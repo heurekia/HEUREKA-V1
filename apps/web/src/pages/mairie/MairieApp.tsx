@@ -8,6 +8,7 @@ const NAV_ITEMS: Array<{ label: string; icon: (p: { size?: number; className?: s
   { label: "Carte", icon: MapIcon },
   { label: "Statistiques", icon: ChartIcon },
   { label: "Paramètres", icon: SettingsIcon },
+  { label: "Infos Perso", icon: UserIcon },
 ];
 
 function HomeIcon({ size = 18, className = "" }) {
@@ -127,6 +128,14 @@ function SunIcon({ size = 18 }) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
       <circle cx="12" cy="12" r="5" /><line x1="12" y1="1" x2="12" y2="3" /><line x1="12" y1="21" x2="12" y2="23" /><line x1="4.22" y1="4.22" x2="5.64" y2="5.64" /><line x1="18.36" y1="18.36" x2="19.78" y2="19.78" /><line x1="1" y1="12" x2="3" y2="12" /><line x1="21" y1="12" x2="23" y2="12" /><line x1="4.22" y1="19.78" x2="5.64" y2="18.36" /><line x1="18.36" y1="5.64" x2="19.78" y2="4.22" />
+    </svg>
+  );
+}
+
+function UserIcon({ size = 18, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" />
     </svg>
   );
 }
@@ -401,7 +410,7 @@ function DossiersScreen() {
 
 function MessageScreen() {
   const [tab, setTab] = useState("Citoyens");
-  const convs = [
+  const citoyenConvs = [
     { name: "Jean Dupont", dossier: "PC-2024-0123", preview: "Bonjour, pouvez-vous me transmettre...", time: "09:15", badge: 2, initials: "JD", color: "#4F46E5" },
     { name: "Sophie Martin", dossier: "DP-2024-0456", preview: "Merci pour votre retour.", time: "Hier", badge: 1, initials: "SM", color: "#22C55E" },
     { name: "Pierre Durand", dossier: "DP-2024-0089", preview: "Pièce complémentaire envoyée.", time: "Hier", initials: "PD", color: "#F97316" },
@@ -409,6 +418,14 @@ function MessageScreen() {
     { name: "SCI Les Oliviers", dossier: "PC-2025-0166", preview: "Nous prenons connaissance.", time: "15/05", initials: "SO", color: "#EC4899" },
     { name: "Emma Petit", dossier: "DP-2024-0333", preview: "Bonjour, j'ai une question sur...", time: "14/05", initials: "EP", color: "#14B8A6" },
   ];
+  const serviceConvs = [
+    { name: "ABF – Architecte des Bâtiments de France", dossier: "PC-2024-0123", preview: "Avis favorable avec réserves transmis.", time: "10:30", badge: 1, initials: "AB", color: "#8B5CF6" },
+    { name: "SDIS – Service Incendie", dossier: "PC-2024-0456", preview: "Consultation en cours d'examen.", time: "Hier", initials: "SD", color: "#EF4444" },
+    { name: "Métropole Tours Val de Loire", dossier: "PC-2024-0166", preview: "Retour attendu avant le 17/05.", time: "Hier", initials: "MT", color: "#F97316" },
+    { name: "DREAL Centre-Val de Loire", dossier: "PC-2024-0789", preview: "Documents bien reçus, analyse en cours.", time: "14/05", initials: "DR", color: "#22C55E" },
+    { name: "Service des Eaux", dossier: "DP-2024-0089", preview: "Avis favorable émis.", time: "13/05", initials: "SE", color: "#3B82F6" },
+  ];
+  const convs = tab === "Citoyens" ? citoyenConvs : serviceConvs;
   return (
     <div style={{ padding: 0, display: "flex", height: "calc(100vh - 56px)" }}>
       <div style={{ width: 320, borderRight: "1px solid #E2E8F0", display: "flex", flexDirection: "column", background: "white" }}>
@@ -714,10 +731,142 @@ function ParametresScreen() {
           </table>
         </div>
       )}
-      {stab !== "Notifications" && stab !== "Utilisateurs" && (
-        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 40, textAlign: "center", color: "#94a3b8" }}>
-          <div style={{ fontSize: 32, marginBottom: 8 }}>🚧</div>
-          <div style={{ fontSize: 14 }}>Section "{stab}" — à implémenter</div>
+      {stab === "Documents" && (
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Gestion des modèles de documents</div>
+              <div style={{ fontSize: 12, color: "#94a3b8" }}>Configurez les modèles de courriers, arrêtés et formulaires utilisés par la commune.</div>
+            </div>
+            <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouveau modèle</button>
+          </div>
+          {[
+            { name: "Accusé de réception", type: "Courrier", format: "DOCX", updated: "12/05/2024", status: "Actif" },
+            { name: "Demande de pièces complémentaires", type: "Courrier", format: "DOCX", updated: "02/05/2024", status: "Actif" },
+            { name: "Arrêté de permis de construire", type: "Arrêté", format: "PDF", updated: "28/04/2024", status: "Actif" },
+            { name: "Arrêté de refus", type: "Arrêté", format: "PDF", updated: "15/04/2024", status: "Actif" },
+            { name: "Notification de décision", type: "Courrier", format: "DOCX", updated: "10/04/2024", status: "Actif" },
+            { name: "Mise en demeure", type: "Courrier", format: "DOCX", updated: "01/04/2024", status: "Désactivé" },
+          ].map((doc, i) => (
+            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
+              <span style={{ fontSize: 20 }}>📄</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{doc.name}</div>
+                <div style={{ fontSize: 11, color: "#94a3b8" }}>{doc.type} · {doc.format} · Modifié le {doc.updated}</div>
+              </div>
+              <StatusBadge status={doc.status} />
+              <div style={{ display: "flex", gap: 6 }}>
+                <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "5px 10px", fontSize: 12, color: "#4F46E5", cursor: "pointer" }}>Éditer</button>
+                <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }}><DotsIcon /></button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+      {stab === "Workflow & Délais" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Délais légaux par type de dossier</div>
+            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Configurez les délais d'instruction pour chaque type de dossier.</div>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "#F8FAFC" }}>
+                  {["Type de dossier","Délai légal","Délai alerte","Délai maxi","Actions"].map(h => (
+                    <th key={h} style={{ padding: "9px 12px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { type: "Permis de construire (PC)", legal: "90j", alert: "75j", max: "120j" },
+                  { type: "Déclaration préalable (DP)", legal: "30j", alert: "25j", max: "60j" },
+                  { type: "Permis d'aménager (PA)", legal: "90j", alert: "75j", max: "120j" },
+                  { type: "Certificat d'urbanisme (CU)", legal: "30j", alert: "25j", max: "45j" },
+                  { type: "Permis de démolir (PD)", legal: "60j", alert: "50j", max: "90j" },
+                ].map((r, i) => (
+                  <tr key={i} style={{ borderBottom: "1px solid #F8FAFC" }}>
+                    <td style={{ padding: "10px 12px", fontSize: 13, color: "#374151", fontWeight: 500 }}>{r.type}</td>
+                    {[r.legal, r.alert, r.max].map((v, j) => (
+                      <td key={j} style={{ padding: "10px 12px" }}>
+                        <input defaultValue={v} style={{ width: 70, padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12, color: "#374151", textAlign: "center" }} />
+                      </td>
+                    ))}
+                    <td style={{ padding: "10px 12px" }}>
+                      <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }}><DotsIcon /></button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16, gap: 8 }}>
+              <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Réinitialiser</button>
+              <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
+            </div>
+          </div>
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Étapes du workflow</div>
+            {[
+              { step: "1", label: "Réception & Enregistrement", desc: "Accusé de réception automatique + création du dossier", auto: true },
+              { step: "2", label: "Vérification de complétude", desc: "Vérification des pièces dans les 15 premiers jours", auto: false },
+              { step: "3", label: "Consultation des services", desc: "Envoi aux organismes consultés selon le type", auto: false },
+              { step: "4", label: "Instruction", desc: "Analyse et rédaction de la décision", auto: false },
+              { step: "5", label: "Décision & Notification", desc: "Signature et envoi de la décision au pétitionnaire", auto: false },
+            ].map((w) => (
+              <div key={w.step} style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 12, padding: "10px 12px", background: "#F8FAFC", borderRadius: 8 }}>
+                <div style={{ width: 28, height: 28, borderRadius: "50%", background: "#4F46E5", color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{w.step}</div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{w.label}</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8" }}>{w.desc}</div>
+                </div>
+                {w.auto && <span style={{ background: "#EEF2FF", color: "#4F46E5", fontSize: 10, fontWeight: 700, borderRadius: 4, padding: "2px 6px", flexShrink: 0 }}>AUTO</span>}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {stab === "Intégrations" && (
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Intégrations et services connectés</div>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Gérez les connexions avec les services tiers.</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            {[
+              { name: "Portail ADS / PLAT'AU", desc: "Plateforme nationale de dépôt des autorisations d'urbanisme", status: "Actif", icon: "🏛" },
+              { name: "DGFIP – Données foncières", desc: "Accès aux données cadastrales et fiscales", status: "Actif", icon: "🗺" },
+              { name: "Géoportail de l'Urbanisme", desc: "Consultation des documents d'urbanisme (PLU, POS...)", status: "Actif", icon: "📍" },
+              { name: "Chorus Pro", desc: "Facturation et paiement des actes d'urbanisme", status: "En attente", icon: "💳" },
+              { name: "DocuSign", desc: "Signature électronique des arrêtés et courriers", status: "Désactivé", icon: "✍️" },
+              { name: "Mailjet / SendGrid", desc: "Envoi des notifications par e-mail", status: "Actif", icon: "✉️" },
+            ].map((int) => (
+              <div key={int.name} style={{ border: "1px solid #E2E8F0", borderRadius: 12, padding: 16, display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 24, flexShrink: 0 }}>{int.icon}</span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 2 }}>{int.name}</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 8 }}>{int.desc}</div>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <StatusBadge status={int.status} />
+                    <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>{int.status === "Désactivé" ? "Activer" : "Configurer"}</button>
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {stab === "Général" && (
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>Informations générales de la commune</div>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+            {[["Nom de la commune","Ballan-Miré"],["Code INSEE","37015"],["Département","Indre-et-Loire (37)"],["Région","Centre-Val de Loire"],["Population","7 800 habitants"],["Surface","30,7 km²"],["Email contact","urbanisme@ballan-mire.fr"],["Téléphone","02 47 67 XX XX"]].map(([l,v]) => (
+              <div key={l}>
+                <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{l}</div>
+                <input defaultValue={v} style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none" }} />
+              </div>
+            ))}
+          </div>
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20, gap: 8 }}>
+            <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+            <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
+          </div>
         </div>
       )}
     </div>
