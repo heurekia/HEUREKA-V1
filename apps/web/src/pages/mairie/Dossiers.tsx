@@ -6,6 +6,7 @@ import { Input } from "../../components/ui/input";
 import { Card, CardContent } from "../../components/ui/card";
 import { Badge, statusLabels } from "../../components/ui/badge";
 import { Table, THead, TBody, Th, Td, Tr } from "../../components/ui/table";
+import { Search, Filter, Plus, FileText } from "lucide-react";
 
 export function MairieDossiers() {
   const [dossiers, setDossiers] = useState<any[]>([]);
@@ -31,26 +32,42 @@ export function MairieDossiers() {
 
   return (
     <div>
-      <div className="flex items-center justify-between mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Dossiers</h1>
+      <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
+        <div>
+          <h1 className="text-2xl font-bold text-[#000020]">Dossiers</h1>
+          <p className="text-gray-500 text-sm mt-1">Gestion des demandes d'urbanisme</p>
+        </div>
         <div className="flex items-center gap-3">
-          <div className="flex gap-2">
+          <div className="relative">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
             <Input
               placeholder="Rechercher..."
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              className="w-64"
+              className="pl-9 w-64"
             />
-            <Button variant="secondary" onClick={handleSearch}>Rechercher</Button>
           </div>
+          <Button variant="outline" size="sm" className="gap-2">
+            <Filter className="w-4 h-4" />
+            Filtres
+          </Button>
+          <Button size="sm" className="gap-2">
+            <Plus className="w-4 h-4" />
+            Nouveau
+          </Button>
         </div>
       </div>
 
-      <Card>
+      <Card className="border-gray-200/80">
         <CardContent className="p-0">
           {loading ? (
-            <div className="p-8 text-center text-gray-500">Chargement...</div>
+            <div className="p-12 text-center text-gray-400">Chargement...</div>
+          ) : dossiers.length === 0 ? (
+            <div className="p-12 text-center text-gray-400">
+              <FileText className="w-12 h-12 mx-auto mb-3 text-gray-300" />
+              <p>Aucun dossier trouvé</p>
+            </div>
           ) : (
             <Table>
               <THead>
@@ -67,7 +84,7 @@ export function MairieDossiers() {
               <TBody>
                 {dossiers.map((d) => (
                   <Tr key={d.id}>
-                    <Td><span className="font-medium text-gray-900">{d.numero}</span></Td>
+                    <Td><span className="font-medium text-[#000020]">{d.numero}</span></Td>
                     <Td className="capitalize">{d.type.replace(/_/g, " ")}</Td>
                     <Td className="max-w-[200px] truncate">{d.adresse ?? "-"}</Td>
                     <Td>{d.parcelle ?? "-"}</Td>

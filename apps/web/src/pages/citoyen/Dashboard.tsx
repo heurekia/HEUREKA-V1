@@ -2,60 +2,113 @@ import { useAuth } from "../../hooks/useAuth";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Link } from "react-router-dom";
+import {
+  FilePlus,
+  FileText,
+  MessageSquare,
+  Clock,
+  ArrowRight,
+} from "lucide-react";
 
 export function CitoyenDashboard() {
   const { user } = useAuth();
 
+  const quickActions = [
+    {
+      title: "Nouvelle demande",
+      desc: "Permis de construire, déclaration préalable...",
+      icon: FilePlus,
+      to: "/citoyen/mes-demandes",
+      color: "bg-heureka-500 text-white",
+    },
+    {
+      title: "Mes demandes",
+      desc: "Suivez l'avancement de vos dossiers",
+      icon: FileText,
+      to: "/citoyen/mes-demandes",
+      color: "bg-blue-500 text-white",
+    },
+    {
+      title: "Messagerie",
+      desc: "Échangez avec les services instructeurs",
+      icon: MessageSquare,
+      to: "/citoyen/messagerie",
+      color: "bg-emerald-500 text-white",
+    },
+  ];
+
+  const recentActivity = [
+    { label: "Dernière connexion", value: "Aujourd'hui à 09:24", icon: Clock },
+  ];
+
   return (
-    <div className="max-w-7xl mx-auto px-4 py-8 sm:px-6 lg:px-8">
+    <div className="max-w-7xl mx-auto px-6 py-8">
       <div className="mb-8">
-        <h1 className="text-2xl font-bold text-gray-900">Bonjour, {user?.prenom}</h1>
-        <p className="text-gray-500">Bienvenue sur votre espace citoyen</p>
+        <h1 className="text-2xl font-bold text-[#000020]">
+          Bonjour, {user?.prenom}
+        </h1>
+        <p className="text-gray-500 mt-1">
+          Bienvenue sur votre espace citoyen
+        </p>
       </div>
 
-      <div className="grid md:grid-cols-2 lg:grid-cols-3 gap-6 mb-8">
-        <Card className="hover:shadow-lg transition-shadow">
-          <CardContent className="p-6">
-            <div className="w-12 h-12 bg-heureka-100 rounded-xl flex items-center justify-center mb-4">
-              <svg className="w-6 h-6 text-heureka-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-              </svg>
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
+        {recentActivity.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Card key={item.label} className="border-gray-200/80">
+              <CardContent className="p-4 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-heureka-100 flex items-center justify-center">
+                  <Icon className="w-5 h-5 text-heureka-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">{item.label}</p>
+                  <p className="text-sm font-semibold text-[#000020]">{item.value}</p>
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
+        <Card className="border-gray-200/80">
+          <CardContent className="p-4 flex items-center gap-3">
+            <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center">
+              <FileText className="w-5 h-5 text-amber-600" />
             </div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Nouvelle demande</h3>
-            <p className="text-gray-600 text-sm mb-4">Déposer un permis de construire, une déclaration préalable...</p>
-            <Link to="/citoyen/mes-demandes">
-              <Button className="w-full">Créer une demande</Button>
-            </Link>
+            <div>
+              <p className="text-xs text-gray-500">Dossiers actifs</p>
+              <p className="text-sm font-semibold text-[#000020]">3 en cours</p>
+            </div>
           </CardContent>
         </Card>
-        <Card className="hover:shadow-lg transition-shadow">
-          <CardContent className="p-6">
-            <div className="w-12 h-12 bg-heureka-100 rounded-xl flex items-center justify-center mb-4">
-              <svg className="w-6 h-6 text-heureka-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-              </svg>
-            </div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Mes demandes</h3>
-            <p className="text-gray-600 text-sm mb-4">Suivez l'avancement de vos dossiers en cours.</p>
-            <Link to="/citoyen/mes-demandes">
-              <Button variant="outline" className="w-full">Voir mes dossiers</Button>
+      </div>
+
+      <h2 className="text-lg font-semibold text-[#000020] mb-4">
+        Actions rapides
+      </h2>
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+        {quickActions.map((action) => {
+          const Icon = action.icon;
+          return (
+            <Link key={action.title} to={action.to}>
+              <Card className="hover:shadow-lg transition-all border-gray-200/80 group h-full">
+                <CardContent className="p-6 flex flex-col items-start gap-4">
+                  <div
+                    className={`w-12 h-12 rounded-xl flex items-center justify-center ${action.color}`}
+                  >
+                    <Icon className="w-6 h-6" />
+                  </div>
+                  <div className="flex-1">
+                    <h3 className="text-base font-semibold text-[#000020] group-hover:text-heureka-600 transition-colors">
+                      {action.title}
+                    </h3>
+                    <p className="text-sm text-gray-500 mt-1">{action.desc}</p>
+                  </div>
+                  <ArrowRight className="w-5 h-5 text-gray-300 group-hover:text-heureka-500 transition-colors" />
+                </CardContent>
+              </Card>
             </Link>
-          </CardContent>
-        </Card>
-        <Card className="hover:shadow-lg transition-shadow">
-          <CardContent className="p-6">
-            <div className="w-12 h-12 bg-heureka-100 rounded-xl flex items-center justify-center mb-4">
-              <svg className="w-6 h-6 text-heureka-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                <path strokeLinecap="round" strokeLinejoin="round" d="M8 10h.01M12 10h.01M16 10h.01M9 16H5a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v8a2 2 0 01-2 2h-5l-5 5v-5z" />
-              </svg>
-            </div>
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Messagerie</h3>
-            <p className="text-gray-600 text-sm mb-4">Échangez avec les services instructeurs.</p>
-            <Link to="/citoyen/messagerie">
-              <Button variant="outline" className="w-full">Accéder</Button>
-            </Link>
-          </CardContent>
-        </Card>
+          );
+        })}
       </div>
     </div>
   );

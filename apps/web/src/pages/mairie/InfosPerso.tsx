@@ -1,17 +1,31 @@
 import { useAuth } from "../../hooks/useAuth";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
+import { Avatar } from "../../components/ui/avatar";
+import {
+  User,
+  Building2,
+  Users,
+  Clock,
+  FileText,
+  PenSquare,
+  Bell,
+  Globe,
+  Shield,
+  HelpCircle,
+  ChevronRight,
+} from "lucide-react";
 
 const menuItems = [
-  { title: "À propos", desc: "Informations personnelles et coordonnées" },
-  { title: "Communes & Rôles", desc: "Gérer vos communes de rattachement" },
-  { title: "Délégations", desc: "Configurer vos délégations" },
-  { title: "Disponibilités", desc: "Définir vos horaires de travail" },
-  { title: "Mes modèles", desc: "Gérer vos modèles de documents" },
-  { title: "Mes signatures", desc: "Gérer vos signatures électroniques" },
-  { title: "Notifications", desc: "Préférences de notification" },
-  { title: "Préférences", desc: "Langue, fuseau horaire, etc." },
-  { title: "Sécurité & Connexion", desc: "Mot de passe, 2FA, sessions" },
-  { title: "Centre d'aide", desc: "Assistance et documentation" },
+  { title: "À propos", desc: "Informations personnelles et coordonnées", icon: User },
+  { title: "Communes & Rôles", desc: "Gérer vos communes de rattachement", icon: Building2 },
+  { title: "Délégations", desc: "Configurer vos délégations", icon: Users },
+  { title: "Disponibilités", desc: "Définir vos horaires de travail", icon: Clock },
+  { title: "Mes modèles", desc: "Gérer vos modèles de documents", icon: FileText },
+  { title: "Mes signatures", desc: "Gérer vos signatures électroniques", icon: PenSquare },
+  { title: "Notifications", desc: "Préférences de notification", icon: Bell },
+  { title: "Préférences", desc: "Langue, fuseau horaire, etc.", icon: Globe },
+  { title: "Sécurité & Connexion", desc: "Mot de passe, 2FA, sessions", icon: Shield },
+  { title: "Centre d'aide", desc: "Assistance et documentation", icon: HelpCircle },
 ];
 
 export function InfosPerso() {
@@ -20,18 +34,19 @@ export function InfosPerso() {
   return (
     <div>
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-gray-900">Informations personnelles</h1>
-        <p className="text-gray-500 text-sm">Gérez votre profil et vos préférences</p>
+        <h1 className="text-2xl font-bold text-[#000020]">Informations personnelles</h1>
+        <p className="text-gray-500 text-sm mt-1">Gérez votre profil et vos préférences</p>
       </div>
 
-      <Card className="mb-6">
+      <Card className="border-gray-200/80 mb-6">
         <CardContent className="p-6">
           <div className="flex items-center gap-4">
-            <div className="w-16 h-16 bg-heureka-100 rounded-full flex items-center justify-center">
-              <span className="text-2xl font-bold text-heureka-600">{user?.prenom?.charAt(0)}{user?.nom?.charAt(0)}</span>
-            </div>
+            <Avatar
+              fallback={user ? `${user.prenom} ${user.nom}` : "U"}
+              className="w-16 h-16 text-xl"
+            />
             <div>
-              <p className="text-lg font-semibold text-gray-900">{user?.prenom} {user?.nom}</p>
+              <p className="text-lg font-semibold text-[#000020]">{user?.prenom} {user?.nom}</p>
               <p className="text-sm text-gray-500">{user?.email}</p>
               <p className="text-sm text-gray-500 capitalize">{user?.role}</p>
             </div>
@@ -40,14 +55,25 @@ export function InfosPerso() {
       </Card>
 
       <div className="grid md:grid-cols-2 gap-4">
-        {menuItems.map((item) => (
-          <Card key={item.title} className="hover:shadow-md transition-shadow cursor-pointer">
-            <CardContent className="p-4">
-              <h3 className="font-medium text-gray-900">{item.title}</h3>
-              <p className="text-sm text-gray-500">{item.desc}</p>
-            </CardContent>
-          </Card>
-        ))}
+        {menuItems.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Card key={item.title} className="border-gray-200/80 hover:shadow-md transition-all cursor-pointer group">
+              <CardContent className="p-4">
+                <div className="flex items-center gap-4">
+                  <div className="w-10 h-10 rounded-xl bg-heureka-100 flex items-center justify-center shrink-0">
+                    <Icon className="w-5 h-5 text-heureka-600" />
+                  </div>
+                  <div className="flex-1 min-w-0">
+                    <h3 className="font-medium text-[#000020] group-hover:text-heureka-600 transition-colors">{item.title}</h3>
+                    <p className="text-sm text-gray-500 truncate">{item.desc}</p>
+                  </div>
+                  <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-heureka-500 transition-colors shrink-0" />
+                </div>
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
     </div>
   );
