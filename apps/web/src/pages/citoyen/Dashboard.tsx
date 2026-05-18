@@ -8,10 +8,37 @@ import {
   MessageSquare,
   Clock,
   ArrowRight,
+  Folder,
+  CheckCircle,
+  AlertCircle,
 } from "lucide-react";
 
 export function CitoyenDashboard() {
   const { user } = useAuth();
+
+  const stats = [
+    {
+      label: "Mes demandes",
+      value: "3 en cours",
+      icon: FileText,
+      color: "bg-heureka-100 text-heureka-600",
+      bg: "bg-heureka-50/50",
+    },
+    {
+      label: "Messages non lus",
+      value: "2 nouveaux",
+      icon: MessageSquare,
+      color: "bg-blue-100 text-blue-600",
+      bg: "bg-blue-50/50",
+    },
+    {
+      label: "Documents à fournir",
+      value: "1 en attente",
+      icon: Folder,
+      color: "bg-amber-100 text-amber-600",
+      bg: "bg-amber-50/50",
+    },
+  ];
 
   const quickActions = [
     {
@@ -22,7 +49,7 @@ export function CitoyenDashboard() {
       color: "bg-heureka-500 text-white",
     },
     {
-      title: "Mes demandes",
+      title: "Consulter mes dossiers",
       desc: "Suivez l'avancement de vos dossiers",
       icon: FileText,
       to: "/citoyen/mes-demandes",
@@ -38,7 +65,22 @@ export function CitoyenDashboard() {
   ];
 
   const recentActivity = [
-    { label: "Dernière connexion", value: "Aujourd'hui à 09:24", icon: Clock },
+    {
+      label: "Dernière connexion",
+      value: "Aujourd'hui à 09:24",
+      icon: Clock,
+    },
+    {
+      label: "Dossiers actifs",
+      value: "3 en cours",
+      icon: FileText,
+      status: "success" as const,
+    },
+    {
+      label: "Notifications",
+      value: "2 non lues",
+      icon: AlertCircle,
+    },
   ];
 
   return (
@@ -52,40 +94,30 @@ export function CitoyenDashboard() {
         </p>
       </div>
 
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 mb-8">
-        {recentActivity.map((item) => {
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-10">
+        {stats.map((item) => {
           const Icon = item.icon;
           return (
-            <Card key={item.label} className="border-gray-200/80">
-              <CardContent className="p-4 flex items-center gap-3">
-                <div className="w-10 h-10 rounded-xl bg-heureka-100 flex items-center justify-center">
-                  <Icon className="w-5 h-5 text-heureka-600" />
+            <Card key={item.label} className="border-gray-200/80 shadow-sm">
+              <CardContent className="p-5">
+                <div className="flex items-start justify-between mb-3">
+                  <div className={`w-11 h-11 rounded-xl ${item.color} flex items-center justify-center`}>
+                    <Icon className="w-5 h-5" />
+                  </div>
+                  <CheckCircle className="w-5 h-5 text-green-400" />
                 </div>
-                <div>
-                  <p className="text-xs text-gray-500">{item.label}</p>
-                  <p className="text-sm font-semibold text-[#000020]">{item.value}</p>
-                </div>
+                <p className="text-2xl font-bold text-[#000020]">{item.value}</p>
+                <p className="text-sm text-gray-500 mt-1">{item.label}</p>
               </CardContent>
             </Card>
           );
         })}
-        <Card className="border-gray-200/80">
-          <CardContent className="p-4 flex items-center gap-3">
-            <div className="w-10 h-10 rounded-xl bg-amber-100 flex items-center justify-center">
-              <FileText className="w-5 h-5 text-amber-600" />
-            </div>
-            <div>
-              <p className="text-xs text-gray-500">Dossiers actifs</p>
-              <p className="text-sm font-semibold text-[#000020]">3 en cours</p>
-            </div>
-          </CardContent>
-        </Card>
       </div>
 
-      <h2 className="text-lg font-semibold text-[#000020] mb-4">
+      <h2 className="text-lg font-semibold text-[#000020] mb-5">
         Actions rapides
       </h2>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-6">
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5 mb-10">
         {quickActions.map((action) => {
           const Icon = action.icon;
           return (
@@ -107,6 +139,25 @@ export function CitoyenDashboard() {
                 </CardContent>
               </Card>
             </Link>
+          );
+        })}
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
+        {recentActivity.map((item) => {
+          const Icon = item.icon;
+          return (
+            <Card key={item.label} className="border-gray-200/80">
+              <CardContent className="p-4 flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-gray-100 flex items-center justify-center">
+                  <Icon className="w-5 h-5 text-gray-600" />
+                </div>
+                <div>
+                  <p className="text-xs text-gray-500">{item.label}</p>
+                  <p className="text-sm font-semibold text-[#000020]">{item.value}</p>
+                </div>
+              </CardContent>
+            </Card>
           );
         })}
       </div>

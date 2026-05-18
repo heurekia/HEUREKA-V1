@@ -5,7 +5,7 @@ import { Input } from "../../components/ui/input";
 import { Card, CardContent } from "../../components/ui/card";
 import { Badge } from "../../components/ui/badge";
 import { api } from "../../lib/api";
-import { Search, FileText, MessageSquare, Eye, ArrowRight, CheckCircle } from "lucide-react";
+import { Search, FileText, MessageSquare, Eye, ArrowRight, CheckCircle, BarChart3, Building2, Clock, Shield } from "lucide-react";
 
 const features = [
   {
@@ -35,10 +35,10 @@ const features = [
 ];
 
 const stats = [
-  { label: "Dossiers traités", value: "12 500+" },
-  { label: "Communes partenaires", value: "48" },
-  { label: "Satisfaction", value: "96%" },
-  { label: "Délai moyen", value: "48h" },
+  { label: "Dossiers traités", value: "12 500+", icon: FileText },
+  { label: "Communes partenaires", value: "48", icon: Building2 },
+  { label: "Satisfaction", value: "96%", icon: Shield },
+  { label: "Délai moyen", value: "48h", icon: Clock },
 ];
 
 export function Accueil() {
@@ -63,9 +63,31 @@ export function Accueil() {
   };
 
   return (
-    <div>
+    <div className="bg-[#F0F0F0]">
+      {/* Navigation */}
+      <header className="bg-white border-b border-gray-200">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="flex items-center justify-between h-16">
+            <div className="flex items-center gap-2.5">
+              <div className="w-8 h-8 bg-heureka-500 rounded-lg flex items-center justify-center">
+                <span className="text-white font-bold text-xs">H</span>
+              </div>
+              <span className="text-lg font-bold text-[#000020]">HEUREKA</span>
+            </div>
+            <div className="flex items-center gap-4">
+              <Link to="/login" className="text-sm text-gray-600 hover:text-[#000020] font-medium transition-colors">Se connecter</Link>
+              <Link to="/register">
+                <Button size="sm" className="bg-heureka-500 hover:bg-heureka-600 text-white rounded-lg">
+                  Créer un compte
+                </Button>
+              </Link>
+            </div>
+          </div>
+        </div>
+      </header>
+
       {/* Hero */}
-      <section className="bg-[#F0F0F0] pt-16 pb-24 overflow-hidden">
+      <section className="pt-16 pb-24 overflow-hidden">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="grid lg:grid-cols-2 gap-12 items-center">
             <div>
@@ -266,12 +288,18 @@ export function Accueil() {
       <section className="py-16 bg-white">
         <div className="max-w-5xl mx-auto px-4">
           <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
-            {stats.map((s) => (
-              <div key={s.label} className="text-center">
-                <p className="text-3xl font-bold text-heureka-500">{s.value}</p>
-                <p className="text-sm text-gray-500 mt-1">{s.label}</p>
-              </div>
-            ))}
+            {stats.map((s) => {
+              const Icon = s.icon;
+              return (
+                <div key={s.label} className="text-center">
+                  <div className="w-12 h-12 rounded-xl bg-heureka-50 flex items-center justify-center mx-auto mb-3">
+                    <Icon className="w-6 h-6 text-heureka-500" />
+                  </div>
+                  <p className="text-3xl font-bold text-[#000020]">{s.value}</p>
+                  <p className="text-sm text-gray-500 mt-1">{s.label}</p>
+                </div>
+              );
+            })}
           </div>
         </div>
       </section>
