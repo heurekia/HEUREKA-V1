@@ -1668,13 +1668,225 @@ function InfosPersoScreen() {
   );
 }
 
+type DossierInfo = { id: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string };
+
+function DossierDetailScreen({ dossier, onBack, navigate }: {
+  dossier: DossierInfo;
+  onBack: () => void;
+  navigate: (s: string) => void;
+}) {
+  const [note, setNote] = useState("");
+  const pieces = [
+    { name: "Formulaire CERFA", ext: "PDF" },
+    { name: "Plan de situation", ext: "PDF" },
+    { name: "Plan de masse", ext: "PDF" },
+    { name: "Notice descriptive", ext: "PDF" },
+    { name: "Photos", ext: "ZIP" },
+    { name: "Pièce complémentaire", ext: "PDF" },
+  ];
+  const timeline = [
+    { date: "12/04/2024", event: "Dépôt du dossier", actor: "Jean Dupont (pétitionnaire)" },
+    { date: "14/04/2024", event: "Accusé réception envoyé", actor: "Système automatique" },
+    { date: "22/04/2024", event: "Envoi en consultation ABF", actor: "Marie Lambert (instructeur)" },
+    { date: "30/04/2024", event: "Réception avis ABF", actor: "ABF – Favorable avec réserves" },
+    { date: "05/05/2024", event: "Mise en instruction", actor: "Marie Lambert (instructeur)" },
+  ];
+  const consultations = [
+    { service: "ABF – Architecte des Bâtiments de France", status: "Avis reçu", ok: true },
+    { service: "SDIS – Service Incendie", status: "En attente", ok: false },
+    { service: "Métropole Tours Val de Loire", status: "En attente", ok: false },
+  ];
+  return (
+    <div style={{ padding: 24 }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+        <button onClick={onBack} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>← Retour aux dossiers</button>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <h1 style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", margin: 0 }}>Dossier {dossier.id}</h1>
+            <StatusBadge status={dossier.status} />
+          </div>
+          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{dossier.type} · {dossier.adresse}</div>
+        </div>
+        <button style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouvelle action</button>
+      </div>
+
+      {/* Two-column layout */}
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        {/* Left column */}
+        <div style={{ flex: 2, display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Informations générales */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Informations générales</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              {[
+                ["Pétitionnaire", dossier.petitionnaire],
+                ["Adresse", dossier.adresse],
+                ["Type de dossier", dossier.type],
+                ["Date de dépôt", "12/04/2024"],
+                ["Échéance", dossier.echeance],
+                ["Instructeur assigné", "Marie Lambert"],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Pièces du dossier */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Pièces du dossier</div>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+              {pieces.map((p) => (
+                <div key={p.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #F1F5F9" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 16 }}>📄</span>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{p.name}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{p.ext}</div>
+                    </div>
+                  </div>
+                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 12, color: "#4F46E5", cursor: "pointer", fontWeight: 500 }}>Télécharger</button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Historique */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Historique / Suivi</div>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 0 }}>
+              {timeline.map((t, i) => (
+                <div key={i} style={{ display: "flex", gap: 12, paddingBottom: i < timeline.length - 1 ? 16 : 0 }}>
+                  <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center" }}>
+                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 3 }} />
+                    {i < timeline.length - 1 && <div style={{ width: 2, flex: 1, background: "#E2E8F0", marginTop: 4 }} />}
+                  </div>
+                  <div style={{ paddingBottom: 4 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{t.event}</div>
+                    <div style={{ fontSize: 12, color: "#94a3b8" }}>{t.actor} · {t.date}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Right column */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column" as const, gap: 16 }}>
+          {/* Actions rapides */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Actions rapides</div>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+              <button style={{ width: "100%", border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#374151", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>📎 Demander pièce complémentaire</button>
+              <button style={{ width: "100%", border: "1px solid #F97316", background: "#FFF7ED", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#C2410C", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>👥 Envoyer en consultation</button>
+              <button style={{ width: "100%", border: "1px solid #4F46E5", background: "#EEF2FF", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#4F46E5", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>📝 Rédiger la décision</button>
+              <button onClick={() => navigate("Messagerie")} style={{ width: "100%", border: "1px solid #22C55E", background: "#F0FDF4", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#15803D", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>💬 Contacter le pétitionnaire</button>
+            </div>
+          </div>
+
+          {/* Consultations */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Consultations</div>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+              {consultations.map((c) => (
+                <div key={c.service} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #F1F5F9" }}>
+                  <div style={{ fontSize: 12, color: "#374151", fontWeight: 500 }}>{c.service}</div>
+                  <span style={{ fontSize: 11, color: c.ok ? "#15803D" : "#C2410C", background: c.ok ? "#F0FDF4" : "#FFF7ED", borderRadius: 20, padding: "2px 8px", fontWeight: 600, whiteSpace: "nowrap" as const }}>
+                    {c.ok ? "✅ Avis reçu" : "⏳ En attente"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Notes internes */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Notes internes</div>
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder="Ajouter une note interne..."
+              style={{ width: "100%", minHeight: 80, border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: "#374151", resize: "vertical" as const, outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const }}
+            />
+            <button style={{ marginTop: 8, width: "100%", background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Ajouter</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NouveauDossierModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div style={{ background: "white", borderRadius: 16, width: 560, maxWidth: "90vw", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px", borderBottom: "1px solid #E2E8F0" }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A" }}>Nouveau dossier</div>
+          <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 20, color: "#94a3b8", lineHeight: 1 }}>×</button>
+        </div>
+        {/* Form */}
+        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Type de dossier</label>
+            <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}>
+              <option>Permis de construire</option>
+              <option>Déclaration préalable</option>
+              <option>Permis d'aménager</option>
+              <option>Certificat d'urbanisme</option>
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Pétitionnaire</label>
+            <input placeholder="Nom du pétitionnaire" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Adresse</label>
+            <input placeholder="Adresse du projet" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Date de dépôt</label>
+            <input type="date" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Instructeur assigné</label>
+            <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}>
+              <option>Marie Lambert</option>
+              <option>Pierre Martin</option>
+              <option>Sophie Dubois</option>
+            </select>
+          </div>
+        </div>
+        {/* Footer */}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "16px 24px", borderTop: "1px solid #E2E8F0" }}>
+          <button onClick={onClose} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: "pointer", fontWeight: 500 }}>Annuler</button>
+          <button onClick={onClose} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Créer le dossier</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MairieApp() {
   const [active, setActive] = useState("Tableau de bord");
+  const [selectedDossier, setSelectedDossier] = useState<DossierInfo | null>(null);
+  const [showNouveauDossier, setShowNouveauDossier] = useState(false);
+
+  const handleDossierClick = (dossier: DossierInfo) => {
+    setSelectedDossier(dossier);
+  };
+
+  const handleDossierBack = () => {
+    setSelectedDossier(null);
+  };
 
   const screenMap: Record<string, JSX.Element> = {
-    "Tableau de bord": <DashboardScreen />,
-    "Dossiers": <DossiersScreen />,
-    "Messagerie": <MessageScreen />,
+    "Tableau de bord": <DashboardScreen navigate={setActive} />,
+    "Dossiers": <DossiersScreen onDossierClick={handleDossierClick} navigate={setActive} />,
+    "Messagerie": <MessageScreen onDossierClick={handleDossierClick} />,
     "Paramètres": <ParametresScreen />,
     "Carte": <CarteScreen />,
     "Calendrier": <CalendrierScreen />,
@@ -1696,10 +1908,10 @@ export function MairieApp() {
 
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex" }}>
-      <Sidebar active={active} setActive={setActive} />
+      <Sidebar active={active} setActive={(s) => { setActive(s); setSelectedDossier(null); }} />
       <div style={{ marginLeft: 180, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar title={active} buttonLabel={cfg.buttonLabel} commune={cfg.commune || "Ballan-Miré"} />
+          <Topbar title={active} buttonLabel={cfg.buttonLabel} commune={cfg.commune || "Ballan-Miré"} onNewDossier={() => setShowNouveauDossier(true)} />
         )}
         {active === "Messagerie" && (
           <div style={{ background: "white", borderBottom: "1px solid #E2E8F0", padding: "0 24px", height: 56, display: "flex", alignItems: "center", gap: 16, position: "sticky", top: 0, zIndex: 40 }}>
@@ -1720,14 +1932,19 @@ export function MairieApp() {
           </div>
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {screenMap[active] ?? (
-            <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>🏗</div>
-              <div style={{ fontSize: 14 }}>Section "{active}" — à implémenter</div>
-            </div>
+          {selectedDossier ? (
+            <DossierDetailScreen dossier={selectedDossier} onBack={handleDossierBack} navigate={setActive} />
+          ) : (
+            screenMap[active] ?? (
+              <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>
+                <div style={{ fontSize: 40, marginBottom: 8 }}>🏗</div>
+                <div style={{ fontSize: 14 }}>Section "{active}" — à implémenter</div>
+              </div>
+            )
           )}
         </div>
       </div>
+      {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} />}
     </div>
   );
 }
