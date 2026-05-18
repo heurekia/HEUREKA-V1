@@ -3,3 +3,5 @@ dist/
 .env
 *.tsbuildinfo
 .next/
+.DS_Store
+*.log
