@@ -1,4 +1,4 @@
-import { useState, type ReactElement } from "react";
+import { useState, JSX } from "react";
 
 const NAV_ITEMS: Array<{ label: string; icon: (p: { size?: number; className?: string }) => ReactElement; badge?: number }> = [
   { label: "Tableau de bord", icon: HomeIcon },
@@ -567,7 +567,7 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: { id: string; t
             {["Citoyens 12", "Services / Consultations 8"].map((t) => {
               const base = t.split(" ")[0] ?? t;
               return (
-                <button key={t} onClick={() => setTab(base)} style={{ flex: 1, border: "none", background: "none", padding: "7px 8px", fontSize: 12, fontWeight: tab === base ? 600 : 400, color: tab === base ? "#4F46E5" : "#64748b", borderBottom: tab === base ? "2px solid #4F46E5" : "2px solid #E2E8F0", cursor: "pointer", whiteSpace: "nowrap" }}>{t}</button>
+                <button key={t} onClick={() => setTab(base ?? "")} style={{ flex: 1, border: "none", background: "none", padding: "7px 8px", fontSize: 12, fontWeight: tab === base ? 600 : 400, color: tab === base ? "#4F46E5" : "#64748b", borderBottom: tab === base ? "2px solid #4F46E5" : "2px solid #E2E8F0", cursor: "pointer", whiteSpace: "nowrap" }}>{t}</button>
               );
             })}
           </div>
@@ -1145,7 +1145,7 @@ function CalendrierScreen() {
             {grid.map((week, wi) => (
               <div key={wi} style={{ display: "grid", gridTemplateColumns: "repeat(7,1fr)", borderBottom: wi < grid.length - 1 ? "1px solid #F1F5F9" : "none" }}>
                 {week.map((day, di) => {
-                  const dayNum = (weekNums[wi] ?? 1) + di;
+                  const dayNum = (weekNums[wi] ?? 0) + di;
                   const isToday = wi === 3 && di === 2;
                   return (
                     <div key={di} style={{ minHeight: 80, padding: "6px 8px", borderRight: di < 6 ? "1px solid #F1F5F9" : "none", background: dayNum > 31 || dayNum < 1 ? "#F8FAFC" : "white" }}>
