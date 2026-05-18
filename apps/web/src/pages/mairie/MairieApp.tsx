@@ -1,6 +1,6 @@
 import { useState, JSX } from "react";
 
-const NAV_ITEMS: Array<{ label: string; icon: (p: { size?: number; className?: string }) => JSX.Element; badge?: number }> = [
+const NAV_ITEMS: Array<{ label: string; icon: (p: { size?: number; className?: string }) => ReactElement; badge?: number }> = [
   { label: "Tableau de bord", icon: HomeIcon },
   { label: "Dossiers", icon: FolderIcon },
   { label: "Calendrier", icon: CalendarIcon },
@@ -258,71 +258,201 @@ function StatusBadge({ status }: { status: string }) {
 }
 
 function DashboardScreen({ navigate }: { navigate: (s: string) => void }) {
+  const [mapFilter, setMapFilter] = useState<string>("Tous");
+  const [activeMarker, setActiveMarker] = useState<number | null>(null);
+
   const cards = [
-    { label: "Nouveaux dossiers", count: 8, sub: "Dossiers en attente d'ouverture d'instruction", color: "#4F46E5", bg: "#EEF2FF", icon: "📁", target: "Dossiers" },
-    { label: "Consultations en attente", count: 2, sub: "Dossiers en attente de retour des services consultés", color: "#F97316", bg: "#FFF7ED", icon: "👥", target: "Dossiers" },
+    { label: "Nouveaux dossiers", count: 8, sub: "En attente d'ouverture d'instruction", color: "#4F46E5", bg: "#EEF2FF", icon: "📁", target: "Dossiers" },
+    { label: "Consultations en attente", count: 2, sub: "En attente de retour des services", color: "#F97316", bg: "#FFF7ED", icon: "👥", target: "Dossiers" },
     { label: "Messages sans réponse", count: 3, sub: "Messages en attente de réponse", color: "#4F46E5", bg: "#EEF2FF", icon: "💬", target: "Messagerie" },
-    { label: "Dossiers en retard", count: 1, sub: "Dossiers avec dépassement de délai", color: "#EF4444", bg: "#FEF2F2", icon: "⏰", alert: true, target: "Dossiers" },
+    { label: "Dossiers en retard", count: 1, sub: "Dépassement de délai constaté", color: "#EF4444", bg: "#FEF2F2", icon: "⏰", alert: true, target: "Dossiers" },
   ];
+
+  const markers = [
+    { top: "22%", left: "22%", color: "#4F46E5", status: "Nouveau", n: 2, label: "Rue des Lilas", dossiers: ["PC-2024-0123","DP-2024-0089"] },
+    { top: "18%", left: "45%", color: "#22C55E", status: "En instruction", n: 3, label: "Av. de la Mer", dossiers: ["PC-2024-0789","DP-2024-0333","PC-2023-0567"] },
+    { top: "38%", left: "60%", color: "#F97316", status: "En consultation", n: 4, label: "Chemin de la Colline", dossiers: ["DP-2024-0456","PC-2023-0166","PC-2024-0222","PC-2024-0166"] },
+    { top: "52%", left: "75%", color: "#4F46E5", status: "Nouveau", n: 2, label: "Route des Plages", dossiers: ["DP-2024-0111","PC-2024-0798"] },
+    { top: "65%", left: "38%", color: "#22C55E", status: "En instruction", n: 5, label: "Lotissement du Parc", dossiers: ["DP-2024-0333","PC-2024-0456","PC-2024-0789","DP-2024-0451","PC-2024-0123"] },
+    { top: "70%", left: "62%", color: "#EF4444", status: "En retard", n: 1, label: "Rue du Stade", dossiers: ["PC-2023-0567"] },
+    { top: "42%", left: "30%", color: "#8B5CF6", status: "Décision", n: 2, label: "ZA des Tilleuls", dossiers: ["PC-2023-0166","DP-2024-0090"] },
+  ];
+
+  const filterColors: Record<string, string> = {
+    "Nouveau": "#4F46E5", "En instruction": "#22C55E",
+    "En consultation": "#F97316", "En retard": "#EF4444", "Décision": "#8B5CF6",
+  };
+
+  const visibleMarkers = mapFilter === "Tous" ? markers : markers.filter(m => m.status === mapFilter);
+
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ marginBottom: 24 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Bonjour Marie,</h1>
-        <p style={{ color: "#64748b", fontSize: 13 }}>Voici l'essentiel de votre activité aujourd'hui.</p>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 56px)", padding: "16px 24px 16px", gap: 12 }}>
+      {/* Header + KPI cards */}
+      <div style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
+        <div style={{ flex: 1 }}>
+          <h1 style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", margin: 0 }}>Bonjour Marie 👋</h1>
+          <p style={{ color: "#64748b", fontSize: 12, margin: "2px 0 0" }}>Voici l'essentiel de votre activité aujourd'hui.</p>
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, flex: 3 }}>
+          {cards.map((c) => (
+            <button key={c.label} onClick={() => navigate(c.target)} style={{
+              background: "white", borderRadius: 10, padding: "12px 14px",
+              border: c.alert ? "1px solid #FCA5A5" : "1px solid #E2E8F0",
+              boxShadow: "0 1px 3px rgba(0,0,0,0.04)", cursor: "pointer", textAlign: "left",
+              display: "flex", alignItems: "center", gap: 10,
+            }}>
+              <div style={{ width: 36, height: 36, borderRadius: 10, background: c.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{c.icon}</div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
+                  <span style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", lineHeight: 1 }}>{c.count}</span>
+                  {c.alert && <span style={{ fontSize: 9, background: "#FEF2F2", color: "#B91C1C", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>Retard</span>}
+                </div>
+                <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.label}</div>
+              </div>
+            </button>
+          ))}
+        </div>
       </div>
-      <div style={{ marginBottom: 6, fontSize: 13, fontWeight: 600, color: "#0F172A" }}>À traiter aujourd'hui</div>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 24 }}>
-        {cards.map((c) => (
-          <div key={c.label} style={{ background: "white", borderRadius: 12, padding: 20, border: c.alert ? "1px solid #FCA5A5" : "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-              <div style={{ width: 44, height: 44, borderRadius: 12, background: c.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20 }}>{c.icon}</div>
-              <span style={{ width: 28, height: 28, background: c.color, color: "white", borderRadius: "50%", fontSize: 13, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{c.count}</span>
-            </div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>{c.label}</div>
-            {c.alert && <span style={{ fontSize: 10, background: "#FEF2F2", color: "#B91C1C", borderRadius: 4, padding: "1px 6px", fontWeight: 600, marginBottom: 4, display: "inline-block" }}>Délai dépassé</span>}
-            <div style={{ fontSize: 11, color: "#94A3B8", lineHeight: 1.4 }}>{c.sub}</div>
-            <button onClick={() => navigate(c.target)} style={{ marginTop: 12, width: "100%", border: "none", background: "transparent", color: c.alert ? "#EF4444" : "#4F46E5", fontSize: 12, fontWeight: 600, cursor: "pointer", textAlign: "left", padding: 0 }}>
-              {c.alert ? "Voir les dossiers →" : "Voir →"}
+
+      {/* Map — fills remaining space */}
+      <div style={{ flex: 1, minHeight: 0, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+        {/* Map toolbar */}
+        <div style={{ padding: "10px 16px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+          <div>
+            <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>Carte des demandes</span>
+            <span style={{ fontSize: 11, color: "#94A3B8", marginLeft: 8 }}>Ballan-Miré · {markers.reduce((s,m) => s+m.n, 0)} dossiers actifs</span>
+          </div>
+          <div style={{ display: "flex", gap: 6, marginLeft: "auto" }}>
+            {["Tous", "Nouveau", "En instruction", "En consultation", "En retard"].map(f => (
+              <button key={f} onClick={() => setMapFilter(f)} style={{
+                border: mapFilter === f ? `1px solid ${filterColors[f] ?? "#4F46E5"}` : "1px solid #E2E8F0",
+                background: mapFilter === f ? `${filterColors[f] ?? "#4F46E5"}15` : "white",
+                color: mapFilter === f ? (filterColors[f] ?? "#4F46E5") : "#64748b",
+                borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: mapFilter === f ? 600 : 400, cursor: "pointer",
+              }}>{f}</button>
+            ))}
+            <button onClick={() => navigate("Carte")} style={{ border: "1px solid #4F46E5", background: "#EEF2FF", color: "#4F46E5", borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer", marginLeft: 4 }}>
+              Carte complète →
             </button>
           </div>
-        ))}
-      </div>
-      <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
-        <div style={{ padding: "16px 20px", borderBottom: "1px solid #F1F5F9", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A" }}>Carte des demandes</div>
-            <div style={{ fontSize: 12, color: "#94A3B8" }}>Visualisez la localisation des demandes sur votre territoire.</div>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            {["En cours", "Passées", "Tous les types"].map((t, i) => (
-              <button key={t} style={{ border: i === 0 ? "1px solid #4F46E5" : "1px solid #E2E8F0", background: i === 0 ? "#EEF2FF" : "white", color: i === 0 ? "#4F46E5" : "#64748b", borderRadius: 6, padding: "5px 12px", fontSize: 12, fontWeight: 500, cursor: "pointer" }}>{t}</button>
-            ))}
-          </div>
         </div>
-        <div style={{ height: 220, background: "linear-gradient(135deg, #e8f4e8 0%, #d4e8d4 50%, #c8dfc8 100%)", display: "flex", alignItems: "center", justifyContent: "center", position: "relative" }}>
-          {[{ top: "35%", left: "28%", color: "#4F46E5", n: 2 }, { top: "25%", left: "48%", color: "#22C55E", n: 3 }, { top: "42%", left: "62%", color: "#F97316", n: 4 }, { top: "55%", left: "78%", color: "#4F46E5", n: 2 }, { top: "70%", left: "42%", color: "#22C55E", n: 5 }, { top: "72%", left: "65%", color: "#EF4444", n: 1 }].map((m, i) => (
-            <div key={i} style={{ position: "absolute", top: m.top, left: m.left, width: 28, height: 28, borderRadius: "50%", background: m.color, color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 2px 6px rgba(0,0,0,0.2)", border: "2px solid white" }}>{m.n}</div>
+
+        {/* Map body */}
+        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          {/* SVG base map */}
+          <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} viewBox="0 0 900 500" preserveAspectRatio="xMidYMid slice">
+            {/* Background terrain */}
+            <rect width="900" height="500" fill="#e8f0e8" />
+            <rect x="0" y="0" width="900" height="500" fill="url(#grid)" opacity="0.3" />
+            <defs>
+              <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
+                <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#c8d8c8" strokeWidth="0.5" />
+              </pattern>
+            </defs>
+            {/* Zones vertes (espaces naturels) */}
+            <ellipse cx="120" cy="380" rx="100" ry="70" fill="#c8e6c8" opacity="0.6" />
+            <ellipse cx="780" cy="80" rx="80" ry="60" fill="#c8e6c8" opacity="0.6" />
+            <ellipse cx="820" cy="420" rx="70" ry="50" fill="#c8e6c8" opacity="0.5" />
+            {/* Cours d'eau */}
+            <path d="M 0 260 Q 150 240 280 270 Q 420 300 550 280 Q 680 260 900 290" fill="none" stroke="#a8cce8" strokeWidth="8" opacity="0.7" />
+            <path d="M 0 265 Q 150 245 280 275 Q 420 305 550 285 Q 680 265 900 295" fill="none" stroke="#b8d4f0" strokeWidth="4" opacity="0.5" />
+            {/* Routes principales */}
+            <path d="M 0 200 L 900 220" stroke="#e8e0d0" strokeWidth="12" />
+            <path d="M 0 202 L 900 222" stroke="white" strokeWidth="8" opacity="0.6" />
+            <path d="M 450 0 L 440 500" stroke="#e8e0d0" strokeWidth="10" />
+            <path d="M 452 0 L 442 500" stroke="white" strokeWidth="6" opacity="0.6" />
+            {/* Routes secondaires */}
+            <path d="M 0 350 Q 200 340 400 360 Q 600 380 900 350" stroke="#ddd8cc" strokeWidth="6" fill="none" />
+            <path d="M 200 0 Q 220 180 250 280 Q 280 380 260 500" stroke="#ddd8cc" strokeWidth="5" fill="none" />
+            <path d="M 650 0 Q 660 150 680 280 Q 700 380 690 500" stroke="#ddd8cc" strokeWidth="5" fill="none" />
+            <path d="M 0 80 Q 250 100 440 80 Q 600 60 750 90 Q 820 110 900 80" stroke="#ddd8cc" strokeWidth="4" fill="none" />
+            {/* Quartiers / blocs */}
+            <rect x="300" y="100" width="120" height="80" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.8" />
+            <rect x="460" y="90" width="90" height="70" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.8" />
+            <rect x="580" y="110" width="100" height="90" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.7" />
+            <rect x="310" y="310" width="130" height="70" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.8" />
+            <rect x="480" y="320" width="110" height="80" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.7" />
+            <rect x="640" y="300" width="100" height="90" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.6" />
+            <rect x="150" y="120" width="80" height="60" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.7" />
+            <rect x="160" y="370" width="90" height="65" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.7" />
+            {/* Bâtiments publics */}
+            <rect x="420" y="170" width="40" height="35" rx="3" fill="#d4e0f0" stroke="#b0bcd8" strokeWidth="1.5" />
+            <rect x="350" y="380" width="45" height="38" rx="3" fill="#d4e0f0" stroke="#b0bcd8" strokeWidth="1.5" />
+          </svg>
+
+          {/* Clickable markers */}
+          {visibleMarkers.map((m, i) => (
+            <div key={i}
+              onClick={() => { setActiveMarker(activeMarker === i ? null : i); navigate("Dossiers"); }}
+              onMouseEnter={() => setActiveMarker(i)}
+              onMouseLeave={() => setActiveMarker(null)}
+              style={{
+                position: "absolute", top: m.top, left: m.left,
+                width: 32, height: 32, borderRadius: "50%",
+                background: m.color, color: "white",
+                fontSize: 12, fontWeight: 700,
+                display: "flex", alignItems: "center", justifyContent: "center",
+                boxShadow: activeMarker === i ? `0 0 0 4px ${m.color}40, 0 4px 12px rgba(0,0,0,0.3)` : "0 2px 8px rgba(0,0,0,0.25)",
+                border: "2px solid white", cursor: "pointer",
+                transform: activeMarker === i ? "scale(1.2)" : "scale(1)",
+                transition: "all 0.15s",
+                zIndex: activeMarker === i ? 20 : 10,
+              }}>
+              {m.n}
+              {/* Tooltip */}
+              {activeMarker === i && (
+                <div style={{
+                  position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)",
+                  background: "#0F172A", color: "white", borderRadius: 8,
+                  padding: "8px 12px", fontSize: 11, whiteSpace: "nowrap",
+                  boxShadow: "0 4px 16px rgba(0,0,0,0.3)", zIndex: 30, minWidth: 160,
+                }}>
+                  <div style={{ fontWeight: 700, marginBottom: 4 }}>{m.label}</div>
+                  <div style={{ color: "#94a3b8", marginBottom: 4 }}>{m.n} dossier{m.n > 1 ? "s" : ""} · {m.status}</div>
+                  {m.dossiers.slice(0, 3).map(d => (
+                    <div key={d} style={{ color: "#818CF8", fontSize: 10 }}>{d}</div>
+                  ))}
+                  {m.dossiers.length > 3 && <div style={{ color: "#64748b", fontSize: 10 }}>+{m.dossiers.length - 3} autres</div>}
+                  <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid #0F172A" }} />
+                </div>
+              )}
+            </div>
           ))}
-          <div style={{ position: "absolute", bottom: 16, left: 16, background: "white", borderRadius: 8, padding: "8px 12px", fontSize: 11, boxShadow: "0 2px 8px rgba(0,0,0,0.1)" }}>
-            {[["#4F46E5","Nouveaux dossiers"],["#22C55E","En instruction"],["#F97316","En consultation"],["#EF4444","En retard"],["#94A3B8","Terminés"]].map(([c,l]) => (
-              <div key={l} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
+
+          {/* Legend */}
+          <div style={{ position: "absolute", bottom: 12, left: 12, background: "white", borderRadius: 8, padding: "8px 12px", fontSize: 11, boxShadow: "0 2px 8px rgba(0,0,0,0.12)", display: "flex", gap: 12 }}>
+            {[["#4F46E5","Nouveau"],["#22C55E","Instruction"],["#F97316","Consultation"],["#EF4444","Retard"],["#8B5CF6","Décision"]].map(([c,l]) => (
+              <div key={l} style={{ display: "flex", alignItems: "center", gap: 4 }}>
                 <span style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block" }} />
                 <span style={{ color: "#374151" }}>{l}</span>
               </div>
             ))}
           </div>
-        </div>
-      </div>
-      <div style={{ marginTop: 16, background: "linear-gradient(135deg, #0f1629, #1e2d5a)", borderRadius: 12, padding: "16px 20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-          <span style={{ fontSize: 22 }}>✨</span>
-          <div>
-            <div style={{ color: "white", fontSize: 13, fontWeight: 600 }}>Besoin d'aide ou d'informations ?</div>
-            <div style={{ color: "#94a3b8", fontSize: 12 }}>Posez votre question à l'assistant IA, il vous répond instantanément.</div>
+
+          {/* Stats overlay top-right */}
+          <div style={{ position: "absolute", top: 12, right: 12, display: "flex", gap: 8 }}>
+            {[["📍", visibleMarkers.reduce((s,m)=>s+m.n,0), "dossiers"], ["🕐", "38j", "délai moy."]].map(([icon, val, label]) => (
+              <div key={String(label)} style={{ background: "white", borderRadius: 8, padding: "6px 10px", boxShadow: "0 2px 8px rgba(0,0,0,0.1)", textAlign: "center" }}>
+                <div style={{ fontSize: 10, color: "#94a3b8" }}>{icon as string}</div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>{val}</div>
+                <div style={{ fontSize: 9, color: "#94a3b8" }}>{label as string}</div>
+              </div>
+            ))}
           </div>
         </div>
-        <button onClick={() => alert("Assistant IA — bientôt disponible")} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
-          💬 Discuter avec l'assistant IA
+      </div>
+
+      {/* AI assistant banner — compact */}
+      <div style={{ flexShrink: 0, background: "linear-gradient(135deg, #0f1629, #1e2d5a)", borderRadius: 10, padding: "10px 16px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <span style={{ fontSize: 18 }}>✨</span>
+          <div>
+            <span style={{ color: "white", fontSize: 12, fontWeight: 600 }}>Assistant IA — </span>
+            <span style={{ color: "#94a3b8", fontSize: 12 }}>Posez vos questions sur les dossiers, délais ou réglementation.</span>
+          </div>
+        </div>
+        <button onClick={() => alert("Assistant IA — bientôt disponible")} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 7, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+          💬 Discuter
         </button>
       </div>
     </div>
@@ -435,7 +565,7 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: { id: string; t
           <p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 12 }}>Échangez avec les pétitionnaires et les services consultés.</p>
           <div style={{ display: "flex", gap: 0, marginBottom: 12 }}>
             {["Citoyens 12", "Services / Consultations 8"].map((t) => {
-              const base = t.split(" ")[0];
+              const base = t.split(" ")[0] ?? t;
               return (
                 <button key={t} onClick={() => setTab(base ?? "")} style={{ flex: 1, border: "none", background: "none", padding: "7px 8px", fontSize: 12, fontWeight: tab === base ? 600 : 400, color: tab === base ? "#4F46E5" : "#64748b", borderBottom: tab === base ? "2px solid #4F46E5" : "2px solid #E2E8F0", cursor: "pointer", whiteSpace: "nowrap" }}>{t}</button>
               );
@@ -1668,13 +1798,225 @@ function InfosPersoScreen() {
   );
 }
 
+type DossierInfo = { id: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string };
+
+function DossierDetailScreen({ dossier, onBack, navigate }: {
+  dossier: DossierInfo;
+  onBack: () => void;
+  navigate: (s: string) => void;
+}) {
+  const [note, setNote] = useState("");
+  const pieces = [
+    { name: "Formulaire CERFA", ext: "PDF" },
+    { name: "Plan de situation", ext: "PDF" },
+    { name: "Plan de masse", ext: "PDF" },
+    { name: "Notice descriptive", ext: "PDF" },
+    { name: "Photos", ext: "ZIP" },
+    { name: "Pièce complémentaire", ext: "PDF" },
+  ];
+  const timeline = [
+    { date: "12/04/2024", event: "Dépôt du dossier", actor: "Jean Dupont (pétitionnaire)" },
+    { date: "14/04/2024", event: "Accusé réception envoyé", actor: "Système automatique" },
+    { date: "22/04/2024", event: "Envoi en consultation ABF", actor: "Marie Lambert (instructeur)" },
+    { date: "30/04/2024", event: "Réception avis ABF", actor: "ABF – Favorable avec réserves" },
+    { date: "05/05/2024", event: "Mise en instruction", actor: "Marie Lambert (instructeur)" },
+  ];
+  const consultations = [
+    { service: "ABF – Architecte des Bâtiments de France", status: "Avis reçu", ok: true },
+    { service: "SDIS – Service Incendie", status: "En attente", ok: false },
+    { service: "Métropole Tours Val de Loire", status: "En attente", ok: false },
+  ];
+  return (
+    <div style={{ padding: 24 }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
+        <button onClick={onBack} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>← Retour aux dossiers</button>
+        <div style={{ flex: 1 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            <h1 style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", margin: 0 }}>Dossier {dossier.id}</h1>
+            <StatusBadge status={dossier.status} />
+          </div>
+          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{dossier.type} · {dossier.adresse}</div>
+        </div>
+        <button style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouvelle action</button>
+      </div>
+
+      {/* Two-column layout */}
+      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+        {/* Left column */}
+        <div style={{ flex: 2, display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* Informations générales */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Informations générales</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              {[
+                ["Pétitionnaire", dossier.petitionnaire],
+                ["Adresse", dossier.adresse],
+                ["Type de dossier", dossier.type],
+                ["Date de dépôt", "12/04/2024"],
+                ["Échéance", dossier.echeance],
+                ["Instructeur assigné", "Marie Lambert"],
+              ].map(([label, value]) => (
+                <div key={label}>
+                  <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{value}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Pièces du dossier */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Pièces du dossier</div>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+              {pieces.map((p) => (
+                <div key={p.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #F1F5F9" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 16 }}>📄</span>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{p.name}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{p.ext}</div>
+                    </div>
+                  </div>
+                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 12, color: "#4F46E5", cursor: "pointer", fontWeight: 500 }}>Télécharger</button>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Historique */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Historique / Suivi</div>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 0 }}>
+              {timeline.map((t, i) => (
+                <div key={i} style={{ display: "flex", gap: 12, paddingBottom: i < timeline.length - 1 ? 16 : 0 }}>
+                  <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center" }}>
+                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 3 }} />
+                    {i < timeline.length - 1 && <div style={{ width: 2, flex: 1, background: "#E2E8F0", marginTop: 4 }} />}
+                  </div>
+                  <div style={{ paddingBottom: 4 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{t.event}</div>
+                    <div style={{ fontSize: 12, color: "#94a3b8" }}>{t.actor} · {t.date}</div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Right column */}
+        <div style={{ flex: 1, display: "flex", flexDirection: "column" as const, gap: 16 }}>
+          {/* Actions rapides */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Actions rapides</div>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+              <button style={{ width: "100%", border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#374151", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>📎 Demander pièce complémentaire</button>
+              <button style={{ width: "100%", border: "1px solid #F97316", background: "#FFF7ED", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#C2410C", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>👥 Envoyer en consultation</button>
+              <button style={{ width: "100%", border: "1px solid #4F46E5", background: "#EEF2FF", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#4F46E5", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>📝 Rédiger la décision</button>
+              <button onClick={() => navigate("Messagerie")} style={{ width: "100%", border: "1px solid #22C55E", background: "#F0FDF4", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#15803D", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>💬 Contacter le pétitionnaire</button>
+            </div>
+          </div>
+
+          {/* Consultations */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Consultations</div>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+              {consultations.map((c) => (
+                <div key={c.service} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #F1F5F9" }}>
+                  <div style={{ fontSize: 12, color: "#374151", fontWeight: 500 }}>{c.service}</div>
+                  <span style={{ fontSize: 11, color: c.ok ? "#15803D" : "#C2410C", background: c.ok ? "#F0FDF4" : "#FFF7ED", borderRadius: 20, padding: "2px 8px", fontWeight: 600, whiteSpace: "nowrap" as const }}>
+                    {c.ok ? "✅ Avis reçu" : "⏳ En attente"}
+                  </span>
+                </div>
+              ))}
+            </div>
+          </div>
+
+          {/* Notes internes */}
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Notes internes</div>
+            <textarea
+              value={note}
+              onChange={e => setNote(e.target.value)}
+              placeholder="Ajouter une note interne..."
+              style={{ width: "100%", minHeight: 80, border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: "#374151", resize: "vertical" as const, outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const }}
+            />
+            <button style={{ marginTop: 8, width: "100%", background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Ajouter</button>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function NouveauDossierModal({ onClose }: { onClose: () => void }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div style={{ background: "white", borderRadius: 16, width: 560, maxWidth: "90vw", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
+        {/* Header */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px", borderBottom: "1px solid #E2E8F0" }}>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A" }}>Nouveau dossier</div>
+          <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 20, color: "#94a3b8", lineHeight: 1 }}>×</button>
+        </div>
+        {/* Form */}
+        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Type de dossier</label>
+            <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}>
+              <option>Permis de construire</option>
+              <option>Déclaration préalable</option>
+              <option>Permis d'aménager</option>
+              <option>Certificat d'urbanisme</option>
+            </select>
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Pétitionnaire</label>
+            <input placeholder="Nom du pétitionnaire" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Adresse</label>
+            <input placeholder="Adresse du projet" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Date de dépôt</label>
+            <input type="date" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Instructeur assigné</label>
+            <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}>
+              <option>Marie Lambert</option>
+              <option>Pierre Martin</option>
+              <option>Sophie Dubois</option>
+            </select>
+          </div>
+        </div>
+        {/* Footer */}
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "16px 24px", borderTop: "1px solid #E2E8F0" }}>
+          <button onClick={onClose} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: "pointer", fontWeight: 500 }}>Annuler</button>
+          <button onClick={onClose} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Créer le dossier</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MairieApp() {
   const [active, setActive] = useState("Tableau de bord");
+  const [selectedDossier, setSelectedDossier] = useState<DossierInfo | null>(null);
+  const [showNouveauDossier, setShowNouveauDossier] = useState(false);
 
-  const screenMap: Record<string, JSX.Element> = {
-    "Tableau de bord": <DashboardScreen />,
-    "Dossiers": <DossiersScreen />,
-    "Messagerie": <MessageScreen />,
+  const handleDossierClick = (dossier: DossierInfo) => {
+    setSelectedDossier(dossier);
+  };
+
+  const handleDossierBack = () => {
+    setSelectedDossier(null);
+  };
+
+  const screenMap: Record<string, ReactElement> = {
+    "Tableau de bord": <DashboardScreen navigate={setActive} />,
+    "Dossiers": <DossiersScreen onDossierClick={handleDossierClick} navigate={setActive} />,
+    "Messagerie": <MessageScreen onDossierClick={handleDossierClick} />,
     "Paramètres": <ParametresScreen />,
     "Carte": <CarteScreen />,
     "Calendrier": <CalendrierScreen />,
@@ -1696,10 +2038,10 @@ export function MairieApp() {
 
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex" }}>
-      <Sidebar active={active} setActive={setActive} />
+      <Sidebar active={active} setActive={(s) => { setActive(s); setSelectedDossier(null); }} />
       <div style={{ marginLeft: 180, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar title={active} buttonLabel={cfg.buttonLabel} commune={cfg.commune || "Ballan-Miré"} />
+          <Topbar title={active} buttonLabel={cfg.buttonLabel} commune={cfg.commune || "Ballan-Miré"} onNewDossier={() => setShowNouveauDossier(true)} />
         )}
         {active === "Messagerie" && (
           <div style={{ background: "white", borderBottom: "1px solid #E2E8F0", padding: "0 24px", height: 56, display: "flex", alignItems: "center", gap: 16, position: "sticky", top: 0, zIndex: 40 }}>
@@ -1720,14 +2062,19 @@ export function MairieApp() {
           </div>
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {screenMap[active] ?? (
-            <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>
-              <div style={{ fontSize: 40, marginBottom: 8 }}>🏗</div>
-              <div style={{ fontSize: 14 }}>Section "{active}" — à implémenter</div>
-            </div>
+          {selectedDossier ? (
+            <DossierDetailScreen dossier={selectedDossier} onBack={handleDossierBack} navigate={setActive} />
+          ) : (
+            screenMap[active] ?? (
+              <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>
+                <div style={{ fontSize: 40, marginBottom: 8 }}>🏗</div>
+                <div style={{ fontSize: 14 }}>Section "{active}" — à implémenter</div>
+              </div>
+            )
           )}
         </div>
       </div>
+      {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} />}
     </div>
   );
 }
