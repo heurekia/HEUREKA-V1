@@ -5,45 +5,40 @@ import { Input } from "../../components/ui/input";
 import { Card, CardContent } from "../../components/ui/card";
 import { Badge } from "../../components/ui/badge";
 import { api } from "../../lib/api";
+import { Search, FileText, MessageSquare, Eye, ArrowRight, CheckCircle } from "lucide-react";
 
 const features = [
   {
     title: "Comprenez les règles",
     desc: "Consultez les règles d'urbanisme applicables à votre terrain en quelques clics.",
-    icon: (
-      <svg className="w-6 h-6 text-heureka-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-      </svg>
-    ),
+    icon: Search,
+    color: "bg-heureka-500",
   },
   {
     title: "Déposez vos demandes",
     desc: "Déposez vos demandes d'autorisation d'urbanisme en ligne, 24h/24.",
-    icon: (
-      <svg className="w-6 h-6 text-heureka-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
-      </svg>
-    ),
+    icon: FileText,
+    color: "bg-blue-500",
   },
   {
     title: "Suivez vos dossiers",
     desc: "Suivez l'avancement de vos demandes en temps réel.",
-    icon: (
-      <svg className="w-6 h-6 text-heureka-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
-        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
-      </svg>
-    ),
+    icon: Eye,
+    color: "bg-emerald-500",
   },
   {
     title: "Échangez facilement",
     desc: "Communiquez avec votre commune directement depuis votre espace personnel.",
-    icon: (
-      <svg className="w-6 h-6 text-heureka-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-        <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
-      </svg>
-    ),
+    icon: MessageSquare,
+    color: "bg-amber-500",
   },
+];
+
+const stats = [
+  { label: "Dossiers traités", value: "12 500+" },
+  { label: "Communes partenaires", value: "48" },
+  { label: "Satisfaction", value: "96%" },
+  { label: "Délai moyen", value: "48h" },
 ];
 
 export function Accueil() {
@@ -69,36 +64,127 @@ export function Accueil() {
 
   return (
     <div>
-      <section className="bg-[#F0F0F0] pt-20 pb-32">
-        <div className="max-w-3xl mx-auto text-center px-4">
-          <h1 className="text-4xl sm:text-5xl font-bold text-[#000020] mb-4">
-            L'urbanisme simplifié, pour tous.
-          </h1>
-          <p className="text-gray-500 mb-10 max-w-xl mx-auto">
-            Comprenez les règles applicables à votre projet, déposez vos demandes
-            et suivez leur avancement, simplement.
-          </p>
-          <div className="flex flex-col sm:flex-row gap-3 max-w-xl mx-auto">
-            <Input
-              placeholder="Ex. : 15 rue des Lilas, 75012 Paris"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-              className="h-12 bg-white border-gray-200 text-sm"
-            />
-            <Button
-              onClick={handleSearch}
-              disabled={loading}
-              className="h-12 px-6 whitespace-nowrap"
-            >
-              {loading ? "..." : "Analyser mon projet"}
-            </Button>
+      {/* Hero */}
+      <section className="bg-[#F0F0F0] pt-16 pb-24 overflow-hidden">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+          <div className="grid lg:grid-cols-2 gap-12 items-center">
+            <div>
+              <Badge variant="default" className="mb-4 bg-heureka-500 text-white border-0 rounded-full px-4 py-1">
+                Plateforme d'urbanisme nouvelle génération
+              </Badge>
+              <h1 className="text-4xl sm:text-5xl lg:text-6xl font-bold text-[#000020] leading-tight mb-4">
+                L'urbanisme simplifié,<br />
+                <span className="text-heureka-500">pour tous.</span>
+              </h1>
+              <p className="text-gray-500 text-lg mb-8 max-w-lg">
+                Comprenez les règles applicables à votre projet, déposez vos demandes
+                et suivez leur avancement, simplement.
+              </p>
+              <div className="flex flex-col sm:flex-row gap-3 max-w-lg">
+                <div className="relative flex-1">
+                  <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400" />
+                  <Input
+                    placeholder="Ex. : 15 rue des Lilas, 75012 Paris"
+                    value={searchQuery}
+                    onChange={(e) => setSearchQuery(e.target.value)}
+                    onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+                    className="h-12 pl-10 bg-white border-gray-200 text-sm rounded-xl"
+                  />
+                </div>
+                <Button
+                  onClick={handleSearch}
+                  disabled={loading}
+                  className="h-12 px-6 whitespace-nowrap rounded-xl"
+                >
+                  {loading ? "..." : "Analyser mon projet"}
+                </Button>
+              </div>
+              <div className="flex items-center gap-6 mt-6 text-sm text-gray-400">
+                <span className="flex items-center gap-1.5"><CheckCircle className="w-4 h-4 text-green-500" /> Gratuit</span>
+                <span className="flex items-center gap-1.5"><CheckCircle className="w-4 h-4 text-green-500" /> Sans inscription</span>
+                <span className="flex items-center gap-1.5"><CheckCircle className="w-4 h-4 text-green-500" /> Immédiat</span>
+              </div>
+            </div>
+
+            {/* App Mockup */}
+            <div className="hidden lg:block relative">
+              <div className="absolute -inset-4 bg-gradient-to-br from-heureka-500/10 via-transparent to-blue-500/10 rounded-3xl blur-2xl" />
+              <div className="relative bg-white rounded-2xl shadow-2xl border border-gray-200 overflow-hidden">
+                <div className="flex items-center gap-2 px-5 py-3 bg-gray-50 border-b border-gray-100">
+                  <div className="w-3 h-3 rounded-full bg-red-400" />
+                  <div className="w-3 h-3 rounded-full bg-yellow-400" />
+                  <div className="w-3 h-3 rounded-full bg-green-400" />
+                  <div className="ml-4 text-xs text-gray-400 bg-white px-3 py-1 rounded-md border border-gray-200 flex-1 max-w-[200px]">
+                    heureka.app
+                  </div>
+                </div>
+                <div className="flex" style={{ height: "320px" }}>
+                  <div className="w-56 bg-[#000020] p-4 flex flex-col gap-2">
+                    <div className="flex items-center gap-2 mb-4">
+                      <div className="w-6 h-6 bg-heureka-500 rounded flex items-center justify-center">
+                        <span className="text-white font-bold text-[10px]">H</span>
+                      </div>
+                      <span className="text-white text-xs font-bold">HEUREKA</span>
+                    </div>
+                    {["Accueil", "Mes demandes", "Messagerie", "Documents"].map((item, i) => (
+                      <div
+                        key={item}
+                        className={`flex items-center gap-2 px-2.5 py-2 rounded-lg text-xs ${
+                          i === 0 ? "bg-heureka-500 text-white" : "text-white/60"
+                        }`}
+                      >
+                        <div className={`w-1.5 h-1.5 rounded-full ${i === 0 ? "bg-white" : "bg-white/30"}`} />
+                        {item}
+                      </div>
+                    ))}
+                    <div className="mt-auto pt-4 border-t border-white/10 flex items-center gap-2">
+                      <div className="w-6 h-6 rounded-full bg-heureka-500 flex items-center justify-center text-white text-[10px] font-bold">
+                        JD
+                      </div>
+                      <span className="text-white/50 text-xs">Jean Dupont</span>
+                    </div>
+                  </div>
+                  <div className="flex-1 bg-[#F0F0F0] p-5">
+                    <div className="flex items-center justify-between mb-4">
+                      <div>
+                        <div className="h-4 w-32 bg-gray-200 rounded" />
+                        <div className="h-3 w-24 bg-gray-100 rounded mt-1" />
+                      </div>
+                      <div className="h-8 w-28 bg-heureka-500 rounded-lg" />
+                    </div>
+                    <div className="grid grid-cols-3 gap-3 mb-4">
+                      {[1, 2, 3].map((i) => (
+                        <div key={i} className="bg-white rounded-xl p-3 border border-gray-200">
+                          <div className="h-3 w-16 bg-gray-200 rounded mb-2" />
+                          <div className="h-5 w-10 bg-gray-300 rounded" />
+                        </div>
+                      ))}
+                    </div>
+                    <div className="bg-white rounded-xl p-4 border border-gray-200">
+                      <div className="flex items-center justify-between mb-3">
+                        <div className="h-4 w-28 bg-gray-200 rounded" />
+                        <div className="h-3 w-16 bg-gray-100 rounded" />
+                      </div>
+                      <div className="space-y-2">
+                        {[1, 2, 3].map((i) => (
+                          <div key={i} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
+                            <div className="h-3 w-24 bg-gray-200 rounded" />
+                            <div className="h-5 w-16 bg-green-100 rounded-full" />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
           </div>
         </div>
       </section>
 
+      {/* Analysis Results */}
       {analysis && (
-        <section className="max-w-5xl mx-auto px-4 -mt-24 relative z-10">
+        <section className="max-w-5xl mx-auto px-4 -mt-12 relative z-10">
           <Card className="shadow-lg border-0">
             <CardContent className="p-6">
               <div className="flex items-center justify-between mb-4">
@@ -169,47 +255,80 @@ export function Accueil() {
       )}
 
       {error && (
-        <section className="max-w-5xl mx-auto px-4 -mt-24 relative z-10">
+        <section className="max-w-5xl mx-auto px-4 -mt-12 relative z-10">
           <Card className="border-red-200">
             <CardContent className="p-4 text-red-700 text-sm">{error}</CardContent>
           </Card>
         </section>
       )}
 
-      <section className="py-20 bg-white">
+      {/* Stats */}
+      <section className="py-16 bg-white">
         <div className="max-w-5xl mx-auto px-4">
-          <h2 className="text-2xl font-bold text-center text-[#000020] mb-12">
-            Tout ce dont vous avez besoin
-          </h2>
-          <div className="grid sm:grid-cols-2 gap-6">
-            {features.map((f) => (
-              <Card key={f.title} className="border-0 shadow-sm hover:shadow-md transition-shadow">
-                <CardContent className="p-6">
-                  <div className="w-10 h-10 bg-heureka-50 rounded-lg flex items-center justify-center mb-4">
-                    {f.icon}
-                  </div>
-                  <h3 className="font-semibold text-[#000020] mb-2">{f.title}</h3>
-                  <p className="text-sm text-gray-500">{f.desc}</p>
-                </CardContent>
-              </Card>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-8">
+            {stats.map((s) => (
+              <div key={s.label} className="text-center">
+                <p className="text-3xl font-bold text-heureka-500">{s.value}</p>
+                <p className="text-sm text-gray-500 mt-1">{s.label}</p>
+              </div>
             ))}
           </div>
         </div>
       </section>
 
-      <section className="py-20 bg-[#F0F0F0] text-center">
-        <div className="max-w-xl mx-auto px-4">
-          <h2 className="text-2xl font-bold text-[#000020] mb-4">
+      {/* Features */}
+      <section className="py-20 bg-[#F0F0F0]">
+        <div className="max-w-5xl mx-auto px-4">
+          <div className="text-center mb-12">
+            <h2 className="text-3xl font-bold text-[#000020] mb-4">
+              Tout ce dont vous avez besoin
+            </h2>
+            <p className="text-gray-500 max-w-lg mx-auto">
+              Une plateforme complète pour gérer vos projets d'urbanisme de A à Z.
+            </p>
+          </div>
+          <div className="grid sm:grid-cols-2 gap-6">
+            {features.map((f) => {
+              const Icon = f.icon;
+              return (
+                <Card key={f.title} className="border-0 shadow-sm hover:shadow-lg transition-all hover:-translate-y-0.5">
+                  <CardContent className="p-6">
+                    <div className={`w-12 h-12 rounded-xl ${f.color} flex items-center justify-center mb-4 shadow-sm`}>
+                      <Icon className="w-6 h-6 text-white" />
+                    </div>
+                    <h3 className="font-semibold text-[#000020] mb-2">{f.title}</h3>
+                    <p className="text-sm text-gray-500">{f.desc}</p>
+                  </CardContent>
+                </Card>
+              );
+            })}
+          </div>
+        </div>
+      </section>
+
+      {/* CTA */}
+      <section className="py-24 bg-[#000020] text-center relative overflow-hidden">
+        <div className="absolute inset-0 bg-gradient-to-br from-heureka-500/10 via-transparent to-blue-500/5" />
+        <div className="max-w-xl mx-auto px-4 relative">
+          <h2 className="text-3xl font-bold text-white mb-4">
             Prêt à simplifier vos démarches ?
           </h2>
-          <p className="text-gray-500 mb-8">
+          <p className="text-gray-400 mb-8">
             Créez votre compte gratuitement pour déposer vos demandes et suivre tous vos projets.
           </p>
-          <Link to="/register">
-            <Button size="lg">
-              Créer un compte
-            </Button>
-          </Link>
+          <div className="flex flex-col sm:flex-row gap-3 justify-center">
+            <Link to="/register">
+              <Button size="lg" className="bg-heureka-500 hover:bg-heureka-600 text-white border-0 gap-2">
+                Créer un compte gratuit
+                <ArrowRight className="w-4 h-4" />
+              </Button>
+            </Link>
+            <Link to="/login">
+              <Button size="lg" variant="outline" className="border-white/20 text-white hover:bg-white/10">
+                Se connecter
+              </Button>
+            </Link>
+          </div>
         </div>
       </section>
     </div>
