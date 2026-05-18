@@ -205,7 +205,7 @@ function Sidebar({ active, setActive }: { active: string; setActive: (s: string)
   );
 }
 
-function Topbar({ buttonLabel = "+ Nouveau dossier", commune = "Ballan-Miré" }: { title?: string; buttonLabel?: string; commune?: string }) {
+function Topbar({ buttonLabel = "+ Nouveau dossier", commune = "Ballan-Miré", onNewDossier }: { title?: string; buttonLabel?: string; commune?: string; onNewDossier?: () => void }) {
   return (
     <div style={{ height: 56, background: "white", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", padding: "0 24px", gap: 16, position: "sticky", top: 0, zIndex: 40 }}>
       <div style={{ flex: 1, maxWidth: 440, display: "flex", alignItems: "center", gap: 8, background: "#F1F5F9", borderRadius: 8, padding: "7px 12px", border: "1px solid #E2E8F0" }}>
@@ -228,7 +228,7 @@ function Topbar({ buttonLabel = "+ Nouveau dossier", commune = "Ballan-Miré" }:
         <span>{commune}</span>
         <ChevronDownIcon size={12} />
       </div>
-      <button style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(79,70,229,0.3)" }}>
+      <button onClick={() => onNewDossier?.()} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(79,70,229,0.3)" }}>
         <PlusIcon size={14} />
         {buttonLabel}
       </button>
@@ -257,12 +257,12 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function DashboardScreen() {
+function DashboardScreen({ navigate }: { navigate: (s: string) => void }) {
   const cards = [
-    { label: "Nouveaux dossiers", count: 8, sub: "Dossiers en attente d'ouverture d'instruction", color: "#4F46E5", bg: "#EEF2FF", icon: "📁" },
-    { label: "Consultations en attente", count: 2, sub: "Dossiers en attente de retour des services consultés", color: "#F97316", bg: "#FFF7ED", icon: "👥" },
-    { label: "Messages sans réponse", count: 3, sub: "Messages en attente de réponse", color: "#4F46E5", bg: "#EEF2FF", icon: "💬" },
-    { label: "Dossiers en retard", count: 1, sub: "Dossiers avec dépassement de délai", color: "#EF4444", bg: "#FEF2F2", icon: "⏰", alert: true },
+    { label: "Nouveaux dossiers", count: 8, sub: "Dossiers en attente d'ouverture d'instruction", color: "#4F46E5", bg: "#EEF2FF", icon: "📁", target: "Dossiers" },
+    { label: "Consultations en attente", count: 2, sub: "Dossiers en attente de retour des services consultés", color: "#F97316", bg: "#FFF7ED", icon: "👥", target: "Dossiers" },
+    { label: "Messages sans réponse", count: 3, sub: "Messages en attente de réponse", color: "#4F46E5", bg: "#EEF2FF", icon: "💬", target: "Messagerie" },
+    { label: "Dossiers en retard", count: 1, sub: "Dossiers avec dépassement de délai", color: "#EF4444", bg: "#FEF2F2", icon: "⏰", alert: true, target: "Dossiers" },
   ];
   return (
     <div style={{ padding: 24 }}>
@@ -281,7 +281,7 @@ function DashboardScreen() {
             <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>{c.label}</div>
             {c.alert && <span style={{ fontSize: 10, background: "#FEF2F2", color: "#B91C1C", borderRadius: 4, padding: "1px 6px", fontWeight: 600, marginBottom: 4, display: "inline-block" }}>Délai dépassé</span>}
             <div style={{ fontSize: 11, color: "#94A3B8", lineHeight: 1.4 }}>{c.sub}</div>
-            <button style={{ marginTop: 12, width: "100%", border: "none", background: "transparent", color: c.alert ? "#EF4444" : "#4F46E5", fontSize: 12, fontWeight: 600, cursor: "pointer", textAlign: "left", padding: 0 }}>
+            <button onClick={() => navigate(c.target)} style={{ marginTop: 12, width: "100%", border: "none", background: "transparent", color: c.alert ? "#EF4444" : "#4F46E5", fontSize: 12, fontWeight: 600, cursor: "pointer", textAlign: "left", padding: 0 }}>
               {c.alert ? "Voir les dossiers →" : "Voir →"}
             </button>
           </div>
@@ -321,7 +321,7 @@ function DashboardScreen() {
             <div style={{ color: "#94a3b8", fontSize: 12 }}>Posez votre question à l'assistant IA, il vous répond instantanément.</div>
           </div>
         </div>
-        <button style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+        <button onClick={() => alert("Assistant IA — bientôt disponible")} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
           💬 Discuter avec l'assistant IA
         </button>
       </div>
@@ -329,7 +329,7 @@ function DashboardScreen() {
   );
 }
 
-function DossiersScreen() {
+function DossiersScreen({ onDossierClick, navigate }: { onDossierClick: (d: { id: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string }) => void; navigate: (s: string) => void }) {
   const tabs = ["Tous 24", "Nouveaux 8", "En instruction 8", "En consultation 4", "Décision 2", "Terminés 2"];
   const rows = [
     { id: "PC-2024-0123", pet: "Jean Dupont", addr: "12 rue des Lilas", type: "Permis de construire", status: "En instruction", ech: "12/06/2024" },
@@ -377,6 +377,7 @@ function DossiersScreen() {
           <tbody>
             {rows.map((r) => (
               <tr key={r.id} style={{ borderBottom: "1px solid #F1F5F9", cursor: "pointer" }}
+                onClick={() => onDossierClick({ id: r.id, type: r.type, petitionnaire: r.pet, adresse: r.addr, status: r.status, echeance: r.ech })}
                 onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
                 onMouseLeave={e => (e.currentTarget.style.background = "white")}>
                 <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 600, color: "#4F46E5" }}>{r.id}</td>
@@ -386,7 +387,7 @@ function DossiersScreen() {
                 <td style={{ padding: "12px 16px" }}><StatusBadge status={r.status} /></td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.ech}</td>
                 <td style={{ padding: "12px 16px" }}>
-                  <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }}><DotsIcon /></button>
+                  <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }} onClick={e => e.stopPropagation()}><DotsIcon /></button>
                 </td>
               </tr>
             ))}
@@ -408,7 +409,7 @@ function DossiersScreen() {
   );
 }
 
-function MessageScreen() {
+function MessageScreen({ onDossierClick }: { onDossierClick: (d: { id: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string }) => void }) {
   const [tab, setTab] = useState("Citoyens");
   const citoyenConvs = [
     { name: "Jean Dupont", dossier: "PC-2024-0123", preview: "Bonjour, pouvez-vous me transmettre...", time: "09:15", badge: 2, initials: "JD", color: "#4F46E5" },
@@ -476,7 +477,7 @@ function MessageScreen() {
             <div style={{ fontSize: 12, color: "#94a3b8" }}>PC-2024-0123 – Permis de construire</div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}>Voir le dossier ↗</button>
+            <button onClick={() => onDossierClick({ id: "PC-2024-0123", type: "Permis de construire", petitionnaire: "Jean Dupont", adresse: "12 rue des Lilas", status: "En instruction", echeance: "12/06/2024" })} style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}>Voir le dossier ↗</button>
             <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
           </div>
         </div>
