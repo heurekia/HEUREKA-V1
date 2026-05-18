@@ -1,0 +1,17 @@
+{
+  "name": "heureka-v1",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm -r --parallel dev",
+    "build": "pnpm -r --if-present run build",
+    "typecheck": "pnpm -r --if-present run typecheck",
+    "seed": "pnpm -F @heureka-v1/api run seed",
+    "setup": "pnpm install && pnpm seed",
+    "start": "pnpm -F @heureka-v1/api run start"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.2",
+    "prettier": "^3.8.1"
+  },
+  "packageManager": "pnpm@9.15.9"
+}
