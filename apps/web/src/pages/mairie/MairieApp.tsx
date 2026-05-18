@@ -1064,6 +1064,609 @@ function CalendrierScreen() {
   );
 }
 
+function StatistiquesScreen() {
+  const [stab, setStab] = useState("Vue générale");
+  const tabs = ["Vue générale", "Délais", "Types de dossiers", "Services"];
+
+  // Simple SVG bar chart
+  const BarChart = ({ data }: { data: { label: string; value: number; color: string }[] }) => {
+    const max = Math.max(...data.map(d => d.value), 1);
+    return (
+      <div style={{ display: "flex", alignItems: "flex-end", gap: 8, height: 160 }}>
+        {data.map((d) => (
+          <div key={d.label} style={{ flex: 1, display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+            <span style={{ fontSize: 11, fontWeight: 600, color: "#374151" }}>{d.value}</span>
+            <div style={{ width: "100%", borderRadius: "4px 4px 0 0", background: d.color, height: `${(d.value / max) * 120}px`, minHeight: d.value > 0 ? 8 : 0, transition: "height 0.3s" }} />
+            <span style={{ fontSize: 10, color: "#94a3b8", textAlign: "center" }}>{d.label}</span>
+          </div>
+        ))}
+      </div>
+    );
+  };
+
+  const monthlyData = [
+    { label: "Jan", value: 18, color: "#4F46E5" }, { label: "Fév", value: 22, color: "#4F46E5" },
+    { label: "Mar", value: 31, color: "#4F46E5" }, { label: "Avr", value: 27, color: "#4F46E5" },
+    { label: "Mai", value: 35, color: "#4F46E5" }, { label: "Jun", value: 29, color: "#4F46E5" },
+    { label: "Jul", value: 24, color: "#4F46E5" }, { label: "Aoû", value: 19, color: "#4F46E5" },
+    { label: "Sep", value: 38, color: "#4F46E5" }, { label: "Oct", value: 42, color: "#4F46E5" },
+    { label: "Nov", value: 33, color: "#4F46E5" }, { label: "Déc", value: 28, color: "#4F46E5" },
+  ];
+
+  const typeData = [
+    { label: "PC", value: 48, color: "#4F46E5" },
+    { label: "DP", value: 67, color: "#6366F1" },
+    { label: "PA", value: 12, color: "#818CF8" },
+    { label: "CU", value: 23, color: "#A5B4FC" },
+    { label: "Autre", value: 9, color: "#C7D2FE" },
+  ];
+
+  const kpis = [
+    { label: "Dossiers traités", value: "159", sub: "+12% vs mois dernier", color: "#4F46E5", bg: "#EEF2FF", icon: "📁" },
+    { label: "Délai moyen", value: "38j", sub: "Objectif : 45j", color: "#22C55E", bg: "#F0FDF4", icon: "⏱" },
+    { label: "Taux d'acceptation", value: "74%", sub: "118 acceptés / 159", color: "#F97316", bg: "#FFF7ED", icon: "✅" },
+    { label: "Dossiers en retard", value: "8", sub: "5% du total", color: "#EF4444", bg: "#FEF2F2", icon: "⚠️" },
+  ];
+
+  return (
+    <div style={{ padding: 24 }}>
+      <div style={{ marginBottom: 20 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Statistiques</h1>
+        <p style={{ color: "#64748b", fontSize: 13 }}>Analysez l'activité et les performances de traitement des dossiers.</p>
+      </div>
+
+      {/* KPI cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 24 }}>
+        {kpis.map(k => (
+          <div key={k.label} style={{ background: "white", borderRadius: 12, padding: 20, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+              <div style={{ width: 40, height: 40, borderRadius: 10, background: k.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{k.icon}</div>
+            </div>
+            <div style={{ fontSize: 26, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>{k.value}</div>
+            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 4 }}>{k.label}</div>
+            <div style={{ fontSize: 11, color: k.color, fontWeight: 600 }}>{k.sub}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* Tabs */}
+      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #E2E8F0", marginBottom: 20 }}>
+        {tabs.map(t => (
+          <button key={t} onClick={() => setStab(t)} style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: stab === t ? 600 : 400, color: stab === t ? "#4F46E5" : "#64748b", borderBottom: stab === t ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>{t}</button>
+        ))}
+      </div>
+
+      {stab === "Vue générale" && (
+        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Dossiers déposés par mois — 2024</div>
+            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>346 dossiers au total cette année</div>
+            <BarChart data={monthlyData} />
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Répartition par type</div>
+              {typeData.map(t => (
+                <div key={t.label} style={{ marginBottom: 10 }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                    <span style={{ fontSize: 12, color: "#374151" }}>{t.label === "PC" ? "Permis de construire" : t.label === "DP" ? "Déclaration préalable" : t.label === "PA" ? "Permis d'aménager" : t.label === "CU" ? "Certificat d'urbanisme" : "Autre"}</span>
+                    <span style={{ fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{t.value}</span>
+                  </div>
+                  <div style={{ height: 6, background: "#F1F5F9", borderRadius: 3, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${(t.value / 159) * 100}%`, background: t.color, borderRadius: 3 }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Résultats des décisions</div>
+              {[{ label: "Accordé", n: 118, color: "#22C55E", pct: 74 }, { label: "Refusé", n: 28, color: "#EF4444", pct: 18 }, { label: "Sursis à statuer", n: 13, color: "#F97316", pct: 8 }].map(r => (
+                <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block" }} />
+                  <span style={{ fontSize: 12, color: "#374151", flex: 1 }}>{r.label}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{r.n}</span>
+                  <span style={{ fontSize: 11, color: "#94a3b8", width: 32, textAlign: "right" }}>{r.pct}%</span>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      {stab === "Délais" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Délais moyens par type</div>
+            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Comparaison avec les délais légaux</div>
+            {[
+              { type: "Permis de construire", current: 52, legal: 90, color: "#22C55E" },
+              { type: "Déclaration préalable", current: 24, legal: 30, color: "#F97316" },
+              { type: "Permis d'aménager", current: 68, legal: 90, color: "#22C55E" },
+              { type: "Certificat d'urbanisme", current: 18, legal: 30, color: "#22C55E" },
+              { type: "Permis de démolir", current: 28, legal: 60, color: "#22C55E" },
+            ].map(d => (
+              <div key={d.type} style={{ marginBottom: 14 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                  <span style={{ fontSize: 12, color: "#374151" }}>{d.type}</span>
+                  <span style={{ fontSize: 12, fontWeight: 600, color: d.color }}>{d.current}j <span style={{ color: "#94a3b8", fontWeight: 400 }}>/ {d.legal}j légal</span></span>
+                </div>
+                <div style={{ height: 8, background: "#F1F5F9", borderRadius: 4, overflow: "hidden" }}>
+                  <div style={{ height: "100%", width: `${(d.current / d.legal) * 100}%`, background: d.color, borderRadius: 4 }} />
+                </div>
+              </div>
+            ))}
+          </div>
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Évolution du délai moyen</div>
+            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>6 derniers mois (jours)</div>
+            <BarChart data={[
+              { label: "Déc", value: 44, color: "#C7D2FE" }, { label: "Jan", value: 41, color: "#A5B4FC" },
+              { label: "Fév", value: 43, color: "#818CF8" }, { label: "Mar", value: 39, color: "#6366F1" },
+              { label: "Avr", value: 36, color: "#4F46E5" }, { label: "Mai", value: 38, color: "#4338CA" },
+            ]} />
+            <div style={{ marginTop: 16, padding: 12, background: "#F0FDF4", borderRadius: 8, fontSize: 12, color: "#15803D", fontWeight: 500 }}>
+              ↓ Amélioration de 14% en 6 mois — objectif 45j maintenu
+            </div>
+          </div>
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20, gridColumn: "1 / -1" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Dossiers dépassant les délais légaux</div>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "#F8FAFC" }}>
+                  {["N° Dossier","Type","Pétitionnaire","Délai légal","Délai écoulé","Dépassement","Statut"].map(h => (
+                    <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { id: "PC-2023-0567", type: "PC", pet: "Marie Bernard", legal: "90j", elapsed: "98j", over: "+8j" },
+                  { id: "DP-2024-0111", type: "DP", pet: "Lucas Morel", legal: "30j", elapsed: "38j", over: "+8j" },
+                  { id: "PC-2023-0412", type: "PC", pet: "SCI Horizon", legal: "90j", elapsed: "94j", over: "+4j" },
+                ].map(r => (
+                  <tr key={r.id} style={{ borderBottom: "1px solid #F1F5F9" }}>
+                    <td style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#4F46E5" }}>{r.id}</td>
+                    <td style={{ padding: "10px 12px", fontSize: 12, color: "#374151" }}>{r.type}</td>
+                    <td style={{ padding: "10px 12px", fontSize: 12, color: "#374151" }}>{r.pet}</td>
+                    <td style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>{r.legal}</td>
+                    <td style={{ padding: "10px 12px", fontSize: 12, color: "#374151" }}>{r.elapsed}</td>
+                    <td style={{ padding: "10px 12px" }}><span style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 11, fontWeight: 700, borderRadius: 6, padding: "2px 8px" }}>{r.over}</span></td>
+                    <td style={{ padding: "10px 12px" }}><StatusBadge status="En retard" /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
+
+      {stab === "Types de dossiers" && (
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 16 }}>Volume par type de dossier</div>
+            <BarChart data={typeData} />
+          </div>
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 16 }}>Détail par type</div>
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr>
+                  {["Type","Déposés","Accordés","Refusés","Délai moy."].map(h => (
+                    <th key={h} style={{ padding: "6px 8px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {[
+                  { type: "Permis de construire", n: 48, acc: 36, ref: 9, delay: "52j" },
+                  { type: "Déclaration préalable", n: 67, acc: 54, ref: 11, delay: "24j" },
+                  { type: "Permis d'aménager", n: 12, acc: 10, ref: 2, delay: "68j" },
+                  { type: "Certificat d'urbanisme", n: 23, acc: 16, ref: 4, delay: "18j" },
+                  { type: "Autre", n: 9, acc: 2, ref: 2, delay: "–" },
+                ].map(r => (
+                  <tr key={r.type} style={{ borderBottom: "1px solid #F8FAFC" }}>
+                    <td style={{ padding: "8px", fontSize: 12, color: "#374151" }}>{r.type}</td>
+                    <td style={{ padding: "8px", fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{r.n}</td>
+                    <td style={{ padding: "8px", fontSize: 12, color: "#22C55E", fontWeight: 600 }}>{r.acc}</td>
+                    <td style={{ padding: "8px", fontSize: 12, color: "#EF4444", fontWeight: 600 }}>{r.ref}</td>
+                    <td style={{ padding: "8px", fontSize: 12, color: "#64748b" }}>{r.delay}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20, gridColumn: "1 / -1" }}>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 16 }}>Tendance mensuelle par type (2024)</div>
+            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
+              {[["Permis de construire","#4F46E5"],["Déclaration préalable","#22C55E"],["Permis d'aménager","#F97316"],["Certificat d'urbanisme","#8B5CF6"]].map(([l,c]) => (
+                <div key={l} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#64748b" }}>
+                  <span style={{ width: 10, height: 10, borderRadius: 2, background: c, display: "inline-block" }} />{l}
+                </div>
+              ))}
+            </div>
+            <div style={{ marginTop: 12, height: 8, background: "linear-gradient(90deg, #EEF2FF 0%, #4F46E5 100%)", borderRadius: 4, opacity: 0.3 }} />
+            <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", textAlign: "center" }}>Graphique linéaire — à connecter aux données réelles</div>
+          </div>
+        </div>
+      )}
+
+      {stab === "Services" && (
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Consultations par service</div>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Nombre de consultations envoyées et délais de retour moyens</div>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: "#F8FAFC" }}>
+                {["Service","Consultations","Retours reçus","En attente","Délai retour moy.","Taux de réponse"].map(h => (
+                  <th key={h} style={{ padding: "9px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {[
+                { service: "ABF – Architecte des Bâtiments de France", n: 42, ret: 38, att: 4, delay: "18j", taux: "90%" },
+                { service: "SDIS – Service Incendie", n: 67, ret: 65, att: 2, delay: "12j", taux: "97%" },
+                { service: "Métropole / Agglo", n: 28, ret: 22, att: 6, delay: "24j", taux: "79%" },
+                { service: "DREAL – Environnement", n: 19, ret: 16, att: 3, delay: "31j", taux: "84%" },
+                { service: "Service des Eaux", n: 33, ret: 33, att: 0, delay: "8j", taux: "100%" },
+                { service: "Direction Voirie", n: 15, ret: 12, att: 3, delay: "21j", taux: "80%" },
+              ].map(r => (
+                <tr key={r.service} style={{ borderBottom: "1px solid #F1F5F9" }}>
+                  <td style={{ padding: "10px 12px", fontSize: 12, fontWeight: 500, color: "#374151" }}>{r.service}</td>
+                  <td style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{r.n}</td>
+                  <td style={{ padding: "10px 12px", fontSize: 12, color: "#22C55E", fontWeight: 600 }}>{r.ret}</td>
+                  <td style={{ padding: "10px 12px", fontSize: 12, color: r.att > 0 ? "#F97316" : "#22C55E", fontWeight: 600 }}>{r.att}</td>
+                  <td style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>{r.delay}</td>
+                  <td style={{ padding: "10px 12px" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ flex: 1, height: 6, background: "#F1F5F9", borderRadius: 3, overflow: "hidden" }}>
+                        <div style={{ height: "100%", width: r.taux, background: parseInt(r.taux) >= 90 ? "#22C55E" : parseInt(r.taux) >= 80 ? "#F97316" : "#EF4444", borderRadius: 3 }} />
+                      </div>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: "#374151", width: 32 }}>{r.taux}</span>
+                    </div>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InfosPersoScreen() {
+  const [stab, setStab] = useState("À propos");
+  const navItems = [
+    { label: "À propos", icon: "👤" },
+    { label: "Communes & Rôles", icon: "🏛" },
+    { label: "Disponibilités", icon: "📅" },
+    { label: "Délégations", icon: "🤝" },
+    { label: "Mes Modèles", icon: "📄" },
+    { label: "Mes Signatures", icon: "✍️" },
+    { label: "Notifications", icon: "🔔" },
+    { label: "Préférences", icon: "⚙️" },
+    { label: "Sécurité / Connexion", icon: "🔒" },
+    { label: "Centre d'aide", icon: "❓" },
+  ];
+
+  return (
+    <div style={{ padding: 24 }}>
+      <div style={{ marginBottom: 20 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Informations personnelles</h1>
+        <p style={{ color: "#64748b", fontSize: 13 }}>Gérez votre profil, vos préférences et vos paramètres de sécurité.</p>
+      </div>
+
+      {/* Profile header */}
+      <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24, marginBottom: 20, display: "flex", alignItems: "center", gap: 20 }}>
+        <div style={{ width: 72, height: 72, borderRadius: "50%", background: "linear-gradient(135deg, #4F46E5, #7C3AED)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700, color: "white", flexShrink: 0 }}>ML</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Marie Lecomte</div>
+          <div style={{ fontSize: 13, color: "#64748b", marginBottom: 6 }}>Instructrice urbanisme — Commune de Ballan-Miré</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            <span style={{ background: "#EEF2FF", color: "#4F46E5", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 10px" }}>Instructrice</span>
+            <span style={{ background: "#F0FDF4", color: "#15803D", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 10px" }}>Actif</span>
+          </div>
+        </div>
+        <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#374151", cursor: "pointer" }}>Modifier le profil</button>
+      </div>
+
+      <div style={{ display: "flex", gap: 20 }}>
+        {/* Left nav */}
+        <div style={{ width: 220, flexShrink: 0 }}>
+          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+            {navItems.map((item) => (
+              <button key={item.label} onClick={() => setStab(item.label)} style={{
+                width: "100%", border: "none", background: stab === item.label ? "#EEF2FF" : "transparent",
+                display: "flex", alignItems: "center", gap: 10, padding: "10px 16px",
+                fontSize: 13, fontWeight: stab === item.label ? 600 : 400,
+                color: stab === item.label ? "#4F46E5" : "#374151",
+                cursor: "pointer", textAlign: "left",
+                borderLeft: stab === item.label ? "3px solid #4F46E5" : "3px solid transparent",
+                borderBottom: "1px solid #F1F5F9",
+              }}>
+                <span style={{ fontSize: 14 }}>{item.icon}</span>
+                {item.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        {/* Content */}
+        <div style={{ flex: 1 }}>
+          {stab === "À propos" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>À propos</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+                {[["Prénom","Marie"],["Nom","Lecomte"],["E-mail","marie.lecomte@ballan-mire.fr"],["Téléphone","02 47 67 XX XX"],["Poste","Instructrice urbanisme"],["Service","Direction de l'urbanisme"]].map(([l,v]) => (
+                  <div key={l}>
+                    <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{l}</div>
+                    <div style={{ fontSize: 13, color: "#0F172A", fontWeight: 500 }}>{v}</div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ borderTop: "1px solid #F1F5F9", marginTop: 20, paddingTop: 20 }}>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>Biographie / Notes</div>
+                <textarea style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "10px 12px", fontSize: 13, outline: "none", resize: "vertical", minHeight: 80, color: "#374151" }} defaultValue="Instructrice urbanisme depuis 2019. Spécialisée dans les permis de construire et les déclarations préalables." />
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16, gap: 8 }}>
+                <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
+              </div>
+            </div>
+          )}
+
+          {stab === "Communes & Rôles" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Communes & Rôles</div>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Communes auxquelles vous avez accès et rôles associés.</div>
+              {[
+                { commune: "Ballan-Miré", role: "Instructrice", services: "Urbanisme, ADS", status: "Principal", color: "#4F46E5" },
+                { commune: "Saint-Avertin", role: "Consultation", services: "Urbanisme", status: "Secondaire", color: "#8B5CF6" },
+                { commune: "La Ville-aux-Dames", role: "Lecteur", services: "Tous", status: "Secondaire", color: "#94A3B8" },
+              ].map(c => (
+                <div key={c.commune} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: "1px solid #F1F5F9" }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 8, background: `${c.color}20`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>🏛</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.commune}</div>
+                    <div style={{ fontSize: 11, color: "#64748b" }}>{c.services}</div>
+                  </div>
+                  <span style={{ background: `${c.color}20`, color: c.color, fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 10px" }}>{c.role}</span>
+                  <span style={{ fontSize: 11, color: "#94a3b8" }}>{c.status}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {stab === "Disponibilités" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Disponibilités</div>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Définissez vos plages de disponibilité pour le traitement des dossiers.</div>
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 8 }}>Jours travaillés</div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"].map((j, i) => (
+                    <button key={j} style={{ width: 40, height: 40, borderRadius: 8, border: i < 5 ? "2px solid #4F46E5" : "1px solid #E2E8F0", background: i < 5 ? "#EEF2FF" : "white", color: i < 5 ? "#4F46E5" : "#94a3b8", fontSize: 12, fontWeight: i < 5 ? 600 : 400, cursor: "pointer" }}>{j}</button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ marginBottom: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 8 }}>Horaires</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Début</div>
+                    <select style={{ padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13 }}><option>08:30</option></select>
+                  </div>
+                  <span style={{ color: "#94a3b8", marginTop: 16 }}>—</span>
+                  <div>
+                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Fin</div>
+                    <select style={{ padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13 }}><option>17:30</option></select>
+                  </div>
+                </div>
+              </div>
+              <div style={{ background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#C2410C", marginBottom: 16 }}>
+                <strong>Absence prévue :</strong> 27 mai – 3 juin 2024 (congés). Dossiers redirigés vers Julien D.
+              </div>
+              <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
+            </div>
+          )}
+
+          {stab === "Délégations" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Délégations</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>Gérez les délégations de traitement de dossiers.</div>
+                </div>
+                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouvelle délégation</button>
+              </div>
+              {[
+                { to: "Julien D.", type: "Permis de construire", period: "27 mai – 3 juin 2024", status: "À venir" },
+                { to: "Claire P.", type: "Tous les dossiers", period: "15 – 22 avr. 2024", status: "Terminé" },
+              ].map((d, i) => (
+                <div key={i} style={{ padding: "14px 0", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{d.to.split(" ").map(w => w[0]).join("")}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{d.to}</div>
+                    <div style={{ fontSize: 11, color: "#64748b" }}>{d.type} · {d.period}</div>
+                  </div>
+                  <StatusBadge status={d.status === "À venir" ? "En attente" : "Terminé"} />
+                </div>
+              ))}
+            </div>
+          )}
+
+          {stab === "Mes Modèles" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+                <div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Mes Modèles</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>Vos modèles de courriers personnalisés.</div>
+                </div>
+                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouveau modèle</button>
+              </div>
+              {[
+                { name: "Demande de pièce complémentaire", type: "Courrier", updated: "12/05/2024" },
+                { name: "Accusé de réception", type: "Courrier", updated: "02/05/2024" },
+                { name: "Notification de décision", type: "Arrêté", updated: "28/04/2024" },
+                { name: "Mise en demeure", type: "Courrier", updated: "15/04/2024" },
+              ].map((m, i) => (
+                <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
+                  <span style={{ fontSize: 20 }}>📄</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{m.name}</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{m.type} · Modifié le {m.updated}</div>
+                  </div>
+                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "5px 10px", fontSize: 12, color: "#4F46E5", cursor: "pointer" }}>Éditer</button>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {stab === "Mes Signatures" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Mes Signatures</div>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Signatures électroniques utilisées dans vos courriers et arrêtés.</div>
+              <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
+                <div style={{ flex: 1, border: "2px solid #4F46E5", borderRadius: 12, padding: 20, position: "relative" }}>
+                  <span style={{ position: "absolute", top: 10, right: 10, background: "#EEF2FF", color: "#4F46E5", fontSize: 10, fontWeight: 700, borderRadius: 4, padding: "2px 6px" }}>Par défaut</span>
+                  <div style={{ height: 60, background: "#F8FAFC", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
+                    <span style={{ fontFamily: "cursive", fontSize: 22, color: "#0F172A" }}>Marie Lecomte</span>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#64748b" }}>Signature principale — utilisée par défaut</div>
+                </div>
+                <div style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 12, padding: 20, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#94a3b8" }}>
+                  <span style={{ fontSize: 28 }}>+</span>
+                  <span style={{ fontSize: 12 }}>Ajouter une signature</span>
+                </div>
+              </div>
+            </div>
+          )}
+
+          {stab === "Notifications" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Notifications personnelles</div>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Préférences de notification pour votre compte uniquement.</div>
+              {[
+                { label: "Dossier assigné", sub: "Quand un dossier m'est assigné", active: true },
+                { label: "Message reçu", sub: "Quand je reçois un nouveau message", active: true },
+                { label: "Délai proche", sub: "48h avant une échéance", active: true },
+                { label: "Délai dépassé", sub: "Quand un délai est dépassé sur mes dossiers", active: true },
+                { label: "Avis reçu", sub: "Quand un service rend son avis", active: false },
+                { label: "Mises à jour plateforme", sub: "Nouvelles fonctionnalités et correctifs", active: false },
+              ].map(n => (
+                <div key={n.label} style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{n.label}</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{n.sub}</div>
+                  </div>
+                  <div style={{ width: 36, height: 20, borderRadius: 10, background: n.active ? "#4F46E5" : "#E2E8F0", position: "relative", cursor: "pointer" }}>
+                    <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: n.active ? 18 : 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {stab === "Préférences" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>Préférences d'affichage</div>
+              {[
+                { label: "Langue", value: "Français" },
+                { label: "Fuseau horaire", value: "Europe/Paris (UTC+2)" },
+                { label: "Format de date", value: "DD/MM/YYYY" },
+                { label: "Dossiers par page", value: "20" },
+              ].map(p => (
+                <div key={p.label} style={{ display: "flex", alignItems: "center", marginBottom: 14, gap: 16 }}>
+                  <div style={{ width: 180, fontSize: 13, color: "#374151", fontWeight: 500 }}>{p.label}</div>
+                  <select style={{ flex: 1, padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151" }}><option>{p.value}</option></select>
+                </div>
+              ))}
+              <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 16, marginTop: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Thème</div>
+                <div style={{ display: "flex", gap: 10 }}>
+                  {[["Clair","☀️",true],["Sombre","🌙",false],["Système","💻",false]].map(([l,ic,active]) => (
+                    <button key={String(l)} style={{ flex: 1, border: active ? "2px solid #4F46E5" : "1px solid #E2E8F0", background: active ? "#EEF2FF" : "white", borderRadius: 10, padding: "12px 8px", cursor: "pointer", textAlign: "center" }}>
+                      <div style={{ fontSize: 20, marginBottom: 4 }}>{ic as string}</div>
+                      <div style={{ fontSize: 12, color: active ? "#4F46E5" : "#374151", fontWeight: active ? 600 : 400 }}>{l as string}</div>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20, gap: 8 }}>
+                <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
+              </div>
+            </div>
+          )}
+
+          {stab === "Sécurité / Connexion" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+              <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Mot de passe</div>
+                {["Mot de passe actuel","Nouveau mot de passe","Confirmer le nouveau mot de passe"].map(l => (
+                  <div key={l} style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>{l}</div>
+                    <input type="password" style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} placeholder="••••••••" />
+                  </div>
+                ))}
+                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", marginTop: 4 }}>Modifier le mot de passe</button>
+              </div>
+              <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>Double authentification (2FA)</div>
+                  <div style={{ width: 36, height: 20, borderRadius: 10, background: "#E2E8F0", position: "relative", cursor: "pointer" }}>
+                    <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+                  </div>
+                </div>
+                <div style={{ fontSize: 12, color: "#94a3b8" }}>Ajoutez une couche de sécurité supplémentaire à votre compte.</div>
+              </div>
+              <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Sessions actives</div>
+                {[
+                  { device: "Chrome — macOS", location: "Ballan-Miré, France", time: "Maintenant", current: true },
+                  { device: "Safari — iPhone", location: "Tours, France", time: "Il y a 2h", current: false },
+                ].map((s, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
+                    <span style={{ fontSize: 20 }}>{s.device.includes("Chrome") ? "💻" : "📱"}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{s.device}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{s.location} · {s.time}</div>
+                    </div>
+                    {s.current ? <span style={{ background: "#F0FDF4", color: "#15803D", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "2px 8px" }}>Actuelle</span> : <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#EF4444", cursor: "pointer" }}>Révoquer</button>}
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {stab === "Centre d'aide" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Centre d'aide</div>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Documentation, tutoriels et support.</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
+                {[{ icon: "📖", title: "Documentation", sub: "Guides complets sur toutes les fonctionnalités" }, { icon: "🎥", title: "Tutoriels vidéo", sub: "Apprenez avec nos tutoriels pas à pas" }, { icon: "💬", title: "Chat support", sub: "Discutez avec notre équipe de support" }, { icon: "📧", title: "Contacter le support", sub: "Envoyez-nous un message" }].map(c => (
+                  <button key={c.title} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 12, padding: 16, cursor: "pointer", textAlign: "left" }}>
+                    <div style={{ fontSize: 24, marginBottom: 8 }}>{c.icon}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>{c.title}</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{c.sub}</div>
+                  </button>
+                ))}
+              </div>
+              <div style={{ background: "#F8FAFC", borderRadius: 10, padding: 16 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 10 }}>Questions fréquentes</div>
+                {["Comment créer un nouveau dossier ?","Comment assigner un dossier à un instructeur ?","Comment envoyer une demande de pièce complémentaire ?","Comment consulter les statistiques de ma commune ?"].map(q => (
+                  <div key={q} style={{ padding: "8px 0", borderBottom: "1px solid #E2E8F0", fontSize: 13, color: "#4F46E5", cursor: "pointer" }}>→ {q}</div>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MairieApp() {
   const [active, setActive] = useState("Tableau de bord");
 
@@ -1074,6 +1677,8 @@ export function MairieApp() {
     "Paramètres": <ParametresScreen />,
     "Carte": <CarteScreen />,
     "Calendrier": <CalendrierScreen />,
+    "Statistiques": <StatistiquesScreen />,
+    "Infos Perso": <InfosPersoScreen />,
   };
 
   const topbarConfig: Record<string, { buttonLabel?: string; commune?: string }> = {
@@ -1082,6 +1687,8 @@ export function MairieApp() {
     "Calendrier": { commune: "Saint-Martin" },
     "Paramètres": { commune: "Ballan-Miré" },
     "Dossiers": { commune: "Saint-Martin" },
+    "Statistiques": { commune: "Ballan-Miré" },
+    "Infos Perso": { commune: "Ballan-Miré" },
   };
 
   const cfg = topbarConfig[active] || {};
