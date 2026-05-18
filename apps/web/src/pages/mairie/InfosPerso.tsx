@@ -1,5 +1,6 @@
+import { Link } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
-import { Card, CardContent, CardHeader } from "../../components/ui/card";
+import { Card, CardContent } from "../../components/ui/card";
 import { Avatar } from "../../components/ui/avatar";
 import {
   User,
@@ -16,16 +17,16 @@ import {
 } from "lucide-react";
 
 const menuItems = [
-  { title: "À propos", desc: "Informations personnelles et coordonnées", icon: User },
-  { title: "Communes & Rôles", desc: "Gérer vos communes de rattachement", icon: Building2 },
-  { title: "Délégations", desc: "Configurer vos délégations", icon: Users },
-  { title: "Disponibilités", desc: "Définir vos horaires de travail", icon: Clock },
-  { title: "Mes modèles", desc: "Gérer vos modèles de documents", icon: FileText },
-  { title: "Mes signatures", desc: "Gérer vos signatures électroniques", icon: PenSquare },
-  { title: "Notifications", desc: "Préférences de notification", icon: Bell },
-  { title: "Préférences", desc: "Langue, fuseau horaire, etc.", icon: Globe },
-  { title: "Sécurité & Connexion", desc: "Mot de passe, 2FA, sessions", icon: Shield },
-  { title: "Centre d'aide", desc: "Assistance et documentation", icon: HelpCircle },
+  { title: "À propos", desc: "Informations personnelles et coordonnées", icon: User, to: "/mairie/infos-perso/a-propos" },
+  { title: "Communes & Rôles", desc: "Gérer vos communes de rattachement", icon: Building2, to: "/mairie/infos-perso/communes" },
+  { title: "Délégations", desc: "Configurer vos délégations", icon: Users, to: "/mairie/infos-perso/delegations" },
+  { title: "Disponibilités", desc: "Définir vos horaires de travail", icon: Clock, to: "/mairie/infos-perso/disponibilites" },
+  { title: "Mes modèles", desc: "Gérer vos modèles de documents", icon: FileText, to: "/mairie/infos-perso/modeles" },
+  { title: "Mes signatures", desc: "Gérer vos signatures électroniques", icon: PenSquare, to: "/mairie/infos-perso/signatures" },
+  { title: "Notifications", desc: "Préférences de notification", icon: Bell, to: "/mairie/infos-perso/notifications" },
+  { title: "Préférences", desc: "Langue, fuseau horaire, etc.", icon: Globe, to: "/mairie/infos-perso/preferences" },
+  { title: "Sécurité & Connexion", desc: "Mot de passe, 2FA, sessions", icon: Shield, to: "/mairie/infos-perso/securite" },
+  { title: "Centre d'aide", desc: "Assistance et documentation", icon: HelpCircle, to: "/mairie/infos-perso/centre-aide" },
 ];
 
 export function InfosPerso() {
@@ -58,20 +59,22 @@ export function InfosPerso() {
         {menuItems.map((item) => {
           const Icon = item.icon;
           return (
-            <Card key={item.title} className="border-gray-200/80 hover:shadow-md transition-all cursor-pointer group">
-              <CardContent className="p-4">
-                <div className="flex items-center gap-4">
-                  <div className="w-10 h-10 rounded-xl bg-heureka-100 flex items-center justify-center shrink-0">
-                    <Icon className="w-5 h-5 text-heureka-600" />
+            <Link key={item.title} to={item.to}>
+              <Card className="border-gray-200/80 hover:shadow-md transition-all cursor-pointer group">
+                <CardContent className="p-4">
+                  <div className="flex items-center gap-4">
+                    <div className="w-10 h-10 rounded-xl bg-heureka-100 flex items-center justify-center shrink-0">
+                      <Icon className="w-5 h-5 text-heureka-600" />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <h3 className="font-medium text-[#000020] group-hover:text-heureka-600 transition-colors">{item.title}</h3>
+                      <p className="text-sm text-gray-500 truncate">{item.desc}</p>
+                    </div>
+                    <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-heureka-500 transition-colors shrink-0" />
                   </div>
-                  <div className="flex-1 min-w-0">
-                    <h3 className="font-medium text-[#000020] group-hover:text-heureka-600 transition-colors">{item.title}</h3>
-                    <p className="text-sm text-gray-500 truncate">{item.desc}</p>
-                  </div>
-                  <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-heureka-500 transition-colors shrink-0" />
-                </div>
-              </CardContent>
-            </Card>
+                </CardContent>
+              </Card>
+            </Link>
           );
         })}
       </div>

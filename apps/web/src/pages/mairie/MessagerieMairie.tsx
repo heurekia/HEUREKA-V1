@@ -1,9 +1,10 @@
 import { useState } from "react";
+import { Link } from "react-router-dom";
 import { Card, CardContent } from "../../components/ui/card";
 import { Input } from "../../components/ui/input";
 import { Button } from "../../components/ui/button";
 import { Avatar } from "../../components/ui/avatar";
-import { Search, Send, MessageSquare, ChevronRight } from "lucide-react";
+import { Search, Send, MessageSquare, ChevronRight, Building2 } from "lucide-react";
 
 const conversations = [
   { id: "1", name: "Dossier PC-2024-001", lastMsg: "Nouveau message du citoyen...", time: "Il y a 2h", unread: 2 },
@@ -24,8 +25,18 @@ export function MessagerieMairie() {
   return (
     <div>
       <div className="mb-6">
-        <h1 className="text-2xl font-bold text-[#000020]">Messagerie</h1>
-        <p className="text-gray-500 text-sm mt-1">Communications avec les citoyens et services</p>
+        <div className="flex items-center justify-between">
+          <div>
+            <h1 className="text-2xl font-bold text-[#000020]">Messagerie</h1>
+            <p className="text-gray-500 text-sm mt-1">Communications avec les citoyens et services</p>
+          </div>
+          <div className="flex items-center gap-1 bg-gray-100 rounded-lg p-1">
+            <span className="px-3 py-1.5 text-sm font-medium bg-white rounded-md shadow-sm text-[#000020]">Citoyens</span>
+            <Link to="/mairie/messagerie/services" className="px-3 py-1.5 text-sm font-medium text-gray-500 hover:text-[#000020] rounded-md transition-colors">
+              Services
+            </Link>
+          </div>
+        </div>
       </div>
 
       <div className="flex h-[calc(100vh-12rem)] rounded-xl overflow-hidden border border-gray-200/80 bg-white shadow-sm">

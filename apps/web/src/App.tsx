@@ -19,9 +19,29 @@ import { MairieDossierDetail } from "./pages/mairie/DossierDetail";
 import { Calendrier } from "./pages/mairie/Calendrier";
 import { Carte } from "./pages/mairie/Carte";
 import { MessagerieMairie } from "./pages/mairie/MessagerieMairie";
+import { MessagerieServices } from "./pages/mairie/MessagerieServices";
 import { Statistiques } from "./pages/mairie/Statistiques";
+import { StatistiquesDelais } from "./pages/mairie/StatistiquesDelais";
+import { StatistiquesServices } from "./pages/mairie/StatistiquesServices";
+import { StatistiquesTypes } from "./pages/mairie/StatistiquesTypes";
 import { Parametres } from "./pages/mairie/Parametres";
+import { ParametresDocuments } from "./pages/mairie/ParametresDocuments";
+import { ParametresUtilisateurs } from "./pages/mairie/ParametresUtilisateurs";
+import { ParametresWorkflow } from "./pages/mairie/ParametresWorkflow";
+import { ParametresNotifications } from "./pages/mairie/ParametresNotifications";
+import { ParametresNotificationsEvenements } from "./pages/mairie/ParametresNotificationsEvenements";
+import { ParametresIntegrations } from "./pages/mairie/ParametresIntegrations";
 import { InfosPerso } from "./pages/mairie/InfosPerso";
+import { InfosPersoAPropos } from "./pages/mairie/InfosPersoAPropos";
+import { InfosPersoCommunes } from "./pages/mairie/InfosPersoCommunes";
+import { InfosPersoDelegations } from "./pages/mairie/InfosPersoDelegations";
+import { InfosPersoDisponibilites } from "./pages/mairie/InfosPersoDisponibilites";
+import { InfosPersoModeles } from "./pages/mairie/InfosPersoModeles";
+import { InfosPersoSignatures } from "./pages/mairie/InfosPersoSignatures";
+import { InfosPersoNotifications } from "./pages/mairie/InfosPersoNotifications";
+import { InfosPersoPreferences } from "./pages/mairie/InfosPersoPreferences";
+import { InfosPersoSecurite } from "./pages/mairie/InfosPersoSecurite";
+import { InfosPersoCentreAide } from "./pages/mairie/InfosPersoCentreAide";
 
 function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
   const { user, loading } = useAuth();
@@ -69,9 +89,29 @@ export function App() {
             <Route path="calendrier" element={<Calendrier />} />
             <Route path="carte" element={<Carte />} />
             <Route path="messagerie" element={<MessagerieMairie />} />
+            <Route path="messagerie/services" element={<MessagerieServices />} />
             <Route path="statistiques" element={<Statistiques />} />
+            <Route path="statistiques/delais" element={<StatistiquesDelais />} />
+            <Route path="statistiques/services" element={<StatistiquesServices />} />
+            <Route path="statistiques/types" element={<StatistiquesTypes />} />
             <Route path="parametres" element={<Parametres />} />
+            <Route path="parametres/documents" element={<ParametresDocuments />} />
+            <Route path="parametres/utilisateurs" element={<ParametresUtilisateurs />} />
+            <Route path="parametres/workflow" element={<ParametresWorkflow />} />
+            <Route path="parametres/notifications" element={<ParametresNotifications />} />
+            <Route path="parametres/notifications-evenements" element={<ParametresNotificationsEvenements />} />
+            <Route path="parametres/integrations" element={<ParametresIntegrations />} />
             <Route path="infos-perso" element={<InfosPerso />} />
+            <Route path="infos-perso/a-propos" element={<InfosPersoAPropos />} />
+            <Route path="infos-perso/communes" element={<InfosPersoCommunes />} />
+            <Route path="infos-perso/delegations" element={<InfosPersoDelegations />} />
+            <Route path="infos-perso/disponibilites" element={<InfosPersoDisponibilites />} />
+            <Route path="infos-perso/modeles" element={<InfosPersoModeles />} />
+            <Route path="infos-perso/signatures" element={<InfosPersoSignatures />} />
+            <Route path="infos-perso/notifications" element={<InfosPersoNotifications />} />
+            <Route path="infos-perso/preferences" element={<InfosPersoPreferences />} />
+            <Route path="infos-perso/securite" element={<InfosPersoSecurite />} />
+            <Route path="infos-perso/centre-aide" element={<InfosPersoCentreAide />} />
           </Route>
 
           <Route path="*" element={<Navigate to="/" replace />} />
