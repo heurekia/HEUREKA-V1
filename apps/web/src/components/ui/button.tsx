@@ -1,7 +1,7 @@
 import { type ButtonHTMLAttributes, forwardRef } from "react";
 
 const variants = {
-  default: "bg-heureka-600 text-white hover:bg-heureka-700 shadow-sm",
+  default: "bg-heureka-500 text-white hover:bg-heureka-600 shadow-sm",
   secondary: "bg-gray-100 text-gray-900 hover:bg-gray-200",
   outline: "border border-gray-300 bg-white hover:bg-gray-50",
   ghost: "hover:bg-gray-100",

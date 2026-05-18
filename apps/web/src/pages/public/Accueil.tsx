@@ -2,9 +2,49 @@ import { useState } from "react";
 import { Link } from "react-router-dom";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
-import { Card, CardContent, CardHeader } from "../../components/ui/card";
+import { Card, CardContent } from "../../components/ui/card";
 import { Badge } from "../../components/ui/badge";
 import { api } from "../../lib/api";
+
+const features = [
+  {
+    title: "Comprenez les règles",
+    desc: "Consultez les règles d'urbanisme applicables à votre terrain en quelques clics.",
+    icon: (
+      <svg className="w-6 h-6 text-heureka-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+      </svg>
+    ),
+  },
+  {
+    title: "Déposez vos demandes",
+    desc: "Déposez vos demandes d'autorisation d'urbanisme en ligne, 24h/24.",
+    icon: (
+      <svg className="w-6 h-6 text-heureka-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+      </svg>
+    ),
+  },
+  {
+    title: "Suivez vos dossiers",
+    desc: "Suivez l'avancement de vos demandes en temps réel.",
+    icon: (
+      <svg className="w-6 h-6 text-heureka-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.431 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+        <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+      </svg>
+    ),
+  },
+  {
+    title: "Échangez facilement",
+    desc: "Communiquez avec votre commune directement depuis votre espace personnel.",
+    icon: (
+      <svg className="w-6 h-6 text-heureka-500" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
+        <path strokeLinecap="round" strokeLinejoin="round" d="M8.625 12a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H8.25m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0H12m4.125 0a.375.375 0 11-.75 0 .375.375 0 01.75 0zm0 0h-.375M21 12c0 4.556-4.03 8.25-9 8.25a9.764 9.764 0 01-2.555-.337A5.972 5.972 0 015.41 20.97a5.969 5.969 0 01-.474-.065 4.48 4.48 0 00.978-2.025c.09-.457-.133-.901-.467-1.226C3.93 16.178 3 14.189 3 12c0-4.556 4.03-8.25 9-8.25s9 3.694 9 8.25z" />
+      </svg>
+    ),
+  },
+];
 
 export function Accueil() {
   const [searchQuery, setSearchQuery] = useState("");
@@ -29,52 +69,41 @@ export function Accueil() {
 
   return (
     <div>
-      <section className="bg-gradient-to-br from-heureka-600 via-heureka-700 to-blue-900 text-white">
-        <div className="max-w-7xl mx-auto px-4 py-20 sm:px-6 lg:px-8">
-          <div className="text-center max-w-3xl mx-auto">
-            <h1 className="text-4xl sm:text-5xl font-bold mb-4">
-              Simplifiez vos démarches d'urbanisme
-            </h1>
-            <p className="text-lg text-blue-100 mb-8">
-              Déposez et suivez vos demandes d'urbanisme en ligne, ou analysez
-              le potentiel réglementaire d'une parcelle en un clic.
-            </p>
-            <div className="relative max-w-xl mx-auto">
-              <Input
-                placeholder="Rechercher une adresse ou une parcelle..."
-                value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
-                onKeyDown={(e) => e.key === "Enter" && handleSearch()}
-                className="h-14 pl-4 pr-12 text-gray-900 bg-white rounded-xl text-base border-0"
-              />
-              <button
-                onClick={handleSearch}
-                disabled={loading}
-                className="absolute right-2 top-1/2 -translate-y-1/2 bg-heureka-600 text-white p-2.5 rounded-lg hover:bg-heureka-700 disabled:opacity-50 transition-colors"
-              >
-                {loading ? (
-                  <svg className="w-5 h-5 animate-spin" fill="none" viewBox="0 0 24 24">
-                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
-                  </svg>
-                ) : (
-                  <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={2}>
-                    <path strokeLinecap="round" strokeLinejoin="round" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
-                  </svg>
-                )}
-              </button>
-            </div>
+      <section className="bg-[#F0F0F0] pt-20 pb-32">
+        <div className="max-w-3xl mx-auto text-center px-4">
+          <h1 className="text-4xl sm:text-5xl font-bold text-[#000020] mb-4">
+            L'urbanisme simplifié, pour tous.
+          </h1>
+          <p className="text-gray-500 mb-10 max-w-xl mx-auto">
+            Comprenez les règles applicables à votre projet, déposez vos demandes
+            et suivez leur avancement, simplement.
+          </p>
+          <div className="flex flex-col sm:flex-row gap-3 max-w-xl mx-auto">
+            <Input
+              placeholder="Ex. : 15 rue des Lilas, 75012 Paris"
+              value={searchQuery}
+              onChange={(e) => setSearchQuery(e.target.value)}
+              onKeyDown={(e) => e.key === "Enter" && handleSearch()}
+              className="h-12 bg-white border-gray-200 text-sm"
+            />
+            <Button
+              onClick={handleSearch}
+              disabled={loading}
+              className="h-12 px-6 whitespace-nowrap"
+            >
+              {loading ? "..." : "Analyser mon projet"}
+            </Button>
           </div>
         </div>
       </section>
 
       {analysis && (
-        <section className="max-w-7xl mx-auto px-4 -mt-6 sm:px-6 lg:px-8 relative z-10">
-          <Card className="shadow-lg border-heureka-100">
+        <section className="max-w-5xl mx-auto px-4 -mt-24 relative z-10">
+          <Card className="shadow-lg border-0">
             <CardContent className="p-6">
               <div className="flex items-center justify-between mb-4">
-                <h2 className="text-lg font-semibold text-gray-900">
-                  Analyse parcellaire : <span className="text-heureka-600">{analysis.parcelle}</span>
+                <h2 className="text-lg font-semibold text-[#000020]">
+                  Analyse parcellaire : <span className="text-heureka-500">{analysis.parcelle}</span>
                 </h2>
                 {analysis.conformite_globale && (
                   <Badge variant={analysis.conformite_globale >= 80 ? "success" : analysis.conformite_globale >= 60 ? "warning" : "danger"}>
@@ -88,7 +117,7 @@ export function Accueil() {
                   <div>
                     <h3 className="text-sm font-medium text-gray-500 mb-2">Zone réglementaire</h3>
                     <div className="bg-heureka-50 rounded-lg p-4">
-                      <p className="text-lg font-bold text-heureka-700">{analysis.zone.code}</p>
+                      <p className="text-lg font-bold text-heureka-500">{analysis.zone.code}</p>
                       <p className="text-sm text-heureka-600">{analysis.zone.label}</p>
                     </div>
                     {analysis.rules.length > 0 && (
@@ -104,7 +133,7 @@ export function Accueil() {
                               </p>
                               <p className="text-gray-600 mt-1">{rule.summary ?? rule.rule_text?.slice(0, 120)}</p>
                               {rule.value_exact != null && (
-                                <p className="text-heureka-600 font-medium mt-1">
+                                <p className="text-heureka-500 font-medium mt-1">
                                   {rule.value_exact} {rule.unit ?? ""}
                                 </p>
                               )}
@@ -140,65 +169,47 @@ export function Accueil() {
       )}
 
       {error && (
-        <section className="max-w-7xl mx-auto px-4 -mt-6 sm:px-6 lg:px-8 relative z-10">
+        <section className="max-w-5xl mx-auto px-4 -mt-24 relative z-10">
           <Card className="border-red-200">
-            <CardContent className="p-4 text-red-700 text-sm">
-              {error}
-            </CardContent>
+            <CardContent className="p-4 text-red-700 text-sm">{error}</CardContent>
           </Card>
         </section>
       )}
 
-      <section className="max-w-7xl mx-auto px-4 py-16 sm:px-6 lg:px-8">
-        <div className="grid md:grid-cols-3 gap-6">
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardContent className="p-6">
-              <div className="w-12 h-12 bg-heureka-100 rounded-xl flex items-center justify-center mb-4">
-                <svg className="w-6 h-6 text-heureka-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-                </svg>
-              </div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">Déposer une demande</h3>
-              <p className="text-gray-600 text-sm mb-4">
-                Permis de construire, déclaration préalable, certificat d'urbanisme...
-              </p>
-              <Link to="/register">
-                <Button className="w-full">Commencer</Button>
-              </Link>
-            </CardContent>
-          </Card>
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardContent className="p-6">
-              <div className="w-12 h-12 bg-heureka-100 rounded-xl flex items-center justify-center mb-4">
-                <svg className="w-6 h-6 text-heureka-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
-                </svg>
-              </div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">Analyse parcellaire</h3>
-              <p className="text-gray-600 text-sm mb-4">
-                Découvrez le potentiel réglementaire d'une parcelle avant de déposer.
-              </p>
-              <Link to="/analyse-parcellaire">
-                <Button variant="outline" className="w-full">Analyser</Button>
-              </Link>
-            </CardContent>
-          </Card>
-          <Card className="hover:shadow-lg transition-shadow">
-            <CardContent className="p-6">
-              <div className="w-12 h-12 bg-heureka-100 rounded-xl flex items-center justify-center mb-4">
-                <svg className="w-6 h-6 text-heureka-600" fill="none" stroke="currentColor" viewBox="0 0 24 24" strokeWidth={1.5}>
-                  <path strokeLinecap="round" strokeLinejoin="round" d="M9.879 7.519c1.171-1.025 3.071-1.025 4.242 0 1.172 1.025 1.172 2.687 0 3.712-.203.179-.43.326-.67.442-.745.361-1.45.999-1.45 1.827v.75M21 12a9 9 0 11-18 0 9 9 0 0118 0zm-9 5.25h.008v.008H12v-.008z" />
-                </svg>
-              </div>
-              <h3 className="text-lg font-semibold text-gray-900 mb-2">Centre d'aide</h3>
-              <p className="text-gray-600 text-sm mb-4">
-                Questions fréquentes, guides et assistance.
-              </p>
-              <Link to="/citoyen/centre-aide">
-                <Button variant="outline" className="w-full">En savoir plus</Button>
-              </Link>
-            </CardContent>
-          </Card>
+      <section className="py-20 bg-white">
+        <div className="max-w-5xl mx-auto px-4">
+          <h2 className="text-2xl font-bold text-center text-[#000020] mb-12">
+            Tout ce dont vous avez besoin
+          </h2>
+          <div className="grid sm:grid-cols-2 gap-6">
+            {features.map((f) => (
+              <Card key={f.title} className="border-0 shadow-sm hover:shadow-md transition-shadow">
+                <CardContent className="p-6">
+                  <div className="w-10 h-10 bg-heureka-50 rounded-lg flex items-center justify-center mb-4">
+                    {f.icon}
+                  </div>
+                  <h3 className="font-semibold text-[#000020] mb-2">{f.title}</h3>
+                  <p className="text-sm text-gray-500">{f.desc}</p>
+                </CardContent>
+              </Card>
+            ))}
+          </div>
+        </div>
+      </section>
+
+      <section className="py-20 bg-[#F0F0F0] text-center">
+        <div className="max-w-xl mx-auto px-4">
+          <h2 className="text-2xl font-bold text-[#000020] mb-4">
+            Prêt à simplifier vos démarches ?
+          </h2>
+          <p className="text-gray-500 mb-8">
+            Créez votre compte gratuitement pour déposer vos demandes et suivre tous vos projets.
+          </p>
+          <Link to="/register">
+            <Button size="lg">
+              Créer un compte
+            </Button>
+          </Link>
         </div>
       </section>
     </div>

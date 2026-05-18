@@ -5,8 +5,9 @@ import { Button } from "../components/ui/button";
 
 const navLinks = [
   { to: "/", label: "Accueil", exact: true },
-  { to: "/analyse-parcellaire", label: "Analyse parcellaire" },
-  { to: "/citoyen/centre-aide", label: "Centre d'aide" },
+  { to: "/comment-ca-marche", label: "Comment ça marche ?" },
+  { to: "/aide", label: "Aide" },
+  { to: "/actualites", label: "Actualités" },
 ];
 
 export function PublicLayout() {
@@ -14,15 +15,15 @@ export function PublicLayout() {
   const location = useLocation();
 
   return (
-    <div className="min-h-screen bg-gray-50 flex flex-col">
+    <div className="min-h-screen bg-[#F0F0F0] flex flex-col">
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
             <Link to="/" className="flex items-center gap-2">
-              <div className="w-8 h-8 bg-heureka-600 rounded-lg flex items-center justify-center">
-                <span className="text-white font-bold text-sm">H</span>
+              <div className="w-7 h-7 bg-heureka-500 rounded flex items-center justify-center">
+                <span className="text-white font-bold text-xs">H</span>
               </div>
-              <span className="text-xl font-bold text-gray-900">HEUREKA</span>
+              <span className="text-lg font-bold text-[#000020]">HEUREKA</span>
             </Link>
             <nav className="hidden md:flex items-center gap-6">
               {navLinks.map((link) => {
@@ -35,7 +36,7 @@ export function PublicLayout() {
                     to={link.to}
                     className={`text-sm font-medium transition-colors ${
                       active
-                        ? "text-heureka-600"
+                        ? "text-heureka-500"
                         : "text-gray-600 hover:text-gray-900"
                     }`}
                   >
@@ -65,11 +66,13 @@ export function PublicLayout() {
                 <div className="flex items-center gap-2">
                   <Link to="/login">
                     <Button variant="ghost" size="sm">
-                      Connexion
+                      Se connecter
                     </Button>
                   </Link>
                   <Link to="/register">
-                    <Button size="sm">S'inscrire</Button>
+                    <Button size="sm">
+                      Créer un compte
+                    </Button>
                   </Link>
                 </div>
               )}
@@ -77,18 +80,26 @@ export function PublicLayout() {
           </div>
         </div>
       </header>
+
       <main className="flex-1">
         <Outlet />
       </main>
-      <footer className="bg-gray-900 text-gray-400 py-8">
+
+      <footer className="bg-white border-t border-gray-200 py-8">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
-          <div className="flex items-center gap-2 mb-4">
-            <div className="w-6 h-6 bg-heureka-600 rounded flex items-center justify-center">
-              <span className="text-white font-bold text-xs">H</span>
+          <div className="flex flex-col md:flex-row items-center justify-between gap-4">
+            <div className="flex items-center gap-2">
+              <div className="w-5 h-5 bg-heureka-500 rounded flex items-center justify-center">
+                <span className="text-white font-bold text-[10px]">H</span>
+              </div>
+              <span className="text-sm text-gray-500">© 2024 Heureka</span>
             </div>
-            <span className="text-white font-bold">HEUREKA</span>
+            <div className="flex items-center gap-4 text-xs text-gray-500">
+              <Link to="/mentions-legales" className="hover:text-gray-900">Mentions légales</Link>
+              <Link to="/politique-confidentialite" className="hover:text-gray-900">Politique de confidentialité</Link>
+              <Link to="/conditions-utilisation" className="hover:text-gray-900">Conditions d'utilisation</Link>
+            </div>
           </div>
-          <p className="text-sm">Plateforme de démarches d'urbanisme &copy; 2026</p>
         </div>
       </footer>
     </div>

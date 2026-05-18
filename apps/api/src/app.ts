@@ -27,6 +27,7 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });
 });
 
+
 // ── Servir le frontend buildé en production ──
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const frontendDist = path.resolve(__dirname, "../../web/dist");
