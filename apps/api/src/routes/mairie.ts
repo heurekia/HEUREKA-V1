@@ -359,14 +359,8 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
 
     const communeName = dossier.commune ?? null;
-    const query: string | null = qOverride
-      ?? (dossier.parcelle ?? (dossier.adresse
-        ? `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`
-        : null));
 
-    if (!query) return res.status(422).json({ error: "Aucune adresse ni référence parcellaire sur ce dossier." });
-
-    // Look up commune INSEE code to constrain BAN + IGN Cadastre + GPU to the right commune
+    // Look up commune INSEE code FIRST — needed to expand partial cadastral refs
     let citycode: string | undefined;
     if (communeName) {
       const [communeRow] = await db.select({ insee_code: communes.insee_code })
@@ -375,6 +369,36 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
         .limit(1);
       citycode = communeRow?.insee_code ?? undefined;
     }
+
+    // Build the analysis query.
+    // The address is ALWAYS the primary source: geocoding gives exact coordinates,
+    // from which we derive the parcel, PLU zone, and all regulatory data.
+    // The dossier.parcelle field (often partial like "BM 019") is only used when
+    // there is no address and it resolves to a full 14-char cadastral reference.
+    let query: string | null;
+    if (qOverride) {
+      // Instructeur corrected the address via the UI editor
+      query = qOverride;
+    } else if (dossier.adresse) {
+      // Standard flow: address → geocode → parcel → analysis
+      query = `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`;
+    } else if (dossier.parcelle) {
+      // No address at all — try to use the cadastral reference as a fallback
+      const raw = dossier.parcelle.trim().replace(/\s+/g, "");
+      if (/^\d{5}[A-Z0-9]{9,}$/i.test(raw)) {
+        query = raw;  // Full 14-char ref (e.g. 37018000BM0019)
+      } else {
+        // Partial ref like "BM 019" — expand with commune INSEE
+        const m = /^([A-Z]{1,2})0*(\d{1,4})$/i.exec(raw);
+        query = (m && m[1] && m[2] && citycode)
+          ? `${citycode}000${m[1].toUpperCase().padStart(2, "0")}${m[2].padStart(4, "0")}`
+          : null;
+      }
+    } else {
+      query = null;
+    }
+
+    if (!query) return res.status(422).json({ error: "Aucune adresse ni référence parcellaire sur ce dossier." });
 
     // ?zone= lets the instructeur manually override the PLU zone when GPU fails
     const zoneOverride = (req.query.zone as string | undefined)?.trim();

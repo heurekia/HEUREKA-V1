@@ -180,8 +180,12 @@ export async function findParcelByLatLng(lat: number, lng: number, codeInsee?: s
 
 export async function findParcelByRef(parcelle_id: string): Promise<ParcelResult | null> {
   try {
-    // parcelle_id format: 37018000AB0123 → commune=37018, section=AB, numero=0123
-    const url = `https://apicarto.ign.fr/api/cadastre/parcelle?code_insee=${parcelle_id.slice(0, 5)}&section=${parcelle_id.slice(7, 9)}&numero=${parcelle_id.slice(9)}&_limit=1`;
+    // parcelle_id format: 37018000BM0019 (14 chars)
+    //   [0:5]  = code_insee   → 37018
+    //   [5:8]  = prefixe      → 000
+    //   [8:10] = section      → BM
+    //   [10:]  = numero       → 0019
+    const url = `https://apicarto.ign.fr/api/cadastre/parcelle?code_insee=${parcelle_id.slice(0, 5)}&section=${parcelle_id.slice(8, 10)}&numero=${parcelle_id.slice(10)}&_limit=1`;
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!r.ok) return null;
     const data = await r.json() as {
