@@ -1,4 +1,6 @@
-import { useState, useRef } from "react";
+import { useState, useRef, useEffect } from "react";
+import { MapLeaflet, type MapDossier } from "../../components/MapLeaflet";
+import { api } from "../../lib/api";
 
 const NAV_ITEMS = [
   { label: "Tableau de bord", icon: HomeIcon },
@@ -399,35 +401,27 @@ const MOCK_MESSAGES = [
 
 function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void }) {
   const [mapFilter, setMapFilter] = useState<string>("Tous");
-  const [activeMarker, setActiveMarker] = useState<number | null>(null);
-  const [mapExpanded, setMapExpanded] = useState(false);
-  const [zoom, setZoom] = useState(1);
-  const [panX, setPanX] = useState(0);
-  const [panY, setPanY] = useState(0);
-  const [isDragging, setIsDragging] = useState(false);
-  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
-  const mapContainerRef = useRef<HTMLDivElement>(null);
-  const dragMovedRef = useRef(false);
+  const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
 
-  const handleMapMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
-    dragMovedRef.current = false;
-    setIsDragging(true);
-    setDragStart({ x: e.clientX, y: e.clientY });
-  };
-  const handleMapMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (!isDragging) return;
-    const cw = mapContainerRef.current?.offsetWidth ?? 800;
-    const ch = mapContainerRef.current?.offsetHeight ?? 300;
-    const svgW = 900 / zoom;
-    const svgH = 500 / zoom;
-    const dx = (e.clientX - dragStart.x) * svgW / cw;
-    const dy = (e.clientY - dragStart.y) * svgH / ch;
-    if (Math.abs(e.clientX - dragStart.x) > 3 || Math.abs(e.clientY - dragStart.y) > 3) dragMovedRef.current = true;
-    setPanX(prev => Math.max(-200, Math.min(200, prev - dx)));
-    setPanY(prev => Math.max(-100, Math.min(100, prev - dy)));
-    setDragStart({ x: e.clientX, y: e.clientY });
-  };
-  const handleMapMouseUp = () => setIsDragging(false);
+  useEffect(() => {
+    api.get<MapDossier[]>("/mairie/map-dossiers?commune=Ballan-Mir%C3%A9")
+      .then(data => setMapDossiers(data))
+      .catch(() => {
+        // Fallback : coordonnées codées en dur pour la démo
+        setMapDossiers([
+          { id: "1", numero: "PC-BM-2024-001", type: "permis_de_construire", status: "en_instruction", adresse: "3 Place du 8 Mai 1945", lat: 47.3543, lng: 0.5503 },
+          { id: "2", numero: "DP-BM-2024-015", type: "declaration_prealable", status: "soumis", adresse: "12 Avenue de Tours", lat: 47.3562, lng: 0.5490 },
+          { id: "3", numero: "PC-BM-2024-022", type: "permis_de_construire", status: "en_instruction", adresse: "5 Rue des Petits Prés", lat: 47.3518, lng: 0.5537 },
+          { id: "4", numero: "DP-BM-2024-008", type: "declaration_prealable", status: "incomplet", adresse: "8 Chemin de la Halbardière", lat: 47.3488, lng: 0.5562 },
+          { id: "5", numero: "PC-BM-2023-044", type: "permis_de_construire", status: "accepte", adresse: "14 Rue du Moulin de la Planche", lat: 47.3558, lng: 0.5448 },
+          { id: "6", numero: "DP-BM-2024-033", type: "declaration_prealable", status: "decision_en_cours", adresse: "2 Impasse des Lilas", lat: 47.3525, lng: 0.5448 },
+          { id: "7", numero: "CU-BM-2024-007", type: "certificat_urbanisme", status: "soumis", adresse: "28 Route de Savonnières", lat: 47.3475, lng: 0.5415 },
+          { id: "8", numero: "PC-BM-2024-041", type: "permis_de_construire", status: "refuse", adresse: "11 Rue du Val de l'Indre", lat: 47.3510, lng: 0.5592 },
+          { id: "9", numero: "DP-BM-2024-019", type: "declaration_prealable", status: "pre_instruction", adresse: "45 Rue de la Liberté", lat: 47.3548, lng: 0.5518 },
+        ]);
+      });
+  }, []);
+  const [mapExpanded, setMapExpanded] = useState(false);
 
   const countByStatus = (status: string) => MOCK_DOSSIERS.filter(d => d.status === status).length;
   const messagesEnAttente = MOCK_MESSAGES.filter(m => !m.lu || m.attendRepons).length;
@@ -450,22 +444,10 @@ function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string)
       icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
   ];
 
-  const markers = [
-    { top: "22%", left: "22%", color: "#4F46E5", status: "Nouveau", n: 2, label: "Rue des Lilas", dossiers: ["PC-2024-0123","DP-2024-0089"] },
-    { top: "18%", left: "45%", color: "#22C55E", status: "En instruction", n: 3, label: "Av. de la Mer", dossiers: ["PC-2024-0789","DP-2024-0333","PC-2023-0567"] },
-    { top: "38%", left: "60%", color: "#F97316", status: "En consultation", n: 4, label: "Chemin de la Colline", dossiers: ["DP-2024-0456","PC-2023-0166","PC-2024-0222","PC-2024-0166"] },
-    { top: "52%", left: "75%", color: "#4F46E5", status: "Nouveau", n: 2, label: "Route des Plages", dossiers: ["DP-2024-0111","PC-2024-0798"] },
-    { top: "65%", left: "38%", color: "#22C55E", status: "En instruction", n: 5, label: "Lotissement du Parc", dossiers: ["DP-2024-0333","PC-2024-0456","PC-2024-0789","DP-2024-0451","PC-2024-0123"] },
-    { top: "70%", left: "62%", color: "#EF4444", status: "En retard", n: 1, label: "Rue du Stade", dossiers: ["PC-2023-0567"] },
-    { top: "42%", left: "30%", color: "#8B5CF6", status: "Décision", n: 2, label: "ZA des Tilleuls", dossiers: ["PC-2023-0166","DP-2024-0090"] },
-  ];
-
   const filterColors: Record<string, string> = {
     "Nouveau": "#4F46E5", "En instruction": "#22C55E",
-    "En consultation": "#F97316", "En retard": "#EF4444", "Décision": "#8B5CF6",
+    "Décision en cours": "#8B5CF6", "Accepté": "#10B981", "Refusé": "#EF4444",
   };
-
-  const visibleMarkers = mapFilter === "Tous" ? markers : markers.filter(m => m.status === mapFilter);
 
   return (
     <div style={{ padding: "28px 32px", display: "flex", flexDirection: "column", gap: 24, background: "#F8F9FC", minHeight: "100%" }}>
@@ -506,7 +488,7 @@ function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string)
             <div style={{ fontSize: 13, color: "#64748b" }}>Visualisez la localisation des demandes sur votre territoire.</div>
           </div>
           <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" as const }}>
-            {["Tous", "Nouveau", "En instruction", "En consultation", "En retard", "Décision"].map(f => (
+            {["Tous", "Nouveau", "En instruction", "Décision en cours", "Accepté", "Refusé"].map(f => (
               <button key={f} onClick={() => setMapFilter(f)} style={{
                 border: mapFilter === f ? "none" : "1px solid #E2E8F0",
                 background: mapFilter === f ? (filterColors[f] ?? "#4F46E5") : "white",
@@ -530,125 +512,13 @@ function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string)
           </div>
         </div>
 
-        <div
-          ref={mapContainerRef}
-          onMouseDown={handleMapMouseDown}
-          onMouseMove={handleMapMouseMove}
-          onMouseUp={handleMapMouseUp}
-          onMouseLeave={handleMapMouseUp}
-          style={{ height: mapExpanded ? 520 : 300, background: "white", borderRadius: 16, border: "1px solid #E2E8F0", overflow: "hidden", position: "relative", cursor: isDragging ? "grabbing" : "grab", transition: "height 0.25s ease", userSelect: "none" }}>
-        {/* Map body */}
-        <div style={{ position: "relative", height: "100%" }}>
-          {/* SVG base map */}
-          <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} viewBox={`${panX} ${panY} ${900 / zoom} ${500 / zoom}`} preserveAspectRatio="xMidYMid slice">
-            {/* Background terrain */}
-            <rect width="900" height="500" fill="#e8f0e8" />
-            <rect x="0" y="0" width="900" height="500" fill="url(#grid)" opacity="0.3" />
-            <defs>
-              <pattern id="grid" width="40" height="40" patternUnits="userSpaceOnUse">
-                <path d="M 40 0 L 0 0 0 40" fill="none" stroke="#c8d8c8" strokeWidth="0.5" />
-              </pattern>
-            </defs>
-            {/* Zones vertes (espaces naturels) */}
-            <ellipse cx="120" cy="380" rx="100" ry="70" fill="#c8e6c8" opacity="0.6" />
-            <ellipse cx="780" cy="80" rx="80" ry="60" fill="#c8e6c8" opacity="0.6" />
-            <ellipse cx="820" cy="420" rx="70" ry="50" fill="#c8e6c8" opacity="0.5" />
-            {/* Cours d'eau */}
-            <path d="M 0 260 Q 150 240 280 270 Q 420 300 550 280 Q 680 260 900 290" fill="none" stroke="#a8cce8" strokeWidth="8" opacity="0.7" />
-            <path d="M 0 265 Q 150 245 280 275 Q 420 305 550 285 Q 680 265 900 295" fill="none" stroke="#b8d4f0" strokeWidth="4" opacity="0.5" />
-            {/* Routes principales */}
-            <path d="M 0 200 L 900 220" stroke="#e8e0d0" strokeWidth="12" />
-            <path d="M 0 202 L 900 222" stroke="white" strokeWidth="8" opacity="0.6" />
-            <path d="M 450 0 L 440 500" stroke="#e8e0d0" strokeWidth="10" />
-            <path d="M 452 0 L 442 500" stroke="white" strokeWidth="6" opacity="0.6" />
-            {/* Routes secondaires */}
-            <path d="M 0 350 Q 200 340 400 360 Q 600 380 900 350" stroke="#ddd8cc" strokeWidth="6" fill="none" />
-            <path d="M 200 0 Q 220 180 250 280 Q 280 380 260 500" stroke="#ddd8cc" strokeWidth="5" fill="none" />
-            <path d="M 650 0 Q 660 150 680 280 Q 700 380 690 500" stroke="#ddd8cc" strokeWidth="5" fill="none" />
-            <path d="M 0 80 Q 250 100 440 80 Q 600 60 750 90 Q 820 110 900 80" stroke="#ddd8cc" strokeWidth="4" fill="none" />
-            {/* Quartiers / blocs */}
-            <rect x="300" y="100" width="120" height="80" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.8" />
-            <rect x="460" y="90" width="90" height="70" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.8" />
-            <rect x="580" y="110" width="100" height="90" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.7" />
-            <rect x="310" y="310" width="130" height="70" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.8" />
-            <rect x="480" y="320" width="110" height="80" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.7" />
-            <rect x="640" y="300" width="100" height="90" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.6" />
-            <rect x="150" y="120" width="80" height="60" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.7" />
-            <rect x="160" y="370" width="90" height="65" rx="4" fill="#f0ece4" stroke="#ddd8cc" strokeWidth="1" opacity="0.7" />
-            {/* Bâtiments publics */}
-            <rect x="420" y="170" width="40" height="35" rx="3" fill="#d4e0f0" stroke="#b0bcd8" strokeWidth="1.5" />
-            <rect x="350" y="380" width="45" height="38" rx="3" fill="#d4e0f0" stroke="#b0bcd8" strokeWidth="1.5" />
-          </svg>
-
-          {/* Clickable markers */}
-          {visibleMarkers.map((m, i) => {
-            const topPct = parseFloat(m.top) / 100;
-            const leftPct = parseFloat(m.left) / 100;
-            const svgW = 900 / zoom;
-            const svgH = 500 / zoom;
-            const markerSvgX = panX + leftPct * svgW;
-            const markerSvgY = panY + topPct * svgH;
-            const cw = mapContainerRef.current?.offsetWidth ?? 800;
-            const ch = mapContainerRef.current?.offsetHeight ?? 300;
-            const screenLeft = (markerSvgX - panX) / svgW * cw;
-            const screenTop = (markerSvgY - panY) / svgH * ch;
-            return (
-            <div key={i}
-              onClick={(e) => { e.stopPropagation(); if (!dragMovedRef.current) { setActiveMarker(activeMarker === i ? null : i); navigate("Dossiers"); } }}
-              onMouseEnter={() => setActiveMarker(i)}
-              onMouseLeave={() => setActiveMarker(null)}
-              style={{
-                position: "absolute", top: screenTop, left: screenLeft,
-                width: 32, height: 32, borderRadius: "50%",
-                background: m.color, color: "white",
-                fontSize: 12, fontWeight: 700,
-                display: "flex", alignItems: "center", justifyContent: "center",
-                boxShadow: activeMarker === i ? `0 0 0 4px ${m.color}40, 0 4px 12px rgba(0,0,0,0.3)` : "0 2px 8px rgba(0,0,0,0.25)",
-                border: "2px solid white", cursor: "pointer",
-                transform: activeMarker === i ? "scale(1.2)" : "scale(1)",
-                transition: "all 0.15s",
-                zIndex: activeMarker === i ? 20 : 10,
-              }}>
-              {m.n}
-              {/* Tooltip */}
-              {activeMarker === i && (
-                <div style={{
-                  position: "absolute", bottom: "calc(100% + 8px)", left: "50%", transform: "translateX(-50%)",
-                  background: "#0F172A", color: "white", borderRadius: 8,
-                  padding: "8px 12px", fontSize: 11, whiteSpace: "nowrap",
-                  boxShadow: "0 4px 16px rgba(0,0,0,0.3)", zIndex: 30, minWidth: 160,
-                }}>
-                  <div style={{ fontWeight: 700, marginBottom: 4 }}>{m.label}</div>
-                  <div style={{ color: "#94a3b8", marginBottom: 4 }}>{m.n} dossier{m.n > 1 ? "s" : ""} · {m.status}</div>
-                  {m.dossiers.slice(0, 3).map(d => (
-                    <div key={d} style={{ color: "#818CF8", fontSize: 10 }}>{d}</div>
-                  ))}
-                  {m.dossiers.length > 3 && <div style={{ color: "#64748b", fontSize: 10 }}>+{m.dossiers.length - 3} autres</div>}
-                  <div style={{ position: "absolute", top: "100%", left: "50%", transform: "translateX(-50%)", width: 0, height: 0, borderLeft: "5px solid transparent", borderRight: "5px solid transparent", borderTop: "5px solid #0F172A" }} />
-                </div>
-              )}
-            </div>
-            );
-          })}
-
-          {/* Legend - top left */}
-          <div style={{ position: "absolute", top: 12, left: 12, background: "white", borderRadius: 10, padding: "10px 14px", fontSize: 11, boxShadow: "0 2px 10px rgba(0,0,0,0.12)", display: "flex", flexDirection: "column", gap: 6 }}>
-            <div style={{ fontSize: 11, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Légende</div>
-            {[["#4F46E5","Nouveaux dossiers"],["#22C55E","En instruction"],["#F97316","En consultation"],["#EF4444","En retard"],["#8B5CF6","Terminés"]].map(([c,l]) => (
-              <div key={l} style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                <span style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block", flexShrink: 0 }} />
-                <span style={{ color: "#374151" }}>{l}</span>
-              </div>
-            ))}
-          </div>
-
-          {/* Zoom controls - top right */}
-          <div style={{ position: "absolute", top: 12, right: 12, display: "flex", flexDirection: "column", gap: 4 }}>
-            {([{ z: "+", delta: 0.4 }, { z: "−", delta: -0.4 }] as const).map(({ z, delta }) => (
-              <button key={z} onClick={(e) => { e.stopPropagation(); setZoom(prev => Math.max(0.5, Math.min(4, prev + delta))); }} style={{ width: 30, height: 30, background: "white", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 16, fontWeight: 700, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 1px 4px rgba(0,0,0,0.1)" }}>{z}</button>
-            ))}
-          </div>
-        </div>
+        <div style={{ height: mapExpanded ? 520 : 300, borderRadius: 16, border: "1px solid #E2E8F0", overflow: "hidden", transition: "height 0.25s ease" }}>
+          <MapLeaflet
+            dossiers={mapDossiers}
+            height={mapExpanded ? 520 : 300}
+            filterStatus={mapFilter}
+            onMarkerClick={() => navigate("Dossiers")}
+          />
         </div>
       </div>
 

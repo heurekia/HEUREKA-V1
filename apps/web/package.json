@@ -10,6 +10,8 @@
   },
   "dependencies": {
     "@heureka-v1/shared": "workspace:*",
+    "@types/leaflet": "^1.9.21",
+    "leaflet": "^1.9.4",
     "lucide-react": "^0.488.0",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
