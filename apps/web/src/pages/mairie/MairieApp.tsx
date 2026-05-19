@@ -2014,6 +2014,34 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   navigate: (s: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("Résumé");
+
+  // ── Analyse parcellaire réelle ──
+  type ParcelAnalysis = {
+    query: string;
+    address?: { label: string; lat: number; lng: number; city: string; postcode: string };
+    parcel?: { parcelle_id: string; section: string; numero: string; surface_m2: number; commune: string; code_insee: string };
+    plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string };
+    risks?: { flood_risk: string; seismic_zone: string; clay_risk: string };
+    db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
+    rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null }>;
+    buildability: { maxFootprintM2: number; remainingFootprintM2: number; maxHeightM: number | null; minSetbackFromRoadM: number | null; minSetbackFromBoundariesM: number | null; estimatedFloors: number | null; greenSpaceRatio: number | null; greenSpaceRequiredM2: number | null; confidence: number; resultSummary: string } | null;
+    data_sources: string[];
+    warnings: string[];
+  };
+  const [parcelAnalysis, setParcelAnalysis] = useState<ParcelAnalysis | null>(null);
+  const [parcelLoading, setParcelLoading] = useState(false);
+  const [parcelError, setParcelError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (activeTab !== "Parcelle" || parcelAnalysis || parcelLoading) return;
+    setParcelLoading(true);
+    setParcelError(null);
+    api.get<ParcelAnalysis>(`/mairie/dossiers/${dossier.id}/analyse-parcelle`)
+      .then(data => setParcelAnalysis(data))
+      .catch(e => setParcelError(e instanceof Error ? e.message : "Erreur analyse parcellaire"))
+      .finally(() => setParcelLoading(false));
+  }, [activeTab, dossier.id, parcelAnalysis, parcelLoading]);
+
   const [decisionType, setDecisionType] = useState<string>("accord_prescription");
   const [prescriptions, setPrescriptions] = useState([
     "Respecter la hauteur maximale de 3,5 m pour l'annexe.",
@@ -2290,95 +2318,198 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         )}
 
         {/* ── PARCELLE ── */}
-        {activeTab === "Parcelle" && (
-          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
+        {activeTab === "Parcelle" && (() => {
+          const TOPIC_LABEL: Record<string, string> = {
+            recul_voie: "Recul voirie", recul_limite: "Recul limites", emprise_sol: "Emprise au sol",
+            hauteur: "Hauteur max.", stationnement: "Stationnement", espaces_verts: "Espaces verts",
+            terrain_min: "Terrain min.",
+          };
+          const floodColor = (v: string) => v === "fort" ? { c: "#C2410C", bg: "#FFF7ED" } : v === "moyen" ? { c: "#C2410C", bg: "#FFF7ED" } : v === "faible" ? { c: "#B45309", bg: "#FFFBEB" } : { c: "#15803D", bg: "#F0FDF4" };
+          const zoneColor = (t?: string) => t === "N" || t === "A" ? { c: "#15803D", bg: "#F0FDF4" } : { c: "#4F46E5", bg: "#EEF2FF" };
+          const pa = parcelAnalysis;
+
+          if (parcelLoading) return (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 300, gap: 12, color: "#64748b", fontSize: 14 }}>
+              <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "spin 1s linear infinite" }}><path d="M21 12a9 9 0 11-6.219-8.56" /></svg>
+              Analyse en cours…
+              <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+            </div>
+          );
+
+          return (
             <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
-              <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "16px 18px 12px" }}>
-                  <div style={SH as React.CSSProperties & { display: string; alignItems: string; gap: number; marginBottom: number }}>
-                    <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
-                    Vue parcellaire
-                  </div>
-                  <div style={{ display: "flex", gap: 6 }}>
-                    {["Cadastre", "PLU", "Risques"].map(l => (
-                      <button key={l} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "4px 10px", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 600, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>{l}</button>
-                    ))}
-                  </div>
-                </div>
-                {dossier.lat && dossier.lng ? (
-                  <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: dossier.adresse, lat: dossier.lat, lng: dossier.lng }]} height={340} commune={dossier.commune} />
-                ) : (
-                  <div style={{ height: 340, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 10 }}>
-                    <svg width={44} height={44} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
-                    <span style={{ fontSize: 13, color: "#94a3b8" }}>Coordonnées non disponibles</span>
-                  </div>
-                )}
-              </div>
-              <div style={CARD}>
-                <SecTitle>Contraintes réglementaires</SecTitle>
-                <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                  {[
-                    { label: "Zone PLU", value: "Zone UC – Urbaine centrale", color: "#4F46E5", bg: "#EEF2FF" },
-                    { label: "Périmètre ABF", value: "Dans les 500m – Monuments Historiques", color: "#C2410C", bg: "#FFF7ED" },
-                    { label: "Zone inondable", value: "Hors zone inondable", color: "#15803D", bg: "#F0FDF4" },
-                    { label: "Réseau ENEDIS", value: "Pas de contrainte identifiée", color: "#15803D", bg: "#F0FDF4" },
-                  ].map(c => (
-                    <div key={c.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: c.bg, borderRadius: 9, border: `1px solid ${c.color}22` }}>
-                      <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>{c.label}</span>
-                      <span style={{ fontSize: 11.5, fontWeight: 600, color: c.color }}>{c.value}</span>
+              {/* Warnings */}
+              {pa?.warnings && pa.warnings.length > 0 && (
+                <div style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 10, padding: "10px 14px", display: "flex", flexDirection: "column" as const, gap: 4 }}>
+                  {pa.warnings.map((w, i) => (
+                    <div key={i} style={{ fontSize: 12.5, color: "#92400E", display: "flex", gap: 6, alignItems: "flex-start" }}>
+                      <span style={{ flexShrink: 0 }}>⚠️</span>{w}
                     </div>
                   ))}
                 </div>
+              )}
+              {parcelError && (
+                <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: "#991B1B" }}>
+                  {parcelError}
+                </div>
+              )}
+
+              <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14 }}>
+                {/* ── Colonne gauche ── */}
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+                  {/* Carte */}
+                  <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
+                    <div style={{ padding: "14px 18px 10px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                      <div style={SH as React.CSSProperties & { display: string; alignItems: string; gap: number; marginBottom: number }}>
+                        <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
+                        Vue parcellaire
+                      </div>
+                      {pa && (
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" as const }}>
+                          {pa.data_sources.map(s => (
+                            <span key={s} style={{ fontSize: 10, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", borderRadius: 5, padding: "2px 7px" }}>{s}</span>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {dossier.lat && dossier.lng ? (
+                      <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: dossier.adresse, lat: dossier.lat, lng: dossier.lng }]} height={300} commune={dossier.commune} />
+                    ) : (
+                      <div style={{ height: 300, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 10 }}>
+                        <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
+                        <span style={{ fontSize: 13, color: "#94a3b8" }}>Coordonnées non disponibles</span>
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Contraintes */}
+                  <div style={CARD}>
+                    <SecTitle>Contraintes réglementaires</SecTitle>
+                    <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                      {/* Zone PLU */}
+                      {(() => {
+                        const zc = pa?.plu_zone ?? (pa?.db_zone ? { zone_code: pa.db_zone.code, zone_label: pa.db_zone.label ?? pa.db_zone.code, zone_type: pa.db_zone.type ?? "U" } : null);
+                        const col = zoneColor(zc?.zone_type);
+                        return (
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: col.bg, borderRadius: 9, border: `1px solid ${col.c}22` }}>
+                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>Zone PLU</span>
+                            <span style={{ fontSize: 11.5, fontWeight: 600, color: col.c }}>
+                              {zc ? `${zc.zone_code} – ${zc.zone_label}` : "Non identifiée"}
+                            </span>
+                          </div>
+                        );
+                      })()}
+                      {/* Risque inondation */}
+                      {(() => {
+                        const flood = pa?.risks?.flood_risk ?? "inconnu";
+                        const col = floodColor(flood);
+                        const labels: Record<string, string> = { fort: "Aléa fort – PPRI", moyen: "Aléa moyen", faible: "Aléa faible", nul: "Hors zone inondable", inconnu: "Non déterminé" };
+                        return (
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: col.bg, borderRadius: 9, border: `1px solid ${col.c}22` }}>
+                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>Zone inondable</span>
+                            <span style={{ fontSize: 11.5, fontWeight: 600, color: col.c }}>{labels[flood] ?? flood}</span>
+                          </div>
+                        );
+                      })()}
+                      {/* Zone sismique */}
+                      {pa?.risks?.seismic_zone && (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: "#F8FAFC", borderRadius: 9, border: "1px solid #E2E8F022" }}>
+                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>Zone sismique</span>
+                          <span style={{ fontSize: 11.5, fontWeight: 600, color: "#374151" }}>Zone {pa.risks.seismic_zone}</span>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+
+                  {/* Constructibilité */}
+                  {pa?.buildability && (
+                    <div style={CARD}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                        <SecTitle>Constructibilité estimée</SecTitle>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div style={{ width: 46, height: 46, borderRadius: "50%", border: "3.5px solid #4F46E5", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5" }}>{Math.round(pa.buildability.confidence * 100)}%</span>
+                          </div>
+                          <span style={{ fontSize: 11, color: "#64748b" }}>confiance</span>
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        {[
+                          ["Emprise restante", pa.buildability.remainingFootprintM2 > 0 ? `${Math.round(pa.buildability.remainingFootprintM2)} m²` : "0 m²"],
+                          ["Hauteur max.", pa.buildability.maxHeightM ? `${pa.buildability.maxHeightM} m` : "—"],
+                          ["Étages estimés", pa.buildability.estimatedFloors ? `${pa.buildability.estimatedFloors} niveaux` : "—"],
+                          ["Espaces verts requis", pa.buildability.greenSpaceRequiredM2 ? `${Math.round(pa.buildability.greenSpaceRequiredM2)} m²` : "—"],
+                          ["Recul voirie min.", pa.buildability.minSetbackFromRoadM ? `${pa.buildability.minSetbackFromRoadM} m` : "—"],
+                          ["Recul limites min.", pa.buildability.minSetbackFromBoundariesM ? `${pa.buildability.minSetbackFromBoundariesM} m` : "—"],
+                        ].map(([l, v]) => (
+                          <div key={l} style={{ background: "#F8FAFC", borderRadius: 8, padding: "9px 12px" }}>
+                            <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 2 }}>{l}</div>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Colonne droite ── */}
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+                  {/* Infos cadastrales */}
+                  <div style={CARD}>
+                    <SecTitle>Informations cadastrales</SecTitle>
+                    {[
+                      ["Référence", pa?.parcel?.parcelle_id ?? dossier.parcelle ?? "—"],
+                      ["Section / N°", pa?.parcel ? `${pa.parcel.section} / ${pa.parcel.numero}` : "—"],
+                      ["Surface parcelle", pa?.parcel?.surface_m2 ? `${pa.parcel.surface_m2} m²` : "—"],
+                      ["Commune", pa?.parcel?.commune ?? dossier.commune ?? "—"],
+                      ["Code INSEE", pa?.parcel?.code_insee ?? "—"],
+                      ["Adresse", pa?.address?.label ?? dossier.adresse ?? "—"],
+                    ].map(([l, v]) => (
+                      <div key={l} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingBottom: 8, marginBottom: 8, borderBottom: "1px solid #F1F5F9" }}>
+                        <span style={{ fontSize: 12, color: "#64748b" }}>{l}</span>
+                        <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", textAlign: "right" as const, maxWidth: "60%" }}>{v}</span>
+                      </div>
+                    ))}
+                  </div>
+
+                  {/* Synthèse PLU */}
+                  <div style={CARD}>
+                    <SecTitle>Synthèse PLU applicable</SecTitle>
+                    {pa?.rules && pa.rules.length > 0 ? (
+                      pa.rules.map(rule => (
+                        <div key={rule.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12.5, paddingBottom: 8, marginBottom: 8, borderBottom: "1px solid #F8FAFC" }}>
+                          <span style={{ color: "#64748b" }}>{TOPIC_LABEL[rule.topic] ?? rule.topic}</span>
+                          <span style={{ color: "#0F172A", fontWeight: 600, textAlign: "right" as const, maxWidth: "55%" }}>
+                            {rule.summary ?? (rule.value_max != null ? `${rule.value_max}${rule.unit ?? ""}` : rule.rule_text.slice(0, 40))}
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <div style={{ fontSize: 12.5, color: "#94a3b8", padding: "8px 0" }}>
+                        {pa ? "Aucune règle enregistrée pour cette zone." : "En attente de l'analyse…"}
+                      </div>
+                    )}
+                    {pa?.plu_zone?.plu_nom && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: "#64748b", fontStyle: "italic" }}>
+                        Source GPU : {pa.plu_zone.plu_nom}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Résumé constructibilité */}
+                  {pa?.buildability?.resultSummary && (
+                    <div style={{ ...CARD, background: "#F0FDF4", border: "1px solid #BBF7D0" }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                        <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M22 11.08V12a10 10 0 11-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
+                        <p style={{ fontSize: 12.5, color: "#14532D", margin: 0, lineHeight: 1.6 }}>{pa.buildability.resultSummary}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
-              <div style={CARD}>
-                <SecTitle>Informations cadastrales</SecTitle>
-                {[
-                  ["Référence parcelle", dossier.parcelle ?? "—"],
-                  ["Commune", dossier.commune ?? "—"],
-                  ["Code postal", dossier.code_postal ?? "—"],
-                  ["Surface du terrain", dossier.surface_plancher ?? "Non renseignée"],
-                  ["Adresse", dossier.adresse],
-                ].map(([l, v]) => (
-                  <div key={l} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingBottom: 9, marginBottom: 9, borderBottom: "1px solid #F1F5F9" }}>
-                    <span style={{ fontSize: 12, color: "#64748b" }}>{l}</span>
-                    <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{v}</span>
-                  </div>
-                ))}
-              </div>
-              <div style={CARD}>
-                <SecTitle>Synthèse PLU applicable</SecTitle>
-                {[
-                  ["Zone", "UC – Urbaine centrale"],
-                  ["Emprise au sol max.", "40%"],
-                  ["Hauteur max.", "9m (2 niveaux)"],
-                  ["Recul voirie", "4m minimum"],
-                  ["Recul limites latérales", "3m ou jointif"],
-                  ["Espaces verts", "30% minimum"],
-                  ["Stationnement", "2 places par logement"],
-                ].map(([l, v]) => (
-                  <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 12.5, paddingBottom: 8, marginBottom: 8, borderBottom: "1px solid #F8FAFC" }}>
-                    <span style={{ color: "#64748b" }}>{l}</span>
-                    <span style={{ color: "#0F172A", fontWeight: 600 }}>{v}</span>
-                  </div>
-                ))}
-              </div>
-              <div style={CARD}>
-                <SecTitle>Documents de référence</SecTitle>
-                {["PLU – Règlement de la zone UC", "Servitudes d'utilité publique", "Plan de prévention des risques", "Périmètres ABF"].map(doc => (
-                  <div key={doc} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "7px 0", borderBottom: "1px solid #F8FAFC" }}>
-                    <span style={{ fontSize: 12.5, color: "#374151", display: "flex", alignItems: "center", gap: 6 }}>
-                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
-                      {doc}
-                    </span>
-                    <button style={{ border: "none", background: "none", fontSize: 12, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>Consulter →</button>
-                  </div>
-                ))}
-              </div>
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ── CONFORMITÉ IA ── */}
         {activeTab === "Conformité IA" && (
