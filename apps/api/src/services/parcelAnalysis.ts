@@ -84,6 +84,7 @@ export interface ParcelAnalysis {
   buildability: ReturnType<typeof calculateBuildability> | null;
   data_sources: string[];
   warnings: string[];
+  available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
 }
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
@@ -303,7 +304,7 @@ async function findDbZoneAndRules(zoneCode: string, communeNom?: string): Promis
  *  - a free-text address: "12 rue du Commerce, Ballan-Miré"
  *  - a cadastral reference: "37018000AB0050"
  */
-export async function analyseParcel(query: string, options?: { citycode?: string }): Promise<ParcelAnalysis> {
+export async function analyseParcel(query: string, options?: { citycode?: string; zoneOverride?: string }): Promise<ParcelAnalysis> {
   const result: ParcelAnalysis = {
     query,
     rules: [],
@@ -391,16 +392,53 @@ export async function analyseParcel(query: string, options?: { citycode?: string
     result.data_sources.push("GéoRisques");
   }
 
-  // Step 5: DB rules lookup
-  const zoneCodeForDb = result.plu_zone?.zone_code ?? (isCadastralRef ? normalizedRef.slice(0, 2) : null);
+  // Step 5: DB rules lookup — use manual zone override if GPU failed
+  const zoneCodeForDb = options?.zoneOverride?.toUpperCase()
+    ?? result.plu_zone?.zone_code
+    ?? (isCadastralRef ? normalizedRef.slice(0, 2) : null);
   const communeForDb = result.parcel?.commune ?? result.address?.city;
 
   if (zoneCodeForDb) {
     const { zone, rules } = await findDbZoneAndRules(zoneCodeForDb, communeForDb);
     result.db_zone = zone;
     result.rules = rules;
-    if (zone) result.data_sources.push("Base réglementaire HEUREKA");
-    else result.warnings.push(`Aucune règle enregistrée pour la zone ${zoneCodeForDb} dans la base HEUREKA.`);
+    if (zone) {
+      // If zone was manually overridden, reflect it as plu_zone so frontend renders correctly
+      if (options?.zoneOverride && !result.plu_zone) {
+        result.plu_zone = { zone_code: zone.code, zone_label: zone.label ?? zone.code, zone_type: zone.type ?? "U" };
+      }
+      result.data_sources.push("Base réglementaire HEUREKA");
+    } else {
+      result.warnings.push(`Aucune règle enregistrée pour la zone ${zoneCodeForDb} dans la base HEUREKA.`);
+    }
+  }
+
+  // Step 5b: When GPU zone unavailable, offer all zones for the commune from DB so the
+  // instructeur can manually select the correct zone.
+  if (!result.plu_zone && !options?.zoneOverride && code_insee) {
+    try {
+      const [communeRow] = await db.select({ id: communes.id })
+        .from(communes)
+        .where(eq(communes.insee_code, code_insee))
+        .limit(1);
+      if (communeRow) {
+        const zoneRows = await db
+          .select({ zone_code: zones.zone_code, zone_label: zones.zone_label, zone_type: zones.zone_type })
+          .from(zones)
+          .where(eq(zones.commune_id, communeRow.id))
+          .orderBy(zones.display_order);
+        result.available_zones = zoneRows.map(z => ({
+          zone_code: z.zone_code,
+          zone_label: z.zone_label ?? z.zone_code,
+          zone_type: z.zone_type ?? "U",
+        }));
+        if (result.available_zones.length > 0) {
+          result.warnings.push(
+            `Zone PLU non déterminée automatiquement (${result.available_zones.length} zones disponibles pour cette commune). Sélectionnez la zone manuellement.`
+          );
+        }
+      }
+    } catch { /* DB errors are non-fatal */ }
   }
 
   // Step 6: Buildability calculation

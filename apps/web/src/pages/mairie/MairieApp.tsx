@@ -2027,12 +2027,14 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     buildability: { maxFootprintM2: number; remainingFootprintM2: number; maxHeightM: number | null; minSetbackFromRoadM: number | null; minSetbackFromBoundariesM: number | null; estimatedFloors: number | null; greenSpaceRatio: number | null; greenSpaceRequiredM2: number | null; confidence: number; resultSummary: string } | null;
     data_sources: string[];
     warnings: string[];
+    available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
   };
   const [parcelAnalysis, setParcelAnalysis] = useState<ParcelAnalysis | null>(null);
   const [parcelLoading, setParcelLoading] = useState(false);
   const [parcelError, setParcelError] = useState<string | null>(null);
   const [showAddressEditor, setShowAddressEditor] = useState(false);
   const [addressOverride, setAddressOverride] = useState<string | null>(null);
+  const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [addrQuery, setAddrQuery] = useState("");
   const [addrSuggestions, setAddrSuggestions] = useState<Array<{ label: string; city: string; postcode: string }>>([]);
   const [addrSugLoading, setAddrSugLoading] = useState(false);
@@ -2044,12 +2046,15 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     if (activeTab !== "Parcelle" || parcelAnalysis || parcelLoading) return;
     setParcelLoading(true);
     setParcelError(null);
-    const url = `/mairie/dossiers/${dossier.id}/analyse-parcelle${addressOverride ? `?q=${encodeURIComponent(addressOverride)}` : ""}`;
+    const params = new URLSearchParams();
+    if (addressOverride) params.set("q", addressOverride);
+    if (selectedZone) params.set("zone", selectedZone);
+    const url = `/mairie/dossiers/${dossier.id}/analyse-parcelle${params.toString() ? "?" + params.toString() : ""}`;
     api.get<ParcelAnalysis>(url)
       .then(data => setParcelAnalysis(data))
       .catch(e => setParcelError(e instanceof Error ? e.message : "Erreur analyse parcellaire"))
       .finally(() => setParcelLoading(false));
-  }, [activeTab, dossier.id, parcelAnalysis, parcelLoading, addressOverride]);
+  }, [activeTab, dossier.id, parcelAnalysis, parcelLoading, addressOverride, selectedZone]);
 
   // BAN autocomplete
   useEffect(() => {
@@ -2070,6 +2075,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     const newAddr = suggestion.label;
     const newCommune = suggestion.city;
     setAddressOverride(newAddr);
+    setSelectedZone(null);
     setLiveAdresse(newAddr);
     setLiveCommune(newCommune);
     setAddrQuery("");
@@ -2471,6 +2477,26 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   {/* Contraintes */}
                   <div style={CARD}>
                     <SecTitle>Contraintes réglementaires</SecTitle>
+                    {/* Zone picker when GPU fails */}
+                    {!pa?.plu_zone && pa?.available_zones && pa.available_zones.length > 0 && (
+                      <div style={{ marginBottom: 12, padding: "10px 14px", background: "#FFF7ED", border: "1px solid #FCD34D", borderRadius: 8 }}>
+                        <p style={{ fontSize: 12, fontWeight: 600, color: "#92400E", margin: "0 0 8px" }}>
+                          Zone PLU non déterminée automatiquement — sélectionnez la zone applicable :
+                        </p>
+                        <select
+                          value={selectedZone ?? ""}
+                          onChange={e => { const v = e.target.value; setSelectedZone(v || null); setParcelAnalysis(null); setParcelError(null); }}
+                          style={{ width: "100%", padding: "6px 10px", border: "1px solid #D97706", borderRadius: 6, fontSize: 13, color: "#374151", background: "white", cursor: "pointer" }}
+                        >
+                          <option value="">— Choisir la zone —</option>
+                          {pa.available_zones.map(z => (
+                            <option key={z.zone_code} value={z.zone_code}>
+                              {z.zone_code} – {z.zone_label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
                     <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
                       {/* Zone PLU */}
                       {(() => {
