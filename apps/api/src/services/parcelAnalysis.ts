@@ -88,9 +88,13 @@ export interface ParcelAnalysis {
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
 
-export async function geocodeAddress(address: string): Promise<AddressResult | null> {
+export async function geocodeAddress(address: string, citycode?: string): Promise<AddressResult | null> {
   try {
-    const url = `https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(address)}&limit=1`;
+    // If citycode (INSEE) is known, constrain BAN to that commune to avoid false matches
+    // on homonymous street names in other communes.
+    const params = new URLSearchParams({ q: address, limit: "1" });
+    if (citycode) params.set("citycode", citycode);
+    const url = `https://api-adresse.data.gouv.fr/search/?${params.toString()}`;
     const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
     if (!r.ok) return null;
     const data = await r.json() as {
@@ -299,7 +303,7 @@ async function findDbZoneAndRules(zoneCode: string, communeNom?: string): Promis
  *  - a free-text address: "12 rue du Commerce, Ballan-Miré"
  *  - a cadastral reference: "37018000AB0050"
  */
-export async function analyseParcel(query: string): Promise<ParcelAnalysis> {
+export async function analyseParcel(query: string, options?: { citycode?: string }): Promise<ParcelAnalysis> {
   const result: ParcelAnalysis = {
     query,
     rules: [],
@@ -313,7 +317,7 @@ export async function analyseParcel(query: string): Promise<ParcelAnalysis> {
 
   let lat: number | undefined;
   let lng: number | undefined;
-  let code_insee: string | undefined;
+  let code_insee: string | undefined = options?.citycode;
 
   // Step 1: Resolve coordinates
   if (isCadastralRef) {
@@ -334,8 +338,9 @@ export async function analyseParcel(query: string): Promise<ParcelAnalysis> {
       result.warnings.push("Parcelle cadastrale non trouvée via API IGN.");
     }
   } else {
-    // Free-text address
-    const addr = await geocodeAddress(query);
+    // Free-text address — constrain BAN to the commune INSEE when known to avoid
+    // false matches on homonymous street names in other communes.
+    const addr = await geocodeAddress(query, options?.citycode);
     if (addr) {
       result.address = addr;
       result.data_sources.push("BAN (api-adresse)");
@@ -363,12 +368,17 @@ export async function analyseParcel(query: string): Promise<ParcelAnalysis> {
     }
   }
 
-  // Step 3: GPU PLU zone
+  // Step 3: GPU PLU zone — validate that the returned PLU file belongs to the expected commune
   if (lat !== undefined && lng !== undefined) {
     const zone = await findPluZone(lat, lng);
     if (zone) {
-      result.plu_zone = zone;
-      result.data_sources.push("GPU (Géoportail de l'Urbanisme)");
+      const pluInsee = zone.plu_nom?.match(/^(\d{5})/)?.[1];
+      if (pluInsee && code_insee && pluInsee !== code_insee) {
+        result.warnings.push(`Zone PLU GPU (${zone.plu_nom}) appartient à la commune ${pluInsee}, différente de ${code_insee}. Zone ignorée.`);
+      } else {
+        result.plu_zone = zone;
+        result.data_sources.push("GPU (Géoportail de l'Urbanisme)");
+      }
     } else {
       result.warnings.push("Zone PLU non disponible sur le Géoportail de l'Urbanisme pour cette localisation.");
     }
