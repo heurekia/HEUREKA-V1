@@ -56,6 +56,9 @@ export function MapLeaflet({
   filterType,
   commune,
   onMarkerClick,
+  onMapClick,
+  clickMode = false,
+  parcelLayer = false,
 }: {
   dossiers: MapDossier[];
   height?: number;
@@ -63,11 +66,19 @@ export function MapLeaflet({
   filterType?: string;
   commune?: string;
   onMarkerClick?: (d: MapDossier) => void;
+  /** Called when user clicks the map in click mode — returns [lat, lng] */
+  onMapClick?: (lat: number, lng: number) => void;
+  /** Activate crosshair cursor + click-to-pick mode */
+  clickMode?: boolean;
+  /** Overlay IGN cadastral parcel boundaries (WMS) */
+  parcelLayer?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.CircleMarker[]>([]);
   const boundaryRef = useRef<L.GeoJSON | null>(null);
+  const parcelLayerRef = useRef<L.TileLayer.WMS | null>(null);
+  const clickPinRef = useRef<L.Marker | null>(null);
 
   // Initialize map once
   useEffect(() => {
@@ -93,6 +104,53 @@ export function MapLeaflet({
       mapRef.current = null;
     };
   }, []);
+
+  // IGN cadastral parcel WMS overlay (shows parcel boundaries)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (parcelLayer && !parcelLayerRef.current) {
+      parcelLayerRef.current = L.tileLayer.wms("https://data.geopf.fr/wms-r/ows", {
+        layers: "CADASTRALPARCELS.PARCELLAIRE_EXPRESS",
+        format: "image/png",
+        transparent: true,
+        version: "1.3.0",
+        opacity: 0.75,
+        attribution: "© IGN — Géoplateforme",
+      }).addTo(map);
+    } else if (!parcelLayer && parcelLayerRef.current) {
+      parcelLayerRef.current.remove();
+      parcelLayerRef.current = null;
+    }
+  }, [parcelLayer]);
+
+  // Map click handler — only active in clickMode
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    const container = map.getContainer();
+    container.style.cursor = clickMode ? "crosshair" : "";
+
+    const handler = (e: L.LeafletMouseEvent) => {
+      if (!clickMode || !onMapClick) return;
+      const { lat, lng } = e.latlng;
+
+      // Drop a temporary pin at the clicked location
+      if (clickPinRef.current) clickPinRef.current.remove();
+      clickPinRef.current = L.marker([lat, lng], {
+        icon: L.divIcon({
+          html: `<div style="width:22px;height:22px;background:#4F46E5;border:3px solid white;border-radius:50%;box-shadow:0 2px 8px rgba(0,0,0,0.4);transform:translate(-50%,-50%)"></div>`,
+          iconSize: [0, 0],
+          className: "",
+        }),
+      }).addTo(map);
+
+      onMapClick(lat, lng);
+    };
+
+    map.on("click", handler);
+    return () => { map.off("click", handler); };
+  }, [clickMode, onMapClick]);
 
   // Fetch and draw commune boundary
   useEffect(() => {

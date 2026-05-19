@@ -407,7 +407,13 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
 
     // ?zone= lets the instructeur manually override the PLU zone when GPU fails
     const zoneOverride = (req.query.zone as string | undefined)?.trim();
-    const analysis = await analyseParcel(query, { citycode, zoneOverride });
+
+    // ?lat=&lng= lets the instructeur provide coordinates from a map click
+    const latParam = parseFloat(req.query.lat as string);
+    const lngParam = parseFloat(req.query.lng as string);
+    const coords = !isNaN(latParam) && !isNaN(lngParam) ? { lat: latParam, lng: lngParam } : undefined;
+
+    const analysis = await analyseParcel(query, { citycode, zoneOverride, coords });
     res.json(analysis);
   } catch (err) {
     console.error(err);

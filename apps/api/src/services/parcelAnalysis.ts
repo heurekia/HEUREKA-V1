@@ -432,7 +432,10 @@ async function findDbZoneAndRules(zoneCode: string, communeNom?: string, codeIns
  *  - a free-text address: "12 rue du Commerce, Ballan-Miré"
  *  - a cadastral reference: "37018000AB0050"
  */
-export async function analyseParcel(query: string, options?: { citycode?: string; zoneOverride?: string }): Promise<ParcelAnalysis> {
+export async function analyseParcel(
+  query: string,
+  options?: { citycode?: string; zoneOverride?: string; coords?: { lat: number; lng: number } }
+): Promise<ParcelAnalysis> {
   const result: ParcelAnalysis = {
     query,
     rules: [],
@@ -444,12 +447,27 @@ export async function analyseParcel(query: string, options?: { citycode?: string
   const isCadastralRef = /^\d{5}[A-Z0-9]{9,}$/i.test(query.replace(/[\s.]/g, ""));
   const normalizedRef = query.replace(/[\s.]/g, "").toUpperCase();
 
-  let lat: number | undefined;
-  let lng: number | undefined;
+  let lat: number | undefined = options?.coords?.lat;
+  let lng: number | undefined = options?.coords?.lng;
   let code_insee: string | undefined = options?.citycode;
 
   // Step 1: Resolve coordinates
-  if (isCadastralRef) {
+  if (lat !== undefined && lng !== undefined) {
+    // Coordinates provided directly (user clicked on map) — skip geocoding
+    result.data_sources.push("Clic carte");
+    const parcel = await findParcelByLatLng(lat, lng, code_insee);
+    if (parcel) {
+      if (code_insee && parcel.code_insee !== code_insee) {
+        result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${code_insee}. Données non retenues.`);
+      } else {
+        result.parcel = parcel;
+        result.data_sources.push("IGN Cadastre");
+        code_insee = parcel.code_insee;
+      }
+    } else {
+      result.warnings.push("Aucune parcelle identifiée à cet emplacement. Cliquez au centre de la parcelle, pas sur la voirie.");
+    }
+  } else if (isCadastralRef) {
     const parcel = await findParcelByRef(normalizedRef);
     if (parcel) {
       result.parcel = parcel;
