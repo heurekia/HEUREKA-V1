@@ -399,7 +399,7 @@ const MOCK_MESSAGES = [
   { id: 4, lu: false, attendRepons: true },
 ];
 
-function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void }) {
+function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void; commune: string }) {
   const [mapFilter, setMapFilter] = useState<string>("Tous");
   const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
 
@@ -517,6 +517,7 @@ function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string)
             dossiers={mapDossiers}
             height={mapExpanded ? 520 : 300}
             filterStatus={mapFilter}
+            commune={commune}
             onMarkerClick={() => navigate("Dossiers")}
           />
         </div>
@@ -2212,7 +2213,7 @@ export function MairieApp() {
   };
 
   const screenMap = {
-    "Tableau de bord": <DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} />,
+    "Tableau de bord": <DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} />,
     "Dossiers": <DossiersScreen key={dossiersFilter} onDossierClick={handleDossierClick} navigate={setActive} initialFilter={dossiersFilter} />,
     "Messagerie": <MessageScreen onDossierClick={handleDossierClick} />,
     "Paramètres": <ParametresScreen />,

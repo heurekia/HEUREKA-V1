@@ -53,16 +53,19 @@ export function MapLeaflet({
   dossiers,
   height = 300,
   filterStatus,
+  commune,
   onMarkerClick,
 }: {
   dossiers: MapDossier[];
   height?: number;
   filterStatus?: string;
+  commune?: string;
   onMarkerClick?: (d: MapDossier) => void;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.CircleMarker[]>([]);
+  const boundaryRef = useRef<L.GeoJSON | null>(null);
 
   // Initialize map once
   useEffect(() => {
@@ -88,6 +91,40 @@ export function MapLeaflet({
       mapRef.current = null;
     };
   }, []);
+
+  // Fetch and draw commune boundary
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map || !commune) return;
+
+    let cancelled = false;
+
+    fetch(`https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(commune)}&fields=contour&format=geojson&geometry=contour&limit=1`)
+      .then(r => r.json())
+      .then((geojson: { features?: unknown[] }) => {
+        if (cancelled || !mapRef.current) return;
+        if (boundaryRef.current) {
+          boundaryRef.current.remove();
+          boundaryRef.current = null;
+        }
+        if (geojson.features && geojson.features.length > 0) {
+          const layer = L.geoJSON(geojson as Parameters<typeof L.geoJSON>[0], {
+            style: {
+              color: "#4F46E5",
+              weight: 2.5,
+              fillColor: "#4F46E5",
+              fillOpacity: 0.07,
+              dashArray: "8 5",
+            },
+          }).addTo(mapRef.current);
+          boundaryRef.current = layer;
+          mapRef.current.fitBounds(layer.getBounds(), { padding: [30, 30] });
+        }
+      })
+      .catch(() => {});
+
+    return () => { cancelled = true; };
+  }, [commune]);
 
   // Sync markers when dossiers or filter changes
   useEffect(() => {
@@ -135,7 +172,8 @@ export function MapLeaflet({
       markersRef.current.push(marker);
     });
 
-    if (visible.length > 0) {
+    // Only fit to markers if there's no commune boundary (boundary handles the initial fit)
+    if (visible.length > 0 && !boundaryRef.current) {
       const bounds = L.latLngBounds(visible.map(d => [d.lat, d.lng] as [number, number]));
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
     }
