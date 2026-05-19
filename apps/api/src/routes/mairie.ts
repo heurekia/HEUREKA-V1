@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes } from "@heureka-v1/db";
-import { eq, desc, and, sql, like } from "drizzle-orm";
+import { eq, desc, and, sql, like, ilike } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 
@@ -351,6 +351,7 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
     const qOverride = (req.query.q as string | undefined)?.trim();
 
     let query: string | null = qOverride ?? null;
+    let communeName: string | null = null;
     if (!query) {
       const [dossier] = await db
         .select({ parcelle: dossiers.parcelle, adresse: dossiers.adresse, commune: dossiers.commune })
@@ -359,6 +360,7 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
         .limit(1);
       if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
 
+      communeName = dossier.commune ?? null;
       query = dossier.parcelle
         ? dossier.parcelle
         : dossier.adresse
@@ -368,7 +370,17 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
 
     if (!query) return res.status(422).json({ error: "Aucune adresse ni référence parcellaire sur ce dossier." });
 
-    const analysis = await analyseParcel(query);
+    // Look up commune INSEE code to constrain BAN geocoding to the right commune
+    let citycode: string | undefined;
+    if (communeName) {
+      const [communeRow] = await db.select({ insee_code: communes.insee_code })
+        .from(communes)
+        .where(ilike(communes.name, `%${communeName}%`))
+        .limit(1);
+      citycode = communeRow?.insee_code ?? undefined;
+    }
+
+    const analysis = await analyseParcel(query, { citycode });
     res.json(analysis);
   } catch (err) {
     console.error(err);
