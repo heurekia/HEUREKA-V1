@@ -380,7 +380,9 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
       citycode = communeRow?.insee_code ?? undefined;
     }
 
-    const analysis = await analyseParcel(query, { citycode });
+    // ?zone= lets the instructeur manually override the PLU zone when GPU fails
+    const zoneOverride = (req.query.zone as string | undefined)?.trim();
+    const analysis = await analyseParcel(query, { citycode, zoneOverride });
     res.json(analysis);
   } catch (err) {
     console.error(err);
