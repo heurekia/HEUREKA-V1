@@ -240,8 +240,13 @@ export async function getRisks(lat: number, lng: number, code_insee: string): Pr
     // Risk API is best-effort
   }
 
-  // Seismic zone from static table (simplified — all of Loire Valley is zone 2)
-  result.seismic_zone = "2";
+  // Seismic zone from department code (arrêté du 22 octobre 2010)
+  const dept = code_insee?.slice(0, 2) ?? "";
+  const zone1Depts = new Set(["14","22","27","29","35","44","49","50","53","56","61","62","76","80"]);
+  const zone3Depts = new Set(["01","05","07","09","15","26","38","42","43","48","63","64","65","67","68","70","73","74","88"]);
+  const zone4Depts = new Set(["04","06"]);
+  const zone5Depts = new Set(["971","972","974","976"]);
+  result.seismic_zone = zone5Depts.has(dept) ? "5" : zone4Depts.has(dept) ? "4" : zone3Depts.has(dept) ? "3" : zone1Depts.has(dept) ? "1" : "2";
 
   return result;
 }
@@ -341,9 +346,14 @@ export async function analyseParcel(query: string): Promise<ParcelAnalysis> {
       // Step 2: Find parcel at those coordinates
       const parcel = await findParcelByLatLng(lat, lng);
       if (parcel) {
-        result.parcel = parcel;
-        result.data_sources.push("IGN Cadastre");
-        code_insee = parcel.code_insee;
+        if (parcel.code_insee !== addr.citycode) {
+          // IGN Cadastre sometimes returns a parcel from a neighboring commune
+          result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${addr.city} (${addr.citycode}). Données cadastrales non retenues.`);
+        } else {
+          result.parcel = parcel;
+          result.data_sources.push("IGN Cadastre");
+          code_insee = parcel.code_insee;
+        }
       } else {
         result.warnings.push("Parcelle cadastrale non identifiée à cette adresse.");
       }

@@ -2037,6 +2037,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [addrSuggestions, setAddrSuggestions] = useState<Array<{ label: string; city: string; postcode: string }>>([]);
   const [addrSugLoading, setAddrSugLoading] = useState(false);
   const [addrSaving, setAddrSaving] = useState(false);
+  const [liveAdresse, setLiveAdresse] = useState(dossier.adresse);
+  const [liveCommune, setLiveCommune] = useState(dossier.commune ?? null);
 
   useEffect(() => {
     if (activeTab !== "Parcelle" || parcelAnalysis || parcelLoading) return;
@@ -2068,6 +2070,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     const newAddr = suggestion.label;
     const newCommune = suggestion.city;
     setAddressOverride(newAddr);
+    setLiveAdresse(newAddr);
+    setLiveCommune(newCommune);
     setAddrQuery("");
     setAddrSuggestions([]);
     setShowAddressEditor(false);
@@ -2196,7 +2200,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               <span style={{ color: "#CBD5E1", fontSize: 12 }}>·</span>
               <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }}>
                 <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
-                {dossier.adresse}{dossier.commune ? `, ${dossier.commune}` : ""}
+                {liveAdresse ?? "—"}{liveCommune ? `, ${liveCommune}` : ""}
+                <button
+                  title="Modifier l'adresse"
+                  onClick={() => { setShowAddressEditor(v => !v); setAddrQuery(""); setAddrSuggestions([]); }}
+                  style={{ padding: "1px 6px", fontSize: 10, color: showAddressEditor ? "#4F46E5" : "#94a3b8", background: showAddressEditor ? "#EEF2FF" : "none", border: "1px solid " + (showAddressEditor ? "#4F46E5" : "#E2E8F0"), borderRadius: 4, cursor: "pointer", marginLeft: 2, fontWeight: 500 }}
+                >✏️</button>
               </span>
               {dossier.parcelle && <>
                 <span style={{ color: "#CBD5E1", fontSize: 12 }}>·</span>
@@ -2231,6 +2240,42 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           </div>
         </div>
 
+        {/* Éditeur d'adresse (dans l'en-tête sticky) */}
+        {showAddressEditor && (
+          <div style={{ padding: "0 0 12px", display: "flex", flexDirection: "column" as const, gap: 4 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <div style={{ position: "relative" as const, flex: 1 }}>
+                <input
+                  autoFocus
+                  value={addrQuery}
+                  onChange={e => setAddrQuery(e.target.value)}
+                  placeholder="Ex : 12 rue du Commerce, Ballan-Miré"
+                  style={{ width: "100%", padding: "7px 11px", border: "1.5px solid #4F46E5", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const, color: "#0F172A" }}
+                />
+                {addrSugLoading && <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 11, color: "#94a3b8" }}>…</span>}
+                {addrSuggestions.length > 0 && (
+                  <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.12)", zIndex: 100, overflow: "hidden" }}>
+                    {addrSuggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        onMouseDown={() => handleAddressSelect(s)}
+                        style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 14px", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: "#374151", borderBottom: i < addrSuggestions.length - 1 ? "1px solid #F1F5F9" : "none" }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                      >
+                        <span style={{ fontWeight: 500 }}>{s.label}</span>
+                        <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: 6 }}>{s.postcode}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button onClick={() => { setShowAddressEditor(false); setAddrQuery(""); setAddrSuggestions([]); }} style={{ padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#64748b", background: "white", cursor: "pointer", whiteSpace: "nowrap" as const }}>Annuler</button>
+            </div>
+            {addrSaving && <span style={{ fontSize: 11, color: "#64748b" }}>Sauvegarde…</span>}
+          </div>
+        )}
+
         {/* Tab bar */}
         <div style={{ display: "flex", gap: 0 }}>
           {DETAIL_TABS.map(tab => (
@@ -2263,8 +2308,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
                   {[
                     ["Pétitionnaire", dossier.petitionnaire],
-                    ["Adresse", dossier.adresse],
-                    ["Commune", dossier.commune ?? "—"],
+                    ["Adresse", liveAdresse ?? "—"],
+                    ["Commune", liveCommune ?? "—"],
                     ["Parcelle", dossier.parcelle ?? "—"],
                     ["Surface plancher", dossier.surface_plancher ?? "—"],
                     ["Type", typeLabel],
@@ -2309,14 +2354,14 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               {/* Mini map */}
               <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
                 <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", padding: "16px 18px 10px" }}>Localisation</div>
-                {dossier.lat && dossier.lng ? (
-                  <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: dossier.adresse, lat: dossier.lat, lng: dossier.lng }]} height={220} commune={dossier.commune} />
+                {(() => { const rLat = parcelAnalysis?.address?.lat ?? dossier.lat; const rLng = parcelAnalysis?.address?.lng ?? dossier.lng; return rLat && rLng ? (
+                  <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: rLat, lng: rLng }]} height={220} commune={liveCommune ?? dossier.commune} />
                 ) : (
                   <div style={{ height: 220, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 8 }}>
                     <svg width={36} height={36} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
                     <span style={{ fontSize: 12, color: "#94a3b8" }}>Géolocalisation indisponible</span>
                   </div>
-                )}
+                ); })()}
               </div>
             </div>
             {/* Alert banners */}
@@ -2385,51 +2430,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   ))}
                 </div>
               )}
-              {(parcelError || showAddressEditor) && (
-                <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                  {parcelError && (
-                    <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: "#991B1B" }}>
-                      {parcelError}
-                    </div>
-                  )}
-                  {/* Correction d'adresse */}
-                  <div style={{ background: "white", border: "1px solid #4F46E5", borderRadius: 10, padding: "14px 16px" }}>
-                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-                      <p style={{ fontSize: 12.5, fontWeight: 600, color: "#374151", margin: 0 }}>Corriger ou préciser l'adresse</p>
-                      {showAddressEditor && !parcelError && (
-                        <button onClick={() => { setShowAddressEditor(false); setAddrQuery(""); setAddrSuggestions([]); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "#94a3b8", lineHeight: 1, padding: 0 }}>×</button>
-                      )}
-                    </div>
-                    <div style={{ position: "relative" as const }}>
-                      <input
-                        autoFocus
-                        value={addrQuery}
-                        onChange={e => setAddrQuery(e.target.value)}
-                        placeholder="Ex : 12 rue du Commerce, Ballan-Miré"
-                        style={{ width: "100%", padding: "8px 12px", border: "1px solid #CBD5E1", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const, color: "#0F172A" }}
-                      />
-                      {addrSugLoading && (
-                        <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 11, color: "#94a3b8" }}>…</span>
-                      )}
-                      {addrSuggestions.length > 0 && (
-                        <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.1)", zIndex: 50, overflow: "hidden" }}>
-                          {addrSuggestions.map((s, i) => (
-                            <button
-                              key={i}
-                              onMouseDown={() => handleAddressSelect(s)}
-                              style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 14px", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: "#374151", borderBottom: i < addrSuggestions.length - 1 ? "1px solid #F1F5F9" : "none" }}
-                              onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
-                              onMouseLeave={e => (e.currentTarget.style.background = "none")}
-                            >
-                              <span style={{ fontWeight: 500 }}>{s.label}</span>
-                              <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: 6 }}>{s.postcode}</span>
-                            </button>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    {addrSaving && <p style={{ fontSize: 11, color: "#64748b", marginTop: 6 }}>Sauvegarde…</p>}
-                  </div>
+              {parcelError && (
+                <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                  <span style={{ fontSize: 12.5, color: "#991B1B" }}>{parcelError}</span>
+                  <button
+                    onClick={() => { setShowAddressEditor(true); setAddrQuery(""); setAddrSuggestions([]); }}
+                    style={{ flexShrink: 0, padding: "5px 11px", background: "white", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#991B1B", cursor: "pointer", fontWeight: 600 }}
+                  >Corriger l'adresse ✏️</button>
                 </div>
               )}
 
@@ -2444,26 +2451,21 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         Vue parcellaire
                       </div>
                       {pa && (
-                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" as const, alignItems: "center" }}>
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" as const }}>
                           {pa.data_sources.map(s => (
                             <span key={s} style={{ fontSize: 10, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", borderRadius: 5, padding: "2px 7px" }}>{s}</span>
                           ))}
-                          <button
-                            title="Modifier l'adresse"
-                            onClick={() => { setShowAddressEditor(true); setAddrQuery(""); setAddrSuggestions([]); }}
-                            style={{ padding: "2px 7px", fontSize: 10, fontWeight: 600, color: "#64748b", background: "#F1F5F9", border: "1px solid #E2E8F0", borderRadius: 5, cursor: "pointer" }}
-                          >✏️ Modifier</button>
                         </div>
                       )}
                     </div>
-                    {dossier.lat && dossier.lng ? (
-                      <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: dossier.adresse, lat: dossier.lat, lng: dossier.lng }]} height={300} commune={dossier.commune} />
+                    {(() => { const pLat = pa?.address?.lat ?? dossier.lat; const pLng = pa?.address?.lng ?? dossier.lng; return pLat && pLng ? (
+                      <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: pLat, lng: pLng }]} height={300} commune={liveCommune ?? dossier.commune} />
                     ) : (
                       <div style={{ height: 300, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 10 }}>
                         <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
                         <span style={{ fontSize: 13, color: "#94a3b8" }}>Coordonnées non disponibles</span>
                       </div>
-                    )}
+                    ); })()}
                   </div>
 
                   {/* Contraintes */}
@@ -2545,9 +2547,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       ["Référence", pa?.parcel?.parcelle_id ?? dossier.parcelle ?? "—"],
                       ["Section / N°", pa?.parcel ? `${pa.parcel.section} / ${pa.parcel.numero}` : "—"],
                       ["Surface parcelle", pa?.parcel?.surface_m2 ? `${pa.parcel.surface_m2} m²` : "—"],
-                      ["Commune", pa?.parcel?.commune ?? dossier.commune ?? "—"],
+                      ["Commune", pa?.parcel?.commune ?? liveCommune ?? "—"],
                       ["Code INSEE", pa?.parcel?.code_insee ?? "—"],
-                      ["Adresse", pa?.address?.label ?? dossier.adresse ?? "—"],
+                      ["Adresse", pa?.address?.label ?? liveAdresse ?? "—"],
                     ].map(([l, v]) => (
                       <div key={l} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingBottom: 8, marginBottom: 8, borderBottom: "1px solid #F1F5F9" }}>
                         <span style={{ fontSize: 12, color: "#64748b" }}>{l}</span>
@@ -2619,7 +2621,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       <span style={{ background: "#FFF7ED", color: "#C2410C", borderRadius: 8, padding: "4px 11px", fontSize: 12, fontWeight: 600, border: "1px solid #FED7AA" }}>1 vigilance</span>
                       <span style={{ background: "#F8FAFC", color: "#475569", borderRadius: 8, padding: "4px 11px", fontSize: 12, fontWeight: 600, border: "1px solid #E2E8F0" }}>1 non vérifiable</span>
                     </div>
-                    <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Analyse basée sur le PLU de {dossier.commune ?? "la commune"} (version 2023) et les documents déposés.</div>
+                    <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Analyse basée sur le PLU de {liveCommune ?? "la commune"} (version 2023) et les documents déposés.</div>
                   </div>
                 </div>
               </div>
@@ -2947,7 +2949,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "0.12em", textTransform: "uppercase" as const }}>Arrêté</div>
                       <div style={{ fontSize: 13, fontStyle: "italic" as const }}>accordant un permis de construire</div>
                     </div>
-                    <p style={{ margin: "0 0 8px" }}>Le Maire de {dossier.commune ?? "la commune"},</p>
+                    <p style={{ margin: "0 0 8px" }}>Le Maire de {liveCommune ?? "la commune"},</p>
                     <p style={{ margin: "0 0 4px" }}>Vu la demande de permis de construire présentée le {dossier.date_depot ? fmtDate(dossier.date_depot) : "—"} par {dossier.petitionnaire}&nbsp;;</p>
                     <p style={{ margin: "0 0 12px" }}>Vu le Code de l'urbanisme&nbsp;;</p>
                     <p style={{ margin: "0 0 8px", fontWeight: 700, fontSize: 13.5, letterSpacing: "0.08em", textTransform: "uppercase" as const }}>Arrête</p>
