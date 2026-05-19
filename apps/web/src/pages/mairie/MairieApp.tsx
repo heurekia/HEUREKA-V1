@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 
 const NAV_ITEMS = [
   { label: "Tableau de bord", icon: HomeIcon },
@@ -211,7 +211,7 @@ function Sidebar({ active, setActive }: { active: string; setActive: (s: string)
   );
 }
 
-function Topbar({ buttonLabel = "+ Nouveau dossier", commune = "Ballan-Miré", onNewDossier, navigate }: { title?: string; buttonLabel?: string; commune?: string; onNewDossier?: () => void; navigate?: (s: string) => void }) {
+function Topbar({ buttonLabel = "Nouveau dossier", commune = "Ballan-Miré", onNewDossier, navigate }: { title?: string; buttonLabel?: string; commune?: string; onNewDossier?: () => void; navigate?: (s: string) => void }) {
   const [showNotifs, setShowNotifs] = useState(false);
   const [showFAQ, setShowFAQ] = useState(false);
   const [showCommune, setShowCommune] = useState(false);
@@ -407,6 +407,34 @@ const MOCK_MESSAGES = [
 function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void }) {
   const [mapFilter, setMapFilter] = useState<string>("Tous");
   const [activeMarker, setActiveMarker] = useState<number | null>(null);
+  const [mapExpanded, setMapExpanded] = useState(false);
+  const [zoom, setZoom] = useState(1);
+  const [panX, setPanX] = useState(0);
+  const [panY, setPanY] = useState(0);
+  const [isDragging, setIsDragging] = useState(false);
+  const [dragStart, setDragStart] = useState({ x: 0, y: 0 });
+  const mapContainerRef = useRef<HTMLDivElement>(null);
+  const dragMovedRef = useRef(false);
+
+  const handleMapMouseDown = (e: React.MouseEvent<HTMLDivElement>) => {
+    dragMovedRef.current = false;
+    setIsDragging(true);
+    setDragStart({ x: e.clientX, y: e.clientY });
+  };
+  const handleMapMouseMove = (e: React.MouseEvent<HTMLDivElement>) => {
+    if (!isDragging) return;
+    const cw = mapContainerRef.current?.offsetWidth ?? 800;
+    const ch = mapContainerRef.current?.offsetHeight ?? 300;
+    const svgW = 900 / zoom;
+    const svgH = 500 / zoom;
+    const dx = (e.clientX - dragStart.x) * svgW / cw;
+    const dy = (e.clientY - dragStart.y) * svgH / ch;
+    if (Math.abs(e.clientX - dragStart.x) > 3 || Math.abs(e.clientY - dragStart.y) > 3) dragMovedRef.current = true;
+    setPanX(prev => Math.max(-200, Math.min(200, prev - dx)));
+    setPanY(prev => Math.max(-100, Math.min(100, prev - dy)));
+    setDragStart({ x: e.clientX, y: e.clientY });
+  };
+  const handleMapMouseUp = () => setIsDragging(false);
 
   const countByStatus = (status: string) => MOCK_DOSSIERS.filter(d => d.status === status).length;
   const messagesEnAttente = MOCK_MESSAGES.filter(m => !m.lu || m.attendRepons).length;
@@ -484,23 +512,42 @@ function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string)
             <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 3 }}>Carte des demandes</div>
             <div style={{ fontSize: 13, color: "#64748b" }}>Visualisez la localisation des demandes sur votre territoire.</div>
           </div>
-          <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-            {["En cours", "Passées"].map(f => (
-              <button key={f} onClick={() => setMapFilter(f === "En cours" ? "Tous" : "Terminés")} style={{ border: mapFilter === (f === "En cours" ? "Tous" : "Terminés") ? "none" : "1px solid #E2E8F0", background: f === "En cours" && mapFilter === "Tous" ? "#4F46E5" : f === "Passées" && mapFilter === "Terminés" ? "#4F46E5" : "white", color: (f === "En cours" && mapFilter === "Tous") || (f === "Passées" && mapFilter === "Terminés") ? "white" : "#374151", borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 500, cursor: "pointer" }}>{f}</button>
+          <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" as const }}>
+            {["Tous", "Nouveau", "En instruction", "En consultation", "En retard", "Décision"].map(f => (
+              <button key={f} onClick={() => setMapFilter(f)} style={{
+                border: mapFilter === f ? "none" : "1px solid #E2E8F0",
+                background: mapFilter === f ? (filterColors[f] ?? "#4F46E5") : "white",
+                color: mapFilter === f ? "white" : "#374151",
+                borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: mapFilter === f ? 600 : 400, cursor: "pointer",
+              }}>{f}</button>
             ))}
-            <select style={{ border: "1px solid #E2E8F0", borderRadius: 8, padding: "7px 12px", fontSize: 13, color: "#374151", background: "white", cursor: "pointer", outline: "none" }}>
+            <select style={{ border: "1px solid #E2E8F0", borderRadius: 8, padding: "6px 10px", fontSize: 12, color: "#374151", background: "white", cursor: "pointer", outline: "none" }}>
               <option>Tous les types</option>
               <option>Permis de construire</option>
               <option>Déclaration préalable</option>
+              <option>Permis d'aménager</option>
+              <option>Certificat d'urbanisme</option>
+              <option>Permis de démolir</option>
             </select>
+            <button onClick={() => setMapExpanded(!mapExpanded)} title={mapExpanded ? "Réduire" : "Agrandir"} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "6px 8px", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center" }}>
+              {mapExpanded
+                ? <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="4 14 10 14 10 20"/><polyline points="20 10 14 10 14 4"/><line x1="10" y1="14" x2="3" y2="21"/><line x1="21" y1="3" x2="14" y2="10"/></svg>
+                : <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><polyline points="9 21 3 21 3 15"/><line x1="21" y1="3" x2="14" y2="10"/><line x1="3" y1="21" x2="10" y2="14"/></svg>}
+            </button>
           </div>
         </div>
 
-        <div style={{ height: 300, background: "white", borderRadius: 16, border: "1px solid #E2E8F0", overflow: "hidden", position: "relative" }}>
+        <div
+          ref={mapContainerRef}
+          onMouseDown={handleMapMouseDown}
+          onMouseMove={handleMapMouseMove}
+          onMouseUp={handleMapMouseUp}
+          onMouseLeave={handleMapMouseUp}
+          style={{ height: mapExpanded ? 520 : 300, background: "white", borderRadius: 16, border: "1px solid #E2E8F0", overflow: "hidden", position: "relative", cursor: isDragging ? "grabbing" : "grab", transition: "height 0.25s ease", userSelect: "none" }}>
         {/* Map body */}
         <div style={{ position: "relative", height: "100%" }}>
           {/* SVG base map */}
-          <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} viewBox="0 0 900 500" preserveAspectRatio="xMidYMid slice">
+          <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%", pointerEvents: "none" }} viewBox={`${panX} ${panY} ${900 / zoom} ${500 / zoom}`} preserveAspectRatio="xMidYMid slice">
             {/* Background terrain */}
             <rect width="900" height="500" fill="#e8f0e8" />
             <rect x="0" y="0" width="900" height="500" fill="url(#grid)" opacity="0.3" />
@@ -541,13 +588,24 @@ function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string)
           </svg>
 
           {/* Clickable markers */}
-          {visibleMarkers.map((m, i) => (
+          {visibleMarkers.map((m, i) => {
+            const topPct = parseFloat(m.top) / 100;
+            const leftPct = parseFloat(m.left) / 100;
+            const svgW = 900 / zoom;
+            const svgH = 500 / zoom;
+            const markerSvgX = panX + leftPct * svgW;
+            const markerSvgY = panY + topPct * svgH;
+            const cw = mapContainerRef.current?.offsetWidth ?? 800;
+            const ch = mapContainerRef.current?.offsetHeight ?? 300;
+            const screenLeft = (markerSvgX - panX) / svgW * cw;
+            const screenTop = (markerSvgY - panY) / svgH * ch;
+            return (
             <div key={i}
-              onClick={() => { setActiveMarker(activeMarker === i ? null : i); navigate("Dossiers"); }}
+              onClick={(e) => { e.stopPropagation(); if (!dragMovedRef.current) { setActiveMarker(activeMarker === i ? null : i); navigate("Dossiers"); } }}
               onMouseEnter={() => setActiveMarker(i)}
               onMouseLeave={() => setActiveMarker(null)}
               style={{
-                position: "absolute", top: m.top, left: m.left,
+                position: "absolute", top: screenTop, left: screenLeft,
                 width: 32, height: 32, borderRadius: "50%",
                 background: m.color, color: "white",
                 fontSize: 12, fontWeight: 700,
@@ -577,7 +635,8 @@ function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string)
                 </div>
               )}
             </div>
-          ))}
+            );
+          })}
 
           {/* Legend - top left */}
           <div style={{ position: "absolute", top: 12, left: 12, background: "white", borderRadius: 10, padding: "10px 14px", fontSize: 11, boxShadow: "0 2px 10px rgba(0,0,0,0.12)", display: "flex", flexDirection: "column", gap: 6 }}>
@@ -592,8 +651,8 @@ function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string)
 
           {/* Zoom controls - top right */}
           <div style={{ position: "absolute", top: 12, right: 12, display: "flex", flexDirection: "column", gap: 4 }}>
-            {["+", "−"].map(z => (
-              <button key={z} style={{ width: 30, height: 30, background: "white", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 16, fontWeight: 700, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 1px 4px rgba(0,0,0,0.1)" }}>{z}</button>
+            {([{ z: "+", delta: 0.4 }, { z: "−", delta: -0.4 }] as const).map(({ z, delta }) => (
+              <button key={z} onClick={(e) => { e.stopPropagation(); setZoom(prev => Math.max(0.5, Math.min(4, prev + delta))); }} style={{ width: 30, height: 30, background: "white", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 16, fontWeight: 700, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 1px 4px rgba(0,0,0,0.1)" }}>{z}</button>
             ))}
           </div>
         </div>
