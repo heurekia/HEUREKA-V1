@@ -2031,6 +2031,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [parcelAnalysis, setParcelAnalysis] = useState<ParcelAnalysis | null>(null);
   const [parcelLoading, setParcelLoading] = useState(false);
   const [parcelError, setParcelError] = useState<string | null>(null);
+  const [showAddressEditor, setShowAddressEditor] = useState(false);
   const [addressOverride, setAddressOverride] = useState<string | null>(null);
   const [addrQuery, setAddrQuery] = useState("");
   const [addrSuggestions, setAddrSuggestions] = useState<Array<{ label: string; city: string; postcode: string }>>([]);
@@ -2069,6 +2070,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     setAddressOverride(newAddr);
     setAddrQuery("");
     setAddrSuggestions([]);
+    setShowAddressEditor(false);
     setParcelAnalysis(null);
     setParcelError(null);
     setAddrSaving(true);
@@ -2383,16 +2385,24 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   ))}
                 </div>
               )}
-              {parcelError && (
+              {(parcelError || showAddressEditor) && (
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                  <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: "#991B1B" }}>
-                    {parcelError}
-                  </div>
+                  {parcelError && (
+                    <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: "#991B1B" }}>
+                      {parcelError}
+                    </div>
+                  )}
                   {/* Correction d'adresse */}
-                  <div style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "14px 16px" }}>
-                    <p style={{ fontSize: 12.5, fontWeight: 600, color: "#374151", marginBottom: 8 }}>Corriger ou préciser l'adresse</p>
+                  <div style={{ background: "white", border: "1px solid #4F46E5", borderRadius: 10, padding: "14px 16px" }}>
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                      <p style={{ fontSize: 12.5, fontWeight: 600, color: "#374151", margin: 0 }}>Corriger ou préciser l'adresse</p>
+                      {showAddressEditor && !parcelError && (
+                        <button onClick={() => { setShowAddressEditor(false); setAddrQuery(""); setAddrSuggestions([]); }} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 16, color: "#94a3b8", lineHeight: 1, padding: 0 }}>×</button>
+                      )}
+                    </div>
                     <div style={{ position: "relative" as const }}>
                       <input
+                        autoFocus
                         value={addrQuery}
                         onChange={e => setAddrQuery(e.target.value)}
                         placeholder="Ex : 12 rue du Commerce, Ballan-Miré"
@@ -2440,7 +2450,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           ))}
                           <button
                             title="Modifier l'adresse"
-                            onClick={() => { setParcelAnalysis(null); setParcelError("Adresse non reconnue. Vérifiez l'orthographe ou utilisez la référence cadastrale."); setAddressOverride(null); setAddrQuery(""); }}
+                            onClick={() => { setShowAddressEditor(true); setAddrQuery(""); setAddrSuggestions([]); }}
                             style={{ padding: "2px 7px", fontSize: 10, fontWeight: 600, color: "#64748b", background: "#F1F5F9", border: "1px solid #E2E8F0", borderRadius: 5, cursor: "pointer" }}
                           >✏️ Modifier</button>
                         </div>
