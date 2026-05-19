@@ -2028,6 +2028,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     data_sources: string[];
     warnings: string[];
     available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
+    municipality?: { is_rnu: boolean; libelle?: string } | null;
+    prescriptions?: Array<{ libelle: string; typepsc: string; txtpsc?: string }>;
+    servitudes?: Array<{ categorie: string; libelle?: string }>;
   };
   const [parcelAnalysis, setParcelAnalysis] = useState<ParcelAnalysis | null>(null);
   const [parcelLoading, setParcelLoading] = useState(false);
@@ -2530,6 +2533,31 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           <span style={{ fontSize: 11.5, fontWeight: 600, color: "#374151" }}>Zone {pa.risks.seismic_zone}</span>
                         </div>
                       )}
+                      {/* Servitudes d'utilité publique */}
+                      {pa?.servitudes && pa.servitudes.length > 0 && pa.servitudes.map((s, i) => {
+                        const supLabels: Record<string, string> = {
+                          AC1: "MH – Périmètre ABF", AC2: "Sites classés/inscrits",
+                          EL: "Ligne HT", EL7: "Ligne HT 63-225kV", EL11: "Ligne HT >225kV",
+                          PM1: "PPRI – Zone submersible", PM2: "Voies ferrées/inondation",
+                          T1: "Voie ferrée", T7: "Route nationale",
+                          I4: "Réseau hertzien", PT: "Télécommunications",
+                        };
+                        const label = supLabels[s.categorie] ?? s.categorie;
+                        const isABF = s.categorie?.startsWith("AC");
+                        return (
+                          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: isABF ? "#FEF3C7" : "#F0F9FF", borderRadius: 9, border: `1px solid ${isABF ? "#FCD34D" : "#BAE6FD"}22` }}>
+                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>SUP {s.categorie}</span>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: isABF ? "#92400E" : "#075985" }}>{s.libelle ?? label}</span>
+                          </div>
+                        );
+                      })}
+                      {/* Prescriptions surfaciques PLU */}
+                      {pa?.prescriptions && pa.prescriptions.length > 0 && pa.prescriptions.map((p, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: "#F0FDF4", borderRadius: 9, border: "1px solid #BBF7D022" }}>
+                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>{p.typepsc || "Prescription"}</span>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: "#14532D", maxWidth: "55%", textAlign: "right" as const }}>{p.libelle}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
 
