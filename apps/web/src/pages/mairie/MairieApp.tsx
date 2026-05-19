@@ -226,30 +226,29 @@ function Sidebar({ active, setActive, commune, setCommune }: { active: string; s
   );
 }
 
-function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void }) {
+function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void }) {
   const [showNotifs, setShowNotifs] = useState(false);
   const [showFAQ, setShowFAQ] = useState(false);
   const [faqQuery, setFaqQuery] = useState("");
   const [faqAnswer, setFaqAnswer] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
+  const [searchResults, setSearchResults] = useState<ApiDossier[]>([]);
   const notifs = [
     { icon: "📁", text: "Nouveau dossier PC-2024-0801 déposé", sub: "Il y a 12 min", color: "#4F46E5" },
     { icon: "💬", text: "Nouveau message de Jean Dupont", sub: "Il y a 1h", color: "#4F46E5" },
     { icon: "⏰", text: "Délai dépassé — DP-2024-0111", sub: "Hier", color: "#EF4444" },
   ];
-  const allDossiers = [
-    { id: "PC-2024-0123", addr: "12 rue des Lilas", pet: "Jean Dupont" },
-    { id: "DP-2024-0456", addr: "8 chemin de la Colline", pet: "Sophie Martin" },
-    { id: "PC-2024-0789", addr: "45 avenue de la Mer", pet: "SCI Les Oliviers" },
-    { id: "DP-2024-0089", addr: "3 impasse des Pins", pet: "Pierre Durand" },
-    { id: "PC-2023-0567", addr: "7 rue du Stade", pet: "Marie Bernard" },
-    { id: "DP-2024-0111", addr: "15 route des Plages", pet: "Lucas Morel" },
-  ];
-  const q = searchQuery.toLowerCase();
-  const searchResults = searchQuery.length > 1
-    ? allDossiers.filter(r => r.id.toLowerCase().includes(q) || r.addr.toLowerCase().includes(q) || r.pet.toLowerCase().includes(q))
-    : [];
+
+  useEffect(() => {
+    if (searchQuery.length <= 1) { setSearchResults([]); return; }
+    const timer = setTimeout(() => {
+      api.get<ApiDossier[]>(`/mairie/dossiers?search=${encodeURIComponent(searchQuery)}`)
+        .then(data => setSearchResults(data.slice(0, 8)))
+        .catch(() => setSearchResults([]));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const closeAll = () => { setShowNotifs(false); setShowFAQ(false); };
 
@@ -273,9 +272,9 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate }: { t
           {searchFocused && searchQuery.length > 1 && (
             <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "white", borderRadius: 10, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 200, overflow: "hidden" }}>
               {searchResults.length > 0 ? searchResults.map(r => (
-                <button key={r.id} onMouseDown={() => { navigate?.("Dossiers"); setSearchQuery(""); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", minWidth: 110 }}>{r.id}</span>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>{r.addr} — {r.pet}</span>
+                <button key={r.id} onMouseDown={() => { onDossierClick?.({ id: r.id, numero: r.numero, type: r.type, petitionnaire: r.demandeur, adresse: r.adresse ?? "—", status: r.status, echeance: r.date_limite_instruction ? new Date(r.date_limite_instruction).toLocaleDateString("fr-FR") : "—", date_depot: r.date_depot ?? undefined }); setSearchQuery(""); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", minWidth: 110 }}>{r.numero}</span>
+                  <span style={{ fontSize: 12, color: "#64748b" }}>{r.adresse ?? "—"} — {r.demandeur}</span>
                 </button>
               )) : (
                 <div style={{ padding: "12px 14px", fontSize: 13, color: "#94a3b8" }}>Aucun résultat pour « {searchQuery} »</div>
@@ -436,8 +435,9 @@ const FALLBACK: MapDossier[] = [
   { id: "9", numero: "DP-BM-2024-019", type: "declaration_prealable", status: "pre_instruction", adresse: "45 Rue de la Liberté", lat: 47.3548, lng: 0.5518 },
 ];
 
-function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void; commune: string }) {
+function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void; commune: string; onDossierClick: (d: DossierInfo) => void }) {
   const [mapFilter, setMapFilter] = useState<string>("Tous");
+  const [mapTypeFilter, setMapTypeFilter] = useState("Tous les types");
   const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
   const [statsByStatus, setStatsByStatus] = useState<Record<string, number>>({});
 
@@ -533,7 +533,7 @@ function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s
                 borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: mapFilter === f ? 600 : 400, cursor: "pointer",
               }}>{f}</button>
             ))}
-            <select style={{ border: "1px solid #E2E8F0", borderRadius: 8, padding: "6px 10px", fontSize: 12, color: "#374151", background: "white", cursor: "pointer", outline: "none" }}>
+            <select value={mapTypeFilter} onChange={e => setMapTypeFilter(e.target.value)} style={{ border: "1px solid #E2E8F0", borderRadius: 8, padding: "6px 10px", fontSize: 12, color: "#374151", background: "white", cursor: "pointer", outline: "none" }}>
               <option>Tous les types</option>
               <option>Permis de construire</option>
               <option>Déclaration préalable</option>
@@ -554,8 +554,9 @@ function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s
             dossiers={mapDossiers}
             height={mapExpanded ? 520 : 300}
             filterStatus={mapFilter}
+            filterType={mapTypeFilter}
             commune={commune}
-            onMarkerClick={() => navigate("Dossiers")}
+            onMarkerClick={(d) => onDossierClick({ id: d.id, numero: d.numero, type: d.type, petitionnaire: "—", adresse: d.adresse, status: d.status, echeance: "—" })}
           />
         </div>
       </div>
@@ -2269,7 +2270,7 @@ export function MairieApp() {
   };
 
   const screenMap = {
-    "Tableau de bord": <DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} />,
+    "Tableau de bord": <DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} onDossierClick={handleDossierClick} />,
     "Dossiers": <DossiersScreen key={dossiersFilter} onDossierClick={handleDossierClick} navigate={setActive} initialFilter={dossiersFilter} />,
     "Messagerie": <MessageScreen onDossierClick={handleDossierClick} />,
     "Paramètres": <ParametresScreen />,
@@ -2284,7 +2285,7 @@ export function MairieApp() {
       <Sidebar active={active} setActive={(s) => { setActive(s); setSelectedDossier(null); }} commune={commune} setCommune={setCommune} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar onNewDossier={() => setShowNouveauDossier(true)} navigate={setActive} />
+          <Topbar onNewDossier={() => setShowNouveauDossier(true)} navigate={setActive} onDossierClick={handleDossierClick} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           {selectedDossier ? (

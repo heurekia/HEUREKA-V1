@@ -53,12 +53,14 @@ export function MapLeaflet({
   dossiers,
   height = 300,
   filterStatus,
+  filterType,
   commune,
   onMarkerClick,
 }: {
   dossiers: MapDossier[];
   height?: number;
   filterStatus?: string;
+  filterType?: string;
   commune?: string;
   onMarkerClick?: (d: MapDossier) => void;
 }) {
@@ -135,12 +137,14 @@ export function MapLeaflet({
     markersRef.current.forEach(m => m.remove());
     markersRef.current = [];
 
-    const visible = filterStatus && filterStatus !== "Tous"
-      ? dossiers.filter(d => {
-          const apiStatus = Object.entries(STATUS_LABELS).find(([, v]) => v === filterStatus)?.[0];
-          return apiStatus ? d.status === apiStatus : true;
-        })
-      : dossiers;
+    const visible = dossiers.filter(d => {
+      const statusOk = !filterStatus || filterStatus === "Tous" || (() => {
+        const apiStatus = Object.entries(STATUS_LABELS).find(([, v]) => v === filterStatus)?.[0];
+        return apiStatus ? d.status === apiStatus : true;
+      })();
+      const typeOk = !filterType || filterType === "Tous les types" || TYPE_LABELS[d.type] === filterType;
+      return statusOk && typeOk;
+    });
 
     visible.forEach(d => {
       const color = STATUS_COLORS[d.status] ?? "#6366F1";
@@ -177,7 +181,7 @@ export function MapLeaflet({
       const bounds = L.latLngBounds(visible.map(d => [d.lat, d.lng] as [number, number]));
       map.fitBounds(bounds, { padding: [40, 40], maxZoom: 15 });
     }
-  }, [dossiers, filterStatus, onMarkerClick]);
+  }, [dossiers, filterStatus, filterType, onMarkerClick]);
 
   // Resize map when height changes (expand/collapse)
   useEffect(() => {
