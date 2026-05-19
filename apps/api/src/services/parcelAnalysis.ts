@@ -442,9 +442,17 @@ export async function analyseParcel(query: string, options?: { citycode?: string
       result.warnings.push("Parcelle cadastrale non trouvée via API IGN.");
     }
   } else {
-    // Free-text address — constrain BAN to the commune INSEE when known to avoid
-    // false matches on homonymous street names in other communes.
-    const addr = await geocodeAddress(query, options?.citycode);
+    // Free-text address — try with citycode first (avoids homonymous street false matches),
+    // then retry without if the constrained search returns nothing.
+    let addr = await geocodeAddress(query, options?.citycode);
+    if (!addr && options?.citycode) {
+      // Retry without citycode: some valid addresses have a low BAN score under citycode constraint
+      const fallback = await geocodeAddress(query);
+      if (fallback && fallback.citycode === options.citycode) {
+        addr = fallback;  // Only accept if still in the expected commune
+      }
+    }
+
     if (addr) {
       result.address = addr;
       result.data_sources.push("BAN (api-adresse)");
@@ -456,7 +464,6 @@ export async function analyseParcel(query: string, options?: { citycode?: string
       const parcel = await findParcelByLatLng(lat, lng, code_insee);
       if (parcel) {
         if (parcel.code_insee !== addr.citycode) {
-          // IGN Cadastre sometimes returns a parcel from a neighboring commune
           result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${addr.city} (${addr.citycode}). Données cadastrales non retenues.`);
         } else {
           result.parcel = parcel;
@@ -467,8 +474,9 @@ export async function analyseParcel(query: string, options?: { citycode?: string
         result.warnings.push("Parcelle cadastrale non identifiée à cette adresse.");
       }
     } else {
-      result.warnings.push("Adresse non reconnue. Vérifiez l'orthographe ou utilisez la référence cadastrale.");
-      return result;
+      // BAN couldn't geocode the address — don't abort, continue to step 5b so the
+      // instructeur sees the zone picker and can select the zone manually.
+      result.warnings.push("Adresse non reconnue par la BAN. Corrigez l'adresse via le crayon ou sélectionnez la zone manuellement.");
     }
   }
 

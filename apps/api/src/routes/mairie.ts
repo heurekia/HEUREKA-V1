@@ -381,7 +381,12 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
       query = qOverride;
     } else if (dossier.adresse) {
       // Standard flow: address → geocode → parcel → analysis
-      query = `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`;
+      // Don't append commune if it's already present in the address string (avoids BAN confusion)
+      const communeAlreadyInAddr = dossier.commune &&
+        dossier.adresse.toLowerCase().includes(dossier.commune.toLowerCase());
+      query = communeAlreadyInAddr
+        ? dossier.adresse
+        : `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`;
     } else if (dossier.parcelle) {
       // No address at all — try to use the cadastral reference as a fallback
       const raw = dossier.parcelle.trim().replace(/\s+/g, "");
