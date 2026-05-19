@@ -46,25 +46,37 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
   try {
     const search = req.query.search as string | undefined;
     const status = req.query.status as string | undefined;
-    let query = db.select().from(dossiers).orderBy(desc(dossiers.created_at));
-    let result;
+
+    const sel = {
+      id: dossiers.id, numero: dossiers.numero, type: dossiers.type, status: dossiers.status,
+      adresse: dossiers.adresse, commune: dossiers.commune, code_postal: dossiers.code_postal,
+      description: dossiers.description, date_depot: dossiers.date_depot,
+      date_limite_instruction: dossiers.date_limite_instruction, created_at: dossiers.created_at,
+      demandeur_prenom: users.prenom, demandeur_nom: users.nom,
+    };
+
+    let rows;
     if (search) {
       const pattern = `%${search}%`;
-      result = await db
-        .select()
-        .from(dossiers)
-        .where(sql`(numero ILIKE ${pattern} OR adresse ILIKE ${pattern} OR parcelle ILIKE ${pattern} OR commune ILIKE ${pattern})`)
+      rows = await db.select(sel).from(dossiers)
+        .leftJoin(users, eq(dossiers.user_id, users.id))
+        .where(sql`(dossiers.numero ILIKE ${pattern} OR dossiers.adresse ILIKE ${pattern} OR dossiers.commune ILIKE ${pattern})`)
         .orderBy(desc(dossiers.created_at));
     } else if (status) {
-      result = await db
-        .select()
-        .from(dossiers)
+      rows = await db.select(sel).from(dossiers)
+        .leftJoin(users, eq(dossiers.user_id, users.id))
         .where(eq(dossiers.status, status as any))
         .orderBy(desc(dossiers.created_at));
     } else {
-      result = await query;
+      rows = await db.select(sel).from(dossiers)
+        .leftJoin(users, eq(dossiers.user_id, users.id))
+        .orderBy(desc(dossiers.created_at));
     }
-    res.json(result);
+
+    res.json(rows.map(r => ({
+      ...r,
+      demandeur: [r.demandeur_prenom, r.demandeur_nom].filter(Boolean).join(" ") || "—",
+    })));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
