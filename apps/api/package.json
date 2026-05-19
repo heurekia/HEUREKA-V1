@@ -7,9 +7,11 @@
     "build": "tsc",
     "start": "tsx src/index.ts",
     "seed": "tsx src/scripts/seed.ts",
+    "ingest-plu": "tsx src/scripts/ingest-plu.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.97.0",
     "@heureka-v1/db": "workspace:*",
     "@heureka-v1/shared": "workspace:*",
     "bcryptjs": "^2.4.3",
@@ -25,6 +27,7 @@
     "@types/bcryptjs": "^2.4.6",
     "@types/cors": "^2.8.17",
     "@types/express": "^5.0.3",
+    "@types/geojson": "^7946.0.16",
     "@types/jsonwebtoken": "^9.0.9",
     "@types/node": "^22.15.3",
     "typescript": "~5.9.2"

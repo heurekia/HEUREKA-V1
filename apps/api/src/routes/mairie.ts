@@ -3,6 +3,7 @@ import { db } from "../db.js";
 import { dossiers, users, notifications, dossier_messages } from "@heureka-v1/db";
 import { eq, desc, and, sql, like } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
+import { analyseParcel } from "../services/parcelAnalysis.js";
 
 export const mairieRouter = Router();
 
@@ -337,6 +338,32 @@ mairieRouter.get("/conversations/:dossierId", async (req: AuthRequest, res) => {
       .where(eq(dossier_messages.dossier_id, req.params.dossierId as string))
       .orderBy(dossier_messages.created_at);
     res.json(msgs);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Analyse parcellaire pour un dossier (onglet Parcelle) ──
+mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res) => {
+  try {
+    const [dossier] = await db
+      .select({ parcelle: dossiers.parcelle, adresse: dossiers.adresse, commune: dossiers.commune })
+      .from(dossiers)
+      .where(eq(dossiers.id, req.params.id as string))
+      .limit(1);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    const query = dossier.parcelle
+      ? dossier.parcelle
+      : dossier.adresse
+        ? `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`
+        : null;
+
+    if (!query) return res.status(422).json({ error: "Aucune adresse ni référence parcellaire sur ce dossier." });
+
+    const analysis = await analyseParcel(query);
+    res.json(analysis);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
