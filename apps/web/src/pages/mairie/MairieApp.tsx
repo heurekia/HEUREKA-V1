@@ -405,15 +405,15 @@ function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s
 
   useEffect(() => {
     const FALLBACK: MapDossier[] = [
-      { id: "1", numero: "PC-BM-2024-001", type: "permis_de_construire", status: "en_instruction", adresse: "3 Place du 8 Mai 1945", lat: 47.3543, lng: 0.5503 },
-      { id: "2", numero: "DP-BM-2024-015", type: "declaration_prealable", status: "soumis", adresse: "12 Avenue de Tours", lat: 47.3562, lng: 0.5490 },
-      { id: "3", numero: "PC-BM-2024-022", type: "permis_de_construire", status: "en_instruction", adresse: "5 Rue des Petits Prés", lat: 47.3518, lng: 0.5537 },
-      { id: "4", numero: "DP-BM-2024-008", type: "declaration_prealable", status: "incomplet", adresse: "8 Chemin de la Halbardière", lat: 47.3488, lng: 0.5562 },
-      { id: "5", numero: "PC-BM-2023-044", type: "permis_de_construire", status: "accepte", adresse: "14 Rue du Moulin de la Planche", lat: 47.3558, lng: 0.5448 },
-      { id: "6", numero: "DP-BM-2024-033", type: "declaration_prealable", status: "decision_en_cours", adresse: "2 Impasse des Lilas", lat: 47.3525, lng: 0.5448 },
-      { id: "7", numero: "CU-BM-2024-007", type: "certificat_urbanisme", status: "soumis", adresse: "28 Route de Savonnières", lat: 47.3475, lng: 0.5415 },
-      { id: "8", numero: "PC-BM-2024-041", type: "permis_de_construire", status: "refuse", adresse: "11 Rue du Val de l'Indre", lat: 47.3510, lng: 0.5592 },
-      { id: "9", numero: "DP-BM-2024-019", type: "declaration_prealable", status: "pre_instruction", adresse: "45 Rue de la Liberté", lat: 47.3548, lng: 0.5518 },
+      { id: "1", numero: "PC-BM-2024-001", type: "permis_de_construire", status: "en_instruction", adresse: "12 Place du 11-Novembre, Ballan-Miré", lat: 47.3551, lng: 0.5497 },
+      { id: "2", numero: "DP-BM-2024-015", type: "declaration_prealable", status: "soumis", adresse: "9 Avenue Jean Mermoz, Ballan-Miré", lat: 47.3538, lng: 0.5512 },
+      { id: "3", numero: "PC-BM-2024-022", type: "permis_de_construire", status: "en_instruction", adresse: "2 Avenue de l'Orée-des-Bois, Ballan-Miré", lat: 47.3524, lng: 0.5531 },
+      { id: "4", numero: "DP-BM-2024-008", type: "declaration_prealable", status: "incomplet", adresse: "9 Rue Jean Mermoz, Ballan-Miré", lat: 47.3540, lng: 0.5508 },
+      { id: "5", numero: "PC-BM-2023-044", type: "permis_de_construire", status: "accepte", adresse: "Avenue Jean Mermoz, Ballan-Miré", lat: 47.3535, lng: 0.5520 },
+      { id: "6", numero: "DP-BM-2024-033", type: "declaration_prealable", status: "decision_en_cours", adresse: "Place du 11-Novembre, Ballan-Miré", lat: 47.3553, lng: 0.5495 },
+      { id: "7", numero: "CU-BM-2024-007", type: "certificat_urbanisme", status: "soumis", adresse: "Rue de la Houssaye, Ballan-Miré", lat: 47.3562, lng: 0.5475 },
+      { id: "8", numero: "PC-BM-2024-041", type: "permis_de_construire", status: "refuse", adresse: "Rue du Commerce, Ballan-Miré", lat: 47.3546, lng: 0.5503 },
+      { id: "9", numero: "DP-BM-2024-019", type: "declaration_prealable", status: "pre_instruction", adresse: "Rue du Val de l'Indre, Ballan-Miré", lat: 47.3510, lng: 0.5560 },
     ];
     api.get<MapDossier[]>("/mairie/map-dossiers?commune=Ballan-Mir%C3%A9")
       .then(data => setMapDossiers(data.length > 0 ? data : FALLBACK))
