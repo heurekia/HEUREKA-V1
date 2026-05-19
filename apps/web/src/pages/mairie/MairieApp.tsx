@@ -140,7 +140,9 @@ function UserIcon({ size = 18, className = "" }) {
   );
 }
 
-function Sidebar({ active, setActive }: { active: string; setActive: (s: string) => void }) {
+function Sidebar({ active, setActive, commune, setCommune }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void }) {
+  const [showDrop, setShowDrop] = useState(false);
+  const communes = ["Ballan-Miré", "Saint-Avertin", "Joué-lès-Tours", "La Riche"];
   return (
     <aside style={{
       width: 200, minWidth: 200, background: "#0f1629",
@@ -161,13 +163,25 @@ function Sidebar({ active, setActive }: { active: string; setActive: (s: string)
           <span style={{ color: "white", fontWeight: 800, fontSize: 15, letterSpacing: "0.04em" }}>HEUREKA</span>
         </div>
         {/* Commune selector */}
-        <div style={{ background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
-          <BuildingIcon size={14} />
-          <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1 }}>Commune de</div>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", lineHeight: 1.4 }}>Saint-Martin</div>
+        <div style={{ position: "relative" }}>
+          <div onClick={() => setShowDrop(!showDrop)} style={{ background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
+            <BuildingIcon size={14} />
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1 }}>Commune de</div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", lineHeight: 1.4 }}>{commune}</div>
+            </div>
+            <ChevronDownIcon size={12} />
           </div>
-          <ChevronDownIcon size={12} />
+          {showDrop && (
+            <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "#1a2540", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 8px 24px rgba(0,0,0,0.3)", zIndex: 200, overflow: "hidden" }}>
+              {communes.map(c => (
+                <button key={c} onClick={() => { setCommune(c); setShowDrop(false); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" as const, fontSize: 12, color: c === commune ? "#818cf8" : "#94a3b8", fontWeight: c === commune ? 600 : 400 }}>
+                  <BuildingIcon size={12} />{c}
+                  {c === commune && <span style={{ marginLeft: "auto", color: "#818cf8" }}>✓</span>}
+                </button>
+              ))}
+            </div>
+          )}
         </div>
       </div>
 
@@ -211,16 +225,13 @@ function Sidebar({ active, setActive }: { active: string; setActive: (s: string)
   );
 }
 
-function Topbar({ buttonLabel = "Nouveau dossier", commune = "Ballan-Miré", onNewDossier, navigate }: { title?: string; buttonLabel?: string; commune?: string; onNewDossier?: () => void; navigate?: (s: string) => void }) {
+function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void }) {
   const [showNotifs, setShowNotifs] = useState(false);
   const [showFAQ, setShowFAQ] = useState(false);
-  const [showCommune, setShowCommune] = useState(false);
   const [faqQuery, setFaqQuery] = useState("");
   const [faqAnswer, setFaqAnswer] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
-
-  const communes = ["Ballan-Miré", "Saint-Avertin", "Joué-lès-Tours", "La Riche"];
   const notifs = [
     { icon: "📁", text: "Nouveau dossier PC-2024-0801 déposé", sub: "Il y a 12 min", color: "#4F46E5" },
     { icon: "💬", text: "Nouveau message de Jean Dupont", sub: "Il y a 1h", color: "#4F46E5" },
@@ -239,7 +250,7 @@ function Topbar({ buttonLabel = "Nouveau dossier", commune = "Ballan-Miré", onN
     ? allDossiers.filter(r => r.id.toLowerCase().includes(q) || r.addr.toLowerCase().includes(q) || r.pet.toLowerCase().includes(q))
     : [];
 
-  const closeAll = () => { setShowNotifs(false); setShowFAQ(false); setShowCommune(false); };
+  const closeAll = () => { setShowNotifs(false); setShowFAQ(false); };
 
   return (
     <div style={{ position: "sticky", top: 0, zIndex: 40 }}>
@@ -276,7 +287,7 @@ function Topbar({ buttonLabel = "Nouveau dossier", commune = "Ballan-Miré", onN
 
         {/* Bell */}
         <div style={{ position: "relative" }}>
-          <button onClick={() => { setShowNotifs(!showNotifs); setShowFAQ(false); setShowCommune(false); }} style={{ border: "none", background: showNotifs ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
+          <button onClick={() => { setShowNotifs(!showNotifs); setShowFAQ(false); }} style={{ border: "none", background: showNotifs ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
             <BellIcon size={20} />
           </button>
           <span style={{ position: "absolute", top: 2, right: 2, width: 16, height: 16, background: "#EF4444", borderRadius: "50%", fontSize: 9, fontWeight: 700, color: "white", display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>3</span>
@@ -304,7 +315,7 @@ function Topbar({ buttonLabel = "Nouveau dossier", commune = "Ballan-Miré", onN
 
         {/* FAQ / Help */}
         <div style={{ position: "relative" }}>
-          <button onClick={() => { setShowFAQ(!showFAQ); setShowNotifs(false); setShowCommune(false); }} style={{ border: "none", background: showFAQ ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
+          <button onClick={() => { setShowFAQ(!showFAQ); setShowNotifs(false); }} style={{ border: "none", background: showFAQ ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
             <HelpIcon size={20} />
           </button>
           {showFAQ && (
@@ -334,24 +345,6 @@ function Topbar({ buttonLabel = "Nouveau dossier", commune = "Ballan-Miré", onN
                   ))}
                 </div>
               </div>
-            </div>
-          )}
-        </div>
-
-        {/* Commune selector */}
-        <div style={{ position: "relative" }}>
-          <button onClick={() => { setShowCommune(!showCommune); setShowNotifs(false); setShowFAQ(false); }} style={{ display: "flex", alignItems: "center", gap: 6, border: "1px solid #E2E8F0", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 13, color: "#374151", fontWeight: 500, background: showCommune ? "#F8FAFC" : "white" }}>
-            <BuildingIcon size={14} /><span>{commune}</span><ChevronDownIcon size={12} />
-          </button>
-          {showCommune && (
-            <div style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, width: 220, background: "white", borderRadius: 10, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.14)", zIndex: 200 }}>
-              <div style={{ padding: "8px 14px", borderBottom: "1px solid #F1F5F9", fontSize: 11, color: "#94a3b8", fontWeight: 600, letterSpacing: "0.05em" }}>MES COMMUNES</div>
-              {communes.map(c => (
-                <button key={c} onClick={closeAll} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left", fontSize: 13, color: c === commune ? "#4F46E5" : "#374151", fontWeight: c === commune ? 600 : 400 }}>
-                  <BuildingIcon size={13} />{c}
-                  {c === commune && <span style={{ marginLeft: "auto", color: "#4F46E5", fontSize: 14 }}>✓</span>}
-                </button>
-              ))}
             </div>
           )}
         </div>
@@ -2332,6 +2325,7 @@ export function MairieApp() {
   const [selectedDossier, setSelectedDossier] = useState<DossierInfo | null>(null);
   const [showNouveauDossier, setShowNouveauDossier] = useState(false);
   const [dossiersFilter, setDossiersFilter] = useState("Tous");
+  const [commune, setCommune] = useState("Ballan-Miré");
 
   const handleDossierClick = (dossier: DossierInfo) => {
     setSelectedDossier(dossier);
@@ -2358,24 +2352,12 @@ export function MairieApp() {
     "Infos Perso": <InfosPersoScreen />,
   };
 
-  const topbarConfig: Record<string, { buttonLabel?: string; commune?: string }> = {
-    "Messagerie": { commune: "Saint-Martin" },
-    "Carte": { commune: "Saint-Martin" },
-    "Calendrier": { commune: "Saint-Martin" },
-    "Paramètres": { commune: "Ballan-Miré" },
-    "Dossiers": { commune: "Saint-Martin" },
-    "Statistiques": { commune: "Ballan-Miré" },
-    "Infos Perso": { commune: "Ballan-Miré" },
-  };
-
-  const cfg = topbarConfig[active] || {};
-
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex" }}>
-      <Sidebar active={active} setActive={(s) => { setActive(s); setSelectedDossier(null); }} />
+      <Sidebar active={active} setActive={(s) => { setActive(s); setSelectedDossier(null); }} commune={commune} setCommune={setCommune} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar title={active} buttonLabel={cfg.buttonLabel} commune={cfg.commune || "Ballan-Miré"} onNewDossier={() => setShowNouveauDossier(true)} navigate={setActive} />
+          <Topbar onNewDossier={() => setShowNouveauDossier(true)} navigate={setActive} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           {selectedDossier ? (
