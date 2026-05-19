@@ -30,6 +30,7 @@ export interface AddressResult {
   postcode: string;
   city: string;
   score: number;
+  type: string;  // "housenumber" | "street" | "locality" | "municipality"
 }
 
 export interface ParcelResult {
@@ -123,7 +124,7 @@ export async function geocodeAddress(address: string, citycode?: string): Promis
         geometry: { coordinates: [number, number] };
         properties: {
           label: string; score: number; citycode: string;
-          postcode: string; city: string;
+          postcode: string; city: string; type: string;
         };
       }>;
     };
@@ -137,6 +138,7 @@ export async function geocodeAddress(address: string, citycode?: string): Promis
       postcode: f.properties.postcode,
       city: f.properties.city,
       score: f.properties.score,
+      type: f.properties.type ?? "housenumber",
     };
   } catch {
     return null;
@@ -213,16 +215,39 @@ export async function findParcelByRef(parcelle_id: string): Promise<ParcelResult
   }
 }
 
+// ── GPU document partition lookup ─────────────────────────────────────────────
+// Resolves the real GPU partition (e.g. DU_37018 for PLU, DU_<SIREN> for PLUi)
+// from coordinates. This is more robust than constructing DU_<INSEE> ourselves
+// because intercommunal PLU (PLUi) use a SIREN-based partition.
+
+export async function getGpuPartition(lat: number, lng: number): Promise<string | null> {
+  try {
+    const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
+    const url = `https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(geom)}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const data = await r.json() as {
+      features?: Array<{ properties: { partition?: string; etat?: string } }>;
+    };
+    // Return the partition of the first approved document, preferring "approuve" state
+    const features = data.features ?? [];
+    const approved = features.find(f => f.properties.etat === "approuve") ?? features[0];
+    return approved?.properties.partition ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // ── GPU PLU Zone lookup ───────────────────────────────────────────────────────
 
-export async function findPluZone(lat: number, lng: number, codeInsee?: string): Promise<PluZoneResult | null> {
+export async function findPluZone(lat: number, lng: number, partition?: string): Promise<PluZoneResult | null> {
   try {
-    // Use geom (GeoJSON Point) + partition=DU_<codeINSEE> to constrain the query to the
-    // correct commune's PLU — without partition, APICarto GPU can return zones from
-    // neighboring communes, especially near municipal boundaries.
+    // Use geom (GeoJSON Point) + partition to constrain to the correct PLU document.
+    // partition comes from getGpuPartition() which handles both PLU (DU_<INSEE>)
+    // and PLUi (DU_<SIREN>).
     const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
     const params = new URLSearchParams({ geom });
-    if (codeInsee) params.set("partition", `DU_${codeInsee}`);
+    if (partition) params.set("partition", partition);
     const url = `https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`;
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!r.ok) return null;
@@ -460,18 +485,29 @@ export async function analyseParcel(query: string, options?: { citycode?: string
       lng = addr.lng;
       code_insee = addr.citycode;
 
-      // Step 2: Find parcel at those coordinates — constrain to commune to avoid wrong results
-      const parcel = await findParcelByLatLng(lat, lng, code_insee);
-      if (parcel) {
-        if (parcel.code_insee !== addr.citycode) {
-          result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${addr.city} (${addr.citycode}). Données cadastrales non retenues.`);
+      // Step 2: Find parcel — only possible for housenumber geocodes.
+      // Street-level geocodes land on the road center, which has no cadastral parcel.
+      if (addr.type === "housenumber" || addr.type === "interpolation") {
+        const parcel = await findParcelByLatLng(lat, lng, code_insee);
+        if (parcel) {
+          if (parcel.code_insee !== addr.citycode) {
+            result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${addr.city} (${addr.citycode}). Données cadastrales non retenues.`);
+          } else {
+            result.parcel = parcel;
+            result.data_sources.push("IGN Cadastre");
+            code_insee = parcel.code_insee;
+          }
         } else {
-          result.parcel = parcel;
-          result.data_sources.push("IGN Cadastre");
-          code_insee = parcel.code_insee;
+          result.warnings.push("Parcelle cadastrale non identifiée à cette adresse.");
         }
       } else {
-        result.warnings.push("Parcelle cadastrale non identifiée à cette adresse.");
+        // Street/locality geocode: coordinates are on the road, not inside a parcel.
+        // GPU zone and risk lookups still work; the instructeur must provide the parcel ref
+        // or select the zone manually.
+        result.warnings.push(
+          `Adresse géocodée au niveau voirie (type : ${addr.type}). La parcelle exacte ne peut être déterminée automatiquement. ` +
+          `Saisissez la référence cadastrale ou sélectionnez la zone PLU ci-dessous.`
+        );
       }
     } else {
       // BAN couldn't geocode the address — don't abort, continue to step 5b so the
@@ -480,9 +516,13 @@ export async function analyseParcel(query: string, options?: { citycode?: string
     }
   }
 
-  // Step 3: GPU PLU zone — pass code_insee so the partition constraint targets the correct commune
+  // Step 3: GPU — resolve the real document partition first, then query zone + supplementary data
+  // getGpuPartition handles both PLU (DU_<INSEE>) and PLUi (DU_<SIREN>) transparently.
   if (lat !== undefined && lng !== undefined) {
-    const zone = await findPluZone(lat, lng, code_insee);
+    const gpuPartition = await getGpuPartition(lat, lng)
+      ?? (code_insee ? `DU_${code_insee}` : undefined); // fallback to constructed partition
+
+    const zone = await findPluZone(lat, lng, gpuPartition ?? undefined);
     if (zone) {
       const pluInsee = zone.plu_nom?.match(/^(\d{5})/)?.[1];
       if (pluInsee && code_insee && pluInsee !== code_insee) {
@@ -494,15 +534,13 @@ export async function analyseParcel(query: string, options?: { citycode?: string
     } else {
       result.warnings.push("Zone PLU non disponible sur le Géoportail de l'Urbanisme pour cette localisation.");
     }
-  }
 
-  // Step 3b: GPU supplementary data (municipality RNU, prescriptions, SUP) — run in parallel
-  if (lat !== undefined && lng !== undefined) {
-    const partition = code_insee ? `DU_${code_insee}` : undefined;
+    // Step 3b: GPU supplementary data (municipality RNU, prescriptions, SUP) — run in parallel
+    // Reuse gpuPartition for consistent document scope
     const [municipality, prescriptions, servitudes] = await Promise.all([
       getMunicipality(lat, lng),
-      getPrescriptionsSurf(lat, lng, partition),
-      getServitudesSurf(lat, lng, partition),
+      getPrescriptionsSurf(lat, lng, gpuPartition ?? undefined),
+      getServitudesSurf(lat, lng, gpuPartition ?? undefined),
     ]);
 
     if (municipality) {
