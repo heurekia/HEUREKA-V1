@@ -1194,89 +1194,153 @@ function ParametresScreen() {
 }
 
 function CarteScreen() {
-  const zones = ["Toutes les zones", "UA - Centre ancien", "UB - Zone urbaine mixte", "1AU - À urbaniser (court terme)", "2AU - À urbaniser (long terme)", "UE - Équipements publics", "A - Agricole", "N - Naturelle"];
+  const navigate = useNavigate();
+  const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
+  const [filterStatus, setFilterStatus] = useState("Tous");
+  const [filterType, setFilterType] = useState("Tous les types");
+  const [pluZones, setPluZones] = useState(true);
+
+  useEffect(() => {
+    const FALLBACK: MapDossier[] = [
+      { id: "1", numero: "PC-BM-2024-001", type: "permis_de_construire", status: "en_instruction", adresse: "12 Place du 11-Novembre, Ballan-Miré", lat: 47.3551, lng: 0.5497 },
+      { id: "2", numero: "DP-BM-2024-015", type: "declaration_prealable", status: "soumis", adresse: "9 Avenue Jean Mermoz, Ballan-Miré", lat: 47.3538, lng: 0.5512 },
+      { id: "3", numero: "PC-BM-2024-022", type: "permis_de_construire", status: "en_instruction", adresse: "2 Avenue de l'Orée-des-Bois, Ballan-Miré", lat: 47.3524, lng: 0.5531 },
+      { id: "4", numero: "DP-BM-2024-008", type: "declaration_prealable", status: "incomplet", adresse: "9 Rue Jean Mermoz, Ballan-Miré", lat: 47.3540, lng: 0.5508 },
+      { id: "5", numero: "PC-BM-2023-044", type: "permis_de_construire", status: "accepte", adresse: "Avenue Jean Mermoz, Ballan-Miré", lat: 47.3535, lng: 0.5520 },
+      { id: "6", numero: "DP-BM-2024-033", type: "declaration_prealable", status: "decision_en_cours", adresse: "Place du 11-Novembre, Ballan-Miré", lat: 47.3553, lng: 0.5495 },
+      { id: "7", numero: "CU-BM-2024-007", type: "certificat_urbanisme", status: "soumis", adresse: "Rue de la Houssaye, Ballan-Miré", lat: 47.3562, lng: 0.5475 },
+      { id: "8", numero: "PC-BM-2024-041", type: "permis_de_construire", status: "refuse", adresse: "Rue du Commerce, Ballan-Miré", lat: 47.3546, lng: 0.5503 },
+      { id: "9", numero: "DP-BM-2024-019", type: "declaration_prealable", status: "pre_instruction", adresse: "Rue du Val de l'Indre, Ballan-Miré", lat: 47.3510, lng: 0.5560 },
+    ];
+    api.get<MapDossier[]>("/mairie/map-dossiers?commune=Ballan-Mir%C3%A9")
+      .then(data => setMapDossiers(data.length > 0 ? data : FALLBACK))
+      .catch(() => setMapDossiers(FALLBACK));
+  }, []);
+
+  const TYPE_OPTIONS = ["Tous les types", "Permis de construire", "Déclaration préalable", "Permis d'aménager", "Permis de démolir", "Certificat d'urbanisme"];
+  const STATUS_OPTIONS = ["Tous", "Nouveau", "Pré-instruction", "Incomplet", "En instruction", "Décision en cours", "Accepté", "Refusé", "Accord avec prescriptions", "Brouillon"];
+
+  const CARTE_STATUS_COLORS: Record<string, string> = {
+    soumis: "#4F46E5", pre_instruction: "#F97316", incomplet: "#EF4444",
+    en_instruction: "#22C55E", decision_en_cours: "#8B5CF6",
+    accepte: "#10B981", refuse: "#EF4444", accord_prescription: "#10B981", brouillon: "#94A3B8",
+  };
+  const CARTE_STATUS_LABELS: Record<string, string> = {
+    brouillon: "Brouillon", soumis: "Nouveau", pre_instruction: "Pré-instruction",
+    incomplet: "Incomplet", en_instruction: "En instruction",
+    decision_en_cours: "Décision en cours", accepte: "Accepté",
+    refuse: "Refusé", accord_prescription: "Accord avec prescriptions",
+  };
+
+  const counts = Object.fromEntries(
+    Object.keys(CARTE_STATUS_LABELS).map(k => [k, mapDossiers.filter(d => d.status === k).length])
+  );
+
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Carte</h1>
-        <p style={{ color: "#64748b", fontSize: 13 }}>Visualisez la répartition des dossiers sur le territoire et filtrez par zone du PLU.</p>
-      </div>
-      <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-        {[{ icon: "🗂", n: 128, label: "Dossiers au total" }, { icon: "🆕", n: 28, label: "Nouveaux dossiers" }, { icon: "🏗", n: 68, label: "En instruction" }, { icon: "💬", n: 24, label: "Consultations" }, { icon: "⏰", n: 8, label: "En retard" }].map(s => (
-          <div key={s.label} style={{ background: "white", borderRadius: 10, border: "1px solid #E2E8F0", padding: "10px 14px", display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
-            <span style={{ fontSize: 16 }}>{s.icon}</span>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A" }}>{s.n}</div>
-              <div style={{ fontSize: 11, color: "#94a3b8" }}>{s.label}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 16 }}>
-        <div style={{ flex: 1, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
-          <div style={{ padding: "10px 14px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", gap: 8 }}>
-            <select style={{ border: "1px solid #E2E8F0", borderRadius: 8, padding: "5px 10px", fontSize: 12 }}><option>Vue par zone PLU</option></select>
-          </div>
-          <div style={{ position: "relative", height: 480, background: "linear-gradient(160deg, #d4edda 0%, #b8dfc8 40%, #a8d4c0 70%, #d4edda 100%)" }}>
-            <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} viewBox="0 0 600 480">
-              <polygon points="300,60 450,100 480,240 380,380 200,380 120,240 180,100" fill="rgba(99,102,241,0.15)" stroke="rgba(99,102,241,0.4)" strokeWidth="2" />
-              <polygon points="180,100 300,60 300,240 200,280 150,200" fill="rgba(34,197,94,0.15)" stroke="rgba(34,197,94,0.4)" strokeWidth="2" />
-              <polygon points="300,60 450,100 420,240 300,240" fill="rgba(249,115,22,0.15)" stroke="rgba(249,115,22,0.4)" strokeWidth="2" />
-              <polygon points="120,240 200,280 200,380 100,360" fill="rgba(236,72,153,0.15)" stroke="rgba(236,72,153,0.4)" strokeWidth="2" />
-              <polygon points="300,240 420,240 380,380 200,380 200,280" fill="rgba(234,179,8,0.15)" stroke="rgba(234,179,8,0.4)" strokeWidth="2" />
-              <text x="260" y="170" fontSize="13" fontWeight="700" fill="rgba(99,102,241,0.8)">UA</text>
-              <text x="180" y="150" fontSize="12" fontWeight="600" fill="rgba(34,197,94,0.8)">UB</text>
-              <text x="370" y="170" fontSize="12" fontWeight="600" fill="rgba(249,115,22,0.8)">1AU</text>
-              <text x="270" y="310" fontSize="12" fontWeight="600" fill="rgba(234,179,8,0.8)">2AU</text>
-              <text x="460" y="290" fontSize="12" fontWeight="600" fill="rgba(148,163,184,0.8)">UE</text>
-            </svg>
-            {[{ top: "25%", left: "35%", color: "#4F46E5", n: 7 }, { top: "38%", left: "52%", color: "#F97316", n: 3 }, { top: "45%", left: "65%", color: "#EF4444", n: 2 }, { top: "58%", left: "42%", color: "#22C55E", n: 4 }, { top: "65%", left: "32%", color: "#22C55E", n: 5 }, { top: "55%", left: "76%", color: "#22C55E", n: 6 }].map((m, i) => (
-              <div key={i} style={{ position: "absolute", top: m.top, left: m.left, width: 30, height: 30, borderRadius: "50%", background: m.color, color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 3px 8px rgba(0,0,0,0.25)", border: "2px solid white" }}>{m.n}</div>
-            ))}
-            <div style={{ position: "absolute", bottom: 12, left: 12, background: "white", borderRadius: 10, padding: "10px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.1)", fontSize: 11 }}>
-              {[["#4F46E5","Nouveau"],["#22C55E","Instruction"],["#F97316","Consultation"],["#EF4444","Retard"],["#8B5CF6","Pièce manquante"],["#94A3B8","Terminé"]].map(([c,l]) => (
-                <div key={l} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block", flexShrink: 0 }} />
-                  <span style={{ color: "#374151" }}>{l}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 56px)", overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{ padding: "10px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+        <div style={{ flex: 1 }}>
+          <h1 style={{ fontSize: 17, fontWeight: 700, color: "#0F172A", margin: 0 }}>Carte du territoire</h1>
+          <p style={{ color: "#64748b", fontSize: 12, margin: 0 }}>Ballan-Miré — zones PLU (Géoportail Urbanisme) et dossiers</p>
         </div>
-        <div style={{ width: 240 }}>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16, marginBottom: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Filtres</span>
-              <button style={{ fontSize: 12, color: "#4F46E5", background: "none", border: "none", cursor: "pointer" }}>Réinitialiser</button>
-            </div>
-            {[["Types de dossier","Tous"],["Statut","Tous"],["Services / Organismes","Tous"]].map(([l,v]) => (
-              <div key={l} style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>{l}</div>
-                <select style={{ width: "100%", padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12 }}><option>{v}</option></select>
-              </div>
-            ))}
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Zone PLU</div>
-              <select style={{ width: "100%", padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12 }}>
-                {zones.map(z => <option key={z}>{z}</option>)}
+        <button
+          onClick={() => setPluZones(v => !v)}
+          style={{
+            display: "flex", alignItems: "center", gap: 6,
+            padding: "6px 13px", borderRadius: 8, fontSize: 12, fontWeight: 600,
+            border: "1.5px solid", cursor: "pointer", transition: "all 0.15s",
+            borderColor: pluZones ? "#4F46E5" : "#E2E8F0",
+            background: pluZones ? "#EEF2FF" : "white",
+            color: pluZones ? "#4F46E5" : "#94a3b8",
+          }}
+        >
+          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
+          </svg>
+          {pluZones ? "Zones PLU activées" : "Zones PLU désactivées"}
+        </button>
+      </div>
+
+      {/* Map + sidebar */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* Map — fills remaining space */}
+        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          <MapLeaflet
+            dossiers={mapDossiers}
+            height="100%"
+            filterStatus={filterStatus}
+            filterType={filterType}
+            commune="Ballan-Miré"
+            ignBase={true}
+            pluZoneLayer={pluZones}
+            parcelLayer={true}
+            onMarkerClick={d => navigate(`/mairie/dossiers/${d.id}`)}
+          />
+        </div>
+
+        {/* Sidebar */}
+        <div style={{ width: 248, borderLeft: "1px solid #E2E8F0", background: "white", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" }}>
+          {/* Filters */}
+          <div style={{ padding: "14px 14px 12px", borderBottom: "1px solid #F1F5F9" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>Filtres</div>
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>Type de dossier</div>
+              <select
+                value={filterType}
+                onChange={e => setFilterType(e.target.value)}
+                style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 11, color: "#374151", background: "white" }}
+              >
+                {TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}
               </select>
             </div>
-            <button style={{ width: "100%", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Appliquer les filtres</button>
+            <div>
+              <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>Statut</div>
+              <select
+                value={filterStatus}
+                onChange={e => setFilterStatus(e.target.value)}
+                style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 11, color: "#374151", background: "white" }}
+              >
+                {STATUS_OPTIONS.map(o => <option key={o}>{o}</option>)}
+              </select>
+            </div>
           </div>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Dossiers dans cette zone</div>
-            <span style={{ background: "#EEF2FF", color: "#4F46E5", fontSize: 11, borderRadius: 6, padding: "2px 8px", fontWeight: 600, display: "inline-block", marginBottom: 8 }}>UA - Centre ancien</span>
-            <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "right", marginBottom: 8 }}>12 dossiers</div>
-            {[{ id: "PC-2024-0123", addr: "12 rue des Lilas", status: "En instruction", dist: "150 m" }, { id: "DP-2024-0089", addr: "7 impasse des Chênes", status: "Nouveau", dist: "280 m" }, { id: "PC-2024-0456", addr: "23 avenue de la Mer", status: "En consultation", dist: "450 m" }].map(d => (
-              <div key={d.id} style={{ padding: "8px 0", borderBottom: "1px solid #F8FAFC" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#4F46E5" }}>{d.id}</span>
-                  <span style={{ fontSize: 11, color: "#94a3b8" }}>{d.dist}</span>
+
+          {/* Dossier status legend */}
+          <div style={{ padding: "12px 14px", borderBottom: "1px solid #F1F5F9" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Dossiers ({mapDossiers.length})</div>
+            {Object.entries(CARTE_STATUS_LABELS)
+              .filter(([k]) => (counts[k] ?? 0) > 0)
+              .map(([k, label]) => (
+                <div key={k} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: "50%", background: CARTE_STATUS_COLORS[k], display: "inline-block", flexShrink: 0, boxShadow: "0 0 0 1.5px white, 0 0 0 2.5px " + CARTE_STATUS_COLORS[k] + "44" }} />
+                  <span style={{ fontSize: 11, color: "#374151", flex: 1 }}>{label}</span>
+                  <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>{counts[k]}</span>
                 </div>
-                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>{d.addr}</div>
-                <StatusBadge status={d.status} />
+              ))}
+          </div>
+
+          {/* PLU zones legend */}
+          <div style={{ padding: "12px 14px" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>
+              Zones PLU
+              {!pluZones && <span style={{ fontSize: 10, fontWeight: 400, color: "#94a3b8", marginLeft: 6 }}>(désactivées)</span>}
+            </div>
+            {[
+              { color: "#C0392B", label: "Zones U — Urbanisées" },
+              { color: "#E67E22", label: "Zones AU — À urbaniser" },
+              { color: "#D4AC0D", label: "Zones A — Agricoles" },
+              { color: "#27AE60", label: "Zones N — Naturelles" },
+            ].map(({ color, label }) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5, opacity: pluZones ? 1 : 0.4 }}>
+                <span style={{ width: 14, height: 10, borderRadius: 2, background: color + "88", border: `1.5px solid ${color}`, display: "inline-block", flexShrink: 0 }} />
+                <span style={{ fontSize: 11, color: "#374151" }}>{label}</span>
               </div>
             ))}
+            <div style={{ marginTop: 8, fontSize: 10, color: "#94a3b8", lineHeight: 1.4 }}>
+              Source : Géoportail de l'Urbanisme<br />
+              Couche URBANISME.ZONE_URBA
+            </div>
           </div>
         </div>
       </div>

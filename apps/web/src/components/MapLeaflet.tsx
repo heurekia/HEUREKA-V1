@@ -59,26 +59,31 @@ export function MapLeaflet({
   onMapClick,
   clickMode = false,
   parcelLayer = false,
+  pluZoneLayer = false,
+  ignBase = false,
 }: {
   dossiers: MapDossier[];
-  height?: number;
+  height?: number | string;
   filterStatus?: string;
   filterType?: string;
   commune?: string;
   onMarkerClick?: (d: MapDossier) => void;
-  /** Called when user clicks the map in click mode — returns [lat, lng] */
   onMapClick?: (lat: number, lng: number) => void;
-  /** Activate crosshair cursor + click-to-pick mode */
   clickMode?: boolean;
-  /** Overlay IGN cadastral parcel boundaries (WMS) */
   parcelLayer?: boolean;
+  /** Overlay GPU PLU zone polygons (URBANISME.ZONE_URBA — Géoportail de l'Urbanisme) */
+  pluZoneLayer?: boolean;
+  /** Use IGN Plan IGN v2 as base layer instead of OpenStreetMap */
+  ignBase?: boolean;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.CircleMarker[]>([]);
   const boundaryRef = useRef<L.GeoJSON | null>(null);
   const parcelLayerRef = useRef<L.TileLayer.WMS | null>(null);
+  const pluLayerRef = useRef<L.TileLayer.WMS | null>(null);
   const clickPinRef = useRef<L.Marker | null>(null);
+  const baseTileRef = useRef<L.TileLayer | null>(null);
 
   // Initialize map once
   useEffect(() => {
@@ -90,11 +95,6 @@ export function MapLeaflet({
       zoomControl: false,
     });
 
-    L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
-      attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
-      maxZoom: 19,
-    }).addTo(map);
-
     L.control.zoom({ position: "topright" }).addTo(map);
 
     mapRef.current = map;
@@ -102,8 +102,29 @@ export function MapLeaflet({
     return () => {
       map.remove();
       mapRef.current = null;
+      baseTileRef.current = null;
+      parcelLayerRef.current = null;
+      pluLayerRef.current = null;
     };
   }, []);
+
+  // Base tile layer — OSM or IGN Plan v2 depending on ignBase prop
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (baseTileRef.current) { baseTileRef.current.remove(); baseTileRef.current = null; }
+    baseTileRef.current = ignBase
+      ? L.tileLayer(
+          "https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0" +
+          "&LAYER=GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2&STYLE=normal&FORMAT=image/png" +
+          "&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}",
+          { attribution: "© IGN — Géoplateforme", maxZoom: 19 }
+        ).addTo(map)
+      : L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+          attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+          maxZoom: 19,
+        }).addTo(map);
+  }, [ignBase]);
 
   // IGN cadastral parcel WMS overlay (shows parcel boundaries)
   useEffect(() => {
@@ -123,6 +144,25 @@ export function MapLeaflet({
       parcelLayerRef.current = null;
     }
   }, [parcelLayer]);
+
+  // GPU PLU zone WMS overlay (Géoportail de l'Urbanisme)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (pluZoneLayer && !pluLayerRef.current) {
+      pluLayerRef.current = L.tileLayer.wms("https://data.geopf.fr/wms-r/ows", {
+        layers: "URBANISME.ZONE_URBA",
+        format: "image/png",
+        transparent: true,
+        version: "1.3.0",
+        opacity: 0.55,
+        attribution: "© IGN Géoplateforme — Géoportail de l'Urbanisme",
+      }).addTo(map);
+    } else if (!pluZoneLayer && pluLayerRef.current) {
+      pluLayerRef.current.remove();
+      pluLayerRef.current = null;
+    }
+  }, [pluZoneLayer]);
 
   // Map click handler — only active in clickMode
   useEffect(() => {
