@@ -336,7 +336,11 @@ async function seed() {
   console.log("  Instructeur BM  : instructeur@ballan-mire.fr / password123");
 }
 
-seed().catch((err) => {
-  console.error("❌ Seed failed:", err);
-  process.exit(1);
-});
+export { seed };
+
+if (process.argv[1]?.includes("seed")) {
+  seed().catch((err) => {
+    console.error("❌ Seed failed:", err);
+    process.exit(1);
+  });
+}
