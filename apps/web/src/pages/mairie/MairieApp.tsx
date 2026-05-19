@@ -380,15 +380,36 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
+const MOCK_DOSSIERS = [
+  { id: "PC-2024-0123", pet: "Jean Dupont", addr: "12 rue des Lilas", type: "Permis de construire", status: "En instruction", ech: "12/06/2024" },
+  { id: "DP-2024-0456", pet: "Sophie Martin", addr: "8 chemin de la Colline", type: "Déclaration préalable", status: "En consultation", ech: "25/06/2024" },
+  { id: "PC-2024-0789", pet: "SCI Les Oliviers", addr: "45 avenue de la Mer", type: "Permis de construire", status: "En instruction", ech: "15/06/2024" },
+  { id: "DP-2024-0089", pet: "Pierre Durand", addr: "3 impasse des Pins", type: "Déclaration préalable", status: "Nouveau", ech: "22/06/2024" },
+  { id: "PC-2023-0567", pet: "Marie Bernard", addr: "7 rue du Stade", type: "Permis de construire", status: "En instruction", ech: "01/06/2024" },
+  { id: "DP-2024-0111", pet: "Lucas Morel", addr: "15 route des Plages", type: "Déclaration préalable", status: "En retard", ech: "10/05/2024" },
+  { id: "PC-2023-0166", pet: "SAS Habitat", addr: "ZA des Tilleuls", type: "Permis de construire", status: "En consultation", ech: "05/06/2024" },
+  { id: "DP-2024-0333", pet: "Emma Petit", addr: "2 lotissement du Parc", type: "Déclaration préalable", status: "En instruction", ech: "18/06/2024" },
+];
+
+const MOCK_MESSAGES = [
+  { id: 1, lu: false, attendRepons: true },
+  { id: 2, lu: false, attendRepons: false },
+  { id: 3, lu: true, attendRepons: true },
+  { id: 4, lu: false, attendRepons: true },
+];
+
 function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void }) {
   const [mapFilter, setMapFilter] = useState<string>("Tous");
   const [activeMarker, setActiveMarker] = useState<number | null>(null);
 
+  const countByStatus = (status: string) => MOCK_DOSSIERS.filter(d => d.status === status).length;
+  const messagesEnAttente = MOCK_MESSAGES.filter(m => !m.lu || m.attendRepons).length;
+
   const cards = [
-    { label: "Nouveaux dossiers", count: 8, sub: "En attente d'ouverture d'instruction", color: "#4F46E5", bg: "#EEF2FF", icon: "📁", onClick: () => navigateDossiers("Nouveau") },
-    { label: "Consultations en attente", count: 2, sub: "En attente de retour des services", color: "#F97316", bg: "#FFF7ED", icon: "👥", onClick: () => navigateDossiers("En consultation") },
-    { label: "Messages sans réponse", count: 3, sub: "Messages en attente de réponse", color: "#4F46E5", bg: "#EEF2FF", icon: "💬", onClick: () => navigate("Messagerie") },
-    { label: "Dossiers en retard", count: 1, sub: "Dépassement de délai constaté", color: "#EF4444", bg: "#FEF2F2", icon: "⏰", alert: true, onClick: () => navigateDossiers("En retard") },
+    { label: "Nouveaux dossiers", count: countByStatus("Nouveau"), sub: "En attente d'ouverture d'instruction", color: "#4F46E5", bg: "#EEF2FF", icon: "📁", onClick: () => navigateDossiers("Nouveau") },
+    { label: "Consultations en attente", count: countByStatus("En consultation"), sub: "En attente de retour des services", color: "#F97316", bg: "#FFF7ED", icon: "👥", onClick: () => navigateDossiers("En consultation") },
+    { label: "Messages sans réponse", count: messagesEnAttente, sub: "Messages en attente de réponse", color: "#4F46E5", bg: "#EEF2FF", icon: "💬", onClick: () => navigate("Messagerie") },
+    { label: "Dossiers en retard", count: countByStatus("En retard"), sub: "Dépassement de délai constaté", color: "#EF4444", bg: "#FEF2F2", icon: "⏰", alert: true, onClick: () => navigateDossiers("En retard") },
   ];
 
   const markers = [
@@ -589,16 +610,7 @@ function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossier
   const [activeTab, setActiveTab] = useState(initialFilter ?? "Tous");
   const [searchQ, setSearchQ] = useState("");
 
-  const allRows = [
-    { id: "PC-2024-0123", pet: "Jean Dupont", addr: "12 rue des Lilas", type: "Permis de construire", status: "En instruction", ech: "12/06/2024" },
-    { id: "DP-2024-0456", pet: "Sophie Martin", addr: "8 chemin de la Colline", type: "Déclaration préalable", status: "En consultation", ech: "25/06/2024" },
-    { id: "PC-2024-0789", pet: "SCI Les Oliviers", addr: "45 avenue de la Mer", type: "Permis de construire", status: "En instruction", ech: "15/06/2024" },
-    { id: "DP-2024-0089", pet: "Pierre Durand", addr: "3 impasse des Pins", type: "Déclaration préalable", status: "Nouveau", ech: "22/06/2024" },
-    { id: "PC-2023-0567", pet: "Marie Bernard", addr: "7 rue du Stade", type: "Permis de construire", status: "En instruction", ech: "01/06/2024" },
-    { id: "DP-2024-0111", pet: "Lucas Morel", addr: "15 route des Plages", type: "Déclaration préalable", status: "En retard", ech: "10/05/2024" },
-    { id: "PC-2023-0166", pet: "SAS Habitat", addr: "ZA des Tilleuls", type: "Permis de construire", status: "En consultation", ech: "05/06/2024" },
-    { id: "DP-2024-0333", pet: "Emma Petit", addr: "2 lotissement du Parc", type: "Déclaration préalable", status: "En instruction", ech: "18/06/2024" },
-  ];
+  const allRows = MOCK_DOSSIERS;
 
   const tabCounts: Record<string, number> = Object.fromEntries(
     tabs.map(t => [t, t === "Tous" ? allRows.length : allRows.filter(r => r.status === t).length])
