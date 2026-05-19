@@ -92,12 +92,21 @@ mairieRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
       .where(eq(dossiers.id, req.params.id as string))
       .limit(1);
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
-    const demandeur = await db
+    const [demandeur] = await db
       .select({ id: users.id, prenom: users.prenom, nom: users.nom, email: users.email })
       .from(users)
       .where(eq(users.id, dossier.user_id))
       .limit(1);
-    res.json({ ...dossier, demandeur: demandeur[0] ?? null });
+    let instructeur = null;
+    if (dossier.instructeur_id) {
+      const [inst] = await db
+        .select({ id: users.id, prenom: users.prenom, nom: users.nom, email: users.email })
+        .from(users)
+        .where(eq(users.id, dossier.instructeur_id))
+        .limit(1);
+      instructeur = inst ?? null;
+    }
+    res.json({ ...dossier, demandeur: demandeur ?? null, instructeur });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

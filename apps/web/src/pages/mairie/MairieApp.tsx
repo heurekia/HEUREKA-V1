@@ -1985,152 +1985,786 @@ function InfosPersoScreen() {
   );
 }
 
-type DossierInfo = { id: string; numero: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string; date_depot?: string };
+type DossierInfo = {
+  id: string; numero: string; type: string; petitionnaire: string; adresse: string;
+  status: string; echeance: string; date_depot?: string;
+  description?: string; parcelle?: string; surface_plancher?: string;
+  commune?: string; code_postal?: string; instructeur?: string;
+  lat?: number; lng?: number;
+};
+
+const DETAIL_TABS = ["Résumé", "Parcelle", "Conformité IA", "Documents", "Consultations", "Chronologie", "Décision"] as const;
+type DetailTab = typeof DETAIL_TABS[number];
 
 function DossierDetailScreen({ dossier, onBack, navigate }: {
   dossier: DossierInfo;
   onBack: () => void;
   navigate: (s: string) => void;
 }) {
-  const [note, setNote] = useState("");
-  const pieces = [
-    { name: "Formulaire CERFA", ext: "PDF" },
-    { name: "Plan de situation", ext: "PDF" },
-    { name: "Plan de masse", ext: "PDF" },
-    { name: "Notice descriptive", ext: "PDF" },
-    { name: "Photos", ext: "ZIP" },
-    { name: "Pièce complémentaire", ext: "PDF" },
+  const [activeTab, setActiveTab] = useState<DetailTab>("Résumé");
+  const [decisionType, setDecisionType] = useState<string>("accord_prescription");
+  const [prescriptions, setPrescriptions] = useState([
+    "Respecter la hauteur maximale de 3,5 m pour l'annexe.",
+    "Conserver 30 % d'espaces perméables sur l'unité foncière.",
+    "Respecter les prescriptions de l'avis ABF joint au dossier.",
+  ]);
+  const [editingPrescriptions, setEditingPrescriptions] = useState(false);
+  const [selectedConsultation, setSelectedConsultation] = useState<number | null>(0);
+  const [selectedDoc, setSelectedDoc] = useState<number>(0);
+
+  const daysLeft = dossier.echeance && dossier.echeance !== "—"
+    ? Math.ceil((new Date(dossier.echeance.split("/").reverse().join("-")).getTime() - Date.now()) / 86400000)
+    : null;
+
+  const typeLabel = TYPE_LABEL[dossier.type] ?? dossier.type;
+  const instructeurName = dossier.instructeur ?? "Non assigné";
+
+  const CONSULTATIONS_DATA = [
+    { service: "ABF – Architecte des Bâtiments de France", status: "Avis reçu", favorable: true, date: "30/04/2024", detail: "Avis favorable avec réserves. Respecter le gabarit des constructions avoisinantes et les matériaux traditionnels.", color: "#15803D", bg: "#F0FDF4" },
+    { service: "SDIS – Service Incendie", status: "En attente", favorable: null, date: "—", detail: "Consultation envoyée le 22/04/2024. Délai de réponse : 45 jours.", color: "#C2410C", bg: "#FFF7ED" },
+    { service: "Métropole Tours Val de Loire", status: "En attente", favorable: null, date: "—", detail: "En attente de transmission.", color: "#C2410C", bg: "#FFF7ED" },
+    { service: "Réseaux (ENEDIS)", status: "Avis reçu", favorable: true, date: "25/04/2024", detail: "Aucune contrainte réseau identifiée. Raccordement possible.", color: "#15803D", bg: "#F0FDF4" },
+    { service: "ARS – Agence Régionale de Santé", status: "Non requis", favorable: null, date: "—", detail: "Non requis pour ce type de dossier.", color: "#475569", bg: "#F8FAFC" },
   ];
-  const timeline = [
-    { date: "12/04/2024", event: "Dépôt du dossier", actor: "Jean Dupont (pétitionnaire)" },
-    { date: "14/04/2024", event: "Accusé réception envoyé", actor: "Système automatique" },
-    { date: "22/04/2024", event: "Envoi en consultation ABF", actor: "Marie Lambert (instructeur)" },
-    { date: "30/04/2024", event: "Réception avis ABF", actor: "ABF – Favorable avec réserves" },
-    { date: "05/05/2024", event: "Mise en instruction", actor: "Marie Lambert (instructeur)" },
+
+  const DOCUMENTS_DATA = [
+    { name: "Formulaire CERFA 13406*08", ext: "PDF", size: "1.2 Mo", date: "12/05/2024", status: "Validé", ia: "Formulaire complet. Toutes les rubriques obligatoires sont renseignées." },
+    { name: "Plan de situation", ext: "PDF", size: "3.4 Mo", date: "12/05/2024", status: "Validé", ia: "Plan conforme. Echelle 1/25000 visible. Localisation précise du terrain identifiée." },
+    { name: "Plan de masse", ext: "PDF", size: "2.1 Mo", date: "12/05/2024", status: "Validé", ia: "Cote NGF présente. Emprise au sol calculable. Distances aux limites séparatives indiquées." },
+    { name: "Notice descriptive", ext: "PDF", size: "0.8 Mo", date: "12/05/2024", status: "Validé", ia: "Description des matériaux conforme aux prescriptions ABF. Surface plancher cohérente avec le CERFA." },
+    { name: "Photos du terrain", ext: "ZIP", size: "12.3 Mo", date: "12/05/2024", status: "Validé", ia: "8 photos identifiées. Vues panoramiques et détails du terrain présents." },
+    { name: "Pièce complémentaire 1", ext: "PDF", size: "0.5 Mo", date: "18/05/2024", status: "En attente", ia: "Analyse en attente de validation." },
   ];
-  const consultations = [
-    { service: "ABF – Architecte des Bâtiments de France", status: "Avis reçu", ok: true },
-    { service: "SDIS – Service Incendie", status: "En attente", ok: false },
-    { service: "Métropole Tours Val de Loire", status: "En attente", ok: false },
+
+  const TIMELINE_DATA = [
+    { date: "12/05/2024", event: "Dépôt du dossier", actor: dossier.petitionnaire + " (pétitionnaire)", icon: "📥", color: "#4F46E5" },
+    { date: "13/05/2024", event: "Accusé de réception envoyé", actor: "Système automatique", icon: "✉️", color: "#22C55E" },
+    { date: "15/05/2024", event: "Vérification de complétude", actor: instructeurName + " (instructeur)", icon: "🔍", color: "#22C55E" },
+    { date: "18/05/2024", event: "Demande de pièce complémentaire", actor: instructeurName + " (instructeur)", icon: "📎", color: "#F97316" },
+    { date: "20/05/2024", event: "Réception pièce complémentaire", actor: dossier.petitionnaire + " (pétitionnaire)", icon: "📄", color: "#22C55E" },
+    { date: "22/05/2024", event: "Dossier déclaré complet", actor: instructeurName + " (instructeur)", icon: "✅", color: "#22C55E" },
+    { date: "22/05/2024", event: "Envoi en consultation ABF", actor: instructeurName + " (instructeur)", icon: "👥", color: "#8B5CF6" },
+    { date: "30/05/2024", event: "Réception avis ABF – Favorable avec réserves", actor: "ABF – Direction Régionale", icon: "📋", color: "#F97316" },
+    { date: "02/06/2024", event: "Mise en instruction", actor: instructeurName + " (instructeur)", icon: "⚙️", color: "#3B82F6" },
   ];
+
+  const IA_RULES = [
+    { rule: "Emprise au sol ≤ 40%", result: "Conforme", value: "32%", ok: true },
+    { rule: "Hauteur maximale ≤ 9m", result: "Conforme", value: "7,2m", ok: true },
+    { rule: "Recul par rapport à la voirie", result: "Point de vigilance", value: "3m (min. 4m requis)", ok: false },
+    { rule: "Espaces verts ≥ 30%", result: "Non vérifiable", value: "Données insuffisantes", ok: null },
+    { rule: "Stationnement (2 places min.)", result: "Conforme", value: "2 places indiquées", ok: true },
+    { rule: "Matériaux conformes PLU", result: "Conforme (ABF)", value: "Avis ABF favorable", ok: true },
+    { rule: "Zone constructible (UC)", result: "Conforme", value: "Zone UC confirmée", ok: true },
+    { rule: "Périmètre ABF (500m)", result: "Applicable", value: "Dans le périmètre", ok: null },
+  ];
+
+  const CARD = { background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 } as const;
+  const LABEL_STYLE = { fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 } as const;
+  const VALUE_STYLE = { fontSize: 13, fontWeight: 500, color: "#374151" } as const;
+
   return (
-    <div style={{ padding: 24 }}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-        <button onClick={onBack} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>← Retour aux dossiers</button>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <h1 style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", margin: 0 }}>Dossier {dossier.numero}</h1>
+    <div style={{ display: "flex", flexDirection: "column" as const, height: "100%", background: "#F8F9FC" }}>
+      {/* ── Sticky header ── */}
+      <div style={{ background: "white", borderBottom: "1px solid #E2E8F0", padding: "16px 28px 0", position: "sticky", top: 0, zIndex: 10 }}>
+        {/* back + actions row */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
+          <button onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 6, border: "none", background: "none", color: "#64748b", fontSize: 13, cursor: "pointer", padding: 0, fontWeight: 500 }}>
+            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+            Retour aux dossiers
+          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => navigate("Messagerie")} style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 13, color: "#374151", cursor: "pointer", fontWeight: 500 }}>
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>
+              Contacter le pétitionnaire
+            </button>
+            <button style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 13, color: "#374151", cursor: "pointer", fontWeight: 500 }}>
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+              Générer un courrier
+            </button>
+            <button style={{ display: "flex", alignItems: "center", gap: 7, background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+              Exporter le dossier
+            </button>
+          </div>
+        </div>
+        {/* numero + status + title */}
+        <div style={{ marginBottom: 10 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+            <h1 style={{ fontSize: 26, fontWeight: 800, color: "#0F172A", margin: 0, letterSpacing: "-0.5px" }}>{dossier.numero}</h1>
             <StatusBadge status={dossier.status} />
           </div>
-          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{dossier.type} · {dossier.adresse}</div>
+          <div style={{ fontSize: 13, color: "#64748b", fontWeight: 500 }}>{typeLabel}{dossier.description ? ` – ${dossier.description}` : ""}</div>
         </div>
-        <button style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouvelle action</button>
+        {/* meta row */}
+        <div style={{ display: "flex", alignItems: "center", gap: 20, marginBottom: 12, flexWrap: "wrap" as const }}>
+          <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#374151" }}>
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+            {dossier.petitionnaire}
+          </span>
+          <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#374151" }}>
+            <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
+            {dossier.adresse}{dossier.commune ? `, ${dossier.commune}` : ""}
+          </span>
+          {dossier.parcelle && (
+            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#374151" }}>
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></svg>
+              {dossier.parcelle}
+            </span>
+          )}
+          <span style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 20 }}>
+            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "#64748b" }}>
+              <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="4" width="18" height="18" rx="2" /><line x1="16" y1="2" x2="16" y2="6" /><line x1="8" y1="2" x2="8" y2="6" /><line x1="3" y1="10" x2="21" y2="10" /></svg>
+              Déposé le {dossier.date_depot ? fmtDate(dossier.date_depot) : "—"}
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "#64748b" }}>
+              <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>
+              Échéance {dossier.echeance}
+              {daysLeft !== null && (
+                <span style={{ background: daysLeft < 14 ? "#FEF2F2" : "#EFF6FF", color: daysLeft < 14 ? "#B91C1C" : "#1D4ED8", borderRadius: 6, padding: "1px 6px", fontSize: 11, fontWeight: 700 }}>
+                  J{daysLeft >= 0 ? `-${daysLeft}` : `+${Math.abs(daysLeft)}`}
+                </span>
+              )}
+            </span>
+            <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 12, color: "#64748b" }}>
+              <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+              Instructeur {instructeurName}
+            </span>
+          </span>
+        </div>
+        {/* Tab bar */}
+        <div style={{ display: "flex", gap: 0, borderTop: "1px solid #F1F5F9" }}>
+          {DETAIL_TABS.map(tab => (
+            <button key={tab} onClick={() => setActiveTab(tab)} style={{
+              border: "none", background: "none", padding: "10px 18px", fontSize: 13, cursor: "pointer", fontWeight: activeTab === tab ? 700 : 400,
+              color: activeTab === tab ? "#4F46E5" : "#64748b",
+              borderBottom: activeTab === tab ? "2px solid #4F46E5" : "2px solid transparent",
+              transition: "color 0.15s", marginBottom: -1,
+            }}>
+              {tab}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Two-column layout */}
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-        {/* Left column */}
-        <div style={{ flex: 2, display: "flex", flexDirection: "column", gap: 16 }}>
-          {/* Informations générales */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Informations générales</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              {[
-                ["Pétitionnaire", dossier.petitionnaire],
-                ["Adresse", dossier.adresse],
-                ["Type de dossier", dossier.type],
-                ["Date de dépôt", dossier.date_depot ?? "—"],
-                ["Échéance", dossier.echeance],
-                ["Instructeur assigné", "Marie Lambert"],
-              ].map(([label, value]) => (
-                <div key={label}>
-                  <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{value}</div>
-                </div>
-              ))}
-            </div>
-          </div>
+      {/* ── Tab content ── */}
+      <div style={{ flex: 1, overflowY: "auto" as const, padding: 24 }}>
 
-          {/* Pièces du dossier */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Pièces du dossier</div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-              {pieces.map((p) => (
-                <div key={p.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #F1F5F9" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 16 }}>📄</span>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{p.name}</div>
-                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{p.ext}</div>
+        {/* ── RÉSUMÉ ── */}
+        {activeTab === "Résumé" && (
+          <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+              {/* Infos principales */}
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 14 }}>Informations principales</div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                  {[
+                    ["Pétitionnaire", dossier.petitionnaire],
+                    ["Adresse", dossier.adresse],
+                    ["Commune", dossier.commune ?? "—"],
+                    ["Parcelle", dossier.parcelle ?? "—"],
+                    ["Surface plancher", dossier.surface_plancher ?? "—"],
+                    ["Type", typeLabel],
+                    ["Date de dépôt", dossier.date_depot ? fmtDate(dossier.date_depot) : "—"],
+                    ["Échéance", dossier.echeance],
+                  ].map(([l, v]) => (
+                    <div key={l}>
+                      <div style={LABEL_STYLE}>{l}</div>
+                      <div style={VALUE_STYLE}>{v}</div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              {/* Avancement */}
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 14 }}>Avancement du dossier</div>
+                {[
+                  { label: "Dépôt", done: true },
+                  { label: "Complétude", done: true },
+                  { label: "Instruction", done: dossier.status === "en_instruction" || dossier.status === "decision_en_cours" || dossier.status === "accepte" || dossier.status === "refuse" || dossier.status === "accord_prescription" },
+                  { label: "Consultations", done: false },
+                  { label: "Décision", done: dossier.status === "accepte" || dossier.status === "refuse" || dossier.status === "accord_prescription" },
+                ].map((step, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+                    <div style={{ width: 24, height: 24, borderRadius: "50%", background: step.done ? "#4F46E5" : "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      {step.done ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 700 }}>{i + 1}</span>}
+                    </div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</div>
                     </div>
                   </div>
-                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 12, color: "#4F46E5", cursor: "pointer", fontWeight: 500 }}>Télécharger</button>
-                </div>
-              ))}
-            </div>
-          </div>
-
-          {/* Historique */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Historique / Suivi</div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 0 }}>
-              {timeline.map((t, i) => (
-                <div key={i} style={{ display: "flex", gap: 12, paddingBottom: i < timeline.length - 1 ? 16 : 0 }}>
-                  <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center" }}>
-                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 3 }} />
-                    {i < timeline.length - 1 && <div style={{ width: 2, flex: 1, background: "#E2E8F0", marginTop: 4 }} />}
+                ))}
+                <div style={{ marginTop: 16, padding: "12px 14px", background: "#EEF2FF", borderRadius: 10, border: "1px solid #C7D2FE" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", marginBottom: 4 }}>Score de conformité IA</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ flex: 1, height: 6, background: "#C7D2FE", borderRadius: 3 }}>
+                      <div style={{ width: "78%", height: "100%", background: "linear-gradient(90deg,#4F46E5,#818CF8)", borderRadius: 3 }} />
+                    </div>
+                    <span style={{ fontSize: 14, fontWeight: 800, color: "#4F46E5" }}>78%</span>
                   </div>
-                  <div style={{ paddingBottom: 4 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{t.event}</div>
-                    <div style={{ fontSize: 12, color: "#94a3b8" }}>{t.actor} · {t.date}</div>
+                  <div style={{ fontSize: 11, color: "#6366F1", marginTop: 4 }}>6 règles conformes · 1 vigilance · 1 non vérifiable</div>
+                </div>
+              </div>
+              {/* Mini carte */}
+              <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", padding: "14px 16px 10px" }}>Localisation</div>
+                {dossier.lat && dossier.lng ? (
+                  <MapLeaflet
+                    dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: dossier.adresse, lat: dossier.lat, lng: dossier.lng }]}
+                    height={200}
+                    commune={dossier.commune}
+                  />
+                ) : (
+                  <div style={{ height: 200, background: "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 6 }}>
+                    <svg width={32} height={32} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
+                    <span style={{ fontSize: 12, color: "#94a3b8" }}>Géolocalisation indisponible</span>
+                  </div>
+                )}
+              </div>
+            </div>
+            {/* Alertes */}
+            <div style={{ display: "flex", gap: 12 }}>
+              <div style={{ flex: 1, background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 10, padding: "12px 16px", display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 18, flexShrink: 0 }}>⚠️</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#C2410C", marginBottom: 2 }}>Recul voirie insuffisant</div>
+                  <div style={{ fontSize: 12, color: "#9A3412" }}>Le projet présente un recul de 3m par rapport à la voirie (minimum requis : 4m selon art. UC 6 du PLU).</div>
+                </div>
+              </div>
+              <div style={{ flex: 1, background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 10, padding: "12px 16px", display: "flex", gap: 10, alignItems: "flex-start" }}>
+                <span style={{ fontSize: 18, flexShrink: 0 }}>ℹ️</span>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1D4ED8", marginBottom: 2 }}>Périmètre ABF</div>
+                  <div style={{ fontSize: 12, color: "#1E40AF" }}>Le terrain est situé dans le périmètre de protection des Monuments Historiques (500m). L'avis ABF est obligatoire.</div>
+                </div>
+              </div>
+            </div>
+            {/* IA banner */}
+            <div style={{ background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", border: "1px solid #C7D2FE", borderRadius: 12, padding: "14px 20px", display: "flex", alignItems: "center", gap: 16 }}>
+              <div style={{ width: 40, height: 40, background: "linear-gradient(135deg,#4F46E5,#8B5CF6)", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="3" /><path d="M12 1v4M12 19v4M4.22 4.22l2.83 2.83M16.95 16.95l2.83 2.83M1 12h4M19 12h4M4.22 19.78l2.83-2.83M16.95 7.05l2.83-2.83" /></svg>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#3730A3" }}>Analyse IA disponible</div>
+                <div style={{ fontSize: 12, color: "#4338CA", marginTop: 2 }}>L'IA a analysé 8 règles du PLU applicables à ce dossier. 1 point de vigilance identifié sur le recul voirie.</div>
+              </div>
+              <button onClick={() => setActiveTab("Conformité IA")} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const }}>Voir l'analyse complète</button>
+            </div>
+          </div>
+        )}
+
+        {/* ── PARCELLE ── */}
+        {activeTab === "Parcelle" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 16 }}>
+            {/* Left: map */}
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
+              <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 16px 10px" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Vue parcellaire</div>
+                  <div style={{ display: "flex", gap: 6 }}>
+                    {["Cadastre", "PLU", "Risques"].map(l => (
+                      <button key={l} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "3px 9px", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 500 }}>{l}</button>
+                    ))}
                   </div>
                 </div>
-              ))}
+                {dossier.lat && dossier.lng ? (
+                  <MapLeaflet
+                    dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: dossier.adresse, lat: dossier.lat, lng: dossier.lng }]}
+                    height={340}
+                    commune={dossier.commune}
+                  />
+                ) : (
+                  <div style={{ height: 340, background: "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 8 }}>
+                    <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 9z" /><circle cx="12" cy="10" r="3" /></svg>
+                    <span style={{ fontSize: 13, color: "#94a3b8" }}>Coordonnées non disponibles</span>
+                  </div>
+                )}
+              </div>
+              {/* Contraintes */}
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Contraintes réglementaires</div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                  {[
+                    { label: "Zone PLU", value: "Zone UC – Urbaine centrale", color: "#4F46E5", bg: "#EEF2FF" },
+                    { label: "Périmètre ABF", value: "Dans les 500m – Monuments Historiques", color: "#C2410C", bg: "#FFF7ED" },
+                    { label: "Zone inondable", value: "Hors zone inondable", color: "#15803D", bg: "#F0FDF4" },
+                    { label: "Réseau ENEDIS", value: "Pas de contrainte identifiée", color: "#15803D", bg: "#F0FDF4" },
+                  ].map(c => (
+                    <div key={c.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: c.bg, borderRadius: 8 }}>
+                      <span style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{c.label}</span>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: c.color }}>{c.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            {/* Right: info */}
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Informations cadastrales</div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                  {[
+                    ["Référence parcelle", dossier.parcelle ?? "—"],
+                    ["Commune", dossier.commune ?? "—"],
+                    ["Code postal", dossier.code_postal ?? "—"],
+                    ["Surface du terrain", dossier.surface_plancher ?? "Non renseignée"],
+                    ["Adresse", dossier.adresse],
+                  ].map(([l, v]) => (
+                    <div key={l} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingBottom: 8, borderBottom: "1px solid #F8FAFC" }}>
+                      <span style={{ fontSize: 12, color: "#64748b" }}>{l}</span>
+                      <span style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Synthèse PLU applicable</div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
+                  {[
+                    ["Zone", "UC – Urbaine centrale"],
+                    ["Emprise au sol max.", "40%"],
+                    ["Hauteur max.", "9m (2 niveaux)"],
+                    ["Recul voirie", "4m minimum"],
+                    ["Recul limites latérales", "3m ou jointif"],
+                    ["Espaces verts", "30% minimum"],
+                    ["Stationnement", "2 places par logement"],
+                  ].map(([l, v]) => (
+                    <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 12, padding: "5px 0", borderBottom: "1px solid #F8FAFC" }}>
+                      <span style={{ color: "#64748b" }}>{l}</span>
+                      <span style={{ color: "#0F172A", fontWeight: 600 }}>{v}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>Documents de référence</div>
+                {["PLU – Règlement de la zone UC", "Servitudes d'utilité publique", "Plan de prévention des risques", "Périmètres ABF"].map(doc => (
+                  <div key={doc} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px solid #F8FAFC" }}>
+                    <span style={{ fontSize: 12, color: "#374151" }}>📄 {doc}</span>
+                    <button style={{ border: "none", background: "none", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>Consulter →</button>
+                  </div>
+                ))}
+              </div>
             </div>
           </div>
-        </div>
+        )}
 
-        {/* Right column */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column" as const, gap: 16 }}>
-          {/* Actions rapides */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Actions rapides</div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-              <button style={{ width: "100%", border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#374151", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>📎 Demander pièce complémentaire</button>
-              <button style={{ width: "100%", border: "1px solid #F97316", background: "#FFF7ED", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#C2410C", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>👥 Envoyer en consultation</button>
-              <button style={{ width: "100%", border: "1px solid #4F46E5", background: "#EEF2FF", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#4F46E5", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>📝 Rédiger la décision</button>
-              <button onClick={() => navigate("Messagerie")} style={{ width: "100%", border: "1px solid #22C55E", background: "#F0FDF4", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#15803D", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>💬 Contacter le pétitionnaire</button>
+        {/* ── CONFORMITÉ IA ── */}
+        {activeTab === "Conformité IA" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+              {/* Score + donut */}
+              <div style={CARD}>
+                <div style={{ display: "flex", alignItems: "center", gap: 20 }}>
+                  <div style={{ position: "relative" as const, width: 100, height: 100, flexShrink: 0 }}>
+                    <svg width={100} height={100} viewBox="0 0 100 100">
+                      <circle cx="50" cy="50" r="40" fill="none" stroke="#E2E8F0" strokeWidth="12" />
+                      <circle cx="50" cy="50" r="40" fill="none" stroke="#4F46E5" strokeWidth="12" strokeDasharray="251.2" strokeDashoffset={251.2 * (1 - 0.78)} strokeLinecap="round" style={{ transform: "rotate(-90deg)", transformOrigin: "50% 50%" }} />
+                    </svg>
+                    <div style={{ position: "absolute" as const, inset: 0, display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center" }}>
+                      <span style={{ fontSize: 20, fontWeight: 800, color: "#4F46E5" }}>78%</span>
+                      <span style={{ fontSize: 9, color: "#64748b" }}>CONFORME</span>
+                    </div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>Score de conformité PLU</div>
+                    <div style={{ display: "flex", gap: 10, flexWrap: "wrap" as const }}>
+                      <span style={{ background: "#F0FDF4", color: "#15803D", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 600 }}>6 conformes</span>
+                      <span style={{ background: "#FFF7ED", color: "#C2410C", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 600 }}>1 vigilance</span>
+                      <span style={{ background: "#F8FAFC", color: "#475569", borderRadius: 8, padding: "3px 10px", fontSize: 12, fontWeight: 600 }}>1 non vérifiable</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#64748b", marginTop: 8 }}>Analyse basée sur le PLU de {dossier.commune ?? "la commune"} (version 2023) et les documents déposés.</div>
+                  </div>
+                </div>
+              </div>
+              {/* Rules table */}
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Règles vérifiées</div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 1 }}>
+                  {IA_RULES.map((r, i) => (
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 12, alignItems: "center", padding: "9px 10px", background: i % 2 === 0 ? "#F8FAFC" : "white", borderRadius: 6 }}>
+                      <span style={{ fontSize: 13, color: "#374151" }}>{r.rule}</span>
+                      <span style={{ fontSize: 11, color: r.ok === true ? "#15803D" : r.ok === false ? "#C2410C" : "#475569", background: r.ok === true ? "#F0FDF4" : r.ok === false ? "#FFF7ED" : "#F8FAFC", borderRadius: 20, padding: "2px 8px", fontWeight: 600, whiteSpace: "nowrap" as const }}>{r.result}</span>
+                      <span style={{ fontSize: 12, color: "#64748b", textAlign: "right" as const, whiteSpace: "nowrap" as const }}>{r.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            {/* Right: details */}
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
+              <div style={{ ...CARD, background: "#FFF7ED", border: "1px solid #FED7AA" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#C2410C", marginBottom: 10 }}>⚠️ Points de vigilance</div>
+                <div style={{ padding: "12px", background: "white", borderRadius: 8, border: "1px solid #FED7AA" }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Recul voirie insuffisant</div>
+                  <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Le projet présente un recul de 3m par rapport à la voirie alors que l'article UC 6 du PLU impose un minimum de 4m. Une modification du projet ou une dérogation motivée est nécessaire.</div>
+                  <div style={{ marginTop: 8, display: "flex", gap: 8 }}>
+                    <button style={{ border: "1px solid #F97316", background: "white", borderRadius: 6, padding: "5px 10px", fontSize: 11, color: "#C2410C", cursor: "pointer", fontWeight: 600 }}>Demander modification</button>
+                    <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "5px 10px", fontSize: 11, color: "#374151", cursor: "pointer" }}>Voir article PLU</button>
+                  </div>
+                </div>
+              </div>
+              <div style={{ ...CARD, background: "#F8FAFC", border: "1px solid #E2E8F0" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#475569", marginBottom: 10 }}>Non vérifiables</div>
+                <div style={{ padding: "12px", background: "white", borderRadius: 8, border: "1px solid #E2E8F0" }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Espaces verts ≥ 30%</div>
+                  <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Les données disponibles dans les documents déposés ne permettent pas de calculer précisément le ratio d'espaces verts. Une pièce complémentaire (plan de masse annoté) peut être demandée.</div>
+                </div>
+              </div>
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>Recommandations IA</div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                  {[
+                    "Demander la modification du plan de masse pour corriger le recul voirie avant instruction définitive.",
+                    "Vérifier l'avis ABF reçu : les prescriptions sur les matériaux doivent être intégrées dans l'arrêté.",
+                    "Confirmer le ratio d'espaces verts sur le plan de masse révisé.",
+                  ].map((r, i) => (
+                    <div key={i} style={{ display: "flex", gap: 8, padding: "8px 10px", background: "#EEF2FF", borderRadius: 8 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", flexShrink: 0, marginTop: 1 }}>{i + 1}.</span>
+                      <span style={{ fontSize: 12, color: "#3730A3", lineHeight: 1.5 }}>{r}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
+        )}
 
-          {/* Consultations */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Consultations</div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-              {consultations.map((c) => (
-                <div key={c.service} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #F1F5F9" }}>
-                  <div style={{ fontSize: 12, color: "#374151", fontWeight: 500 }}>{c.service}</div>
-                  <span style={{ fontSize: 11, color: c.ok ? "#15803D" : "#C2410C", background: c.ok ? "#F0FDF4" : "#FFF7ED", borderRadius: 20, padding: "2px 8px", fontWeight: 600, whiteSpace: "nowrap" as const }}>
-                    {c.ok ? "✅ Avis reçu" : "⏳ En attente"}
-                  </span>
+        {/* ── DOCUMENTS ── */}
+        {activeTab === "Documents" && (
+          <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 260px", gap: 16 }}>
+            {/* List */}
+            <div style={CARD}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Pièces du dossier</div>
+              <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
+                {DOCUMENTS_DATA.map((doc, i) => (
+                  <button key={i} onClick={() => setSelectedDoc(i)} style={{
+                    display: "flex", alignItems: "flex-start", gap: 10, padding: "9px 10px", borderRadius: 8, border: "none", cursor: "pointer", textAlign: "left" as const,
+                    background: selectedDoc === i ? "#EEF2FF" : "transparent",
+                    outline: selectedDoc === i ? "1px solid #C7D2FE" : "none",
+                  }}>
+                    <span style={{ fontSize: 20, flexShrink: 0, marginTop: 2 }}>📄</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{doc.name}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 1 }}>{doc.ext} · {doc.size} · {doc.date}</div>
+                      <span style={{ fontSize: 10, fontWeight: 600, color: doc.status === "Validé" ? "#15803D" : "#C2410C", background: doc.status === "Validé" ? "#F0FDF4" : "#FFF7ED", borderRadius: 4, padding: "1px 5px", display: "inline-block", marginTop: 3 }}>{doc.status}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <button style={{ marginTop: 12, width: "100%", border: "2px dashed #E2E8F0", background: "transparent", borderRadius: 8, padding: "9px 0", fontSize: 12, color: "#64748b", cursor: "pointer" }}>+ Ajouter une pièce</button>
+            </div>
+            {/* Preview */}
+            <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Aperçu : {DOCUMENTS_DATA[selectedDoc]?.name}</div>
+              <div style={{ flex: 1, background: "#F1F5F9", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 12, minHeight: 320 }}>
+                <span style={{ fontSize: 56 }}>📄</span>
+                <div style={{ textAlign: "center" as const }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>{DOCUMENTS_DATA[selectedDoc]?.name}</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>{DOCUMENTS_DATA[selectedDoc]?.ext} · {DOCUMENTS_DATA[selectedDoc]?.size}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Ouvrir</button>
+                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, cursor: "pointer", color: "#374151" }}>Télécharger</button>
+                </div>
+              </div>
+            </div>
+            {/* IA Analysis */}
+            <div style={CARD}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Analyse IA</div>
+              <div style={{ padding: "12px", background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", borderRadius: 10, border: "1px solid #C7D2FE", marginBottom: 10 }}>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", marginBottom: 6 }}>RÉSULTAT</div>
+                <div style={{ fontSize: 12, color: "#3730A3", lineHeight: 1.6 }}>{DOCUMENTS_DATA[selectedDoc]?.ia}</div>
+              </div>
+              <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>
+                <div style={{ fontWeight: 600, color: "#374151", marginBottom: 4 }}>Cohérence avec le dossier</div>
+                Les informations de cette pièce sont cohérentes avec les autres documents déposés.
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── CONSULTATIONS ── */}
+        {activeTab === "Consultations" && (
+          <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+            {/* Stats */}
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+              {[
+                { label: "Total", value: "5", color: "#4F46E5", bg: "#EEF2FF" },
+                { label: "Avis reçus", value: "2", color: "#15803D", bg: "#F0FDF4" },
+                { label: "En attente", value: "2", color: "#C2410C", bg: "#FFF7ED" },
+                { label: "Non requis", value: "1", color: "#475569", bg: "#F8FAFC" },
+              ].map(s => (
+                <div key={s.label} style={{ background: s.bg, borderRadius: 10, padding: "14px 18px", display: "flex", flexDirection: "column" as const, gap: 4 }}>
+                  <span style={{ fontSize: 24, fontWeight: 800, color: s.color }}>{s.value}</span>
+                  <span style={{ fontSize: 12, color: "#64748b", fontWeight: 500 }}>{s.label}</span>
                 </div>
               ))}
             </div>
+            {/* Table + detail */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, alignItems: "flex-start" }}>
+              <div style={CARD}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Organismes consultés</div>
+                  <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>+ Lancer une consultation</button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 1 }}>
+                  {CONSULTATIONS_DATA.map((c, i) => (
+                    <button key={i} onClick={() => setSelectedConsultation(i)} style={{
+                      display: "grid", gridTemplateColumns: "1fr auto auto", gap: 14, alignItems: "center", padding: "11px 12px", border: "none", cursor: "pointer", borderRadius: 8, textAlign: "left" as const,
+                      background: selectedConsultation === i ? "#EEF2FF" : i % 2 === 0 ? "#F8FAFC" : "white",
+                      outline: selectedConsultation === i ? "1px solid #C7D2FE" : "none",
+                    }}>
+                      <span style={{ fontSize: 13, color: "#374151", fontWeight: 500 }}>{c.service}</span>
+                      <span style={{ fontSize: 11, color: "#64748b" }}>{c.date}</span>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: c.color, background: c.bg, borderRadius: 20, padding: "2px 10px", whiteSpace: "nowrap" as const }}>{c.status}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {selectedConsultation !== null && (() => {
+                const c = CONSULTATIONS_DATA[selectedConsultation];
+                if (!c) return null;
+                return (
+                  <div style={CARD}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>{c.service}</div>
+                    <div style={{ display: "flex", gap: 8, marginBottom: 12 }}>
+                      <span style={{ fontSize: 11, fontWeight: 600, color: c.color, background: c.bg, borderRadius: 20, padding: "2px 10px" }}>{c.status}</span>
+                      <span style={{ fontSize: 11, color: "#64748b", padding: "2px 0" }}>Date : {c.date}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#374151", lineHeight: 1.7, padding: "12px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #F1F5F9" }}>
+                      {c.detail}
+                    </div>
+                    {c.favorable === null && c.status === "En attente" && (
+                      <button style={{ marginTop: 12, width: "100%", border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 0", fontSize: 12, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>Relancer</button>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
           </div>
+        )}
 
-          {/* Notes internes */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Notes internes</div>
-            <textarea
-              value={note}
-              onChange={e => setNote(e.target.value)}
-              placeholder="Ajouter une note interne..."
-              style={{ width: "100%", minHeight: 80, border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: "#374151", resize: "vertical" as const, outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const }}
-            />
-            <button style={{ marginTop: 8, width: "100%", background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Ajouter</button>
+        {/* ── CHRONOLOGIE ── */}
+        {activeTab === "Chronologie" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 16, alignItems: "flex-start" }}>
+            {/* Timeline */}
+            <div style={CARD}>
+              <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>Historique complet</div>
+              <div style={{ display: "flex", flexDirection: "column" as const }}>
+                {TIMELINE_DATA.map((t, i) => (
+                  <div key={i} style={{ display: "flex", gap: 14, paddingBottom: i < TIMELINE_DATA.length - 1 ? 20 : 0 }}>
+                    <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", width: 32 }}>
+                      <div style={{ width: 32, height: 32, borderRadius: "50%", background: t.color + "22", border: `2px solid ${t.color}`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 14 }}>{t.icon}</div>
+                      {i < TIMELINE_DATA.length - 1 && <div style={{ width: 2, flex: 1, background: "#E2E8F0", marginTop: 6 }} />}
+                    </div>
+                    <div style={{ paddingBottom: 4, flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{t.event}</div>
+                      <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{t.actor}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{t.date}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+            {/* Right panels */}
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Étapes clés</div>
+                {[
+                  { label: "Dépôt", date: dossier.date_depot ? fmtDate(dossier.date_depot) : "—", done: true },
+                  { label: "Complétude", date: "22/05/2024", done: true },
+                  { label: "Fin d'instruction", date: dossier.echeance, done: false },
+                ].map((e, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "7px 0", borderBottom: i < 2 ? "1px solid #F8FAFC" : "none" }}>
+                    <span style={{ fontSize: 12, color: "#374151", fontWeight: 500 }}>{e.label}</span>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <span style={{ fontSize: 12, color: "#64748b" }}>{e.date}</span>
+                      {e.done ? <span style={{ fontSize: 10, background: "#F0FDF4", color: "#15803D", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>Fait</span> : <span style={{ fontSize: 10, background: "#EFF6FF", color: "#1D4ED8", borderRadius: 4, padding: "1px 6px", fontWeight: 700 }}>Prévu</span>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Temps forts</div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                  <div style={{ background: "#FFF7ED", borderRadius: 8, padding: "10px 12px", border: "1px solid #FED7AA" }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#C2410C" }}>Avis ABF avec réserves</div>
+                    <div style={{ fontSize: 11, color: "#9A3412", marginTop: 3 }}>30/05/2024 – Des prescriptions ont été émises concernant les matériaux.</div>
+                  </div>
+                  <div style={{ background: "#EFF6FF", borderRadius: 8, padding: "10px 12px", border: "1px solid #BFDBFE" }}>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#1D4ED8" }}>Dossier mis en instruction</div>
+                    <div style={{ fontSize: 11, color: "#1E40AF", marginTop: 3 }}>02/06/2024 – Assigné à {instructeurName}.</div>
+                  </div>
+                </div>
+              </div>
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>Délais réglementaires</div>
+                <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>
+                  Délai légal : <strong>2 mois</strong> (permis de construire maison individuelle)<br />
+                  Date limite : <strong>{dossier.echeance}</strong><br />
+                  {daysLeft !== null && <span>Temps restant : <strong style={{ color: daysLeft < 14 ? "#B91C1C" : "#15803D" }}>J-{Math.max(0, daysLeft)}</strong></span>}
+                </div>
+              </div>
+            </div>
           </div>
-        </div>
+        )}
+
+        {/* ── DÉCISION ── */}
+        {activeTab === "Décision" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 16, alignItems: "flex-start" }}>
+            {/* Left */}
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+              <div style={CARD}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Projet de décision</div>
+                {/* Type de décision */}
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 10 }}>Type de décision</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 8, marginBottom: 20 }}>
+                  {[
+                    { key: "accord", label: "Accord", sub: "Autorisation simple", icon: "✓" },
+                    { key: "accord_prescription", label: "Accord avec prescriptions", sub: "Autorisation sous conditions", icon: "✓" },
+                    { key: "refus", label: "Refus", sub: "Opposition au projet", icon: "✕" },
+                    { key: "sursis", label: "Sursis à statuer", sub: "Attente de complément", icon: "⏱" },
+                    { key: "pieces", label: "Demande de pièces", sub: "Pièces manquantes", icon: "📄" },
+                  ].map(d => (
+                    <button key={d.key} onClick={() => setDecisionType(d.key)} style={{
+                      border: `2px solid ${decisionType === d.key ? "#4F46E5" : "#E2E8F0"}`,
+                      background: decisionType === d.key ? "#EEF2FF" : "white",
+                      borderRadius: 10, padding: "12px 10px", cursor: "pointer", textAlign: "left" as const,
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
+                        <div style={{ width: 20, height: 20, borderRadius: "50%", background: decisionType === d.key ? "#4F46E5" : "#E2E8F0", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke={decisionType === d.key ? "white" : "#94a3b8"} strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                        </div>
+                        <span style={{ fontSize: 12, fontWeight: 700, color: decisionType === d.key ? "#4F46E5" : "#374151" }}>{d.label}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "#64748b" }}>{d.sub}</div>
+                    </button>
+                  ))}
+                </div>
+                {/* Prescriptions */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>Prescriptions à intégrer dans l'arrêté</span>
+                    <span style={{ background: "#4F46E5", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 11, fontWeight: 700, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{prescriptions.length}</span>
+                  </div>
+                  <button onClick={() => setEditingPrescriptions(!editingPrescriptions)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>✏️ Modifier</button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 6, marginBottom: 20 }}>
+                  {prescriptions.map((p, i) => (
+                    <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 12px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #F1F5F9" }}>
+                      <span style={{ width: 20, height: 20, borderRadius: "50%", background: "#EEF2FF", color: "#4F46E5", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>{i + 1}</span>
+                      {editingPrescriptions ? (
+                        <input value={p} onChange={e => { const next = [...prescriptions]; next[i] = e.target.value; setPrescriptions(next); }} style={{ flex: 1, border: "1px solid #C7D2FE", borderRadius: 6, padding: "4px 8px", fontSize: 12, outline: "none", color: "#374151" }} />
+                      ) : (
+                        <span style={{ fontSize: 12, color: "#374151", lineHeight: 1.5 }}>{p}</span>
+                      )}
+                    </div>
+                  ))}
+                  {editingPrescriptions && (
+                    <button onClick={() => setPrescriptions([...prescriptions, ""])} style={{ border: "2px dashed #C7D2FE", background: "transparent", borderRadius: 8, padding: "7px 0", fontSize: 12, color: "#4F46E5", cursor: "pointer", width: "100%" }}>+ Ajouter une prescription</button>
+                  )}
+                </div>
+                {/* Génération documents */}
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 10 }}>Génération des documents</div>
+                <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+                  <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+                    Générer projet d'arrêté
+                  </button>
+                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 14px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>
+                    Générer courrier
+                  </button>
+                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 14px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+                    Prévisualiser PDF
+                  </button>
+                </div>
+                {/* Arrêté preview */}
+                <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "#F8FAFC", borderBottom: "1px solid #E2E8F0" }}>
+                    <span style={{ fontSize: 12, color: "#94a3b8" }}>Aperçu du projet d'arrêté</span>
+                    <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
+                      <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 4, padding: "2px 8px", fontSize: 11, color: "#374151", cursor: "pointer", fontWeight: 700 }}>B</button>
+                      <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 4, padding: "2px 8px", fontSize: 11, color: "#374151", cursor: "pointer", fontStyle: "italic" as const }}>I</button>
+                    </div>
+                  </div>
+                  <div style={{ padding: "24px 28px", fontFamily: "Georgia, serif", fontSize: 12, lineHeight: 1.8, color: "#1a1a1a", minHeight: 220 }}>
+                    <div style={{ textAlign: "center" as const, marginBottom: 16 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "0.1em" }}>ARRÊTÉ</div>
+                      <div style={{ fontSize: 13 }}>accordant un permis de construire</div>
+                    </div>
+                    <div>Le Maire de {dossier.commune ?? "la commune"},</div>
+                    <div style={{ marginTop: 8 }}>Vu la demande de permis de construire présentée le {dossier.date_depot ? fmtDate(dossier.date_depot) : "—"} par {dossier.petitionnaire}&nbsp;;</div>
+                    <div>Vu le Code de l'urbanisme&nbsp;;</div>
+                    <div style={{ marginTop: 8, fontWeight: 700 }}>ARRÊTE</div>
+                    <div><strong>Article 1<sup>er</sup></strong> – Le permis de construire est <strong>ACCORDÉ</strong> à {dossier.petitionnaire} pour le projet décrit dans la demande susvisée.</div>
+                    {prescriptions.length > 0 && (
+                      <div><strong>Article 2</strong> – Prescriptions<br />Les prescriptions suivantes devront être respectées :<br />{prescriptions.map((p, i) => <span key={i}>{i + 1}. {p}<br /></span>)}</div>
+                    )}
+                  </div>
+                </div>
+              </div>
+            </div>
+            {/* Right */}
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Synthèse du dossier</div>
+                {[
+                  { label: "Dossier complet", ok: true },
+                  { label: "Consultations terminées", ok: true, sub: "5 consultations clôturées" },
+                  { label: "Échéance respectée", ok: true, sub: "Instruction dans les délais" },
+                  { label: "2 points de vigilance identifiés", ok: false, sub: "Voir le détail ci-dessous" },
+                ].map((item, i) => (
+                  <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start", padding: "8px 0", borderBottom: i < 3 ? "1px solid #F8FAFC" : "none" }}>
+                    <span style={{ fontSize: 16, flexShrink: 0, marginTop: 1 }}>{item.ok ? "✅" : "⚠️"}</span>
+                    <div>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>{item.label}</div>
+                      {item.sub && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{item.sub}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Vérifications avant décision</div>
+                {[
+                  { label: "Dossier complet", ok: true },
+                  { label: "Consultations clôturées", ok: true },
+                  { label: "Pièces obligatoires présentes", ok: true },
+                  { label: "Avis ABF avec prescriptions", warn: true },
+                  { label: "Signature du maire requise", warn: true },
+                ].map((item, i) => (
+                  <div key={i} style={{ display: "flex", gap: 8, alignItems: "center", padding: "7px 0", borderBottom: i < 4 ? "1px solid #F8FAFC" : "none" }}>
+                    <span style={{ fontSize: 15, flexShrink: 0 }}>{item.ok ? "✅" : "⚠️"}</span>
+                    <span style={{ fontSize: 12, color: "#374151" }}>{item.label}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={CARD}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Signatures</div>
+                {[
+                  { initials: "ML", name: instructeurName, role: "Instructeur·trice", signed: true, date: "Signé le 17/05/2024" },
+                  { initials: "M", name: "Maire", role: "Élu signataire", signed: false, date: "—" },
+                ].map((sig, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: i === 0 ? "1px solid #F1F5F9" : "none" }}>
+                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: "#4F46E5", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 700, flexShrink: 0 }}>{sig.initials}</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{sig.name}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{sig.role}</div>
+                    </div>
+                    <span style={{ fontSize: 11, fontWeight: 600, color: sig.signed ? "#15803D" : "#C2410C", background: sig.signed ? "#F0FDF4" : "#FFF7ED", borderRadius: 6, padding: "2px 8px" }}>{sig.signed ? sig.date : "Signature requise"}</span>
+                  </div>
+                ))}
+              </div>
+              <button style={{ width: "100%", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 12, padding: "14px 0", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 8 }}>
+                <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                Valider la décision
+              </button>
+            </div>
+          </div>
+        )}
+
       </div>
     </div>
   );
@@ -2270,25 +2904,45 @@ function NouveauDossierModal({ onClose }: { onClose: () => void }) {
 
 function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
   const { id } = useParams<{ id: string }>();
-  const location = useLocation();
   const routerNavigate = useNavigate();
-  const stateDossier = (location.state as { dossier?: DossierInfo } | null)?.dossier;
-  const [dossier, setDossier] = useState<DossierInfo | null>(stateDossier ?? null);
-  const [loading, setLoading] = useState(!stateDossier);
+  const [dossier, setDossier] = useState<DossierInfo | null>(null);
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    if (!id || stateDossier) return;
-    api.get<{ id: string; numero: string; type: string; status: string; adresse: string | null; date_limite_instruction: string | null; date_depot: string | null; demandeur: { prenom?: string; nom?: string } | null }>(`/mairie/dossiers/${id}`)
-      .then(data => setDossier({
-        id: data.id,
-        numero: data.numero,
-        type: data.type,
-        petitionnaire: data.demandeur ? ([data.demandeur.prenom, data.demandeur.nom].filter(Boolean).join(" ") || "—") : "—",
-        adresse: data.adresse ?? "—",
-        status: data.status,
-        echeance: fmtDate(data.date_limite_instruction),
-        date_depot: data.date_depot ?? undefined,
-      }))
+    if (!id) return;
+    type ApiDetail = {
+      id: string; numero: string; type: string; status: string;
+      adresse: string | null; commune: string | null; code_postal: string | null;
+      description: string | null; parcelle: string | null; surface_plancher: string | null;
+      date_limite_instruction: string | null; date_depot: string | null;
+      metadata: Record<string, unknown> | null;
+      demandeur: { prenom?: string; nom?: string } | null;
+      instructeur: { prenom?: string; nom?: string } | null;
+    };
+    api.get<ApiDetail>(`/mairie/dossiers/${id}`)
+      .then(data => {
+        const meta = (data.metadata ?? {}) as Record<string, unknown>;
+        const lat = parseFloat(String(meta["lat"] ?? ""));
+        const lng = parseFloat(String(meta["lng"] ?? ""));
+        setDossier({
+          id: data.id,
+          numero: data.numero,
+          type: data.type,
+          petitionnaire: data.demandeur ? ([data.demandeur.prenom, data.demandeur.nom].filter(Boolean).join(" ") || "—") : "—",
+          adresse: data.adresse ?? "—",
+          status: data.status,
+          echeance: fmtDate(data.date_limite_instruction),
+          date_depot: data.date_depot ?? undefined,
+          description: data.description ?? undefined,
+          parcelle: data.parcelle ?? undefined,
+          surface_plancher: data.surface_plancher ?? undefined,
+          commune: data.commune ?? undefined,
+          code_postal: data.code_postal ?? undefined,
+          instructeur: data.instructeur ? ([data.instructeur.prenom, data.instructeur.nom].filter(Boolean).join(" ") || undefined) : undefined,
+          lat: isNaN(lat) ? undefined : lat,
+          lng: isNaN(lng) ? undefined : lng,
+        });
+      })
       .catch(() => routerNavigate("/mairie/dossiers", { replace: true }))
       .finally(() => setLoading(false));
   }, [id]);
