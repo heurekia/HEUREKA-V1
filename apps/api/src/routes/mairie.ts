@@ -184,27 +184,56 @@ mairieRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
         status: dossiers.status,
         adresse: dossiers.adresse,
         commune: dossiers.commune,
+        code_postal: dossiers.code_postal,
         metadata: dossiers.metadata,
       })
       .from(dossiers)
       .where(
         commune
-          ? sql`commune ILIKE ${"%" + commune + "%"} AND (metadata->>'lat') IS NOT NULL`
-          : sql`(metadata->>'lat') IS NOT NULL`
+          ? sql`commune ILIKE ${"%" + commune + "%"} AND adresse IS NOT NULL`
+          : sql`adresse IS NOT NULL`
       )
       .orderBy(desc(dossiers.created_at))
       .limit(200);
 
-    const result = rows
-      .map(d => {
-        const meta = (d.metadata ?? {}) as Record<string, unknown>;
-        const lat = parseFloat(String(meta["lat"] ?? ""));
-        const lng = parseFloat(String(meta["lng"] ?? ""));
-        return { id: d.id, numero: d.numero, type: d.type, status: d.status, adresse: d.adresse ?? "", commune: d.commune ?? "", lat, lng };
-      })
-      .filter(d => !isNaN(d.lat) && !isNaN(d.lng));
+    // Géocode les dossiers sans coordonnées et met en cache dans metadata
+    async function geocode(adresse: string, communeNom: string, codePostal: string | null): Promise<{ lat: number; lng: number } | null> {
+      try {
+        const q = encodeURIComponent(`${adresse} ${communeNom}`);
+        const citycode = codePostal ? `&postcode=${encodeURIComponent(codePostal)}` : "";
+        const r = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${q}${citycode}&limit=1`);
+        if (!r.ok) return null;
+        const data = await r.json() as { features?: { geometry: { coordinates: [number, number] }; properties: { score: number } }[] };
+        const feature = data.features?.[0];
+        if (!feature || feature.properties.score < 0.4) return null;
+        const [lng, lat] = feature.geometry.coordinates;
+        return { lat, lng };
+      } catch {
+        return null;
+      }
+    }
 
-    res.json(result);
+    const result = await Promise.all(rows.map(async d => {
+      const meta = (d.metadata ?? {}) as Record<string, unknown>;
+      let lat = parseFloat(String(meta["lat"] ?? ""));
+      let lng = parseFloat(String(meta["lng"] ?? ""));
+
+      if ((isNaN(lat) || isNaN(lng)) && d.adresse) {
+        const coords = await geocode(d.adresse, d.commune ?? "", d.code_postal ?? null);
+        if (coords) {
+          lat = coords.lat;
+          lng = coords.lng;
+          // Cache dans metadata pour les prochains appels
+          await db.update(dossiers)
+            .set({ metadata: { ...meta, lat, lng } })
+            .where(eq(dossiers.id, d.id));
+        }
+      }
+
+      return { id: d.id, numero: d.numero, type: d.type, status: d.status, adresse: d.adresse ?? "", commune: d.commune ?? "", lat, lng };
+    }));
+
+    res.json(result.filter(d => !isNaN(d.lat) && !isNaN(d.lng)));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
