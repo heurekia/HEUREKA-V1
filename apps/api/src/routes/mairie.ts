@@ -347,23 +347,44 @@ mairieRouter.get("/conversations/:dossierId", async (req: AuthRequest, res) => {
 // ── Analyse parcellaire pour un dossier (onglet Parcelle) ──
 mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res) => {
   try {
-    const [dossier] = await db
-      .select({ parcelle: dossiers.parcelle, adresse: dossiers.adresse, commune: dossiers.commune })
-      .from(dossiers)
-      .where(eq(dossiers.id, req.params.id as string))
-      .limit(1);
-    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    // ?q= override permet de forcer une adresse sans passer par celle du dossier
+    const qOverride = (req.query.q as string | undefined)?.trim();
 
-    const query = dossier.parcelle
-      ? dossier.parcelle
-      : dossier.adresse
-        ? `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`
-        : null;
+    let query: string | null = qOverride ?? null;
+    if (!query) {
+      const [dossier] = await db
+        .select({ parcelle: dossiers.parcelle, adresse: dossiers.adresse, commune: dossiers.commune })
+        .from(dossiers)
+        .where(eq(dossiers.id, req.params.id as string))
+        .limit(1);
+      if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+      query = dossier.parcelle
+        ? dossier.parcelle
+        : dossier.adresse
+          ? `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`
+          : null;
+    }
 
     if (!query) return res.status(422).json({ error: "Aucune adresse ni référence parcellaire sur ce dossier." });
 
     const analysis = await analyseParcel(query);
     res.json(analysis);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Mise à jour adresse d'un dossier ──
+mairieRouter.patch("/dossiers/:id/adresse", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { adresse, commune } = req.body as { adresse?: string; commune?: string };
+    if (!adresse) return res.status(400).json({ error: "adresse requis" });
+    await db.update(dossiers)
+      .set({ adresse, commune: commune ?? null, updated_at: new Date() })
+      .where(eq(dossiers.id, req.params.id as string));
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
