@@ -2031,16 +2031,51 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [parcelAnalysis, setParcelAnalysis] = useState<ParcelAnalysis | null>(null);
   const [parcelLoading, setParcelLoading] = useState(false);
   const [parcelError, setParcelError] = useState<string | null>(null);
+  const [addressOverride, setAddressOverride] = useState<string | null>(null);
+  const [addrQuery, setAddrQuery] = useState("");
+  const [addrSuggestions, setAddrSuggestions] = useState<Array<{ label: string; city: string; postcode: string }>>([]);
+  const [addrSugLoading, setAddrSugLoading] = useState(false);
+  const [addrSaving, setAddrSaving] = useState(false);
 
   useEffect(() => {
     if (activeTab !== "Parcelle" || parcelAnalysis || parcelLoading) return;
     setParcelLoading(true);
     setParcelError(null);
-    api.get<ParcelAnalysis>(`/mairie/dossiers/${dossier.id}/analyse-parcelle`)
+    const url = `/mairie/dossiers/${dossier.id}/analyse-parcelle${addressOverride ? `?q=${encodeURIComponent(addressOverride)}` : ""}`;
+    api.get<ParcelAnalysis>(url)
       .then(data => setParcelAnalysis(data))
       .catch(e => setParcelError(e instanceof Error ? e.message : "Erreur analyse parcellaire"))
       .finally(() => setParcelLoading(false));
-  }, [activeTab, dossier.id, parcelAnalysis, parcelLoading]);
+  }, [activeTab, dossier.id, parcelAnalysis, parcelLoading, addressOverride]);
+
+  // BAN autocomplete
+  useEffect(() => {
+    if (addrQuery.length < 3) { setAddrSuggestions([]); return; }
+    const timer = setTimeout(() => {
+      setAddrSugLoading(true);
+      fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(addrQuery)}&limit=5`)
+        .then(r => r.json())
+        .then((d: { features: Array<{ properties: { label: string; city: string; postcode: string } }> }) =>
+          setAddrSuggestions(d.features.map(f => ({ label: f.properties.label, city: f.properties.city, postcode: f.properties.postcode }))))
+        .catch(() => setAddrSuggestions([]))
+        .finally(() => setAddrSugLoading(false));
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [addrQuery]);
+
+  const handleAddressSelect = (suggestion: { label: string; city: string; postcode: string }) => {
+    const newAddr = suggestion.label;
+    const newCommune = suggestion.city;
+    setAddressOverride(newAddr);
+    setAddrQuery("");
+    setAddrSuggestions([]);
+    setParcelAnalysis(null);
+    setParcelError(null);
+    setAddrSaving(true);
+    api.patch(`/mairie/dossiers/${dossier.id}/adresse`, { adresse: newAddr, commune: newCommune })
+      .catch(() => {})
+      .finally(() => setAddrSaving(false));
+  };
 
   const [decisionType, setDecisionType] = useState<string>("accord_prescription");
   const [prescriptions, setPrescriptions] = useState([
@@ -2349,8 +2384,42 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               )}
               {parcelError && (
-                <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: "#991B1B" }}>
-                  {parcelError}
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                  <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 14px", fontSize: 12.5, color: "#991B1B" }}>
+                    {parcelError}
+                  </div>
+                  {/* Correction d'adresse */}
+                  <div style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "14px 16px" }}>
+                    <p style={{ fontSize: 12.5, fontWeight: 600, color: "#374151", marginBottom: 8 }}>Corriger ou préciser l'adresse</p>
+                    <div style={{ position: "relative" as const }}>
+                      <input
+                        value={addrQuery}
+                        onChange={e => setAddrQuery(e.target.value)}
+                        placeholder="Ex : 12 rue du Commerce, Ballan-Miré"
+                        style={{ width: "100%", padding: "8px 12px", border: "1px solid #CBD5E1", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const, color: "#0F172A" }}
+                      />
+                      {addrSugLoading && (
+                        <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 11, color: "#94a3b8" }}>…</span>
+                      )}
+                      {addrSuggestions.length > 0 && (
+                        <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, boxShadow: "0 4px 12px rgba(0,0,0,0.1)", zIndex: 50, overflow: "hidden" }}>
+                          {addrSuggestions.map((s, i) => (
+                            <button
+                              key={i}
+                              onMouseDown={() => handleAddressSelect(s)}
+                              style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 14px", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: "#374151", borderBottom: i < addrSuggestions.length - 1 ? "1px solid #F1F5F9" : "none" }}
+                              onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
+                              onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                            >
+                              <span style={{ fontWeight: 500 }}>{s.label}</span>
+                              <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: 6 }}>{s.postcode}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                    {addrSaving && <p style={{ fontSize: 11, color: "#64748b", marginTop: 6 }}>Sauvegarde…</p>}
+                  </div>
                 </div>
               )}
 
@@ -2365,10 +2434,15 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         Vue parcellaire
                       </div>
                       {pa && (
-                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" as const }}>
+                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" as const, alignItems: "center" }}>
                           {pa.data_sources.map(s => (
                             <span key={s} style={{ fontSize: 10, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", borderRadius: 5, padding: "2px 7px" }}>{s}</span>
                           ))}
+                          <button
+                            title="Modifier l'adresse"
+                            onClick={() => { setParcelAnalysis(null); setParcelError("Adresse non reconnue. Vérifiez l'orthographe ou utilisez la référence cadastrale."); setAddressOverride(null); setAddrQuery(""); }}
+                            style={{ padding: "2px 7px", fontSize: 10, fontWeight: 600, color: "#64748b", background: "#F1F5F9", border: "1px solid #E2E8F0", borderRadius: 5, cursor: "pointer" }}
+                          >✏️ Modifier</button>
                         </div>
                       )}
                     </div>
