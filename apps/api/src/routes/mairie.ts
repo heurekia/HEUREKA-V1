@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages } from "@heureka-v1/db";
 import { eq, desc, and, sql, like } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 
@@ -252,6 +252,87 @@ mairieRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
   }
 });
 
+
+// ── Conversations : liste avec preview et non-lus ──
+// NB: "non lu" = dernier message du citoyen sans réponse de la mairie/instructeur
+mairieRouter.get("/conversations", async (_req: AuthRequest, res) => {
+  try {
+    const rows = await db.execute(sql`
+      WITH last_msg AS (
+        SELECT DISTINCT ON (dossier_id) dossier_id, content, from_role, created_at
+        FROM dossier_messages
+        ORDER BY dossier_id, created_at DESC
+      ),
+      unread AS (
+        SELECT dm.dossier_id, COUNT(*)::int AS cnt
+        FROM dossier_messages dm
+        WHERE dm.from_role = 'citoyen'
+          AND dm.created_at > COALESCE((
+            SELECT MAX(dm2.created_at) FROM dossier_messages dm2
+            WHERE dm2.dossier_id = dm.dossier_id AND dm2.from_role != 'citoyen'
+          ), '1970-01-01'::timestamp)
+        GROUP BY dm.dossier_id
+      )
+      SELECT
+        d.id AS dossier_id, d.numero, d.type, d.status,
+        COALESCE(u.prenom || ' ' || u.nom, '—') AS petitionnaire,
+        lm.content AS last_content, lm.from_role AS last_from_role,
+        lm.created_at AS last_at,
+        COALESCE(ur.cnt, 0) AS unread_count
+      FROM dossiers d
+      JOIN last_msg lm ON lm.dossier_id = d.id
+      LEFT JOIN users u ON u.id = d.user_id
+      LEFT JOIN unread ur ON ur.dossier_id = d.id
+      ORDER BY lm.created_at DESC
+    `);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Nombre total de messages non lus (pour le badge dashboard) ──
+mairieRouter.get("/conversations/unread-count", async (_req: AuthRequest, res) => {
+  try {
+    const rows = await db.execute(sql`
+      SELECT COUNT(DISTINCT dm.dossier_id)::int AS count
+      FROM dossier_messages dm
+      WHERE dm.from_role = 'citoyen'
+        AND dm.created_at > COALESCE((
+          SELECT MAX(dm2.created_at) FROM dossier_messages dm2
+          WHERE dm2.dossier_id = dm.dossier_id AND dm2.from_role != 'citoyen'
+        ), '1970-01-01'::timestamp)
+    `) as unknown as [{ count: number }];
+    res.json({ count: rows[0]?.count ?? 0 });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Thread d'une conversation ──
+mairieRouter.get("/conversations/:dossierId", async (req: AuthRequest, res) => {
+  try {
+    const msgs = await db
+      .select({
+        id: dossier_messages.id,
+        content: dossier_messages.content,
+        from_role: dossier_messages.from_role,
+        created_at: dossier_messages.created_at,
+        prenom: users.prenom,
+        nom: users.nom,
+      })
+      .from(dossier_messages)
+      .leftJoin(users, sql`dossier_messages.from_user_id::uuid = users.id`)
+      .where(eq(dossier_messages.dossier_id, req.params.dossierId as string))
+      .orderBy(dossier_messages.created_at);
+    res.json(msgs);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 
 mairieRouter.get("/notifications", async (req: AuthRequest, res) => {
   try {
