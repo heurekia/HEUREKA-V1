@@ -586,7 +586,6 @@ function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string)
 
 function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossierClick: (d: { id: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string }) => void; navigate: (s: string) => void; initialFilter?: string }) {
   const tabs = ["Tous", "Nouveau", "En instruction", "En consultation", "En retard", "Décision", "Terminés"];
-  const tabCounts: Record<string, number> = { "Tous": 24, "Nouveau": 8, "En instruction": 8, "En consultation": 4, "En retard": 1, "Décision": 2, "Terminés": 2 };
   const [activeTab, setActiveTab] = useState(initialFilter ?? "Tous");
   const [searchQ, setSearchQ] = useState("");
 
@@ -600,6 +599,10 @@ function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossier
     { id: "PC-2023-0166", pet: "SAS Habitat", addr: "ZA des Tilleuls", type: "Permis de construire", status: "En consultation", ech: "05/06/2024" },
     { id: "DP-2024-0333", pet: "Emma Petit", addr: "2 lotissement du Parc", type: "Déclaration préalable", status: "En instruction", ech: "18/06/2024" },
   ];
+
+  const tabCounts: Record<string, number> = Object.fromEntries(
+    tabs.map(t => [t, t === "Tous" ? allRows.length : allRows.filter(r => r.status === t).length])
+  );
   const rows = allRows.filter(r => {
     const matchTab = activeTab === "Tous" || r.status === activeTab;
     const matchQ = !searchQ || r.id.toLowerCase().includes(searchQ.toLowerCase()) || r.pet.toLowerCase().includes(searchQ.toLowerCase()) || r.addr.toLowerCase().includes(searchQ.toLowerCase());
