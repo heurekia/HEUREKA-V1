@@ -205,33 +205,156 @@ function Sidebar({ active, setActive }: { active: string; setActive: (s: string)
   );
 }
 
-function Topbar({ buttonLabel = "+ Nouveau dossier", commune = "Ballan-Miré", onNewDossier }: { title?: string; buttonLabel?: string; commune?: string; onNewDossier?: () => void }) {
+function Topbar({ buttonLabel = "+ Nouveau dossier", commune = "Ballan-Miré", onNewDossier, navigate }: { title?: string; buttonLabel?: string; commune?: string; onNewDossier?: () => void; navigate?: (s: string) => void }) {
+  const [showNotifs, setShowNotifs] = useState(false);
+  const [showFAQ, setShowFAQ] = useState(false);
+  const [showCommune, setShowCommune] = useState(false);
+  const [faqQuery, setFaqQuery] = useState("");
+  const [faqAnswer, setFaqAnswer] = useState("");
+  const [searchQuery, setSearchQuery] = useState("");
+  const [searchFocused, setSearchFocused] = useState(false);
+
+  const communes = ["Ballan-Miré", "Saint-Avertin", "Joué-lès-Tours", "La Riche"];
+  const notifs = [
+    { icon: "📁", text: "Nouveau dossier PC-2024-0801 déposé", sub: "Il y a 12 min", color: "#4F46E5" },
+    { icon: "💬", text: "Nouveau message de Jean Dupont", sub: "Il y a 1h", color: "#4F46E5" },
+    { icon: "⏰", text: "Délai dépassé — DP-2024-0111", sub: "Hier", color: "#EF4444" },
+  ];
+  const allDossiers = [
+    { id: "PC-2024-0123", addr: "12 rue des Lilas", pet: "Jean Dupont" },
+    { id: "DP-2024-0456", addr: "8 chemin de la Colline", pet: "Sophie Martin" },
+    { id: "PC-2024-0789", addr: "45 avenue de la Mer", pet: "SCI Les Oliviers" },
+    { id: "DP-2024-0089", addr: "3 impasse des Pins", pet: "Pierre Durand" },
+    { id: "PC-2023-0567", addr: "7 rue du Stade", pet: "Marie Bernard" },
+    { id: "DP-2024-0111", addr: "15 route des Plages", pet: "Lucas Morel" },
+  ];
+  const q = searchQuery.toLowerCase();
+  const searchResults = searchQuery.length > 1
+    ? allDossiers.filter(r => r.id.toLowerCase().includes(q) || r.addr.toLowerCase().includes(q) || r.pet.toLowerCase().includes(q))
+    : [];
+
+  const closeAll = () => { setShowNotifs(false); setShowFAQ(false); setShowCommune(false); };
+
   return (
-    <div style={{ height: 56, background: "white", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", padding: "0 24px", gap: 16, position: "sticky", top: 0, zIndex: 40 }}>
-      <div style={{ flex: 1, maxWidth: 440, display: "flex", alignItems: "center", gap: 8, background: "#F1F5F9", borderRadius: 8, padding: "7px 12px", border: "1px solid #E2E8F0" }}>
-        <SearchIcon size={15} />
-        <input style={{ border: "none", background: "transparent", outline: "none", fontSize: 13, color: "#64748b", flex: 1 }} placeholder="Rechercher un dossier, une adresse, un pétitionnaire..." />
-        <kbd style={{ fontSize: 10, color: "#94a3b8", background: "#E2E8F0", borderRadius: 4, padding: "1px 5px" }}>⌘K</kbd>
-      </div>
-      <div style={{ flex: 1 }} />
-      <div style={{ position: "relative" }}>
-        <button style={{ border: "none", background: "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
-          <BellIcon size={20} />
+    <div style={{ position: "sticky", top: 0, zIndex: 40 }}>
+      <div style={{ height: 56, background: "white", borderBottom: "1px solid #e2e8f0", display: "flex", alignItems: "center", padding: "0 24px", gap: 16 }}>
+        {/* Search */}
+        <div style={{ flex: 1, maxWidth: 440, position: "relative" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#F1F5F9", borderRadius: 8, padding: "7px 12px", border: `1px solid ${searchFocused ? "#4F46E5" : "#E2E8F0"}` }}>
+            <SearchIcon size={15} />
+            <input
+              style={{ border: "none", background: "transparent", outline: "none", fontSize: 13, color: "#374151", flex: 1 }}
+              placeholder="Rechercher un dossier, une adresse, un pétitionnaire..."
+              value={searchQuery}
+              onChange={e => setSearchQuery(e.target.value)}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setTimeout(() => setSearchFocused(false), 150)}
+            />
+            {searchQuery && <button onClick={() => setSearchQuery("")} style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 16, lineHeight: 1, padding: 0 }}>×</button>}
+          </div>
+          {searchFocused && searchQuery.length > 1 && (
+            <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "white", borderRadius: 10, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 200, overflow: "hidden" }}>
+              {searchResults.length > 0 ? searchResults.map(r => (
+                <button key={r.id} onMouseDown={() => { navigate?.("Dossiers"); setSearchQuery(""); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", minWidth: 110 }}>{r.id}</span>
+                  <span style={{ fontSize: 12, color: "#64748b" }}>{r.addr} — {r.pet}</span>
+                </button>
+              )) : (
+                <div style={{ padding: "12px 14px", fontSize: 13, color: "#94a3b8" }}>Aucun résultat pour « {searchQuery} »</div>
+              )}
+            </div>
+          )}
+        </div>
+
+        <div style={{ flex: 1 }} />
+
+        {/* Bell */}
+        <div style={{ position: "relative" }}>
+          <button onClick={() => { setShowNotifs(!showNotifs); setShowFAQ(false); setShowCommune(false); }} style={{ border: "none", background: showNotifs ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
+            <BellIcon size={20} />
+          </button>
+          <span style={{ position: "absolute", top: 2, right: 2, width: 16, height: 16, background: "#EF4444", borderRadius: "50%", fontSize: 9, fontWeight: 700, color: "white", display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>3</span>
+          {showNotifs && (
+            <div style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, width: 320, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.14)", zIndex: 200 }}>
+              <div style={{ padding: "12px 16px", borderBottom: "1px solid #F1F5F9", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Notifications</span>
+                <button style={{ border: "none", background: "none", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>Tout marquer lu</button>
+              </div>
+              {notifs.map((n, i) => (
+                <div key={i} style={{ padding: "10px 16px", display: "flex", alignItems: "flex-start", gap: 10, borderBottom: "1px solid #F8FAFC", cursor: "pointer" }} onClick={closeAll}>
+                  <div style={{ width: 32, height: 32, borderRadius: 8, background: n.color + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{n.icon}</div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 12, color: "#0F172A", fontWeight: 500 }}>{n.text}</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{n.sub}</div>
+                  </div>
+                </div>
+              ))}
+              <div style={{ padding: "10px 16px", textAlign: "center" }}>
+                <button style={{ border: "none", background: "none", fontSize: 12, color: "#4F46E5", cursor: "pointer" }}>Voir toutes les notifications</button>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* FAQ / Help */}
+        <div style={{ position: "relative" }}>
+          <button onClick={() => { setShowFAQ(!showFAQ); setShowNotifs(false); setShowCommune(false); }} style={{ border: "none", background: showFAQ ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
+            <HelpIcon size={20} />
+          </button>
+          {showFAQ && (
+            <div style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, width: 340, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.14)", zIndex: 200 }}>
+              <div style={{ padding: "12px 16px", borderBottom: "1px solid #F1F5F9" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Assistant FAQ ✨</div>
+                <div style={{ fontSize: 11, color: "#94a3b8" }}>Posez une question sur la réglementation, les délais ou les procédures.</div>
+              </div>
+              <div style={{ padding: "12px 16px" }}>
+                {faqAnswer && (
+                  <div style={{ background: "#F0F4FF", borderRadius: 8, padding: "10px 12px", marginBottom: 10, fontSize: 12, color: "#374151", borderLeft: "3px solid #4F46E5" }}>{faqAnswer}</div>
+                )}
+                <div style={{ display: "flex", gap: 6 }}>
+                  <input
+                    value={faqQuery}
+                    onChange={e => setFaqQuery(e.target.value)}
+                    onKeyDown={e => { if (e.key === "Enter" && faqQuery.trim()) { setFaqAnswer("Recherche en cours sur « " + faqQuery + " »… Cette fonctionnalité sera connectée à la base réglementaire."); setFaqQuery(""); } }}
+                    placeholder="Ex : délai permis de construire..."
+                    style={{ flex: 1, padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, outline: "none", color: "#374151" }}
+                    autoFocus
+                  />
+                  <button onClick={() => { if (faqQuery.trim()) { setFaqAnswer("Recherche en cours sur « " + faqQuery + " »… Cette fonctionnalité sera connectée à la base réglementaire."); setFaqQuery(""); } }} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 13px", fontSize: 13, cursor: "pointer" }}>→</button>
+                </div>
+                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap" as const, gap: 4 }}>
+                  {["Délai permis construire", "Consultation ABF", "Pièces CERFA"].map(s => (
+                    <button key={s} onClick={() => setFaqQuery(s)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 12, padding: "3px 8px", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>{s}</button>
+                  ))}
+                </div>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Commune selector */}
+        <div style={{ position: "relative" }}>
+          <button onClick={() => { setShowCommune(!showCommune); setShowNotifs(false); setShowFAQ(false); }} style={{ display: "flex", alignItems: "center", gap: 6, border: "1px solid #E2E8F0", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 13, color: "#374151", fontWeight: 500, background: showCommune ? "#F8FAFC" : "white" }}>
+            <BuildingIcon size={14} /><span>{commune}</span><ChevronDownIcon size={12} />
+          </button>
+          {showCommune && (
+            <div style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, width: 220, background: "white", borderRadius: 10, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.14)", zIndex: 200 }}>
+              <div style={{ padding: "8px 14px", borderBottom: "1px solid #F1F5F9", fontSize: 11, color: "#94a3b8", fontWeight: 600, letterSpacing: "0.05em" }}>MES COMMUNES</div>
+              {communes.map(c => (
+                <button key={c} onClick={closeAll} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left", fontSize: 13, color: c === commune ? "#4F46E5" : "#374151", fontWeight: c === commune ? 600 : 400 }}>
+                  <BuildingIcon size={13} />{c}
+                  {c === commune && <span style={{ marginLeft: "auto", color: "#4F46E5", fontSize: 14 }}>✓</span>}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* New dossier */}
+        <button onClick={() => onNewDossier?.()} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(79,70,229,0.3)" }}>
+          <PlusIcon size={14} />{buttonLabel}
         </button>
-        <span style={{ position: "absolute", top: 2, right: 2, width: 16, height: 16, background: "#EF4444", borderRadius: "50%", fontSize: 9, fontWeight: 700, color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}>3</span>
       </div>
-      <button style={{ border: "none", background: "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
-        <HelpIcon size={20} />
-      </button>
-      <div style={{ display: "flex", alignItems: "center", gap: 6, border: "1px solid #E2E8F0", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 13, color: "#374151", fontWeight: 500 }}>
-        <BuildingIcon size={14} />
-        <span>{commune}</span>
-        <ChevronDownIcon size={12} />
-      </div>
-      <button onClick={() => onNewDossier?.()} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(79,70,229,0.3)" }}>
-        <PlusIcon size={14} />
-        {buttonLabel}
-      </button>
     </div>
   );
 }
@@ -257,15 +380,15 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-function DashboardScreen({ navigate }: { navigate: (s: string) => void }) {
+function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void }) {
   const [mapFilter, setMapFilter] = useState<string>("Tous");
   const [activeMarker, setActiveMarker] = useState<number | null>(null);
 
   const cards = [
-    { label: "Nouveaux dossiers", count: 8, sub: "En attente d'ouverture d'instruction", color: "#4F46E5", bg: "#EEF2FF", icon: "📁", target: "Dossiers" },
-    { label: "Consultations en attente", count: 2, sub: "En attente de retour des services", color: "#F97316", bg: "#FFF7ED", icon: "👥", target: "Dossiers" },
-    { label: "Messages sans réponse", count: 3, sub: "Messages en attente de réponse", color: "#4F46E5", bg: "#EEF2FF", icon: "💬", target: "Messagerie" },
-    { label: "Dossiers en retard", count: 1, sub: "Dépassement de délai constaté", color: "#EF4444", bg: "#FEF2F2", icon: "⏰", alert: true, target: "Dossiers" },
+    { label: "Nouveaux dossiers", count: 8, sub: "En attente d'ouverture d'instruction", color: "#4F46E5", bg: "#EEF2FF", icon: "📁", onClick: () => navigateDossiers("Nouveau") },
+    { label: "Consultations en attente", count: 2, sub: "En attente de retour des services", color: "#F97316", bg: "#FFF7ED", icon: "👥", onClick: () => navigateDossiers("En consultation") },
+    { label: "Messages sans réponse", count: 3, sub: "Messages en attente de réponse", color: "#4F46E5", bg: "#EEF2FF", icon: "💬", onClick: () => navigate("Messagerie") },
+    { label: "Dossiers en retard", count: 1, sub: "Dépassement de délai constaté", color: "#EF4444", bg: "#FEF2F2", icon: "⏰", alert: true, onClick: () => navigateDossiers("En retard") },
   ];
 
   const markers = [
@@ -286,16 +409,16 @@ function DashboardScreen({ navigate }: { navigate: (s: string) => void }) {
   const visibleMarkers = mapFilter === "Tous" ? markers : markers.filter(m => m.status === mapFilter);
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 56px)", padding: "16px 24px 16px", gap: 12 }}>
+    <div style={{ padding: "16px 24px", display: "flex", flexDirection: "column", gap: 12 }}>
       {/* Header + KPI cards */}
-      <div style={{ display: "flex", alignItems: "center", gap: 16, flexShrink: 0 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
         <div style={{ flex: 1 }}>
           <h1 style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", margin: 0 }}>Bonjour Marie 👋</h1>
           <p style={{ color: "#64748b", fontSize: 12, margin: "2px 0 0" }}>Voici l'essentiel de votre activité aujourd'hui.</p>
         </div>
         <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, flex: 3 }}>
           {cards.map((c) => (
-            <button key={c.label} onClick={() => navigate(c.target)} style={{
+            <button key={c.label} onClick={c.onClick} style={{
               background: "white", borderRadius: 10, padding: "12px 14px",
               border: c.alert ? "1px solid #FCA5A5" : "1px solid #E2E8F0",
               boxShadow: "0 1px 3px rgba(0,0,0,0.04)", cursor: "pointer", textAlign: "left",
@@ -314,8 +437,8 @@ function DashboardScreen({ navigate }: { navigate: (s: string) => void }) {
         </div>
       </div>
 
-      {/* Map — fills remaining space */}
-      <div style={{ flex: 1, minHeight: 0, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      {/* Map */}
+      <div style={{ height: 300, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {/* Map toolbar */}
         <div style={{ padding: "10px 16px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
           <div>
@@ -459,9 +582,13 @@ function DashboardScreen({ navigate }: { navigate: (s: string) => void }) {
   );
 }
 
-function DossiersScreen({ onDossierClick, navigate }: { onDossierClick: (d: { id: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string }) => void; navigate: (s: string) => void }) {
-  const tabs = ["Tous 24", "Nouveaux 8", "En instruction 8", "En consultation 4", "Décision 2", "Terminés 2"];
-  const rows = [
+function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossierClick: (d: { id: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string }) => void; navigate: (s: string) => void; initialFilter?: string }) {
+  const tabs = ["Tous", "Nouveau", "En instruction", "En consultation", "En retard", "Décision", "Terminés"];
+  const tabCounts: Record<string, number> = { "Tous": 24, "Nouveau": 8, "En instruction": 8, "En consultation": 4, "En retard": 1, "Décision": 2, "Terminés": 2 };
+  const [activeTab, setActiveTab] = useState(initialFilter ?? "Tous");
+  const [searchQ, setSearchQ] = useState("");
+
+  const allRows = [
     { id: "PC-2024-0123", pet: "Jean Dupont", addr: "12 rue des Lilas", type: "Permis de construire", status: "En instruction", ech: "12/06/2024" },
     { id: "DP-2024-0456", pet: "Sophie Martin", addr: "8 chemin de la Colline", type: "Déclaration préalable", status: "En consultation", ech: "25/06/2024" },
     { id: "PC-2024-0789", pet: "SCI Les Oliviers", addr: "45 avenue de la Mer", type: "Permis de construire", status: "En instruction", ech: "15/06/2024" },
@@ -471,20 +598,31 @@ function DossiersScreen({ onDossierClick, navigate }: { onDossierClick: (d: { id
     { id: "PC-2023-0166", pet: "SAS Habitat", addr: "ZA des Tilleuls", type: "Permis de construire", status: "En consultation", ech: "05/06/2024" },
     { id: "DP-2024-0333", pet: "Emma Petit", addr: "2 lotissement du Parc", type: "Déclaration préalable", status: "En instruction", ech: "18/06/2024" },
   ];
+  const rows = allRows.filter(r => {
+    const matchTab = activeTab === "Tous" || r.status === activeTab;
+    const matchQ = !searchQ || r.id.toLowerCase().includes(searchQ.toLowerCase()) || r.pet.toLowerCase().includes(searchQ.toLowerCase()) || r.addr.toLowerCase().includes(searchQ.toLowerCase());
+    return matchTab && matchQ;
+  });
+
   return (
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Dossiers</h1>
         <p style={{ color: "#64748b", fontSize: 13 }}>Retrouvez et suivez l'avancement de tous les dossiers.</p>
       </div>
-      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #E2E8F0", marginBottom: 16 }}>
-        {tabs.map((t, i) => (
-          <button key={t} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13, fontWeight: i === 0 ? 600 : 400, color: i === 0 ? "#4F46E5" : "#64748b", borderBottom: i === 0 ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>{t}</button>
-        ))}
+      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #E2E8F0", marginBottom: 16, overflowX: "auto" }}>
+        {tabs.map(t => {
+          const active = t === activeTab;
+          return (
+            <button key={t} onClick={() => setActiveTab(t)} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13, fontWeight: active ? 600 : 400, color: active ? "#4F46E5" : "#64748b", borderBottom: active ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer", whiteSpace: "nowrap" }}>
+              {t} <span style={{ fontSize: 11, color: active ? "#4F46E5" : "#94a3b8" }}>{tabCounts[t] ?? 0}</span>
+            </button>
+          );
+        })}
       </div>
       <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
         <div style={{ flex: 1, position: "relative" }}>
-          <input placeholder="Rechercher" style={{ width: "100%", padding: "7px 12px 7px 32px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", color: "#374151" }} />
+          <input value={searchQ} onChange={e => setSearchQ(e.target.value)} placeholder="Rechercher un dossier, une adresse, un pétitionnaire..." style={{ width: "100%", padding: "7px 12px 7px 32px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", color: "#374151" }} />
         </div>
         {["Tous les types", "Tous les secteurs"].map(p => (
           <select key={p} style={{ padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", cursor: "pointer" }}>
@@ -1950,53 +2088,134 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 }
 
 function NouveauDossierModal({ onClose }: { onClose: () => void }) {
-  return (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
-      <div style={{ background: "white", borderRadius: 16, width: 560, maxWidth: "90vw", boxShadow: "0 20px 60px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
-        {/* Header */}
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px", borderBottom: "1px solid #E2E8F0" }}>
-          <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A" }}>Nouveau dossier</div>
-          <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 20, color: "#94a3b8", lineHeight: 1 }}>×</button>
-        </div>
-        {/* Form */}
-        <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Type de dossier</label>
-            <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}>
-              <option>Permis de construire</option>
-              <option>Déclaration préalable</option>
-              <option>Permis d'aménager</option>
-              <option>Certificat d'urbanisme</option>
-            </select>
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Pétitionnaire</label>
-            <input placeholder="Nom du pétitionnaire" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Adresse</label>
-            <input placeholder="Adresse du projet" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Date de dépôt</label>
-            <input type="date" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Instructeur assigné</label>
-            <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}>
-              <option>Marie Lambert</option>
-              <option>Pierre Martin</option>
-              <option>Sophie Dubois</option>
-            </select>
-          </div>
-        </div>
-        {/* Footer */}
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "16px 24px", borderTop: "1px solid #E2E8F0" }}>
-          <button onClick={onClose} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: "pointer", fontWeight: 500 }}>Annuler</button>
-          <button onClick={onClose} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Créer le dossier</button>
-        </div>
+  const [mode, setMode] = useState<"choose" | "manual" | "ocr">("choose");
+  const [ocrFile, setOcrFile] = useState<string | null>(null);
+  const [ocrScanning, setOcrScanning] = useState(false);
+  const [ocrDone, setOcrDone] = useState(false);
+
+  const handleOcrFile = (e: React.ChangeEvent<HTMLInputElement>) => {
+    if (e.target.files?.[0]) {
+      setOcrFile(e.target.files[0].name);
+      setOcrScanning(true);
+      setTimeout(() => { setOcrScanning(false); setOcrDone(true); }, 2000);
+    }
+  };
+
+  const Overlay = ({ children }: { children: React.ReactNode }) => (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div style={{ background: "white", borderRadius: 16, width: 580, maxWidth: "92vw", boxShadow: "0 20px 60px rgba(0,0,0,0.22)", maxHeight: "90vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+        {children}
       </div>
     </div>
+  );
+
+  const ModalHeader = ({ title, back }: { title: string; back?: () => void }) => (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "18px 24px", borderBottom: "1px solid #E2E8F0" }}>
+      {back && <button onClick={back} style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18, lineHeight: 1, padding: 0 }}>←</button>}
+      <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", flex: 1 }}>{title}</div>
+      <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 20, color: "#94a3b8", lineHeight: 1 }}>×</button>
+    </div>
+  );
+
+  if (mode === "choose") return (
+    <Overlay>
+      <ModalHeader title="Nouveau dossier" />
+      <div style={{ padding: "24px", display: "flex", flexDirection: "column" as const, gap: 12 }}>
+        <p style={{ fontSize: 13, color: "#64748b", margin: 0 }}>Choisissez le mode de saisie du dossier.</p>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 4 }}>
+          <button onClick={() => setMode("manual")} style={{ border: "2px solid #E2E8F0", borderRadius: 14, padding: "24px 20px", cursor: "pointer", background: "white", textAlign: "left", transition: "border-color 0.15s" }}
+            onMouseEnter={e => (e.currentTarget.style.borderColor = "#4F46E5")} onMouseLeave={e => (e.currentTarget.style.borderColor = "#E2E8F0")}>
+            <div style={{ fontSize: 32, marginBottom: 12 }}>📝</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Saisie manuelle</div>
+            <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>Remplissez le formulaire CERFA et les pièces complémentaires manuellement.</div>
+          </button>
+          <button onClick={() => setMode("ocr")} style={{ border: "2px solid #E2E8F0", borderRadius: 14, padding: "24px 20px", cursor: "pointer", background: "white", textAlign: "left", transition: "border-color 0.15s" }}
+            onMouseEnter={e => (e.currentTarget.style.borderColor = "#4F46E5")} onMouseLeave={e => (e.currentTarget.style.borderColor = "#E2E8F0")}>
+            <div style={{ fontSize: 32, marginBottom: 12 }}>📷</div>
+            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Reconnaissance OCR</div>
+            <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>Importez un CERFA scanné ou des pièces complémentaires — les données seront extraites automatiquement.</div>
+          </button>
+        </div>
+      </div>
+    </Overlay>
+  );
+
+  if (mode === "ocr") return (
+    <Overlay>
+      <ModalHeader title="Reconnaissance OCR" back={() => setMode("choose")} />
+      <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
+        {!ocrFile ? (
+          <label style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", border: "2px dashed #CBD5E1", borderRadius: 12, padding: "40px 24px", cursor: "pointer", gap: 10, background: "#F8FAFC" }}>
+            <span style={{ fontSize: 36 }}>📂</span>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>Déposez votre fichier ici</div>
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>PDF, JPG ou PNG — CERFA, plan de situation, pièces complémentaires</div>
+            <div style={{ background: "#4F46E5", color: "white", borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 600 }}>Choisir un fichier</div>
+            <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={handleOcrFile} style={{ display: "none" }} />
+          </label>
+        ) : ocrScanning ? (
+          <div style={{ textAlign: "center", padding: "32px 0" }}>
+            <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
+            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>Analyse en cours…</div>
+            <div style={{ fontSize: 12, color: "#64748b" }}>Extraction des données de {ocrFile}</div>
+            <div style={{ marginTop: 16, height: 4, background: "#E2E8F0", borderRadius: 2, overflow: "hidden" }}>
+              <div style={{ height: "100%", background: "linear-gradient(90deg,#4F46E5,#6366F1)", borderRadius: 2, animation: "none", width: "60%" }} />
+            </div>
+          </div>
+        ) : ocrDone ? (
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, background: "#F0FDF4", borderRadius: 8, padding: "10px 14px", border: "1px solid #BBF7D0" }}>
+              <span style={{ fontSize: 18 }}>✅</span>
+              <div style={{ fontSize: 13, color: "#15803D", fontWeight: 500 }}>Données extraites de {ocrFile}</div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
+              {[["Type de dossier", "Permis de construire"], ["Pétitionnaire", "Jean Dupont"], ["Adresse", "12 rue des Lilas, Ballan-Miré"], ["CERFA n°", "13406*08"], ["SIRET", "—"]].map(([label, value]) => (
+                <div key={label} style={{ display: "flex", gap: 12, alignItems: "center" }}>
+                  <div style={{ width: 160, fontSize: 12, fontWeight: 600, color: "#374151", flexShrink: 0 }}>{label}</div>
+                  <input defaultValue={value} style={{ flex: 1, padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none" }} />
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
+      </div>
+      {ocrDone && (
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
+          <button onClick={onClose} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: "pointer" }}>Annuler</button>
+          <button onClick={onClose} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Créer le dossier</button>
+        </div>
+      )}
+    </Overlay>
+  );
+
+  return (
+    <Overlay>
+      <ModalHeader title="Nouveau dossier — Saisie manuelle" back={() => setMode("choose")} />
+      <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 14 }}>
+        {[
+          { label: "Type de dossier", el: <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}><option>Permis de construire</option><option>Déclaration préalable</option><option>Permis d'aménager</option><option>Certificat d'urbanisme</option></select> },
+          { label: "Pétitionnaire", el: <input placeholder="Nom du pétitionnaire" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} /> },
+          { label: "Adresse du projet", el: <input placeholder="Adresse" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} /> },
+          { label: "Date de dépôt", el: <input type="date" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} /> },
+          { label: "Instructeur assigné", el: <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}><option>Marie Lambert</option><option>Pierre Martin</option><option>Sophie Dubois</option></select> },
+        ].map(({ label, el }) => (
+          <div key={label}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>{label}</label>
+            {el}
+          </div>
+        ))}
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Pièces jointes</label>
+          <label style={{ display: "flex", alignItems: "center", gap: 8, border: "1px dashed #CBD5E1", borderRadius: 8, padding: "10px 14px", cursor: "pointer", fontSize: 12, color: "#64748b" }}>
+            <span style={{ fontSize: 18 }}>📎</span> Ajouter des pièces (PDF, JPG, PNG)
+            <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} />
+          </label>
+        </div>
+      </div>
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
+        <button onClick={onClose} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: "pointer", fontWeight: 500 }}>Annuler</button>
+        <button onClick={onClose} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Créer le dossier</button>
+      </div>
+    </Overlay>
   );
 }
 
@@ -2004,6 +2223,7 @@ export function MairieApp() {
   const [active, setActive] = useState("Tableau de bord");
   const [selectedDossier, setSelectedDossier] = useState<DossierInfo | null>(null);
   const [showNouveauDossier, setShowNouveauDossier] = useState(false);
+  const [dossiersFilter, setDossiersFilter] = useState("Tous");
 
   const handleDossierClick = (dossier: DossierInfo) => {
     setSelectedDossier(dossier);
@@ -2013,9 +2233,15 @@ export function MairieApp() {
     setSelectedDossier(null);
   };
 
+  const navigateDossiers = (filter: string) => {
+    setDossiersFilter(filter);
+    setActive("Dossiers");
+    setSelectedDossier(null);
+  };
+
   const screenMap = {
-    "Tableau de bord": <DashboardScreen navigate={setActive} />,
-    "Dossiers": <DossiersScreen onDossierClick={handleDossierClick} navigate={setActive} />,
+    "Tableau de bord": <DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} />,
+    "Dossiers": <DossiersScreen key={dossiersFilter} onDossierClick={handleDossierClick} navigate={setActive} initialFilter={dossiersFilter} />,
     "Messagerie": <MessageScreen onDossierClick={handleDossierClick} />,
     "Paramètres": <ParametresScreen />,
     "Carte": <CarteScreen />,
@@ -2041,25 +2267,7 @@ export function MairieApp() {
       <Sidebar active={active} setActive={(s) => { setActive(s); setSelectedDossier(null); }} />
       <div style={{ marginLeft: 180, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar title={active} buttonLabel={cfg.buttonLabel} commune={cfg.commune || "Ballan-Miré"} onNewDossier={() => setShowNouveauDossier(true)} />
-        )}
-        {active === "Messagerie" && (
-          <div style={{ background: "white", borderBottom: "1px solid #E2E8F0", padding: "0 24px", height: 56, display: "flex", alignItems: "center", gap: 16, position: "sticky", top: 0, zIndex: 40 }}>
-            <div style={{ flex: 1, maxWidth: 440, display: "flex", alignItems: "center", gap: 8, background: "#F1F5F9", borderRadius: 8, padding: "7px 12px", border: "1px solid #E2E8F0" }}>
-              <SearchIcon size={15} />
-              <input style={{ border: "none", background: "transparent", outline: "none", fontSize: 13, color: "#64748b", flex: 1 }} placeholder="Rechercher un dossier, une adresse..." />
-              <kbd style={{ fontSize: 10, color: "#94a3b8", background: "#E2E8F0", borderRadius: 4, padding: "1px 5px" }}>⌘K</kbd>
-            </div>
-            <div style={{ flex: 1 }} />
-            <div style={{ position: "relative" }}>
-              <button style={{ border: "none", background: "none", cursor: "pointer", color: "#64748b", padding: 6, borderRadius: 6 }}><BellIcon /></button>
-              <span style={{ position: "absolute", top: 2, right: 2, width: 16, height: 16, background: "#EF4444", borderRadius: "50%", fontSize: 9, fontWeight: 700, color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}>3</span>
-            </div>
-            <button style={{ border: "none", background: "none", cursor: "pointer", color: "#64748b", padding: 6 }}><SunIcon /></button>
-            <div style={{ display: "flex", alignItems: "center", gap: 6, border: "1px solid #E2E8F0", borderRadius: 8, padding: "5px 10px", cursor: "pointer", fontSize: 13 }}>
-              <BuildingIcon /><span>Saint-Martin</span><ChevronDownIcon />
-            </div>
-          </div>
+          <Topbar title={active} buttonLabel={cfg.buttonLabel} commune={cfg.commune || "Ballan-Miré"} onNewDossier={() => setShowNouveauDossier(true)} navigate={setActive} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           {selectedDossier ? (
