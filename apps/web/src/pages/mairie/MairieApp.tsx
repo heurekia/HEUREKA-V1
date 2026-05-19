@@ -1,16 +1,20 @@
 import { useState, useRef, useEffect } from "react";
+import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { MapLeaflet, type MapDossier } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 
 const NAV_ITEMS = [
-  { label: "Tableau de bord", icon: HomeIcon },
-  { label: "Dossiers", icon: FolderIcon },
-  { label: "Calendrier", icon: CalendarIcon },
-  { label: "Messagerie", icon: MessageIcon, badge: 2 },
-  { label: "Carte", icon: MapIcon },
-  { label: "Statistiques", icon: ChartIcon },
-  { label: "Paramètres", icon: SettingsIcon },
+  { label: "Tableau de bord", icon: HomeIcon, path: "/mairie" },
+  { label: "Dossiers", icon: FolderIcon, path: "/mairie/dossiers" },
+  { label: "Calendrier", icon: CalendarIcon, path: "/mairie/calendrier" },
+  { label: "Messagerie", icon: MessageIcon, badge: 2, path: "/mairie/messagerie" },
+  { label: "Carte", icon: MapIcon, path: "/mairie/carte" },
+  { label: "Statistiques", icon: ChartIcon, path: "/mairie/statistiques" },
+  { label: "Paramètres", icon: SettingsIcon, path: "/mairie/parametres" },
 ];
+
+const LABEL_TO_PATH: Record<string, string> = Object.fromEntries(NAV_ITEMS.map(n => [n.label, n.path]));
+LABEL_TO_PATH["Infos Perso"] = "/mairie/profil";
 
 function HomeIcon({ size = 18, className = "" }) {
   return (
@@ -613,9 +617,14 @@ function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }
   );
 }
 
-function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossierClick: (d: DossierInfo) => void; navigate: (s: string) => void; initialFilter?: string }) {
+function DossiersScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) => void }) {
   const tabs = ["Tous", "Nouveau", "En instruction", "Pré-instruction", "Incomplet", "Décision en cours", "Accepté", "Refusé"];
-  const [activeTab, setActiveTab] = useState(initialFilter ?? "Tous");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(searchParams.get("filter") ?? "Tous");
+
+  useEffect(() => {
+    setActiveTab(searchParams.get("filter") ?? "Tous");
+  }, [searchParams]);
   const [searchQ, setSearchQ] = useState("");
   const [apiDossiers, setApiDossiers] = useState<ApiDossier[]>([]);
   const [loading, setLoading] = useState(true);
@@ -658,7 +667,7 @@ function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossier
         {tabs.map(t => {
           const active = t === activeTab;
           return (
-            <button key={t} onClick={() => setActiveTab(t)} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13, fontWeight: active ? 600 : 400, color: active ? "#4F46E5" : "#64748b", borderBottom: active ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer", whiteSpace: "nowrap" }}>
+            <button key={t} onClick={() => { setActiveTab(t); setSearchParams(t !== "Tous" ? { filter: t } : {}, { replace: true }); }} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13, fontWeight: active ? 600 : 400, color: active ? "#4F46E5" : "#64748b", borderBottom: active ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer", whiteSpace: "nowrap" }}>
               {t} <span style={{ fontSize: 11, color: active ? "#4F46E5" : "#94a3b8" }}>{tabCounts[t] ?? 0}</span>
             </button>
           );
@@ -2259,56 +2268,82 @@ function NouveauDossierModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
+  const { id } = useParams<{ id: string }>();
+  const location = useLocation();
+  const routerNavigate = useNavigate();
+  const stateDossier = (location.state as { dossier?: DossierInfo } | null)?.dossier;
+  const [dossier, setDossier] = useState<DossierInfo | null>(stateDossier ?? null);
+  const [loading, setLoading] = useState(!stateDossier);
+
+  useEffect(() => {
+    if (!id || stateDossier) return;
+    api.get<{ id: string; numero: string; type: string; status: string; adresse: string | null; date_limite_instruction: string | null; date_depot: string | null; demandeur: { prenom?: string; nom?: string } | null }>(`/mairie/dossiers/${id}`)
+      .then(data => setDossier({
+        id: data.id,
+        numero: data.numero,
+        type: data.type,
+        petitionnaire: data.demandeur ? ([data.demandeur.prenom, data.demandeur.nom].filter(Boolean).join(" ") || "—") : "—",
+        adresse: data.adresse ?? "—",
+        status: data.status,
+        echeance: fmtDate(data.date_limite_instruction),
+        date_depot: data.date_depot ?? undefined,
+      }))
+      .catch(() => routerNavigate("/mairie/dossiers", { replace: true }))
+      .finally(() => setLoading(false));
+  }, [id]);
+
+  if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>Chargement…</div>;
+  if (!dossier) return null;
+  return <DossierDetailScreen dossier={dossier} onBack={() => routerNavigate(-1 as never)} navigate={navigate} />;
+}
+
 export function MairieApp() {
-  const [active, setActive] = useState("Tableau de bord");
-  const [selectedDossier, setSelectedDossier] = useState<DossierInfo | null>(null);
-  const [showNouveauDossier, setShowNouveauDossier] = useState(false);
-  const [dossiersFilter, setDossiersFilter] = useState("Tous");
   const [commune, setCommune] = useState("Ballan-Miré");
+  const [showNouveauDossier, setShowNouveauDossier] = useState(false);
+  const routerNavigate = useNavigate();
+  const location = useLocation();
+
+  const pathname = location.pathname;
+  const active = pathname.startsWith("/mairie/dossiers") ? "Dossiers"
+    : pathname.startsWith("/mairie/messagerie") ? "Messagerie"
+    : pathname.startsWith("/mairie/calendrier") ? "Calendrier"
+    : pathname.startsWith("/mairie/carte") ? "Carte"
+    : pathname.startsWith("/mairie/statistiques") ? "Statistiques"
+    : pathname.startsWith("/mairie/parametres") ? "Paramètres"
+    : pathname.startsWith("/mairie/profil") ? "Infos Perso"
+    : "Tableau de bord";
+
+  const setActive = (s: string) => routerNavigate(LABEL_TO_PATH[s] ?? "/mairie");
 
   const handleDossierClick = (dossier: DossierInfo) => {
-    setSelectedDossier(dossier);
-  };
-
-  const handleDossierBack = () => {
-    setSelectedDossier(null);
+    routerNavigate(`/mairie/dossiers/${dossier.id}`, { state: { dossier } });
   };
 
   const navigateDossiers = (filter: string) => {
-    setDossiersFilter(filter);
-    setActive("Dossiers");
-    setSelectedDossier(null);
-  };
-
-  const screenMap = {
-    "Tableau de bord": <DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} onDossierClick={handleDossierClick} />,
-    "Dossiers": <DossiersScreen key={dossiersFilter} onDossierClick={handleDossierClick} navigate={setActive} initialFilter={dossiersFilter} />,
-    "Messagerie": <MessageScreen onDossierClick={handleDossierClick} />,
-    "Paramètres": <ParametresScreen />,
-    "Carte": <CarteScreen />,
-    "Calendrier": <CalendrierScreen />,
-    "Statistiques": <StatistiquesScreen />,
-    "Infos Perso": <InfosPersoScreen />,
+    routerNavigate(`/mairie/dossiers?filter=${encodeURIComponent(filter)}`);
   };
 
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex" }}>
-      <Sidebar active={active} setActive={(s) => { setActive(s); setSelectedDossier(null); }} commune={commune} setCommune={setCommune} />
+      <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
           <Topbar onNewDossier={() => setShowNouveauDossier(true)} navigate={setActive} onDossierClick={handleDossierClick} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {selectedDossier ? (
-            <DossierDetailScreen dossier={selectedDossier} onBack={handleDossierBack} navigate={setActive} />
-          ) : (
-            (Object.hasOwn(screenMap, active) ? screenMap[active as keyof typeof screenMap] : null) ?? (
-              <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>
-                <div style={{ fontSize: 40, marginBottom: 8 }}>🏗</div>
-                <div style={{ fontSize: 14 }}>Section "{active}" — à implémenter</div>
-              </div>
-            )
-          )}
+          <Routes>
+            <Route index element={<DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} onDossierClick={handleDossierClick} />} />
+            <Route path="dossiers" element={<DossiersScreen onDossierClick={handleDossierClick} />} />
+            <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} />} />
+            <Route path="messagerie" element={<MessageScreen onDossierClick={handleDossierClick} />} />
+            <Route path="calendrier" element={<CalendrierScreen />} />
+            <Route path="carte" element={<CarteScreen />} />
+            <Route path="statistiques" element={<StatistiquesScreen />} />
+            <Route path="parametres" element={<ParametresScreen />} />
+            <Route path="profil" element={<InfosPersoScreen />} />
+            <Route path="*" element={<Navigate to="/mairie" replace />} />
+          </Routes>
         </div>
       </div>
       {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} />}
