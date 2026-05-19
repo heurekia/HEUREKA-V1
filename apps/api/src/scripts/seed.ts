@@ -198,6 +198,119 @@ async function seed() {
   }).returning(); const dossier3 = dossier3_rows[0]!;
   console.log(`✅ Dossier: ${dossier3.numero}`);
 
+  // ── Commune Ballan-Miré ──
+  const communeBM_rows = await db.insert(communes).values({
+    name: "Ballan-Miré",
+    insee_code: "37015",
+    zip_code: "37510",
+  }).returning(); const communeBM = communeBM_rows[0]!;
+  console.log(`✅ Commune: ${communeBM.name}`);
+
+  const mairieBM_rows = await db.insert(users).values({
+    email: "mairie@ballan-mire.fr", password_hash: pw,
+    prenom: "Marie", nom: "Lambert", role: "mairie",
+    commune: "Ballan-Miré",
+  }).returning(); const mairieBM = mairieBM_rows[0]!;
+  console.log(`✅ Mairie: ${mairieBM.email}`);
+
+  const instructeurBM_rows = await db.insert(users).values({
+    email: "instructeur@ballan-mire.fr", password_hash: pw,
+    prenom: "Pierre", nom: "Durand", role: "instructeur",
+    commune: "Ballan-Miré",
+  }).returning(); const instructeurBM = instructeurBM_rows[0]!;
+  console.log(`✅ Instructeur: ${instructeurBM.email}`);
+
+  const citoyenBM1_rows = await db.insert(users).values({
+    email: "jean.dupont@email.fr", password_hash: pw,
+    prenom: "Jean", nom: "Dupont", role: "citoyen", commune: "Ballan-Miré",
+  }).returning(); const citoyenBM1 = citoyenBM1_rows[0]!;
+
+  const citoyenBM2_rows = await db.insert(users).values({
+    email: "sophie.martin@email.fr", password_hash: pw,
+    prenom: "Sophie", nom: "Martin", role: "citoyen", commune: "Ballan-Miré",
+  }).returning(); const citoyenBM2 = citoyenBM2_rows[0]!;
+
+  // Dossiers Ballan-Miré avec coordonnées GPS dans metadata
+  const dossiersBM = [
+    {
+      numero: "PC-BM-2024-001", type: "permis_de_construire" as const,
+      status: "en_instruction" as const, user_id: citoyenBM1.id, instructeur_id: instructeurBM.id,
+      parcelle: "BM 001", adresse: "3 Place du 8 Mai 1945", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Construction d'une maison individuelle R+1, 145 m², avec garage", surface_plancher: "145",
+      date_depot: new Date("2024-02-10"), date_limite_instruction: new Date("2024-08-10"),
+      metadata: { lat: 47.3543, lng: 0.5503 },
+    },
+    {
+      numero: "DP-BM-2024-015", type: "declaration_prealable" as const,
+      status: "soumis" as const, user_id: citoyenBM2.id,
+      parcelle: "BM 015", adresse: "12 Avenue de Tours", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Extension de 28 m² et création d'une véranda sur maison existante", surface_plancher: "28",
+      date_depot: new Date("2024-04-05"),
+      metadata: { lat: 47.3562, lng: 0.5490 },
+    },
+    {
+      numero: "PC-BM-2024-022", type: "permis_de_construire" as const,
+      status: "en_instruction" as const, user_id: citoyenBM1.id, instructeur_id: instructeurBM.id,
+      parcelle: "BM 022", adresse: "5 Rue des Petits Prés", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Construction d'un immeuble collectif R+2 — 6 logements, 320 m²", surface_plancher: "320",
+      date_depot: new Date("2024-03-18"), date_limite_instruction: new Date("2024-09-18"),
+      metadata: { lat: 47.3518, lng: 0.5537 },
+    },
+    {
+      numero: "DP-BM-2024-008", type: "declaration_prealable" as const,
+      status: "incomplet" as const, user_id: citoyenBM2.id,
+      parcelle: "BM 008", adresse: "8 Chemin de la Halbardière", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Création d'une piscine hors-sol et modification de clôture", surface_plancher: "40",
+      date_depot: new Date("2024-01-22"),
+      metadata: { lat: 47.3488, lng: 0.5562 },
+    },
+    {
+      numero: "PC-BM-2023-044", type: "permis_de_construire" as const,
+      status: "accepte" as const, user_id: citoyenBM1.id, instructeur_id: mairieBM.id,
+      parcelle: "BM 044", adresse: "14 Rue du Moulin de la Planche", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Construction d'un garage double et aménagement de l'entrée", surface_plancher: "60",
+      date_depot: new Date("2023-10-08"), date_completude: new Date("2023-11-01"), date_limite_instruction: new Date("2024-02-08"),
+      metadata: { lat: 47.3558, lng: 0.5448 },
+    },
+    {
+      numero: "DP-BM-2024-033", type: "declaration_prealable" as const,
+      status: "decision_en_cours" as const, user_id: citoyenBM2.id, instructeur_id: instructeurBM.id,
+      parcelle: "BM 033", adresse: "2 Impasse des Lilas", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Ravalement de façade, installation de panneaux photovoltaïques", surface_plancher: "20",
+      date_depot: new Date("2024-03-02"), date_completude: new Date("2024-03-20"),
+      metadata: { lat: 47.3525, lng: 0.5448 },
+    },
+    {
+      numero: "CU-BM-2024-007", type: "certificat_urbanisme" as const,
+      status: "soumis" as const, user_id: citoyenBM1.id,
+      parcelle: "BM 007", adresse: "28 Route de Savonnières", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Certificat d'urbanisme opérationnel — viabilité d'un projet de lotissement", surface_plancher: "0",
+      date_depot: new Date("2024-04-15"),
+      metadata: { lat: 47.3475, lng: 0.5415 },
+    },
+    {
+      numero: "PC-BM-2024-041", type: "permis_de_construire" as const,
+      status: "refuse" as const, user_id: citoyenBM2.id, instructeur_id: instructeurBM.id,
+      parcelle: "BM 041", adresse: "11 Rue du Val de l'Indre", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Construction maison individuelle — non conforme PLU zone N", surface_plancher: "100",
+      date_depot: new Date("2024-01-30"), date_completude: new Date("2024-02-15"), date_limite_instruction: new Date("2024-07-30"),
+      metadata: { lat: 47.3510, lng: 0.5592 },
+    },
+    {
+      numero: "DP-BM-2024-019", type: "declaration_prealable" as const,
+      status: "pre_instruction" as const, user_id: citoyenBM1.id,
+      parcelle: "BM 019", adresse: "45 Rue de la Liberté", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Division parcellaire et création d'un accès indépendant", surface_plancher: "15",
+      date_depot: new Date("2024-04-20"),
+      metadata: { lat: 47.3548, lng: 0.5518 },
+    },
+  ];
+
+  for (const d of dossiersBM) {
+    const row = await db.insert(dossiers).values(d as any).returning();
+    console.log(`✅ Dossier BM: ${row[0]!.numero} (${d.adresse})`);
+  }
+
   // ── Messages ──
   await db.insert(dossier_messages).values({
     dossier_id: dossier1.id,
@@ -215,10 +328,12 @@ async function seed() {
 
   console.log("\n✅✅✅ Seed terminé !");
   console.log("\n📧 Identifiants de test :");
-  console.log("  Admin      : admin@heureka.fr / admin123");
-  console.log("  Mairie     : mairie@tours.fr / password123");
-  console.log("  Instructeur: instructeur@tours.fr / password123");
-  console.log("  Citoyen    : citoyen@test.fr / password123");
+  console.log("  Admin           : admin@heureka.fr / admin123");
+  console.log("  Mairie Tours    : mairie@tours.fr / password123");
+  console.log("  Instructeur Trs : instructeur@tours.fr / password123");
+  console.log("  Citoyen         : citoyen@test.fr / password123");
+  console.log("  Mairie BM       : mairie@ballan-mire.fr / password123");
+  console.log("  Instructeur BM  : instructeur@ballan-mire.fr / password123");
 }
 
 seed().catch((err) => {

@@ -171,7 +171,47 @@ mairieRouter.get("/instructeurs", async (_req: AuthRequest, res) => {
   }
 });
 
-// ── Notifications ──
+// ── Dossiers géolocalisés pour la carte ──
+mairieRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
+  try {
+    const commune = req.query.commune as string | undefined;
+
+    const rows = await db
+      .select({
+        id: dossiers.id,
+        numero: dossiers.numero,
+        type: dossiers.type,
+        status: dossiers.status,
+        adresse: dossiers.adresse,
+        commune: dossiers.commune,
+        metadata: dossiers.metadata,
+      })
+      .from(dossiers)
+      .where(
+        commune
+          ? sql`commune ILIKE ${"%" + commune + "%"} AND (metadata->>'lat') IS NOT NULL`
+          : sql`(metadata->>'lat') IS NOT NULL`
+      )
+      .orderBy(desc(dossiers.created_at))
+      .limit(200);
+
+    const result = rows
+      .map(d => {
+        const meta = (d.metadata ?? {}) as Record<string, unknown>;
+        const lat = parseFloat(String(meta["lat"] ?? ""));
+        const lng = parseFloat(String(meta["lng"] ?? ""));
+        return { id: d.id, numero: d.numero, type: d.type, status: d.status, adresse: d.adresse ?? "", commune: d.commune ?? "", lat, lng };
+      })
+      .filter(d => !isNaN(d.lat) && !isNaN(d.lng));
+
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+
 mairieRouter.get("/notifications", async (req: AuthRequest, res) => {
   try {
     const list = await db
