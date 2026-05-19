@@ -347,30 +347,26 @@ mairieRouter.get("/conversations/:dossierId", async (req: AuthRequest, res) => {
 // ── Analyse parcellaire pour un dossier (onglet Parcelle) ──
 mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res) => {
   try {
-    // ?q= override permet de forcer une adresse sans passer par celle du dossier
     const qOverride = (req.query.q as string | undefined)?.trim();
 
-    let query: string | null = qOverride ?? null;
-    let communeName: string | null = null;
-    if (!query) {
-      const [dossier] = await db
-        .select({ parcelle: dossiers.parcelle, adresse: dossiers.adresse, commune: dossiers.commune })
-        .from(dossiers)
-        .where(eq(dossiers.id, req.params.id as string))
-        .limit(1);
-      if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    // Always fetch the dossier — we need commune info for the INSEE lookup even when
+    // an address override is provided via ?q=, to constrain BAN to the right commune.
+    const [dossier] = await db
+      .select({ parcelle: dossiers.parcelle, adresse: dossiers.adresse, commune: dossiers.commune })
+      .from(dossiers)
+      .where(eq(dossiers.id, req.params.id as string))
+      .limit(1);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
 
-      communeName = dossier.commune ?? null;
-      query = dossier.parcelle
-        ? dossier.parcelle
-        : dossier.adresse
-          ? `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`
-          : null;
-    }
+    const communeName = dossier.commune ?? null;
+    const query: string | null = qOverride
+      ?? (dossier.parcelle ?? (dossier.adresse
+        ? `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`
+        : null));
 
     if (!query) return res.status(422).json({ error: "Aucune adresse ni référence parcellaire sur ce dossier." });
 
-    // Look up commune INSEE code to constrain BAN geocoding to the right commune
+    // Look up commune INSEE code to constrain BAN + IGN Cadastre + GPU to the right commune
     let citycode: string | undefined;
     if (communeName) {
       const [communeRow] = await db.select({ insee_code: communes.insee_code })

@@ -52,6 +52,23 @@ export interface PluZoneResult {
   geometry?: Geometry;
 }
 
+export interface MunicipalityResult {
+  is_rnu: boolean;
+  libelle?: string;
+  partition?: string;
+}
+
+export interface PrescriptionResult {
+  libelle: string;
+  typepsc: string;
+  txtpsc?: string;
+}
+
+export interface ServitudeResult {
+  categorie: string;   // ex: AC1, EL7, PM1, T1
+  libelle?: string;
+}
+
 export interface RiskResult {
   flood_risk: "fort" | "moyen" | "faible" | "nul" | "inconnu";
   seismic_zone: string;
@@ -85,6 +102,9 @@ export interface ParcelAnalysis {
   data_sources: string[];
   warnings: string[];
   available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
+  municipality?: MunicipalityResult | null;
+  prescriptions?: PrescriptionResult[];
+  servitudes?: ServitudeResult[];
 }
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
@@ -125,9 +145,12 @@ export async function geocodeAddress(address: string, citycode?: string): Promis
 
 // ── Cadastral parcel lookup ──────────────────────────────────────────────────
 
-export async function findParcelByLatLng(lat: number, lng: number): Promise<ParcelResult | null> {
+export async function findParcelByLatLng(lat: number, lng: number, codeInsee?: string): Promise<ParcelResult | null> {
   try {
-    const url = `https://apicarto.ign.fr/api/cadastre/parcelle?lon=${lng}&lat=${lat}&_limit=1`;
+    // Adding code_insee constrains the result to the correct commune — without it,
+    // the IGN Cadastre API can return a parcel from a neighboring commune.
+    const insee = codeInsee ? `&code_insee=${codeInsee}` : "";
+    const url = `https://apicarto.ign.fr/api/cadastre/parcelle?lon=${lng}&lat=${lat}&_limit=1${insee}`;
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!r.ok) return null;
     const data = await r.json() as {
@@ -224,6 +247,70 @@ export async function findPluZone(lat: number, lng: number, codeInsee?: string):
   }
 }
 
+// ── GPU municipality (RNU check) ─────────────────────────────────────────────
+
+export async function getMunicipality(lat: number, lng: number): Promise<MunicipalityResult | null> {
+  try {
+    const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
+    const url = `https://apicarto.ign.fr/api/gpu/municipality?geom=${encodeURIComponent(geom)}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const data = await r.json() as {
+      features?: Array<{ properties: { is_rnu?: boolean; libelle?: string; partition?: string } }>;
+    };
+    const f = data.features?.[0];
+    if (!f) return null;
+    return { is_rnu: f.properties.is_rnu ?? false, libelle: f.properties.libelle, partition: f.properties.partition };
+  } catch {
+    return null;
+  }
+}
+
+// ── GPU prescriptions surfaciques (EBC, reculs spéciaux…) ────────────────────
+
+export async function getPrescriptionsSurf(lat: number, lng: number, partition?: string): Promise<PrescriptionResult[]> {
+  try {
+    const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
+    const params = new URLSearchParams({ geom });
+    if (partition) params.set("partition", partition);
+    const url = `https://apicarto.ign.fr/api/gpu/prescription-surf?${params.toString()}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return [];
+    const data = await r.json() as {
+      features?: Array<{ properties: { libelle?: string; typepsc?: string; txtpsc?: string } }>;
+    };
+    return (data.features ?? []).map(f => ({
+      libelle: f.properties.libelle ?? "",
+      typepsc: f.properties.typepsc ?? "",
+      txtpsc: f.properties.txtpsc,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// ── GPU assiettes SUP surfaciques (AC1 MH, EL lignes HT, PM inondations…) ───
+
+export async function getServitudesSurf(lat: number, lng: number, partition?: string): Promise<ServitudeResult[]> {
+  try {
+    const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
+    const params = new URLSearchParams({ geom });
+    if (partition) params.set("partition", partition);
+    const url = `https://apicarto.ign.fr/api/gpu/assiette-sup-s?${params.toString()}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return [];
+    const data = await r.json() as {
+      features?: Array<{ properties: { catesup?: string; libelle?: string; libsup?: string; nomsup?: string } }>;
+    };
+    return (data.features ?? []).map(f => ({
+      categorie: f.properties.catesup ?? "",
+      libelle: f.properties.libsup ?? f.properties.libelle ?? f.properties.nomsup,
+    }));
+  } catch {
+    return [];
+  }
+}
+
 // ── GéoRisques risk lookup ────────────────────────────────────────────────────
 
 export async function getRisks(lat: number, lng: number, code_insee: string): Promise<RiskResult> {
@@ -264,7 +351,7 @@ export async function getRisks(lat: number, lng: number, code_insee: string): Pr
 
 // ── DB regulatory rules lookup ────────────────────────────────────────────────
 
-async function findDbZoneAndRules(zoneCode: string, communeNom?: string): Promise<{
+async function findDbZoneAndRules(zoneCode: string, communeNom?: string, codeInsee?: string): Promise<{
   zone: { id: string; code: string; label: string | null; type: string | null } | null;
   rules: RegDbRule[];
 }> {
@@ -272,16 +359,22 @@ async function findDbZoneAndRules(zoneCode: string, communeNom?: string): Promis
   let foundZone = null;
   const attempts = [zoneCode, zoneCode.slice(0, -1), zoneCode.slice(0, -2)].filter(z => z.length >= 2);
 
+  // Resolve commune once — prefer INSEE code (exact) over name (fuzzy)
+  let communeId: string | null = null;
+  if (codeInsee) {
+    const [row] = await db.select({ id: communes.id }).from(communes).where(eq(communes.insee_code, codeInsee)).limit(1);
+    communeId = row?.id ?? null;
+  }
+  if (!communeId && communeNom) {
+    const [row] = await db.select({ id: communes.id }).from(communes).where(ilike(communes.name, `%${communeNom}%`)).limit(1);
+    communeId = row?.id ?? null;
+  }
+
   for (const code of attempts) {
-    let query = db.select().from(zones).where(eq(zones.zone_code, code));
-    if (communeNom) {
-      // join with communes to filter by commune
-      const communeRows = await db.select().from(communes).where(ilike(communes.name, `%${communeNom}%`)).limit(1);
-      if (communeRows[0]) {
-        query = db.select().from(zones).where(and(eq(zones.zone_code, code), eq(zones.commune_id, communeRows[0].id)));
-      }
-    }
-    const rows = await query.limit(1);
+    const where = communeId
+      ? and(eq(zones.zone_code, code), eq(zones.commune_id, communeId))
+      : eq(zones.zone_code, code);
+    const rows = await db.select().from(zones).where(where).limit(1);
     if (rows[0]) { foundZone = rows[0]; break; }
   }
 
@@ -355,8 +448,8 @@ export async function analyseParcel(query: string, options?: { citycode?: string
       lng = addr.lng;
       code_insee = addr.citycode;
 
-      // Step 2: Find parcel at those coordinates
-      const parcel = await findParcelByLatLng(lat, lng);
+      // Step 2: Find parcel at those coordinates — constrain to commune to avoid wrong results
+      const parcel = await findParcelByLatLng(lat, lng, code_insee);
       if (parcel) {
         if (parcel.code_insee !== addr.citycode) {
           // IGN Cadastre sometimes returns a parcel from a neighboring commune
@@ -391,6 +484,46 @@ export async function analyseParcel(query: string, options?: { citycode?: string
     }
   }
 
+  // Step 3b: GPU supplementary data (municipality RNU, prescriptions, SUP) — run in parallel
+  if (lat !== undefined && lng !== undefined) {
+    const partition = code_insee ? `DU_${code_insee}` : undefined;
+    const [municipality, prescriptions, servitudes] = await Promise.all([
+      getMunicipality(lat, lng),
+      getPrescriptionsSurf(lat, lng, partition),
+      getServitudesSurf(lat, lng, partition),
+    ]);
+
+    if (municipality) {
+      result.municipality = municipality;
+      if (municipality.is_rnu) {
+        result.warnings.push("Cette commune est soumise au Règlement National d'Urbanisme (RNU) — le PLU local n'est pas applicable.");
+      }
+      result.data_sources.push("GPU (commune)");
+    }
+
+    if (prescriptions.length > 0) {
+      result.prescriptions = prescriptions;
+      const hasEbc = prescriptions.some(p =>
+        p.libelle?.toUpperCase().includes("EBC") ||
+        p.typepsc?.toUpperCase().includes("EBC") ||
+        p.txtpsc?.toLowerCase().includes("espace boisé")
+      );
+      if (hasEbc) result.warnings.push("Espace Boisé Classé (EBC) sur ou à proximité de la parcelle — défrichement et construction interdits.");
+      result.data_sources.push("GPU (prescriptions)");
+    }
+
+    if (servitudes.length > 0) {
+      result.servitudes = servitudes;
+      const ac = servitudes.find(s => s.categorie?.startsWith("AC"));
+      const el = servitudes.find(s => s.categorie?.startsWith("EL"));
+      const pm = servitudes.find(s => s.categorie?.startsWith("PM"));
+      if (ac) result.warnings.push("Périmètre de protection d'un monument historique (SUP AC) — avis de l'ABF requis.");
+      if (el) result.warnings.push("Ligne électrique haute tension à proximité (SUP EL) — distances de sécurité réglementaires applicables.");
+      if (pm) result.warnings.push("Zone de servitude inondation (SUP PM) — prescriptions PPRI applicables.");
+      result.data_sources.push("GPU (SUP)");
+    }
+  }
+
   // Step 4: GéoRisques
   if (lat !== undefined && lng !== undefined && code_insee) {
     const risks = await getRisks(lat, lng, code_insee);
@@ -405,7 +538,7 @@ export async function analyseParcel(query: string, options?: { citycode?: string
   const communeForDb = result.parcel?.commune ?? result.address?.city;
 
   if (zoneCodeForDb) {
-    const { zone, rules } = await findDbZoneAndRules(zoneCodeForDb, communeForDb);
+    const { zone, rules } = await findDbZoneAndRules(zoneCodeForDb, communeForDb, code_insee);
     result.db_zone = zone;
     result.rules = rules;
     if (zone) {
