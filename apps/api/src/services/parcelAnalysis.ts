@@ -129,7 +129,7 @@ export async function geocodeAddress(address: string, citycode?: string): Promis
       }>;
     };
     const f = data.features?.[0];
-    if (!f || f.properties.score < 0.3) return null;
+    if (!f || f.properties.score < 0.2) return null;
     return {
       label: f.properties.label,
       lat: f.geometry.coordinates[1],
@@ -485,14 +485,25 @@ export async function analyseParcel(
       result.warnings.push("Parcelle cadastrale non trouvée via API IGN.");
     }
   } else {
-    // Free-text address — try with citycode first (avoids homonymous street false matches),
-    // then retry without if the constrained search returns nothing.
+    // Free-text address — try several BAN strategies in order of reliability.
     let addr = await geocodeAddress(query, options?.citycode);
+
+    // Retry 2: strip postcode + trailing commune from the query.
+    // When citycode is provided, BAN already pins the commune — the embedded "37510 Ballan-Miré"
+    // at the end of the address string is redundant and can reduce the match score.
+    // e.g. "9 Avenue Jean Mermoz 37510 Ballan-Miré" → "9 Avenue Jean Mermoz"
     if (!addr && options?.citycode) {
-      // Retry without citycode: some valid addresses have a low BAN score under citycode constraint
+      const streetOnly = query.replace(/,?\s*\b\d{5}\b.*$/, "").trim();
+      if (streetOnly !== query && streetOnly.length > 4) {
+        addr = await geocodeAddress(streetOnly, options.citycode);
+      }
+    }
+
+    // Retry 3: unconstrained BAN search — accept only if result is in the expected commune
+    if (!addr && options?.citycode) {
       const fallback = await geocodeAddress(query);
       if (fallback && fallback.citycode === options.citycode) {
-        addr = fallback;  // Only accept if still in the expected commune
+        addr = fallback;
       }
     }
 
