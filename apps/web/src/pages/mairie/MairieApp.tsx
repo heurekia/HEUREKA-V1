@@ -354,9 +354,11 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
         </div>
 
         {/* New dossier */}
-        <button onClick={() => onNewDossier?.()} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(79,70,229,0.3)" }}>
-          <PlusIcon size={14} />{buttonLabel}
-        </button>
+        {onNewDossier && (
+          <button onClick={onNewDossier} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(79,70,229,0.3)" }}>
+            <PlusIcon size={14} />{buttonLabel}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -3029,7 +3031,7 @@ export function MairieApp() {
       <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar onNewDossier={() => setShowNouveauDossier(true)} navigate={setActive} onDossierClick={handleDossierClick} />
+          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           <Routes>
