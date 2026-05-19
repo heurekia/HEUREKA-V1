@@ -188,9 +188,15 @@ export async function findParcelByRef(parcelle_id: string): Promise<ParcelResult
 
 // ── GPU PLU Zone lookup ───────────────────────────────────────────────────────
 
-export async function findPluZone(lat: number, lng: number): Promise<PluZoneResult | null> {
+export async function findPluZone(lat: number, lng: number, codeInsee?: string): Promise<PluZoneResult | null> {
   try {
-    const url = `https://apicarto.ign.fr/api/gpu/zone-urba?lon=${lng}&lat=${lat}`;
+    // Use geom (GeoJSON Point) + partition=DU_<codeINSEE> to constrain the query to the
+    // correct commune's PLU — without partition, APICarto GPU can return zones from
+    // neighboring communes, especially near municipal boundaries.
+    const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
+    const params = new URLSearchParams({ geom });
+    if (codeInsee) params.set("partition", `DU_${codeInsee}`);
+    const url = `https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`;
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!r.ok) return null;
     const data = await r.json() as {
@@ -369,9 +375,9 @@ export async function analyseParcel(query: string, options?: { citycode?: string
     }
   }
 
-  // Step 3: GPU PLU zone — validate that the returned PLU file belongs to the expected commune
+  // Step 3: GPU PLU zone — pass code_insee so the partition constraint targets the correct commune
   if (lat !== undefined && lng !== undefined) {
-    const zone = await findPluZone(lat, lng);
+    const zone = await findPluZone(lat, lng, code_insee);
     if (zone) {
       const pluInsee = zone.plu_nom?.match(/^(\d{5})/)?.[1];
       if (pluInsee && code_insee && pluInsee !== code_insee) {
