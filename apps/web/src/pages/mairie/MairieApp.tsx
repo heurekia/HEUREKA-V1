@@ -409,36 +409,38 @@ function DashboardScreen({ navigate, navigateDossiers }: { navigate: (s: string)
   const visibleMarkers = mapFilter === "Tous" ? markers : markers.filter(m => m.status === mapFilter);
 
   return (
-    <div style={{ padding: "16px 24px", display: "flex", flexDirection: "column", gap: 12 }}>
-      {/* Header + KPI cards */}
-      <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-        <div style={{ flex: 1 }}>
-          <h1 style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", margin: 0 }}>Bonjour Marie 👋</h1>
-          <p style={{ color: "#64748b", fontSize: 12, margin: "2px 0 0" }}>Voici l'essentiel de votre activité aujourd'hui.</p>
-        </div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 10, flex: 3 }}>
-          {cards.map((c) => (
-            <button key={c.label} onClick={c.onClick} style={{
-              background: "white", borderRadius: 10, padding: "12px 14px",
-              border: c.alert ? "1px solid #FCA5A5" : "1px solid #E2E8F0",
-              boxShadow: "0 1px 3px rgba(0,0,0,0.04)", cursor: "pointer", textAlign: "left",
-              display: "flex", alignItems: "center", gap: 10,
-            }}>
-              <div style={{ width: 36, height: 36, borderRadius: 10, background: c.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{c.icon}</div>
-              <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-                  <span style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", lineHeight: 1 }}>{c.count}</span>
-                  {c.alert && <span style={{ fontSize: 9, background: "#FEF2F2", color: "#B91C1C", borderRadius: 4, padding: "1px 5px", fontWeight: 700 }}>Retard</span>}
-                </div>
-                <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.3, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.label}</div>
+    <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column", gap: 14 }}>
+      {/* Greeting */}
+      <div>
+        <h1 style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", margin: 0 }}>Bonjour Marie 👋</h1>
+        <p style={{ color: "#64748b", fontSize: 13, margin: "3px 0 0" }}>Voici l'essentiel de votre activité aujourd'hui.</p>
+      </div>
+
+      {/* KPI cards — full width row */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+        {cards.map((c) => (
+          <button key={c.label} onClick={c.onClick} style={{
+            background: "white", borderRadius: 12, padding: "16px 18px",
+            border: c.alert ? "1.5px solid #FCA5A5" : "1px solid #E2E8F0",
+            boxShadow: c.alert ? "0 2px 8px rgba(239,68,68,0.08)" : "0 1px 4px rgba(0,0,0,0.05)",
+            cursor: "pointer", textAlign: "left", display: "flex", alignItems: "center", gap: 14,
+            transition: "box-shadow 0.15s",
+          }}>
+            <div style={{ width: 44, height: 44, borderRadius: 12, background: c.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>{c.icon}</div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ display: "flex", alignItems: "baseline", gap: 6, marginBottom: 3 }}>
+                <span style={{ fontSize: 26, fontWeight: 800, color: c.alert ? "#EF4444" : "#0F172A", lineHeight: 1 }}>{c.count}</span>
+                {c.alert && <span style={{ fontSize: 9, background: "#FEF2F2", color: "#B91C1C", borderRadius: 4, padding: "2px 6px", fontWeight: 700, letterSpacing: "0.02em" }}>EN RETARD</span>}
               </div>
-            </button>
-          ))}
-        </div>
+              <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.4 }}>{c.label}</div>
+              <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 1, lineHeight: 1.3 }}>{c.sub}</div>
+            </div>
+          </button>
+        ))}
       </div>
 
       {/* Map */}
-      <div style={{ height: 300, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden", display: "flex", flexDirection: "column" }}>
+      <div style={{ height: 360, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden", display: "flex", flexDirection: "column" }}>
         {/* Map toolbar */}
         <div style={{ padding: "10px 16px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
           <div>
