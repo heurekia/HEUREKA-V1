@@ -381,7 +381,12 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
       query = qOverride;
     } else if (dossier.adresse) {
       // Standard flow: address → geocode → parcel → analysis
-      query = `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`;
+      // Don't append commune if it's already present in the address string (avoids BAN confusion)
+      const communeAlreadyInAddr = dossier.commune &&
+        dossier.adresse.toLowerCase().includes(dossier.commune.toLowerCase());
+      query = communeAlreadyInAddr
+        ? dossier.adresse
+        : `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`;
     } else if (dossier.parcelle) {
       // No address at all — try to use the cadastral reference as a fallback
       const raw = dossier.parcelle.trim().replace(/\s+/g, "");
@@ -402,7 +407,13 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
 
     // ?zone= lets the instructeur manually override the PLU zone when GPU fails
     const zoneOverride = (req.query.zone as string | undefined)?.trim();
-    const analysis = await analyseParcel(query, { citycode, zoneOverride });
+
+    // ?lat=&lng= lets the instructeur provide coordinates from a map click
+    const latParam = parseFloat(req.query.lat as string);
+    const lngParam = parseFloat(req.query.lng as string);
+    const coords = !isNaN(latParam) && !isNaN(lngParam) ? { lat: latParam, lng: lngParam } : undefined;
+
+    const analysis = await analyseParcel(query, { citycode, zoneOverride, coords });
     res.json(analysis);
   } catch (err) {
     console.error(err);

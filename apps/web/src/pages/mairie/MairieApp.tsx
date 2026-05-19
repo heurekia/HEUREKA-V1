@@ -2044,6 +2044,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [addrSaving, setAddrSaving] = useState(false);
   const [liveAdresse, setLiveAdresse] = useState(dossier.adresse);
   const [liveCommune, setLiveCommune] = useState(dossier.commune ?? null);
+  const [clickingParcel, setClickingParcel] = useState(false);
+  const [clickedCoords, setClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
 
   useEffect(() => {
     if (activeTab !== "Parcelle" || parcelAnalysis || parcelLoading) return;
@@ -2052,12 +2054,16 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     const params = new URLSearchParams();
     if (addressOverride) params.set("q", addressOverride);
     if (selectedZone) params.set("zone", selectedZone);
+    if (clickedCoords) {
+      params.set("lat", String(clickedCoords.lat));
+      params.set("lng", String(clickedCoords.lng));
+    }
     const url = `/mairie/dossiers/${dossier.id}/analyse-parcelle${params.toString() ? "?" + params.toString() : ""}`;
     api.get<ParcelAnalysis>(url)
-      .then(data => setParcelAnalysis(data))
+      .then(data => { setParcelAnalysis(data); setClickingParcel(false); })
       .catch(e => setParcelError(e instanceof Error ? e.message : "Erreur analyse parcellaire"))
       .finally(() => setParcelLoading(false));
-  }, [activeTab, dossier.id, parcelAnalysis, parcelLoading, addressOverride, selectedZone]);
+  }, [activeTab, dossier.id, parcelAnalysis, parcelLoading, addressOverride, selectedZone, clickedCoords]);
 
   // BAN autocomplete
   useEffect(() => {
@@ -2454,27 +2460,65 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
                   {/* Carte */}
                   <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
-                    <div style={{ padding: "14px 18px 10px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                    <div style={{ padding: "14px 18px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                       <div style={SH as React.CSSProperties & { display: string; alignItems: string; gap: number; marginBottom: number }}>
                         <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
                         Vue parcellaire
                       </div>
-                      {pa && (
-                        <div style={{ display: "flex", gap: 5, flexWrap: "wrap" as const }}>
-                          {pa.data_sources.map(s => (
-                            <span key={s} style={{ fontSize: 10, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", borderRadius: 5, padding: "2px 7px" }}>{s}</span>
-                          ))}
-                        </div>
-                      )}
-                    </div>
-                    {(() => { const pLat = pa?.address?.lat ?? dossier.lat; const pLng = pa?.address?.lng ?? dossier.lng; return pLat && pLng ? (
-                      <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: pLat, lng: pLng }]} height={300} commune={liveCommune ?? dossier.commune} />
-                    ) : (
-                      <div style={{ height: 300, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 10 }}>
-                        <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
-                        <span style={{ fontSize: 13, color: "#94a3b8" }}>Coordonnées non disponibles</span>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" as const }}>
+                        {pa && pa.data_sources.map(s => (
+                          <span key={s} style={{ fontSize: 10, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", borderRadius: 5, padding: "2px 7px" }}>{s}</span>
+                        ))}
+                        {/* Click-to-identify parcel button */}
+                        <button
+                          onClick={() => {
+                            setClickingParcel(v => !v);
+                          }}
+                          style={{
+                            padding: "4px 10px", borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+                            border: clickingParcel ? "1.5px solid #4F46E5" : "1.5px solid #C7D2FE",
+                            background: clickingParcel ? "#EEF2FF" : "white",
+                            color: clickingParcel ? "#4F46E5" : "#64748b",
+                          }}
+                          title="Cliquez sur la carte pour identifier la parcelle"
+                        >
+                          {clickingParcel ? "✕ Annuler" : "📍 Localiser sur la carte"}
+                        </button>
                       </div>
-                    ); })()}
+                    </div>
+                    {clickingParcel && (
+                      <div style={{ margin: "0 14px 10px", padding: "8px 12px", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 8, fontSize: 12, color: "#4338CA", fontWeight: 600 }}>
+                        Cliquez au centre de la parcelle concernée — les limites cadastrales sont visibles sur le fond de carte.
+                      </div>
+                    )}
+                    {(() => {
+                      const pLat = pa?.address?.lat ?? (clickedCoords?.lat) ?? dossier.lat;
+                      const pLng = pa?.address?.lng ?? (clickedCoords?.lng) ?? dossier.lng;
+                      const hasCoords = pLat && pLng;
+                      return hasCoords ? (
+                        <MapLeaflet
+                          dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: pLat, lng: pLng }]}
+                          height={clickingParcel ? 380 : 300}
+                          commune={liveCommune ?? dossier.commune}
+                          clickMode={clickingParcel}
+                          parcelLayer={clickingParcel}
+                          onMapClick={(lat, lng) => {
+                            setClickedCoords({ lat, lng });
+                            setParcelAnalysis(null);
+                            setParcelError(null);
+                            setSelectedZone(null);
+                          }}
+                        />
+                      ) : (
+                        <div style={{ height: 300, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 10 }}>
+                          <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
+                          <span style={{ fontSize: 13, color: "#94a3b8" }}>Coordonnées non disponibles</span>
+                          <button onClick={() => setClickingParcel(true)} style={{ padding: "6px 14px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                            📍 Localiser sur la carte
+                          </button>
+                        </div>
+                      );
+                    })()}
                   </div>
 
                   {/* Contraintes */}
