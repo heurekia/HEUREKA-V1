@@ -416,12 +416,22 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-const MOCK_MESSAGES = [
-  { id: 1, lu: false, attendRepons: true },
-  { id: 2, lu: false, attendRepons: false },
-  { id: 3, lu: true, attendRepons: true },
-  { id: 4, lu: false, attendRepons: true },
-];
+function stringToColor(s: string): string {
+  const palette = ["#4F46E5","#22C55E","#F97316","#8B5CF6","#EC4899","#14B8A6","#EF4444","#3B82F6"];
+  let h = 0;
+  for (const c of s) h = (h * 31 + c.charCodeAt(0)) % palette.length;
+  return palette[h] ?? "#4F46E5";
+}
+function nameInitials(name: string): string {
+  return name.split(" ").slice(0, 2).map(w => w[0]?.toUpperCase() ?? "").join("");
+}
+function fmtConvTime(iso: string): string {
+  const d = new Date(iso), now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return "Hier";
+  return d.toLocaleDateString("fr-FR");
+}
 
 const FALLBACK: MapDossier[] = [
   { id: "1", numero: "PC-BM-2024-001", type: "permis_de_construire", status: "en_instruction", adresse: "3 Place du 8 Mai 1945", lat: 47.3543, lng: 0.5503 },
@@ -440,6 +450,7 @@ function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }
   const [mapTypeFilter, setMapTypeFilter] = useState("Tous les types");
   const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
   const [statsByStatus, setStatsByStatus] = useState<Record<string, number>>({});
+  const [unreadMessages, setUnreadMessages] = useState(0);
 
   useEffect(() => {
     const FALLBACK: MapDossier[] = [
@@ -464,11 +475,15 @@ function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }
         setStatsByStatus(map);
       })
       .catch(() => {});
+
+    api.get<{ count: number }>("/mairie/conversations/unread-count")
+      .then(data => setUnreadMessages(Number(data.count)))
+      .catch(() => {});
   }, []);
   const [mapExpanded, setMapExpanded] = useState(false);
 
   const countByStatus = (s: string) => statsByStatus[s] ?? 0;
-  const messagesEnAttente = MOCK_MESSAGES.filter(m => !m.lu || m.attendRepons).length;
+  const messagesEnAttente = unreadMessages;
 
   const cardDefs = [
     { label: "Nouveaux dossiers", desc: "Dossiers en attente d'ouverture d'instruction", count: countByStatus("soumis"), color: "#4F46E5", bg: "#EEF2FF", cta: "Voir les dossiers", ctaColor: "#4F46E5", ctaBg: "#EEF2FF", onClick: () => navigateDossiers("Nouveau"),
@@ -707,15 +722,26 @@ function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossier
 }
 
 function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) => void }) {
+  type Conv = { dossier_id: string; numero: string; type: string; status: string; petitionnaire: string; last_content: string; last_from_role: string; last_at: string; unread_count: number };
+  type Msg = { id: string; content: string; from_role: string; created_at: string; prenom: string | null; nom: string | null };
+
   const [tab, setTab] = useState("Citoyens");
-  const citoyenConvs = [
-    { name: "Jean Dupont", dossier: "PC-2024-0123", preview: "Bonjour, pouvez-vous me transmettre...", time: "09:15", badge: 2, initials: "JD", color: "#4F46E5" },
-    { name: "Sophie Martin", dossier: "DP-2024-0456", preview: "Merci pour votre retour.", time: "Hier", badge: 1, initials: "SM", color: "#22C55E" },
-    { name: "Pierre Durand", dossier: "DP-2024-0089", preview: "Pièce complémentaire envoyée.", time: "Hier", initials: "PD", color: "#F97316" },
-    { name: "Lucas Morel", dossier: "PC-2024-0789", preview: "D'accord, merci.", time: "15/05", initials: "LM", color: "#8B5CF6" },
-    { name: "SCI Les Oliviers", dossier: "PC-2025-0166", preview: "Nous prenons connaissance.", time: "15/05", initials: "SO", color: "#EC4899" },
-    { name: "Emma Petit", dossier: "DP-2024-0333", preview: "Bonjour, j'ai une question sur...", time: "14/05", initials: "EP", color: "#14B8A6" },
-  ];
+  const [convs, setConvs] = useState<Conv[]>([]);
+  const [selected, setSelected] = useState<Conv | null>(null);
+  const [thread, setThread] = useState<Msg[]>([]);
+
+  useEffect(() => {
+    api.get<Conv[]>("/mairie/conversations").then(data => {
+      setConvs(data);
+      if (data.length > 0) setSelected(s => s ?? (data[0] ?? null));
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    api.get<Msg[]>(`/mairie/conversations/${selected.dossier_id}`).then(setThread).catch(() => {});
+  }, [selected]);
+
   const serviceConvs = [
     { name: "ABF – Architecte des Bâtiments de France", dossier: "PC-2024-0123", preview: "Avis favorable avec réserves transmis.", time: "10:30", badge: 1, initials: "AB", color: "#8B5CF6" },
     { name: "SDIS – Service Incendie", dossier: "PC-2024-0456", preview: "Consultation en cours d'examen.", time: "Hier", initials: "SD", color: "#EF4444" },
@@ -723,15 +749,18 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
     { name: "DREAL Centre-Val de Loire", dossier: "PC-2024-0789", preview: "Documents bien reçus, analyse en cours.", time: "14/05", initials: "DR", color: "#22C55E" },
     { name: "Service des Eaux", dossier: "DP-2024-0089", preview: "Avis favorable émis.", time: "13/05", initials: "SE", color: "#3B82F6" },
   ];
-  const convs = tab === "Citoyens" ? citoyenConvs : serviceConvs;
+
+  const totalUnread = convs.reduce((s, c) => s + c.unread_count, 0);
+
   return (
     <div style={{ padding: 0, display: "flex", height: "calc(100vh - 56px)" }}>
+      {/* ── Liste conversations ── */}
       <div style={{ width: 320, borderRight: "1px solid #E2E8F0", display: "flex", flexDirection: "column", background: "white" }}>
         <div style={{ padding: "20px 16px 0" }}>
           <h1 style={{ fontSize: 18, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Messagerie</h1>
           <p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 12 }}>Échangez avec les pétitionnaires et les services consultés.</p>
           <div style={{ display: "flex", gap: 0, marginBottom: 12 }}>
-            {["Citoyens 12", "Services / Consultations 8"].map((t) => {
+            {[`Citoyens${totalUnread > 0 ? ` ${totalUnread}` : ""}`, "Services / Consultations"].map((t) => {
               const base = t.split(" ")[0] ?? t;
               return (
                 <button key={t} onClick={() => setTab(base)} style={{ flex: 1, border: "none", background: "none", padding: "7px 8px", fontSize: 12, fontWeight: tab === base ? 600 : 400, color: tab === base ? "#4F46E5" : "#64748b", borderBottom: tab === base ? "2px solid #4F46E5" : "2px solid #E2E8F0", cursor: "pointer", whiteSpace: "nowrap" }}>{t}</button>
@@ -743,7 +772,28 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
           </div>
         </div>
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {convs.map((c, i) => (
+          {tab === "Citoyens" ? convs.map((c) => {
+            const isActive = selected?.dossier_id === c.dossier_id;
+            const color = stringToColor(c.petitionnaire);
+            return (
+              <div key={c.dossier_id} onClick={() => setSelected(c)} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: isActive ? "#F0F4FF" : "white" }}
+                onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
+                onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "white"; }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: color, color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{nameInitials(c.petitionnaire)}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.petitionnaire}</span>
+                      <span style={{ fontSize: 11, color: "#94a3b8" }}>{fmtConvTime(c.last_at)}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 2 }}>{c.numero}</div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.last_content}</div>
+                  </div>
+                  {c.unread_count > 0 && <span style={{ background: "#4F46E5", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{c.unread_count}</span>}
+                </div>
+              </div>
+            );
+          }) : serviceConvs.map((c, i) => (
             <div key={i} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: i === 0 ? "#F0F4FF" : "white" }}
               onMouseEnter={e => { if (i !== 0) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
               onMouseLeave={e => { if (i !== 0) (e.currentTarget as HTMLDivElement).style.background = "white"; }}>
@@ -762,109 +812,70 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
             </div>
           ))}
         </div>
-        <div style={{ padding: "8px 16px", borderTop: "1px solid #F1F5F9" }}>
-          <button style={{ fontSize: 12, color: "#4F46E5", fontWeight: 500, background: "none", border: "none", cursor: "pointer" }}>Voir toutes les conversations →</button>
-        </div>
       </div>
 
+      {/* ── Thread ── */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", background: "#FAFBFD" }}>
-        <div style={{ padding: "14px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>Jean Dupont</div>
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>PC-2024-0123 – Permis de construire</div>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => onDossierClick({ id: "PC-2024-0123", numero: "PC-2024-0123", type: "Permis de construire", petitionnaire: "Jean Dupont", adresse: "12 rue des Lilas", status: "en_instruction", echeance: "12/06/2024" })} style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}>Voir le dossier ↗</button>
-            <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
-          </div>
-        </div>
-        <div style={{ flex: 1, padding: 20, overflowY: "auto" }}>
-          <div style={{ textAlign: "center", marginBottom: 16 }}>
-            <span style={{ background: "#F1F5F9", color: "#94a3b8", fontSize: 11, borderRadius: 10, padding: "3px 10px" }}>Aujourd'hui</span>
-          </div>
-          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#4F46E5", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>JD</div>
-            <div style={{ maxWidth: "60%" }}>
-              <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "12px 14px", border: "1px solid #E2E8F0", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
-                <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.5 }}>Bonjour,</p>
-                <p style={{ margin: "6px 0 0", fontSize: 13, color: "#374151", lineHeight: 1.5 }}>Pouvez-vous me transmettre le document manquant s'il vous plaît ?</p>
-                <p style={{ margin: "6px 0 0", fontSize: 13, color: "#374151" }}>Merci d'avance.</p>
-              </div>
-              <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 4, display: "block" }}>09:15</span>
+        {selected ? (<>
+          <div style={{ padding: "14px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>{selected.petitionnaire}</div>
+              <div style={{ fontSize: 12, color: "#94a3b8" }}>{selected.numero} – {TYPE_LABEL[selected.type] ?? selected.type}</div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => onDossierClick({ id: selected.dossier_id, numero: selected.numero, type: selected.type, petitionnaire: selected.petitionnaire, adresse: "—", status: selected.status, echeance: "—" })} style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}>Voir le dossier ↗</button>
+              <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 10, marginBottom: 16, justifyContent: "flex-end" }}>
-            <div style={{ maxWidth: "60%" }}>
-              <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", borderRadius: "12px 4px 12px 12px", padding: "12px 14px" }}>
-                <p style={{ margin: 0, fontSize: 13, color: "white", lineHeight: 1.5 }}>Bonjour Monsieur Dupont,</p>
-                <p style={{ margin: "6px 0 0", fontSize: 13, color: "rgba(255,255,255,0.9)", lineHeight: 1.5 }}>Vous trouverez en pièce jointe le document complémentaire demandé.</p>
-                <div style={{ marginTop: 10, background: "rgba(255,255,255,0.15)", borderRadius: 8, padding: "8px 10px", display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ color: "white", fontSize: 18 }}>📄</span>
-                  <div>
-                    <div style={{ color: "white", fontSize: 12, fontWeight: 600 }}>Plan masse complémentaire.pdf</div>
-                    <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 11 }}>PDF – 2.4 Mo</div>
+          <div style={{ flex: 1, padding: 20, overflowY: "auto" }}>
+            {thread.map((msg) => {
+              const isInstructeur = msg.from_role !== "citoyen";
+              const senderName = [msg.prenom, msg.nom].filter(Boolean).join(" ") || (isInstructeur ? "Instructeur" : selected.petitionnaire);
+              const time = new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+              return (
+                <div key={msg.id} style={{ display: "flex", gap: 10, marginBottom: 16, justifyContent: isInstructeur ? "flex-end" : "flex-start" }}>
+                  {!isInstructeur && <div style={{ width: 32, height: 32, borderRadius: "50%", background: stringToColor(selected.petitionnaire), color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{nameInitials(selected.petitionnaire)}</div>}
+                  <div style={{ maxWidth: "60%" }}>
+                    {isInstructeur ? (
+                      <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", borderRadius: "12px 4px 12px 12px", padding: "12px 14px" }}>
+                        <p style={{ margin: 0, fontSize: 13, color: "white", lineHeight: 1.5 }}>{msg.content}</p>
+                      </div>
+                    ) : (
+                      <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "12px 14px", border: "1px solid #E2E8F0", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+                        <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.5 }}>{msg.content}</p>
+                      </div>
+                    )}
+                    <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 4, display: "block", textAlign: isInstructeur ? "right" : "left" }}>{time}</span>
                   </div>
+                  {isInstructeur && <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{nameInitials(senderName)}</div>}
                 </div>
-              </div>
-              <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 4, display: "block", textAlign: "right" }}>09:32 ✓✓</span>
-            </div>
-            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>ML</div>
+              );
+            })}
           </div>
-          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#4F46E5", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>JD</div>
-            <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "10px 14px", border: "1px solid #E2E8F0" }}>
-              <p style={{ margin: 0, fontSize: 13, color: "#374151" }}>Merci beaucoup !</p>
-              <span style={{ fontSize: 11, color: "#94a3b8" }}>09:55</span>
-            </div>
+          <div style={{ padding: "12px 16px", borderTop: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", gap: 10 }}>
+            <input placeholder="Écrire un message..." style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 8, padding: "9px 14px", fontSize: 13, outline: "none" }} />
+            <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18 }}>📎</button>
+            <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18 }}>😊</button>
+            <button style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #4F46E5, #6366F1)", border: "none", cursor: "pointer", color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}><SendIcon size={14} /></button>
           </div>
-        </div>
-        <div style={{ padding: "12px 16px", borderTop: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", gap: 10 }}>
-          <input placeholder="Écrire un message..." style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 8, padding: "9px 14px", fontSize: 13, outline: "none" }} />
-          <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18 }}>📎</button>
-          <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18 }}>😊</button>
-          <button style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #4F46E5, #6366F1)", border: "none", cursor: "pointer", color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}><SendIcon size={14} /></button>
-        </div>
+        </>) : (
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8", fontSize: 13 }}>Sélectionnez une conversation</div>
+        )}
       </div>
 
+      {/* ── Panneau info ── */}
       <div style={{ width: 260, borderLeft: "1px solid #E2E8F0", background: "white", padding: 16, overflowY: "auto" }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Informations</div>
-        <div style={{ marginBottom: 4, fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em" }}>Pétitionnaire</div>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4 }}>Jean Dupont</div>
-        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 2 }}>✉ jean.dupont@email.fr</div>
-        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 2 }}>📞 06 12 34 56 78</div>
-        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>📍 12 rue des Lilas, 13400 Saint-Martin</div>
-        <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
-          <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Dossier</div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4 }}>PC-2024-0123</div>
-          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 2 }}>Permis de construire</div>
-          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>Dépôt le 12/04/2024</div>
-          <StatusBadge status="En instruction" />
-        </div>
-        <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#0F172A", marginBottom: 8 }}>Pièces du dossier</div>
-          {["Formulaire CERFA","Plan de situation","Plan de masse","Notice descriptive"].map(p => (
-            <div key={p} style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 12 }}>
-              <span style={{ color: "#374151" }}>📄 {p}</span>
-              <span style={{ color: "#94a3b8" }}>PDF</span>
-            </div>
-          ))}
-          <button style={{ fontSize: 12, color: "#4F46E5", fontWeight: 500, background: "none", border: "none", cursor: "pointer", padding: 0 }}>Voir toutes les pièces (12) →</button>
-        </div>
-        <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#0F172A" }}>Historique des échanges</div>
-            <button style={{ fontSize: 11, color: "#4F46E5", background: "none", border: "none", cursor: "pointer" }}>Voir tout</button>
+        {selected ? (<>
+          <div style={{ marginBottom: 4, fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em" }}>Pétitionnaire</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 12 }}>{selected.petitionnaire}</div>
+          <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Dossier</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4 }}>{selected.numero}</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>{TYPE_LABEL[selected.type] ?? selected.type}</div>
+            <StatusBadge status={STATUS_LABEL[selected.status] ?? selected.status} />
           </div>
-          {[["15/05/2024","Pièce complémentaire envoyée","Par vous"],["14/05/2024","Demande de pièce complémentaire","Par vous"],["12/04/2024","Accusé d'enregistrement","Automatique"]].map(([d,e,a]) => (
-            <div key={d} style={{ display: "flex", gap: 8, marginBottom: 10, fontSize: 12 }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 5 }} />
-              <div>
-                <div style={{ color: "#374151", fontWeight: 500 }}>{e}</div>
-                <div style={{ color: "#94a3b8" }}>{a} · {d}</div>
-              </div>
-            </div>
-          ))}
-        </div>
+        </>) : <div style={{ fontSize: 12, color: "#94a3b8" }}>Aucune conversation sélectionnée</div>}
       </div>
     </div>
   );
