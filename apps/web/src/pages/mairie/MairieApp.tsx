@@ -10,7 +10,6 @@ const NAV_ITEMS = [
   { label: "Carte", icon: MapIcon },
   { label: "Statistiques", icon: ChartIcon },
   { label: "Paramètres", icon: SettingsIcon },
-  { label: "Infos Perso", icon: UserIcon },
 ];
 
 function HomeIcon({ size = 18, className = "" }) {
@@ -215,7 +214,7 @@ function Sidebar({ active, setActive, commune, setCommune }: { active: string; s
         })}
       </nav>
 
-      <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
+      <div onClick={() => setActive("Infos Perso")} style={{ borderTop: "1px solid rgba(255,255,255,0.07)", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
         <div style={{ width: 34, height: 34, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "white", flexShrink: 0 }}>ML</div>
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ color: "white", fontSize: 12, fontWeight: 600 }}>Marie L.</div>
@@ -360,37 +359,63 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate }: { t
   );
 }
 
+const STATUS_LABEL: Record<string, string> = {
+  brouillon: "Brouillon",
+  soumis: "Nouveau",
+  pre_instruction: "Pré-instruction",
+  incomplet: "Incomplet",
+  en_instruction: "En instruction",
+  decision_en_cours: "Décision en cours",
+  accepte: "Accepté",
+  refuse: "Refusé",
+  accord_prescription: "Accord prescriptions",
+};
+
+const TYPE_LABEL: Record<string, string> = {
+  permis_de_construire: "Permis de construire",
+  declaration_prealable: "Déclaration préalable",
+  permis_amenager: "Permis d'aménager",
+  permis_demolir: "Permis de démolir",
+  permis_lotir: "Permis de lotir",
+  certificat_urbanisme: "Certificat d'urbanisme",
+};
+
+function fmtDate(d: string | Date | null | undefined): string {
+  if (!d) return "—";
+  return new Date(d).toLocaleDateString("fr-FR");
+}
+
+type ApiDossier = {
+  id: string; numero: string; type: string; status: string;
+  adresse: string | null; commune: string | null; description: string | null;
+  date_depot: string | null; date_limite_instruction: string | null;
+  demandeur: string;
+};
+
 function StatusBadge({ status }: { status: string }) {
-  const map: Record<string, { bg: string; color: string; dot: string }> = {
+  const label = STATUS_LABEL[status] ?? status;
+  const styles: Record<string, { bg: string; color: string; dot: string }> = {
     "En instruction": { bg: "#EFF6FF", color: "#1D4ED8", dot: "#3B82F6" },
-    "En consultation": { bg: "#FFF7ED", color: "#C2410C", dot: "#F97316" },
     "Nouveau": { bg: "#F0FDF4", color: "#15803D", dot: "#22C55E" },
-    "En retard": { bg: "#FEF2F2", color: "#B91C1C", dot: "#EF4444" },
-    "Terminé": { bg: "#F8FAFC", color: "#475569", dot: "#94A3B8" },
+    "Pré-instruction": { bg: "#F0FDF4", color: "#15803D", dot: "#22C55E" },
+    "Incomplet": { bg: "#FFF7ED", color: "#C2410C", dot: "#F97316" },
+    "Décision en cours": { bg: "#FAF5FF", color: "#7E22CE", dot: "#9333EA" },
+    "Accepté": { bg: "#F0FDF4", color: "#15803D", dot: "#22C55E" },
+    "Refusé": { bg: "#FEF2F2", color: "#B91C1C", dot: "#EF4444" },
+    "Brouillon": { bg: "#F8FAFC", color: "#475569", dot: "#94A3B8" },
+    "Accord prescriptions": { bg: "#EFF6FF", color: "#1D4ED8", dot: "#3B82F6" },
     "Actif": { bg: "#F0FDF4", color: "#15803D", dot: "#22C55E" },
     "En attente": { bg: "#FFF7ED", color: "#C2410C", dot: "#F97316" },
     "Désactivé": { bg: "#FEF2F2", color: "#B91C1C", dot: "#EF4444" },
-    "Décision": { bg: "#FAF5FF", color: "#7E22CE", dot: "#9333EA" },
   };
-  const s = map[status] || { bg: "#F1F5F9", color: "#475569", dot: "#94A3B8" };
+  const s = styles[label] ?? { bg: "#F1F5F9", color: "#475569", dot: "#94A3B8" };
   return (
     <span style={{ background: s.bg, color: s.color, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 5 }}>
       <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.dot, display: "inline-block" }} />
-      {status}
+      {label}
     </span>
   );
 }
-
-const MOCK_DOSSIERS = [
-  { id: "PC-2024-0123", pet: "Jean Dupont", addr: "12 rue des Lilas", type: "Permis de construire", status: "En instruction", ech: "12/06/2024" },
-  { id: "DP-2024-0456", pet: "Sophie Martin", addr: "8 chemin de la Colline", type: "Déclaration préalable", status: "En consultation", ech: "25/06/2024" },
-  { id: "PC-2024-0789", pet: "SCI Les Oliviers", addr: "45 avenue de la Mer", type: "Permis de construire", status: "En instruction", ech: "15/06/2024" },
-  { id: "DP-2024-0089", pet: "Pierre Durand", addr: "3 impasse des Pins", type: "Déclaration préalable", status: "Nouveau", ech: "22/06/2024" },
-  { id: "PC-2023-0567", pet: "Marie Bernard", addr: "7 rue du Stade", type: "Permis de construire", status: "En instruction", ech: "01/06/2024" },
-  { id: "DP-2024-0111", pet: "Lucas Morel", addr: "15 route des Plages", type: "Déclaration préalable", status: "En retard", ech: "10/05/2024" },
-  { id: "PC-2023-0166", pet: "SAS Habitat", addr: "ZA des Tilleuls", type: "Permis de construire", status: "En consultation", ech: "05/06/2024" },
-  { id: "DP-2024-0333", pet: "Emma Petit", addr: "2 lotissement du Parc", type: "Déclaration préalable", status: "En instruction", ech: "18/06/2024" },
-];
 
 const MOCK_MESSAGES = [
   { id: 1, lu: false, attendRepons: true },
@@ -399,9 +424,22 @@ const MOCK_MESSAGES = [
   { id: 4, lu: false, attendRepons: true },
 ];
 
+const FALLBACK: MapDossier[] = [
+  { id: "1", numero: "PC-BM-2024-001", type: "permis_de_construire", status: "en_instruction", adresse: "3 Place du 8 Mai 1945", lat: 47.3543, lng: 0.5503 },
+  { id: "2", numero: "DP-BM-2024-015", type: "declaration_prealable", status: "soumis", adresse: "12 Avenue de Tours", lat: 47.3562, lng: 0.5490 },
+  { id: "3", numero: "PC-BM-2024-022", type: "permis_de_construire", status: "en_instruction", adresse: "5 Rue des Petits Prés", lat: 47.3518, lng: 0.5537 },
+  { id: "4", numero: "DP-BM-2024-008", type: "declaration_prealable", status: "incomplet", adresse: "8 Chemin de la Halbardière", lat: 47.3488, lng: 0.5562 },
+  { id: "5", numero: "PC-BM-2023-044", type: "permis_de_construire", status: "accepte", adresse: "14 Rue du Moulin de la Planche", lat: 47.3558, lng: 0.5448 },
+  { id: "6", numero: "DP-BM-2024-033", type: "declaration_prealable", status: "decision_en_cours", adresse: "2 Impasse des Lilas", lat: 47.3525, lng: 0.5448 },
+  { id: "7", numero: "CU-BM-2024-007", type: "certificat_urbanisme", status: "soumis", adresse: "28 Route de Savonnières", lat: 47.3475, lng: 0.5415 },
+  { id: "8", numero: "PC-BM-2024-041", type: "permis_de_construire", status: "refuse", adresse: "11 Rue du Val de l'Indre", lat: 47.3510, lng: 0.5592 },
+  { id: "9", numero: "DP-BM-2024-019", type: "declaration_prealable", status: "pre_instruction", adresse: "45 Rue de la Liberté", lat: 47.3548, lng: 0.5518 },
+];
+
 function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void; commune: string }) {
   const [mapFilter, setMapFilter] = useState<string>("Tous");
   const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
+  const [statsByStatus, setStatsByStatus] = useState<Record<string, number>>({});
 
   useEffect(() => {
     const FALLBACK: MapDossier[] = [
@@ -418,27 +456,28 @@ function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s
     api.get<MapDossier[]>("/mairie/map-dossiers?commune=Ballan-Mir%C3%A9")
       .then(data => setMapDossiers(data.length > 0 ? data : FALLBACK))
       .catch(() => setMapDossiers(FALLBACK));
+
+    api.get<{ dossiers_par_statut: { status: string; count: number }[] }>("/mairie/dashboard")
+      .then(data => {
+        const map: Record<string, number> = {};
+        data.dossiers_par_statut.forEach(r => { map[r.status] = Number(r.count); });
+        setStatsByStatus(map);
+      })
+      .catch(() => {});
   }, []);
   const [mapExpanded, setMapExpanded] = useState(false);
 
-  const countByStatus = (status: string) => MOCK_DOSSIERS.filter(d => d.status === status).length;
+  const countByStatus = (s: string) => statsByStatus[s] ?? 0;
   const messagesEnAttente = MOCK_MESSAGES.filter(m => !m.lu || m.attendRepons).length;
 
-  const cards = [
-    { label: "Nouveaux dossiers", count: countByStatus("Nouveau"), sub: "En attente d'ouverture d'instruction", color: "#4F46E5", bg: "#EEF2FF", icon: "📁", onClick: () => navigateDossiers("Nouveau") },
-    { label: "Consultations en attente", count: countByStatus("En consultation"), sub: "En attente de retour des services", color: "#F97316", bg: "#FFF7ED", icon: "👥", onClick: () => navigateDossiers("En consultation") },
-    { label: "Messages sans réponse", count: messagesEnAttente, sub: "Messages en attente de réponse", color: "#4F46E5", bg: "#EEF2FF", icon: "💬", onClick: () => navigate("Messagerie") },
-    { label: "Dossiers en retard", count: countByStatus("En retard"), sub: "Dépassement de délai constaté", color: "#EF4444", bg: "#FEF2F2", icon: "⏰", alert: true, onClick: () => navigateDossiers("En retard") },
-  ];
-
   const cardDefs = [
-    { label: "Nouveaux dossiers", desc: "Dossiers en attente d'ouverture d'instruction", count: countByStatus("Nouveau"), color: "#4F46E5", bg: "#EEF2FF", cta: "Voir les dossiers", ctaColor: "#4F46E5", ctaBg: "#EEF2FF", onClick: () => navigateDossiers("Nouveau"),
+    { label: "Nouveaux dossiers", desc: "Dossiers en attente d'ouverture d'instruction", count: countByStatus("soumis"), color: "#4F46E5", bg: "#EEF2FF", cta: "Voir les dossiers", ctaColor: "#4F46E5", ctaBg: "#EEF2FF", onClick: () => navigateDossiers("Nouveau"),
       icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M22 19a2 2 0 01-2 2H4a2 2 0 01-2-2V5a2 2 0 012-2h5l2 3h9a2 2 0 012 2z"/><polyline points="9 11 12 14 15 11"/><line x1="12" y1="8" x2="12" y2="14"/></svg> },
-    { label: "Consultations en attente", desc: "Dossiers en attente de retour des services consultés", count: countByStatus("En consultation"), color: "#F97316", bg: "#FFF7ED", cta: "Voir les consultations", ctaColor: "#F97316", ctaBg: "#FFF7ED", onClick: () => navigateDossiers("En consultation"),
+    { label: "En instruction", desc: "Dossiers en cours d'instruction", count: countByStatus("en_instruction"), color: "#F97316", bg: "#FFF7ED", cta: "Voir les dossiers", ctaColor: "#F97316", ctaBg: "#FFF7ED", onClick: () => navigateDossiers("En instruction"),
       icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#F97316" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 00-3-3.87"/><path d="M16 3.13a4 4 0 010 7.75"/></svg> },
     { label: "Messages sans réponse", desc: "Messages en attente de réponse", count: messagesEnAttente, color: "#4F46E5", bg: "#EEF2FF", cta: "Voir les messages", ctaColor: "#4F46E5", ctaBg: "#EEF2FF", onClick: () => navigate("Messagerie"),
       icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg> },
-    { label: "Dossiers en retard", desc: "Dossiers avec dépassement de délai", count: countByStatus("En retard"), color: "#EF4444", bg: "#FEF2F2", cta: "Voir les dossiers", ctaColor: "#EF4444", ctaBg: "#FEF2F2", alert: true, onClick: () => navigateDossiers("En retard"),
+    { label: "Incomplets", desc: "Dossiers en attente de pièces complémentaires", count: countByStatus("incomplet"), color: "#EF4444", bg: "#FEF2F2", cta: "Voir les dossiers", ctaColor: "#EF4444", ctaBg: "#FEF2F2", alert: true, onClick: () => navigateDossiers("Incomplet"),
       icon: <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#EF4444" strokeWidth="1.7" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg> },
   ];
 
@@ -558,19 +597,38 @@ function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s
   );
 }
 
-function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossierClick: (d: { id: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string }) => void; navigate: (s: string) => void; initialFilter?: string }) {
-  const tabs = ["Tous", "Nouveau", "En instruction", "En consultation", "En retard", "Décision", "Terminés"];
+function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossierClick: (d: DossierInfo) => void; navigate: (s: string) => void; initialFilter?: string }) {
+  const tabs = ["Tous", "Nouveau", "En instruction", "Pré-instruction", "Incomplet", "Décision en cours", "Accepté", "Refusé"];
   const [activeTab, setActiveTab] = useState(initialFilter ?? "Tous");
   const [searchQ, setSearchQ] = useState("");
+  const [apiDossiers, setApiDossiers] = useState<ApiDossier[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  const allRows = MOCK_DOSSIERS;
+  useEffect(() => {
+    api.get<ApiDossier[]>("/mairie/dossiers")
+      .then(d => setApiDossiers(d))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, []);
+
+  const allRows = apiDossiers.map(d => ({
+    id: d.id,
+    numero: d.numero,
+    pet: d.demandeur,
+    addr: d.adresse ?? "—",
+    type: TYPE_LABEL[d.type] ?? d.type,
+    statusLabel: STATUS_LABEL[d.status] ?? d.status,
+    statusRaw: d.status,
+    ech: fmtDate(d.date_limite_instruction),
+    dateDepot: fmtDate(d.date_depot),
+  }));
 
   const tabCounts: Record<string, number> = Object.fromEntries(
-    tabs.map(t => [t, t === "Tous" ? allRows.length : allRows.filter(r => r.status === t).length])
+    tabs.map(t => [t, t === "Tous" ? allRows.length : allRows.filter(r => r.statusLabel === t).length])
   );
   const rows = allRows.filter(r => {
-    const matchTab = activeTab === "Tous" || r.status === activeTab;
-    const matchQ = !searchQ || r.id.toLowerCase().includes(searchQ.toLowerCase()) || r.pet.toLowerCase().includes(searchQ.toLowerCase()) || r.addr.toLowerCase().includes(searchQ.toLowerCase());
+    const matchTab = activeTab === "Tous" || r.statusLabel === activeTab;
+    const matchQ = !searchQ || r.numero.toLowerCase().includes(searchQ.toLowerCase()) || r.pet.toLowerCase().includes(searchQ.toLowerCase()) || r.addr.toLowerCase().includes(searchQ.toLowerCase());
     return matchTab && matchQ;
   });
 
@@ -607,23 +665,27 @@ function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossier
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#F8FAFC" }}>
-              {["N° Dossier","Pétitionnaire","Adresse","Type de dossier","Statut","Échéance","Actions"].map(h => (
+              {["N° Dossier","Pétitionnaire","Adresse","Type de dossier","Statut","Dépôt","Actions"].map(h => (
                 <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {rows.map((r) => (
+            {loading ? (
+              <tr><td colSpan={7} style={{ padding: "24px 16px", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Chargement…</td></tr>
+            ) : rows.length === 0 ? (
+              <tr><td colSpan={7} style={{ padding: "24px 16px", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Aucun dossier trouvé</td></tr>
+            ) : rows.map((r) => (
               <tr key={r.id} style={{ borderBottom: "1px solid #F1F5F9", cursor: "pointer" }}
-                onClick={() => onDossierClick({ id: r.id, type: r.type, petitionnaire: r.pet, adresse: r.addr, status: r.status, echeance: r.ech })}
+                onClick={() => onDossierClick({ id: r.id, numero: r.numero, type: r.type, petitionnaire: r.pet, adresse: r.addr, status: r.statusRaw, echeance: r.ech, date_depot: r.dateDepot })}
                 onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
                 onMouseLeave={e => (e.currentTarget.style.background = "white")}>
-                <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 600, color: "#4F46E5" }}>{r.id}</td>
+                <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 600, color: "#4F46E5" }}>{r.numero}</td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.pet}</td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: "#64748b" }}>{r.addr}</td>
                 <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.type}</td>
-                <td style={{ padding: "12px 16px" }}><StatusBadge status={r.status} /></td>
-                <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.ech}</td>
+                <td style={{ padding: "12px 16px" }}><StatusBadge status={r.statusRaw} /></td>
+                <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.dateDepot}</td>
                 <td style={{ padding: "12px 16px" }}>
                   <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }} onClick={e => e.stopPropagation()}><DotsIcon /></button>
                 </td>
@@ -632,14 +694,10 @@ function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossier
           </tbody>
         </table>
         <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid #F1F5F9" }}>
-          <span style={{ fontSize: 12, color: "#64748b" }}>Affichage de 1 à 8 sur 24 dossiers</span>
-          <div style={{ display: "flex", gap: 4 }}>
-            {["‹","1","2","3","›"].map((p, i) => (
-              <button key={i} style={{ width: 28, height: 28, border: "1px solid #E2E8F0", background: p === "1" ? "#4F46E5" : "white", color: p === "1" ? "white" : "#64748b", borderRadius: 6, fontSize: 13, fontWeight: p === "1" ? 600 : 400, cursor: "pointer" }}>{p}</button>
-            ))}
-          </div>
+          <span style={{ fontSize: 12, color: "#64748b" }}>{rows.length} dossier{rows.length !== 1 ? "s" : ""} affiché{rows.length !== 1 ? "s" : ""}</span>
+          <div style={{ flex: 1 }} />
           <select style={{ border: "1px solid #E2E8F0", borderRadius: 6, padding: "4px 8px", fontSize: 12 }}>
-            <option>8 dossiers par page</option>
+            <option>Tous les dossiers par page</option>
           </select>
         </div>
       </div>
@@ -647,7 +705,7 @@ function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossier
   );
 }
 
-function MessageScreen({ onDossierClick }: { onDossierClick: (d: { id: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string }) => void }) {
+function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) => void }) {
   const [tab, setTab] = useState("Citoyens");
   const citoyenConvs = [
     { name: "Jean Dupont", dossier: "PC-2024-0123", preview: "Bonjour, pouvez-vous me transmettre...", time: "09:15", badge: 2, initials: "JD", color: "#4F46E5" },
@@ -715,7 +773,7 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: { id: string; t
             <div style={{ fontSize: 12, color: "#94a3b8" }}>PC-2024-0123 – Permis de construire</div>
           </div>
           <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => onDossierClick({ id: "PC-2024-0123", type: "Permis de construire", petitionnaire: "Jean Dupont", adresse: "12 rue des Lilas", status: "En instruction", echeance: "12/06/2024" })} style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}>Voir le dossier ↗</button>
+            <button onClick={() => onDossierClick({ id: "PC-2024-0123", numero: "PC-2024-0123", type: "Permis de construire", petitionnaire: "Jean Dupont", adresse: "12 rue des Lilas", status: "en_instruction", echeance: "12/06/2024" })} style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}>Voir le dossier ↗</button>
             <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
           </div>
         </div>
@@ -1906,7 +1964,7 @@ function InfosPersoScreen() {
   );
 }
 
-type DossierInfo = { id: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string };
+type DossierInfo = { id: string; numero: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string; date_depot?: string };
 
 function DossierDetailScreen({ dossier, onBack, navigate }: {
   dossier: DossierInfo;
@@ -1941,7 +1999,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         <button onClick={onBack} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>← Retour aux dossiers</button>
         <div style={{ flex: 1 }}>
           <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <h1 style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", margin: 0 }}>Dossier {dossier.id}</h1>
+            <h1 style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", margin: 0 }}>Dossier {dossier.numero}</h1>
             <StatusBadge status={dossier.status} />
           </div>
           <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{dossier.type} · {dossier.adresse}</div>
@@ -1961,7 +2019,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 ["Pétitionnaire", dossier.petitionnaire],
                 ["Adresse", dossier.adresse],
                 ["Type de dossier", dossier.type],
-                ["Date de dépôt", "12/04/2024"],
+                ["Date de dépôt", dossier.date_depot ?? "—"],
                 ["Échéance", dossier.echeance],
                 ["Instructeur assigné", "Marie Lambert"],
               ].map(([label, value]) => (
