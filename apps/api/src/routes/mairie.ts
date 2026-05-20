@@ -4,6 +4,7 @@ import { dossiers, users, notifications, dossier_messages, zones, zone_regulator
 import { eq, desc, and, sql, like, ilike } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
+import Anthropic from "@anthropic-ai/sdk";
 
 export const mairieRouter = Router();
 
@@ -635,6 +636,225 @@ mairieRouter.post("/admin/seed-plu", async (_req: AuthRequest, res) => {
     console.error("[seed-plu]", err);
     const detail = err instanceof Error ? err.message : String(err);
     res.status(500).json({ error: `Erreur serveur : ${detail}` });
+  }
+});
+
+// ── Ingestion PLU depuis PDF (IA — admin uniquement) ──────────────────────────
+// POST /mairie/admin/ingest-plu-pdf
+// Body: { commune_name, insee_code, zip_code?, pdf_base64 }
+// Uses Claude's native PDF document support — no pdftotext required.
+// All extracted rules stored as validation_status = "brouillon" for human review.
+
+type PluRuleInput = {
+  article_number?: number | null;
+  article_title?: string;
+  topic: string;
+  rule_text: string;
+  not_regulated?: boolean;
+  value_min?: number | null;
+  value_max?: number | null;
+  value_exact?: number | null;
+  unit?: string | null;
+  conditions?: string | null;
+  summary: string;
+  needs_vision?: boolean;
+};
+
+const PLU_SAVE_RULE_TOOL: Anthropic.Tool = {
+  name: "save_rule",
+  description: "Enregistre une règle réglementaire extraite d'un article du PLU.",
+  input_schema: {
+    type: "object" as const,
+    properties: {
+      article_number: { type: "integer", description: "Numéro de l'article. Null si non numéroté." },
+      article_title: { type: "string", description: "Titre exact de l'article." },
+      topic: {
+        type: "string",
+        enum: ["destinations","terrain_min","recul_voie","recul_limite","recul_batiments","emprise_sol","hauteur","aspect","stationnement","espaces_verts","cos","general"],
+        description: "Catégorie réglementaire.",
+      },
+      rule_text: { type: "string", description: "Texte fidèle de la règle." },
+      not_regulated: { type: "boolean", description: "True si article dit 'sans objet' ou 'non réglementé'." },
+      value_min: { type: "number", description: "Valeur minimale numérique. Omettre si absent." },
+      value_max: { type: "number", description: "Valeur maximale numérique. Omettre si absent." },
+      value_exact: { type: "number", description: "Valeur unique exacte. Omettre si absent." },
+      unit: { type: "string", enum: ["m","%","m²","places"], description: "Unité. Omettre si pas de valeur numérique." },
+      conditions: { type: "string", description: "Conditions ou exceptions. Omettre si aucune." },
+      summary: { type: "string", description: "Résumé en 10 mots maximum." },
+      needs_vision: { type: "boolean", description: "True si le texte renvoie à un schéma pour la valeur numérique principale." },
+    },
+    required: ["article_number","article_title","topic","rule_text","not_regulated","summary","needs_vision"],
+  },
+};
+
+mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
+  const { commune_name, insee_code, zip_code, pdf_base64 } = req.body as {
+    commune_name?: string;
+    insee_code?: string;
+    zip_code?: string;
+    pdf_base64?: string;
+  };
+
+  if (!commune_name || !insee_code || !pdf_base64) {
+    return res.status(400).json({ error: "commune_name, insee_code et pdf_base64 requis" });
+  }
+
+  try {
+    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+
+    // Upsert commune
+    let commune = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
+    if (!commune) {
+      const [created] = await db.insert(communes).values({
+        name: commune_name,
+        insee_code,
+        zip_code: zip_code ?? "",
+      }).returning();
+      commune = created!;
+    } else {
+      await db.update(communes).set({ name: commune_name, zip_code: zip_code ?? commune.zip_code ?? "", updated_at: new Date() }).where(eq(communes.id, commune.id));
+    }
+
+    const pdfDoc = {
+      type: "document" as const,
+      source: { type: "base64" as const, media_type: "application/pdf" as const, data: pdf_base64 },
+    };
+
+    // Phase 1 — Zone discovery
+    const zoneMsg = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 2000,
+      messages: [{
+        role: "user",
+        content: [
+          pdfDoc,
+          {
+            type: "text",
+            text: `Ce document est un règlement PLU français.
+Liste toutes les zones qui ont un règlement distinct (UA, UB, UC, 1AU, N, A, etc.).
+Exclure les sous-secteurs sans règlement propre sauf s'ils ont un article complet dédié.
+Répondre UNIQUEMENT avec un JSON array, sans autre texte :
+[{"code":"UA","label":"Zone UA – Centre ancien","type":"U"},…]
+Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
+          },
+        ],
+      }],
+    });
+
+    const zoneRaw = zoneMsg.content[0]?.type === "text" ? zoneMsg.content[0].text : "[]";
+    const zoneDefs = JSON.parse(zoneRaw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
+
+    if (zoneDefs.length === 0) {
+      return res.status(422).json({ error: "Aucune zone détectée dans le document. Vérifiez que c'est bien un règlement PLU textuel." });
+    }
+
+    // Phase 2 — Règles par zone
+    const results: Array<{ zone: string; rules: number; vision: number }> = [];
+
+    for (const zoneDef of zoneDefs) {
+      const ruleMsg = await client.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 4000,
+        tools: [PLU_SAVE_RULE_TOOL],
+        tool_choice: { type: "any" },
+        messages: [{
+          role: "user",
+          content: [
+            pdfDoc,
+            {
+              type: "text",
+              text: `Ce document est un règlement PLU français. Extrais les règles de la ZONE ${zoneDef.code} uniquement.
+
+Pour CHAQUE article présent dans la section Zone ${zoneDef.code}, appelle save_rule une fois.
+Correspondance article → topic :
+  1/2 → destinations | 5 → terrain_min | 6 → recul_voie | 7 → recul_limite
+  8 → recul_batiments | 9 → emprise_sol | 10 → hauteur | 11 → aspect
+  12 → stationnement | 13 → espaces_verts | 14 → cos
+
+- Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
+- Plusieurs valeurs selon sous-secteurs → valeur principale dans value_max, variantes dans conditions.
+- Si le texte renvoie à un schéma pour la valeur numérique principale → needs_vision = true.
+- N'invente aucune valeur. Si incertain, omets value_min/max/exact.`,
+            },
+          ],
+        }],
+      });
+
+      const rules: PluRuleInput[] = ruleMsg.content
+        .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
+        .map(b => b.input as PluRuleInput);
+
+      // Upsert zone
+      const [existingZone] = await db.select({ id: zones.id })
+        .from(zones)
+        .where(and(eq(zones.commune_id, commune.id), eq(zones.zone_code, zoneDef.code)))
+        .limit(1);
+
+      let zoneId: string;
+      if (existingZone) {
+        zoneId = existingZone.id;
+        await db.update(zones).set({ zone_label: zoneDef.label, zone_type: zoneDef.type, updated_at: new Date() }).where(eq(zones.id, zoneId));
+      } else {
+        const [created] = await db.insert(zones).values({
+          commune_id: commune.id,
+          zone_code: zoneDef.code,
+          zone_label: zoneDef.label,
+          zone_type: zoneDef.type,
+          summary: `Zone ${zoneDef.code} — extrait par IA, à valider`,
+          status: "active",
+          is_active: true,
+        }).returning();
+        zoneId = created!.id;
+      }
+
+      // Upsert rules
+      let visionCount = 0;
+      for (const rule of rules) {
+        const [existingRule] = await db.select({ id: zone_regulatory_rules.id })
+          .from(zone_regulatory_rules)
+          .where(and(eq(zone_regulatory_rules.zone_id, zoneId), eq(zone_regulatory_rules.topic, rule.topic)))
+          .limit(1);
+
+        if (rule.needs_vision) visionCount++;
+
+        const payload = {
+          article_number: rule.article_number ?? null,
+          article_title: rule.article_title ?? (rule.article_number ? `Article ${rule.article_number}` : ""),
+          topic: rule.topic,
+          rule_text: rule.rule_text,
+          value_min: rule.value_min ?? null,
+          value_max: rule.value_max ?? null,
+          value_exact: rule.value_exact ?? null,
+          unit: rule.unit ?? null,
+          conditions: rule.conditions ?? null,
+          summary: rule.summary,
+          instructor_note: rule.needs_vision ? "⚠ La valeur est dans un schéma — à vérifier manuellement." : null,
+          validation_status: "brouillon" as const,
+        };
+
+        if (existingRule) {
+          await db.update(zone_regulatory_rules).set({ ...payload, updated_at: new Date() }).where(eq(zone_regulatory_rules.id, existingRule.id));
+        } else {
+          await db.insert(zone_regulatory_rules).values({ zone_id: zoneId, ...payload });
+        }
+      }
+
+      results.push({ zone: zoneDef.code, rules: rules.length, vision: visionCount });
+    }
+
+    res.json({
+      ok: true,
+      commune: commune.name,
+      insee_code: commune.insee_code,
+      zones: results.length,
+      rules: results.reduce((s, z) => s + z.rules, 0),
+      needs_review: results.reduce((s, z) => s + z.vision, 0),
+      detail: results,
+    });
+
+  } catch (err) {
+    console.error("[ingest-plu-pdf]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 

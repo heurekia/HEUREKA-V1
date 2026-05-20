@@ -13,7 +13,7 @@ import { notificationsRouter } from "./routes/notifications.js";
 export const app = express();
 
 app.use(cors({ origin: process.env.FRONTEND_URL ?? process.env.RAILWAY_STATIC_URL ?? "http://localhost:5173", credentials: true }));
-app.use(express.json({ limit: "10mb" }));
+app.use(express.json({ limit: "50mb" }));
 
 app.use("/api/public", publicRouter);
 app.use("/api/auth", authRouter);
