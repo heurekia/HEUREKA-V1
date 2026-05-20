@@ -9,7 +9,6 @@ const NAV_ITEMS = [
   { label: "Calendrier", icon: CalendarIcon, path: "/mairie/calendrier" },
   { label: "Messagerie", icon: MessageIcon, badge: 2, path: "/mairie/messagerie" },
   { label: "Carte", icon: MapIcon, path: "/mairie/carte" },
-  { label: "Réglementation", icon: RulesIcon, path: "/mairie/reglementation" },
   { label: "Statistiques", icon: ChartIcon, path: "/mairie/statistiques" },
   { label: "Paramètres", icon: SettingsIcon, path: "/mairie/parametres" },
 ];
@@ -901,9 +900,12 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
   );
 }
 
-function ParametresScreen() {
-  const settingsTabs = ["Général", "Utilisateurs", "Documents", "Workflow & Délais", "Notifications", "Intégrations"];
+function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
+  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Intégrations"];
   const [stab, setStab] = useState("Notifications");
+  const [seeding, setSeeding] = useState(false);
+  const [seedDone, setSeedDone] = useState(false);
+  const [reglKey, setReglKey] = useState(0);
   const events = [
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
     { label: "Dossier assigné", sub: "Lorsqu'un dossier vous est assigné.", icon: "👤", active: true },
@@ -925,6 +927,38 @@ function ParametresScreen() {
           <button key={t} onClick={() => setStab(t)} style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: stab === t ? 600 : 400, color: stab === t ? "#4F46E5" : "#64748b", borderBottom: stab === t ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>{t}</button>
         ))}
       </div>
+      {stab === "Réglementation" && (
+        <div style={{ minHeight: 400 }}>
+          {!seedDone ? (
+            <div style={{ marginBottom: 20, background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 12, padding: "16px 20px", display: "flex", alignItems: "center", gap: 16 }}>
+              <span style={{ fontSize: 28 }}>🏙️</span>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontWeight: 600, fontSize: 14, color: "#1E1B4B", marginBottom: 2 }}>Initialiser le PLU de {commune}</div>
+                <div style={{ fontSize: 12, color: "#6366F1" }}>Charge les règles du PLU de Ballan-Miré (modification n°5, 2018) pour commencer à travailler.</div>
+              </div>
+              <button
+                disabled={seeding}
+                onClick={async () => {
+                  setSeeding(true);
+                  try {
+                    await api.post("/mairie/admin/seed-plu", {});
+                    setSeedDone(true);
+                    setReglKey(k => k + 1);
+                  } finally { setSeeding(false); }
+                }}
+                style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: seeding ? "wait" : "pointer", whiteSpace: "nowrap", opacity: seeding ? 0.7 : 1 }}
+              >
+                {seeding ? "Chargement…" : "Charger le PLU"}
+              </button>
+            </div>
+          ) : (
+            <div style={{ marginBottom: 16, background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 10, padding: "10px 16px", fontSize: 13, color: "#15803D", display: "flex", alignItems: "center", gap: 8 }}>
+              ✓ PLU de {commune} chargé — validez les règles ci-dessous.
+            </div>
+          )}
+          <ReglementationScreen key={reglKey} commune={commune} />
+        </div>
+      )}
       {stab === "Notifications" && (
         <div style={{ display: "flex", gap: 24 }}>
           <div style={{ flex: 1, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
@@ -1887,12 +1921,9 @@ function ReglementationScreen({ commune }: { commune: string }) {
 
   if (!data) return (
     <div style={{ padding: 40, textAlign: "center", color: "#9CA3AF" }}>
-      <div style={{ fontSize: 40, marginBottom: 12 }}>🏙️</div>
-      <div style={{ fontWeight: 600, color: "#374151", marginBottom: 8 }}>Aucune donnée de réglementation</div>
-      <div style={{ fontSize: 13 }}>Lancez le script d'ingestion PLU pour {commune}</div>
-      <div style={{ marginTop: 16, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px 20px", display: "inline-block", fontFamily: "monospace", fontSize: 12, color: "#4F46E5" }}>
-        npx tsx src/scripts/ingest-plu.ts --commune "{commune}" --insee XXXXX --zip XXXXX --pdf reglement.pdf
-      </div>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>🗂️</div>
+      <div style={{ fontWeight: 600, color: "#374151", marginBottom: 6 }}>Aucune règle chargée pour {commune}</div>
+      <div style={{ fontSize: 13 }}>Utilisez le bouton "Charger le PLU" ci-dessus pour initialiser les données.</div>
     </div>
   );
 
@@ -3855,9 +3886,8 @@ export function MairieApp() {
             <Route path="messagerie" element={<MessageScreen onDossierClick={handleDossierClick} />} />
             <Route path="calendrier" element={<CalendrierScreen />} />
             <Route path="carte" element={<CarteScreen initialCommune={commune} />} />
-            <Route path="reglementation" element={<ReglementationScreen commune={commune} />} />
             <Route path="statistiques" element={<StatistiquesScreen />} />
-            <Route path="parametres" element={<ParametresScreen />} />
+            <Route path="parametres" element={<ParametresScreen commune={commune} />} />
             <Route path="profil" element={<InfosPersoScreen />} />
             <Route path="*" element={<Navigate to="/mairie" replace />} />
           </Routes>
