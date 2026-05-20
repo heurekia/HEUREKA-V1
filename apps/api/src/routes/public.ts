@@ -10,9 +10,22 @@ export const publicRouter = Router();
  */
 publicRouter.get("/analyse", async (req, res) => {
   try {
-    const q = (req.query.q as string | undefined)?.trim();
-    if (!q) return res.status(400).json({ error: "Paramètre q requis (adresse ou référence cadastrale)" });
-    const analysis = await analyseParcel(q);
+    const q = ((req.query.q as string | undefined) ?? "").trim();
+    const lat = req.query.lat !== undefined ? parseFloat(req.query.lat as string) : undefined;
+    const lng = req.query.lng !== undefined ? parseFloat(req.query.lng as string) : undefined;
+    const citycode = req.query.citycode as string | undefined;
+    const zoneOverride = req.query.zone as string | undefined;
+
+    const hasCoords = lat !== undefined && lng !== undefined && !isNaN(lat) && !isNaN(lng);
+    if (!q && !hasCoords) {
+      return res.status(400).json({ error: "Paramètre q ou (lat+lng) requis" });
+    }
+
+    const analysis = await analyseParcel(q, {
+      citycode,
+      zoneOverride,
+      coords: hasCoords ? { lat: lat!, lng: lng! } : undefined,
+    });
     res.json(analysis);
   } catch (err) {
     console.error(err);
