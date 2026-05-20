@@ -1909,19 +1909,19 @@ function ReglementationScreen({ commune }: { commune: string }) {
     </div>
   );
 
-  if (!data) return (
+  if (!data || data.zones.length === 0) return (
     <div style={{ padding: 40, textAlign: "center" }}>
       <div style={{ fontSize: 48, marginBottom: 16 }}>🏙️</div>
       <div style={{ fontWeight: 700, color: "#1E293B", fontSize: 16, marginBottom: 8 }}>
-        Aucune règle PLU pour {commune}
+        {data ? "Zones PLU non encore chargées" : `Aucune règle PLU pour ${commune}`}
       </div>
-      <div style={{ fontSize: 13, color: "#6B7280", marginBottom: 24, maxWidth: 400, margin: "0 auto 24px" }}>
+      <div style={{ fontSize: 13, color: "#6B7280", maxWidth: 400, margin: "0 auto 24px" }}>
         {loadError
           ? `Erreur de chargement : ${loadError}`
-          : "Chargez les règles du PLU de Ballan-Miré pour commencer. Opération idempotente — vous pouvez relancer sans risque."}
+          : "Chargez les règles du PLU de Ballan-Miré pour commencer. L'opération est idempotente — vous pouvez relancer sans risque."}
       </div>
       {seedError && (
-        <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 16px", color: "#DC2626", fontSize: 13, marginBottom: 16, maxWidth: 480, margin: "0 auto 16px" }}>
+        <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 16px", color: "#DC2626", fontSize: 13, maxWidth: 480, margin: "0 auto 16px" }}>
           ⚠ {seedError}
         </div>
       )}

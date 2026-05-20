@@ -779,3 +779,61 @@ mairieRouter.patch("/reglementation/zones/:id", async (req: AuthRequest, res) =>
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
+
+// ── Proxy APICarto GPU zones (évite le CORS côté navigateur) ─────────────────
+// GET /mairie/plu-zones?commune=Ballan-Miré
+mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
+  try {
+    const commune = (req.query.commune as string | undefined)?.trim();
+    if (!commune) return res.status(400).json({ error: "commune requis" });
+
+    // 1. Commune boundary polygon from geo.api.gouv.fr
+    const geoR = await fetch(
+      `https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(commune)}&fields=contour&format=geojson&geometry=contour&limit=1`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (!geoR.ok) return res.status(502).json({ error: "Erreur geo.api.gouv.fr" });
+    type GeoComm = { features?: Array<{ geometry?: { type: string; coordinates: number[][][] } }> };
+    const geoJson = await geoR.json() as GeoComm;
+    const communeGeom = geoJson.features?.[0]?.geometry;
+    if (!communeGeom) return res.status(404).json({ error: `Commune "${commune}" non trouvée` });
+
+    // 2. Compute centroid
+    const pts = communeGeom.coordinates[0]!;
+    const lats = pts.map(p => p[1]!), lngs = pts.map(p => p[0]!);
+    const center = {
+      lat: (Math.min(...lats) + Math.max(...lats)) / 2,
+      lng: (Math.min(...lngs) + Math.max(...lngs)) / 2,
+    };
+
+    // 3. GPU document (partition)
+    const ptGeom = JSON.stringify({ type: "Point", coordinates: [center.lng, center.lat] });
+    const docR = await fetch(
+      `https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(ptGeom)}`,
+      { signal: AbortSignal.timeout(10000) }
+    );
+    if (!docR.ok) return res.status(502).json({ error: "Erreur APICarto document GPU" });
+    type GpuDoc = { features?: Array<{ properties: { partition?: string; etat?: string } }> };
+    const docJson = await docR.json() as GpuDoc;
+    const docs = docJson.features ?? [];
+    const doc = docs.find(f => f.properties.etat === "approuve") ?? docs[0];
+    const partition = doc?.properties.partition;
+    if (!partition) return res.status(404).json({ error: "Aucun PLU approuvé trouvé pour cette commune" });
+
+    // 4. Zone-urba features
+    const params = new URLSearchParams({ partition, _limit: "1000" });
+    params.set("geom", JSON.stringify(communeGeom));
+    const zoneR = await fetch(
+      `https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`,
+      { signal: AbortSignal.timeout(20000) }
+    );
+    if (!zoneR.ok) return res.status(502).json({ error: "Erreur APICarto zone-urba" });
+    const zoneJson = await zoneR.json();
+
+    res.setHeader("Cache-Control", "public, max-age=3600");
+    res.json(zoneJson);
+  } catch (err) {
+    console.error("[plu-zones proxy]", err);
+    res.status(500).json({ error: "Erreur serveur", detail: String(err) });
+  }
+});

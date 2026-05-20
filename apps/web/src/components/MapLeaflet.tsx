@@ -182,49 +182,24 @@ export function MapLeaflet({
 
     (async () => {
       try {
-        // Step 1: get commune boundary polygon (reuse drawn layer if already available)
-        type GeoJsonPoly = { type: string; coordinates: number[][][] };
-        let communeGeom: GeoJsonPoly | null = null;
-        const existing = boundaryRef.current?.toGeoJSON() as { features?: Array<{ geometry?: GeoJsonPoly }> } | null;
-        communeGeom = existing?.features?.[0]?.geometry ?? null;
+        // Proxy request to avoid CORS — backend fetches geo.api.gouv.fr + apicarto.ign.fr
+        const token = localStorage.getItem("token");
+        const headers: Record<string, string> = {};
+        if (token) headers["Authorization"] = `Bearer ${token}`;
 
-        if (!communeGeom && commune) {
-          const r = await fetch(`https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(commune)}&fields=contour&format=geojson&geometry=contour&limit=1`, { signal: AbortSignal.timeout(5000) });
-          if (r.ok) {
-            const j = await r.json() as { features?: Array<{ geometry?: GeoJsonPoly }> };
-            communeGeom = j.features?.[0]?.geometry ?? null;
-          }
-        }
+        const r = await fetch(
+          `/api/mairie/plu-zones?commune=${encodeURIComponent(commune ?? "")}`,
+          { signal: AbortSignal.timeout(30000), headers }
+        );
 
         if (cancelled || !mapRef.current) return;
 
-        // Step 2: derive commune centre for GPU partition lookup
-        const center = (() => {
-          const pts = communeGeom?.coordinates?.[0];
-          if (pts?.length) {
-            const lats = pts.map(p => p[1] as number), lngs = pts.map(p => p[0] as number);
-            return { lat: (Math.min(...lats) + Math.max(...lats)) / 2, lng: (Math.min(...lngs) + Math.max(...lngs)) / 2 };
-          }
-          const c = map.getCenter();
-          return { lat: c.lat, lng: c.lng };
-        })();
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({})) as { error?: string };
+          throw new Error(body.error ?? `Erreur ${r.status}`);
+        }
 
-        // Step 3: resolve GPU partition (PLU or PLUi)
-        const ptGeom = JSON.stringify({ type: "Point", coordinates: [center.lng, center.lat] });
-        const docR = await fetch(`https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(ptGeom)}`, { signal: AbortSignal.timeout(6000) });
-        if (!docR.ok || cancelled || !mapRef.current) return;
-        const docJson = await docR.json() as { features?: Array<{ properties: { partition?: string; etat?: string } }> };
-        const docs = docJson.features ?? [];
-        const doc = docs.find(f => f.properties.etat === "approuve") ?? docs[0];
-        const partition = doc?.properties.partition;
-        if (!partition || cancelled || !mapRef.current) return;
-
-        // Step 4: fetch zones filtered by commune polygon (excludes neighboring commune zones in PLUi)
-        const params = new URLSearchParams({ partition, _limit: "1000" });
-        if (communeGeom) params.set("geom", JSON.stringify(communeGeom));
-        const zoneR = await fetch(`https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`, { signal: AbortSignal.timeout(15000) });
-        if (!zoneR.ok || cancelled || !mapRef.current) return;
-        const zoneJson = await zoneR.json() as Parameters<typeof L.geoJSON>[0];
+        const zoneJson = await r.json() as Parameters<typeof L.geoJSON>[0];
 
         pluLayerRef.current = L.geoJSON(zoneJson, {
           style: (feature) => {
@@ -244,7 +219,7 @@ export function MapLeaflet({
         }).addTo(mapRef.current);
       } catch (err) {
         console.warn("[MapLeaflet] Zones PLU non chargées :", err);
-        if (!cancelled) setZoneError(err instanceof Error ? err.message : "Erreur APICarto IGN");
+        if (!cancelled) setZoneError(err instanceof Error ? err.message : "Erreur chargement zones PLU");
       }
     })();
 
