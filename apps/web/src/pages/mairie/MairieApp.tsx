@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
-import { MapLeaflet, type MapDossier } from "../../components/MapLeaflet";
+import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 
 const NAV_ITEMS = [
@@ -1201,6 +1201,7 @@ function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: str
   const [filterStatus, setFilterStatus] = useState("Tous");
   const [filterType, setFilterType] = useState("Tous les types");
   const [pluZones, setPluZones] = useState(true);
+  const [baseLayer, setBaseLayer] = useState<BaseLayer>("ign-ortho");
 
   useEffect(() => {
     api.get<string[]>("/mairie/communes")
@@ -1250,7 +1251,7 @@ function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: str
       <div style={{ padding: "10px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
         <div style={{ flex: 1 }}>
           <h1 style={{ fontSize: 17, fontWeight: 700, color: "#0F172A", margin: 0 }}>Carte du territoire</h1>
-          <p style={{ color: "#64748b", fontSize: 12, margin: 0 }}>Ballan-Miré — zones PLU (Géoportail Urbanisme) et dossiers</p>
+          <p style={{ color: "#64748b", fontSize: 12, margin: 0 }}>{commune} — zones PLU (Géoportail Urbanisme) et dossiers</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {/* Commune selector */}
@@ -1265,6 +1266,22 @@ function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: str
             >
               {communes.map(c => <option key={c} value={c}>{c}</option>)}
             </select>
+          </div>
+          {/* Base map selector */}
+          <div style={{ display: "flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden", background: "white" }}>
+            {([
+              { key: "ign-ortho", label: "Photo" },
+              { key: "carto-light", label: "Neutre" },
+              { key: "ign-plan", label: "Plan IGN" },
+            ] as { key: BaseLayer; label: string }[]).map(({ key, label }) => (
+              <button key={key} onClick={() => setBaseLayer(key)} style={{
+                padding: "5px 11px", border: "none", borderRight: "1px solid #E2E8F0", cursor: "pointer",
+                fontSize: 11.5, fontWeight: baseLayer === key ? 700 : 400,
+                background: baseLayer === key ? "#4F46E5" : "white",
+                color: baseLayer === key ? "white" : "#64748b",
+                transition: "all 0.12s",
+              }}>{label}</button>
+            ))}
           </div>
           <button
             onClick={() => setPluZones(v => !v)}
@@ -1294,8 +1311,8 @@ function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: str
             height="100%"
             filterStatus={filterStatus}
             filterType={filterType}
-            commune="Ballan-Miré"
-            ignBase={true}
+            commune={commune}
+            baseLayer={baseLayer}
             pluZoneLayer={pluZones}
             parcelLayer={true}
             onMarkerClick={d => navigate(`/mairie/dossiers/${d.id}`)}
