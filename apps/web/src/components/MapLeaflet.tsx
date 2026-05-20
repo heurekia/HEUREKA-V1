@@ -81,7 +81,7 @@ export function MapLeaflet({
   const markersRef = useRef<L.CircleMarker[]>([]);
   const boundaryRef = useRef<L.GeoJSON | null>(null);
   const parcelLayerRef = useRef<L.TileLayer.WMS | null>(null);
-  const pluLayerRef = useRef<L.TileLayer.WMS | null>(null);
+  const pluLayerRef = useRef<L.GeoJSON | null>(null);
   const clickPinRef = useRef<L.Marker | null>(null);
   const baseTileRef = useRef<L.TileLayer | null>(null);
 
@@ -145,23 +145,63 @@ export function MapLeaflet({
     }
   }, [parcelLayer]);
 
-  // GPU PLU zone WMS overlay (Géoportail de l'Urbanisme)
+  // GPU PLU zone overlay — fetch GeoJSON polygons from APICarto and color by zone type.
+  // This matches Géoportail Urbanisme rendering and works at all zoom levels.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    if (pluZoneLayer && !pluLayerRef.current) {
-      pluLayerRef.current = L.tileLayer.wms("https://data.geopf.fr/wms-r/ows", {
-        layers: "URBANISME.ZONE_URBA",
-        format: "image/png",
-        transparent: true,
-        version: "1.3.0",
-        opacity: 0.55,
-        attribution: "© IGN Géoplateforme — Géoportail de l'Urbanisme",
-      }).addTo(map);
-    } else if (!pluZoneLayer && pluLayerRef.current) {
-      pluLayerRef.current.remove();
-      pluLayerRef.current = null;
+
+    if (!pluZoneLayer) {
+      if (pluLayerRef.current) { pluLayerRef.current.remove(); pluLayerRef.current = null; }
+      return;
     }
+    if (pluLayerRef.current) return; // already loaded
+
+    const center = boundaryRef.current?.getBounds().getCenter() ?? map.getCenter();
+
+    const TYPE_FILL: Record<string, string> = {
+      U: "#C0392B", AU: "#E67E22", A: "#D4AC0D", N: "#27AE60",
+    };
+
+    (async () => {
+      try {
+        // 1. Resolve GPU partition (handles PLU vs PLUi automatically)
+        const geom = JSON.stringify({ type: "Point", coordinates: [center.lng, center.lat] });
+        const docR = await fetch(`https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(geom)}`, { signal: AbortSignal.timeout(6000) });
+        if (!docR.ok) return;
+        const docJson = await docR.json() as { features?: Array<{ properties: { partition?: string; etat?: string } }> };
+        const docs = docJson.features ?? [];
+        const doc = docs.find(f => f.properties.etat === "approuve") ?? docs[0];
+        const partition = doc?.properties.partition;
+        if (!partition || !mapRef.current) return;
+
+        // 2. Fetch all zone polygons for this PLU document
+        const zoneR = await fetch(`https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(partition)}&_limit=1000`, { signal: AbortSignal.timeout(15000) });
+        if (!zoneR.ok || !mapRef.current) return;
+        const zoneJson = await zoneR.json() as Parameters<typeof L.geoJSON>[0];
+
+        pluLayerRef.current = L.geoJSON(zoneJson, {
+          style: (feature) => {
+            const raw = (feature?.properties?.typezone as string | undefined) ?? "U";
+            const type = raw.startsWith("AU") ? "AU"
+              : raw.startsWith("U") ? "U"
+              : raw.startsWith("N") ? "N"
+              : raw.startsWith("A") ? "A"
+              : "U";
+            const color = TYPE_FILL[type] ?? "#888";
+            return { fillColor: color, fillOpacity: 0.38, color, weight: 0.7, opacity: 0.7 };
+          },
+          onEachFeature: (feature, layer) => {
+            const p = feature.properties as { libelle?: string; libelong?: string } | null;
+            if (!p) return;
+            layer.bindTooltip(
+              `<b style="font-size:13px">${p.libelle ?? "?"}</b>${p.libelong ? `<br><span style="font-size:11px;color:#555">${p.libelong}</span>` : ""}`,
+              { sticky: true, opacity: 0.95 }
+            );
+          },
+        }).addTo(mapRef.current);
+      } catch { /* zone layer is informational */ }
+    })();
   }, [pluZoneLayer]);
 
   // Map click handler — only active in clickMode
