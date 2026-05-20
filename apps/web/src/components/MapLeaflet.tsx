@@ -63,6 +63,9 @@ export function MapLeaflet({
   parcelLayer = false,
   pluZoneLayer = false,
   baseLayer = "osm",
+  highlightGeometry,
+  defaultCenter,
+  defaultZoom,
 }: {
   dossiers: MapDossier[];
   height?: number | string;
@@ -77,6 +80,12 @@ export function MapLeaflet({
   pluZoneLayer?: boolean;
   /** Base tile layer: osm | ign-plan | ign-ortho | carto-light */
   baseLayer?: BaseLayer;
+  /** GeoJSON geometry to highlight (e.g. found parcel polygon) */
+  highlightGeometry?: object;
+  /** Override initial map center [lat, lng] */
+  defaultCenter?: [number, number];
+  /** Override initial map zoom level */
+  defaultZoom?: number;
 }) {
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
@@ -86,14 +95,18 @@ export function MapLeaflet({
   const pluLayerRef = useRef<L.GeoJSON | null>(null);
   const clickPinRef = useRef<L.Marker | null>(null);
   const baseTileRef = useRef<L.TileLayer | null>(null);
+  const highlightLayerRef = useRef<L.GeoJSON | null>(null);
+  // Capture initial center/zoom at mount time (refs avoid re-running the init effect)
+  const initialCenterRef = useRef<[number, number]>(defaultCenter ?? DEFAULT_CENTER);
+  const initialZoomRef = useRef<number>(defaultZoom ?? DEFAULT_ZOOM);
 
   // Initialize map once
   useEffect(() => {
     if (!containerRef.current || mapRef.current) return;
 
     const map = L.map(containerRef.current, {
-      center: DEFAULT_CENTER,
-      zoom: DEFAULT_ZOOM,
+      center: initialCenterRef.current,
+      zoom: initialZoomRef.current,
       zoomControl: false,
     });
 
@@ -107,6 +120,7 @@ export function MapLeaflet({
       baseTileRef.current = null;
       parcelLayerRef.current = null;
       pluLayerRef.current = null;
+      highlightLayerRef.current = null;
     };
   }, []);
 
@@ -231,6 +245,21 @@ export function MapLeaflet({
 
     return () => { cancelled = true; };
   }, [pluZoneLayer, commune]);
+
+  // Highlight geometry (e.g. parcel polygon returned by analysis)
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (highlightLayerRef.current) { highlightLayerRef.current.remove(); highlightLayerRef.current = null; }
+    if (!highlightGeometry) return;
+    try {
+      highlightLayerRef.current = L.geoJSON(highlightGeometry as Parameters<typeof L.geoJSON>[0], {
+        style: { fillColor: "#4F46E5", fillOpacity: 0.2, color: "#4F46E5", weight: 2.5, opacity: 0.9, dashArray: "5 4" },
+      }).addTo(map);
+      const bounds = highlightLayerRef.current.getBounds();
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60], maxZoom: 19 });
+    } catch { /* invalid geometry — ignore */ }
+  }, [highlightGeometry]);
 
   // Map click handler — only active in clickMode
   useEffect(() => {

@@ -37,9 +37,11 @@ export function App() {
     <BrowserRouter>
       <AuthProvider>
         <Routes>
+          {/* Analyse parcellaire is full-screen — lives outside PublicLayout */}
+          <Route path="/analyse-parcellaire" element={<AnalyseParcellaire />} />
+
           <Route element={<PublicLayout />}>
             <Route path="/" element={<Accueil />} />
-            <Route path="/analyse-parcellaire" element={<AnalyseParcellaire />} />
             <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
             <Route path="/register" element={<PublicOnlyRoute><Register /></PublicOnlyRoute>} />
           </Route>
