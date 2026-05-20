@@ -179,6 +179,53 @@ export async function geocodeAddress(address: string, citycode?: string): Promis
   }
 }
 
+// ── Reverse-geocode coordinates to commune INSEE code ─────────────────────────
+// Uses geo.api.gouv.fr which returns the commune that spatially contains (lat, lng).
+// Called before IGN Cadastre lookups to constrain results to the correct commune
+// and prevent the API from returning parcels from an unrelated part of France.
+
+async function getInseeFromCoords(lat: number, lng: number): Promise<string | undefined> {
+  try {
+    const r = await fetch(
+      `https://geo.api.gouv.fr/communes?lat=${lat}&lon=${lng}&fields=code&format=json`,
+      { signal: AbortSignal.timeout(3000) }
+    );
+    if (!r.ok) return undefined;
+    const data = await r.json() as Array<{ code: string }>;
+    return data[0]?.code;
+  } catch {
+    return undefined;
+  }
+}
+
+// ── Haversine distance (km) between two lat/lng points ────────────────────────
+function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number): number {
+  const R = 6371;
+  const dLat = (lat2 - lat1) * Math.PI / 180;
+  const dLng = (lng2 - lng1) * Math.PI / 180;
+  const a = Math.sin(dLat / 2) ** 2 +
+    Math.cos(lat1 * Math.PI / 180) * Math.cos(lat2 * Math.PI / 180) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// ── Parcel lookup with small-offset retries ───────────────────────────────────
+// BAN housenumber points land on the road edge; the parcel polygon sits a few
+// metres behind the sidewalk. If the first lookup misses, we try 4 offsets of
+// ~15 m (N / S / E / W) to catch parcels just inside the block boundary.
+
+async function findParcelWithRetry(lat: number, lng: number, codeInsee?: string): Promise<ParcelResult | null> {
+  const first = await findParcelByLatLng(lat, lng, codeInsee);
+  if (first) return first;
+  // ~15 m offsets in lat and lng degrees (at ~47° latitude)
+  const DLAT = 0.000135; // ~15 m north/south
+  const DLNG = 0.000195; // ~15 m east/west
+  for (const [dLat, dLng] of [[DLAT, 0], [-DLAT, 0], [0, DLNG], [0, -DLNG]] as [number, number][]) {
+    const p = await findParcelByLatLng(lat + dLat, lng + dLng, codeInsee);
+    if (p) return p;
+  }
+  return null;
+}
+
 // ── Cadastral parcel lookup ──────────────────────────────────────────────────
 
 export async function findParcelByLatLng(lat: number, lng: number, codeInsee?: string): Promise<ParcelResult | null> {
@@ -487,11 +534,31 @@ export async function analyseParcel(
 
   // Step 1: Resolve coordinates
   if (lat !== undefined && lng !== undefined) {
-    // Coordinates provided directly (user clicked on map) — skip geocoding
+    // Coordinates provided directly (user clicked on map) — skip geocoding.
+    // Pre-resolve the commune INSEE code from geo.api.gouv.fr so that the IGN
+    // Cadastre query is constrained to the right commune (without this, the API
+    // can silently return a parcel from a completely different region of France).
     result.data_sources.push("Clic carte");
+    if (!code_insee) {
+      code_insee = await getInseeFromCoords(lat, lng);
+    }
+
     const parcel = await findParcelByLatLng(lat, lng, code_insee);
     if (parcel) {
-      if (code_insee && parcel.code_insee !== code_insee) {
+      // Sanity-check: parcel centroid should be within 2 km of the clicked point.
+      // A larger distance means the API returned an unrelated parcel.
+      let centroidOk = true;
+      if (parcel.geometry?.type === "Polygon") {
+        const coords = (parcel.geometry as Polygon).coordinates[0];
+        if (coords?.length) {
+          const cLat = coords.reduce((s, c) => s + (c[1] ?? 0), 0) / coords.length;
+          const cLng = coords.reduce((s, c) => s + (c[0] ?? 0), 0) / coords.length;
+          if (distanceKm(lat, lng, cLat, cLng) > 2) centroidOk = false;
+        }
+      }
+      if (!centroidOk) {
+        result.warnings.push(`Parcelle retournée par IGN Cadastre (${parcel.parcelle_id}) est trop éloignée du point cliqué — résultat ignoré.`);
+      } else if (code_insee && parcel.code_insee !== code_insee) {
         result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${code_insee}. Données non retenues.`);
       } else {
         result.parcel = parcel;
@@ -581,8 +648,10 @@ export async function analyseParcel(
 
       // Step 2: Find parcel — only possible for housenumber geocodes.
       // Street-level geocodes land on the road center, which has no cadastral parcel.
+      // findParcelWithRetry tries small offsets (~15 m) when the primary point misses,
+      // since BAN places housenumber coords on the road edge, not on the parcel itself.
       if (addr.type === "housenumber" || addr.type === "interpolation") {
-        const parcel = await findParcelByLatLng(lat, lng, code_insee);
+        const parcel = await findParcelWithRetry(lat, lng, code_insee);
         if (parcel) {
           if (parcel.code_insee !== addr.citycode) {
             result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${addr.city} (${addr.citycode}). Données cadastrales non retenues.`);
