@@ -1,6 +1,6 @@
 import { useState, useRef, useEffect } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
-import { MapLeaflet, type MapDossier } from "../../components/MapLeaflet";
+import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 
 const NAV_ITEMS = [
@@ -1193,12 +1193,21 @@ function ParametresScreen() {
   );
 }
 
-function CarteScreen() {
+function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: string }) {
   const navigate = useNavigate();
+  const [commune, setCommune] = useState(initialCommune);
+  const [communes, setCommunes] = useState<string[]>([initialCommune]);
   const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
   const [filterStatus, setFilterStatus] = useState("Tous");
   const [filterType, setFilterType] = useState("Tous les types");
   const [pluZones, setPluZones] = useState(true);
+  const [baseLayer, setBaseLayer] = useState<BaseLayer>("ign-ortho");
+
+  useEffect(() => {
+    api.get<string[]>("/mairie/communes")
+      .then(data => { if (data.length > 0) setCommunes(data); })
+      .catch(() => {});
+  }, []);
 
   useEffect(() => {
     const FALLBACK: MapDossier[] = [
@@ -1212,10 +1221,10 @@ function CarteScreen() {
       { id: "8", numero: "PC-BM-2024-041", type: "permis_de_construire", status: "refuse", adresse: "Rue du Commerce, Ballan-Miré", lat: 47.3546, lng: 0.5503 },
       { id: "9", numero: "DP-BM-2024-019", type: "declaration_prealable", status: "pre_instruction", adresse: "Rue du Val de l'Indre, Ballan-Miré", lat: 47.3510, lng: 0.5560 },
     ];
-    api.get<MapDossier[]>("/mairie/map-dossiers?commune=Ballan-Mir%C3%A9")
+    api.get<MapDossier[]>(`/mairie/map-dossiers?commune=${encodeURIComponent(commune)}`)
       .then(data => setMapDossiers(data.length > 0 ? data : FALLBACK))
       .catch(() => setMapDossiers(FALLBACK));
-  }, []);
+  }, [commune]);
 
   const TYPE_OPTIONS = ["Tous les types", "Permis de construire", "Déclaration préalable", "Permis d'aménager", "Permis de démolir", "Certificat d'urbanisme"];
   const STATUS_OPTIONS = ["Tous", "Nouveau", "Pré-instruction", "Incomplet", "En instruction", "Décision en cours", "Accepté", "Refusé", "Accord avec prescriptions", "Brouillon"];
@@ -1242,24 +1251,55 @@ function CarteScreen() {
       <div style={{ padding: "10px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
         <div style={{ flex: 1 }}>
           <h1 style={{ fontSize: 17, fontWeight: 700, color: "#0F172A", margin: 0 }}>Carte du territoire</h1>
-          <p style={{ color: "#64748b", fontSize: 12, margin: 0 }}>Ballan-Miré — zones PLU (Géoportail Urbanisme) et dossiers</p>
+          <p style={{ color: "#64748b", fontSize: 12, margin: 0 }}>{commune} — zones PLU (Géoportail Urbanisme) et dossiers</p>
         </div>
-        <button
-          onClick={() => setPluZones(v => !v)}
-          style={{
-            display: "flex", alignItems: "center", gap: 6,
-            padding: "6px 13px", borderRadius: 8, fontSize: 12, fontWeight: 600,
-            border: "1.5px solid", cursor: "pointer", transition: "all 0.15s",
-            borderColor: pluZones ? "#4F46E5" : "#E2E8F0",
-            background: pluZones ? "#EEF2FF" : "white",
-            color: pluZones ? "#4F46E5" : "#94a3b8",
-          }}
-        >
-          <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
-          </svg>
-          {pluZones ? "Zones PLU activées" : "Zones PLU désactivées"}
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Commune selector */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#F8F9FC", border: "1px solid #E2E8F0", borderRadius: 8, padding: "5px 10px" }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
+            </svg>
+            <select
+              value={commune}
+              onChange={e => { setCommune(e.target.value); setMapDossiers([]); }}
+              style={{ border: "none", background: "transparent", fontSize: 12, fontWeight: 600, color: "#374151", outline: "none", cursor: "pointer" }}
+            >
+              {communes.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          {/* Base map selector */}
+          <div style={{ display: "flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden", background: "white" }}>
+            {([
+              { key: "ign-ortho", label: "Photo" },
+              { key: "carto-light", label: "Neutre" },
+              { key: "ign-plan", label: "Plan IGN" },
+            ] as { key: BaseLayer; label: string }[]).map(({ key, label }) => (
+              <button key={key} onClick={() => setBaseLayer(key)} style={{
+                padding: "5px 11px", border: "none", borderRight: "1px solid #E2E8F0", cursor: "pointer",
+                fontSize: 11.5, fontWeight: baseLayer === key ? 700 : 400,
+                background: baseLayer === key ? "#4F46E5" : "white",
+                color: baseLayer === key ? "white" : "#64748b",
+                transition: "all 0.12s",
+              }}>{label}</button>
+            ))}
+          </div>
+          <button
+            onClick={() => setPluZones(v => !v)}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "6px 13px", borderRadius: 8, fontSize: 12, fontWeight: 600,
+              border: "1.5px solid", cursor: "pointer", transition: "all 0.15s",
+              borderColor: pluZones ? "#4F46E5" : "#E2E8F0",
+              background: pluZones ? "#EEF2FF" : "white",
+              color: pluZones ? "#4F46E5" : "#94a3b8",
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
+            </svg>
+            {pluZones ? "Zones PLU activées" : "Zones PLU désactivées"}
+          </button>
+        </div>
       </div>
 
       {/* Map + sidebar */}
@@ -1271,8 +1311,8 @@ function CarteScreen() {
             height="100%"
             filterStatus={filterStatus}
             filterType={filterType}
-            commune="Ballan-Miré"
-            ignBase={true}
+            commune={commune}
+            baseLayer={baseLayer}
             pluZoneLayer={pluZones}
             parcelLayer={true}
             onMarkerClick={d => navigate(`/mairie/dossiers/${d.id}`)}
@@ -3419,7 +3459,7 @@ export function MairieApp() {
             <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} />} />
             <Route path="messagerie" element={<MessageScreen onDossierClick={handleDossierClick} />} />
             <Route path="calendrier" element={<CalendrierScreen />} />
-            <Route path="carte" element={<CarteScreen />} />
+            <Route path="carte" element={<CarteScreen initialCommune={commune} />} />
             <Route path="statistiques" element={<StatistiquesScreen />} />
             <Route path="parametres" element={<ParametresScreen />} />
             <Route path="profil" element={<InfosPersoScreen />} />

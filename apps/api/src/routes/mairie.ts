@@ -193,6 +193,21 @@ mairieRouter.get("/instructeurs", async (_req: AuthRequest, res) => {
   }
 });
 
+// ── Communes avec dossiers (pour le sélecteur de la carte) ──
+mairieRouter.get("/communes", async (_req: AuthRequest, res) => {
+  try {
+    const rows = await db
+      .selectDistinct({ commune: dossiers.commune })
+      .from(dossiers)
+      .where(sql`commune IS NOT NULL`)
+      .orderBy(dossiers.commune);
+    res.json(rows.map(r => r.commune).filter(Boolean));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── Dossiers géolocalisés pour la carte ──
 mairieRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
   try {
