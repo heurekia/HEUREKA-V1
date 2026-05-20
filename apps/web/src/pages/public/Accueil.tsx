@@ -1,6 +1,8 @@
-import { useState } from "react";
+import { useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { FileText, MessageSquare, Eye, Search } from "lucide-react";
+
+type BanSuggestion = { label: string };
 
 const features = [
   {
@@ -85,11 +87,29 @@ function HouseIllustration() {
 
 export function Accueil() {
   const [query, setQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<BanSuggestion[]>([]);
+  const [showSugg, setShowSugg] = useState(false);
+  const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
 
-  const handleSearch = () => {
-    if (!query.trim()) return;
-    navigate(`/analyse-parcellaire?q=${encodeURIComponent(query.trim())}`);
+  const goAnalyse = (q: string) => {
+    setSuggestions([]);
+    setShowSugg(false);
+    navigate(`/analyse-parcellaire?q=${encodeURIComponent(q.trim())}`);
+  };
+
+  const handleQueryChange = (val: string) => {
+    setQuery(val);
+    setShowSugg(true);
+    if (suggestTimer.current) clearTimeout(suggestTimer.current);
+    if (val.length < 3) { setSuggestions([]); return; }
+    suggestTimer.current = setTimeout(async () => {
+      try {
+        const r = await fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(val)}&limit=6`);
+        const data = await r.json() as { features?: Array<{ properties: { label: string } }> };
+        setSuggestions((data.features ?? []).map(f => ({ label: f.properties.label })));
+      } catch { setSuggestions([]); }
+    }, 250);
   };
 
   return (
@@ -133,20 +153,46 @@ export function Accueil() {
 
           {/* Input + button */}
           <div className="flex flex-1 gap-3 min-w-0">
-            <div className="flex-1 flex items-center gap-2 border border-gray-200 rounded-xl px-4 bg-gray-50">
-              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" />
-              </svg>
-              <input
-                value={query}
-                onChange={e => setQuery(e.target.value)}
-                onKeyDown={e => e.key === "Enter" && handleSearch()}
-                placeholder="Ex. : 15 rue des Lilas, 75012 Paris"
-                className="flex-1 bg-transparent py-3.5 text-sm text-gray-700 placeholder-gray-400 outline-none"
-              />
+            <div className="relative flex-1">
+              <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-4 bg-gray-50">
+                <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" />
+                </svg>
+                <input
+                  value={query}
+                  onChange={e => handleQueryChange(e.target.value)}
+                  onKeyDown={e => { if (e.key === "Enter" && query.trim()) goAnalyse(query); if (e.key === "Escape") setShowSugg(false); }}
+                  onFocus={() => suggestions.length > 0 && setShowSugg(true)}
+                  onBlur={() => setTimeout(() => setShowSugg(false), 150)}
+                  placeholder="Ex. : 15 rue des Lilas, 75012 Paris"
+                  className="flex-1 bg-transparent py-3.5 text-sm text-gray-700 placeholder-gray-400 outline-none"
+                />
+                {query && (
+                  <button onClick={() => { setQuery(""); setSuggestions([]); }} className="text-gray-400 hover:text-gray-600 text-base leading-none">×</button>
+                )}
+              </div>
+
+              {/* BAN suggestions dropdown */}
+              {showSugg && suggestions.length > 0 && (
+                <div className="absolute top-full left-0 right-0 mt-1 bg-white border border-gray-200 rounded-xl shadow-lg z-50 overflow-hidden">
+                  {suggestions.map((s, i) => (
+                    <button
+                      key={i}
+                      onMouseDown={() => goAnalyse(s.label)}
+                      className="flex items-center gap-3 w-full px-4 py-2.5 text-left text-sm text-gray-700 hover:bg-gray-50 border-b border-gray-50 last:border-none"
+                    >
+                      <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className="flex-shrink-0">
+                        <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" />
+                      </svg>
+                      {s.label}
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
+
             <button
-              onClick={handleSearch}
+              onClick={() => query.trim() && goAnalyse(query)}
               className="flex-shrink-0 flex items-center gap-2 bg-heureka-500 hover:bg-heureka-600 text-white px-6 py-3.5 rounded-xl font-semibold text-sm transition-colors"
             >
               Analyser mon projet
