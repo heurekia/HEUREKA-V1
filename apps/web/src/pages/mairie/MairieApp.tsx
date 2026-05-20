@@ -903,9 +903,6 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
 function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
   const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Intégrations"];
   const [stab, setStab] = useState("Notifications");
-  const [seeding, setSeeding] = useState(false);
-  const [seedDone, setSeedDone] = useState(false);
-  const [reglKey, setReglKey] = useState(0);
   const events = [
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
     { label: "Dossier assigné", sub: "Lorsqu'un dossier vous est assigné.", icon: "👤", active: true },
@@ -928,35 +925,8 @@ function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
         ))}
       </div>
       {stab === "Réglementation" && (
-        <div style={{ minHeight: 400 }}>
-          {!seedDone ? (
-            <div style={{ marginBottom: 20, background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 12, padding: "16px 20px", display: "flex", alignItems: "center", gap: 16 }}>
-              <span style={{ fontSize: 28 }}>🏙️</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontWeight: 600, fontSize: 14, color: "#1E1B4B", marginBottom: 2 }}>Initialiser le PLU de {commune}</div>
-                <div style={{ fontSize: 12, color: "#6366F1" }}>Charge les règles du PLU de Ballan-Miré (modification n°5, 2018) pour commencer à travailler.</div>
-              </div>
-              <button
-                disabled={seeding}
-                onClick={async () => {
-                  setSeeding(true);
-                  try {
-                    await api.post("/mairie/admin/seed-plu", {});
-                    setSeedDone(true);
-                    setReglKey(k => k + 1);
-                  } finally { setSeeding(false); }
-                }}
-                style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: seeding ? "wait" : "pointer", whiteSpace: "nowrap", opacity: seeding ? 0.7 : 1 }}
-              >
-                {seeding ? "Chargement…" : "Charger le PLU"}
-              </button>
-            </div>
-          ) : (
-            <div style={{ marginBottom: 16, background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 10, padding: "10px 16px", fontSize: 13, color: "#15803D", display: "flex", alignItems: "center", gap: 8 }}>
-              ✓ PLU de {commune} chargé — validez les règles ci-dessous.
-            </div>
-          )}
-          <ReglementationScreen key={reglKey} commune={commune} />
+        <div style={{ minHeight: 400, margin: "0 -24px" }}>
+          <ReglementationScreen commune={commune} />
         </div>
       )}
       {stab === "Notifications" && (
@@ -1842,6 +1812,9 @@ const ZONE_TYPE_STYLE: Record<string, { bg: string; color: string; border: strin
 function ReglementationScreen({ commune }: { commune: string }) {
   const [data, setData] = useState<ReglData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [seeding, setSeeding] = useState(false);
+  const [seedError, setSeedError] = useState<string | null>(null);
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<RuleRow>>({});
@@ -1851,10 +1824,27 @@ function ReglementationScreen({ commune }: { commune: string }) {
 
   const load = () => {
     setLoading(true);
+    setLoadError(null);
     api.get<ReglData>(`/mairie/reglementation?commune_name=${encodeURIComponent(commune)}`)
-      .then(d => { setData(d); if (!selectedZoneId && d.zones[0]) setSelectedZoneId(d.zones[0].id); })
-      .catch(() => setData(null))
+      .then(d => {
+        setData(d);
+        if (d.zones[0] && !selectedZoneId) setSelectedZoneId(d.zones[0].id);
+      })
+      .catch(e => { setData(null); setLoadError(e.message ?? "Erreur de chargement"); })
       .finally(() => setLoading(false));
+  };
+
+  const runSeed = async () => {
+    setSeeding(true);
+    setSeedError(null);
+    try {
+      await api.post("/mairie/admin/seed-plu", {});
+      load();
+    } catch (e) {
+      setSeedError(e instanceof Error ? e.message : "Erreur serveur — vérifiez les logs API");
+    } finally {
+      setSeeding(false);
+    }
   };
 
   useEffect(() => { load(); }, [commune]);
@@ -1920,10 +1910,32 @@ function ReglementationScreen({ commune }: { commune: string }) {
   );
 
   if (!data) return (
-    <div style={{ padding: 40, textAlign: "center", color: "#9CA3AF" }}>
-      <div style={{ fontSize: 40, marginBottom: 12 }}>🗂️</div>
-      <div style={{ fontWeight: 600, color: "#374151", marginBottom: 6 }}>Aucune règle chargée pour {commune}</div>
-      <div style={{ fontSize: 13 }}>Utilisez le bouton "Charger le PLU" ci-dessus pour initialiser les données.</div>
+    <div style={{ padding: 40, textAlign: "center" }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>🏙️</div>
+      <div style={{ fontWeight: 700, color: "#1E293B", fontSize: 16, marginBottom: 8 }}>
+        Aucune règle PLU pour {commune}
+      </div>
+      <div style={{ fontSize: 13, color: "#6B7280", marginBottom: 24, maxWidth: 400, margin: "0 auto 24px" }}>
+        {loadError
+          ? `Erreur de chargement : ${loadError}`
+          : "Chargez les règles du PLU de Ballan-Miré pour commencer. Opération idempotente — vous pouvez relancer sans risque."}
+      </div>
+      {seedError && (
+        <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 16px", color: "#DC2626", fontSize: 13, marginBottom: 16, maxWidth: 480, margin: "0 auto 16px" }}>
+          ⚠ {seedError}
+        </div>
+      )}
+      <button
+        onClick={runSeed}
+        disabled={seeding}
+        style={{ background: seeding ? "#6366F1" : "#4F46E5", color: "white", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 14, fontWeight: 700, cursor: seeding ? "wait" : "pointer", display: "inline-flex", alignItems: "center", gap: 10, boxShadow: "0 4px 14px rgba(79,70,229,0.35)" }}>
+        {seeding ? (
+          <>
+            <div style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.4)", borderTopColor: "white", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+            Chargement en cours…
+          </>
+        ) : "⬇ Charger le PLU de Ballan-Miré"}
+      </button>
     </div>
   );
 
