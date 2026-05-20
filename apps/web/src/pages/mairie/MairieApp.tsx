@@ -3,6 +3,13 @@ import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearch
 import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 
+const COMMUNE_INSEE: Record<string, string> = {
+  "Ballan-Miré": "37018",
+  "Saint-Avertin": "37207",
+  "Joué-lès-Tours": "37122",
+  "La Riche": "37125",
+};
+
 const NAV_ITEMS = [
   { label: "Tableau de bord", icon: HomeIcon, path: "/mairie" },
   { label: "Dossiers", icon: FolderIcon, path: "/mairie/dossiers" },
@@ -926,7 +933,7 @@ function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
       </div>
       {stab === "Réglementation" && (
         <div style={{ minHeight: 400, margin: "0 -24px" }}>
-          <ReglementationScreen commune={commune} />
+          <ReglementationScreen commune={commune} inseeCode={COMMUNE_INSEE[commune]} />
         </div>
       )}
       {stab === "Notifications" && (
@@ -1209,6 +1216,7 @@ function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
 function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: string }) {
   const navigate = useNavigate();
   const [commune, setCommune] = useState(initialCommune);
+  const [inseeCode, setInseeCode] = useState<string>(COMMUNE_INSEE[initialCommune] ?? "");
   const [communes, setCommunes] = useState<string[]>([initialCommune]);
   const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
   const [filterStatus, setFilterStatus] = useState("Tous");
@@ -1274,7 +1282,7 @@ function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: str
             </svg>
             <select
               value={commune}
-              onChange={e => { setCommune(e.target.value); setMapDossiers([]); }}
+              onChange={e => { setCommune(e.target.value); setInseeCode(COMMUNE_INSEE[e.target.value] ?? ""); setMapDossiers([]); }}
               style={{ border: "none", background: "transparent", fontSize: 12, fontWeight: 600, color: "#374151", outline: "none", cursor: "pointer" }}
             >
               {communes.map(c => <option key={c} value={c}>{c}</option>)}
@@ -1325,6 +1333,7 @@ function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: str
             filterStatus={filterStatus}
             filterType={filterType}
             commune={commune}
+            inseeCode={inseeCode || undefined}
             baseLayer={baseLayer}
             pluZoneLayer={pluZones}
             parcelLayer={true}
@@ -1809,7 +1818,7 @@ const ZONE_TYPE_STYLE: Record<string, { bg: string; color: string; border: strin
   N:  { bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0", label: "Naturelle" },
 };
 
-function ReglementationScreen({ commune }: { commune: string }) {
+function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCode?: string }) {
   const [data, setData] = useState<ReglData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -1825,7 +1834,10 @@ function ReglementationScreen({ commune }: { commune: string }) {
   const load = () => {
     setLoading(true);
     setLoadError(null);
-    api.get<ReglData>(`/mairie/reglementation?commune_name=${encodeURIComponent(commune)}`)
+    const param = inseeCode
+      ? `insee_code=${encodeURIComponent(inseeCode)}`
+      : `commune_name=${encodeURIComponent(commune)}`;
+    api.get<ReglData>(`/mairie/reglementation?${param}`)
       .then(d => {
         setData(d);
         if (d.zones[0] && !selectedZoneId) setSelectedZoneId(d.zones[0].id);
@@ -1847,7 +1859,7 @@ function ReglementationScreen({ commune }: { commune: string }) {
     }
   };
 
-  useEffect(() => { load(); }, [commune]);
+  useEffect(() => { load(); }, [commune, inseeCode]);
 
   const patchRule = async (id: string, patch: Partial<RuleRow>) => {
     setSaving(true);

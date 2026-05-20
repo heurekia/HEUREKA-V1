@@ -57,6 +57,7 @@ export function MapLeaflet({
   filterStatus,
   filterType,
   commune,
+  inseeCode,
   onMarkerClick,
   onMapClick,
   clickMode = false,
@@ -72,6 +73,8 @@ export function MapLeaflet({
   filterStatus?: string;
   filterType?: string;
   commune?: string;
+  /** INSEE commune code (preferred over name — works for PLU and PLUi) */
+  inseeCode?: string;
   onMarkerClick?: (d: MapDossier) => void;
   onMapClick?: (lat: number, lng: number) => void;
   clickMode?: boolean;
@@ -187,10 +190,10 @@ export function MapLeaflet({
         const headers: Record<string, string> = {};
         if (token) headers["Authorization"] = `Bearer ${token}`;
 
-        const r = await fetch(
-          `/api/mairie/plu-zones?commune=${encodeURIComponent(commune ?? "")}`,
-          { signal: AbortSignal.timeout(30000), headers }
-        );
+        const pluUrl = inseeCode
+          ? `/api/mairie/plu-zones?insee_code=${encodeURIComponent(inseeCode)}`
+          : `/api/mairie/plu-zones?commune=${encodeURIComponent(commune ?? "")}`;
+        const r = await fetch(pluUrl, { signal: AbortSignal.timeout(30000), headers });
 
         if (cancelled || !mapRef.current) return;
 
@@ -224,7 +227,7 @@ export function MapLeaflet({
     })();
 
     return () => { cancelled = true; };
-  }, [pluZoneLayer, commune]);
+  }, [pluZoneLayer, commune, inseeCode]);
 
   // Highlight geometry (e.g. parcel polygon returned by analysis)
   useEffect(() => {
@@ -272,11 +275,15 @@ export function MapLeaflet({
   // Fetch and draw commune boundary
   useEffect(() => {
     const map = mapRef.current;
-    if (!map || !commune) return;
+    if (!map || (!commune && !inseeCode)) return;
 
     let cancelled = false;
 
-    fetch(`https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(commune)}&fields=contour&format=geojson&geometry=contour&limit=1`)
+    const boundaryUrl = inseeCode
+      ? `https://geo.api.gouv.fr/communes?code=${encodeURIComponent(inseeCode)}&fields=contour&format=geojson&geometry=contour&limit=1`
+      : `https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(commune!)}&fields=contour&format=geojson&geometry=contour&limit=1`;
+
+    fetch(boundaryUrl)
       .then(r => r.json())
       .then((geojson: { features?: unknown[] }) => {
         if (cancelled || !mapRef.current) return;
@@ -301,7 +308,7 @@ export function MapLeaflet({
       .catch(() => {});
 
     return () => { cancelled = true; };
-  }, [commune]);
+  }, [commune, inseeCode]);
 
   // Sync markers when dossiers or filter changes
   useEffect(() => {
