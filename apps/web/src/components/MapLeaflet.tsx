@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -87,6 +87,7 @@ export function MapLeaflet({
   /** Override initial map zoom level */
   defaultZoom?: number;
 }) {
+  const [zoneError, setZoneError] = useState<string | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.CircleMarker[]>([]);
@@ -170,6 +171,7 @@ export function MapLeaflet({
     if (!map) return;
 
     if (pluLayerRef.current) { pluLayerRef.current.remove(); pluLayerRef.current = null; }
+    setZoneError(null);
     if (!pluZoneLayer) return;
 
     const TYPE_FILL: Record<string, string> = {
@@ -240,7 +242,10 @@ export function MapLeaflet({
             );
           },
         }).addTo(mapRef.current);
-      } catch { /* zone layer is informational */ }
+      } catch (err) {
+        console.warn("[MapLeaflet] Zones PLU non chargées :", err);
+        if (!cancelled) setZoneError(err instanceof Error ? err.message : "Erreur APICarto IGN");
+      }
     })();
 
     return () => { cancelled = true; };
@@ -384,9 +389,18 @@ export function MapLeaflet({
   }, [height]);
 
   return (
-    <div
-      ref={containerRef}
-      style={{ width: "100%", height, borderRadius: "inherit" }}
-    />
+    <div style={{ width: "100%", height, borderRadius: "inherit", position: "relative" }}>
+      <div ref={containerRef} style={{ width: "100%", height: "100%", borderRadius: "inherit" }} />
+      {pluZoneLayer && zoneError && (
+        <div style={{
+          position: "absolute", bottom: 8, left: 8, zIndex: 1000,
+          background: "rgba(239,68,68,0.92)", color: "white",
+          borderRadius: 8, padding: "6px 12px", fontSize: 11, fontWeight: 600,
+          backdropFilter: "blur(4px)", maxWidth: 280,
+        }}>
+          ⚠ Zones PLU indisponibles — {zoneError}
+        </div>
+      )}
+    </div>
   );
 }
