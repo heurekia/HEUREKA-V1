@@ -907,8 +907,149 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
   );
 }
 
+function IngestPluSection() {
+  const [communeName, setCommuneName] = useState("");
+  const [inseeCode, setInseeCode] = useState("");
+  const [zipCode, setZipCode] = useState("");
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<string | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; commune: string; zones: number; rules: number; needs_review: number; detail: Array<{ zone: string; rules: number; vision: number }> } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const handleSubmit = async () => {
+    if (!communeName.trim() || !inseeCode.trim() || !pdfFile) {
+      setError("Tous les champs sont requis.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    setStep("Lecture du PDF…");
+    try {
+      const buf = await pdfFile.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+      const pdf_base64 = btoa(binary);
+
+      setStep("Analyse des zones par IA (peut prendre 30-60s)…");
+      const r = await api.post<{ ok: boolean; commune: string; zones: number; rules: number; needs_review: number; detail: Array<{ zone: string; rules: number; vision: number }> }>(
+        "/mairie/admin/ingest-plu-pdf",
+        { commune_name: communeName.trim(), insee_code: inseeCode.trim(), zip_code: zipCode.trim() || undefined, pdf_base64 },
+      );
+      setResult(r);
+      setStep(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur serveur");
+      setStep(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Ajouter une nouvelle commune</div>
+      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 20 }}>
+        Importez le règlement PLU (PDF) d'une commune. L'IA extrait les zones et règles automatiquement.
+        Les règles sont stockées en statut <strong>brouillon</strong> — elles nécessitent une validation humaine avant d'être utilisées.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", gap: 12 }}>
+          <div style={{ flex: 2 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>Nom de la commune *</div>
+            <input
+              value={communeName}
+              onChange={e => setCommuneName(e.target.value)}
+              placeholder="ex : Rochecorbon"
+              style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>Code INSEE *</div>
+            <input
+              value={inseeCode}
+              onChange={e => setInseeCode(e.target.value)}
+              placeholder="ex : 37194"
+              style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>Code postal</div>
+            <input
+              value={zipCode}
+              onChange={e => setZipCode(e.target.value)}
+              placeholder="ex : 37210"
+              style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }}
+            />
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>Règlement PLU (PDF) *</div>
+          <div
+            onClick={() => fileRef.current?.click()}
+            style={{ border: "2px dashed #CBD5E1", borderRadius: 10, padding: "20px 16px", textAlign: "center", cursor: "pointer", background: pdfFile ? "#F0FDF4" : "#F8FAFC", transition: "background 0.15s" }}
+          >
+            {pdfFile ? (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#16a34a" }}>{pdfFile.name}</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{(pdfFile.size / 1024 / 1024).toFixed(1)} Mo — cliquez pour changer</div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: 13, color: "#64748b" }}>Cliquez pour sélectionner un PDF</div>
+                <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>Règlement PLU uniquement (pas le RI) — max ~35 Mo</div>
+              </div>
+            )}
+            <input ref={fileRef} type="file" accept="application/pdf" style={{ display: "none" }} onChange={e => { setPdfFile(e.target.files?.[0] ?? null); setResult(null); setError(null); }} />
+          </div>
+        </div>
+        {error && (
+          <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#DC2626" }}>{error}</div>
+        )}
+        {step && (
+          <div style={{ background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#4F46E5", display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 14, height: 14, border: "2px solid #4F46E5", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+            {step}
+          </div>
+        )}
+        {result && (
+          <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 8, padding: "14px 16px" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#16a34a", marginBottom: 8 }}>
+              Ingestion terminée — {result.commune}
+            </div>
+            <div style={{ fontSize: 13, color: "#15803d", marginBottom: 10 }}>
+              {result.zones} zone{result.zones > 1 ? "s" : ""} · {result.rules} règle{result.rules > 1 ? "s" : ""} extraites
+              {result.needs_review > 0 && ` · ${result.needs_review} à vérifier (schéma)`}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {result.detail.map(d => (
+                <span key={d.zone} style={{ background: "#DCFCE7", color: "#166534", borderRadius: 6, padding: "3px 8px", fontSize: 12, fontWeight: 600 }}>
+                  {d.zone} ({d.rules}){d.vision > 0 ? " ⚠" : ""}
+                </span>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: "#64748b", marginTop: 10 }}>
+              Statut : brouillon — rendez-vous dans l'onglet Réglementation pour valider les règles.
+            </div>
+          </div>
+        )}
+        <button
+          onClick={handleSubmit}
+          disabled={loading || !communeName || !inseeCode || !pdfFile}
+          style={{ alignSelf: "flex-start", background: loading ? "#A5B4FC" : "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "10px 22px", fontSize: 13, fontWeight: 600, cursor: loading ? "not-allowed" : "pointer" }}
+        >
+          {loading ? "Traitement en cours…" : "Lancer l'ingestion"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
-  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Intégrations"];
+  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Communes", "Workflow & Délais", "Notifications", "Intégrations"];
   const [stab, setStab] = useState("Réglementation");
   const events = [
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
@@ -934,6 +1075,11 @@ function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
       {stab === "Réglementation" && (
         <div style={{ minHeight: 400, margin: "0 -24px" }}>
           <ReglementationScreen commune={commune} inseeCode={COMMUNE_INSEE[commune]} />
+        </div>
+      )}
+      {stab === "Communes" && (
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+          <IngestPluSection />
         </div>
       )}
       {stab === "Notifications" && (
