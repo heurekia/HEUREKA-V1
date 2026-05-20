@@ -648,3 +648,134 @@ mairieRouter.get("/notifications", async (req: AuthRequest, res) => {
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
+
+// ── Réglementation ────────────────────────────────────────────────────────────
+
+// GET /mairie/reglementation?commune_name=Ballan-Miré
+// Returns zones with their rules and per-zone validation stats.
+mairieRouter.get("/reglementation", async (req: AuthRequest, res) => {
+  try {
+    const communeName = (req.query.commune_name as string | undefined)?.trim();
+    if (!communeName) return res.status(400).json({ error: "commune_name requis" });
+
+    const [commune] = await db.select().from(communes)
+      .where(ilike(communes.name, `%${communeName}%`))
+      .limit(1);
+    if (!commune) return res.status(404).json({ error: "Commune non trouvée" });
+
+    const zoneRows = await db.select().from(zones)
+      .where(and(eq(zones.commune_id, commune.id), eq(zones.is_active, true)))
+      .orderBy(zones.display_order);
+
+    const result = await Promise.all(zoneRows.map(async zone => {
+      const rules = await db.select().from(zone_regulatory_rules)
+        .where(eq(zone_regulatory_rules.zone_id, zone.id))
+        .orderBy(zone_regulatory_rules.article_number);
+
+      const stats = {
+        total: rules.length,
+        valide: rules.filter(r => r.validation_status === "valide").length,
+        brouillon: rules.filter(r => r.validation_status === "brouillon" || r.validation_status === "draft").length,
+        rejete: rules.filter(r => r.validation_status === "rejete").length,
+      };
+
+      return { ...zone, rules, stats };
+    }));
+
+    res.json({ commune, zones: result });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PATCH /mairie/reglementation/rules/:id — validate, edit or reject a rule
+mairieRouter.patch("/reglementation/rules/:id", async (req: AuthRequest, res) => {
+  try {
+    const id = req.params.id as string;
+    const { rule_text, validation_status, value_min, value_max, value_exact, unit, conditions, summary, instructor_note, topic, article_number, article_title } = req.body as Record<string, unknown>;
+
+    const allowed = new Set(["valide", "brouillon", "rejete", "draft"]);
+    if (validation_status !== undefined && !allowed.has(validation_status as string)) {
+      return res.status(400).json({ error: "validation_status invalide" });
+    }
+
+    const patch: Record<string, unknown> = { updated_at: new Date() };
+    if (rule_text !== undefined) patch.rule_text = rule_text;
+    if (validation_status !== undefined) patch.validation_status = validation_status;
+    if (value_min !== undefined) patch.value_min = value_min === null ? null : Number(value_min);
+    if (value_max !== undefined) patch.value_max = value_max === null ? null : Number(value_max);
+    if (value_exact !== undefined) patch.value_exact = value_exact === null ? null : Number(value_exact);
+    if (unit !== undefined) patch.unit = unit;
+    if (conditions !== undefined) patch.conditions = conditions;
+    if (summary !== undefined) patch.summary = summary;
+    if (instructor_note !== undefined) patch.instructor_note = instructor_note;
+    if (topic !== undefined) patch.topic = topic;
+    if (article_number !== undefined) patch.article_number = article_number;
+    if (article_title !== undefined) patch.article_title = article_title;
+
+    await db.update(zone_regulatory_rules).set(patch).where(eq(zone_regulatory_rules.id, id));
+    const [updated] = await db.select().from(zone_regulatory_rules).where(eq(zone_regulatory_rules.id, id)).limit(1);
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// DELETE /mairie/reglementation/rules/:id
+mairieRouter.delete("/reglementation/rules/:id", async (req: AuthRequest, res) => {
+  try {
+    await db.delete(zone_regulatory_rules).where(eq(zone_regulatory_rules.id, req.params.id as string));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /mairie/reglementation/zones/:zoneId/rules — add a rule manually
+mairieRouter.post("/reglementation/zones/:zoneId/rules", async (req: AuthRequest, res) => {
+  try {
+    const zone_id = req.params.zoneId as string;
+    const [zone] = await db.select({ id: zones.id }).from(zones).where(eq(zones.id, zone_id)).limit(1);
+    if (!zone) return res.status(404).json({ error: "Zone non trouvée" });
+
+    const { article_number, article_title, topic, rule_text, value_min, value_max, value_exact, unit, conditions, summary } = req.body as Record<string, unknown>;
+    if (!topic || !rule_text) return res.status(400).json({ error: "topic et rule_text requis" });
+
+    const [created] = await db.insert(zone_regulatory_rules).values({
+      zone_id,
+      article_number: article_number ? Number(article_number) : null,
+      article_title: (article_title as string | undefined) ?? (article_number ? `Article ${article_number}` : ""),
+      topic: topic as string,
+      rule_text: rule_text as string,
+      value_min: value_min != null ? Number(value_min) : null,
+      value_max: value_max != null ? Number(value_max) : null,
+      value_exact: value_exact != null ? Number(value_exact) : null,
+      unit: (unit as string | undefined) ?? null,
+      conditions: (conditions as string | undefined) ?? null,
+      summary: (summary as string | undefined) ?? null,
+      validation_status: "brouillon",
+    }).returning();
+
+    res.status(201).json(created);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PATCH /mairie/reglementation/zones/:id — update zone label/summary
+mairieRouter.patch("/reglementation/zones/:id", async (req: AuthRequest, res) => {
+  try {
+    const { zone_label, summary } = req.body as { zone_label?: string; summary?: string };
+    await db.update(zones)
+      .set({ ...(zone_label !== undefined && { zone_label }), ...(summary !== undefined && { summary }), updated_at: new Date() })
+      .where(eq(zones.id, req.params.id as string));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
