@@ -902,7 +902,7 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
 
 function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
   const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Intégrations"];
-  const [stab, setStab] = useState("Notifications");
+  const [stab, setStab] = useState("Réglementation");
   const events = [
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
     { label: "Dossier assigné", sub: "Lorsqu'un dossier vous est assigné.", icon: "👤", active: true },
