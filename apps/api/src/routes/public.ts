@@ -1,87 +1,46 @@
 import { Router } from "express";
-import { db } from "../db.js";
-import { zones, zone_regulatory_rules } from "@heureka-v1/db";
-import { eq, and } from "drizzle-orm";
-import { calculateBuildability, type BuildabilityInput } from "../services/buildability.js";
+import { analyseParcel } from "../services/parcelAnalysis.js";
 
 export const publicRouter = Router();
 
-// ── Analyse parcellaire publique (sans auth) ──
+/**
+ * GET /public/analyse?q=<adresse ou ref cadastrale>
+ * Accept: "12 rue du Commerce, Ballan-Miré" OR "37018000AB0050"
+ * Returns full ParcelAnalysis including GPU zone, risks, DB rules, buildability.
+ */
+publicRouter.get("/analyse", async (req, res) => {
+  try {
+    const q = ((req.query.q as string | undefined) ?? "").trim();
+    const lat = req.query.lat !== undefined ? parseFloat(req.query.lat as string) : undefined;
+    const lng = req.query.lng !== undefined ? parseFloat(req.query.lng as string) : undefined;
+    const citycode = req.query.citycode as string | undefined;
+    const zoneOverride = req.query.zone as string | undefined;
+
+    const hasCoords = lat !== undefined && lng !== undefined && !isNaN(lat) && !isNaN(lng);
+    if (!q && !hasCoords) {
+      return res.status(400).json({ error: "Paramètre q ou (lat+lng) requis" });
+    }
+
+    const analysis = await analyseParcel(q, {
+      citycode,
+      zoneOverride,
+      coords: hasCoords ? { lat: lat!, lng: lng! } : undefined,
+    });
+    res.json(analysis);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+/**
+ * GET /public/analyse-parcelle/:parcelle
+ * Legacy endpoint — kept for backwards compatibility, proxies to analyseParcel.
+ */
 publicRouter.get("/analyse-parcelle/:parcelle", async (req, res) => {
   try {
-    const parcelleRef = req.params.parcelle as string;
-    const zoneCode = parcelleRef.slice(0, 2).toUpperCase();
-
-    const foundZone = await db.select().from(zones).where(eq(zones.zone_code, zoneCode)).limit(1);
-    if (foundZone.length === 0) {
-      return res.json({
-        parcelle: parcelleRef,
-        zone: null,
-        rules: [],
-        buildability: null,
-        conformite_globale: null,
-        message: "Zone réglementaire non trouvée pour cette parcelle.",
-      });
-    }
-
-    const zone = foundZone[0]!;
-    const rules = await db
-      .select()
-      .from(zone_regulatory_rules)
-      .where(and(eq(zone_regulatory_rules.zone_id, zone.id), eq(zone_regulatory_rules.validation_status, "valide")))
-      .orderBy(zone_regulatory_rules.article_number);
-
-    const calcVars: BuildabilityInput["calculationVariables"] = {
-      maxFootprintRatio: null,
-      maxHeightM: null,
-      minSetbackFromRoadM: null,
-      minSetbackFromBoundariesM: null,
-      parkingRules: null,
-      greenSpaceRatio: null,
-    };
-
-    for (const rule of rules) {
-      if (rule.topic === "emprise_sol") {
-        calcVars.maxFootprintRatio = rule.value_exact ?? rule.value_max ?? null;
-      }
-      if (rule.topic === "hauteur") {
-        calcVars.maxHeightM = rule.value_exact ?? rule.value_max ?? null;
-      }
-      if (rule.topic === "recul_voie") {
-        calcVars.minSetbackFromRoadM = rule.value_exact ?? rule.value_min ?? null;
-      }
-      if (rule.topic === "recul_limite") {
-        calcVars.minSetbackFromBoundariesM = rule.value_exact ?? rule.value_min ?? null;
-      }
-      if (rule.topic === "stationnement" && rule.rule_text) {
-        calcVars.parkingRules = rule.rule_text;
-      }
-      if (rule.topic === "espaces_verts") {
-        calcVars.greenSpaceRatio = rule.value_exact ?? rule.value_max ?? null;
-      }
-    }
-
-    const input: BuildabilityInput = {
-      parcelSurfaceM2: 500,
-      existingFootprintM2: 0,
-      calculationVariables: calcVars,
-    };
-
-    const buildability = calculateBuildability(input);
-    const conformite = rules.length > 0 ? Math.round(buildability.confidence * 100) : null;
-
-    res.json({
-      parcelle: parcelleRef,
-      zone: {
-        id: zone.id,
-        code: zone.zone_code,
-        label: zone.zone_label,
-        type: zone.zone_type,
-      },
-      rules,
-      buildability,
-      conformite_globale: conformite,
-    });
+    const analysis = await analyseParcel(req.params.parcelle as string);
+    res.json(analysis);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

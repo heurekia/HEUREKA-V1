@@ -1,16 +1,27 @@
 import { useState, useRef, useEffect } from "react";
-import { MapLeaflet, type MapDossier } from "../../components/MapLeaflet";
+import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 
+const COMMUNE_INSEE: Record<string, string> = {
+  "Ballan-Miré": "37018",
+  "Saint-Avertin": "37207",
+  "Joué-lès-Tours": "37122",
+  "La Riche": "37125",
+};
+
 const NAV_ITEMS = [
-  { label: "Tableau de bord", icon: HomeIcon },
-  { label: "Dossiers", icon: FolderIcon },
-  { label: "Calendrier", icon: CalendarIcon },
-  { label: "Messagerie", icon: MessageIcon, badge: 2 },
-  { label: "Carte", icon: MapIcon },
-  { label: "Statistiques", icon: ChartIcon },
-  { label: "Paramètres", icon: SettingsIcon },
+  { label: "Tableau de bord", icon: HomeIcon, path: "/mairie" },
+  { label: "Dossiers", icon: FolderIcon, path: "/mairie/dossiers" },
+  { label: "Calendrier", icon: CalendarIcon, path: "/mairie/calendrier" },
+  { label: "Messagerie", icon: MessageIcon, badge: 2, path: "/mairie/messagerie" },
+  { label: "Carte", icon: MapIcon, path: "/mairie/carte" },
+  { label: "Statistiques", icon: ChartIcon, path: "/mairie/statistiques" },
+  { label: "Paramètres", icon: SettingsIcon, path: "/mairie/parametres" },
 ];
+
+const LABEL_TO_PATH: Record<string, string> = Object.fromEntries(NAV_ITEMS.map(n => [n.label, n.path]));
+LABEL_TO_PATH["Infos Perso"] = "/mairie/profil";
 
 function HomeIcon({ size = 18, className = "" }) {
   return (
@@ -59,6 +70,14 @@ function SettingsIcon({ size = 18, className = "" }) {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <circle cx="12" cy="12" r="3" /><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14" />
       <path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+    </svg>
+  );
+}
+function RulesIcon({ size = 18, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" />
     </svg>
   );
 }
@@ -226,30 +245,29 @@ function Sidebar({ active, setActive, commune, setCommune }: { active: string; s
   );
 }
 
-function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void }) {
+function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void }) {
   const [showNotifs, setShowNotifs] = useState(false);
   const [showFAQ, setShowFAQ] = useState(false);
   const [faqQuery, setFaqQuery] = useState("");
   const [faqAnswer, setFaqAnswer] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
+  const [searchResults, setSearchResults] = useState<ApiDossier[]>([]);
   const notifs = [
     { icon: "📁", text: "Nouveau dossier PC-2024-0801 déposé", sub: "Il y a 12 min", color: "#4F46E5" },
     { icon: "💬", text: "Nouveau message de Jean Dupont", sub: "Il y a 1h", color: "#4F46E5" },
     { icon: "⏰", text: "Délai dépassé — DP-2024-0111", sub: "Hier", color: "#EF4444" },
   ];
-  const allDossiers = [
-    { id: "PC-2024-0123", addr: "12 rue des Lilas", pet: "Jean Dupont" },
-    { id: "DP-2024-0456", addr: "8 chemin de la Colline", pet: "Sophie Martin" },
-    { id: "PC-2024-0789", addr: "45 avenue de la Mer", pet: "SCI Les Oliviers" },
-    { id: "DP-2024-0089", addr: "3 impasse des Pins", pet: "Pierre Durand" },
-    { id: "PC-2023-0567", addr: "7 rue du Stade", pet: "Marie Bernard" },
-    { id: "DP-2024-0111", addr: "15 route des Plages", pet: "Lucas Morel" },
-  ];
-  const q = searchQuery.toLowerCase();
-  const searchResults = searchQuery.length > 1
-    ? allDossiers.filter(r => r.id.toLowerCase().includes(q) || r.addr.toLowerCase().includes(q) || r.pet.toLowerCase().includes(q))
-    : [];
+
+  useEffect(() => {
+    if (searchQuery.length <= 1) { setSearchResults([]); return; }
+    const timer = setTimeout(() => {
+      api.get<ApiDossier[]>(`/mairie/dossiers?search=${encodeURIComponent(searchQuery)}`)
+        .then(data => setSearchResults(data.slice(0, 8)))
+        .catch(() => setSearchResults([]));
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
 
   const closeAll = () => { setShowNotifs(false); setShowFAQ(false); };
 
@@ -273,9 +291,9 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate }: { t
           {searchFocused && searchQuery.length > 1 && (
             <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "white", borderRadius: 10, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.12)", zIndex: 200, overflow: "hidden" }}>
               {searchResults.length > 0 ? searchResults.map(r => (
-                <button key={r.id} onMouseDown={() => { navigate?.("Dossiers"); setSearchQuery(""); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" }}>
-                  <span style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", minWidth: 110 }}>{r.id}</span>
-                  <span style={{ fontSize: 12, color: "#64748b" }}>{r.addr} — {r.pet}</span>
+                <button key={r.id} onMouseDown={() => { onDossierClick?.({ id: r.id, numero: r.numero, type: r.type, petitionnaire: r.demandeur, adresse: r.adresse ?? "—", status: r.status, echeance: r.date_limite_instruction ? new Date(r.date_limite_instruction).toLocaleDateString("fr-FR") : "—", date_depot: r.date_depot ?? undefined }); setSearchQuery(""); }} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" }}>
+                  <span style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", minWidth: 110 }}>{r.numero}</span>
+                  <span style={{ fontSize: 12, color: "#64748b" }}>{r.adresse ?? "—"} — {r.demandeur}</span>
                 </button>
               )) : (
                 <div style={{ padding: "12px 14px", fontSize: 13, color: "#94a3b8" }}>Aucun résultat pour « {searchQuery} »</div>
@@ -351,9 +369,11 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate }: { t
         </div>
 
         {/* New dossier */}
-        <button onClick={() => onNewDossier?.()} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(79,70,229,0.3)" }}>
-          <PlusIcon size={14} />{buttonLabel}
-        </button>
+        {onNewDossier && (
+          <button onClick={onNewDossier} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 6, boxShadow: "0 1px 3px rgba(79,70,229,0.3)" }}>
+            <PlusIcon size={14} />{buttonLabel}
+          </button>
+        )}
       </div>
     </div>
   );
@@ -417,12 +437,22 @@ function StatusBadge({ status }: { status: string }) {
   );
 }
 
-const MOCK_MESSAGES = [
-  { id: 1, lu: false, attendRepons: true },
-  { id: 2, lu: false, attendRepons: false },
-  { id: 3, lu: true, attendRepons: true },
-  { id: 4, lu: false, attendRepons: true },
-];
+function stringToColor(s: string): string {
+  const palette = ["#4F46E5","#22C55E","#F97316","#8B5CF6","#EC4899","#14B8A6","#EF4444","#3B82F6"];
+  let h = 0;
+  for (const c of s) h = (h * 31 + c.charCodeAt(0)) % palette.length;
+  return palette[h] ?? "#4F46E5";
+}
+function nameInitials(name: string): string {
+  return name.split(" ").slice(0, 2).map(w => w[0]?.toUpperCase() ?? "").join("");
+}
+function fmtConvTime(iso: string): string {
+  const d = new Date(iso), now = new Date();
+  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
+  if (d.toDateString() === yesterday.toDateString()) return "Hier";
+  return d.toLocaleDateString("fr-FR");
+}
 
 const FALLBACK: MapDossier[] = [
   { id: "1", numero: "PC-BM-2024-001", type: "permis_de_construire", status: "en_instruction", adresse: "3 Place du 8 Mai 1945", lat: 47.3543, lng: 0.5503 },
@@ -436,10 +466,12 @@ const FALLBACK: MapDossier[] = [
   { id: "9", numero: "DP-BM-2024-019", type: "declaration_prealable", status: "pre_instruction", adresse: "45 Rue de la Liberté", lat: 47.3548, lng: 0.5518 },
 ];
 
-function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void; commune: string }) {
+function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void; commune: string; onDossierClick: (d: DossierInfo) => void }) {
   const [mapFilter, setMapFilter] = useState<string>("Tous");
+  const [mapTypeFilter, setMapTypeFilter] = useState("Tous les types");
   const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
   const [statsByStatus, setStatsByStatus] = useState<Record<string, number>>({});
+  const [unreadMessages, setUnreadMessages] = useState(0);
 
   useEffect(() => {
     const FALLBACK: MapDossier[] = [
@@ -464,11 +496,15 @@ function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s
         setStatsByStatus(map);
       })
       .catch(() => {});
+
+    api.get<{ count: number }>("/mairie/conversations/unread-count")
+      .then(data => setUnreadMessages(Number(data.count)))
+      .catch(() => {});
   }, []);
   const [mapExpanded, setMapExpanded] = useState(false);
 
   const countByStatus = (s: string) => statsByStatus[s] ?? 0;
-  const messagesEnAttente = MOCK_MESSAGES.filter(m => !m.lu || m.attendRepons).length;
+  const messagesEnAttente = unreadMessages;
 
   const cardDefs = [
     { label: "Nouveaux dossiers", desc: "Dossiers en attente d'ouverture d'instruction", count: countByStatus("soumis"), color: "#4F46E5", bg: "#EEF2FF", cta: "Voir les dossiers", ctaColor: "#4F46E5", ctaBg: "#EEF2FF", onClick: () => navigateDossiers("Nouveau"),
@@ -533,7 +569,7 @@ function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s
                 borderRadius: 8, padding: "6px 12px", fontSize: 12, fontWeight: mapFilter === f ? 600 : 400, cursor: "pointer",
               }}>{f}</button>
             ))}
-            <select style={{ border: "1px solid #E2E8F0", borderRadius: 8, padding: "6px 10px", fontSize: 12, color: "#374151", background: "white", cursor: "pointer", outline: "none" }}>
+            <select value={mapTypeFilter} onChange={e => setMapTypeFilter(e.target.value)} style={{ border: "1px solid #E2E8F0", borderRadius: 8, padding: "6px 10px", fontSize: 12, color: "#374151", background: "white", cursor: "pointer", outline: "none" }}>
               <option>Tous les types</option>
               <option>Permis de construire</option>
               <option>Déclaration préalable</option>
@@ -554,8 +590,9 @@ function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s
             dossiers={mapDossiers}
             height={mapExpanded ? 520 : 300}
             filterStatus={mapFilter}
+            filterType={mapTypeFilter}
             commune={commune}
-            onMarkerClick={() => navigate("Dossiers")}
+            onMarkerClick={(d) => onDossierClick({ id: d.id, numero: d.numero, type: d.type, petitionnaire: "—", adresse: d.adresse, status: d.status, echeance: "—" })}
           />
         </div>
       </div>
@@ -597,9 +634,14 @@ function DashboardScreen({ navigate, navigateDossiers, commune }: { navigate: (s
   );
 }
 
-function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossierClick: (d: DossierInfo) => void; navigate: (s: string) => void; initialFilter?: string }) {
+function DossiersScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) => void }) {
   const tabs = ["Tous", "Nouveau", "En instruction", "Pré-instruction", "Incomplet", "Décision en cours", "Accepté", "Refusé"];
-  const [activeTab, setActiveTab] = useState(initialFilter ?? "Tous");
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(searchParams.get("filter") ?? "Tous");
+
+  useEffect(() => {
+    setActiveTab(searchParams.get("filter") ?? "Tous");
+  }, [searchParams]);
   const [searchQ, setSearchQ] = useState("");
   const [apiDossiers, setApiDossiers] = useState<ApiDossier[]>([]);
   const [loading, setLoading] = useState(true);
@@ -642,7 +684,7 @@ function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossier
         {tabs.map(t => {
           const active = t === activeTab;
           return (
-            <button key={t} onClick={() => setActiveTab(t)} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13, fontWeight: active ? 600 : 400, color: active ? "#4F46E5" : "#64748b", borderBottom: active ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer", whiteSpace: "nowrap" }}>
+            <button key={t} onClick={() => { setActiveTab(t); setSearchParams(t !== "Tous" ? { filter: t } : {}, { replace: true }); }} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13, fontWeight: active ? 600 : 400, color: active ? "#4F46E5" : "#64748b", borderBottom: active ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer", whiteSpace: "nowrap" }}>
               {t} <span style={{ fontSize: 11, color: active ? "#4F46E5" : "#94a3b8" }}>{tabCounts[t] ?? 0}</span>
             </button>
           );
@@ -706,15 +748,26 @@ function DossiersScreen({ onDossierClick, navigate, initialFilter }: { onDossier
 }
 
 function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) => void }) {
+  type Conv = { dossier_id: string; numero: string; type: string; status: string; petitionnaire: string; last_content: string; last_from_role: string; last_at: string; unread_count: number };
+  type Msg = { id: string; content: string; from_role: string; created_at: string; prenom: string | null; nom: string | null };
+
   const [tab, setTab] = useState("Citoyens");
-  const citoyenConvs = [
-    { name: "Jean Dupont", dossier: "PC-2024-0123", preview: "Bonjour, pouvez-vous me transmettre...", time: "09:15", badge: 2, initials: "JD", color: "#4F46E5" },
-    { name: "Sophie Martin", dossier: "DP-2024-0456", preview: "Merci pour votre retour.", time: "Hier", badge: 1, initials: "SM", color: "#22C55E" },
-    { name: "Pierre Durand", dossier: "DP-2024-0089", preview: "Pièce complémentaire envoyée.", time: "Hier", initials: "PD", color: "#F97316" },
-    { name: "Lucas Morel", dossier: "PC-2024-0789", preview: "D'accord, merci.", time: "15/05", initials: "LM", color: "#8B5CF6" },
-    { name: "SCI Les Oliviers", dossier: "PC-2025-0166", preview: "Nous prenons connaissance.", time: "15/05", initials: "SO", color: "#EC4899" },
-    { name: "Emma Petit", dossier: "DP-2024-0333", preview: "Bonjour, j'ai une question sur...", time: "14/05", initials: "EP", color: "#14B8A6" },
-  ];
+  const [convs, setConvs] = useState<Conv[]>([]);
+  const [selected, setSelected] = useState<Conv | null>(null);
+  const [thread, setThread] = useState<Msg[]>([]);
+
+  useEffect(() => {
+    api.get<Conv[]>("/mairie/conversations").then(data => {
+      setConvs(data);
+      if (data.length > 0) setSelected(s => s ?? (data[0] ?? null));
+    }).catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    if (!selected) return;
+    api.get<Msg[]>(`/mairie/conversations/${selected.dossier_id}`).then(setThread).catch(() => {});
+  }, [selected]);
+
   const serviceConvs = [
     { name: "ABF – Architecte des Bâtiments de France", dossier: "PC-2024-0123", preview: "Avis favorable avec réserves transmis.", time: "10:30", badge: 1, initials: "AB", color: "#8B5CF6" },
     { name: "SDIS – Service Incendie", dossier: "PC-2024-0456", preview: "Consultation en cours d'examen.", time: "Hier", initials: "SD", color: "#EF4444" },
@@ -722,15 +775,18 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
     { name: "DREAL Centre-Val de Loire", dossier: "PC-2024-0789", preview: "Documents bien reçus, analyse en cours.", time: "14/05", initials: "DR", color: "#22C55E" },
     { name: "Service des Eaux", dossier: "DP-2024-0089", preview: "Avis favorable émis.", time: "13/05", initials: "SE", color: "#3B82F6" },
   ];
-  const convs = tab === "Citoyens" ? citoyenConvs : serviceConvs;
+
+  const totalUnread = convs.reduce((s, c) => s + c.unread_count, 0);
+
   return (
     <div style={{ padding: 0, display: "flex", height: "calc(100vh - 56px)" }}>
+      {/* ── Liste conversations ── */}
       <div style={{ width: 320, borderRight: "1px solid #E2E8F0", display: "flex", flexDirection: "column", background: "white" }}>
         <div style={{ padding: "20px 16px 0" }}>
           <h1 style={{ fontSize: 18, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Messagerie</h1>
           <p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 12 }}>Échangez avec les pétitionnaires et les services consultés.</p>
           <div style={{ display: "flex", gap: 0, marginBottom: 12 }}>
-            {["Citoyens 12", "Services / Consultations 8"].map((t) => {
+            {[`Citoyens${totalUnread > 0 ? ` ${totalUnread}` : ""}`, "Services / Consultations"].map((t) => {
               const base = t.split(" ")[0] ?? t;
               return (
                 <button key={t} onClick={() => setTab(base)} style={{ flex: 1, border: "none", background: "none", padding: "7px 8px", fontSize: 12, fontWeight: tab === base ? 600 : 400, color: tab === base ? "#4F46E5" : "#64748b", borderBottom: tab === base ? "2px solid #4F46E5" : "2px solid #E2E8F0", cursor: "pointer", whiteSpace: "nowrap" }}>{t}</button>
@@ -742,7 +798,28 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
           </div>
         </div>
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {convs.map((c, i) => (
+          {tab === "Citoyens" ? convs.map((c) => {
+            const isActive = selected?.dossier_id === c.dossier_id;
+            const color = stringToColor(c.petitionnaire);
+            return (
+              <div key={c.dossier_id} onClick={() => setSelected(c)} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: isActive ? "#F0F4FF" : "white" }}
+                onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
+                onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "white"; }}>
+                <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: color, color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{nameInitials(c.petitionnaire)}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 2 }}>
+                      <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.petitionnaire}</span>
+                      <span style={{ fontSize: 11, color: "#94a3b8" }}>{fmtConvTime(c.last_at)}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 2 }}>{c.numero}</div>
+                    <div style={{ fontSize: 12, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.last_content}</div>
+                  </div>
+                  {c.unread_count > 0 && <span style={{ background: "#4F46E5", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{c.unread_count}</span>}
+                </div>
+              </div>
+            );
+          }) : serviceConvs.map((c, i) => (
             <div key={i} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: i === 0 ? "#F0F4FF" : "white" }}
               onMouseEnter={e => { if (i !== 0) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
               onMouseLeave={e => { if (i !== 0) (e.currentTarget as HTMLDivElement).style.background = "white"; }}>
@@ -761,117 +838,219 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
             </div>
           ))}
         </div>
-        <div style={{ padding: "8px 16px", borderTop: "1px solid #F1F5F9" }}>
-          <button style={{ fontSize: 12, color: "#4F46E5", fontWeight: 500, background: "none", border: "none", cursor: "pointer" }}>Voir toutes les conversations →</button>
-        </div>
       </div>
 
+      {/* ── Thread ── */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", background: "#FAFBFD" }}>
-        <div style={{ padding: "14px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>Jean Dupont</div>
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>PC-2024-0123 – Permis de construire</div>
-          </div>
-          <div style={{ display: "flex", gap: 8 }}>
-            <button onClick={() => onDossierClick({ id: "PC-2024-0123", numero: "PC-2024-0123", type: "Permis de construire", petitionnaire: "Jean Dupont", adresse: "12 rue des Lilas", status: "en_instruction", echeance: "12/06/2024" })} style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}>Voir le dossier ↗</button>
-            <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
-          </div>
-        </div>
-        <div style={{ flex: 1, padding: 20, overflowY: "auto" }}>
-          <div style={{ textAlign: "center", marginBottom: 16 }}>
-            <span style={{ background: "#F1F5F9", color: "#94a3b8", fontSize: 11, borderRadius: 10, padding: "3px 10px" }}>Aujourd'hui</span>
-          </div>
-          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#4F46E5", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>JD</div>
-            <div style={{ maxWidth: "60%" }}>
-              <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "12px 14px", border: "1px solid #E2E8F0", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
-                <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.5 }}>Bonjour,</p>
-                <p style={{ margin: "6px 0 0", fontSize: 13, color: "#374151", lineHeight: 1.5 }}>Pouvez-vous me transmettre le document manquant s'il vous plaît ?</p>
-                <p style={{ margin: "6px 0 0", fontSize: 13, color: "#374151" }}>Merci d'avance.</p>
-              </div>
-              <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 4, display: "block" }}>09:15</span>
+        {selected ? (<>
+          <div style={{ padding: "14px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>{selected.petitionnaire}</div>
+              <div style={{ fontSize: 12, color: "#94a3b8" }}>{selected.numero} – {TYPE_LABEL[selected.type] ?? selected.type}</div>
+            </div>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={() => onDossierClick({ id: selected.dossier_id, numero: selected.numero, type: selected.type, petitionnaire: selected.petitionnaire, adresse: "—", status: selected.status, echeance: "—" })} style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}>Voir le dossier ↗</button>
+              <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
             </div>
           </div>
-          <div style={{ display: "flex", gap: 10, marginBottom: 16, justifyContent: "flex-end" }}>
-            <div style={{ maxWidth: "60%" }}>
-              <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", borderRadius: "12px 4px 12px 12px", padding: "12px 14px" }}>
-                <p style={{ margin: 0, fontSize: 13, color: "white", lineHeight: 1.5 }}>Bonjour Monsieur Dupont,</p>
-                <p style={{ margin: "6px 0 0", fontSize: 13, color: "rgba(255,255,255,0.9)", lineHeight: 1.5 }}>Vous trouverez en pièce jointe le document complémentaire demandé.</p>
-                <div style={{ marginTop: 10, background: "rgba(255,255,255,0.15)", borderRadius: 8, padding: "8px 10px", display: "flex", alignItems: "center", gap: 8 }}>
-                  <span style={{ color: "white", fontSize: 18 }}>📄</span>
-                  <div>
-                    <div style={{ color: "white", fontSize: 12, fontWeight: 600 }}>Plan masse complémentaire.pdf</div>
-                    <div style={{ color: "rgba(255,255,255,0.7)", fontSize: 11 }}>PDF – 2.4 Mo</div>
+          <div style={{ flex: 1, padding: 20, overflowY: "auto" }}>
+            {thread.map((msg) => {
+              const isInstructeur = msg.from_role !== "citoyen";
+              const senderName = [msg.prenom, msg.nom].filter(Boolean).join(" ") || (isInstructeur ? "Instructeur" : selected.petitionnaire);
+              const time = new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+              return (
+                <div key={msg.id} style={{ display: "flex", gap: 10, marginBottom: 16, justifyContent: isInstructeur ? "flex-end" : "flex-start" }}>
+                  {!isInstructeur && <div style={{ width: 32, height: 32, borderRadius: "50%", background: stringToColor(selected.petitionnaire), color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{nameInitials(selected.petitionnaire)}</div>}
+                  <div style={{ maxWidth: "60%" }}>
+                    {isInstructeur ? (
+                      <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", borderRadius: "12px 4px 12px 12px", padding: "12px 14px" }}>
+                        <p style={{ margin: 0, fontSize: 13, color: "white", lineHeight: 1.5 }}>{msg.content}</p>
+                      </div>
+                    ) : (
+                      <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "12px 14px", border: "1px solid #E2E8F0", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+                        <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.5 }}>{msg.content}</p>
+                      </div>
+                    )}
+                    <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 4, display: "block", textAlign: isInstructeur ? "right" : "left" }}>{time}</span>
                   </div>
+                  {isInstructeur && <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{nameInitials(senderName)}</div>}
                 </div>
-              </div>
-              <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 4, display: "block", textAlign: "right" }}>09:32 ✓✓</span>
-            </div>
-            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>ML</div>
+              );
+            })}
           </div>
-          <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-            <div style={{ width: 32, height: 32, borderRadius: "50%", background: "#4F46E5", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>JD</div>
-            <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "10px 14px", border: "1px solid #E2E8F0" }}>
-              <p style={{ margin: 0, fontSize: 13, color: "#374151" }}>Merci beaucoup !</p>
-              <span style={{ fontSize: 11, color: "#94a3b8" }}>09:55</span>
-            </div>
+          <div style={{ padding: "12px 16px", borderTop: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", gap: 10 }}>
+            <input placeholder="Écrire un message..." style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 8, padding: "9px 14px", fontSize: 13, outline: "none" }} />
+            <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18 }}>📎</button>
+            <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18 }}>😊</button>
+            <button style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #4F46E5, #6366F1)", border: "none", cursor: "pointer", color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}><SendIcon size={14} /></button>
           </div>
-        </div>
-        <div style={{ padding: "12px 16px", borderTop: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", gap: 10 }}>
-          <input placeholder="Écrire un message..." style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 8, padding: "9px 14px", fontSize: 13, outline: "none" }} />
-          <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18 }}>📎</button>
-          <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18 }}>😊</button>
-          <button style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #4F46E5, #6366F1)", border: "none", cursor: "pointer", color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}><SendIcon size={14} /></button>
-        </div>
+        </>) : (
+          <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8", fontSize: 13 }}>Sélectionnez une conversation</div>
+        )}
       </div>
 
+      {/* ── Panneau info ── */}
       <div style={{ width: 260, borderLeft: "1px solid #E2E8F0", background: "white", padding: 16, overflowY: "auto" }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Informations</div>
-        <div style={{ marginBottom: 4, fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em" }}>Pétitionnaire</div>
-        <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4 }}>Jean Dupont</div>
-        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 2 }}>✉ jean.dupont@email.fr</div>
-        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 2 }}>📞 06 12 34 56 78</div>
-        <div style={{ fontSize: 12, color: "#64748b", marginBottom: 12 }}>📍 12 rue des Lilas, 13400 Saint-Martin</div>
-        <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
-          <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Dossier</div>
-          <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4 }}>PC-2024-0123</div>
-          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 2 }}>Permis de construire</div>
-          <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>Dépôt le 12/04/2024</div>
-          <StatusBadge status="En instruction" />
-        </div>
-        <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
-          <div style={{ fontSize: 12, fontWeight: 600, color: "#0F172A", marginBottom: 8 }}>Pièces du dossier</div>
-          {["Formulaire CERFA","Plan de situation","Plan de masse","Notice descriptive"].map(p => (
-            <div key={p} style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 12 }}>
-              <span style={{ color: "#374151" }}>📄 {p}</span>
-              <span style={{ color: "#94a3b8" }}>PDF</span>
-            </div>
-          ))}
-          <button style={{ fontSize: 12, color: "#4F46E5", fontWeight: 500, background: "none", border: "none", cursor: "pointer", padding: 0 }}>Voir toutes les pièces (12) →</button>
-        </div>
-        <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-            <div style={{ fontSize: 12, fontWeight: 600, color: "#0F172A" }}>Historique des échanges</div>
-            <button style={{ fontSize: 11, color: "#4F46E5", background: "none", border: "none", cursor: "pointer" }}>Voir tout</button>
+        {selected ? (<>
+          <div style={{ marginBottom: 4, fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em" }}>Pétitionnaire</div>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 12 }}>{selected.petitionnaire}</div>
+          <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Dossier</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4 }}>{selected.numero}</div>
+            <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>{TYPE_LABEL[selected.type] ?? selected.type}</div>
+            <StatusBadge status={STATUS_LABEL[selected.status] ?? selected.status} />
           </div>
-          {[["15/05/2024","Pièce complémentaire envoyée","Par vous"],["14/05/2024","Demande de pièce complémentaire","Par vous"],["12/04/2024","Accusé d'enregistrement","Automatique"]].map(([d,e,a]) => (
-            <div key={d} style={{ display: "flex", gap: 8, marginBottom: 10, fontSize: 12 }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 5 }} />
-              <div>
-                <div style={{ color: "#374151", fontWeight: 500 }}>{e}</div>
-                <div style={{ color: "#94a3b8" }}>{a} · {d}</div>
-              </div>
-            </div>
-          ))}
-        </div>
+        </>) : <div style={{ fontSize: 12, color: "#94a3b8" }}>Aucune conversation sélectionnée</div>}
       </div>
     </div>
   );
 }
 
-function ParametresScreen() {
-  const settingsTabs = ["Général", "Utilisateurs", "Documents", "Workflow & Délais", "Notifications", "Intégrations"];
-  const [stab, setStab] = useState("Notifications");
+function IngestPluSection() {
+  const [communeName, setCommuneName] = useState("");
+  const [inseeCode, setInseeCode] = useState("");
+  const [zipCode, setZipCode] = useState("");
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<string | null>(null);
+  const [result, setResult] = useState<{ ok: boolean; commune: string; zones: number; rules: number; needs_review: number; detail: Array<{ zone: string; rules: number; vision: number }> } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  const handleSubmit = async () => {
+    if (!communeName.trim() || !inseeCode.trim() || !pdfFile) {
+      setError("Tous les champs sont requis.");
+      return;
+    }
+    setLoading(true);
+    setError(null);
+    setResult(null);
+    setStep("Lecture du PDF…");
+    try {
+      const buf = await pdfFile.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = "";
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+      const pdf_base64 = btoa(binary);
+
+      setStep("Analyse des zones par IA (peut prendre 30-60s)…");
+      const r = await api.post<{ ok: boolean; commune: string; zones: number; rules: number; needs_review: number; detail: Array<{ zone: string; rules: number; vision: number }> }>(
+        "/mairie/admin/ingest-plu-pdf",
+        { commune_name: communeName.trim(), insee_code: inseeCode.trim(), zip_code: zipCode.trim() || undefined, pdf_base64 },
+      );
+      setResult(r);
+      setStep(null);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur serveur");
+      setStep(null);
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ maxWidth: 640 }}>
+      <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Ajouter une nouvelle commune</div>
+      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 20 }}>
+        Importez le règlement PLU (PDF) d'une commune. L'IA extrait les zones et règles automatiquement.
+        Les règles sont stockées en statut <strong>brouillon</strong> — elles nécessitent une validation humaine avant d'être utilisées.
+      </div>
+      <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+        <div style={{ display: "flex", gap: 12 }}>
+          <div style={{ flex: 2 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>Nom de la commune *</div>
+            <input
+              value={communeName}
+              onChange={e => setCommuneName(e.target.value)}
+              placeholder="ex : Rochecorbon"
+              style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>Code INSEE *</div>
+            <input
+              value={inseeCode}
+              onChange={e => setInseeCode(e.target.value)}
+              placeholder="ex : 37194"
+              style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }}
+            />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>Code postal</div>
+            <input
+              value={zipCode}
+              onChange={e => setZipCode(e.target.value)}
+              placeholder="ex : 37210"
+              style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }}
+            />
+          </div>
+        </div>
+        <div>
+          <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>Règlement PLU (PDF) *</div>
+          <div
+            onClick={() => fileRef.current?.click()}
+            style={{ border: "2px dashed #CBD5E1", borderRadius: 10, padding: "20px 16px", textAlign: "center", cursor: "pointer", background: pdfFile ? "#F0FDF4" : "#F8FAFC", transition: "background 0.15s" }}
+          >
+            {pdfFile ? (
+              <div>
+                <div style={{ fontSize: 13, fontWeight: 600, color: "#16a34a" }}>{pdfFile.name}</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginTop: 2 }}>{(pdfFile.size / 1024 / 1024).toFixed(1)} Mo — cliquez pour changer</div>
+              </div>
+            ) : (
+              <div>
+                <div style={{ fontSize: 13, color: "#64748b" }}>Cliquez pour sélectionner un PDF</div>
+                <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>Règlement PLU uniquement (pas le RI) — max ~35 Mo</div>
+              </div>
+            )}
+            <input ref={fileRef} type="file" accept="application/pdf" style={{ display: "none" }} onChange={e => { setPdfFile(e.target.files?.[0] ?? null); setResult(null); setError(null); }} />
+          </div>
+        </div>
+        {error && (
+          <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#DC2626" }}>{error}</div>
+        )}
+        {step && (
+          <div style={{ background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#4F46E5", display: "flex", alignItems: "center", gap: 8 }}>
+            <div style={{ width: 14, height: 14, border: "2px solid #4F46E5", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+            {step}
+          </div>
+        )}
+        {result && (
+          <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 8, padding: "14px 16px" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#16a34a", marginBottom: 8 }}>
+              Ingestion terminée — {result.commune}
+            </div>
+            <div style={{ fontSize: 13, color: "#15803d", marginBottom: 10 }}>
+              {result.zones} zone{result.zones > 1 ? "s" : ""} · {result.rules} règle{result.rules > 1 ? "s" : ""} extraites
+              {result.needs_review > 0 && ` · ${result.needs_review} à vérifier (schéma)`}
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+              {result.detail.map(d => (
+                <span key={d.zone} style={{ background: "#DCFCE7", color: "#166534", borderRadius: 6, padding: "3px 8px", fontSize: 12, fontWeight: 600 }}>
+                  {d.zone} ({d.rules}){d.vision > 0 ? " ⚠" : ""}
+                </span>
+              ))}
+            </div>
+            <div style={{ fontSize: 11, color: "#64748b", marginTop: 10 }}>
+              Statut : brouillon — rendez-vous dans l'onglet Réglementation pour valider les règles.
+            </div>
+          </div>
+        )}
+        <button
+          onClick={handleSubmit}
+          disabled={loading || !communeName || !inseeCode || !pdfFile}
+          style={{ alignSelf: "flex-start", background: loading ? "#A5B4FC" : "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "10px 22px", fontSize: 13, fontWeight: 600, cursor: loading ? "not-allowed" : "pointer" }}
+        >
+          {loading ? "Traitement en cours…" : "Lancer l'ingestion"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
+  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Communes", "Workflow & Délais", "Notifications", "Intégrations"];
+  const [stab, setStab] = useState("Réglementation");
   const events = [
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
     { label: "Dossier assigné", sub: "Lorsqu'un dossier vous est assigné.", icon: "👤", active: true },
@@ -893,6 +1072,16 @@ function ParametresScreen() {
           <button key={t} onClick={() => setStab(t)} style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: stab === t ? 600 : 400, color: stab === t ? "#4F46E5" : "#64748b", borderBottom: stab === t ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>{t}</button>
         ))}
       </div>
+      {stab === "Réglementation" && (
+        <div style={{ minHeight: 400, margin: "0 -24px" }}>
+          <ReglementationScreen commune={commune} inseeCode={COMMUNE_INSEE[commune]} />
+        </div>
+      )}
+      {stab === "Communes" && (
+        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+          <IngestPluSection />
+        </div>
+      )}
       {stab === "Notifications" && (
         <div style={{ display: "flex", gap: 24 }}>
           <div style={{ flex: 1, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
@@ -1170,90 +1359,196 @@ function ParametresScreen() {
   );
 }
 
-function CarteScreen() {
-  const zones = ["Toutes les zones", "UA - Centre ancien", "UB - Zone urbaine mixte", "1AU - À urbaniser (court terme)", "2AU - À urbaniser (long terme)", "UE - Équipements publics", "A - Agricole", "N - Naturelle"];
+function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: string }) {
+  const navigate = useNavigate();
+  const [commune, setCommune] = useState(initialCommune);
+  const [inseeCode, setInseeCode] = useState<string>(COMMUNE_INSEE[initialCommune] ?? "");
+  const [communes, setCommunes] = useState<string[]>([initialCommune]);
+  const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
+  const [filterStatus, setFilterStatus] = useState("Tous");
+  const [filterType, setFilterType] = useState("Tous les types");
+  const [pluZones, setPluZones] = useState(true);
+  const [baseLayer, setBaseLayer] = useState<BaseLayer>("ign-ortho");
+
+  useEffect(() => {
+    api.get<string[]>("/mairie/communes")
+      .then(data => { if (data.length > 0) setCommunes(data); })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const FALLBACK: MapDossier[] = [
+      { id: "1", numero: "PC-BM-2024-001", type: "permis_de_construire", status: "en_instruction", adresse: "12 Place du 11-Novembre, Ballan-Miré", lat: 47.3551, lng: 0.5497 },
+      { id: "2", numero: "DP-BM-2024-015", type: "declaration_prealable", status: "soumis", adresse: "9 Avenue Jean Mermoz, Ballan-Miré", lat: 47.3538, lng: 0.5512 },
+      { id: "3", numero: "PC-BM-2024-022", type: "permis_de_construire", status: "en_instruction", adresse: "2 Avenue de l'Orée-des-Bois, Ballan-Miré", lat: 47.3524, lng: 0.5531 },
+      { id: "4", numero: "DP-BM-2024-008", type: "declaration_prealable", status: "incomplet", adresse: "9 Rue Jean Mermoz, Ballan-Miré", lat: 47.3540, lng: 0.5508 },
+      { id: "5", numero: "PC-BM-2023-044", type: "permis_de_construire", status: "accepte", adresse: "Avenue Jean Mermoz, Ballan-Miré", lat: 47.3535, lng: 0.5520 },
+      { id: "6", numero: "DP-BM-2024-033", type: "declaration_prealable", status: "decision_en_cours", adresse: "Place du 11-Novembre, Ballan-Miré", lat: 47.3553, lng: 0.5495 },
+      { id: "7", numero: "CU-BM-2024-007", type: "certificat_urbanisme", status: "soumis", adresse: "Rue de la Houssaye, Ballan-Miré", lat: 47.3562, lng: 0.5475 },
+      { id: "8", numero: "PC-BM-2024-041", type: "permis_de_construire", status: "refuse", adresse: "Rue du Commerce, Ballan-Miré", lat: 47.3546, lng: 0.5503 },
+      { id: "9", numero: "DP-BM-2024-019", type: "declaration_prealable", status: "pre_instruction", adresse: "Rue du Val de l'Indre, Ballan-Miré", lat: 47.3510, lng: 0.5560 },
+    ];
+    api.get<MapDossier[]>(`/mairie/map-dossiers?commune=${encodeURIComponent(commune)}`)
+      .then(data => setMapDossiers(data.length > 0 ? data : FALLBACK))
+      .catch(() => setMapDossiers(FALLBACK));
+  }, [commune]);
+
+  const TYPE_OPTIONS = ["Tous les types", "Permis de construire", "Déclaration préalable", "Permis d'aménager", "Permis de démolir", "Certificat d'urbanisme"];
+  const STATUS_OPTIONS = ["Tous", "Nouveau", "Pré-instruction", "Incomplet", "En instruction", "Décision en cours", "Accepté", "Refusé", "Accord avec prescriptions", "Brouillon"];
+
+  const CARTE_STATUS_COLORS: Record<string, string> = {
+    soumis: "#4F46E5", pre_instruction: "#F97316", incomplet: "#EF4444",
+    en_instruction: "#22C55E", decision_en_cours: "#8B5CF6",
+    accepte: "#10B981", refuse: "#EF4444", accord_prescription: "#10B981", brouillon: "#94A3B8",
+  };
+  const CARTE_STATUS_LABELS: Record<string, string> = {
+    brouillon: "Brouillon", soumis: "Nouveau", pre_instruction: "Pré-instruction",
+    incomplet: "Incomplet", en_instruction: "En instruction",
+    decision_en_cours: "Décision en cours", accepte: "Accepté",
+    refuse: "Refusé", accord_prescription: "Accord avec prescriptions",
+  };
+
+  const counts = Object.fromEntries(
+    Object.keys(CARTE_STATUS_LABELS).map(k => [k, mapDossiers.filter(d => d.status === k).length])
+  );
+
   return (
-    <div style={{ padding: 24 }}>
-      <div style={{ marginBottom: 16 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Carte</h1>
-        <p style={{ color: "#64748b", fontSize: 13 }}>Visualisez la répartition des dossiers sur le territoire et filtrez par zone du PLU.</p>
-      </div>
-      <div style={{ display: "flex", gap: 12, marginBottom: 16 }}>
-        {[{ icon: "🗂", n: 128, label: "Dossiers au total" }, { icon: "🆕", n: 28, label: "Nouveaux dossiers" }, { icon: "🏗", n: 68, label: "En instruction" }, { icon: "💬", n: 24, label: "Consultations" }, { icon: "⏰", n: 8, label: "En retard" }].map(s => (
-          <div key={s.label} style={{ background: "white", borderRadius: 10, border: "1px solid #E2E8F0", padding: "10px 14px", display: "flex", alignItems: "center", gap: 8, flex: 1 }}>
-            <span style={{ fontSize: 16 }}>{s.icon}</span>
-            <div>
-              <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A" }}>{s.n}</div>
-              <div style={{ fontSize: 11, color: "#94a3b8" }}>{s.label}</div>
-            </div>
-          </div>
-        ))}
-      </div>
-      <div style={{ display: "flex", gap: 16 }}>
-        <div style={{ flex: 1, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
-          <div style={{ padding: "10px 14px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", gap: 8 }}>
-            <select style={{ border: "1px solid #E2E8F0", borderRadius: 8, padding: "5px 10px", fontSize: 12 }}><option>Vue par zone PLU</option></select>
-          </div>
-          <div style={{ position: "relative", height: 480, background: "linear-gradient(160deg, #d4edda 0%, #b8dfc8 40%, #a8d4c0 70%, #d4edda 100%)" }}>
-            <svg style={{ position: "absolute", inset: 0, width: "100%", height: "100%" }} viewBox="0 0 600 480">
-              <polygon points="300,60 450,100 480,240 380,380 200,380 120,240 180,100" fill="rgba(99,102,241,0.15)" stroke="rgba(99,102,241,0.4)" strokeWidth="2" />
-              <polygon points="180,100 300,60 300,240 200,280 150,200" fill="rgba(34,197,94,0.15)" stroke="rgba(34,197,94,0.4)" strokeWidth="2" />
-              <polygon points="300,60 450,100 420,240 300,240" fill="rgba(249,115,22,0.15)" stroke="rgba(249,115,22,0.4)" strokeWidth="2" />
-              <polygon points="120,240 200,280 200,380 100,360" fill="rgba(236,72,153,0.15)" stroke="rgba(236,72,153,0.4)" strokeWidth="2" />
-              <polygon points="300,240 420,240 380,380 200,380 200,280" fill="rgba(234,179,8,0.15)" stroke="rgba(234,179,8,0.4)" strokeWidth="2" />
-              <text x="260" y="170" fontSize="13" fontWeight="700" fill="rgba(99,102,241,0.8)">UA</text>
-              <text x="180" y="150" fontSize="12" fontWeight="600" fill="rgba(34,197,94,0.8)">UB</text>
-              <text x="370" y="170" fontSize="12" fontWeight="600" fill="rgba(249,115,22,0.8)">1AU</text>
-              <text x="270" y="310" fontSize="12" fontWeight="600" fill="rgba(234,179,8,0.8)">2AU</text>
-              <text x="460" y="290" fontSize="12" fontWeight="600" fill="rgba(148,163,184,0.8)">UE</text>
-            </svg>
-            {[{ top: "25%", left: "35%", color: "#4F46E5", n: 7 }, { top: "38%", left: "52%", color: "#F97316", n: 3 }, { top: "45%", left: "65%", color: "#EF4444", n: 2 }, { top: "58%", left: "42%", color: "#22C55E", n: 4 }, { top: "65%", left: "32%", color: "#22C55E", n: 5 }, { top: "55%", left: "76%", color: "#22C55E", n: 6 }].map((m, i) => (
-              <div key={i} style={{ position: "absolute", top: m.top, left: m.left, width: 30, height: 30, borderRadius: "50%", background: m.color, color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 3px 8px rgba(0,0,0,0.25)", border: "2px solid white" }}>{m.n}</div>
-            ))}
-            <div style={{ position: "absolute", bottom: 12, left: 12, background: "white", borderRadius: 10, padding: "10px 12px", boxShadow: "0 2px 8px rgba(0,0,0,0.1)", fontSize: 11 }}>
-              {[["#4F46E5","Nouveau"],["#22C55E","Instruction"],["#F97316","Consultation"],["#EF4444","Retard"],["#8B5CF6","Pièce manquante"],["#94A3B8","Terminé"]].map(([c,l]) => (
-                <div key={l} style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 3 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: c, display: "inline-block", flexShrink: 0 }} />
-                  <span style={{ color: "#374151" }}>{l}</span>
-                </div>
-              ))}
-            </div>
-          </div>
+    <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 56px)", overflow: "hidden" }}>
+      {/* Header */}
+      <div style={{ padding: "10px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
+        <div style={{ flex: 1 }}>
+          <h1 style={{ fontSize: 17, fontWeight: 700, color: "#0F172A", margin: 0 }}>Carte du territoire</h1>
+          <p style={{ color: "#64748b", fontSize: 12, margin: 0 }}>{commune} — zones PLU (Géoportail Urbanisme) et dossiers</p>
         </div>
-        <div style={{ width: 240 }}>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16, marginBottom: 12 }}>
-            <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 12 }}>
-              <span style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Filtres</span>
-              <button style={{ fontSize: 12, color: "#4F46E5", background: "none", border: "none", cursor: "pointer" }}>Réinitialiser</button>
-            </div>
-            {[["Types de dossier","Tous"],["Statut","Tous"],["Services / Organismes","Tous"]].map(([l,v]) => (
-              <div key={l} style={{ marginBottom: 10 }}>
-                <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>{l}</div>
-                <select style={{ width: "100%", padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12 }}><option>{v}</option></select>
-              </div>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {/* Commune selector */}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, background: "#F8F9FC", border: "1px solid #E2E8F0", borderRadius: 8, padding: "5px 10px" }}>
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
+            </svg>
+            <select
+              value={commune}
+              onChange={e => { setCommune(e.target.value); setInseeCode(COMMUNE_INSEE[e.target.value] ?? ""); setMapDossiers([]); }}
+              style={{ border: "none", background: "transparent", fontSize: 12, fontWeight: 600, color: "#374151", outline: "none", cursor: "pointer" }}
+            >
+              {communes.map(c => <option key={c} value={c}>{c}</option>)}
+            </select>
+          </div>
+          {/* Base map selector */}
+          <div style={{ display: "flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden", background: "white" }}>
+            {([
+              { key: "ign-ortho", label: "Photo" },
+              { key: "carto-light", label: "Neutre" },
+              { key: "ign-plan", label: "Plan IGN" },
+            ] as { key: BaseLayer; label: string }[]).map(({ key, label }) => (
+              <button key={key} onClick={() => setBaseLayer(key)} style={{
+                padding: "5px 11px", border: "none", borderRight: "1px solid #E2E8F0", cursor: "pointer",
+                fontSize: 11.5, fontWeight: baseLayer === key ? 700 : 400,
+                background: baseLayer === key ? "#4F46E5" : "white",
+                color: baseLayer === key ? "white" : "#64748b",
+                transition: "all 0.12s",
+              }}>{label}</button>
             ))}
-            <div style={{ marginBottom: 10 }}>
-              <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>Zone PLU</div>
-              <select style={{ width: "100%", padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12 }}>
-                {zones.map(z => <option key={z}>{z}</option>)}
+          </div>
+          <button
+            onClick={() => setPluZones(v => !v)}
+            style={{
+              display: "flex", alignItems: "center", gap: 6,
+              padding: "6px 13px", borderRadius: 8, fontSize: 12, fontWeight: 600,
+              border: "1.5px solid", cursor: "pointer", transition: "all 0.15s",
+              borderColor: pluZones ? "#4F46E5" : "#E2E8F0",
+              background: pluZones ? "#EEF2FF" : "white",
+              color: pluZones ? "#4F46E5" : "#94a3b8",
+            }}
+          >
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+              <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
+            </svg>
+            {pluZones ? "Zones PLU activées" : "Zones PLU désactivées"}
+          </button>
+        </div>
+      </div>
+
+      {/* Map + sidebar */}
+      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+        {/* Map — fills remaining space */}
+        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+          <MapLeaflet
+            dossiers={mapDossiers}
+            height="100%"
+            filterStatus={filterStatus}
+            filterType={filterType}
+            commune={commune}
+            inseeCode={inseeCode || undefined}
+            baseLayer={baseLayer}
+            pluZoneLayer={pluZones}
+            parcelLayer={true}
+            onMarkerClick={d => navigate(`/mairie/dossiers/${d.id}`)}
+          />
+        </div>
+
+        {/* Sidebar */}
+        <div style={{ width: 248, borderLeft: "1px solid #E2E8F0", background: "white", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" }}>
+          {/* Filters */}
+          <div style={{ padding: "14px 14px 12px", borderBottom: "1px solid #F1F5F9" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>Filtres</div>
+            <div style={{ marginBottom: 8 }}>
+              <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>Type de dossier</div>
+              <select
+                value={filterType}
+                onChange={e => setFilterType(e.target.value)}
+                style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 11, color: "#374151", background: "white" }}
+              >
+                {TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}
               </select>
             </div>
-            <button style={{ width: "100%", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Appliquer les filtres</button>
+            <div>
+              <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>Statut</div>
+              <select
+                value={filterStatus}
+                onChange={e => setFilterStatus(e.target.value)}
+                style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 11, color: "#374151", background: "white" }}
+              >
+                {STATUS_OPTIONS.map(o => <option key={o}>{o}</option>)}
+              </select>
+            </div>
           </div>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Dossiers dans cette zone</div>
-            <span style={{ background: "#EEF2FF", color: "#4F46E5", fontSize: 11, borderRadius: 6, padding: "2px 8px", fontWeight: 600, display: "inline-block", marginBottom: 8 }}>UA - Centre ancien</span>
-            <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "right", marginBottom: 8 }}>12 dossiers</div>
-            {[{ id: "PC-2024-0123", addr: "12 rue des Lilas", status: "En instruction", dist: "150 m" }, { id: "DP-2024-0089", addr: "7 impasse des Chênes", status: "Nouveau", dist: "280 m" }, { id: "PC-2024-0456", addr: "23 avenue de la Mer", status: "En consultation", dist: "450 m" }].map(d => (
-              <div key={d.id} style={{ padding: "8px 0", borderBottom: "1px solid #F8FAFC" }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 3 }}>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#4F46E5" }}>{d.id}</span>
-                  <span style={{ fontSize: 11, color: "#94a3b8" }}>{d.dist}</span>
+
+          {/* Dossier status legend */}
+          <div style={{ padding: "12px 14px", borderBottom: "1px solid #F1F5F9" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Dossiers ({mapDossiers.length})</div>
+            {Object.entries(CARTE_STATUS_LABELS)
+              .filter(([k]) => (counts[k] ?? 0) > 0)
+              .map(([k, label]) => (
+                <div key={k} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+                  <span style={{ width: 9, height: 9, borderRadius: "50%", background: CARTE_STATUS_COLORS[k], display: "inline-block", flexShrink: 0, boxShadow: "0 0 0 1.5px white, 0 0 0 2.5px " + CARTE_STATUS_COLORS[k] + "44" }} />
+                  <span style={{ fontSize: 11, color: "#374151", flex: 1 }}>{label}</span>
+                  <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>{counts[k]}</span>
                 </div>
-                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>{d.addr}</div>
-                <StatusBadge status={d.status} />
+              ))}
+          </div>
+
+          {/* PLU zones legend */}
+          <div style={{ padding: "12px 14px" }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>
+              Zones PLU
+              {!pluZones && <span style={{ fontSize: 10, fontWeight: 400, color: "#94a3b8", marginLeft: 6 }}>(désactivées)</span>}
+            </div>
+            {[
+              { color: "#C0392B", label: "Zones U — Urbanisées" },
+              { color: "#E67E22", label: "Zones AU — À urbaniser" },
+              { color: "#D4AC0D", label: "Zones A — Agricoles" },
+              { color: "#27AE60", label: "Zones N — Naturelles" },
+            ].map(({ color, label }) => (
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5, opacity: pluZones ? 1 : 0.4 }}>
+                <span style={{ width: 14, height: 10, borderRadius: 2, background: color + "88", border: `1.5px solid ${color}`, display: "inline-block", flexShrink: 0 }} />
+                <span style={{ fontSize: 11, color: "#374151" }}>{label}</span>
               </div>
             ))}
+            <div style={{ marginTop: 8, fontSize: 10, color: "#94a3b8", lineHeight: 1.4 }}>
+              Source : Géoportail de l'Urbanisme<br />
+              Couche URBANISME.ZONE_URBA
+            </div>
           </div>
         </div>
       </div>
@@ -1632,6 +1927,434 @@ function StatistiquesScreen() {
   );
 }
 
+// ── Réglementation screen ──────────────────────────────────────────────────────
+
+type RuleRow = {
+  id: string; zone_id: string; article_number: number | null; article_title: string | null;
+  topic: string; rule_text: string; value_min: number | null; value_max: number | null;
+  value_exact: number | null; unit: string | null; conditions: string | null; summary: string | null;
+  instructor_note: string | null; validation_status: string;
+};
+type ZoneRow = {
+  id: string; zone_code: string; zone_label: string; zone_type: string; summary: string | null;
+  rules: RuleRow[];
+  stats: { total: number; valide: number; brouillon: number; rejete: number };
+};
+type ReglData = { commune: { id: string; name: string; insee_code: string }; zones: ZoneRow[] };
+
+const TOPIC_META: Record<string, { label: string; icon: string }> = {
+  recul_voie:      { label: "Recul voirie",      icon: "🛣️" },
+  recul_limite:    { label: "Recul limites",      icon: "📐" },
+  recul_batiments: { label: "Entre bâtiments",    icon: "🏢" },
+  terrain_min:     { label: "Surface minimale",   icon: "📏" },
+  emprise_sol:     { label: "Emprise au sol",     icon: "🏠" },
+  hauteur:         { label: "Hauteur max.",       icon: "📏" },
+  stationnement:   { label: "Stationnement",      icon: "🅿️" },
+  espaces_verts:   { label: "Espaces verts",      icon: "🌳" },
+  aspect:          { label: "Aspect extérieur",   icon: "🎨" },
+  destinations:    { label: "Destinations",       icon: "🏗️" },
+  cos:             { label: "COS",                icon: "📊" },
+  general:         { label: "Général",            icon: "📋" },
+};
+
+const ZONE_TYPE_STYLE: Record<string, { bg: string; color: string; border: string; label: string }> = {
+  U:  { bg: "#EEF2FF", color: "#4338CA", border: "#C7D2FE", label: "Urbaine" },
+  AU: { bg: "#FFF7ED", color: "#C2410C", border: "#FED7AA", label: "À urbaniser" },
+  A:  { bg: "#FEFCE8", color: "#A16207", border: "#FDE68A", label: "Agricole" },
+  N:  { bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0", label: "Naturelle" },
+};
+
+function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCode?: string }) {
+  const [data, setData] = useState<ReglData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState<string | null>(null);
+  const [seeding, setSeeding] = useState(false);
+  const [seedError, setSeedError] = useState<string | null>(null);
+  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Partial<RuleRow>>({});
+  const [saving, setSaving] = useState(false);
+  const [addingZoneId, setAddingZoneId] = useState<string | null>(null);
+  const [newRule, setNewRule] = useState<Partial<RuleRow>>({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
+
+  const load = () => {
+    setLoading(true);
+    setLoadError(null);
+    const param = inseeCode
+      ? `insee_code=${encodeURIComponent(inseeCode)}`
+      : `commune_name=${encodeURIComponent(commune)}`;
+    api.get<ReglData>(`/mairie/reglementation?${param}`)
+      .then(d => {
+        setData(d);
+        if (d.zones[0] && !selectedZoneId) setSelectedZoneId(d.zones[0].id);
+      })
+      .catch(e => { setData(null); setLoadError(e.message ?? "Erreur de chargement"); })
+      .finally(() => setLoading(false));
+  };
+
+  const runSeed = async () => {
+    setSeeding(true);
+    setSeedError(null);
+    try {
+      await api.post("/mairie/admin/seed-plu", {});
+      load();
+    } catch (e) {
+      setSeedError(e instanceof Error ? e.message : "Erreur serveur — vérifiez les logs API");
+    } finally {
+      setSeeding(false);
+    }
+  };
+
+  useEffect(() => { load(); }, [commune, inseeCode]);
+
+  const patchRule = async (id: string, patch: Partial<RuleRow>) => {
+    setSaving(true);
+    try {
+      await api.patch(`/mairie/reglementation/rules/${id}`, patch);
+      setData(prev => prev ? {
+        ...prev,
+        zones: prev.zones.map(z => ({
+          ...z,
+          rules: z.rules.map(r => r.id === id ? { ...r, ...patch } : r),
+          stats: computeStats(z.rules.map(r => r.id === id ? { ...r, ...patch } : r)),
+        })),
+      } : null);
+    } finally { setSaving(false); }
+  };
+
+  const deleteRule = async (id: string) => {
+    if (!confirm("Supprimer cette règle ?")) return;
+    await api.delete(`/mairie/reglementation/rules/${id}`);
+    setData(prev => prev ? {
+      ...prev,
+      zones: prev.zones.map(z => ({
+        ...z,
+        rules: z.rules.filter(r => r.id !== id),
+        stats: computeStats(z.rules.filter(r => r.id !== id)),
+      })),
+    } : null);
+  };
+
+  const addRule = async (zoneId: string) => {
+    if (!newRule.rule_text || !newRule.topic) return;
+    const created = await api.post<RuleRow>(`/mairie/reglementation/zones/${zoneId}/rules`, newRule);
+    setData(prev => prev ? {
+      ...prev,
+      zones: prev.zones.map(z => z.id === zoneId
+        ? { ...z, rules: [...z.rules, created], stats: computeStats([...z.rules, created]) }
+        : z),
+    } : null);
+    setAddingZoneId(null);
+    setNewRule({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
+  };
+
+  const computeStats = (rules: RuleRow[]) => ({
+    total: rules.length,
+    valide: rules.filter(r => r.validation_status === "valide").length,
+    brouillon: rules.filter(r => r.validation_status === "brouillon" || r.validation_status === "draft").length,
+    rejete: rules.filter(r => r.validation_status === "rejete").length,
+  });
+
+  const selectedZone = data?.zones.find(z => z.id === selectedZoneId);
+  const totalStats = data ? data.zones.reduce((acc, z) => ({
+    total: acc.total + z.stats.total,
+    valide: acc.valide + z.stats.valide,
+  }), { total: 0, valide: 0 }) : null;
+
+  if (loading) return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 300 }}>
+      <div style={{ width: 32, height: 32, borderRadius: "50%", border: "3px solid #E2E8F0", borderTopColor: "#4F46E5", animation: "spin 0.8s linear infinite" }} />
+    </div>
+  );
+
+  if (!data || data.zones.length === 0) return (
+    <div style={{ padding: 40, textAlign: "center" }}>
+      <div style={{ fontSize: 48, marginBottom: 16 }}>🏙️</div>
+      <div style={{ fontWeight: 700, color: "#1E293B", fontSize: 16, marginBottom: 8 }}>
+        {data ? "Zones PLU non encore chargées" : `Aucune règle PLU pour ${commune}`}
+      </div>
+      <div style={{ fontSize: 13, color: "#6B7280", maxWidth: 400, margin: "0 auto 24px" }}>
+        {loadError
+          ? `Erreur de chargement : ${loadError}`
+          : "Chargez les règles du PLU de Ballan-Miré pour commencer. L'opération est idempotente — vous pouvez relancer sans risque."}
+      </div>
+      {seedError && (
+        <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 16px", color: "#DC2626", fontSize: 13, maxWidth: 480, margin: "0 auto 16px" }}>
+          ⚠ {seedError}
+        </div>
+      )}
+      <button
+        onClick={runSeed}
+        disabled={seeding}
+        style={{ background: seeding ? "#6366F1" : "#4F46E5", color: "white", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 14, fontWeight: 700, cursor: seeding ? "wait" : "pointer", display: "inline-flex", alignItems: "center", gap: 10, boxShadow: "0 4px 14px rgba(79,70,229,0.35)" }}>
+        {seeding ? (
+          <>
+            <div style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.4)", borderTopColor: "white", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
+            Chargement en cours…
+          </>
+        ) : "⬇ Charger le PLU de Ballan-Miré"}
+      </button>
+    </div>
+  );
+
+  const statusDot = (status: string) => {
+    const s = status === "valide" ? { bg: "#DCFCE7", color: "#15803D", label: "Validée" }
+      : status === "rejete" ? { bg: "#FEE2E2", color: "#DC2626", label: "Rejetée" }
+      : { bg: "#FEF9C3", color: "#A16207", label: "À valider" };
+    return (
+      <span style={{ background: s.bg, color: s.color, borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>{s.label}</span>
+    );
+  };
+
+  return (
+    <div style={{ display: "flex", height: "calc(100vh - 56px)", background: "#F8FAFC" }}>
+
+      {/* ── Left: zone list ── */}
+      <div style={{ width: 288, flexShrink: 0, borderRight: "1px solid #E2E8F0", background: "white", display: "flex", flexDirection: "column", overflowY: "auto" }}>
+        {/* Header */}
+        <div style={{ padding: "20px 20px 16px", borderBottom: "1px solid #F1F5F9" }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#000020", marginBottom: 4 }}>Réglementation PLU</div>
+          <div style={{ fontSize: 12, color: "#9CA3AF" }}>{commune}</div>
+          {totalStats && (
+            <div style={{ marginTop: 12, background: "#F8FAFC", borderRadius: 10, padding: "10px 14px", border: "1px solid #E2E8F0" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 12, color: "#6B7280" }}>Progression globale</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#4F46E5" }}>
+                  {totalStats.valide} / {totalStats.total}
+                </span>
+              </div>
+              <div style={{ height: 6, background: "#E2E8F0", borderRadius: 99, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${totalStats.total ? (totalStats.valide / totalStats.total) * 100 : 0}%`, background: "#4F46E5", borderRadius: 99, transition: "width 0.3s" }} />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Zone cards */}
+        <div style={{ flex: 1, padding: "12px 12px" }}>
+          {data.zones.map(zone => {
+            const ts = ZONE_TYPE_STYLE[zone.zone_type] ?? ZONE_TYPE_STYLE["U"]!;
+            const pct = zone.stats.total ? Math.round((zone.stats.valide / zone.stats.total) * 100) : 0;
+            const isSelected = zone.id === selectedZoneId;
+            return (
+              <button key={zone.id} onClick={() => setSelectedZoneId(zone.id)} style={{
+                width: "100%", border: `1px solid ${isSelected ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 10, padding: "12px 14px",
+                background: isSelected ? "#EEF2FF" : "white", marginBottom: 6, cursor: "pointer", textAlign: "left",
+                transition: "all 0.12s",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ background: ts.bg, color: ts.color, border: `1px solid ${ts.border}`, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700 }}>
+                    {zone.zone_code}
+                  </span>
+                  <span style={{ fontSize: 12, color: "#374151", fontWeight: isSelected ? 600 : 400, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {zone.zone_label.replace(/^Zone [A-Z0-9]+ [-–] /, "")}
+                  </span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ flex: 1, height: 4, background: "#F1F5F9", borderRadius: 99, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "#22C55E" : "#4F46E5", borderRadius: 99, transition: "width 0.3s" }} />
+                  </div>
+                  <span style={{ fontSize: 11, color: pct === 100 ? "#16A34A" : "#6B7280", fontWeight: 600, whiteSpace: "nowrap" }}>
+                    {pct === 100 ? "✓ Tout validé" : `${zone.stats.valide}/${zone.stats.total}`}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Right: rules ── */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}>
+        {!selectedZone ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#9CA3AF", fontSize: 14 }}>
+            ← Sélectionnez une zone
+          </div>
+        ) : (
+          <>
+            {/* Zone header */}
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+                {(() => { const ts = ZONE_TYPE_STYLE[selectedZone.zone_type] ?? ZONE_TYPE_STYLE["U"]!; return (
+                  <span style={{ background: ts.bg, color: ts.color, border: `1px solid ${ts.border}`, borderRadius: 8, padding: "4px 12px", fontSize: 13, fontWeight: 700 }}>
+                    {selectedZone.zone_code} — {ts.label}
+                  </span>
+                ); })()}
+                <span style={{ fontSize: 16, fontWeight: 700, color: "#000020" }}>{selectedZone.zone_label}</span>
+              </div>
+              {selectedZone.summary && (
+                <p style={{ fontSize: 13, color: "#6B7280", margin: 0 }}>{selectedZone.summary}</p>
+              )}
+            </div>
+
+            {/* Rules list */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {selectedZone.rules.length === 0 && (
+                <div style={{ textAlign: "center", padding: "40px 20px", color: "#9CA3AF", background: "white", borderRadius: 12, border: "1px dashed #E2E8F0" }}>
+                  Aucune règle pour cette zone.
+                </div>
+              )}
+
+              {selectedZone.rules.map(rule => {
+                const meta = TOPIC_META[rule.topic] ?? { label: rule.topic, icon: "📋" };
+                const isEditing = editingId === rule.id;
+                const statusColor = rule.validation_status === "valide" ? "#22C55E"
+                  : rule.validation_status === "rejete" ? "#EF4444" : "#F59E0B";
+
+                return (
+                  <div key={rule.id} style={{
+                    background: "white", borderRadius: 12, border: "1px solid #E2E8F0",
+                    borderLeft: `4px solid ${statusColor}`, overflow: "hidden",
+                  }}>
+                    {/* Rule header */}
+                    <div style={{ padding: "14px 18px", display: "flex", alignItems: "flex-start", gap: 12 }}>
+                      <span style={{ fontSize: 20, flexShrink: 0, marginTop: 1 }}>{meta.icon}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                            {rule.article_number ? `Art. ${rule.article_number} • ` : ""}{meta.label}
+                          </span>
+                          {statusDot(rule.validation_status)}
+                        </div>
+                        {!isEditing && (
+                          <>
+                            <p style={{ margin: "0 0 4px", fontSize: 13, color: "#111827", lineHeight: 1.5 }}>{rule.rule_text}</p>
+                            {(rule.value_min != null || rule.value_max != null || rule.value_exact != null) && (
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                                {rule.value_min != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#374151" }}>min {rule.value_min} {rule.unit}</span>}
+                                {rule.value_max != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#374151" }}>max {rule.value_max} {rule.unit}</span>}
+                                {rule.value_exact != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#374151" }}>{rule.value_exact} {rule.unit}</span>}
+                                {rule.conditions && <span style={{ background: "#FFF7ED", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#C2410C" }}>⚠ {rule.conditions}</span>}
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {/* Inline edit form */}
+                        {isEditing && (
+                          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                            <textarea
+                              style={{ width: "100%", minHeight: 72, borderRadius: 8, border: "1px solid #C7D2FE", padding: "8px 10px", fontSize: 13, resize: "vertical", outline: "none", fontFamily: "inherit" }}
+                              value={editForm.rule_text ?? rule.rule_text}
+                              onChange={e => setEditForm(f => ({ ...f, rule_text: e.target.value }))}
+                            />
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                              {[["value_min", "Min"], ["value_max", "Max"], ["value_exact", "Exact"]].map(([field, label]) => (
+                                <label key={field} style={{ fontSize: 11, color: "#6B7280", display: "flex", alignItems: "center", gap: 4 }}>
+                                  {label}
+                                  <input type="number" style={{ width: 70, borderRadius: 6, border: "1px solid #E2E8F0", padding: "4px 6px", fontSize: 12, outline: "none" }}
+                                    value={(editForm[field as keyof RuleRow] ?? rule[field as keyof RuleRow]) as number ?? ""}
+                                    onChange={e => setEditForm(f => ({ ...f, [field as string]: e.target.value === "" ? null : Number(e.target.value) }))}
+                                  />
+                                </label>
+                              ))}
+                              <label style={{ fontSize: 11, color: "#6B7280", display: "flex", alignItems: "center", gap: 4 }}>
+                                Unité
+                                <select style={{ borderRadius: 6, border: "1px solid #E2E8F0", padding: "4px 6px", fontSize: 12, outline: "none" }}
+                                  value={(editForm.unit ?? rule.unit) ?? ""}
+                                  onChange={e => setEditForm(f => ({ ...f, unit: e.target.value || null }))}>
+                                  <option value="">—</option>
+                                  <option value="m">m</option>
+                                  <option value="%">%</option>
+                                  <option value="m²">m²</option>
+                                  <option value="places">places</option>
+                                </select>
+                              </label>
+                            </div>
+                            <input style={{ borderRadius: 8, border: "1px solid #E2E8F0", padding: "6px 10px", fontSize: 12, outline: "none" }}
+                              placeholder="Conditions particulières…"
+                              value={(editForm.conditions ?? rule.conditions) ?? ""}
+                              onChange={e => setEditForm(f => ({ ...f, conditions: e.target.value || null }))}
+                            />
+                            <input style={{ borderRadius: 8, border: "1px solid #E2E8F0", padding: "6px 10px", fontSize: 12, outline: "none" }}
+                              placeholder="Résumé (10 mots max)…"
+                              value={(editForm.summary ?? rule.summary) ?? ""}
+                              onChange={e => setEditForm(f => ({ ...f, summary: e.target.value || null }))}
+                            />
+                            <div style={{ display: "flex", gap: 8 }}>
+                              <button onClick={async () => { await patchRule(rule.id, { ...editForm, validation_status: "valide" }); setEditingId(null); setEditForm({}); }} disabled={saving}
+                                style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                {saving ? "…" : "Sauvegarder & Valider"}
+                              </button>
+                              <button onClick={() => { setEditingId(null); setEditForm({}); }}
+                                style={{ background: "#F1F5F9", color: "#374151", border: "none", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
+                                Annuler
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Action buttons */}
+                      {!isEditing && (
+                        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                          {rule.validation_status !== "valide" && (
+                            <button title="Valider" onClick={() => patchRule(rule.id, { validation_status: "valide" })}
+                              style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #BBF7D0", background: "#F0FDF4", color: "#16A34A", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>✓</button>
+                          )}
+                          {rule.validation_status !== "rejete" && (
+                            <button title="Rejeter" onClick={() => patchRule(rule.id, { validation_status: "rejete" })}
+                              style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #FECACA", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>✗</button>
+                          )}
+                          <button title="Modifier" onClick={() => { setEditingId(rule.id); setEditForm({}); }}
+                            style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #E2E8F0", background: "#F8FAFC", color: "#6B7280", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>✏</button>
+                          <button title="Supprimer" onClick={() => deleteRule(rule.id)}
+                            style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #E2E8F0", background: "#F8FAFC", color: "#9CA3AF", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>🗑</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Add rule button */}
+              {addingZoneId !== selectedZone.id ? (
+                <button onClick={() => setAddingZoneId(selectedZone.id)}
+                  style={{ width: "100%", padding: "12px", border: "2px dashed #C7D2FE", borderRadius: 12, background: "transparent", color: "#4F46E5", fontSize: 13, fontWeight: 600, cursor: "pointer", marginTop: 4 }}>
+                  + Ajouter une règle
+                </button>
+              ) : (
+                <div style={{ background: "white", borderRadius: 12, border: "1px solid #C7D2FE", padding: "16px 18px" }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: "#374151", marginBottom: 12 }}>Nouvelle règle</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <select style={{ borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none", flex: 1 }}
+                      value={newRule.topic ?? "recul_voie"}
+                      onChange={e => setNewRule(f => ({ ...f, topic: e.target.value }))}>
+                      {Object.entries(TOPIC_META).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
+                    </select>
+                    <input type="number" placeholder="Art. n°" style={{ width: 80, borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none" }}
+                      value={newRule.article_number ?? ""}
+                      onChange={e => setNewRule(f => ({ ...f, article_number: e.target.value === "" ? null : Number(e.target.value) }))}
+                    />
+                  </div>
+                  <textarea placeholder="Texte de la règle…" style={{ width: "100%", minHeight: 72, borderRadius: 8, border: "1px solid #E2E8F0", padding: "8px 10px", fontSize: 13, resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                    value={newRule.rule_text ?? ""}
+                    onChange={e => setNewRule(f => ({ ...f, rule_text: e.target.value }))}
+                  />
+                  <input placeholder="Résumé (10 mots max)" style={{ marginTop: 6, width: "100%", borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none", boxSizing: "border-box" }}
+                    value={newRule.summary ?? ""}
+                    onChange={e => setNewRule(f => ({ ...f, summary: e.target.value }))}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button onClick={() => addRule(selectedZone.id)}
+                      style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                      Ajouter
+                    </button>
+                    <button onClick={() => setAddingZoneId(null)}
+                      style={{ background: "#F1F5F9", color: "#374151", border: "none", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
+                      Annuler
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function InfosPersoScreen() {
   const [stab, setStab] = useState("À propos");
   const navItems = [
@@ -1964,156 +2687,1151 @@ function InfosPersoScreen() {
   );
 }
 
-type DossierInfo = { id: string; numero: string; type: string; petitionnaire: string; adresse: string; status: string; echeance: string; date_depot?: string };
+type DossierInfo = {
+  id: string; numero: string; type: string; petitionnaire: string; adresse: string;
+  status: string; echeance: string; date_depot?: string;
+  description?: string; parcelle?: string; surface_plancher?: string;
+  commune?: string; code_postal?: string; instructeur?: string;
+  lat?: number; lng?: number;
+};
+
+const DETAIL_TABS = ["Résumé", "Parcelle", "Conformité IA", "Documents", "Consultations", "Chronologie", "Décision"] as const;
+type DetailTab = typeof DETAIL_TABS[number];
+
+const TAB_ICONS: Record<string, React.ReactNode> = {
+  "Résumé": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>,
+  "Parcelle": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>,
+  "Conformité IA": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>,
+  "Documents": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
+  "Consultations": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>,
+  "Chronologie": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
+  "Décision": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><polyline points="9 15 11 17 15 13" /></svg>,
+};
 
 function DossierDetailScreen({ dossier, onBack, navigate }: {
   dossier: DossierInfo;
   onBack: () => void;
   navigate: (s: string) => void;
 }) {
-  const [note, setNote] = useState("");
-  const pieces = [
-    { name: "Formulaire CERFA", ext: "PDF" },
-    { name: "Plan de situation", ext: "PDF" },
-    { name: "Plan de masse", ext: "PDF" },
-    { name: "Notice descriptive", ext: "PDF" },
-    { name: "Photos", ext: "ZIP" },
-    { name: "Pièce complémentaire", ext: "PDF" },
+  const [activeTab, setActiveTab] = useState<DetailTab>("Résumé");
+
+  // ── Analyse parcellaire réelle ──
+  type ParcelAnalysis = {
+    query: string;
+    address?: { label: string; lat: number; lng: number; city: string; postcode: string };
+    parcel?: { parcelle_id: string; section: string; numero: string; surface_m2: number; commune: string; code_insee: string };
+    plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string };
+    risks?: { flood_risk: string; seismic_zone: string; clay_risk: string };
+    db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
+    rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null }>;
+    buildability: { maxFootprintM2: number; remainingFootprintM2: number; maxHeightM: number | null; minSetbackFromRoadM: number | null; minSetbackFromBoundariesM: number | null; estimatedFloors: number | null; greenSpaceRatio: number | null; greenSpaceRequiredM2: number | null; confidence: number; resultSummary: string } | null;
+    data_sources: string[];
+    warnings: string[];
+    available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
+    municipality?: { is_rnu: boolean; libelle?: string } | null;
+    prescriptions?: Array<{ libelle: string; typepsc: string; txtpsc?: string }>;
+    servitudes?: Array<{ categorie: string; libelle?: string }>;
+  };
+  const [parcelAnalysis, setParcelAnalysis] = useState<ParcelAnalysis | null>(null);
+  const [parcelLoading, setParcelLoading] = useState(false);
+  const [parcelError, setParcelError] = useState<string | null>(null);
+  const [showAddressEditor, setShowAddressEditor] = useState(false);
+  const [addressOverride, setAddressOverride] = useState<string | null>(null);
+  const [selectedZone, setSelectedZone] = useState<string | null>(null);
+  const [addrQuery, setAddrQuery] = useState("");
+  const [addrSuggestions, setAddrSuggestions] = useState<Array<{ label: string; city: string; postcode: string }>>([]);
+  const [addrSugLoading, setAddrSugLoading] = useState(false);
+  const [addrSaving, setAddrSaving] = useState(false);
+  const [liveAdresse, setLiveAdresse] = useState(dossier.adresse);
+  const [liveCommune, setLiveCommune] = useState(dossier.commune ?? null);
+  const [clickingParcel, setClickingParcel] = useState(false);
+  const [clickedCoords, setClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
+
+  useEffect(() => {
+    if (activeTab !== "Parcelle" || parcelAnalysis || parcelLoading) return;
+    setParcelLoading(true);
+    setParcelError(null);
+    const params = new URLSearchParams();
+    if (addressOverride) params.set("q", addressOverride);
+    if (selectedZone) params.set("zone", selectedZone);
+    if (clickedCoords) {
+      params.set("lat", String(clickedCoords.lat));
+      params.set("lng", String(clickedCoords.lng));
+    }
+    const url = `/mairie/dossiers/${dossier.id}/analyse-parcelle${params.toString() ? "?" + params.toString() : ""}`;
+    api.get<ParcelAnalysis>(url)
+      .then(data => { setParcelAnalysis(data); setClickingParcel(false); })
+      .catch(e => setParcelError(e instanceof Error ? e.message : "Erreur analyse parcellaire"))
+      .finally(() => setParcelLoading(false));
+  }, [activeTab, dossier.id, parcelAnalysis, parcelLoading, addressOverride, selectedZone, clickedCoords]);
+
+  // BAN autocomplete
+  useEffect(() => {
+    if (addrQuery.length < 3) { setAddrSuggestions([]); return; }
+    const timer = setTimeout(() => {
+      setAddrSugLoading(true);
+      fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(addrQuery)}&limit=5`)
+        .then(r => r.json())
+        .then((d: { features: Array<{ properties: { label: string; city: string; postcode: string } }> }) =>
+          setAddrSuggestions(d.features.map(f => ({ label: f.properties.label, city: f.properties.city, postcode: f.properties.postcode }))))
+        .catch(() => setAddrSuggestions([]))
+        .finally(() => setAddrSugLoading(false));
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [addrQuery]);
+
+  const handleAddressSelect = (suggestion: { label: string; city: string; postcode: string }) => {
+    const newAddr = suggestion.label;
+    const newCommune = suggestion.city;
+    setAddressOverride(newAddr);
+    setSelectedZone(null);
+    setLiveAdresse(newAddr);
+    setLiveCommune(newCommune);
+    setAddrQuery("");
+    setAddrSuggestions([]);
+    setShowAddressEditor(false);
+    setParcelAnalysis(null);
+    setParcelError(null);
+    setAddrSaving(true);
+    api.patch(`/mairie/dossiers/${dossier.id}/adresse`, { adresse: newAddr, commune: newCommune })
+      .catch(() => {})
+      .finally(() => setAddrSaving(false));
+  };
+
+  const [decisionType, setDecisionType] = useState<string>("accord_prescription");
+  const [prescriptions, setPrescriptions] = useState([
+    "Respecter la hauteur maximale de 3,5 m pour l'annexe.",
+    "Conserver 30 % d'espaces perméables sur l'unité foncière.",
+    "Respecter les prescriptions de l'avis ABF joint au dossier.",
+  ]);
+  const [editingPrescriptions, setEditingPrescriptions] = useState(false);
+  const [selectedConsultation, setSelectedConsultation] = useState<number | null>(0);
+  const [selectedDoc, setSelectedDoc] = useState<number>(0);
+
+  const daysLeft = dossier.echeance && dossier.echeance !== "—"
+    ? Math.ceil((new Date(dossier.echeance.split("/").reverse().join("-")).getTime() - Date.now()) / 86400000)
+    : null;
+
+  const typeLabel = TYPE_LABEL[dossier.type] ?? dossier.type;
+  const instructeurName = dossier.instructeur ?? "Non assigné";
+
+  const CONSULTATIONS_DATA = [
+    { service: "ABF – Architecte des Bâtiments de France", status: "Avis reçu", favorable: true, date: "30/04/2024", detail: "Avis favorable avec réserves. Respecter le gabarit des constructions avoisinantes et les matériaux traditionnels.", color: "#15803D", bg: "#F0FDF4" },
+    { service: "SDIS – Service Incendie", status: "En attente", favorable: null, date: "—", detail: "Consultation envoyée le 22/04/2024. Délai de réponse : 45 jours.", color: "#C2410C", bg: "#FFF7ED" },
+    { service: "Métropole Tours Val de Loire", status: "En attente", favorable: null, date: "—", detail: "En attente de transmission.", color: "#C2410C", bg: "#FFF7ED" },
+    { service: "Réseaux (ENEDIS)", status: "Avis reçu", favorable: true, date: "25/04/2024", detail: "Aucune contrainte réseau identifiée. Raccordement possible.", color: "#15803D", bg: "#F0FDF4" },
+    { service: "ARS – Agence Régionale de Santé", status: "Non requis", favorable: null, date: "—", detail: "Non requis pour ce type de dossier.", color: "#475569", bg: "#F8FAFC" },
   ];
-  const timeline = [
-    { date: "12/04/2024", event: "Dépôt du dossier", actor: "Jean Dupont (pétitionnaire)" },
-    { date: "14/04/2024", event: "Accusé réception envoyé", actor: "Système automatique" },
-    { date: "22/04/2024", event: "Envoi en consultation ABF", actor: "Marie Lambert (instructeur)" },
-    { date: "30/04/2024", event: "Réception avis ABF", actor: "ABF – Favorable avec réserves" },
-    { date: "05/05/2024", event: "Mise en instruction", actor: "Marie Lambert (instructeur)" },
+
+  const DOCUMENTS_DATA = [
+    { name: "Formulaire CERFA 13406*08", ext: "PDF", size: "1.2 Mo", date: "12/05/2024", status: "Validé", ia: "Formulaire complet. Toutes les rubriques obligatoires sont renseignées." },
+    { name: "Plan de situation", ext: "PDF", size: "3.4 Mo", date: "12/05/2024", status: "Validé", ia: "Plan conforme. Echelle 1/25000 visible. Localisation précise du terrain identifiée." },
+    { name: "Plan de masse", ext: "PDF", size: "2.1 Mo", date: "12/05/2024", status: "Validé", ia: "Cote NGF présente. Emprise au sol calculable. Distances aux limites séparatives indiquées." },
+    { name: "Notice descriptive", ext: "PDF", size: "0.8 Mo", date: "12/05/2024", status: "Validé", ia: "Description des matériaux conforme aux prescriptions ABF. Surface plancher cohérente avec le CERFA." },
+    { name: "Photos du terrain", ext: "ZIP", size: "12.3 Mo", date: "12/05/2024", status: "Validé", ia: "8 photos identifiées. Vues panoramiques et détails du terrain présents." },
+    { name: "Pièce complémentaire 1", ext: "PDF", size: "0.5 Mo", date: "18/05/2024", status: "En attente", ia: "Analyse en attente de validation." },
   ];
-  const consultations = [
-    { service: "ABF – Architecte des Bâtiments de France", status: "Avis reçu", ok: true },
-    { service: "SDIS – Service Incendie", status: "En attente", ok: false },
-    { service: "Métropole Tours Val de Loire", status: "En attente", ok: false },
+
+  const TIMELINE_DATA = [
+    { date: "12/05/2024", event: "Dépôt du dossier", actor: dossier.petitionnaire + " (pétitionnaire)", icon: "📥", color: "#4F46E5" },
+    { date: "13/05/2024", event: "Accusé de réception envoyé", actor: "Système automatique", icon: "✉️", color: "#22C55E" },
+    { date: "15/05/2024", event: "Vérification de complétude", actor: instructeurName + " (instructeur)", icon: "🔍", color: "#22C55E" },
+    { date: "18/05/2024", event: "Demande de pièce complémentaire", actor: instructeurName + " (instructeur)", icon: "📎", color: "#F97316" },
+    { date: "20/05/2024", event: "Réception pièce complémentaire", actor: dossier.petitionnaire + " (pétitionnaire)", icon: "📄", color: "#22C55E" },
+    { date: "22/05/2024", event: "Dossier déclaré complet", actor: instructeurName + " (instructeur)", icon: "✅", color: "#22C55E" },
+    { date: "22/05/2024", event: "Envoi en consultation ABF", actor: instructeurName + " (instructeur)", icon: "👥", color: "#8B5CF6" },
+    { date: "30/05/2024", event: "Réception avis ABF – Favorable avec réserves", actor: "ABF – Direction Régionale", icon: "📋", color: "#F97316" },
+    { date: "02/06/2024", event: "Mise en instruction", actor: instructeurName + " (instructeur)", icon: "⚙️", color: "#3B82F6" },
   ];
+
+  const IA_RULES = [
+    { rule: "Emprise au sol ≤ 40%", result: "Conforme", value: "32%", ok: true },
+    { rule: "Hauteur maximale ≤ 9m", result: "Conforme", value: "7,2m", ok: true },
+    { rule: "Recul par rapport à la voirie", result: "Point de vigilance", value: "3m (min. 4m requis)", ok: false },
+    { rule: "Espaces verts ≥ 30%", result: "Non vérifiable", value: "Données insuffisantes", ok: null },
+    { rule: "Stationnement (2 places min.)", result: "Conforme", value: "2 places indiquées", ok: true },
+    { rule: "Matériaux conformes PLU", result: "Conforme (ABF)", value: "Avis ABF favorable", ok: true },
+    { rule: "Zone constructible (UC)", result: "Conforme", value: "Zone UC confirmée", ok: true },
+    { rule: "Périmètre ABF (500m)", result: "Applicable", value: "Dans le périmètre", ok: null },
+  ];
+
+  const CARD: React.CSSProperties = { background: "white", borderRadius: 14, border: "1px solid #E8EEF4", padding: 22, boxShadow: "0 1px 4px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)" };
+  const SH: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 18 };
+  const LABEL_ST: React.CSSProperties = { fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 3 };
+  const VALUE_ST: React.CSSProperties = { fontSize: 13, fontWeight: 500, color: "#1E293B" };
+
+  const Divider = () => <div style={{ height: 1, background: "#F1F5F9", margin: "4px 0" }} />;
+
+  const SecTitle = ({ children, action }: { children: React.ReactNode; action?: React.ReactNode }) => (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+      <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block", flexShrink: 0 }} />
+        {children}
+      </div>
+      {action}
+    </div>
+  );
+
   return (
-    <div style={{ padding: 24 }}>
-      {/* Header */}
-      <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 20 }}>
-        <button onClick={onBack} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}>← Retour aux dossiers</button>
-        <div style={{ flex: 1 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-            <h1 style={{ fontSize: 20, fontWeight: 700, color: "#0F172A", margin: 0 }}>Dossier {dossier.numero}</h1>
-            <StatusBadge status={dossier.status} />
+    <div style={{ display: "flex", flexDirection: "column" as const, height: "100%", background: "#F3F4F8" }}>
+      {/* ── Sticky header ── */}
+      <div style={{ background: "white", borderBottom: "1px solid #E8EEF4", padding: "14px 28px 0", position: "sticky", top: 0, zIndex: 10, boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+        {/* top bar: back + actions */}
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+          <button onClick={onBack} style={{ display: "flex", alignItems: "center", gap: 5, border: "none", background: "none", color: "#64748b", fontSize: 13, cursor: "pointer", padding: 0, fontWeight: 500, letterSpacing: "-0.1px" }}>
+            <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 18 9 12 15 6" /></svg>
+            Retour aux dossiers
+          </button>
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={() => navigate("Messagerie")} style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "7px 15px", fontSize: 12.5, color: "#374151", cursor: "pointer", fontWeight: 500, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>
+              Contacter le pétitionnaire
+            </button>
+            <button style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "7px 15px", fontSize: 12.5, color: "#374151", cursor: "pointer", fontWeight: 500, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+              Générer un courrier
+            </button>
+            <button style={{ display: "flex", alignItems: "center", gap: 7, background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 9, padding: "7px 15px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.35)" }}>
+              <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" /></svg>
+              Exporter le dossier
+            </button>
           </div>
-          <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{dossier.type} · {dossier.adresse}</div>
         </div>
-        <button style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouvelle action</button>
+
+        {/* identity row */}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
+          {/* left: numero + description + meta */}
+          <div>
+            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 3 }}>
+              <h1 style={{ fontSize: 26, fontWeight: 800, color: "#0F172A", margin: 0, letterSpacing: "-0.8px", lineHeight: 1 }}>{dossier.numero}</h1>
+              <StatusBadge status={dossier.status} />
+            </div>
+            <div style={{ fontSize: 13, color: "#475569", fontWeight: 500, marginBottom: 8 }}>{typeLabel}{dossier.description ? ` – ${dossier.description}` : ""}</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" as const }}>
+              <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }}>
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+                <span style={{ fontWeight: 500 }}>{dossier.petitionnaire}</span>
+              </span>
+              <span style={{ color: "#CBD5E1", fontSize: 12 }}>·</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }}>
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
+                {liveAdresse ?? "—"}{liveCommune ? `, ${liveCommune}` : ""}
+                <button
+                  title="Modifier l'adresse"
+                  onClick={() => { setShowAddressEditor(v => !v); setAddrQuery(""); setAddrSuggestions([]); }}
+                  style={{ padding: "1px 6px", fontSize: 10, color: showAddressEditor ? "#4F46E5" : "#94a3b8", background: showAddressEditor ? "#EEF2FF" : "none", border: "1px solid " + (showAddressEditor ? "#4F46E5" : "#E2E8F0"), borderRadius: 4, cursor: "pointer", marginLeft: 2, fontWeight: 500 }}
+                >✏️</button>
+              </span>
+              {dossier.parcelle && <>
+                <span style={{ color: "#CBD5E1", fontSize: 12 }}>·</span>
+                <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }}>
+                  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></svg>
+                  {dossier.parcelle}
+                </span>
+              </>}
+            </div>
+          </div>
+          {/* right: date chips */}
+          <div style={{ display: "flex", gap: 6, flexShrink: 0, marginTop: 2 }}>
+            <div style={{ background: "#F8FAFC", border: "1px solid #E8EEF4", borderRadius: 10, padding: "8px 14px", textAlign: "center" as const, minWidth: 110 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>Déposé le</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#1E293B" }}>{dossier.date_depot ? fmtDate(dossier.date_depot) : "—"}</div>
+            </div>
+            <div style={{ background: "#F8FAFC", border: "1px solid #E8EEF4", borderRadius: 10, padding: "8px 14px", textAlign: "center" as const, minWidth: 110 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>Échéance</div>
+              <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center" }}>
+                <span style={{ fontSize: 13, fontWeight: 600, color: "#1E293B" }}>{dossier.echeance}</span>
+                {daysLeft !== null && (
+                  <span style={{ background: daysLeft < 14 ? "#FEF2F2" : "#EFF6FF", color: daysLeft < 14 ? "#DC2626" : "#2563EB", borderRadius: 5, padding: "1px 6px", fontSize: 11, fontWeight: 800, letterSpacing: "-0.2px" }}>
+                    J{daysLeft >= 0 ? `-${daysLeft}` : `+${Math.abs(daysLeft)}`}
+                  </span>
+                )}
+              </div>
+            </div>
+            <div style={{ background: "#F8FAFC", border: "1px solid #E8EEF4", borderRadius: 10, padding: "8px 14px", textAlign: "center" as const, minWidth: 120 }}>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>Instructeur</div>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#1E293B" }}>{instructeurName}</div>
+            </div>
+          </div>
+        </div>
+
+        {/* Éditeur d'adresse (dans l'en-tête sticky) */}
+        {showAddressEditor && (
+          <div style={{ padding: "0 0 12px", display: "flex", flexDirection: "column" as const, gap: 4 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+              <div style={{ position: "relative" as const, flex: 1 }}>
+                <input
+                  autoFocus
+                  value={addrQuery}
+                  onChange={e => setAddrQuery(e.target.value)}
+                  placeholder="Ex : 12 rue du Commerce, Ballan-Miré"
+                  style={{ width: "100%", padding: "7px 11px", border: "1.5px solid #4F46E5", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const, color: "#0F172A" }}
+                />
+                {addrSugLoading && <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 11, color: "#94a3b8" }}>…</span>}
+                {addrSuggestions.length > 0 && (
+                  <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.12)", zIndex: 100, overflow: "hidden" }}>
+                    {addrSuggestions.map((s, i) => (
+                      <button
+                        key={i}
+                        onMouseDown={() => handleAddressSelect(s)}
+                        style={{ display: "block", width: "100%", textAlign: "left", padding: "9px 14px", border: "none", background: "none", cursor: "pointer", fontSize: 13, color: "#374151", borderBottom: i < addrSuggestions.length - 1 ? "1px solid #F1F5F9" : "none" }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "none")}
+                      >
+                        <span style={{ fontWeight: 500 }}>{s.label}</span>
+                        <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: 6 }}>{s.postcode}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button onClick={() => { setShowAddressEditor(false); setAddrQuery(""); setAddrSuggestions([]); }} style={{ padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#64748b", background: "white", cursor: "pointer", whiteSpace: "nowrap" as const }}>Annuler</button>
+            </div>
+            {addrSaving && <span style={{ fontSize: 11, color: "#64748b" }}>Sauvegarde…</span>}
+          </div>
+        )}
+
+        {/* Tab bar */}
+        <div style={{ display: "flex", gap: 0 }}>
+          {DETAIL_TABS.map(tab => (
+            <button key={tab} onClick={() => setActiveTab(tab)} style={{
+              display: "flex", alignItems: "center", gap: 6,
+              border: "none", background: "none", padding: "10px 18px", fontSize: 12.5, cursor: "pointer",
+              fontWeight: activeTab === tab ? 700 : 500,
+              color: activeTab === tab ? "#4F46E5" : "#64748b",
+              borderBottom: activeTab === tab ? "2.5px solid #4F46E5" : "2.5px solid transparent",
+              transition: "color 0.12s",
+              marginBottom: -1,
+            }}>
+              <span style={{ opacity: activeTab === tab ? 1 : 0.6 }}>{TAB_ICONS[tab]}</span>
+              {tab}
+            </button>
+          ))}
+        </div>
       </div>
 
-      {/* Two-column layout */}
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
-        {/* Left column */}
-        <div style={{ flex: 2, display: "flex", flexDirection: "column", gap: 16 }}>
-          {/* Informations générales */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Informations générales</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              {[
-                ["Pétitionnaire", dossier.petitionnaire],
-                ["Adresse", dossier.adresse],
-                ["Type de dossier", dossier.type],
-                ["Date de dépôt", dossier.date_depot ?? "—"],
-                ["Échéance", dossier.echeance],
-                ["Instructeur assigné", "Marie Lambert"],
-              ].map(([label, value]) => (
-                <div key={label}>
-                  <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{value}</div>
+      {/* ── Tab content ── */}
+      <div style={{ flex: 1, overflowY: "auto" as const, padding: "20px 24px" }}>
+
+        {/* ── RÉSUMÉ ── */}
+        {activeTab === "Résumé" && (
+          <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16 }}>
+              {/* Infos principales */}
+              <div style={CARD}>
+                <SecTitle>Informations principales</SecTitle>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
+                  {[
+                    ["Pétitionnaire", dossier.petitionnaire],
+                    ["Adresse", liveAdresse ?? "—"],
+                    ["Commune", liveCommune ?? "—"],
+                    ["Parcelle", dossier.parcelle ?? "—"],
+                    ["Surface plancher", dossier.surface_plancher ?? "—"],
+                    ["Type", typeLabel],
+                    ["Date de dépôt", dossier.date_depot ? fmtDate(dossier.date_depot) : "—"],
+                    ["Échéance", dossier.echeance],
+                  ].map(([l, v]) => (
+                    <div key={l}>
+                      <div style={LABEL_ST}>{l}</div>
+                      <div style={VALUE_ST}>{v}</div>
+                    </div>
+                  ))}
                 </div>
-              ))}
+              </div>
+              {/* Avancement */}
+              <div style={CARD}>
+                <SecTitle>Avancement du dossier</SecTitle>
+                {[
+                  { label: "Dépôt", done: true },
+                  { label: "Complétude", done: true },
+                  { label: "Instruction", done: ["en_instruction","decision_en_cours","accepte","refuse","accord_prescription"].includes(dossier.status) },
+                  { label: "Consultations", done: false },
+                  { label: "Décision", done: ["accepte","refuse","accord_prescription"].includes(dossier.status) },
+                ].map((step, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: i < 4 ? 14 : 0 }}>
+                    <div style={{ width: 28, height: 28, borderRadius: "50%", background: step.done ? "linear-gradient(135deg,#4F46E5,#6366F1)" : "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: step.done ? "0 2px 6px rgba(79,70,229,0.3)" : "none" }}>
+                      {step.done ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <span style={{ fontSize: 11, color: "#CBD5E1", fontWeight: 700 }}>{i + 1}</span>}
+                    </div>
+                    <span style={{ fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
+                  </div>
+                ))}
+                <div style={{ marginTop: 20, padding: "14px 16px", background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", borderRadius: 12, border: "1px solid #C7D2FE" }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", marginBottom: 6, letterSpacing: "0.04em" }}>SCORE DE CONFORMITÉ IA</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ flex: 1, height: 7, background: "#C7D2FE", borderRadius: 4, overflow: "hidden" }}>
+                      <div style={{ width: "78%", height: "100%", background: "linear-gradient(90deg,#4F46E5,#818CF8)", borderRadius: 4 }} />
+                    </div>
+                    <span style={{ fontSize: 16, fontWeight: 800, color: "#4F46E5" }}>78%</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#6366F1", marginTop: 5 }}>6 règles conformes · 1 vigilance · 1 non vérifiable</div>
+                </div>
+              </div>
+              {/* Mini map */}
+              <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", padding: "16px 18px 10px" }}>Localisation</div>
+                {(() => { const rLat = parcelAnalysis?.address?.lat ?? dossier.lat; const rLng = parcelAnalysis?.address?.lng ?? dossier.lng; return rLat && rLng ? (
+                  <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: rLat, lng: rLng }]} height={220} commune={liveCommune ?? dossier.commune} />
+                ) : (
+                  <div style={{ height: 220, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 8 }}>
+                    <svg width={36} height={36} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
+                    <span style={{ fontSize: 12, color: "#94a3b8" }}>Géolocalisation indisponible</span>
+                  </div>
+                ); })()}
+              </div>
+            </div>
+            {/* Alert banners */}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div style={{ background: "#FFF8F0", border: "1px solid #FDDCB5", borderRadius: 12, padding: "14px 18px", display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: "#FEF3C7", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+                </div>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#B45309", marginBottom: 3 }}>Recul voirie insuffisant</div>
+                  <div style={{ fontSize: 12, color: "#92400E", lineHeight: 1.55 }}>Le projet présente un recul de 3m par rapport à la voirie (minimum requis : 4m selon art. UC 6 du PLU).</div>
+                </div>
+              </div>
+              <div style={{ background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 12, padding: "14px 18px", display: "flex", gap: 12, alignItems: "flex-start" }}>
+                <div style={{ width: 32, height: 32, borderRadius: 8, background: "#DBEAFE", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+                </div>
+                <div>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1D4ED8", marginBottom: 3 }}>Périmètre ABF</div>
+                  <div style={{ fontSize: 12, color: "#1E40AF", lineHeight: 1.55 }}>Le terrain est situé dans le périmètre de protection des Monuments Historiques (500m). L'avis ABF est obligatoire.</div>
+                </div>
+              </div>
+            </div>
+            {/* IA banner */}
+            <div style={{ background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", border: "1px solid #C7D2FE", borderRadius: 14, padding: "16px 22px", display: "flex", alignItems: "center", gap: 18, boxShadow: "0 1px 4px rgba(79,70,229,0.08)" }}>
+              <div style={{ width: 44, height: 44, background: "linear-gradient(135deg,#4F46E5,#7C3AED)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 4px 10px rgba(79,70,229,0.3)" }}>
+                <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
+              </div>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#3730A3" }}>Analyse IA disponible</div>
+                <div style={{ fontSize: 12, color: "#4338CA", marginTop: 3, lineHeight: 1.55 }}>L'IA a analysé 8 règles du PLU applicables à ce dossier. 1 point de vigilance identifié sur le recul voirie.</div>
+              </div>
+              <button onClick={() => setActiveTab("Conformité IA")} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 9, padding: "9px 16px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const, boxShadow: "0 2px 6px rgba(79,70,229,0.35)" }}>Voir l'analyse complète</button>
             </div>
           </div>
+        )}
 
-          {/* Pièces du dossier */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Pièces du dossier</div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-              {pieces.map((p) => (
-                <div key={p.name} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 12px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #F1F5F9" }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ fontSize: 16 }}>📄</span>
-                    <div>
-                      <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{p.name}</div>
-                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{p.ext}</div>
+        {/* ── PARCELLE ── */}
+        {activeTab === "Parcelle" && (() => {
+          const TOPIC_LABEL: Record<string, string> = {
+            recul_voie: "Recul voirie", recul_limite: "Recul limites", emprise_sol: "Emprise au sol",
+            hauteur: "Hauteur max.", stationnement: "Stationnement", espaces_verts: "Espaces verts",
+            terrain_min: "Terrain min.",
+          };
+          const floodColor = (v: string) => v === "fort" ? { c: "#C2410C", bg: "#FFF7ED" } : v === "moyen" ? { c: "#C2410C", bg: "#FFF7ED" } : v === "faible" ? { c: "#B45309", bg: "#FFFBEB" } : { c: "#15803D", bg: "#F0FDF4" };
+          const zoneColor = (t?: string) => t === "N" || t === "A" ? { c: "#15803D", bg: "#F0FDF4" } : { c: "#4F46E5", bg: "#EEF2FF" };
+          const pa = parcelAnalysis;
+
+          if (parcelLoading) return (
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "center", minHeight: 300, gap: 12, color: "#64748b", fontSize: 14 }}>
+              <svg width={20} height={20} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ animation: "spin 1s linear infinite" }}><path d="M21 12a9 9 0 11-6.219-8.56" /></svg>
+              Analyse en cours…
+              <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+            </div>
+          );
+
+          return (
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+              {/* Warnings */}
+              {pa?.warnings && pa.warnings.length > 0 && (
+                <div style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 10, padding: "10px 14px", display: "flex", flexDirection: "column" as const, gap: 4 }}>
+                  {pa.warnings.map((w, i) => (
+                    <div key={i} style={{ fontSize: 12.5, color: "#92400E", display: "flex", gap: 6, alignItems: "flex-start" }}>
+                      <span style={{ flexShrink: 0 }}>⚠️</span>{w}
+                    </div>
+                  ))}
+                </div>
+              )}
+              {parcelError && (
+                <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+                  <span style={{ fontSize: 12.5, color: "#991B1B" }}>{parcelError}</span>
+                  <button
+                    onClick={() => { setShowAddressEditor(true); setAddrQuery(""); setAddrSuggestions([]); }}
+                    style={{ flexShrink: 0, padding: "5px 11px", background: "white", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#991B1B", cursor: "pointer", fontWeight: 600 }}
+                  >Corriger l'adresse ✏️</button>
+                </div>
+              )}
+
+              <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14 }}>
+                {/* ── Colonne gauche ── */}
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+                  {/* Carte */}
+                  <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
+                    <div style={{ padding: "14px 18px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                      <div style={SH as React.CSSProperties & { display: string; alignItems: string; gap: number; marginBottom: number }}>
+                        <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
+                        Vue parcellaire
+                      </div>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" as const }}>
+                        {pa && pa.data_sources.map(s => (
+                          <span key={s} style={{ fontSize: 10, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", borderRadius: 5, padding: "2px 7px" }}>{s}</span>
+                        ))}
+                        {/* Click-to-identify parcel button */}
+                        <button
+                          onClick={() => {
+                            setClickingParcel(v => !v);
+                          }}
+                          style={{
+                            padding: "4px 10px", borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: "pointer",
+                            border: clickingParcel ? "1.5px solid #4F46E5" : "1.5px solid #C7D2FE",
+                            background: clickingParcel ? "#EEF2FF" : "white",
+                            color: clickingParcel ? "#4F46E5" : "#64748b",
+                          }}
+                          title="Cliquez sur la carte pour identifier la parcelle"
+                        >
+                          {clickingParcel ? "✕ Annuler" : "📍 Localiser sur la carte"}
+                        </button>
+                      </div>
+                    </div>
+                    {clickingParcel && (
+                      <div style={{ margin: "0 14px 10px", padding: "8px 12px", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 8, fontSize: 12, color: "#4338CA", fontWeight: 600 }}>
+                        Cliquez au centre de la parcelle concernée — les limites cadastrales sont visibles sur le fond de carte.
+                      </div>
+                    )}
+                    {(() => {
+                      const pLat = pa?.address?.lat ?? (clickedCoords?.lat) ?? dossier.lat;
+                      const pLng = pa?.address?.lng ?? (clickedCoords?.lng) ?? dossier.lng;
+                      const hasCoords = pLat && pLng;
+                      return hasCoords ? (
+                        <MapLeaflet
+                          dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: pLat, lng: pLng }]}
+                          height={clickingParcel ? 380 : 300}
+                          commune={liveCommune ?? dossier.commune}
+                          clickMode={clickingParcel}
+                          parcelLayer={clickingParcel}
+                          onMapClick={(lat, lng) => {
+                            setClickedCoords({ lat, lng });
+                            setParcelAnalysis(null);
+                            setParcelError(null);
+                            setSelectedZone(null);
+                          }}
+                        />
+                      ) : (
+                        <div style={{ height: 300, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 10 }}>
+                          <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
+                          <span style={{ fontSize: 13, color: "#94a3b8" }}>Coordonnées non disponibles</span>
+                          <button onClick={() => setClickingParcel(true)} style={{ padding: "6px 14px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+                            📍 Localiser sur la carte
+                          </button>
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Contraintes */}
+                  <div style={CARD}>
+                    <SecTitle>Contraintes réglementaires</SecTitle>
+                    {/* Zone picker when GPU fails */}
+                    {!pa?.plu_zone && pa?.available_zones && pa.available_zones.length > 0 && (
+                      <div style={{ marginBottom: 12, padding: "10px 14px", background: "#FFF7ED", border: "1px solid #FCD34D", borderRadius: 8 }}>
+                        <p style={{ fontSize: 12, fontWeight: 600, color: "#92400E", margin: "0 0 8px" }}>
+                          Zone PLU non déterminée automatiquement — sélectionnez la zone applicable :
+                        </p>
+                        <select
+                          value={selectedZone ?? ""}
+                          onChange={e => { const v = e.target.value; setSelectedZone(v || null); setParcelAnalysis(null); setParcelError(null); }}
+                          style={{ width: "100%", padding: "6px 10px", border: "1px solid #D97706", borderRadius: 6, fontSize: 13, color: "#374151", background: "white", cursor: "pointer" }}
+                        >
+                          <option value="">— Choisir la zone —</option>
+                          {pa.available_zones.map(z => (
+                            <option key={z.zone_code} value={z.zone_code}>
+                              {z.zone_code} – {z.zone_label}
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+                    <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                      {/* Zone PLU */}
+                      {(() => {
+                        const zc = pa?.plu_zone ?? (pa?.db_zone ? { zone_code: pa.db_zone.code, zone_label: pa.db_zone.label ?? pa.db_zone.code, zone_type: pa.db_zone.type ?? "U" } : null);
+                        const col = zoneColor(zc?.zone_type);
+                        return (
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: col.bg, borderRadius: 9, border: `1px solid ${col.c}22` }}>
+                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>Zone PLU</span>
+                            <span style={{ fontSize: 11.5, fontWeight: 600, color: col.c }}>
+                              {zc ? `${zc.zone_code} – ${zc.zone_label}` : "Non identifiée"}
+                            </span>
+                          </div>
+                        );
+                      })()}
+                      {/* Risque inondation */}
+                      {(() => {
+                        const flood = pa?.risks?.flood_risk ?? "inconnu";
+                        const col = floodColor(flood);
+                        const labels: Record<string, string> = { fort: "Aléa fort – PPRI", moyen: "Aléa moyen", faible: "Aléa faible", nul: "Hors zone inondable", inconnu: "Non déterminé" };
+                        return (
+                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: col.bg, borderRadius: 9, border: `1px solid ${col.c}22` }}>
+                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>Zone inondable</span>
+                            <span style={{ fontSize: 11.5, fontWeight: 600, color: col.c }}>{labels[flood] ?? flood}</span>
+                          </div>
+                        );
+                      })()}
+                      {/* Zone sismique */}
+                      {pa?.risks?.seismic_zone && (
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: "#F8FAFC", borderRadius: 9, border: "1px solid #E2E8F022" }}>
+                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>Zone sismique</span>
+                          <span style={{ fontSize: 11.5, fontWeight: 600, color: "#374151" }}>Zone {pa.risks.seismic_zone}</span>
+                        </div>
+                      )}
+                      {/* Servitudes d'utilité publique */}
+                      {pa?.servitudes && pa.servitudes.length > 0 && pa.servitudes.map((s, i) => {
+                        const supLabels: Record<string, string> = {
+                          AC1: "MH – Périmètre ABF", AC2: "Sites classés/inscrits",
+                          EL: "Ligne HT", EL7: "Ligne HT 63-225kV", EL11: "Ligne HT >225kV",
+                          PM1: "PPRI – Zone submersible", PM2: "Voies ferrées/inondation",
+                          T1: "Voie ferrée", T7: "Route nationale",
+                          I4: "Réseau hertzien", PT: "Télécommunications",
+                        };
+                        const label = supLabels[s.categorie] ?? s.categorie;
+                        const isABF = s.categorie?.startsWith("AC");
+                        return (
+                          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: isABF ? "#FEF3C7" : "#F0F9FF", borderRadius: 9, border: `1px solid ${isABF ? "#FCD34D" : "#BAE6FD"}22` }}>
+                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>SUP {s.categorie}</span>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: isABF ? "#92400E" : "#075985" }}>{s.libelle ?? label}</span>
+                          </div>
+                        );
+                      })}
+                      {/* Prescriptions surfaciques PLU */}
+                      {pa?.prescriptions && pa.prescriptions.length > 0 && pa.prescriptions.map((p, i) => (
+                        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: "#F0FDF4", borderRadius: 9, border: "1px solid #BBF7D022" }}>
+                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>{p.typepsc || "Prescription"}</span>
+                          <span style={{ fontSize: 11, fontWeight: 600, color: "#14532D", maxWidth: "55%", textAlign: "right" as const }}>{p.libelle}</span>
+                        </div>
+                      ))}
                     </div>
                   </div>
-                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 12, color: "#4F46E5", cursor: "pointer", fontWeight: 500 }}>Télécharger</button>
-                </div>
-              ))}
-            </div>
-          </div>
 
-          {/* Historique */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Historique / Suivi</div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 0 }}>
-              {timeline.map((t, i) => (
-                <div key={i} style={{ display: "flex", gap: 12, paddingBottom: i < timeline.length - 1 ? 16 : 0 }}>
-                  <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center" }}>
-                    <div style={{ width: 10, height: 10, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 3 }} />
-                    {i < timeline.length - 1 && <div style={{ width: 2, flex: 1, background: "#E2E8F0", marginTop: 4 }} />}
+                  {/* Constructibilité */}
+                  {pa?.buildability && (
+                    <div style={CARD}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
+                        <SecTitle>Constructibilité estimée</SecTitle>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                          <div style={{ width: 46, height: 46, borderRadius: "50%", border: "3.5px solid #4F46E5", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5" }}>{Math.round(pa.buildability.confidence * 100)}%</span>
+                          </div>
+                          <span style={{ fontSize: 11, color: "#64748b" }}>confiance</span>
+                        </div>
+                      </div>
+                      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+                        {[
+                          ["Emprise restante", pa.buildability.remainingFootprintM2 > 0 ? `${Math.round(pa.buildability.remainingFootprintM2)} m²` : "0 m²"],
+                          ["Hauteur max.", pa.buildability.maxHeightM ? `${pa.buildability.maxHeightM} m` : "—"],
+                          ["Étages estimés", pa.buildability.estimatedFloors ? `${pa.buildability.estimatedFloors} niveaux` : "—"],
+                          ["Espaces verts requis", pa.buildability.greenSpaceRequiredM2 ? `${Math.round(pa.buildability.greenSpaceRequiredM2)} m²` : "—"],
+                          ["Recul voirie min.", pa.buildability.minSetbackFromRoadM ? `${pa.buildability.minSetbackFromRoadM} m` : "—"],
+                          ["Recul limites min.", pa.buildability.minSetbackFromBoundariesM ? `${pa.buildability.minSetbackFromBoundariesM} m` : "—"],
+                        ].map(([l, v]) => (
+                          <div key={l} style={{ background: "#F8FAFC", borderRadius: 8, padding: "9px 12px" }}>
+                            <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 2 }}>{l}</div>
+                            <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* ── Colonne droite ── */}
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+                  {/* Infos cadastrales */}
+                  <div style={CARD}>
+                    <SecTitle>Informations cadastrales</SecTitle>
+                    {[
+                      ["Référence", pa?.parcel?.parcelle_id ?? dossier.parcelle ?? "—"],
+                      ["Section / N°", pa?.parcel ? `${pa.parcel.section} / ${pa.parcel.numero}` : "—"],
+                      ["Surface parcelle", pa?.parcel?.surface_m2 ? `${pa.parcel.surface_m2} m²` : "—"],
+                      ["Commune", pa?.parcel?.commune ?? liveCommune ?? "—"],
+                      ["Code INSEE", pa?.parcel?.code_insee ?? "—"],
+                      ["Adresse", pa?.address?.label ?? liveAdresse ?? "—"],
+                    ].map(([l, v]) => (
+                      <div key={l} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingBottom: 8, marginBottom: 8, borderBottom: "1px solid #F1F5F9" }}>
+                        <span style={{ fontSize: 12, color: "#64748b" }}>{l}</span>
+                        <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", textAlign: "right" as const, maxWidth: "60%" }}>{v}</span>
+                      </div>
+                    ))}
                   </div>
-                  <div style={{ paddingBottom: 4 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500, color: "#374151" }}>{t.event}</div>
-                    <div style={{ fontSize: 12, color: "#94a3b8" }}>{t.actor} · {t.date}</div>
+
+                  {/* Synthèse PLU */}
+                  <div style={CARD}>
+                    <SecTitle>Synthèse PLU applicable</SecTitle>
+                    {pa?.rules && pa.rules.length > 0 ? (
+                      pa.rules.map(rule => (
+                        <div key={rule.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12.5, paddingBottom: 8, marginBottom: 8, borderBottom: "1px solid #F8FAFC" }}>
+                          <span style={{ color: "#64748b" }}>{TOPIC_LABEL[rule.topic] ?? rule.topic}</span>
+                          <span style={{ color: "#0F172A", fontWeight: 600, textAlign: "right" as const, maxWidth: "55%" }}>
+                            {rule.summary ?? (rule.value_max != null ? `${rule.value_max}${rule.unit ?? ""}` : rule.rule_text.slice(0, 40))}
+                          </span>
+                        </div>
+                      ))
+                    ) : (
+                      <div style={{ fontSize: 12.5, color: "#94a3b8", padding: "8px 0" }}>
+                        {pa ? "Aucune règle enregistrée pour cette zone." : "En attente de l'analyse…"}
+                      </div>
+                    )}
+                    {pa?.plu_zone?.plu_nom && (
+                      <div style={{ marginTop: 8, fontSize: 11, color: "#64748b", fontStyle: "italic" }}>
+                        Source GPU : {pa.plu_zone.plu_nom}
+                      </div>
+                    )}
+                  </div>
+
+                  {/* Résumé constructibilité */}
+                  {pa?.buildability?.resultSummary && (
+                    <div style={{ ...CARD, background: "#F0FDF4", border: "1px solid #BBF7D0" }}>
+                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
+                        <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M22 11.08V12a10 10 0 11-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
+                        <p style={{ fontSize: 12.5, color: "#14532D", margin: 0, lineHeight: 1.6 }}>{pa.buildability.resultSummary}</p>
+                      </div>
+                    </div>
+                  )}
+                </div>
+              </div>
+            </div>
+          );
+        })()}
+
+        {/* ── CONFORMITÉ IA ── */}
+        {activeTab === "Conformité IA" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+              <div style={CARD}>
+                <div style={{ display: "flex", alignItems: "center", gap: 22 }}>
+                  <div style={{ position: "relative" as const, width: 110, height: 110, flexShrink: 0 }}>
+                    <svg width={110} height={110} viewBox="0 0 110 110">
+                      <circle cx="55" cy="55" r="44" fill="none" stroke="#EEF2FF" strokeWidth="13" />
+                      <circle cx="55" cy="55" r="44" fill="none" stroke="url(#iagrad)" strokeWidth="13" strokeDasharray="276.5" strokeDashoffset={276.5 * (1 - 0.78)} strokeLinecap="round" style={{ transform: "rotate(-90deg)", transformOrigin: "50% 50%" }} />
+                      <defs><linearGradient id="iagrad" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stopColor="#4F46E5" /><stop offset="100%" stopColor="#818CF8" /></linearGradient></defs>
+                    </svg>
+                    <div style={{ position: "absolute" as const, inset: 0, display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center" }}>
+                      <span style={{ fontSize: 22, fontWeight: 900, color: "#4F46E5", letterSpacing: "-1px" }}>78%</span>
+                      <span style={{ fontSize: 9, color: "#64748b", fontWeight: 700, letterSpacing: "0.06em" }}>CONFORME</span>
+                    </div>
+                  </div>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>Score de conformité PLU</div>
+                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const, marginBottom: 10 }}>
+                      <span style={{ background: "#F0FDF4", color: "#15803D", borderRadius: 8, padding: "4px 11px", fontSize: 12, fontWeight: 600, border: "1px solid #BBF7D0" }}>6 conformes</span>
+                      <span style={{ background: "#FFF7ED", color: "#C2410C", borderRadius: 8, padding: "4px 11px", fontSize: 12, fontWeight: 600, border: "1px solid #FED7AA" }}>1 vigilance</span>
+                      <span style={{ background: "#F8FAFC", color: "#475569", borderRadius: 8, padding: "4px 11px", fontSize: 12, fontWeight: 600, border: "1px solid #E2E8F0" }}>1 non vérifiable</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Analyse basée sur le PLU de {liveCommune ?? "la commune"} (version 2023) et les documents déposés.</div>
+                  </div>
+                </div>
+              </div>
+              <div style={CARD}>
+                <SecTitle>Règles vérifiées</SecTitle>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 2 }}>
+                  {IA_RULES.map((r, i) => (
+                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 12, alignItems: "center", padding: "9px 12px", background: i % 2 === 0 ? "#F8FAFC" : "white", borderRadius: 8 }}>
+                      <span style={{ fontSize: 13, color: "#374151" }}>{r.rule}</span>
+                      <span style={{ fontSize: 11, color: r.ok === true ? "#15803D" : r.ok === false ? "#C2410C" : "#475569", background: r.ok === true ? "#F0FDF4" : r.ok === false ? "#FFF7ED" : "#F8FAFC", borderRadius: 20, padding: "3px 9px", fontWeight: 700, whiteSpace: "nowrap" as const, border: `1px solid ${r.ok === true ? "#BBF7D0" : r.ok === false ? "#FED7AA" : "#E2E8F0"}` }}>{r.result}</span>
+                      <span style={{ fontSize: 12, color: "#64748b", textAlign: "right" as const, whiteSpace: "nowrap" as const }}>{r.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+              <div style={{ ...CARD, background: "linear-gradient(135deg,#FFFBEB,#FFF7ED)", border: "1px solid #FDE68A" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#B45309", marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 24, height: 24, borderRadius: 6, background: "#FEF3C7", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+                  </div>
+                  Points de vigilance
+                </div>
+                <div style={{ padding: "14px", background: "white", borderRadius: 10, border: "1px solid #FDE68A", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 6 }}>Recul voirie insuffisant</div>
+                  <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Le projet présente un recul de 3m alors que l'article UC 6 du PLU impose un minimum de 4m. Une modification du projet ou une dérogation motivée est nécessaire.</div>
+                  <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
+                    <button style={{ border: "1px solid #FED7AA", background: "#FFF7ED", borderRadius: 7, padding: "5px 11px", fontSize: 11.5, color: "#C2410C", cursor: "pointer", fontWeight: 600 }}>Demander modification</button>
+                    <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "5px 11px", fontSize: 11.5, color: "#374151", cursor: "pointer" }}>Voir article PLU</button>
+                  </div>
+                </div>
+              </div>
+              <div style={{ ...CARD, background: "#F8FAFC" }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#475569", marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ width: 24, height: 24, borderRadius: 6, background: "#E2E8F0", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
+                  </div>
+                  Non vérifiables
+                </div>
+                <div style={{ padding: "14px", background: "white", borderRadius: 10, border: "1px solid #E2E8F0" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 6 }}>Espaces verts ≥ 30%</div>
+                  <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Les données disponibles ne permettent pas de calculer le ratio d'espaces verts. Une pièce complémentaire peut être demandée.</div>
+                </div>
+              </div>
+              <div style={CARD}>
+                <SecTitle>Recommandations IA</SecTitle>
+                {[
+                  "Demander la modification du plan de masse pour corriger le recul voirie avant instruction définitive.",
+                  "Vérifier l'avis ABF reçu : les prescriptions sur les matériaux doivent être intégrées dans l'arrêté.",
+                  "Confirmer le ratio d'espaces verts sur le plan de masse révisé.",
+                ].map((r, i) => (
+                  <div key={i} style={{ display: "flex", gap: 10, padding: "10px 12px", background: "#EEF2FF", borderRadius: 9, border: "1px solid #C7D2FE", marginBottom: i < 2 ? 8 : 0 }}>
+                    <span style={{ fontSize: 12, fontWeight: 800, color: "#4F46E5", flexShrink: 0, marginTop: 1, width: 16, textAlign: "center" as const }}>{i + 1}</span>
+                    <span style={{ fontSize: 12, color: "#3730A3", lineHeight: 1.55 }}>{r}</span>
+                  </div>
+                ))}
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── DOCUMENTS ── */}
+        {activeTab === "Documents" && (
+          <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 260px", gap: 16 }}>
+            <div style={CARD}>
+              <SecTitle>Pièces du dossier</SecTitle>
+              <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
+                {DOCUMENTS_DATA.map((doc, i) => (
+                  <button key={i} onClick={() => setSelectedDoc(i)} style={{
+                    display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 11px", borderRadius: 9, border: selectedDoc === i ? "1.5px solid #C7D2FE" : "1.5px solid transparent", cursor: "pointer", textAlign: "left" as const,
+                    background: selectedDoc === i ? "#EEF2FF" : "transparent",
+                    transition: "background 0.1s",
+                  }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 7, background: doc.ext === "ZIP" ? "#FFF7ED" : "#EEF2FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={doc.ext === "ZIP" ? "#F97316" : "#4F46E5"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+                    </div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{doc.name}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{doc.ext} · {doc.size} · {doc.date}</div>
+                      <span style={{ fontSize: 10.5, fontWeight: 700, color: doc.status === "Validé" ? "#15803D" : "#C2410C", background: doc.status === "Validé" ? "#F0FDF4" : "#FFF7ED", borderRadius: 5, padding: "1px 6px", display: "inline-block", marginTop: 4, border: `1px solid ${doc.status === "Validé" ? "#BBF7D0" : "#FED7AA"}` }}>{doc.status}</span>
+                    </div>
+                  </button>
+                ))}
+              </div>
+              <button style={{ marginTop: 12, width: "100%", border: "2px dashed #E2E8F0", background: "transparent", borderRadius: 9, padding: "10px 0", fontSize: 12, color: "#64748b", cursor: "pointer", fontWeight: 500 }}>+ Ajouter une pièce</button>
+            </div>
+            <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
+              <SecTitle>{`Aperçu : ${DOCUMENTS_DATA[selectedDoc]?.name ?? ""}`}</SecTitle>
+              <div style={{ flex: 1, background: "#F8FAFC", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 14, minHeight: 340, border: "1px solid #EAECF0" }}>
+                <div style={{ width: 64, height: 80, background: "white", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", border: "1px solid #E2E8F0" }}>
+                  <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+                </div>
+                <div style={{ textAlign: "center" as const }}>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>{DOCUMENTS_DATA[selectedDoc]?.name}</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>{DOCUMENTS_DATA[selectedDoc]?.ext} · {DOCUMENTS_DATA[selectedDoc]?.size}</div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 9, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.3)" }}>Ouvrir</button>
+                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "9px 18px", fontSize: 13, cursor: "pointer", color: "#374151", fontWeight: 500 }}>Télécharger</button>
+                </div>
+              </div>
+            </div>
+            <div style={CARD}>
+              <SecTitle>Analyse IA</SecTitle>
+              <div style={{ padding: "14px", background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", borderRadius: 11, border: "1px solid #C7D2FE", marginBottom: 14 }}>
+                <div style={{ fontSize: 10, fontWeight: 800, color: "#4F46E5", marginBottom: 7, letterSpacing: "0.07em" }}>RÉSULTAT</div>
+                <div style={{ fontSize: 12, color: "#3730A3", lineHeight: 1.6 }}>{DOCUMENTS_DATA[selectedDoc]?.ia}</div>
+              </div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Cohérence avec le dossier</div>
+              <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Les informations de cette pièce sont cohérentes avec les autres documents déposés.</div>
+            </div>
+          </div>
+        )}
+
+        {/* ── CONSULTATIONS ── */}
+        {activeTab === "Consultations" && (
+          <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+              {[
+                { label: "Total", value: "5", color: "#4F46E5", bg: "#EEF2FF", border: "#C7D2FE" },
+                { label: "Avis reçus", value: "2", color: "#15803D", bg: "#F0FDF4", border: "#BBF7D0" },
+                { label: "En attente", value: "2", color: "#C2410C", bg: "#FFF7ED", border: "#FED7AA" },
+                { label: "Non requis", value: "1", color: "#475569", bg: "#F8FAFC", border: "#E2E8F0" },
+              ].map(s => (
+                <div key={s.label} style={{ background: s.bg, borderRadius: 12, padding: "16px 20px", border: `1px solid ${s.border}`, boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+                  <div style={{ fontSize: 28, fontWeight: 900, color: s.color, letterSpacing: "-1px", lineHeight: 1 }}>{s.value}</div>
+                  <div style={{ fontSize: 12, color: "#64748b", fontWeight: 600, marginTop: 5 }}>{s.label}</div>
+                </div>
+              ))}
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, alignItems: "flex-start" }}>
+              <div style={CARD}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
+                    Organismes consultés
+                  </div>
+                  <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 9, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 5px rgba(79,70,229,0.3)" }}>+ Lancer une consultation</button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 3 }}>
+                  {CONSULTATIONS_DATA.map((c, i) => (
+                    <button key={i} onClick={() => setSelectedConsultation(i)} style={{
+                      display: "grid", gridTemplateColumns: "1fr auto auto", gap: 14, alignItems: "center", padding: "12px 14px", border: selectedConsultation === i ? "1.5px solid #C7D2FE" : "1.5px solid transparent", cursor: "pointer", borderRadius: 10, textAlign: "left" as const,
+                      background: selectedConsultation === i ? "#EEF2FF" : i % 2 === 0 ? "#F8FAFC" : "white",
+                    }}>
+                      <span style={{ fontSize: 13, color: "#374151", fontWeight: 500 }}>{c.service}</span>
+                      <span style={{ fontSize: 11.5, color: "#94a3b8" }}>{c.date}</span>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: c.color, background: c.bg, borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" as const, border: `1px solid ${c.color}33` }}>{c.status}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+              {selectedConsultation !== null && (() => {
+                const c = CONSULTATIONS_DATA[selectedConsultation];
+                if (!c) return null;
+                return (
+                  <div style={CARD}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>{c.service}</div>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
+                      <span style={{ fontSize: 11, fontWeight: 700, color: c.color, background: c.bg, borderRadius: 20, padding: "3px 10px", border: `1px solid ${c.color}33` }}>{c.status}</span>
+                      <span style={{ fontSize: 11.5, color: "#94a3b8" }}>Date : {c.date}</span>
+                    </div>
+                    <div style={{ fontSize: 12.5, color: "#374151", lineHeight: 1.7, padding: "13px 14px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #EAECF0" }}>{c.detail}</div>
+                    {c.favorable === null && c.status === "En attente" && (
+                      <button style={{ marginTop: 12, width: "100%", border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "9px 0", fontSize: 12.5, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>Relancer</button>
+                    )}
+                  </div>
+                );
+              })()}
+            </div>
+          </div>
+        )}
+
+        {/* ── CHRONOLOGIE ── */}
+        {activeTab === "Chronologie" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, alignItems: "flex-start" }}>
+            <div style={CARD}>
+              <SecTitle>Historique complet</SecTitle>
+              {TIMELINE_DATA.map((t, i) => (
+                <div key={i} style={{ display: "flex", gap: 16, paddingBottom: i < TIMELINE_DATA.length - 1 ? 22 : 0 }}>
+                  <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", width: 36 }}>
+                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: t.color + "18", border: `2px solid ${t.color}55`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 15 }}>{t.icon}</div>
+                    {i < TIMELINE_DATA.length - 1 && <div style={{ width: 2, flex: 1, background: "linear-gradient(to bottom,#E2E8F0,#F8FAFC)", marginTop: 8 }} />}
+                  </div>
+                  <div style={{ paddingBottom: 4, flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{t.event}</div>
+                    <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{t.actor}</div>
+                    <div style={{ fontSize: 11, color: "#CBD5E1", marginTop: 3, fontWeight: 500 }}>{t.date}</div>
                   </div>
                 </div>
               ))}
             </div>
-          </div>
-        </div>
-
-        {/* Right column */}
-        <div style={{ flex: 1, display: "flex", flexDirection: "column" as const, gap: 16 }}>
-          {/* Actions rapides */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Actions rapides</div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-              <button style={{ width: "100%", border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#374151", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>📎 Demander pièce complémentaire</button>
-              <button style={{ width: "100%", border: "1px solid #F97316", background: "#FFF7ED", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#C2410C", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>👥 Envoyer en consultation</button>
-              <button style={{ width: "100%", border: "1px solid #4F46E5", background: "#EEF2FF", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#4F46E5", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>📝 Rédiger la décision</button>
-              <button onClick={() => navigate("Messagerie")} style={{ width: "100%", border: "1px solid #22C55E", background: "#F0FDF4", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#15803D", cursor: "pointer", textAlign: "left" as const, fontWeight: 500 }}>💬 Contacter le pétitionnaire</button>
-            </div>
-          </div>
-
-          {/* Consultations */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Consultations</div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-              {consultations.map((c) => (
-                <div key={c.service} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "8px 0", borderBottom: "1px solid #F1F5F9" }}>
-                  <div style={{ fontSize: 12, color: "#374151", fontWeight: 500 }}>{c.service}</div>
-                  <span style={{ fontSize: 11, color: c.ok ? "#15803D" : "#C2410C", background: c.ok ? "#F0FDF4" : "#FFF7ED", borderRadius: 20, padding: "2px 8px", fontWeight: 600, whiteSpace: "nowrap" as const }}>
-                    {c.ok ? "✅ Avis reçu" : "⏳ En attente"}
-                  </span>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+              <div style={CARD}>
+                <SecTitle>Étapes clés</SecTitle>
+                {[
+                  { label: "Dépôt", date: dossier.date_depot ? fmtDate(dossier.date_depot) : "—", done: true },
+                  { label: "Complétude", date: "22/05/2024", done: true },
+                  { label: "Fin d'instruction", date: dossier.echeance, done: false },
+                ].map((e, i) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: i < 2 ? "1px solid #F1F5F9" : "none" }}>
+                    <span style={{ fontSize: 13, color: "#374151", fontWeight: 600 }}>{e.label}</span>
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <span style={{ fontSize: 12, color: "#64748b" }}>{e.date}</span>
+                      <span style={{ fontSize: 10.5, fontWeight: 700, background: e.done ? "#F0FDF4" : "#EFF6FF", color: e.done ? "#15803D" : "#2563EB", borderRadius: 5, padding: "2px 7px", border: `1px solid ${e.done ? "#BBF7D0" : "#BFDBFE"}` }}>{e.done ? "Fait" : "Prévu"}</span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={CARD}>
+                <SecTitle>Temps forts</SecTitle>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                  <div style={{ background: "#FFF8F0", borderRadius: 10, padding: "12px 14px", border: "1px solid #FDDCB5" }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, color: "#B45309" }}>Avis ABF avec réserves</div>
+                    <div style={{ fontSize: 11.5, color: "#92400E", marginTop: 4, lineHeight: 1.5 }}>30/05/2024 – Prescriptions émises concernant les matériaux.</div>
+                  </div>
+                  <div style={{ background: "#EFF6FF", borderRadius: 10, padding: "12px 14px", border: "1px solid #BFDBFE" }}>
+                    <div style={{ fontSize: 12.5, fontWeight: 700, color: "#1D4ED8" }}>Dossier mis en instruction</div>
+                    <div style={{ fontSize: 11.5, color: "#1E40AF", marginTop: 4, lineHeight: 1.5 }}>02/06/2024 – Assigné à {instructeurName}.</div>
+                  </div>
                 </div>
-              ))}
+              </div>
+              <div style={CARD}>
+                <SecTitle>Délais réglementaires</SecTitle>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                  {[["Délai légal", "2 mois (PC maison individuelle)"], ["Date limite", dossier.echeance], daysLeft !== null ? ["Temps restant", `J-${Math.max(0, daysLeft)}`] : null].filter(Boolean).map((row, i) => row && (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "6px 0", borderBottom: i < 1 ? "1px solid #F1F5F9" : "none" }}>
+                      <span style={{ color: "#64748b" }}>{row[0]}</span>
+                      <span style={{ fontWeight: 700, color: i === 2 ? (daysLeft !== null && daysLeft < 14 ? "#DC2626" : "#15803D") : "#0F172A" }}>{row[1]}</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
             </div>
           </div>
+        )}
 
-          {/* Notes internes */}
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Notes internes</div>
-            <textarea
-              value={note}
-              onChange={e => setNote(e.target.value)}
-              placeholder="Ajouter une note interne..."
-              style={{ width: "100%", minHeight: 80, border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 10px", fontSize: 13, color: "#374151", resize: "vertical" as const, outline: "none", fontFamily: "inherit", boxSizing: "border-box" as const }}
-            />
-            <button style={{ marginTop: 8, width: "100%", background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Ajouter</button>
+        {/* ── DÉCISION ── */}
+        {activeTab === "Décision" && (
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 340px", gap: 16, alignItems: "flex-start" }}>
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+              <div style={CARD}>
+                <div style={{ fontSize: 15, fontWeight: 800, color: "#0F172A", marginBottom: 20, letterSpacing: "-0.3px" }}>Projet de décision</div>
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 12 }}>Type de décision</div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 9, marginBottom: 24 }}>
+                  {[
+                    { key: "accord", label: "Accord", sub: "Autorisation simple" },
+                    { key: "accord_prescription", label: "Accord avec prescriptions", sub: "Autorisation sous conditions" },
+                    { key: "refus", label: "Refus", sub: "Opposition au projet" },
+                    { key: "sursis", label: "Sursis à statuer", sub: "Attente de complément" },
+                    { key: "pieces", label: "Demande de pièces", sub: "Pièces manquantes" },
+                  ].map(d => (
+                    <button key={d.key} onClick={() => setDecisionType(d.key)} style={{
+                      border: `1.5px solid ${decisionType === d.key ? "#4F46E5" : "#E2E8F0"}`,
+                      background: decisionType === d.key ? "#EEF2FF" : "white",
+                      borderRadius: 11, padding: "13px 12px", cursor: "pointer", textAlign: "left" as const,
+                      boxShadow: decisionType === d.key ? "0 2px 8px rgba(79,70,229,0.15)" : "0 1px 2px rgba(0,0,0,0.04)",
+                      transition: "all 0.12s",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
+                        <div style={{ width: 18, height: 18, borderRadius: "50%", background: decisionType === d.key ? "#4F46E5" : "#E2E8F0", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, transition: "background 0.12s" }}>
+                          <svg width={9} height={9} viewBox="0 0 24 24" fill="none" stroke={decisionType === d.key ? "white" : "#CBD5E1"} strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                        </div>
+                        <span style={{ fontSize: 11.5, fontWeight: 700, color: decisionType === d.key ? "#4F46E5" : "#374151", lineHeight: 1.3 }}>{d.label}</span>
+                      </div>
+                      <div style={{ fontSize: 11, color: "#94a3b8", paddingLeft: 25 }}>{d.sub}</div>
+                    </button>
+                  ))}
+                </div>
+                {/* Prescriptions */}
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.07em" }}>Prescriptions à intégrer dans l'arrêté</span>
+                    <span style={{ background: "#4F46E5", color: "white", borderRadius: "50%", width: 19, height: 19, fontSize: 11, fontWeight: 800, display: "inline-flex", alignItems: "center", justifyContent: "center" }}>{prescriptions.length}</span>
+                  </div>
+                  <button onClick={() => setEditingPrescriptions(!editingPrescriptions)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "5px 11px", fontSize: 11.5, color: "#4F46E5", cursor: "pointer", fontWeight: 600, display: "flex", alignItems: "center", gap: 5, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+                    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7" /><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z" /></svg>
+                    Modifier
+                  </button>
+                </div>
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 7, marginBottom: 22 }}>
+                  {prescriptions.map((p, i) => (
+                    <div key={i} style={{ display: "flex", gap: 11, alignItems: "flex-start", padding: "10px 13px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #EAECF0" }}>
+                      <span style={{ width: 21, height: 21, borderRadius: "50%", background: "#EEF2FF", color: "#4F46E5", fontSize: 11, fontWeight: 800, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1, border: "1px solid #C7D2FE" }}>{i + 1}</span>
+                      {editingPrescriptions ? (
+                        <input value={p} onChange={e => { const next = [...prescriptions]; next[i] = e.target.value; setPrescriptions(next); }} style={{ flex: 1, border: "1.5px solid #C7D2FE", borderRadius: 7, padding: "5px 9px", fontSize: 12.5, outline: "none", color: "#374151", background: "white" }} />
+                      ) : (
+                        <span style={{ fontSize: 12.5, color: "#374151", lineHeight: 1.55 }}>{p}</span>
+                      )}
+                    </div>
+                  ))}
+                  {editingPrescriptions && (
+                    <button onClick={() => setPrescriptions([...prescriptions, ""])} style={{ border: "2px dashed #C7D2FE", background: "transparent", borderRadius: 10, padding: "9px 0", fontSize: 12.5, color: "#4F46E5", cursor: "pointer", width: "100%", fontWeight: 600 }}>+ Ajouter une prescription</button>
+                  )}
+                </div>
+                {/* Génération documents */}
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.07em", marginBottom: 12 }}>Génération des documents</div>
+                <div style={{ display: "flex", gap: 9, marginBottom: 18 }}>
+                  <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 9, padding: "10px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", gap: 7, boxShadow: "0 2px 6px rgba(79,70,229,0.3)" }}>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+                    Générer projet d'arrêté
+                  </button>
+                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "10px 14px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 7, fontWeight: 500, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>
+                    Générer courrier
+                  </button>
+                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "10px 14px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 7, fontWeight: 500, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+                    <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" /><circle cx="12" cy="12" r="3" /></svg>
+                    Prévisualiser PDF
+                  </button>
+                </div>
+                {/* Arrêté preview */}
+                <div style={{ border: "1px solid #E2E8F0", borderRadius: 12, overflow: "hidden", boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 14px", background: "#F8FAFC", borderBottom: "1px solid #E2E8F0" }}>
+                    <span style={{ fontSize: 11.5, color: "#64748b", fontWeight: 500 }}>Aperçu du projet d'arrêté</span>
+                    <div style={{ marginLeft: "auto", display: "flex", gap: 6 }}>
+                      {["B", "I", "U"].map(f => (
+                        <button key={f} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 5, padding: "2px 8px", fontSize: 11, color: "#374151", cursor: "pointer", fontWeight: f === "B" ? 700 : 400, fontStyle: f === "I" ? "italic" as const : "normal", textDecoration: f === "U" ? "underline" : "none" }}>{f}</button>
+                      ))}
+                    </div>
+                  </div>
+                  <div style={{ padding: "24px 30px", fontFamily: "'Georgia', serif", fontSize: 12.5, lineHeight: 1.9, color: "#1a1a1a", background: "white", minHeight: 240 }}>
+                    <div style={{ textAlign: "center" as const, marginBottom: 18 }}>
+                      <div style={{ fontWeight: 700, fontSize: 14, letterSpacing: "0.12em", textTransform: "uppercase" as const }}>Arrêté</div>
+                      <div style={{ fontSize: 13, fontStyle: "italic" as const }}>accordant un permis de construire</div>
+                    </div>
+                    <p style={{ margin: "0 0 8px" }}>Le Maire de {liveCommune ?? "la commune"},</p>
+                    <p style={{ margin: "0 0 4px" }}>Vu la demande de permis de construire présentée le {dossier.date_depot ? fmtDate(dossier.date_depot) : "—"} par {dossier.petitionnaire}&nbsp;;</p>
+                    <p style={{ margin: "0 0 12px" }}>Vu le Code de l'urbanisme&nbsp;;</p>
+                    <p style={{ margin: "0 0 8px", fontWeight: 700, fontSize: 13.5, letterSpacing: "0.08em", textTransform: "uppercase" as const }}>Arrête</p>
+                    <p style={{ margin: "0 0 8px" }}><strong>Article 1<sup>er</sup></strong> – Le permis de construire est <strong>ACCORDÉ</strong> à {dossier.petitionnaire} pour le projet décrit dans la demande susvisée.</p>
+                    {prescriptions.length > 0 && <p style={{ margin: "0 0 4px" }}><strong>Article 2</strong> – <em>Prescriptions</em><br />Les prescriptions suivantes devront être respectées :<br />{prescriptions.map((p, i) => <span key={i}>{i + 1}. {p}<br /></span>)}</p>}
+                  </div>
+                </div>
+              </div>
+            </div>
+            {/* Right */}
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+              <div style={CARD}>
+                <SecTitle>Synthèse du dossier</SecTitle>
+                {[
+                  { label: "Dossier complet", ok: true },
+                  { label: "Consultations terminées", ok: true, sub: "5 consultations clôturées" },
+                  { label: "Échéance respectée", ok: true, sub: "Instruction dans les délais" },
+                  { label: "2 points de vigilance", ok: false, sub: "Voir le détail ci-dessous" },
+                ].map((item, i) => (
+                  <div key={i} style={{ display: "flex", gap: 11, alignItems: "flex-start", padding: "9px 0", borderBottom: i < 3 ? "1px solid #F1F5F9" : "none" }}>
+                    <div style={{ width: 22, height: 22, borderRadius: "50%", background: item.ok ? "#DCFCE7" : "#FEF9C3", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 1 }}>
+                      {item.ok
+                        ? <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                        : <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+                      }
+                    </div>
+                    <div>
+                      <div style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>{item.label}</div>
+                      {item.sub && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{item.sub}</div>}
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={CARD}>
+                <SecTitle>Vérifications avant décision</SecTitle>
+                {[
+                  { label: "Dossier complet", ok: true },
+                  { label: "Consultations clôturées", ok: true },
+                  { label: "Pièces obligatoires présentes", ok: true },
+                  { label: "Avis ABF avec prescriptions", ok: false },
+                  { label: "Signature du maire requise", ok: false },
+                ].map((item, i) => (
+                  <div key={i} style={{ display: "flex", gap: 10, alignItems: "center", padding: "8px 0", borderBottom: i < 4 ? "1px solid #F8FAFC" : "none" }}>
+                    <div style={{ width: 20, height: 20, borderRadius: "50%", background: item.ok ? "#DCFCE7" : "#FEF9C3", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      {item.ok
+                        ? <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                        : <svg width={10} height={10} viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="3.5" strokeLinecap="round" strokeLinejoin="round"><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
+                      }
+                    </div>
+                    <span style={{ fontSize: 12.5, color: "#374151" }}>{item.label}</span>
+                  </div>
+                ))}
+              </div>
+              <div style={CARD}>
+                <SecTitle>Signatures</SecTitle>
+                {[
+                  { initials: instructeurName.split(" ").map(w => w[0]?.toUpperCase() ?? "").join("").slice(0, 2), name: instructeurName, role: "Instructeur·trice", signed: true, date: "17/05/2024" },
+                  { initials: "M", name: "Maire", role: "Élu signataire", signed: false, date: "" },
+                ].map((sig, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "11px 0", borderBottom: i === 0 ? "1px solid #F1F5F9" : "none" }}>
+                    <div style={{ width: 38, height: 38, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, fontWeight: 800, flexShrink: 0, boxShadow: "0 2px 6px rgba(79,70,229,0.25)" }}>{sig.initials}</div>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{sig.name}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 1 }}>{sig.role}</div>
+                    </div>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: sig.signed ? "#15803D" : "#C2410C", background: sig.signed ? "#F0FDF4" : "#FFF7ED", borderRadius: 7, padding: "3px 9px", border: `1px solid ${sig.signed ? "#BBF7D0" : "#FED7AA"}`, whiteSpace: "nowrap" as const }}>
+                      {sig.signed ? `Signé le ${sig.date}` : "Signature requise"}
+                    </span>
+                  </div>
+                ))}
+              </div>
+              <button style={{ width: "100%", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 12, padding: "15px 0", fontSize: 14, fontWeight: 700, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 9, boxShadow: "0 4px 14px rgba(79,70,229,0.4)", letterSpacing: "-0.2px" }}>
+                <svg width={17} height={17} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
+                Valider la décision
+              </button>
+            </div>
           </div>
-        </div>
+        )}
+
       </div>
     </div>
   );
 }
+
 
 function NouveauDossierModal({ onClose }: { onClose: () => void }) {
   const [mode, setMode] = useState<"choose" | "manual" | "ocr">("choose");
@@ -2247,56 +3965,102 @@ function NouveauDossierModal({ onClose }: { onClose: () => void }) {
   );
 }
 
+function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
+  const { id } = useParams<{ id: string }>();
+  const routerNavigate = useNavigate();
+  const [dossier, setDossier] = useState<DossierInfo | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!id) return;
+    type ApiDetail = {
+      id: string; numero: string; type: string; status: string;
+      adresse: string | null; commune: string | null; code_postal: string | null;
+      description: string | null; parcelle: string | null; surface_plancher: string | null;
+      date_limite_instruction: string | null; date_depot: string | null;
+      metadata: Record<string, unknown> | null;
+      demandeur: { prenom?: string; nom?: string } | null;
+      instructeur: { prenom?: string; nom?: string } | null;
+    };
+    api.get<ApiDetail>(`/mairie/dossiers/${id}`)
+      .then(data => {
+        const meta = (data.metadata ?? {}) as Record<string, unknown>;
+        const lat = parseFloat(String(meta["lat"] ?? ""));
+        const lng = parseFloat(String(meta["lng"] ?? ""));
+        setDossier({
+          id: data.id,
+          numero: data.numero,
+          type: data.type,
+          petitionnaire: data.demandeur ? ([data.demandeur.prenom, data.demandeur.nom].filter(Boolean).join(" ") || "—") : "—",
+          adresse: data.adresse ?? "—",
+          status: data.status,
+          echeance: fmtDate(data.date_limite_instruction),
+          date_depot: data.date_depot ?? undefined,
+          description: data.description ?? undefined,
+          parcelle: data.parcelle ?? undefined,
+          surface_plancher: data.surface_plancher ?? undefined,
+          commune: data.commune ?? undefined,
+          code_postal: data.code_postal ?? undefined,
+          instructeur: data.instructeur ? ([data.instructeur.prenom, data.instructeur.nom].filter(Boolean).join(" ") || undefined) : undefined,
+          lat: isNaN(lat) ? undefined : lat,
+          lng: isNaN(lng) ? undefined : lng,
+        });
+      })
+      .catch(() => routerNavigate("/mairie/dossiers", { replace: true }))
+      .finally(() => setLoading(false));
+  }, [id]);
+
+  if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>Chargement…</div>;
+  if (!dossier) return null;
+  return <DossierDetailScreen dossier={dossier} onBack={() => routerNavigate(-1 as never)} navigate={navigate} />;
+}
+
 export function MairieApp() {
-  const [active, setActive] = useState("Tableau de bord");
-  const [selectedDossier, setSelectedDossier] = useState<DossierInfo | null>(null);
-  const [showNouveauDossier, setShowNouveauDossier] = useState(false);
-  const [dossiersFilter, setDossiersFilter] = useState("Tous");
   const [commune, setCommune] = useState("Ballan-Miré");
+  const [showNouveauDossier, setShowNouveauDossier] = useState(false);
+  const routerNavigate = useNavigate();
+  const location = useLocation();
+
+  const pathname = location.pathname;
+  const active = pathname.startsWith("/mairie/dossiers") ? "Dossiers"
+    : pathname.startsWith("/mairie/messagerie") ? "Messagerie"
+    : pathname.startsWith("/mairie/calendrier") ? "Calendrier"
+    : pathname.startsWith("/mairie/carte") ? "Carte"
+    : pathname.startsWith("/mairie/statistiques") ? "Statistiques"
+    : pathname.startsWith("/mairie/parametres") ? "Paramètres"
+    : pathname.startsWith("/mairie/profil") ? "Infos Perso"
+    : "Tableau de bord";
+
+  const setActive = (s: string) => routerNavigate(LABEL_TO_PATH[s] ?? "/mairie");
 
   const handleDossierClick = (dossier: DossierInfo) => {
-    setSelectedDossier(dossier);
-  };
-
-  const handleDossierBack = () => {
-    setSelectedDossier(null);
+    routerNavigate(`/mairie/dossiers/${dossier.id}`, { state: { dossier } });
   };
 
   const navigateDossiers = (filter: string) => {
-    setDossiersFilter(filter);
-    setActive("Dossiers");
-    setSelectedDossier(null);
-  };
-
-  const screenMap = {
-    "Tableau de bord": <DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} />,
-    "Dossiers": <DossiersScreen key={dossiersFilter} onDossierClick={handleDossierClick} navigate={setActive} initialFilter={dossiersFilter} />,
-    "Messagerie": <MessageScreen onDossierClick={handleDossierClick} />,
-    "Paramètres": <ParametresScreen />,
-    "Carte": <CarteScreen />,
-    "Calendrier": <CalendrierScreen />,
-    "Statistiques": <StatistiquesScreen />,
-    "Infos Perso": <InfosPersoScreen />,
+    routerNavigate(`/mairie/dossiers?filter=${encodeURIComponent(filter)}`);
   };
 
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex" }}>
-      <Sidebar active={active} setActive={(s) => { setActive(s); setSelectedDossier(null); }} commune={commune} setCommune={setCommune} />
+      <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar onNewDossier={() => setShowNouveauDossier(true)} navigate={setActive} />
+          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {selectedDossier ? (
-            <DossierDetailScreen dossier={selectedDossier} onBack={handleDossierBack} navigate={setActive} />
-          ) : (
-            (Object.hasOwn(screenMap, active) ? screenMap[active as keyof typeof screenMap] : null) ?? (
-              <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>
-                <div style={{ fontSize: 40, marginBottom: 8 }}>🏗</div>
-                <div style={{ fontSize: 14 }}>Section "{active}" — à implémenter</div>
-              </div>
-            )
-          )}
+          <Routes>
+            <Route index element={<DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} onDossierClick={handleDossierClick} />} />
+            <Route path="dossiers" element={<DossiersScreen onDossierClick={handleDossierClick} />} />
+            <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} />} />
+            <Route path="messagerie" element={<MessageScreen onDossierClick={handleDossierClick} />} />
+            <Route path="calendrier" element={<CalendrierScreen />} />
+            <Route path="carte" element={<CarteScreen initialCommune={commune} />} />
+            <Route path="statistiques" element={<StatistiquesScreen />} />
+            <Route path="parametres" element={<ParametresScreen commune={commune} />} />
+            <Route path="profil" element={<InfosPersoScreen />} />
+            <Route path="*" element={<Navigate to="/mairie" replace />} />
+          </Routes>
         </div>
       </div>
       {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} />}

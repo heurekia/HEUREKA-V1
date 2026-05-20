@@ -2,7 +2,7 @@ import "dotenv/config";
 import { db } from "../db.js";
 import { users, communes, zones, zone_regulatory_rules, dossiers, dossier_messages } from "@heureka-v1/db";
 import bcrypt from "bcryptjs";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 
 async function upsertCommune(values: { name: string; insee_code: string; zip_code: string }) {
   const [row] = await db.insert(communes).values(values)
@@ -194,11 +194,66 @@ async function seed() {
     console.log(`✅ Dossier BM: ${row.numero} (${d.adresse})`);
   }
 
-  // ── Messages (skip si dossier1 a déjà des messages) ──
+  // ── Messages Tours (skip si dossier1 a déjà des messages) ──
   const existingMessages = await db.select().from(dossier_messages).where(eq(dossier_messages.dossier_id, dossier1.id));
   if (existingMessages.length === 0) {
-    await db.insert(dossier_messages).values({ dossier_id: dossier1.id, from_user_id: citoyen.id, from_role: "citoyen", content: "Bonjour, je souhaiterais savoir où en est l'instruction de mon dossier. Merci." });
-    await db.insert(dossier_messages).values({ dossier_id: dossier1.id, from_user_id: instructeur.id, from_role: "instructeur", content: "Bonjour, votre dossier est en cours d'instruction. Nous attendons l'avis de l'architecte des Bâtiments de France. Nous reviendrons vers vous sous quinze jours." });
+    await db.insert(dossier_messages).values({ dossier_id: dossier1.id, from_user_id: citoyen.id, from_role: "citoyen", content: "Bonjour, je souhaiterais savoir où en est l'instruction de mon dossier. Merci.", created_at: new Date("2024-05-10T09:15:00") });
+    await db.insert(dossier_messages).values({ dossier_id: dossier1.id, from_user_id: instructeur.id, from_role: "instructeur", content: "Bonjour, votre dossier est en cours d'instruction. Nous attendons l'avis de l'architecte des Bâtiments de France. Nous reviendrons vers vous sous quinze jours.", created_at: new Date("2024-05-10T14:32:00") });
+  }
+
+  // ── Conversations Ballan-Miré ──
+  const dossiersBMRows = await db.select().from(dossiers).where(sql`commune = 'Ballan-Miré'`);
+  const bmMap = Object.fromEntries(dossiersBMRows.map(d => [d.numero, d]));
+  const existingBMMessages = await db.select({ id: dossier_messages.id }).from(dossier_messages)
+    .where(sql`dossier_id IN (SELECT id FROM dossiers WHERE commune = 'Ballan-Miré')`);
+
+  if (existingBMMessages.length === 0) {
+    // PC-BM-2024-001 — Jean Dupont : échange, dernier message du citoyen (non lu)
+    const d001 = bmMap["PC-BM-2024-001"];
+    if (d001) {
+      await db.insert(dossier_messages).values([
+        { dossier_id: d001.id, from_user_id: citoyenBM1.id, from_role: "citoyen", content: "Bonjour, pouvez-vous me donner des nouvelles de l'avancement de mon dossier PC-BM-2024-001 ? Merci.", created_at: new Date("2024-05-10T09:15:00") },
+        { dossier_id: d001.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Bonjour M. Dupont, votre dossier est en cours d'instruction. Nous attendons l'avis de l'Architecte des Bâtiments de France. Délai estimé : 3 semaines.", created_at: new Date("2024-05-10T14:32:00") },
+        { dossier_id: d001.id, from_user_id: citoyenBM1.id, from_role: "citoyen", content: "Merci pour cette réponse. Est-ce que je dois fournir des documents supplémentaires de mon côté ?", created_at: new Date("2024-05-11T08:45:00") },
+      ]);
+    }
+
+    // DP-BM-2024-015 — Sophie Martin : message sans réponse (non lu)
+    const d015 = bmMap["DP-BM-2024-015"];
+    if (d015) {
+      await db.insert(dossier_messages).values([
+        { dossier_id: d015.id, from_user_id: citoyenBM2.id, from_role: "citoyen", content: "Bonjour, j'ai déposé ma déclaration préalable pour une extension de 28 m². Pouvez-vous confirmer que toutes les pièces ont bien été reçues ?", created_at: new Date("2024-05-08T10:20:00") },
+      ]);
+    }
+
+    // DP-BM-2024-008 — Sophie Martin : dossier incomplet, échange complet, dernier message instructeur (lu)
+    const d008 = bmMap["DP-BM-2024-008"];
+    if (d008) {
+      await db.insert(dossier_messages).values([
+        { dossier_id: d008.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Bonjour Mme Martin, votre dossier DP-BM-2024-008 est incomplet. Il manque le plan de masse coté et la notice descriptive. Merci de les transmettre dans les meilleurs délais.", created_at: new Date("2024-04-15T11:00:00") },
+        { dossier_id: d008.id, from_user_id: citoyenBM2.id, from_role: "citoyen", content: "Bonjour, voici les documents demandés en pièce jointe. J'espère que cela complète bien mon dossier.", created_at: new Date("2024-04-16T16:30:00") },
+        { dossier_id: d008.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Merci pour l'envoi. Nous procédons à la vérification et vous recontacterons si nécessaire.", created_at: new Date("2024-04-17T09:10:00") },
+      ]);
+    }
+
+    // PC-BM-2024-022 — Jean Dupont : demande de mise à jour (non lu)
+    const d022 = bmMap["PC-BM-2024-022"];
+    if (d022) {
+      await db.insert(dossier_messages).values([
+        { dossier_id: d022.id, from_user_id: citoyenBM1.id, from_role: "citoyen", content: "Bonjour, je souhaitais connaître l'avancement du dossier pour mon immeuble collectif. Y a-t-il des points bloquants à ce stade ?", created_at: new Date("2024-05-12T15:00:00") },
+      ]);
+    }
+
+    // DP-BM-2024-033 — Sophie Martin : échange sur délai, dernier message instructeur (lu)
+    const d033 = bmMap["DP-BM-2024-033"];
+    if (d033) {
+      await db.insert(dossier_messages).values([
+        { dossier_id: d033.id, from_user_id: citoyenBM2.id, from_role: "citoyen", content: "Bonjour, mon dossier est en décision depuis un moment. Pouvez-vous m'indiquer le délai prévu pour la réponse ?", created_at: new Date("2024-05-05T09:00:00") },
+        { dossier_id: d033.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Bonjour, la décision sera rendue dans les 5 jours ouvrés. Vous recevrez une notification par email dès qu'elle sera disponible.", created_at: new Date("2024-05-06T11:30:00") },
+      ]);
+    }
+
+    console.log("✅ Conversations BM ajoutées");
   }
 
   console.log("\n✅✅✅ Seed terminé !");
