@@ -1,15 +1,23 @@
 /**
- * PLU Ingestion Script
+ * PLU Ingestion Script — general-purpose
  *
- * Extracts regulatory rules from a PLU règlement PDF using the Claude API
- * and stores them in the zone_regulatory_rules table.
+ * Extracts regulatory rules from any French PLU règlement PDF using a
+ * two-pass Claude API strategy and stores them in the zone_regulatory_rules
+ * table with validation_status = "brouillon" (requires instructeur review).
  *
  * Usage:
- *   npx tsx src/scripts/ingest-plu.ts --commune ballan-mire --pdf /path/to/reglement.pdf
- *   npx tsx src/scripts/ingest-plu.ts --commune ballan-mire --seed   (uses hardcoded rules)
+ *   # AI extraction from PDF (any commune)
+ *   npx tsx src/scripts/ingest-plu.ts \
+ *     --commune "Rochecorbon" --insee 37194 --zip 37210 \
+ *     --pdf /path/to/reglement.pdf
  *
- * The --seed flag bypasses AI extraction and uses the manually-verified rules
- * extracted from the Ballan-Miré PLU règlement (modification n°5, 29/01/2018).
+ *   # Verified seed for Ballan-Miré (validation_status = "valide")
+ *   npx tsx src/scripts/ingest-plu.ts \
+ *     --commune "Ballan-Miré" --insee 37018 --zip 37510 --seed
+ *
+ * Two-pass AI extraction:
+ *   Pass 1  →  Identify all zone codes and labels from the document.
+ *   Pass 2  →  For each zone, extract all regulatory rules (articles 1-14).
  */
 
 import { db } from "../db.js";
@@ -19,309 +27,402 @@ import { execSync } from "child_process";
 import fs from "fs";
 import Anthropic from "@anthropic-ai/sdk";
 
+// ── CLI args ───────────────────────────────────────────────────────────────────
+
 const args = process.argv.slice(2);
-const COMMUNE_SLUG = args[args.indexOf("--commune") + 1] ?? "ballan-mire";
-const PDF_PATH = args.includes("--pdf") ? args[args.indexOf("--pdf") + 1] : null;
-const SEED_MODE = args.includes("--seed");
-const DRY_RUN = args.includes("--dry-run");
+const get = (flag: string) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
+const has = (flag: string) => args.includes(flag);
 
-// ── Hardcoded seed rules extracted from Ballan-Miré PLU (modification n°5) ──
-// Source: PLU-Ballan-Reglement.pdf, approved 29/01/2018 by Tours Métropole Val de Loire
+const COMMUNE_NAME = get("--commune") ?? "Ballan-Miré";
+const INSEE_CODE   = get("--insee")   ?? "37018";
+const ZIP_CODE     = get("--zip")     ?? "37510";
+const PDF_PATH     = get("--pdf");
+const SEED_MODE    = has("--seed");
+const DRY_RUN      = has("--dry-run");
 
-// Sources: PLU-Ballan-Reglement.pdf (modification n°5, 29/01/2018) + NotebookLM analysis (2026-05-19)
-// Corrections vs initial draft: UB/UC/UD/UZ/1AU pleine terre ratios, UD terrain min + hauteur,
-// UB social housing quotas, added zones UZ/UX/UY/UL/US/UV/1AUZ/AUH/AUY/NI.
+// ── Types ──────────────────────────────────────────────────────────────────────
+
+type RuleInput = {
+  article_number: number;
+  article_title?: string;
+  topic: string;
+  rule_text: string;
+  value_min?: number | null;
+  value_max?: number | null;
+  value_exact?: number | null;
+  unit?: string | null;
+  conditions?: string | null;
+  summary?: string | null;
+};
 
 type ZoneInput = {
   zone_code: string;
   zone_label: string;
   zone_type: string;
   summary: string;
-  rules: Array<{
-    article_number: number;
-    topic: string;
-    rule_text: string;
-    value_min?: number;
-    value_max?: number;
-    value_exact?: number;
-    unit?: string;
-    conditions?: string;
-    summary?: string;
-  }>;
+  rules: RuleInput[];
 };
 
+// ── Ballan-Miré verified seed data ────────────────────────────────────────────
+// Source: PLU-Ballan-Reglement.pdf, modification n°5, approved 29/01/2018.
+// These rules are pre-validated — they skip the brouillon stage.
+
 const BALLAN_MIRE_ZONES: ZoneInput[] = [
-  // ── ZONES URBAINES RÉSIDENTIELLES ─────────────────────────────────────────
   {
-    zone_code: "UA",
-    zone_label: "Zone UA – Centre ancien",
-    zone_type: "U",
-    summary: "Cœur historique de Ballan-Miré, bâti traditionnel dense en étoile autour de l'église.",
+    zone_code: "UA", zone_label: "Zone UA – Centre ancien", zone_type: "U",
+    summary: "Cœur historique, bâti traditionnel dense en étoile autour de l'église.",
     rules: [
-      { article_number: 6, topic: "recul_voie", rule_text: "Recul entre 0 et 1 mètre, ou alignement sur construction voisine, ou recul minimal de 6 mètres. Un élément d'architecture (mur, grille) doit souligner l'alignement en cas de recul.", value_min: 0, value_max: 6, unit: "m", summary: "0-1m ou alignement ou ≥6m" },
-      { article_number: 7, topic: "recul_limite", rule_text: "En limite séparative ou à distance ≥ moitié de la hauteur avec un minimum de 3 mètres.", value_min: 3, unit: "m", conditions: "H/2 minimum 3m", summary: "En limite ou H/2 (min 3m)" },
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol non réglementée en zone UA, pour respecter l'imbrication historique.", summary: "Non réglementé" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur maximale : 6,5 mètres à l'égout de toiture ou à l'acrotère ; 9 mètres au faîtage. Une hauteur différente est admise si elle n'excède pas le bâtiment voisin le plus proche.", value_max: 6.5, unit: "m", conditions: "Toiture-terrasse: 6.5m; faîtage: 9m", summary: "6,5m égout / 9m faîtage" },
-      { article_number: 12, topic: "stationnement", rule_text: "1 place par logement d'1 pièce ; 2 places pour logement de 2 pièces et plus. Activités : 1 place/50m² SP. Commerces ≤100m² : aucune place. Vélos : 1 emplacement/logement.", summary: "2 places/logement (≥2P), 1/50m² activités" },
-      { article_number: 13, topic: "espaces_verts", rule_text: "Au moins 25% d'espaces libres en pleine terre. 1 arbre de haute tige pour 100m² d'espaces libres. 1 arbre pour 50m² de parking.", value_min: 25, unit: "%", summary: "≥25% pleine terre" },
+      { article_number: 6,  topic: "recul_voie",   rule_text: "Recul entre 0 et 1 m, ou alignement sur construction voisine, ou recul minimal de 6 m. Un élément d'architecture doit souligner l'alignement en cas de recul.", value_min: 0, value_max: 6, unit: "m", summary: "0-1m ou alignement ou ≥6m" },
+      { article_number: 7,  topic: "recul_limite",  rule_text: "En limite séparative ou à distance ≥ moitié de la hauteur avec un minimum de 3 m.", value_min: 3, unit: "m", conditions: "H/2 minimum 3m", summary: "En limite ou H/2 (min 3m)" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Emprise au sol non réglementée en zone UA.", summary: "Non réglementé" },
+      { article_number: 10, topic: "hauteur",       rule_text: "Hauteur maximale : 6,5 m à l'égout ou à l'acrotère ; 9 m au faîtage. Une hauteur différente est admise si elle n'excède pas le bâtiment voisin le plus proche.", value_max: 6.5, unit: "m", conditions: "Faîtage: 9m", summary: "6,5m égout / 9m faîtage" },
+      { article_number: 12, topic: "stationnement", rule_text: "1 place/logement 1P ; 2 places pour ≥2P. Activités : 1 place/50m² SP. Commerces ≤100m² : 0 place. Vélos : 1 emplacement/logement.", summary: "2 places/logement (≥2P), 1/50m² activités" },
+      { article_number: 13, topic: "espaces_verts", rule_text: "≥25% d'espaces libres en pleine terre. 1 arbre haute tige/100m² d'espaces libres.", value_min: 25, unit: "%", summary: "≥25% pleine terre" },
     ],
   },
   {
-    zone_code: "UB",
-    zone_label: "Zone UB – Extensions du centre",
-    zone_type: "U",
-    summary: "Extensions urbaines du centre : collectifs R+3, nouvelle mairie, ZAC des Prés, quartier gare. Quota logements sociaux imposé (20-30%).",
+    zone_code: "UB", zone_label: "Zone UB – Extensions du centre", zone_type: "U",
+    summary: "Extensions urbaines : collectifs R+3, nouvelle mairie, ZAC des Prés, quartier gare. Quota social 20-30%.",
     rules: [
-      { article_number: 6, topic: "recul_voie", rule_text: "Recul minimal de 6 mètres par rapport aux voies.", value_min: 6, unit: "m", summary: "≥6m" },
-      { article_number: 7, topic: "recul_limite", rule_text: "En limite séparative ou à distance ≥ moitié de la hauteur avec un minimum de 3 mètres. Secteur UBa : recul H/2 min 3m, jamais en limite.", value_min: 3, unit: "m", conditions: "UBa: jamais en limite – H/2 min 3m", summary: "En limite ou H/2 (min 3m)" },
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol maximale de 50% de la superficie du terrain. Secteur UBai (inondable) : limitée à 10%.", value_max: 50, unit: "%", conditions: "UBai: 10%", summary: "≤50% (UBai: 10%)" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur maximale : 9 mètres à l'égout de toiture ou à l'acrotère ; 14 mètres au faîtage (R+3).", value_max: 9, unit: "m", conditions: "Faîtage: 14m", summary: "9m égout / 14m faîtage" },
-      { article_number: 12, topic: "stationnement", rule_text: "2 places par logement (1 pour logements aidés). 1 place/50m² SP pour activités. Quota social : 20% pour 5-20 logements, 30% au-delà. Pré-équipement recharge électrique obligatoire.", summary: "2 places/logement, quota social 20-30%" },
-      { article_number: 13, topic: "espaces_verts", rule_text: "Au moins 35% d'espaces libres en pleine terre. 1 arbre de haute tige pour 100m² d'espaces libres.", value_min: 35, unit: "%", summary: "≥35% pleine terre" },
+      { article_number: 6,  topic: "recul_voie",   rule_text: "Recul minimal de 6 m par rapport aux voies.", value_min: 6, unit: "m", summary: "≥6m" },
+      { article_number: 7,  topic: "recul_limite",  rule_text: "En limite séparative ou H/2 min 3 m. Secteur UBa : jamais en limite — H/2 min 3 m.", value_min: 3, unit: "m", conditions: "UBa: jamais en limite – H/2 min 3m", summary: "En limite ou H/2 (min 3m)" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Emprise au sol max 50%. Secteur UBai (inondable) : limité à 10%.", value_max: 50, unit: "%", conditions: "UBai: 10%", summary: "≤50% (UBai: 10%)" },
+      { article_number: 10, topic: "hauteur",       rule_text: "9 m à l'égout ou à l'acrotère ; 14 m au faîtage (R+3).", value_max: 9, unit: "m", conditions: "Faîtage: 14m", summary: "9m égout / 14m faîtage" },
+      { article_number: 12, topic: "stationnement", rule_text: "2 places/logement (1 pour logements aidés). Quota social : 20% pour 5-20 logements, 30% au-delà. Pré-équipement recharge électrique obligatoire.", summary: "2 places/logement, quota social 20-30%" },
+      { article_number: 13, topic: "espaces_verts", rule_text: "≥35% d'espaces libres en pleine terre. 1 arbre haute tige/100m².", value_min: 35, unit: "%", summary: "≥35% pleine terre" },
     ],
   },
   {
-    zone_code: "UC",
-    zone_label: "Zone UC – Quartiers pavillonnaires",
-    zone_type: "U",
-    summary: "Zone majoritaire de la commune : lotissements, ZAC des Prés, hameaux de Miré et des Vallées. Quota social 20% dès 5 logements.",
+    zone_code: "UC", zone_label: "Zone UC – Quartiers pavillonnaires", zone_type: "U",
+    summary: "Zone majoritaire : lotissements, ZAC des Prés, hameaux de Miré et des Vallées. Quota social 20% dès 5 logements.",
     rules: [
-      { article_number: 6, topic: "recul_voie", rule_text: "Recul minimal de 3 mètres. RD751 : recul minimal de 45 mètres par rapport à l'axe de la voie.", value_min: 3, unit: "m", conditions: "RD751: 45m depuis axe", summary: "≥3m (RD751: 45m)" },
-      { article_number: 7, topic: "recul_limite", rule_text: "En limite séparative ou à distance ≥ moitié de la hauteur avec un minimum de 3 mètres.", value_min: 3, unit: "m", conditions: "H/2 minimum 3m", summary: "En limite ou H/2 (min 3m)" },
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol maximale de 50% de la superficie du terrain.", value_max: 50, unit: "%", summary: "≤50%" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur maximale : 6,5 mètres à l'égout de toiture ou à l'acrotère ; 9 mètres au faîtage (R+2).", value_max: 6.5, unit: "m", conditions: "Faîtage: 9m", summary: "6,5m égout / 9m faîtage" },
-      { article_number: 12, topic: "stationnement", rule_text: "2 places par logement (1 pour logements aidés). 1 place/50m² SP pour activités. Quota social : 20% dès 5 logements.", summary: "2 places/logement, quota social 20%" },
-      { article_number: 13, topic: "espaces_verts", rule_text: "Au moins 40% d'espaces libres en pleine terre. 1 arbre de haute tige pour 100m².", value_min: 40, unit: "%", summary: "≥40% pleine terre" },
+      { article_number: 6,  topic: "recul_voie",   rule_text: "Recul minimal de 3 m. RD751 : 45 m depuis l'axe de la voie.", value_min: 3, unit: "m", conditions: "RD751: 45m depuis axe", summary: "≥3m (RD751: 45m)" },
+      { article_number: 7,  topic: "recul_limite",  rule_text: "En limite séparative ou H/2 min 3 m.", value_min: 3, unit: "m", conditions: "H/2 minimum 3m", summary: "En limite ou H/2 (min 3m)" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Emprise au sol maximale de 50%.", value_max: 50, unit: "%", summary: "≤50%" },
+      { article_number: 10, topic: "hauteur",       rule_text: "6,5 m à l'égout ; 9 m au faîtage (R+2).", value_max: 6.5, unit: "m", conditions: "Faîtage: 9m", summary: "6,5m égout / 9m faîtage" },
+      { article_number: 12, topic: "stationnement", rule_text: "2 places/logement. Quota social : 20% dès 5 logements.", summary: "2 places/logement, quota social 20%" },
+      { article_number: 13, topic: "espaces_verts", rule_text: "≥40% d'espaces libres en pleine terre. 1 arbre haute tige/100m².", value_min: 40, unit: "%", summary: "≥40% pleine terre" },
     ],
   },
   {
-    zone_code: "UD",
-    zone_label: "Zone UD – Quartiers verdoyants (Haute Lande, Miré)",
-    zone_type: "U",
-    summary: "Habitat individuel très peu dense en espaces boisés. Taille minimale terrain 2 000m². Implantation en limite séparative interdite.",
+    zone_code: "UD", zone_label: "Zone UD – Quartiers verdoyants (Haute Lande, Miré)", zone_type: "U",
+    summary: "Habitat individuel très peu dense en espaces boisés. Terrain min 2 000 m². Limite séparative interdite.",
     rules: [
-      { article_number: 5, topic: "terrain_min", rule_text: "Superficie minimale des terrains constructibles : 2 000 m².", value_min: 2000, unit: "m²", summary: "≥2 000m² par terrain" },
-      { article_number: 6, topic: "recul_voie", rule_text: "Recul minimal de 7 mètres par rapport aux voies et emprises publiques.", value_min: 7, unit: "m", summary: "≥7m" },
-      { article_number: 7, topic: "recul_limite", rule_text: "Implantation en limite séparative interdite. Recul minimum égal à la demi-hauteur du bâtiment avec un minimum de 3 mètres.", value_min: 3, unit: "m", conditions: "Jamais en limite – H/2 min 3m", summary: "Jamais en limite, H/2 (min 3m)" },
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol maximale de 20% de la superficie du terrain.", value_max: 20, unit: "%", summary: "≤20%" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur maximale : 6,5 mètres à l'égout de toiture ou à l'acrotère ; 8,5 mètres au faîtage.", value_max: 6.5, unit: "m", conditions: "Faîtage: 8.5m", summary: "6,5m égout / 8,5m faîtage" },
+      { article_number: 5,  topic: "terrain_min",  rule_text: "Superficie minimale des terrains constructibles : 2 000 m².", value_min: 2000, unit: "m²", summary: "≥2 000m² par terrain" },
+      { article_number: 6,  topic: "recul_voie",   rule_text: "Recul minimal de 7 m par rapport aux voies et emprises publiques.", value_min: 7, unit: "m", summary: "≥7m" },
+      { article_number: 7,  topic: "recul_limite",  rule_text: "Implantation en limite séparative interdite. Recul min H/2 avec minimum 3 m.", value_min: 3, unit: "m", conditions: "Jamais en limite – H/2 min 3m", summary: "Jamais en limite, H/2 (min 3m)" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Emprise au sol maximale de 20%.", value_max: 20, unit: "%", summary: "≤20%" },
+      { article_number: 10, topic: "hauteur",       rule_text: "6,5 m à l'égout ; 8,5 m au faîtage.", value_max: 6.5, unit: "m", conditions: "Faîtage: 8.5m", summary: "6,5m égout / 8,5m faîtage" },
       { article_number: 12, topic: "stationnement", rule_text: "2 places par logement de 2 pièces et plus.", summary: "2 places/logement" },
-      { article_number: 13, topic: "espaces_verts", rule_text: "Au moins 60% d'espaces libres en pleine terre. Maintien obligatoire des arbres existants.", value_min: 60, unit: "%", summary: "≥60% pleine terre" },
+      { article_number: 13, topic: "espaces_verts", rule_text: "≥60% d'espaces libres en pleine terre. Maintien obligatoire des arbres existants.", value_min: 60, unit: "%", summary: "≥60% pleine terre" },
     ],
   },
   {
-    zone_code: "UZ",
-    zone_label: "Zone UZ – ZAC de la Pasqueraie",
-    zone_type: "U",
-    summary: "Zone d'habitat récent mixte. UZa : collectifs R+3-4 (14m). UZb : formes compactes en continuité du centre.",
+    zone_code: "UZ", zone_label: "Zone UZ – ZAC de la Pasqueraie", zone_type: "U",
+    summary: "Zone d'habitat récent mixte. UZa : collectifs R+3-4 (14m). UZb : formes compactes.",
     rules: [
-      { article_number: 6, topic: "recul_voie", rule_text: "Recul minimal de 5 mètres.", value_min: 5, unit: "m", summary: "≥5m" },
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol maximale de 50% (40% dans le sous-secteur UZa de logements collectifs).", value_max: 50, unit: "%", conditions: "UZa: 40%", summary: "≤50% (UZa: 40%)" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur maximale : 14 mètres dans le secteur UZa, 11 mètres dans le secteur UZb.", value_max: 14, unit: "m", conditions: "UZb: 11m", summary: "14m (UZa) / 11m (UZb)" },
-      { article_number: 13, topic: "espaces_verts", rule_text: "Au moins 40% d'espaces libres en pleine terre.", value_min: 40, unit: "%", summary: "≥40% pleine terre" },
+      { article_number: 6,  topic: "recul_voie",   rule_text: "Recul minimal de 5 m.", value_min: 5, unit: "m", summary: "≥5m" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Emprise au sol max 50% (40% en UZa — logements collectifs).", value_max: 50, unit: "%", conditions: "UZa: 40%", summary: "≤50% (UZa: 40%)" },
+      { article_number: 10, topic: "hauteur",       rule_text: "14 m en UZa ; 11 m en UZb.", value_max: 14, unit: "m", conditions: "UZb: 11m", summary: "14m (UZa) / 11m (UZb)" },
+      { article_number: 13, topic: "espaces_verts", rule_text: "≥40% d'espaces libres en pleine terre.", value_min: 40, unit: "%", summary: "≥40% pleine terre" },
     ],
   },
-  // ── ZONES URBAINES SPÉCIALISÉES ────────────────────────────────────────────
   {
-    zone_code: "UX",
-    zone_label: "Zone UX – Activités La Châtaigneraie",
-    zone_type: "U",
-    summary: "Zone d'activités économiques diversifiées. Reculs stricts RD751/RD751c. Traitement architectural façades imposé.",
+    zone_code: "UX", zone_label: "Zone UX – Activités La Châtaigneraie", zone_type: "U",
+    summary: "Zone d'activités économiques. Reculs stricts RD751/RD751c.",
     rules: [
-      { article_number: 6, topic: "recul_voie", rule_text: "Recul de 45 mètres par rapport à l'axe de la RD751. Recul de 25 mètres par rapport à la RD751c. Aucun accès individuel autorisé sur la RD751c.", value_min: 45, unit: "m", conditions: "RD751: 45m axe; RD751c: 25m", summary: "45m (RD751) / 25m (RD751c)" },
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol maximale de 60% de la superficie du terrain.", value_max: 60, unit: "%", summary: "≤60%" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur maximale de 10 mètres.", value_max: 10, unit: "m", summary: "≤10m" },
+      { article_number: 6,  topic: "recul_voie",   rule_text: "45 m depuis l'axe RD751 ; 25 m depuis la RD751c. Aucun accès individuel sur RD751c.", value_min: 45, unit: "m", conditions: "RD751: 45m axe; RD751c: 25m", summary: "45m (RD751) / 25m (RD751c)" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Emprise au sol max 60%.", value_max: 60, unit: "%", summary: "≤60%" },
+      { article_number: 10, topic: "hauteur",       rule_text: "Hauteur maximale de 10 m.", value_max: 10, unit: "m", summary: "≤10m" },
       { article_number: 12, topic: "stationnement", rule_text: "1 place/50m² SP. Pré-équipement recharge électrique obligatoire.", summary: "1 place/50m²" },
     ],
   },
   {
-    zone_code: "UY",
-    zone_label: "Zone UY – Activités Carrefour en Touraine",
-    zone_type: "U",
-    summary: "Grande zone d'activités économiques. Hauteurs jusqu'à 15m. Intégration paysagère des façades sur grand axe.",
+    zone_code: "UY", zone_label: "Zone UY – Activités Carrefour en Touraine", zone_type: "U",
+    summary: "Grande zone d'activités. Hauteurs jusqu'à 15 m.",
     rules: [
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol maximale de 50% de la superficie du terrain.", value_max: 50, unit: "%", summary: "≤50%" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur maximale de 15 mètres.", value_max: 15, unit: "m", summary: "≤15m" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Emprise au sol max 50%.", value_max: 50, unit: "%", summary: "≤50%" },
+      { article_number: 10, topic: "hauteur",       rule_text: "Hauteur maximale de 15 m.", value_max: 15, unit: "m", summary: "≤15m" },
     ],
   },
   {
-    zone_code: "UL",
-    zone_label: "Zone UL – Sports et Loisirs",
-    zone_type: "U",
-    summary: "Équipements sportifs et de loisirs : centre équestre, camping, base nautique, centres de loisirs. Intégration paysagère prioritaire.",
+    zone_code: "UL", zone_label: "Zone UL – Sports et Loisirs", zone_type: "U",
+    summary: "Équipements sportifs et de loisirs : centre équestre, camping, base nautique.",
     rules: [
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol non réglementée pour permettre l'adaptation aux besoins des équipements.", summary: "Non réglementé" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur non réglementée pour permettre l'adaptation aux besoins des équipements.", summary: "Non réglementé" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Emprise au sol non réglementée pour les équipements sportifs et de loisirs.", summary: "Non réglementé" },
+      { article_number: 10, topic: "hauteur",       rule_text: "Hauteur non réglementée pour les équipements sportifs et de loisirs.", summary: "Non réglementé" },
     ],
   },
   {
-    zone_code: "US",
-    zone_label: "Zone US – Établissements sanitaires et sociaux",
-    zone_type: "U",
-    summary: "IEM Charlemagne, centre rééducation cardiaque Bois Gibert, centre formation SDIS, captage eau (USf). Recul 10m des limites.",
+    zone_code: "US", zone_label: "Zone US – Établissements sanitaires et sociaux", zone_type: "U",
+    summary: "IEM Charlemagne, centre de rééducation, SDIS, captage eau (USf).",
     rules: [
-      { article_number: 7, topic: "recul_limite", rule_text: "Recul de 10 mètres par rapport aux limites séparatives.", value_min: 10, unit: "m", summary: "≥10m des limites" },
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol non réglementée pour s'adapter aux besoins spécifiques des équipements.", summary: "Non réglementé" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur non réglementée pour s'adapter aux besoins spécifiques des équipements.", summary: "Non réglementé" },
+      { article_number: 7,  topic: "recul_limite",  rule_text: "Recul de 10 m par rapport aux limites séparatives.", value_min: 10, unit: "m", summary: "≥10m des limites" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Non réglementé pour les équipements sanitaires.", summary: "Non réglementé" },
+      { article_number: 10, topic: "hauteur",       rule_text: "Non réglementé pour les équipements sanitaires.", summary: "Non réglementé" },
     ],
   },
   {
-    zone_code: "UV",
-    zone_label: "Zone UV – Village Vacances",
-    zone_type: "U",
-    summary: "Opération de village-vacances en cours. Recul 10m des voies.",
+    zone_code: "UV", zone_label: "Zone UV – Village Vacances", zone_type: "U",
+    summary: "Opération de village-vacances en cours.",
     rules: [
-      { article_number: 6, topic: "recul_voie", rule_text: "Recul minimal de 10 mètres par rapport aux voies.", value_min: 10, unit: "m", summary: "≥10m" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur maximale de 9 mètres au faîtage.", value_max: 9, unit: "m", summary: "≤9m faîtage" },
-    ],
-  },
-  // ── ZONES À URBANISER ──────────────────────────────────────────────────────
-  {
-    zone_code: "1AU",
-    zone_label: "Zone 1AU – La Savatterie (à urbaniser immédiat)",
-    zone_type: "AU",
-    summary: "Secteur résidentiel à urbaniser à court terme dans le vallon. Hauteur réduite pour intégration paysagère.",
-    rules: [
-      { article_number: 6, topic: "recul_voie", rule_text: "Recul minimal de 5 mètres.", value_min: 5, unit: "m", summary: "≥5m" },
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol maximale de 50%.", value_max: 50, unit: "%", summary: "≤50%" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur maximale de 7,5 mètres au faîtage pour s'insérer dans le vallon.", value_max: 7.5, unit: "m", summary: "≤7,5m faîtage" },
-      { article_number: 13, topic: "espaces_verts", rule_text: "Au moins 40% d'espaces libres en pleine terre.", value_min: 40, unit: "%", summary: "≥40% pleine terre" },
+      { article_number: 6,  topic: "recul_voie",   rule_text: "Recul minimal de 10 m par rapport aux voies.", value_min: 10, unit: "m", summary: "≥10m" },
+      { article_number: 10, topic: "hauteur",       rule_text: "Hauteur maximale de 9 m au faîtage.", value_max: 9, unit: "m", summary: "≤9m faîtage" },
     ],
   },
   {
-    zone_code: "1AUZ",
-    zone_label: "Zone 1AUZ – ZAC Pasqueraie 3e tranche",
-    zone_type: "AU",
-    summary: "Dernière tranche de la ZAC de la Pasqueraie. Habitat collectif et individuel. 25% logements sociaux requis.",
+    zone_code: "1AU", zone_label: "Zone 1AU – La Savatterie", zone_type: "AU",
+    summary: "Secteur résidentiel à urbaniser à court terme dans le vallon.",
     rules: [
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol selon secteur, cohérente avec la ZAC existante.", summary: "Variable selon secteur" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur variable selon l'emplacement : 10 à 14 mètres.", value_min: 10, value_max: 14, unit: "m", summary: "10-14m selon emplacement" },
-      { article_number: 13, topic: "espaces_verts", rule_text: "Au moins 25% d'espaces libres en pleine terre.", value_min: 25, unit: "%", summary: "≥25% pleine terre" },
+      { article_number: 6,  topic: "recul_voie",   rule_text: "Recul minimal de 5 m.", value_min: 5, unit: "m", summary: "≥5m" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Emprise au sol max 50%.", value_max: 50, unit: "%", summary: "≤50%" },
+      { article_number: 10, topic: "hauteur",       rule_text: "Hauteur maximale de 7,5 m au faîtage pour s'insérer dans le vallon.", value_max: 7.5, unit: "m", summary: "≤7,5m faîtage" },
+      { article_number: 13, topic: "espaces_verts", rule_text: "≥40% d'espaces libres en pleine terre.", value_min: 40, unit: "%", summary: "≥40% pleine terre" },
     ],
   },
   {
-    zone_code: "AUH",
-    zone_label: "Zone AUH – Urbanisation future résidentielle",
-    zone_type: "AU",
-    summary: "Secteurs futurs (Les Galbrunes, La Butorderie, L'Aigrefin). Non constructibles sans révision PLU. Extensions bâti existant +50% max 50m² tolérées.",
+    zone_code: "1AUZ", zone_label: "Zone 1AUZ – ZAC Pasqueraie 3e tranche", zone_type: "AU",
+    summary: "Dernière tranche ZAC Pasqueraie. 25% logements sociaux requis.",
     rules: [
-      { article_number: 9, topic: "emprise_sol", rule_text: "Seules les extensions des constructions existantes sont autorisées : +50% de l'emprise existante avec un maximum de 50m². Toute nouvelle construction nécessite une révision du PLU.", value_max: 50, unit: "m²", conditions: "Extensions uniquement; révision PLU pour construire", summary: "Extensions seules (+50% max 50m²)" },
+      { article_number: 9,  topic: "emprise_sol",   rule_text: "Emprise au sol cohérente avec la ZAC existante, selon secteur.", summary: "Variable selon secteur" },
+      { article_number: 10, topic: "hauteur",       rule_text: "Hauteur variable selon l'emplacement : 10 à 14 m.", value_min: 10, value_max: 14, unit: "m", summary: "10-14m selon emplacement" },
+      { article_number: 13, topic: "espaces_verts", rule_text: "≥25% d'espaces libres en pleine terre.", value_min: 25, unit: "%", summary: "≥25% pleine terre" },
     ],
   },
   {
-    zone_code: "AUY",
-    zone_label: "Zone AUY – Urbanisation future économique",
-    zone_type: "AU",
-    summary: "Extension future de la zone d'activités Carrefour en Touraine. Inconstructible sauf extensions existantes.",
+    zone_code: "AUH", zone_label: "Zone AUH – Urbanisation future résidentielle", zone_type: "AU",
+    summary: "Secteurs futurs (Les Galbrunes, La Butorderie). Inconstructible sans révision PLU.",
     rules: [
-      { article_number: 9, topic: "emprise_sol", rule_text: "Seules les extensions des constructions existantes sont autorisées dans la limite de 50% de l'emprise existante. Toute nouvelle construction nécessite une modification du PLU.", value_max: 50, unit: "%", conditions: "Extensions bâti existant uniquement", summary: "Extensions seules (+50% existant)" },
-    ],
-  },
-  // ── ZONES AGRICOLES ────────────────────────────────────────────────────────
-  {
-    zone_code: "A",
-    zone_label: "Zone A – Agricole",
-    zone_type: "A",
-    summary: "Protège le potentiel agronomique et paysager. Secteurs : Ad (diversification), Ah (habitat isolé +50m²), Ap (protection paysagère stricte – inconstructible).",
-    rules: [
-      { article_number: 9, topic: "emprise_sol", rule_text: "Emprise au sol non réglementée pour l'exploitation agricole. Ah : extension limitée à 50% de l'emprise existante avec maximum 50m². Ad : nouvelles constructions ≤50% de l'emprise existante.", summary: "Libre (Ah: +50% max 50m²; Ap: inconstructible)" },
-      { article_number: 10, topic: "hauteur", rule_text: "Hauteur maximale de 4 mètres à l'égout de toiture pour les bâtiments à usage d'habitation. Pas de limite pour les bâtiments agricoles. Secteur Ah : extensions à la hauteur du bâtiment existant ; annexes 3m max.", value_max: 4, unit: "m", conditions: "Habitation seule; agricole libre; Ah annexes 3m", summary: "4m égout (habitation)" },
-    ],
-  },
-  // ── ZONES NATURELLES ───────────────────────────────────────────────────────
-  {
-    zone_code: "N",
-    zone_label: "Zone N – Naturelle et forestière",
-    zone_type: "N",
-    summary: "Espaces naturels et boisés protégés. Secteurs : Nh (bâti existant +50m²), Ng (golf 20%), Na (gens du voyage 5%), Nb (club canin 300m²), Nf (forage 50%).",
-    rules: [
-      { article_number: 9, topic: "emprise_sol", rule_text: "Inconstructible en principe. Secteurs tolérés : Nh (+50% max 50m²), Ng (20%), Na (5%), Nb (300m²), Nf (50%).", summary: "Inconstructible (secteurs: Nh/Ng/Na/Nb/Nf)" },
-      { article_number: 10, topic: "hauteur", rule_text: "Non réglementé sauf : Nh (hauteur existant; annexes 3m), Ng (5m max), Nb et Na (6m max), Nf (6m max).", summary: "Libre (secteurs: Nh ext./3m; Ng 5m; autres 6m)" },
+      { article_number: 9, topic: "emprise_sol", rule_text: "Extensions uniquement : +50% de l'emprise existante, max 50 m². Nouvelle construction = révision PLU obligatoire.", value_max: 50, unit: "m²", conditions: "Extensions uniquement; révision PLU pour construire", summary: "Extensions seules (+50% max 50m²)" },
     ],
   },
   {
-    zone_code: "NI",
-    zone_label: "Zone NI – Inondable (vallée du Cher)",
-    zone_type: "N",
-    summary: "Val de Tours–Val de Luynes, soumis au PPRI. NI1 (aléa faible à fort), NI2 (aléa fort fréquent), NI3 (lit du Cher – très fort). Sous-sols interdits.",
+    zone_code: "AUY", zone_label: "Zone AUY – Urbanisation future économique", zone_type: "AU",
+    summary: "Extension future zone activités Carrefour. Inconstructible sauf extensions.",
     rules: [
-      { article_number: 9, topic: "emprise_sol", rule_text: "Extensions très limitées du bâti existant uniquement : maximum 50m² sous conditions strictes. Toute extension doit prévoir un étage refuge au-dessus des plus hautes eaux connues.", value_max: 50, unit: "m²", conditions: "PPRI; étage refuge obligatoire; sous-sols interdits", summary: "Extensions ≤50m² avec étage refuge" },
-      { article_number: 10, topic: "hauteur", rule_text: "Plancher habitable des nouvelles constructions surélevé d'au moins 0,50 mètre par rapport au sol naturel. Étage refuge obligatoire au-dessus des plus hautes eaux connues.", value_min: 0.5, unit: "m", conditions: "Surélévation +0.50m NGF; étage refuge PHEC", summary: "Plancher +0.50m NGF; étage refuge PHEC" },
+      { article_number: 9, topic: "emprise_sol", rule_text: "Extensions du bâti existant uniquement : +50% de l'emprise existante. Nouvelle construction = modification PLU obligatoire.", value_max: 50, unit: "%", conditions: "Extensions bâti existant uniquement", summary: "Extensions seules (+50% existant)" },
+    ],
+  },
+  {
+    zone_code: "A", zone_label: "Zone A – Agricole", zone_type: "A",
+    summary: "Protège le potentiel agronomique. Ad (diversification), Ah (habitat isolé), Ap (protection paysagère — inconstructible).",
+    rules: [
+      { article_number: 9,  topic: "emprise_sol", rule_text: "Libre pour l'exploitation agricole. Ah : +50% de l'emprise existante max 50 m². Ap : inconstructible.", summary: "Libre (Ah: +50% max 50m²; Ap: inconstructible)" },
+      { article_number: 10, topic: "hauteur",     rule_text: "4 m à l'égout pour les habitations. Pas de limite pour les bâtiments agricoles. Ah annexes : 3 m max.", value_max: 4, unit: "m", conditions: "Habitation seule; agricole libre; Ah annexes 3m", summary: "4m égout (habitation)" },
+    ],
+  },
+  {
+    zone_code: "N", zone_label: "Zone N – Naturelle et forestière", zone_type: "N",
+    summary: "Espaces naturels et boisés protégés. Nh (bâti +50m²), Ng (golf 20%), Na (gens du voyage 5%), Nb, Nf.",
+    rules: [
+      { article_number: 9,  topic: "emprise_sol", rule_text: "Inconstructible en principe. Secteurs tolérés : Nh (+50% max 50 m²), Ng (20%), Na (5%), Nb (300 m²), Nf (50%).", summary: "Inconstructible (secteurs: Nh/Ng/Na/Nb/Nf)" },
+      { article_number: 10, topic: "hauteur",     rule_text: "Non réglementé sauf : Nh (hauteur existant; annexes 3 m), Ng (5 m max), Nb/Na/Nf (6 m max).", summary: "Libre (Nh ext./3m; Ng 5m; autres 6m)" },
+    ],
+  },
+  {
+    zone_code: "NI", zone_label: "Zone NI – Inondable (vallée du Cher)", zone_type: "N",
+    summary: "Val de Tours–Val de Luynes, PPRI. NI1 (aléa faible à fort), NI2 (fort fréquent), NI3 (lit du Cher).",
+    rules: [
+      { article_number: 9,  topic: "emprise_sol", rule_text: "Extensions très limitées : max 50 m² sous conditions strictes PPRI. Étage refuge au-dessus des plus hautes eaux connues obligatoire.", value_max: 50, unit: "m²", conditions: "PPRI; étage refuge; sous-sols interdits", summary: "Extensions ≤50m² avec étage refuge" },
+      { article_number: 10, topic: "hauteur",     rule_text: "Plancher habitable surélevé d'au moins 0,50 m par rapport au sol naturel. Étage refuge obligatoire au-dessus des PHEC.", value_min: 0.5, unit: "m", conditions: "Surélévation +0.50m NGF; étage refuge PHEC", summary: "Plancher +0.50m NGF; étage refuge PHEC" },
     ],
   },
 ];
 
-// ── AI extraction from PDF ────────────────────────────────────────────────────
+// ── Pass 1 — Zone discovery ────────────────────────────────────────────────────
 
-async function extractRulesWithAI(pdfText: string, zone_code: string): Promise<typeof BALLAN_MIRE_ZONES[0]["rules"]> {
-  const client = new Anthropic();
+async function discoverZones(
+  pdfText: string,
+  client: Anthropic,
+): Promise<Array<{ code: string; label: string; type: string }>> {
+  // First try a fast regex scan (works for most standard French PLUs)
+  const regexFound = new Map<string, boolean>();
+  const patterns = [
+    /(?:^|\n)\s*(?:ZONE|Zone)\s+([A-Z][A-Z0-9]*(?:[a-z][A-Z0-9]*)?)\s*(?:[-–—]|\n)/gm,
+    /(?:^|\n)\s*([A-Z][A-Z0-9]*)\s*[-–—]\s*(?:Zone|ZONE)\s+/gm,
+  ];
+  for (const re of patterns) {
+    for (const m of pdfText.matchAll(re)) {
+      if (m[1] && m[1].length >= 1 && m[1].length <= 6) regexFound.set(m[1], true);
+    }
+  }
 
-  const prompt = `Tu es un expert en droit de l'urbanisme français.
-Voici le texte du règlement PLU pour la zone ${zone_code}.
-Extrais les règles quantitatives pour les articles suivants uniquement :
-- Article 6 (recul voirie) → topic: "recul_voie"
-- Article 7 (recul limites séparatives) → topic: "recul_limite"
-- Article 9 (emprise au sol) → topic: "emprise_sol"
-- Article 10 (hauteur maximale) → topic: "hauteur"
-- Article 12 (stationnement) → topic: "stationnement"
-- Article 13 (espaces verts) → topic: "espaces_verts"
+  // If regex found ≥2 zones, trust it and enrich via Claude
+  const regexCodes = [...regexFound.keys()];
+  if (regexCodes.length >= 2) {
+    console.log(`  → Regex detected ${regexCodes.length} zones: ${regexCodes.join(", ")}`);
+    // Enrich with labels + types using Claude
+    const msg = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 1000,
+      messages: [{
+        role: "user",
+        content: `Voici les codes de zones détectés dans un PLU français: ${regexCodes.join(", ")}.
+Pour chaque code, déduis le type de zone (U, AU, A ou N — premier caractère significatif du code) et propose un label court.
+Retourne UNIQUEMENT un JSON array: [{"code":"UA","label":"Zone UA – …","type":"U"}, …]
+Règles: type = "U" si commence par U, "AU" si commence par AU ou 1AU ou 2AU, "A" si commence par A (hors AU), "N" si commence par N.`,
+      }],
+    });
+    try {
+      const text = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
+      const arr = JSON.parse(text.match(/\[[\s\S]*\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
+      if (arr.length > 0) return arr;
+    } catch { /* fall through */ }
+  }
 
-Pour chaque règle, retourne un JSON array avec les champs :
-{
-  "article_number": number,
-  "topic": string,
-  "rule_text": string (texte exact ou reformulé fidèlement),
-  "value_min": number | null,
-  "value_max": number | null,
-  "value_exact": number | null,
-  "unit": "m" | "%" | "m²" | null,
-  "conditions": string | null (cas particuliers, secteurs spéciaux),
-  "summary": string (résumé en 10 mots max)
-}
-
-Si une règle dit "Non réglementé", inclus-la quand même avec value_min/max/exact à null.
-Réponds UNIQUEMENT avec le JSON array, sans texte supplémentaire.
-
-TEXTE DU RÈGLEMENT :
-${pdfText.slice(0, 8000)}`;
-
-  const message = await client.messages.create({
+  // Fallback: full Claude zone discovery from first 10000 chars
+  console.log("  → Regex insufficient — using Claude for zone discovery…");
+  const sample = pdfText.slice(0, 10000);
+  const msg = await client.messages.create({
     model: "claude-sonnet-4-6",
-    max_tokens: 2000,
-    messages: [{ role: "user", content: prompt }],
+    max_tokens: 1500,
+    messages: [{
+      role: "user",
+      content: `Tu es expert en documents d'urbanisme français. Voici le début d'un règlement PLU.
+Identifie TOUTES les zones qui ont un règlement distinct dans ce document (UA, UB, UC, N, A, 1AU, NI, etc.).
+N'inclus PAS les sous-secteurs qui n'ont pas de règlement propre (ex: UBa si UBa est juste mentionné dans UB).
+Pour chaque zone:
+  - code: code exact (ex: "UA", "1AU", "NI")
+  - label: libellé court (ex: "Zone UA – Centre ancien")
+  - type: "U" | "AU" | "A" | "N" (classification réglementaire)
+
+Retourne UNIQUEMENT un JSON array. Exemple:
+[{"code":"UA","label":"Zone UA – Centre ancien","type":"U"},{"code":"N","label":"Zone N – Naturelle","type":"N"}]
+
+TEXTE DU PLU:
+${sample}`,
+    }],
   });
 
-  const content = message.content[0]!;
-  if (content.type !== "text") return [];
-
+  const text = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
   try {
-    const jsonMatch = content.text.match(/\[[\s\S]*\]/);
-    if (!jsonMatch) return [];
-    return JSON.parse(jsonMatch[0]);
+    const arr = JSON.parse(text.match(/\[[\s\S]*\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
+    console.log(`  → Claude detected ${arr.length} zones: ${arr.map(z => z.code).join(", ")}`);
+    return arr;
   } catch {
-    console.error(`Failed to parse AI response for zone ${zone_code}`);
+    console.error("  ✗ Zone discovery failed — check PDF quality");
     return [];
   }
+}
+
+// ── Pass 2 — Extract rules for one zone ───────────────────────────────────────
+
+async function extractZoneRules(
+  zoneCode: string,
+  zoneText: string,
+  client: Anthropic,
+): Promise<RuleInput[]> {
+  const prompt = `Tu es expert en droit de l'urbanisme français.
+Voici le texte du règlement PLU pour la zone ${zoneCode}.
+Extrais toutes les règles quantitatives des articles suivants:
+
+| Article | Topic (identifiant) |
+|---------|---------------------|
+| Art 1-2 | "destinations"      |
+| Art 5   | "terrain_min"       |
+| Art 6   | "recul_voie"        |
+| Art 7   | "recul_limite"      |
+| Art 8   | "recul_batiments"   |
+| Art 9   | "emprise_sol"       |
+| Art 10  | "hauteur"           |
+| Art 11  | "aspect"            |
+| Art 12  | "stationnement"     |
+| Art 13  | "espaces_verts"     |
+| Art 14  | "cos"               |
+
+Pour chaque article présent, retourne un objet JSON:
+{
+  "article_number": <number>,
+  "article_title": <string — titre de l'article tel qu'il apparaît>,
+  "topic": <identifiant ci-dessus>,
+  "rule_text": <texte fidèle ou reformulé de manière concise>,
+  "value_min": <number | null>,
+  "value_max": <number | null>,
+  "value_exact": <number | null>,
+  "unit": "m" | "%" | "m²" | "places" | null,
+  "conditions": <cas particuliers, secteurs spéciaux, ou null>,
+  "summary": <résumé en 10 mots max>
+}
+
+Règles importantes:
+- Si "Non réglementé" ou "sans objet", inclus quand même la règle avec values à null.
+- Si plusieurs valeurs selon secteurs (ex: "UC: 50%, UCa: 40%"), mets la valeur principale et les variantes dans "conditions".
+- Inclus UNIQUEMENT les articles présents dans le texte.
+- Réponds UNIQUEMENT avec un JSON array valide, sans texte autour.
+
+TEXTE:
+${zoneText.slice(0, 14000)}`;
+
+  try {
+    const msg = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 3000,
+      messages: [{ role: "user", content: prompt }],
+    });
+    const text = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
+    const arr = JSON.parse(text.match(/\[[\s\S]*\]/)?.[0] ?? "[]") as RuleInput[];
+    return arr;
+  } catch (e) {
+    console.error(`  ✗ Rule extraction failed for zone ${zoneCode}:`, e);
+    return [];
+  }
+}
+
+// ── Find zone text section in full PDF ────────────────────────────────────────
+
+function extractZoneSection(fullText: string, zoneCode: string, allCodes: string[]): string {
+  // Build patterns that match common French PLU zone headers
+  const escaped = zoneCode.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const headerPatterns = [
+    new RegExp(`(?:^|\\n)[ \\t]*(?:ZONE|Zone)[ \\t]+${escaped}[ \\t]*(?:[-–—]|\\n)`, "m"),
+    new RegExp(`(?:^|\\n)[ \\t]*${escaped}[ \\t]*[-–—][ \\t]*(?:Zone|ZONE|zone)`, "m"),
+    new RegExp(`(?:^|\\n)[ \\t]*CHAPITRE[^\\n]*[ \\t]+${escaped}\\b`, "m"),
+    new RegExp(`(?:^|\\n)[ \\t]*${escaped}\\b[^\\n]*\\n[ \\t]*DISPOSITIONS`, "m"),
+  ];
+
+  let startIdx = -1;
+  for (const re of headerPatterns) {
+    const m = fullText.match(re);
+    if (m?.index !== undefined) { startIdx = m.index; break; }
+  }
+  if (startIdx === -1) return "";
+
+  // Find the end: start of the next zone section
+  const otherCodes = allCodes.filter(c => c !== zoneCode);
+  let endIdx = fullText.length;
+  for (const other of otherCodes) {
+    const escapedOther = other.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const re = new RegExp(`(?:^|\\n)[ \\t]*(?:ZONE|Zone)[ \\t]+${escapedOther}[ \\t]*(?:[-–—]|\\n)`, "m");
+    const m = fullText.slice(startIdx + 200).match(re);
+    if (m?.index !== undefined) {
+      const candidate = startIdx + 200 + m.index;
+      if (candidate < endIdx) endIdx = candidate;
+    }
+  }
+
+  return fullText.slice(startIdx, Math.min(endIdx, startIdx + 18000));
 }
 
 // ── DB upsert ──────────────────────────────────────────────────────────────────
 
 async function upsertZoneAndRules(
   commune_id: string,
-  zoneData: typeof BALLAN_MIRE_ZONES[0],
+  zoneData: ZoneInput,
+  validationStatus: "valide" | "brouillon",
 ): Promise<void> {
   // Upsert zone
-  const existing = await db.select().from(zones)
+  const [existing] = await db.select({ id: zones.id })
+    .from(zones)
     .where(and(eq(zones.commune_id, commune_id), eq(zones.zone_code, zoneData.zone_code)))
     .limit(1);
 
   let zone_id: string;
-  if (existing[0]) {
-    zone_id = existing[0].id;
+  if (existing) {
+    zone_id = existing.id;
     await db.update(zones)
       .set({ zone_label: zoneData.zone_label, zone_type: zoneData.zone_type, summary: zoneData.summary, updated_at: new Date() })
       .where(eq(zones.id, zone_id));
-    console.log(`  ↻ Mise à jour zone ${zoneData.zone_code}`);
+    console.log(`  ↻ Zone ${zoneData.zone_code} mise à jour`);
   } else {
     const [created] = await db.insert(zones).values({
       commune_id,
@@ -333,110 +434,144 @@ async function upsertZoneAndRules(
       is_active: true,
     }).returning();
     zone_id = created!.id;
-    console.log(`  + Création zone ${zoneData.zone_code}`);
+    console.log(`  + Zone ${zoneData.zone_code} créée`);
   }
 
   // Upsert rules
+  let newCount = 0, updateCount = 0;
   for (const rule of zoneData.rules) {
-    const existingRule = await db.select().from(zone_regulatory_rules)
-      .where(and(
-        eq(zone_regulatory_rules.zone_id, zone_id),
-        eq(zone_regulatory_rules.topic, rule.topic),
-      ))
+    const [existingRule] = await db.select({ id: zone_regulatory_rules.id })
+      .from(zone_regulatory_rules)
+      .where(and(eq(zone_regulatory_rules.zone_id, zone_id), eq(zone_regulatory_rules.topic, rule.topic)))
       .limit(1);
 
-    if (existingRule[0]) {
-      await db.update(zone_regulatory_rules).set({
-        article_number: rule.article_number,
-        rule_text: rule.rule_text,
-        value_min: rule.value_min ?? null,
-        value_max: rule.value_max ?? null,
-        value_exact: rule.value_exact ?? null,
-        unit: rule.unit ?? null,
-        conditions: rule.conditions ?? null,
-        summary: rule.summary ?? null,
-        validation_status: "valide",
-        updated_at: new Date(),
-      }).where(eq(zone_regulatory_rules.id, existingRule[0].id));
+    const payload = {
+      article_number: rule.article_number ?? null,
+      article_title: rule.article_title ?? `Article ${rule.article_number}`,
+      topic: rule.topic,
+      rule_text: rule.rule_text,
+      value_min: rule.value_min ?? null,
+      value_max: rule.value_max ?? null,
+      value_exact: rule.value_exact ?? null,
+      unit: rule.unit ?? null,
+      conditions: rule.conditions ?? null,
+      summary: rule.summary ?? null,
+      validation_status: validationStatus,
+    };
+
+    if (existingRule) {
+      await db.update(zone_regulatory_rules).set({ ...payload, updated_at: new Date() }).where(eq(zone_regulatory_rules.id, existingRule.id));
+      updateCount++;
     } else {
-      await db.insert(zone_regulatory_rules).values({
-        zone_id,
-        article_number: rule.article_number,
-        article_title: `Article ${rule.article_number}`,
-        topic: rule.topic,
-        rule_text: rule.rule_text,
-        value_min: rule.value_min ?? null,
-        value_max: rule.value_max ?? null,
-        value_exact: rule.value_exact ?? null,
-        unit: rule.unit ?? null,
-        conditions: rule.conditions ?? null,
-        summary: rule.summary ?? null,
-        validation_status: "valide",
-      });
+      await db.insert(zone_regulatory_rules).values({ zone_id, ...payload });
+      newCount++;
     }
-    console.log(`    • ${rule.topic}: ${rule.summary ?? rule.rule_text.slice(0, 50)}`);
+    console.log(`    • [${validationStatus}] ${rule.topic}: ${rule.summary ?? rule.rule_text.slice(0, 60)}`);
   }
+  console.log(`    → ${newCount} créée(s), ${updateCount} mise(s) à jour`);
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 async function main() {
-  console.log(`\n🏙️  Ingestion PLU — ${COMMUNE_SLUG.toUpperCase()}`);
-  console.log(`Mode: ${SEED_MODE ? "seed (règles manuelles)" : PDF_PATH ? "extraction IA" : "seed (défaut)"}\n`);
+  console.log(`\n🏙️  Ingestion PLU — ${COMMUNE_NAME} (INSEE ${INSEE_CODE})`);
 
-  // Find or create commune
-  const communeName = COMMUNE_SLUG.replace(/-/g, " ").replace(/\b\w/g, c => c.toUpperCase());
-  const inseeCode = COMMUNE_SLUG === "ballan-mire" ? "37018" : "00000";
+  const mode = SEED_MODE ? "seed (règles Ballan-Miré vérifiées)" : PDF_PATH ? `extraction IA → ${PDF_PATH}` : "seed (défaut)";
+  console.log(`Mode: ${mode}${DRY_RUN ? " [DRY RUN]" : ""}\n`);
 
-  let commune = (await db.select().from(communes).where(eq(communes.insee_code, inseeCode)).limit(1))[0];
+  // Upsert commune
+  let commune = (await db.select().from(communes).where(eq(communes.insee_code, INSEE_CODE)).limit(1))[0];
   if (!commune) {
-    const [created] = await db.insert(communes).values({
-      name: communeName,
-      insee_code: inseeCode,
-      zip_code: "37510",
-    }).returning();
-    commune = created!;
-    console.log(`✓ Commune créée : ${communeName} (${inseeCode})`);
+    if (DRY_RUN) {
+      console.log(`[DRY RUN] Commune créée : ${COMMUNE_NAME} (${INSEE_CODE})`);
+    } else {
+      const [created] = await db.insert(communes).values({ name: COMMUNE_NAME, insee_code: INSEE_CODE, zip_code: ZIP_CODE }).returning();
+      commune = created!;
+      console.log(`✓ Commune créée : ${COMMUNE_NAME} (${INSEE_CODE})`);
+    }
   } else {
     console.log(`✓ Commune trouvée : ${commune.name}`);
   }
 
-  const zonesToProcess = SEED_MODE || !PDF_PATH ? BALLAN_MIRE_ZONES : [];
-
-  if (PDF_PATH && !SEED_MODE) {
-    // AI extraction mode
-    console.log(`\nExtraction du texte du PDF...`);
-    let pdfText: string;
-    try {
-      pdfText = execSync(`pdftotext "${PDF_PATH}" -`, { encoding: "utf-8", maxBuffer: 20 * 1024 * 1024 });
-    } catch (e) {
-      console.error("Erreur pdftotext:", e);
-      process.exit(1);
+  // Seed mode (Ballan-Miré)
+  if (SEED_MODE || !PDF_PATH) {
+    if (INSEE_CODE !== "37018") {
+      console.warn("⚠  --seed contient uniquement les règles de Ballan-Miré (37018). Pour une autre commune, utilisez --pdf.");
     }
-
-    // Parse zones from PDF text
-    const zoneMatches = pdfText.matchAll(/RÈGLEMENT – ZONE ([A-Z0-9]+)\n([\s\S]*?)(?=RÈGLEMENT – ZONE [A-Z0-9]+|$)/g);
-    for (const match of zoneMatches) {
-      const zone_code = match[1]!;
-      const zoneText = match[2]!;
-      console.log(`\nExtraction IA pour zone ${zone_code}...`);
-      const rules = await extractRulesWithAI(zoneText, zone_code);
-      if (rules.length > 0) {
-        zonesToProcess.push({ zone_code, zone_label: `Zone ${zone_code}`, zone_type: zone_code[0] ?? "U", summary: "", rules });
-      }
+    console.log(`\nTraitement de ${BALLAN_MIRE_ZONES.length} zones (règles vérifiées)...\n`);
+    for (const z of BALLAN_MIRE_ZONES) {
+      if (!DRY_RUN && commune) await upsertZoneAndRules(commune.id, z, "valide");
+      else console.log(`[DRY RUN] Zone ${z.zone_code}: ${z.rules.length} règle(s)`);
     }
+    console.log(`\n✅ Seed terminé — ${BALLAN_MIRE_ZONES.length} zones, ${COMMUNE_NAME}`);
+    return;
   }
 
-  console.log(`\nTraitement de ${zonesToProcess.length} zones...\n`);
-  for (const zoneData of zonesToProcess) {
-    if (!DRY_RUN) {
-      await upsertZoneAndRules(commune.id, zoneData);
+  // PDF extraction mode
+  if (!fs.existsSync(PDF_PATH)) { console.error(`✗ Fichier non trouvé : ${PDF_PATH}`); process.exit(1); }
+
+  console.log("Extraction du texte PDF (pdftotext)…");
+  let pdfText: string;
+  try {
+    pdfText = execSync(`pdftotext "${PDF_PATH}" -`, { encoding: "utf-8", maxBuffer: 30 * 1024 * 1024 });
+  } catch (e) {
+    console.error("✗ pdftotext échoué. Assurez-vous que poppler-utils est installé (apt install poppler-utils).", e);
+    process.exit(1);
+  }
+  console.log(`  → ${pdfText.length.toLocaleString()} caractères extraits\n`);
+
+  const client = new Anthropic();
+
+  // Pass 1 — Zone discovery
+  console.log("Pass 1 — Identification des zones…");
+  const discoveredZones = await discoverZones(pdfText, client);
+  if (discoveredZones.length === 0) {
+    console.error("✗ Aucune zone identifiée. Vérifiez la qualité du PDF (scan OCR requis ?).");
+    process.exit(1);
+  }
+  console.log(`  ✓ ${discoveredZones.length} zones identifiées\n`);
+
+  // Pass 2 — Rule extraction per zone
+  const allCodes = discoveredZones.map(z => z.code);
+  let totalRules = 0;
+
+  for (const zoneInfo of discoveredZones) {
+    console.log(`\nZone ${zoneInfo.code} — ${zoneInfo.label}`);
+
+    const zoneText = extractZoneSection(pdfText, zoneInfo.code, allCodes);
+    if (!zoneText) {
+      console.warn(`  ⚠ Section de texte introuvable pour ${zoneInfo.code} — zone ignorée`);
+      continue;
+    }
+    console.log(`  → Section de ${zoneText.length} caractères`);
+
+    const rules = await extractZoneRules(zoneInfo.code, zoneText, client);
+    if (rules.length === 0) {
+      console.warn(`  ⚠ Aucune règle extraite pour ${zoneInfo.code}`);
+      continue;
+    }
+    console.log(`  → ${rules.length} règle(s) extraite(s)`);
+
+    const zoneData: ZoneInput = {
+      zone_code: zoneInfo.code,
+      zone_label: zoneInfo.label,
+      zone_type: zoneInfo.type,
+      summary: "",
+      rules,
+    };
+
+    if (!DRY_RUN && commune) {
+      await upsertZoneAndRules(commune.id, zoneData, "brouillon");
     } else {
-      console.log(`[DRY RUN] Zone ${zoneData.zone_code}: ${zoneData.rules.length} règles`);
+      rules.forEach(r => console.log(`    [DRY RUN] • ${r.topic}: ${r.summary ?? r.rule_text.slice(0, 60)}`));
     }
+    totalRules += rules.length;
   }
 
-  console.log(`\n✅ Ingestion terminée — ${zonesToProcess.length} zones, commune ${communeName}`);
+  console.log(`\n✅ Extraction IA terminée — ${discoveredZones.length} zones, ${totalRules} règles`);
+  if (!DRY_RUN) {
+    console.log(`   → Statut : "brouillon" — en attente de validation par l'instructeur dans HEUREKA`);
+  }
 }
 
 main().catch(e => { console.error(e); process.exit(1); });

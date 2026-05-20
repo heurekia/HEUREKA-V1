@@ -9,6 +9,7 @@ const NAV_ITEMS = [
   { label: "Calendrier", icon: CalendarIcon, path: "/mairie/calendrier" },
   { label: "Messagerie", icon: MessageIcon, badge: 2, path: "/mairie/messagerie" },
   { label: "Carte", icon: MapIcon, path: "/mairie/carte" },
+  { label: "Réglementation", icon: RulesIcon, path: "/mairie/reglementation" },
   { label: "Statistiques", icon: ChartIcon, path: "/mairie/statistiques" },
   { label: "Paramètres", icon: SettingsIcon, path: "/mairie/parametres" },
 ];
@@ -63,6 +64,14 @@ function SettingsIcon({ size = 18, className = "" }) {
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
       <circle cx="12" cy="12" r="3" /><path d="M19.07 4.93a10 10 0 010 14.14M4.93 4.93a10 10 0 000 14.14" />
       <path d="M12 2v2M12 20v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M2 12h2M20 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42" />
+    </svg>
+  );
+}
+function RulesIcon({ size = 18, className = "" }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" className={className}>
+      <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" />
+      <line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" />
     </svg>
   );
 }
@@ -1755,6 +1764,392 @@ function StatistiquesScreen() {
           </table>
         </div>
       )}
+    </div>
+  );
+}
+
+// ── Réglementation screen ──────────────────────────────────────────────────────
+
+type RuleRow = {
+  id: string; zone_id: string; article_number: number | null; article_title: string | null;
+  topic: string; rule_text: string; value_min: number | null; value_max: number | null;
+  value_exact: number | null; unit: string | null; conditions: string | null; summary: string | null;
+  instructor_note: string | null; validation_status: string;
+};
+type ZoneRow = {
+  id: string; zone_code: string; zone_label: string; zone_type: string; summary: string | null;
+  rules: RuleRow[];
+  stats: { total: number; valide: number; brouillon: number; rejete: number };
+};
+type ReglData = { commune: { id: string; name: string; insee_code: string }; zones: ZoneRow[] };
+
+const TOPIC_META: Record<string, { label: string; icon: string }> = {
+  recul_voie:      { label: "Recul voirie",      icon: "🛣️" },
+  recul_limite:    { label: "Recul limites",      icon: "📐" },
+  recul_batiments: { label: "Entre bâtiments",    icon: "🏢" },
+  terrain_min:     { label: "Surface minimale",   icon: "📏" },
+  emprise_sol:     { label: "Emprise au sol",     icon: "🏠" },
+  hauteur:         { label: "Hauteur max.",       icon: "📏" },
+  stationnement:   { label: "Stationnement",      icon: "🅿️" },
+  espaces_verts:   { label: "Espaces verts",      icon: "🌳" },
+  aspect:          { label: "Aspect extérieur",   icon: "🎨" },
+  destinations:    { label: "Destinations",       icon: "🏗️" },
+  cos:             { label: "COS",                icon: "📊" },
+  general:         { label: "Général",            icon: "📋" },
+};
+
+const ZONE_TYPE_STYLE: Record<string, { bg: string; color: string; border: string; label: string }> = {
+  U:  { bg: "#EEF2FF", color: "#4338CA", border: "#C7D2FE", label: "Urbaine" },
+  AU: { bg: "#FFF7ED", color: "#C2410C", border: "#FED7AA", label: "À urbaniser" },
+  A:  { bg: "#FEFCE8", color: "#A16207", border: "#FDE68A", label: "Agricole" },
+  N:  { bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0", label: "Naturelle" },
+};
+
+function ReglementationScreen({ commune }: { commune: string }) {
+  const [data, setData] = useState<ReglData | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState<Partial<RuleRow>>({});
+  const [saving, setSaving] = useState(false);
+  const [addingZoneId, setAddingZoneId] = useState<string | null>(null);
+  const [newRule, setNewRule] = useState<Partial<RuleRow>>({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
+
+  const load = () => {
+    setLoading(true);
+    api.get<ReglData>(`/mairie/reglementation?commune_name=${encodeURIComponent(commune)}`)
+      .then(d => { setData(d); if (!selectedZoneId && d.zones[0]) setSelectedZoneId(d.zones[0].id); })
+      .catch(() => setData(null))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [commune]);
+
+  const patchRule = async (id: string, patch: Partial<RuleRow>) => {
+    setSaving(true);
+    try {
+      await api.patch(`/mairie/reglementation/rules/${id}`, patch);
+      setData(prev => prev ? {
+        ...prev,
+        zones: prev.zones.map(z => ({
+          ...z,
+          rules: z.rules.map(r => r.id === id ? { ...r, ...patch } : r),
+          stats: computeStats(z.rules.map(r => r.id === id ? { ...r, ...patch } : r)),
+        })),
+      } : null);
+    } finally { setSaving(false); }
+  };
+
+  const deleteRule = async (id: string) => {
+    if (!confirm("Supprimer cette règle ?")) return;
+    await api.delete(`/mairie/reglementation/rules/${id}`);
+    setData(prev => prev ? {
+      ...prev,
+      zones: prev.zones.map(z => ({
+        ...z,
+        rules: z.rules.filter(r => r.id !== id),
+        stats: computeStats(z.rules.filter(r => r.id !== id)),
+      })),
+    } : null);
+  };
+
+  const addRule = async (zoneId: string) => {
+    if (!newRule.rule_text || !newRule.topic) return;
+    const created = await api.post<RuleRow>(`/mairie/reglementation/zones/${zoneId}/rules`, newRule);
+    setData(prev => prev ? {
+      ...prev,
+      zones: prev.zones.map(z => z.id === zoneId
+        ? { ...z, rules: [...z.rules, created], stats: computeStats([...z.rules, created]) }
+        : z),
+    } : null);
+    setAddingZoneId(null);
+    setNewRule({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
+  };
+
+  const computeStats = (rules: RuleRow[]) => ({
+    total: rules.length,
+    valide: rules.filter(r => r.validation_status === "valide").length,
+    brouillon: rules.filter(r => r.validation_status === "brouillon" || r.validation_status === "draft").length,
+    rejete: rules.filter(r => r.validation_status === "rejete").length,
+  });
+
+  const selectedZone = data?.zones.find(z => z.id === selectedZoneId);
+  const totalStats = data ? data.zones.reduce((acc, z) => ({
+    total: acc.total + z.stats.total,
+    valide: acc.valide + z.stats.valide,
+  }), { total: 0, valide: 0 }) : null;
+
+  if (loading) return (
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 300 }}>
+      <div style={{ width: 32, height: 32, borderRadius: "50%", border: "3px solid #E2E8F0", borderTopColor: "#4F46E5", animation: "spin 0.8s linear infinite" }} />
+    </div>
+  );
+
+  if (!data) return (
+    <div style={{ padding: 40, textAlign: "center", color: "#9CA3AF" }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>🏙️</div>
+      <div style={{ fontWeight: 600, color: "#374151", marginBottom: 8 }}>Aucune donnée de réglementation</div>
+      <div style={{ fontSize: 13 }}>Lancez le script d'ingestion PLU pour {commune}</div>
+      <div style={{ marginTop: 16, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px 20px", display: "inline-block", fontFamily: "monospace", fontSize: 12, color: "#4F46E5" }}>
+        npx tsx src/scripts/ingest-plu.ts --commune "{commune}" --insee XXXXX --zip XXXXX --pdf reglement.pdf
+      </div>
+    </div>
+  );
+
+  const statusDot = (status: string) => {
+    const s = status === "valide" ? { bg: "#DCFCE7", color: "#15803D", label: "Validée" }
+      : status === "rejete" ? { bg: "#FEE2E2", color: "#DC2626", label: "Rejetée" }
+      : { bg: "#FEF9C3", color: "#A16207", label: "À valider" };
+    return (
+      <span style={{ background: s.bg, color: s.color, borderRadius: 20, padding: "2px 9px", fontSize: 11, fontWeight: 600 }}>{s.label}</span>
+    );
+  };
+
+  return (
+    <div style={{ display: "flex", height: "calc(100vh - 56px)", background: "#F8FAFC" }}>
+
+      {/* ── Left: zone list ── */}
+      <div style={{ width: 288, flexShrink: 0, borderRight: "1px solid #E2E8F0", background: "white", display: "flex", flexDirection: "column", overflowY: "auto" }}>
+        {/* Header */}
+        <div style={{ padding: "20px 20px 16px", borderBottom: "1px solid #F1F5F9" }}>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#000020", marginBottom: 4 }}>Réglementation PLU</div>
+          <div style={{ fontSize: 12, color: "#9CA3AF" }}>{commune}</div>
+          {totalStats && (
+            <div style={{ marginTop: 12, background: "#F8FAFC", borderRadius: 10, padding: "10px 14px", border: "1px solid #E2E8F0" }}>
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
+                <span style={{ fontSize: 12, color: "#6B7280" }}>Progression globale</span>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#4F46E5" }}>
+                  {totalStats.valide} / {totalStats.total}
+                </span>
+              </div>
+              <div style={{ height: 6, background: "#E2E8F0", borderRadius: 99, overflow: "hidden" }}>
+                <div style={{ height: "100%", width: `${totalStats.total ? (totalStats.valide / totalStats.total) * 100 : 0}%`, background: "#4F46E5", borderRadius: 99, transition: "width 0.3s" }} />
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Zone cards */}
+        <div style={{ flex: 1, padding: "12px 12px" }}>
+          {data.zones.map(zone => {
+            const ts = ZONE_TYPE_STYLE[zone.zone_type] ?? ZONE_TYPE_STYLE["U"]!;
+            const pct = zone.stats.total ? Math.round((zone.stats.valide / zone.stats.total) * 100) : 0;
+            const isSelected = zone.id === selectedZoneId;
+            return (
+              <button key={zone.id} onClick={() => setSelectedZoneId(zone.id)} style={{
+                width: "100%", border: `1px solid ${isSelected ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 10, padding: "12px 14px",
+                background: isSelected ? "#EEF2FF" : "white", marginBottom: 6, cursor: "pointer", textAlign: "left",
+                transition: "all 0.12s",
+              }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                  <span style={{ background: ts.bg, color: ts.color, border: `1px solid ${ts.border}`, borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 700 }}>
+                    {zone.zone_code}
+                  </span>
+                  <span style={{ fontSize: 12, color: "#374151", fontWeight: isSelected ? 600 : 400, flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                    {zone.zone_label.replace(/^Zone [A-Z0-9]+ [-–] /, "")}
+                  </span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <div style={{ flex: 1, height: 4, background: "#F1F5F9", borderRadius: 99, overflow: "hidden" }}>
+                    <div style={{ height: "100%", width: `${pct}%`, background: pct === 100 ? "#22C55E" : "#4F46E5", borderRadius: 99, transition: "width 0.3s" }} />
+                  </div>
+                  <span style={{ fontSize: 11, color: pct === 100 ? "#16A34A" : "#6B7280", fontWeight: 600, whiteSpace: "nowrap" }}>
+                    {pct === 100 ? "✓ Tout validé" : `${zone.stats.valide}/${zone.stats.total}`}
+                  </span>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      </div>
+
+      {/* ── Right: rules ── */}
+      <div style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}>
+        {!selectedZone ? (
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#9CA3AF", fontSize: 14 }}>
+            ← Sélectionnez une zone
+          </div>
+        ) : (
+          <>
+            {/* Zone header */}
+            <div style={{ marginBottom: 24 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 6 }}>
+                {(() => { const ts = ZONE_TYPE_STYLE[selectedZone.zone_type] ?? ZONE_TYPE_STYLE["U"]!; return (
+                  <span style={{ background: ts.bg, color: ts.color, border: `1px solid ${ts.border}`, borderRadius: 8, padding: "4px 12px", fontSize: 13, fontWeight: 700 }}>
+                    {selectedZone.zone_code} — {ts.label}
+                  </span>
+                ); })()}
+                <span style={{ fontSize: 16, fontWeight: 700, color: "#000020" }}>{selectedZone.zone_label}</span>
+              </div>
+              {selectedZone.summary && (
+                <p style={{ fontSize: 13, color: "#6B7280", margin: 0 }}>{selectedZone.summary}</p>
+              )}
+            </div>
+
+            {/* Rules list */}
+            <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+              {selectedZone.rules.length === 0 && (
+                <div style={{ textAlign: "center", padding: "40px 20px", color: "#9CA3AF", background: "white", borderRadius: 12, border: "1px dashed #E2E8F0" }}>
+                  Aucune règle pour cette zone.
+                </div>
+              )}
+
+              {selectedZone.rules.map(rule => {
+                const meta = TOPIC_META[rule.topic] ?? { label: rule.topic, icon: "📋" };
+                const isEditing = editingId === rule.id;
+                const statusColor = rule.validation_status === "valide" ? "#22C55E"
+                  : rule.validation_status === "rejete" ? "#EF4444" : "#F59E0B";
+
+                return (
+                  <div key={rule.id} style={{
+                    background: "white", borderRadius: 12, border: "1px solid #E2E8F0",
+                    borderLeft: `4px solid ${statusColor}`, overflow: "hidden",
+                  }}>
+                    {/* Rule header */}
+                    <div style={{ padding: "14px 18px", display: "flex", alignItems: "flex-start", gap: 12 }}>
+                      <span style={{ fontSize: 20, flexShrink: 0, marginTop: 1 }}>{meta.icon}</span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.04em" }}>
+                            {rule.article_number ? `Art. ${rule.article_number} • ` : ""}{meta.label}
+                          </span>
+                          {statusDot(rule.validation_status)}
+                        </div>
+                        {!isEditing && (
+                          <>
+                            <p style={{ margin: "0 0 4px", fontSize: 13, color: "#111827", lineHeight: 1.5 }}>{rule.rule_text}</p>
+                            {(rule.value_min != null || rule.value_max != null || rule.value_exact != null) && (
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                                {rule.value_min != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#374151" }}>min {rule.value_min} {rule.unit}</span>}
+                                {rule.value_max != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#374151" }}>max {rule.value_max} {rule.unit}</span>}
+                                {rule.value_exact != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#374151" }}>{rule.value_exact} {rule.unit}</span>}
+                                {rule.conditions && <span style={{ background: "#FFF7ED", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#C2410C" }}>⚠ {rule.conditions}</span>}
+                              </div>
+                            )}
+                          </>
+                        )}
+
+                        {/* Inline edit form */}
+                        {isEditing && (
+                          <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                            <textarea
+                              style={{ width: "100%", minHeight: 72, borderRadius: 8, border: "1px solid #C7D2FE", padding: "8px 10px", fontSize: 13, resize: "vertical", outline: "none", fontFamily: "inherit" }}
+                              value={editForm.rule_text ?? rule.rule_text}
+                              onChange={e => setEditForm(f => ({ ...f, rule_text: e.target.value }))}
+                            />
+                            <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                              {[["value_min", "Min"], ["value_max", "Max"], ["value_exact", "Exact"]].map(([field, label]) => (
+                                <label key={field} style={{ fontSize: 11, color: "#6B7280", display: "flex", alignItems: "center", gap: 4 }}>
+                                  {label}
+                                  <input type="number" style={{ width: 70, borderRadius: 6, border: "1px solid #E2E8F0", padding: "4px 6px", fontSize: 12, outline: "none" }}
+                                    value={(editForm[field as keyof RuleRow] ?? rule[field as keyof RuleRow]) as number ?? ""}
+                                    onChange={e => setEditForm(f => ({ ...f, [field as string]: e.target.value === "" ? null : Number(e.target.value) }))}
+                                  />
+                                </label>
+                              ))}
+                              <label style={{ fontSize: 11, color: "#6B7280", display: "flex", alignItems: "center", gap: 4 }}>
+                                Unité
+                                <select style={{ borderRadius: 6, border: "1px solid #E2E8F0", padding: "4px 6px", fontSize: 12, outline: "none" }}
+                                  value={(editForm.unit ?? rule.unit) ?? ""}
+                                  onChange={e => setEditForm(f => ({ ...f, unit: e.target.value || null }))}>
+                                  <option value="">—</option>
+                                  <option value="m">m</option>
+                                  <option value="%">%</option>
+                                  <option value="m²">m²</option>
+                                  <option value="places">places</option>
+                                </select>
+                              </label>
+                            </div>
+                            <input style={{ borderRadius: 8, border: "1px solid #E2E8F0", padding: "6px 10px", fontSize: 12, outline: "none" }}
+                              placeholder="Conditions particulières…"
+                              value={(editForm.conditions ?? rule.conditions) ?? ""}
+                              onChange={e => setEditForm(f => ({ ...f, conditions: e.target.value || null }))}
+                            />
+                            <input style={{ borderRadius: 8, border: "1px solid #E2E8F0", padding: "6px 10px", fontSize: 12, outline: "none" }}
+                              placeholder="Résumé (10 mots max)…"
+                              value={(editForm.summary ?? rule.summary) ?? ""}
+                              onChange={e => setEditForm(f => ({ ...f, summary: e.target.value || null }))}
+                            />
+                            <div style={{ display: "flex", gap: 8 }}>
+                              <button onClick={async () => { await patchRule(rule.id, { ...editForm, validation_status: "valide" }); setEditingId(null); setEditForm({}); }} disabled={saving}
+                                style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                {saving ? "…" : "Sauvegarder & Valider"}
+                              </button>
+                              <button onClick={() => { setEditingId(null); setEditForm({}); }}
+                                style={{ background: "#F1F5F9", color: "#374151", border: "none", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
+                                Annuler
+                              </button>
+                            </div>
+                          </div>
+                        )}
+                      </div>
+
+                      {/* Action buttons */}
+                      {!isEditing && (
+                        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                          {rule.validation_status !== "valide" && (
+                            <button title="Valider" onClick={() => patchRule(rule.id, { validation_status: "valide" })}
+                              style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #BBF7D0", background: "#F0FDF4", color: "#16A34A", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>✓</button>
+                          )}
+                          {rule.validation_status !== "rejete" && (
+                            <button title="Rejeter" onClick={() => patchRule(rule.id, { validation_status: "rejete" })}
+                              style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #FECACA", background: "#FEF2F2", color: "#DC2626", cursor: "pointer", fontSize: 16, display: "flex", alignItems: "center", justifyContent: "center" }}>✗</button>
+                          )}
+                          <button title="Modifier" onClick={() => { setEditingId(rule.id); setEditForm({}); }}
+                            style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #E2E8F0", background: "#F8FAFC", color: "#6B7280", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>✏</button>
+                          <button title="Supprimer" onClick={() => deleteRule(rule.id)}
+                            style={{ width: 32, height: 32, borderRadius: 8, border: "1px solid #E2E8F0", background: "#F8FAFC", color: "#9CA3AF", cursor: "pointer", fontSize: 14, display: "flex", alignItems: "center", justifyContent: "center" }}>🗑</button>
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                );
+              })}
+
+              {/* Add rule button */}
+              {addingZoneId !== selectedZone.id ? (
+                <button onClick={() => setAddingZoneId(selectedZone.id)}
+                  style={{ width: "100%", padding: "12px", border: "2px dashed #C7D2FE", borderRadius: 12, background: "transparent", color: "#4F46E5", fontSize: 13, fontWeight: 600, cursor: "pointer", marginTop: 4 }}>
+                  + Ajouter une règle
+                </button>
+              ) : (
+                <div style={{ background: "white", borderRadius: 12, border: "1px solid #C7D2FE", padding: "16px 18px" }}>
+                  <div style={{ fontWeight: 600, fontSize: 13, color: "#374151", marginBottom: 12 }}>Nouvelle règle</div>
+                  <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+                    <select style={{ borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none", flex: 1 }}
+                      value={newRule.topic ?? "recul_voie"}
+                      onChange={e => setNewRule(f => ({ ...f, topic: e.target.value }))}>
+                      {Object.entries(TOPIC_META).map(([k, v]) => <option key={k} value={k}>{v.icon} {v.label}</option>)}
+                    </select>
+                    <input type="number" placeholder="Art. n°" style={{ width: 80, borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none" }}
+                      value={newRule.article_number ?? ""}
+                      onChange={e => setNewRule(f => ({ ...f, article_number: e.target.value === "" ? null : Number(e.target.value) }))}
+                    />
+                  </div>
+                  <textarea placeholder="Texte de la règle…" style={{ width: "100%", minHeight: 72, borderRadius: 8, border: "1px solid #E2E8F0", padding: "8px 10px", fontSize: 13, resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                    value={newRule.rule_text ?? ""}
+                    onChange={e => setNewRule(f => ({ ...f, rule_text: e.target.value }))}
+                  />
+                  <input placeholder="Résumé (10 mots max)" style={{ marginTop: 6, width: "100%", borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none", boxSizing: "border-box" }}
+                    value={newRule.summary ?? ""}
+                    onChange={e => setNewRule(f => ({ ...f, summary: e.target.value }))}
+                  />
+                  <div style={{ display: "flex", gap: 8, marginTop: 10 }}>
+                    <button onClick={() => addRule(selectedZone.id)}
+                      style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                      Ajouter
+                    </button>
+                    <button onClick={() => setAddingZoneId(null)}
+                      style={{ background: "#F1F5F9", color: "#374151", border: "none", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
+                      Annuler
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }
@@ -3460,6 +3855,7 @@ export function MairieApp() {
             <Route path="messagerie" element={<MessageScreen onDossierClick={handleDossierClick} />} />
             <Route path="calendrier" element={<CalendrierScreen />} />
             <Route path="carte" element={<CarteScreen initialCommune={commune} />} />
+            <Route path="reglementation" element={<ReglementationScreen commune={commune} />} />
             <Route path="statistiques" element={<StatistiquesScreen />} />
             <Route path="parametres" element={<ParametresScreen />} />
             <Route path="profil" element={<InfosPersoScreen />} />
