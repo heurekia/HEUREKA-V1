@@ -110,6 +110,40 @@ export interface ParcelAnalysis {
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
 
+// Nominatim (OpenStreetMap) geocoder — used as fallback when BAN returns nothing.
+// Returns coordinates in AddressResult shape; citycode is injected from the caller
+// since Nominatim doesn't return French INSEE codes.
+async function geocodeNominatim(address: string, citycode?: string): Promise<AddressResult | null> {
+  try {
+    const params = new URLSearchParams({ q: address, format: "json", limit: "1", countrycodes: "fr", addressdetails: "1" });
+    const r = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+      signal: AbortSignal.timeout(5000),
+      headers: { "User-Agent": "Heureka-Urbanisme/1.0" },
+    });
+    if (!r.ok) return null;
+    const data = await r.json() as Array<{
+      lat: string; lon: string; display_name: string; type: string; class: string;
+      address?: { postcode?: string; city?: string; town?: string; village?: string; municipality?: string };
+    }>;
+    const f = data?.[0];
+    if (!f) return null;
+    const lat = parseFloat(f.lat);
+    const lng = parseFloat(f.lon);
+    if (isNaN(lat) || isNaN(lng)) return null;
+    return {
+      label: f.display_name,
+      lat, lng,
+      citycode: citycode ?? "",
+      postcode: f.address?.postcode ?? "",
+      city: f.address?.city ?? f.address?.town ?? f.address?.village ?? f.address?.municipality ?? "",
+      score: 0.75,
+      type: f.type === "house" || f.type === "residential" ? "housenumber" : "street",
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function geocodeAddress(address: string, citycode?: string): Promise<AddressResult | null> {
   try {
     // If citycode (INSEE) is known, constrain BAN to that commune to avoid false matches
@@ -486,30 +520,61 @@ export async function analyseParcel(
     }
   } else {
     // Free-text address — try several BAN strategies in order of reliability.
+    // Pre-compute the "street-only" form: strip everything from the postcode onward.
+    // "9 Avenue Jean Mermoz 37510 Ballan-Miré" → "9 Avenue Jean Mermoz"
+    // When citycode is provided, BAN already pins the commune so this is cleaner.
+    const streetOnly = query.replace(/,?\s*\b\d{5}\b.*$/, "").trim();
+    const hasStreetOnly = streetOnly !== query && streetOnly.length > 4;
+
+    // Strategy 1: full query, constrained to commune via citycode
     let addr = await geocodeAddress(query, options?.citycode);
 
-    // Retry 2: strip postcode + trailing commune from the query.
-    // When citycode is provided, BAN already pins the commune — the embedded "37510 Ballan-Miré"
-    // at the end of the address string is redundant and can reduce the match score.
-    // e.g. "9 Avenue Jean Mermoz 37510 Ballan-Miré" → "9 Avenue Jean Mermoz"
-    if (!addr && options?.citycode) {
-      const streetOnly = query.replace(/,?\s*\b\d{5}\b.*$/, "").trim();
-      if (streetOnly !== query && streetOnly.length > 4) {
-        addr = await geocodeAddress(streetOnly, options.citycode);
-      }
+    // Strategy 2: stripped query, constrained — embedded postcode+city can reduce BAN scores
+    if (!addr && hasStreetOnly) {
+      addr = await geocodeAddress(streetOnly, options?.citycode);
     }
 
-    // Retry 3: unconstrained BAN search — accept only if result is in the expected commune
+    // Strategy 3: full query, unconstrained — accept only if result is in expected commune
     if (!addr && options?.citycode) {
-      const fallback = await geocodeAddress(query);
-      if (fallback && fallback.citycode === options.citycode) {
-        addr = fallback;
+      const unc = await geocodeAddress(query);
+      if (unc?.citycode === options.citycode) addr = unc;
+    }
+
+    // Strategy 4: stripped + unconstrained with citycode validation
+    if (!addr && hasStreetOnly && options?.citycode) {
+      const unc = await geocodeAddress(streetOnly);
+      if (unc?.citycode === options.citycode) addr = unc;
+    }
+
+    // Strategy 5: last resort — unconstrained + no postcode, accept high-confidence results
+    // (only when no citycode to validate against; score ≥ 0.6 means BAN is fairly certain)
+    if (!addr && hasStreetOnly && !options?.citycode) {
+      const unc = await geocodeAddress(streetOnly);
+      if (unc && unc.score >= 0.6) addr = unc;
+    }
+
+    // Strategy 6: Nominatim (OpenStreetMap) — covers addresses not indexed in BAN
+    if (!addr) {
+      const nomQuery = hasStreetOnly ? streetOnly : query;
+      const nom = await geocodeNominatim(nomQuery, options?.citycode);
+      if (nom) {
+        // Validate: if citycode is known, check result is in the right department
+        if (options?.citycode) {
+          const dept = options.citycode.slice(0, 2);
+          if (!nom.postcode || nom.postcode.startsWith(dept)) {
+            nom.citycode = options.citycode;
+            addr = nom;
+          }
+        } else {
+          addr = nom;
+        }
       }
     }
 
     if (addr) {
       result.address = addr;
-      result.data_sources.push("BAN (api-adresse)");
+      const source = addr.score === 0.75 ? "Nominatim (OpenStreetMap)" : "BAN (api-adresse)";
+      result.data_sources.push(source);
       lat = addr.lat;
       lng = addr.lng;
       code_insee = addr.citycode;
