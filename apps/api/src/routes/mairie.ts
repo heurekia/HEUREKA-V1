@@ -629,8 +629,9 @@ mairieRouter.post("/admin/seed-plu", async (_req: AuthRequest, res) => {
 
     res.json({ ok: true, commune: commune.name, zones_created: zonesCreated, rules_created: rulesCreated, total_zones: ZONES_DATA.length, total_rules: ZONES_DATA.reduce((s, z) => s + z.rules.length, 0) });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erreur serveur", detail: String(err) });
+    console.error("[seed-plu]", err);
+    const detail = err instanceof Error ? err.message : String(err);
+    res.status(500).json({ error: `Erreur serveur : ${detail}` });
   }
 });
 
@@ -820,14 +821,22 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
     const partition = doc?.properties.partition;
     if (!partition) return res.status(404).json({ error: "Aucun PLU approuvé trouvé pour cette commune" });
 
-    // 4. Zone-urba features
+    // 4. Zone-urba features — use bounding-box geom (avoids URL-length issues
+    //    with full commune polygon) then rely on partition for the commune filter.
+    const [minLng, maxLng] = [Math.min(...lngs), Math.max(...lngs)];
+    const [minLat, maxLat] = [Math.min(...lats), Math.max(...lats)];
+    const bboxGeom = JSON.stringify({
+      type: "Polygon",
+      coordinates: [[[minLng, minLat], [maxLng, minLat], [maxLng, maxLat], [minLng, maxLat], [minLng, minLat]]],
+    });
     const params = new URLSearchParams({ partition, _limit: "1000" });
-    params.set("geom", JSON.stringify(communeGeom));
-    const zoneR = await fetch(
-      `https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`,
-      { signal: AbortSignal.timeout(20000) }
-    );
-    if (!zoneR.ok) return res.status(502).json({ error: "Erreur APICarto zone-urba" });
+    params.set("geom", bboxGeom);
+    const zoneUrl = `https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`;
+    const zoneR = await fetch(zoneUrl, { signal: AbortSignal.timeout(20000) });
+    if (!zoneR.ok) {
+      const body = await zoneR.text().catch(() => "");
+      return res.status(502).json({ error: `Erreur APICarto zone-urba (HTTP ${zoneR.status})`, detail: body.slice(0, 300) });
+    }
     const zoneJson = await zoneR.json();
 
     res.setHeader("Cache-Control", "public, max-age=3600");
