@@ -585,11 +585,14 @@ mairieRouter.post("/admin/seed-plu", async (_req: AuthRequest, res) => {
   ];
 
   try {
-    // Upsert commune
-    let commune = (await db.select().from(communes).where(eq(communes.insee_code, "37018")).limit(1))[0];
+    // Upsert commune — cherche d'abord par insee_code, puis par name (évite la contrainte UNIQUE)
+    let commune = (await db.select().from(communes).where(eq(communes.insee_code, "37018")).limit(1))[0]
+      ?? (await db.select().from(communes).where(ilike(communes.name, "Ballan-Miré")).limit(1))[0];
     if (!commune) {
       const [created] = await db.insert(communes).values({ name: "Ballan-Miré", insee_code: "37018", zip_code: "37510" }).returning();
       commune = created!;
+    } else {
+      await db.update(communes).set({ insee_code: "37018", zip_code: "37510" }).where(eq(communes.id, commune.id));
     }
 
     let zonesCreated = 0, rulesCreated = 0;
