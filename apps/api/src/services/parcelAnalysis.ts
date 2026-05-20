@@ -208,77 +208,22 @@ function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number): num
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// ── Best-match parcel near a coordinate ──────────────────────────────────────
-// For map clicks: uses geom=<Point> which does actual point-in-polygon containment
-// (unlike the lon/lat query which returns nearest centroid regardless of geometry).
-// For address lookups: BAN places housenumber points on the road edge, so the
-// exact point may fall outside every parcel.  In that case we do a ~80 m bbox
-// search and pick the candidate whose centroid is closest to the query point.
+// ── Parcel lookup with small-offset retries ───────────────────────────────────
+// BAN housenumber points land on the road edge; the parcel polygon sits a few
+// metres behind the sidewalk. If the first lookup misses, we try 4 offsets of
+// ~15 m (N / S / E / W) to catch parcels just inside the block boundary.
 
-async function findBestParcelNearPoint(lat: number, lng: number, codeInsee: string): Promise<ParcelResult | null> {
-  type Feature = {
-    properties: { id: string; section: string; numero: string; contenance: number; nom_com: string; code_insee: string };
-    geometry: Geometry;
-  };
-  const toParcel = (f: Feature): ParcelResult => ({
-    parcelle_id: f.properties.id,
-    section: f.properties.section,
-    numero: f.properties.numero,
-    surface_m2: f.properties.contenance,
-    commune: f.properties.nom_com,
-    code_insee: f.properties.code_insee,
-    geometry: f.geometry ?? null,
-  });
-
-  // 1. Exact containment via geom=<Point> — returns the parcel that spatially contains
-  //    the point.  This is the correct query for map clicks.
-  try {
-    const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
-    const url = `https://apicarto.ign.fr/api/cadastre/parcelle?code_insee=${codeInsee}&geom=${encodeURIComponent(geom)}&_limit=1`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (r.ok) {
-      const data = await r.json() as { features?: Feature[] };
-      if (data.features?.[0]) return toParcel(data.features[0]);
-    }
-  } catch { /* fall through to bbox */ }
-
-  // 2. Bbox ~80 m + pick closest centroid — handles BAN road-edge points that fall
-  //    between parcel boundaries.
-  // At 47° latitude: 1° lat ≈ 111 km, 1° lng ≈ 76 km → 80 m ≈ 0.00072° / 0.00105°
-  const DLAT = 0.00072;
-  const DLNG = 0.00105;
-  const bboxGeom = {
-    type: "Polygon",
-    coordinates: [[[lng - DLNG, lat - DLAT], [lng + DLNG, lat - DLAT], [lng + DLNG, lat + DLAT], [lng - DLNG, lat + DLAT], [lng - DLNG, lat - DLAT]]],
-  };
-  try {
-    const url = `https://apicarto.ign.fr/api/cadastre/parcelle?code_insee=${codeInsee}&geom=${encodeURIComponent(JSON.stringify(bboxGeom))}&_limit=20`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
-    if (!r.ok) return null;
-    const data = await r.json() as { features?: Feature[] };
-    const features = data.features ?? [];
-    if (!features.length) return null;
-
-    let best: ParcelResult | null = null;
-    let bestDist = Infinity;
-    for (const f of features) {
-      const parcel = toParcel(f);
-      if (parcel.geometry?.type === "Polygon") {
-        const coords = (parcel.geometry as Polygon).coordinates[0] ?? [];
-        if (coords.length) {
-          const cLat = coords.reduce((s, c) => s + (c[1] as number), 0) / coords.length;
-          const cLng = coords.reduce((s, c) => s + (c[0] as number), 0) / coords.length;
-          const d = distanceKm(lat, lng, cLat, cLng);
-          if (d < bestDist) { bestDist = d; best = parcel; }
-        }
-      } else if (!best) {
-        best = parcel;
-      }
-    }
-    return best;
-  } catch {
-    return null;
+async function findParcelWithRetry(lat: number, lng: number, codeInsee?: string): Promise<ParcelResult | null> {
+  const first = await findParcelByLatLng(lat, lng, codeInsee);
+  if (first) return first;
+  // ~15 m offsets in lat and lng degrees (at ~47° latitude)
+  const DLAT = 0.000135; // ~15 m north/south
+  const DLNG = 0.000195; // ~15 m east/west
+  for (const [dLat, dLng] of [[DLAT, 0], [-DLAT, 0], [0, DLNG], [0, -DLNG]] as [number, number][]) {
+    const p = await findParcelByLatLng(lat + dLat, lng + dLng, codeInsee);
+    if (p) return p;
   }
+  return null;
 }
 
 // ── Cadastral parcel lookup ──────────────────────────────────────────────────
@@ -598,9 +543,22 @@ export async function analyseParcel(
       code_insee = await getInseeFromCoords(lat, lng);
     }
 
-    const parcel = code_insee ? await findBestParcelNearPoint(lat, lng, code_insee) : await findParcelByLatLng(lat, lng, undefined);
+    const parcel = await findParcelByLatLng(lat, lng, code_insee);
     if (parcel) {
-      if (code_insee && parcel.code_insee !== code_insee) {
+      // Sanity-check: parcel centroid should be within 2 km of the clicked point.
+      // A larger distance means the API returned an unrelated parcel.
+      let centroidOk = true;
+      if (parcel.geometry?.type === "Polygon") {
+        const coords = (parcel.geometry as Polygon).coordinates[0];
+        if (coords?.length) {
+          const cLat = coords.reduce((s, c) => s + (c[1] ?? 0), 0) / coords.length;
+          const cLng = coords.reduce((s, c) => s + (c[0] ?? 0), 0) / coords.length;
+          if (distanceKm(lat, lng, cLat, cLng) > 2) centroidOk = false;
+        }
+      }
+      if (!centroidOk) {
+        result.warnings.push(`Parcelle retournée par IGN Cadastre (${parcel.parcelle_id}) est trop éloignée du point cliqué — résultat ignoré.`);
+      } else if (code_insee && parcel.code_insee !== code_insee) {
         result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${code_insee}. Données non retenues.`);
       } else {
         result.parcel = parcel;
@@ -693,7 +651,7 @@ export async function analyseParcel(
       // findParcelWithRetry tries small offsets (~15 m) when the primary point misses,
       // since BAN places housenumber coords on the road edge, not on the parcel itself.
       if (addr.type === "housenumber" || addr.type === "interpolation") {
-        const parcel = code_insee ? await findBestParcelNearPoint(lat, lng, code_insee) : null;
+        const parcel = await findParcelWithRetry(lat, lng, code_insee);
         if (parcel) {
           if (parcel.code_insee !== addr.citycode) {
             result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${addr.city} (${addr.citycode}). Données cadastrales non retenues.`);
