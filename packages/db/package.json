@@ -6,7 +6,7 @@
   "types": "./src/index.ts",
   "scripts": {
     "generate": "drizzle-kit generate",
-    "migrate": "tsx node_modules/drizzle-kit/bin.cjs push --force",
+    "migrate": "tsx src/migrate.ts",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
