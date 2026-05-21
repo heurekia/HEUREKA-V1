@@ -1,11 +1,12 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
-    "buildCommand": "pnpm build && pnpm --filter @heureka-v1/db migrate && pnpm --filter @heureka-v1/api seed"
+    "buildCommand": "pnpm build"
   },
   "deploy": {
     "numReplicas": 1,
     "startCommand": "pnpm start",
+    "preDeployCommand": "pnpm --filter @heureka-v1/db migrate && pnpm --filter @heureka-v1/api seed",
     "healthcheckPath": "/api/health",
     "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",
