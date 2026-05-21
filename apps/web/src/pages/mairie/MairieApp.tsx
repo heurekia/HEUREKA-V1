@@ -876,13 +876,14 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
   const [serviceUnreadNames, setServiceUnreadNames] = useState<Set<string>>(new Set(["ABF – Architecte des Bâtiments de France"]));
   const [thread, setThread] = useState<Msg[]>([]);
 
-  const refreshUnreadBadge = () =>
-    api.get<{ count: number }>(`/mairie/conversations/unread-count?commune=${encodeURIComponent(commune)}`)
-      .then(d => onUnreadChange?.(Number(d.count)))
-      .catch(() => {});
-
   const refreshConvs = () =>
     api.get<Conv[]>(`/mairie/conversations?commune=${encodeURIComponent(commune)}`).then(data => setConvs(data)).catch(() => {});
+
+  // Badge sidebar = citoyens non lus + services non lus (réactif)
+  useEffect(() => {
+    const citizenCount = convs.reduce((s, c) => s + c.unread_count, 0);
+    onUnreadChange?.(citizenCount + serviceUnreadNames.size);
+  }, [convs, serviceUnreadNames]);
 
   useEffect(() => {
     setSelected(null);
@@ -897,14 +898,12 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
   useEffect(() => {
     if (!selected) return;
     api.get<Msg[]>(`/mairie/conversations/${selected.dossier_id}`).then(setThread).catch(() => {});
-    // Marquer les messages comme lus et mettre à jour la liste
     api.post(`/mairie/conversations/${selected.dossier_id}/read`)
       .then(() => {
         setConvs(prev => prev.map(c =>
           c.dossier_id === selected.dossier_id ? { ...c, unread_count: 0 } : c
         ));
         setSelected(prev => prev ? { ...prev, unread_count: 0 } : prev);
-        refreshUnreadBadge();
       })
       .catch(() => {});
   }, [selected?.dossier_id]);
@@ -917,7 +916,6 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
           c.dossier_id === selected.dossier_id ? { ...c, unread_count: 1 } : c
         ));
         setSelected(prev => prev ? { ...prev, unread_count: 1 } : prev);
-        refreshUnreadBadge();
       })
       .catch(() => {});
   };
@@ -952,7 +950,8 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
       ]},
   ];
 
-  const totalUnread = convs.reduce((s, c) => s + c.unread_count, 0);
+  const totalCitizenUnread = convs.reduce((s, c) => s + c.unread_count, 0);
+  const totalServiceUnread = serviceUnreadNames.size;
 
   return (
     <div style={{ padding: 0, display: "flex", height: "calc(100vh - 56px)" }}>
@@ -962,12 +961,17 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
           <h1 style={{ fontSize: 18, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Messagerie</h1>
           <p style={{ color: "#94A3B8", fontSize: 12, marginBottom: 12 }}>Échangez avec les pétitionnaires et les services consultés.</p>
           <div style={{ display: "flex", gap: 0, marginBottom: 12 }}>
-            {[`Citoyens${totalUnread > 0 ? ` ${totalUnread}` : ""}`, "Services / Consultations"].map((t) => {
-              const base = t.split(" ")[0] ?? t;
-              return (
-                <button key={t} onClick={() => setTab(base)} style={{ flex: 1, border: "none", background: "none", padding: "7px 8px", fontSize: 12, fontWeight: tab === base ? 600 : 400, color: tab === base ? "#4F46E5" : "#64748b", borderBottom: tab === base ? "2px solid #4F46E5" : "2px solid #E2E8F0", cursor: "pointer", whiteSpace: "nowrap" }}>{t}</button>
-              );
-            })}
+            {([
+              { key: "Citoyens", label: "Citoyens", count: totalCitizenUnread },
+              { key: "Services", label: "Services / Consultations", count: totalServiceUnread },
+            ] as { key: string; label: string; count: number }[]).map(({ key, label, count }) => (
+              <button key={key} onClick={() => setTab(key)} style={{ flex: 1, border: "none", background: "none", padding: "7px 6px", fontSize: 12, fontWeight: tab === key ? 600 : 400, color: tab === key ? "#4F46E5" : "#64748b", borderBottom: tab === key ? "2px solid #4F46E5" : "2px solid #E2E8F0", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 5, whiteSpace: "nowrap" }}>
+                {label}
+                {count > 0 && (
+                  <span style={{ background: tab === key ? "#4F46E5" : "#E2E8F0", color: tab === key ? "white" : "#64748b", borderRadius: 10, padding: "1px 6px", fontSize: 10, fontWeight: 700, minWidth: 16, textAlign: "center" }}>{count}</span>
+                )}
+              </button>
+            ))}
           </div>
           <div style={{ position: "relative", marginBottom: 8 }}>
             <input placeholder="Rechercher une conversation" style={{ width: "100%", padding: "7px 12px 7px 28px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, outline: "none" }} />
@@ -4476,15 +4480,11 @@ export function MairieApp() {
   const routerNavigate = useNavigate();
   const location = useLocation();
 
-  // Fetch unread message count for the sidebar badge
+  // Charge le badge initial quand la commune change ; MessageScreen maintient ensuite le total en temps réel
   useEffect(() => {
-    const load = () =>
-      api.get<{ count: number }>(`/mairie/conversations/unread-count?commune=${encodeURIComponent(commune)}`)
-        .then(d => setMessageBadge(Number(d.count)))
-        .catch(() => {});
-    load();
-    const interval = setInterval(load, 30000);
-    return () => clearInterval(interval);
+    api.get<{ count: number }>(`/mairie/conversations/unread-count?commune=${encodeURIComponent(commune)}`)
+      .then(d => setMessageBadge(Number(d.count) + 1)) // +1 pour ABF (service non lu initial)
+      .catch(() => {});
   }, [commune]);
 
   const pathname = location.pathname;
