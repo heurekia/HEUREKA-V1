@@ -11,6 +11,17 @@ export const mairieRouter = Router();
 mairieRouter.use(requireAuth);
 mairieRouter.use(requireRole("mairie", "instructeur", "admin"));
 
+// Délais réglementaires d'instruction (Code de l'Urbanisme)
+// Calculés à partir de la date de complétude, ou de dépôt si non renseignée.
+const DELAI_INSTRUCTION_MOIS: Record<string, number> = {
+  permis_de_construire: 2,    // R.423-23 — droit commun
+  declaration_prealable: 1,   // R.423-24
+  permis_amenager: 3,         // R.423-25
+  permis_demolir: 2,          // R.423-26
+  permis_lotir: 3,            // R.423-25 (assimilé PA)
+  certificat_urbanisme: 2,    // R.410-9 — CUb opérationnel
+};
+
 // ── Dashboard stats ──
 mairieRouter.get("/dashboard", async (_req: AuthRequest, res) => {
   try {
@@ -120,13 +131,31 @@ mairieRouter.patch("/dossiers/:id/status", async (req: AuthRequest, res) => {
   try {
     const { status } = req.body;
     if (!status) return res.status(400).json({ error: "Statut requis" });
-    const [dossier] = await db
-      .update(dossiers)
-      .set({ status, updated_at: new Date() })
-      .where(eq(dossiers.id, req.params.id as string))
-      .returning();
-    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
-    res.json(dossier);
+
+    // Lire le dossier avant update pour calculer l'échéance si nécessaire
+    const [before] = await db.select().from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
+    if (!before) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    const patch: Partial<typeof before> & { updated_at: Date } = { status: status as typeof before.status, updated_at: new Date() };
+
+    // Auto-date dépôt quand passage en "soumis"
+    if (status === "soumis" && !before.date_depot) {
+      patch.date_depot = new Date();
+    }
+
+    // Auto-calcul de l'échéance si elle n'est pas encore renseignée
+    if (!before.date_limite_instruction) {
+      const startDate = (before.date_completude ?? patch.date_depot ?? before.date_depot);
+      if (startDate) {
+        const months = DELAI_INSTRUCTION_MOIS[before.type] ?? 2;
+        const deadline = new Date(startDate);
+        deadline.setMonth(deadline.getMonth() + months);
+        patch.date_limite_instruction = deadline;
+      }
+    }
+
+    const [updated] = await db.update(dossiers).set(patch).where(eq(dossiers.id, req.params.id as string)).returning();
+    res.json(updated);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -448,6 +477,39 @@ mairieRouter.patch("/dossiers/:id/adresse", requireAuth, async (req: AuthRequest
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Calcul des dates d'échéance théoriques (admin) ──────────────────────────
+// POST /mairie/admin/compute-deadlines
+// Remplit date_limite_instruction pour tous les dossiers qui ont une date_depot
+// mais pas encore de délai. Idempotent — ne touche pas les dossiers déjà datés.
+mairieRouter.post("/admin/compute-deadlines", async (_req: AuthRequest, res) => {
+  try {
+    const toUpdate = await db
+      .select({ id: dossiers.id, type: dossiers.type, date_depot: dossiers.date_depot, date_completude: dossiers.date_completude })
+      .from(dossiers)
+      .where(sql`date_depot IS NOT NULL AND date_limite_instruction IS NULL`);
+
+    let updated = 0;
+    for (const d of toUpdate) {
+      const months = DELAI_INSTRUCTION_MOIS[d.type] ?? 2;
+      const startDate = new Date((d.date_completude ?? d.date_depot)!);
+      const deadline = new Date(startDate);
+      deadline.setMonth(deadline.getMonth() + months);
+      await db.update(dossiers)
+        .set({ date_limite_instruction: deadline, updated_at: new Date() })
+        .where(eq(dossiers.id, d.id));
+      updated++;
+    }
+
+    res.json({
+      ok: true, updated,
+      rules: Object.entries(DELAI_INSTRUCTION_MOIS).map(([type, mois]) => ({ type, delai_mois: mois })),
+    });
+  } catch (err) {
+    console.error("[compute-deadlines]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

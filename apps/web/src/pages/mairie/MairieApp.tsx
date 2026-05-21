@@ -643,15 +643,51 @@ function DossiersScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =
   useEffect(() => {
     setActiveTab(searchParams.get("filter") ?? "Tous");
   }, [searchParams]);
+
   const [searchQ, setSearchQ] = useState("");
   const [apiDossiers, setApiDossiers] = useState<ApiDossier[]>([]);
   const [loading, setLoading] = useState(true);
+  const [showColPicker, setShowColPicker] = useState(false);
 
+  type ColKey = "petitionnaire" | "adresse" | "type" | "statut" | "date_depot" | "echeance";
+  const ALL_COLS: { key: ColKey; label: string }[] = [
+    { key: "petitionnaire", label: "Pétitionnaire" },
+    { key: "adresse", label: "Adresse" },
+    { key: "type", label: "Type de dossier" },
+    { key: "statut", label: "Statut" },
+    { key: "date_depot", label: "Date de dépôt" },
+    { key: "echeance", label: "Date d'échéance" },
+  ];
+
+  const [visibleCols, setVisibleCols] = useState<Set<ColKey>>(() => {
+    try {
+      const saved = localStorage.getItem("dossiers_cols");
+      if (saved) return new Set(JSON.parse(saved) as ColKey[]);
+    } catch {}
+    return new Set<ColKey>(["petitionnaire", "adresse", "type", "statut", "date_depot", "echeance"]);
+  });
+
+  const toggleCol = (key: ColKey) => {
+    setVisibleCols(prev => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      try { localStorage.setItem("dossiers_cols", JSON.stringify([...next])); } catch {}
+      return next;
+    });
+  };
+
+  // On mount: compute missing deadlines then load dossiers
   useEffect(() => {
-    api.get<ApiDossier[]>("/mairie/dossiers")
-      .then(d => setApiDossiers(d))
+    const token = localStorage.getItem("token");
+    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } : {};
+    fetch("/api/mairie/admin/compute-deadlines", { method: "POST", headers })
       .catch(() => {})
-      .finally(() => setLoading(false));
+      .finally(() => {
+        api.get<ApiDossier[]>("/mairie/dossiers")
+          .then(d => setApiDossiers(d))
+          .catch(() => {})
+          .finally(() => setLoading(false));
+      });
   }, []);
 
   const allRows = apiDossiers.map(d => ({
@@ -675,12 +711,18 @@ function DossiersScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =
     return matchTab && matchQ;
   });
 
+  const colSpan = 2 + visibleCols.size; // N° + visible cols + Actions
+
+  const thStyle: React.CSSProperties = { padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0", whiteSpace: "nowrap" };
+
   return (
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Dossiers</h1>
         <p style={{ color: "#64748b", fontSize: 13 }}>Retrouvez et suivez l'avancement de tous les dossiers.</p>
       </div>
+
+      {/* Status tabs */}
       <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #E2E8F0", marginBottom: 16, overflowX: "auto" }}>
         {tabs.map(t => {
           const active = t === activeTab;
@@ -691,6 +733,8 @@ function DossiersScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =
           );
         })}
       </div>
+
+      {/* Toolbar */}
       <div style={{ display: "flex", gap: 8, marginBottom: 16, alignItems: "center" }}>
         <div style={{ flex: 1, position: "relative" }}>
           <input value={searchQ} onChange={e => setSearchQ(e.target.value)} placeholder="Rechercher un dossier, une adresse, un pétitionnaire..." style={{ width: "100%", padding: "7px 12px 7px 32px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", color: "#374151" }} />
@@ -700,35 +744,93 @@ function DossiersScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =
             <option>{p}</option>
           </select>
         ))}
-        <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 12px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>+ Plus de filtres</button>
-        <div style={{ flex: 1 }} />
-        <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 12px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>↕ Trier</button>
+        {/* Column picker */}
+        <div style={{ position: "relative" }}>
+          <button
+            onClick={() => setShowColPicker(v => !v)}
+            style={{ border: "1px solid #E2E8F0", background: showColPicker ? "#F1F5F9" : "white", borderRadius: 8, padding: "7px 12px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 6 }}
+          >
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+              <rect x="3" y="3" width="18" height="18" rx="2"/><line x1="9" y1="3" x2="9" y2="21"/><line x1="15" y1="3" x2="15" y2="21"/><line x1="3" y1="9" x2="21" y2="9"/><line x1="3" y1="15" x2="21" y2="15"/>
+            </svg>
+            Colonnes
+          </button>
+          {showColPicker && (
+            <>
+              <div onClick={() => setShowColPicker(false)} style={{ position: "fixed", inset: 0, zIndex: 98 }} />
+              <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px 16px", zIndex: 99, minWidth: 210, boxShadow: "0 8px 24px rgba(0,0,0,0.10)" }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 10, textTransform: "uppercase", letterSpacing: "0.05em" }}>Colonnes visibles</div>
+                {ALL_COLS.map(col => (
+                  <label key={col.key} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 0", cursor: "pointer", fontSize: 13, color: "#374151" }}>
+                    <input
+                      type="checkbox"
+                      checked={visibleCols.has(col.key)}
+                      onChange={() => toggleCol(col.key)}
+                      style={{ accentColor: "#4F46E5", width: 14, height: 14, cursor: "pointer" }}
+                    />
+                    {col.label}
+                  </label>
+                ))}
+                <div style={{ borderTop: "1px solid #F1F5F9", marginTop: 8, paddingTop: 8 }}>
+                  <button
+                    onClick={() => {
+                      const all = new Set<ColKey>(ALL_COLS.map(c => c.key));
+                      setVisibleCols(all);
+                      try { localStorage.setItem("dossiers_cols", JSON.stringify([...all])); } catch {}
+                    }}
+                    style={{ fontSize: 12, color: "#4F46E5", background: "none", border: "none", cursor: "pointer", padding: 0 }}
+                  >
+                    Tout afficher
+                  </button>
+                </div>
+              </div>
+            </>
+          )}
+        </div>
       </div>
+
+      {/* Table */}
       <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
         <table style={{ width: "100%", borderCollapse: "collapse" }}>
           <thead>
             <tr style={{ background: "#F8FAFC" }}>
-              {["N° Dossier","Pétitionnaire","Adresse","Type de dossier","Statut","Dépôt","Actions"].map(h => (
-                <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
-              ))}
+              <th style={thStyle}>N° Dossier</th>
+              {visibleCols.has("petitionnaire") && <th style={thStyle}>Pétitionnaire</th>}
+              {visibleCols.has("adresse") && <th style={thStyle}>Adresse</th>}
+              {visibleCols.has("type") && <th style={thStyle}>Type de dossier</th>}
+              {visibleCols.has("statut") && <th style={thStyle}>Statut</th>}
+              {visibleCols.has("date_depot") && <th style={thStyle}>Date de dépôt</th>}
+              {visibleCols.has("echeance") && <th style={thStyle}>Date d'échéance</th>}
+              <th style={thStyle}>Actions</th>
             </tr>
           </thead>
           <tbody>
             {loading ? (
-              <tr><td colSpan={7} style={{ padding: "24px 16px", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Chargement…</td></tr>
+              <tr><td colSpan={colSpan} style={{ padding: "24px 16px", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Chargement…</td></tr>
             ) : rows.length === 0 ? (
-              <tr><td colSpan={7} style={{ padding: "24px 16px", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Aucun dossier trouvé</td></tr>
+              <tr><td colSpan={colSpan} style={{ padding: "24px 16px", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Aucun dossier trouvé</td></tr>
             ) : rows.map((r) => (
               <tr key={r.id} style={{ borderBottom: "1px solid #F1F5F9", cursor: "pointer" }}
                 onClick={() => onDossierClick({ id: r.id, numero: r.numero, type: r.type, petitionnaire: r.pet, adresse: r.addr, status: r.statusRaw, echeance: r.ech, date_depot: r.dateDepot })}
                 onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
                 onMouseLeave={e => (e.currentTarget.style.background = "white")}>
                 <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 600, color: "#4F46E5" }}>{r.numero}</td>
-                <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.pet}</td>
-                <td style={{ padding: "12px 16px", fontSize: 13, color: "#64748b" }}>{r.addr}</td>
-                <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.type}</td>
-                <td style={{ padding: "12px 16px" }}><StatusBadge status={r.statusRaw} /></td>
-                <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.dateDepot}</td>
+                {visibleCols.has("petitionnaire") && <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.pet}</td>}
+                {visibleCols.has("adresse") && <td style={{ padding: "12px 16px", fontSize: 13, color: "#64748b", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.addr}</td>}
+                {visibleCols.has("type") && <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.type}</td>}
+                {visibleCols.has("statut") && <td style={{ padding: "12px 16px" }}><StatusBadge status={r.statusRaw} /></td>}
+                {visibleCols.has("date_depot") && <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.dateDepot || <span style={{ color: "#CBD5E1" }}>—</span>}</td>}
+                {visibleCols.has("echeance") && (
+                  <td style={{ padding: "12px 16px", fontSize: 13 }}>
+                    {r.ech
+                      ? (() => {
+                          const isOverdue = r.ech !== "—" && new Date(apiDossiers.find(d => d.id === r.id)?.date_limite_instruction ?? "") < new Date();
+                          return <span style={{ color: isOverdue ? "#EF4444" : "#374151", fontWeight: isOverdue ? 600 : 400 }}>{r.ech}{isOverdue ? " ⚠" : ""}</span>;
+                        })()
+                      : <span style={{ color: "#CBD5E1" }}>—</span>
+                    }
+                  </td>
+                )}
                 <td style={{ padding: "12px 16px" }}>
                   <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }} onClick={e => e.stopPropagation()}><DotsIcon /></button>
                 </td>
