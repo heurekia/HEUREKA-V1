@@ -1078,11 +1078,12 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
       partition = doc?.properties.partition ?? undefined;
     }
 
-    // Strategy 2: if /document returned nothing, probe zone-urba with bbox to extract partition
-    // This catches PLUi communes (Tours Métropole etc.) where the document endpoint misses
+    // Strategy 2: if /document returned nothing, probe zone-urba with the commune centroid POINT
+    // (point query only returns zones containing that exact point — avoids bleeding into
+    // neighbouring communes whose bbox overlaps, e.g. Saint-Cyr-sur-Loire next to Tours)
     if (!partition) {
       const probeParams = new URLSearchParams({ _limit: "5" });
-      probeParams.set("geom", bboxGeom);
+      probeParams.set("geom", ptGeom);
       const probeR = await fetch(
         `https://apicarto.ign.fr/api/gpu/zone-urba?${probeParams.toString()}`,
         { signal: AbortSignal.timeout(15000) }

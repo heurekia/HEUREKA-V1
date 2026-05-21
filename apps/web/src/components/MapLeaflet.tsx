@@ -91,6 +91,7 @@ export function MapLeaflet({
   defaultZoom?: number;
 }) {
   const [zoneError, setZoneError] = useState<string | null>(null);
+  const [mapReady, setMapReady] = useState(false);
   const containerRef = useRef<HTMLDivElement>(null);
   const mapRef = useRef<L.Map | null>(null);
   const markersRef = useRef<L.CircleMarker[]>([]);
@@ -117,6 +118,11 @@ export function MapLeaflet({
     L.control.zoom({ position: "topright" }).addTo(map);
 
     mapRef.current = map;
+    // Defer invalidateSize + signal readiness so the container has its final layout
+    requestAnimationFrame(() => {
+      map.invalidateSize();
+      setMapReady(true);
+    });
 
     return () => {
       map.remove();
@@ -125,6 +131,7 @@ export function MapLeaflet({
       parcelLayerRef.current = null;
       pluLayerRef.current = null;
       highlightLayerRef.current = null;
+      setMapReady(false);
     };
   }, []);
 
@@ -227,7 +234,7 @@ export function MapLeaflet({
     })();
 
     return () => { cancelled = true; };
-  }, [pluZoneLayer, commune, inseeCode]);
+  }, [pluZoneLayer, commune, inseeCode, mapReady]);
 
   // Highlight geometry (e.g. parcel polygon returned by analysis)
   useEffect(() => {
@@ -308,7 +315,7 @@ export function MapLeaflet({
       .catch(() => {});
 
     return () => { cancelled = true; };
-  }, [commune, inseeCode]);
+  }, [commune, inseeCode, mapReady]);
 
   // Sync markers when dossiers or filter changes
   useEffect(() => {
