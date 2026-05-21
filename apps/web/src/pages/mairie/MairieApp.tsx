@@ -882,7 +882,15 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
   const [convs, setConvs] = useState<Conv[]>([]);
   const [selected, setSelected] = useState<Conv | null>(null);
   const [selectedService, setSelectedService] = useState<ServiceConv | null>(null);
-  const [serviceUnreadNames, setServiceUnreadNames] = useState<Set<string>>(new Set(["ABF – Architecte des Bâtiments de France"]));
+  const svcUnreadKey = `heureka_svcUnread_${commune}`;
+  const loadSvcUnread = (key: string) => {
+    try { const s = localStorage.getItem(key); if (s !== null) return new Set<string>(JSON.parse(s)); } catch {}
+    return new Set<string>(["ABF – Architecte des Bâtiments de France"]);
+  };
+  const saveSvcUnread = (key: string, names: Set<string>) => {
+    try { localStorage.setItem(key, JSON.stringify([...names])); } catch {}
+  };
+  const [serviceUnreadNames, setServiceUnreadNames] = useState<Set<string>>(() => loadSvcUnread(svcUnreadKey));
   const [thread, setThread] = useState<Msg[]>([]);
 
   const refreshConvs = () =>
@@ -897,7 +905,7 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
   useEffect(() => {
     setSelected(null);
     setSelectedService(null);
-    setServiceUnreadNames(new Set(["ABF – Architecte des Bâtiments de France"]));
+    setServiceUnreadNames(loadSvcUnread(`heureka_svcUnread_${commune}`));
     api.get<Conv[]>(`/mairie/conversations?commune=${encodeURIComponent(commune)}`).then(data => {
       setConvs(data);
     }).catch(() => {});
@@ -1015,7 +1023,7 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
             <div key={i} onClick={() => {
               setSelectedService(c);
               setSelected(null);
-              setServiceUnreadNames(prev => { const next = new Set(prev); next.delete(c.name); return next; });
+              setServiceUnreadNames(prev => { const next = new Set(prev); next.delete(c.name); saveSvcUnread(svcUnreadKey, next); return next; });
             }} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: isActive ? "#F0F4FF" : "white" }}
               onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
               onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "white"; }}>
@@ -1051,7 +1059,7 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <button
-                onClick={() => setServiceUnreadNames(prev => new Set(prev).add(selectedService.name))}
+                onClick={() => setServiceUnreadNames(prev => { const next = new Set(prev).add(selectedService.name); saveSvcUnread(svcUnreadKey, next); return next; })}
                 title="Marquer comme non lu"
                 style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#64748b", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}
               >
