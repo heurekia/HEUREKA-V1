@@ -7,9 +7,9 @@ import { useAuth } from "../../hooks/useAuth";
 const COMMUNE_INSEE: Record<string, string> = {
   "Ballan-Miré": "37018",
   "Tours": "37261",
-  "Saint-Avertin": "37226",
+  "Saint-Avertin": "37207",
   "Joué-lès-Tours": "37122",
-  "La Riche": "37132",
+  "La Riche": "37125",
 };
 
 const NAV_ITEMS = [
