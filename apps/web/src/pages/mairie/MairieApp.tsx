@@ -5,7 +5,7 @@ import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 
 const COMMUNE_INSEE: Record<string, string> = {
-  "Ballan-Miré": "37015",
+  "Ballan-Miré": "37018",
   "Tours": "37261",
   "Saint-Avertin": "37226",
   "Joué-lès-Tours": "37122",
@@ -1619,7 +1619,7 @@ function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
         <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>Informations générales de la commune</div>
           <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            {[["Nom de la commune","Ballan-Miré"],["Code INSEE","37015"],["Département","Indre-et-Loire (37)"],["Région","Centre-Val de Loire"],["Population","7 800 habitants"],["Surface","30,7 km²"],["Email contact","urbanisme@ballan-mire.fr"],["Téléphone","02 47 67 XX XX"]].map(([l,v]) => (
+            {[["Nom de la commune","Ballan-Miré"],["Code INSEE","37018"],["Département","Indre-et-Loire (37)"],["Région","Centre-Val de Loire"],["Population","7 800 habitants"],["Surface","30,7 km²"],["Email contact","urbanisme@ballan-mire.fr"],["Téléphone","02 47 67 XX XX"]].map(([l,v]) => (
               <div key={l}>
                 <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{l}</div>
                 <input defaultValue={v} style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none" }} />
