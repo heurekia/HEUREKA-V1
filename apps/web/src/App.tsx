@@ -13,11 +13,12 @@ import { MesDocuments } from "./pages/citoyen/MesDocuments";
 import { CentreAide } from "./pages/citoyen/CentreAide";
 import { Profil } from "./pages/citoyen/Profil";
 import { MairieApp } from "./pages/mairie/MairieApp";
+import { MairieLogin } from "./pages/mairie/MairieLogin";
 
-function ProtectedRoute({ children, roles }: { children: React.ReactNode; roles?: string[] }) {
+function ProtectedRoute({ children, roles, loginPath = "/login" }: { children: React.ReactNode; roles?: string[]; loginPath?: string }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="flex items-center justify-center min-h-screen"><div className="animate-spin w-8 h-8 border-4 border-heureka-600 border-t-transparent rounded-full" /></div>;
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) return <Navigate to={loginPath} replace />;
   if (roles && !roles.includes(user.role)) return <Navigate to="/" replace />;
   return <>{children}</>;
 }
@@ -40,6 +41,9 @@ export function App() {
           {/* Analyse parcellaire is full-screen — lives outside PublicLayout */}
           <Route path="/analyse-parcellaire" element={<AnalyseParcellaire />} />
 
+          {/* Mairie login — full-screen, outside PublicLayout */}
+          <Route path="/mairie/login" element={<PublicOnlyRoute><MairieLogin /></PublicOnlyRoute>} />
+
           <Route element={<PublicLayout />}>
             <Route path="/" element={<Accueil />} />
             <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
@@ -58,7 +62,7 @@ export function App() {
           <Route
             path="/mairie/*"
             element={
-              <ProtectedRoute roles={["mairie", "instructeur", "admin"]}>
+              <ProtectedRoute roles={["mairie", "instructeur", "admin"]} loginPath="/mairie/login">
                 <MairieApp />
               </ProtectedRoute>
             }

@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
+import { useAuth } from "../../hooks/useAuth";
 
 const COMMUNE_INSEE: Record<string, string> = {
   "Ballan-Miré": "37018",
@@ -164,6 +165,7 @@ function UserIcon({ size = 18, className = "" }) {
 function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0 }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void; messageBadge?: number }) {
   const [showDrop, setShowDrop] = useState(false);
   const communes = ["Ballan-Miré", "Tours", "Saint-Avertin", "Joué-lès-Tours", "La Riche"];
+  const { logout } = useAuth();
   return (
     <aside style={{
       width: 200, minWidth: 200, background: "#0f1629",
@@ -235,13 +237,25 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0 }: {
         })}
       </nav>
 
-      <div onClick={() => setActive("Infos Perso")} style={{ borderTop: "1px solid rgba(255,255,255,0.07)", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10, cursor: "pointer" }}>
-        <div style={{ width: 34, height: 34, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "white", flexShrink: 0 }}>ML</div>
-        <div style={{ flex: 1, minWidth: 0 }}>
-          <div style={{ color: "white", fontSize: 12, fontWeight: 600 }}>Marie L.</div>
-          <div style={{ color: "#64748b", fontSize: 11 }}>Instructrice</div>
+      <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+        <div onClick={() => setActive("Infos Perso")} style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, cursor: "pointer" }}>
+          <div style={{ width: 34, height: 34, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "white", flexShrink: 0 }}>ML</div>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ color: "white", fontSize: 12, fontWeight: 600 }}>Marie L.</div>
+            <div style={{ color: "#64748b", fontSize: 11 }}>Instructrice</div>
+          </div>
         </div>
-        <ArrowRightIcon size={12} />
+        <button
+          onClick={logout}
+          title="Déconnexion"
+          style={{ background: "none", border: "none", cursor: "pointer", color: "#64748b", padding: 4, borderRadius: 6, display: "flex", alignItems: "center", flexShrink: 0 }}
+          onMouseEnter={e => (e.currentTarget.style.color = "#EF4444")}
+          onMouseLeave={e => (e.currentTarget.style.color = "#64748b")}
+        >
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M9 21H5a2 2 0 01-2-2V5a2 2 0 012-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" y1="12" x2="9" y2="12"/>
+          </svg>
+        </button>
       </div>
     </aside>
   );
