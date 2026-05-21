@@ -5,6 +5,7 @@ import { api } from "../../lib/api";
 
 const COMMUNE_INSEE: Record<string, string> = {
   "Ballan-Miré": "37018",
+  "Tours": "37261",
   "Saint-Avertin": "37207",
   "Joué-lès-Tours": "37122",
   "La Riche": "37125",
@@ -162,7 +163,7 @@ function UserIcon({ size = 18, className = "" }) {
 
 function Sidebar({ active, setActive, commune, setCommune }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void }) {
   const [showDrop, setShowDrop] = useState(false);
-  const communes = ["Ballan-Miré", "Saint-Avertin", "Joué-lès-Tours", "La Riche"];
+  const communes = ["Ballan-Miré", "Tours", "Saint-Avertin", "Joué-lès-Tours", "La Riche"];
   return (
     <aside style={{
       width: 200, minWidth: 200, background: "#0f1629",
