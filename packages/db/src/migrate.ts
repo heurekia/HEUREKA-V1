@@ -177,10 +177,10 @@ ALTER TABLE communes ADD COLUMN IF NOT EXISTS departement text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS region text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS description text;
 
--- Remove duplicate/wrong-code commune rows, keeping only the correct one
-DELETE FROM communes WHERE name = 'Ballan-Miré'   AND insee_code != '37018';
-DELETE FROM communes WHERE name = 'La Riche'       AND insee_code != '37195';
-DELETE FROM communes WHERE name = 'Saint-Avertin'  AND insee_code != '37208';
+-- Full reset of commune-linked data (seed repopulates immediately after)
+DELETE FROM zone_regulatory_rules;
+DELETE FROM zones;
+DELETE FROM communes;
 
 -- Promote mairie@tours.fr to admin
 UPDATE users SET role = 'admin' WHERE email = 'mairie@tours.fr';

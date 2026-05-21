@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from "react";
+import { useState, useRef, useEffect, useCallback } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
@@ -1339,7 +1339,7 @@ type StaffUser = {
 
 type InseeCandidate = { nom: string; insee: string; zip: string | null; departement: string | null; region: string | null };
 
-function CommuneGeneralTab({ commune, isAdmin }: { commune: string; isAdmin: boolean }) {
+function CommuneGeneralTab({ commune, isAdmin, onInseeUpdated }: { commune: string; isAdmin: boolean; onInseeUpdated?: () => void }) {
   const [data, setData] = useState<CommuneData | null>(null);
   const [form, setForm] = useState<Partial<CommuneData>>({});
   const [loading, setLoading] = useState(true);
@@ -1379,6 +1379,7 @@ function CommuneGeneralTab({ commune, isAdmin }: { commune: string; isAdmin: boo
       const updated = await api.patch<CommuneData>(`/mairie/admin/commune-details?commune=${encodeURIComponent(commune)}`, form);
       setData(updated); setForm(updated); setSaved(true);
       setTimeout(() => setSaved(false), 3000);
+      onInseeUpdated?.();
     } catch { /* ignore */ }
     finally { setSaving(false); }
   };
@@ -1710,7 +1711,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   );
 }
 
-function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false }: { commune?: string; isAdmin?: boolean; communeInseeMap?: Record<string, string> }) {
+function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
   const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Intégrations"];
   const [stab, setStab] = useState("Réglementation");
@@ -1735,11 +1736,11 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false }: { commu
           <button key={t} onClick={() => setStab(t)} style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: stab === t ? 600 : 400, color: stab === t ? "#4F46E5" : "#64748b", borderBottom: stab === t ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>{t}</button>
         ))}
       </div>
-      {stab === "Général" && <CommuneGeneralTab commune={commune} isAdmin={isAdmin} />}
+      {stab === "Général" && <CommuneGeneralTab commune={commune} isAdmin={isAdmin} onInseeUpdated={onInseeUpdated} />}
       {stab === "Utilisateurs" && <CommuneUsersTab commune={commune} isAdmin={isAdmin} currentUserId={user?.id} />}
       {stab === "Réglementation" && (
         <div style={{ minHeight: 400, margin: "0 -24px" }}>
-          <ReglementationScreen commune={commune} inseeCode={COMMUNE_INSEE[commune]} />
+          <ReglementationScreen commune={commune} inseeCode={communeInseeMap[commune]} />
         </div>
       )}
       {stab === "Notifications" && (
@@ -4760,7 +4761,7 @@ export function MairieApp() {
   const location = useLocation();
 
   // Load commune list from DB to get correct INSEE codes
-  useEffect(() => {
+  const refreshCommuneInseeMap = useCallback(() => {
     api.get<{ name: string; insee_code: string }[]>("/mairie/commune-list")
       .then(data => {
         if (!data.length) return;
@@ -4770,6 +4771,7 @@ export function MairieApp() {
       })
       .catch(() => {});
   }, []);
+  useEffect(() => { refreshCommuneInseeMap(); }, [refreshCommuneInseeMap]);
 
   // Charge le badge initial quand la commune change ; MessageScreen maintient ensuite le total en temps réel
   useEffect(() => {
@@ -4814,7 +4816,7 @@ export function MairieApp() {
             <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
             <Route path="carte" element={<CarteScreen initialCommune={commune} communeInseeMap={communeInseeMap} />} />
             <Route path="statistiques" element={<StatistiquesScreen commune={commune} />} />
-            <Route path="parametres" element={<ParametresScreen commune={commune} isAdmin={isAdmin} communeInseeMap={communeInseeMap} />} />
+            <Route path="parametres" element={<ParametresScreen commune={commune} isAdmin={isAdmin} communeInseeMap={communeInseeMap} onInseeUpdated={refreshCommuneInseeMap} />} />
             <Route path="profil" element={<InfosPersoScreen />} />
             <Route path="*" element={<Navigate to="/mairie" replace />} />
           </Routes>
