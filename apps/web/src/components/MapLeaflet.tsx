@@ -97,7 +97,7 @@ export function MapLeaflet({
   const markersRef = useRef<L.CircleMarker[]>([]);
   const boundaryRef = useRef<L.GeoJSON | null>(null);
   const parcelLayerRef = useRef<L.TileLayer.WMS | null>(null);
-  const pluLayerRef = useRef<L.GeoJSON | null>(null);
+  const pluLayerRef = useRef<L.Layer | null>(null);
   const clickPinRef = useRef<L.Marker | null>(null);
   const baseTileRef = useRef<L.TileLayer | null>(null);
   const highlightLayerRef = useRef<L.GeoJSON | null>(null);
@@ -174,8 +174,8 @@ export function MapLeaflet({
     }
   }, [parcelLayer]);
 
-  // GPU PLU zone overlay — GeoJSON polygons colored by zone type, filtered to commune boundary.
-  // Re-fetches whenever commune changes so switching communes works correctly.
+  // GPU PLU zone overlay — WMS tiles from IGN Géoplateforme, same source as Géoportail Urbanisme.
+  // WMS has no feature limit and renders all zones correctly for any viewport.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -184,57 +184,15 @@ export function MapLeaflet({
     setZoneError(null);
     if (!pluZoneLayer) return;
 
-    const TYPE_FILL: Record<string, string> = {
-      U: "#C0392B", AU: "#E67E22", A: "#D4AC0D", N: "#27AE60",
-    };
-
-    let cancelled = false;
-
-    (async () => {
-      try {
-        // Proxy request to avoid CORS — backend fetches geo.api.gouv.fr + apicarto.ign.fr
-        const token = localStorage.getItem("token");
-        const headers: Record<string, string> = {};
-        if (token) headers["Authorization"] = `Bearer ${token}`;
-
-        const pluUrl = inseeCode
-          ? `/api/mairie/plu-zones?insee_code=${encodeURIComponent(inseeCode)}`
-          : `/api/mairie/plu-zones?commune=${encodeURIComponent(commune ?? "")}`;
-        const r = await fetch(pluUrl, { signal: AbortSignal.timeout(30000), headers });
-
-        if (cancelled || !mapRef.current) return;
-
-        if (!r.ok) {
-          const body = await r.json().catch(() => ({})) as { error?: string };
-          throw new Error(body.error ?? `Erreur ${r.status}`);
-        }
-
-        const zoneJson = await r.json() as Parameters<typeof L.geoJSON>[0];
-
-        pluLayerRef.current = L.geoJSON(zoneJson, {
-          style: (feature) => {
-            const raw = (feature?.properties?.typezone as string | undefined) ?? "U";
-            const type = raw.startsWith("AU") ? "AU" : raw.startsWith("U") ? "U" : raw.startsWith("N") ? "N" : raw.startsWith("A") ? "A" : "U";
-            const color = TYPE_FILL[type] ?? "#888";
-            return { fillColor: color, fillOpacity: 0.38, color, weight: 0.7, opacity: 0.7 };
-          },
-          onEachFeature: (feature, layer) => {
-            const p = feature.properties as { libelle?: string; libelong?: string } | null;
-            if (!p) return;
-            layer.bindTooltip(
-              `<b style="font-size:13px">${p.libelle ?? "?"}</b>${p.libelong ? `<br><span style="font-size:11px;color:#555">${p.libelong}</span>` : ""}`,
-              { sticky: true, opacity: 0.95 }
-            );
-          },
-        }).addTo(mapRef.current);
-      } catch (err) {
-        console.warn("[MapLeaflet] Zones PLU non chargées :", err);
-        if (!cancelled) setZoneError(err instanceof Error ? err.message : "Erreur chargement zones PLU");
-      }
-    })();
-
-    return () => { cancelled = true; };
-  }, [pluZoneLayer, commune, inseeCode, mapReady]);
+    pluLayerRef.current = L.tileLayer.wms("https://data.geopf.fr/wms-r/ows", {
+      layers: "URBANISME.ZONE_URBA",
+      format: "image/png",
+      transparent: true,
+      version: "1.3.0",
+      opacity: 0.55,
+      attribution: '© IGN — <a href="https://www.geoportail-urbanisme.gouv.fr/">Géoportail de l\'Urbanisme</a>',
+    }).addTo(map);
+  }, [pluZoneLayer, mapReady]);
 
   // Highlight geometry (e.g. parcel polygon returned by analysis)
   useEffect(() => {
