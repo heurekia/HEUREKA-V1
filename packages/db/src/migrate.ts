@@ -166,9 +166,8 @@ CREATE TABLE IF NOT EXISTS calendar_events (
 -- Schema changes (idempotent)
 ALTER TABLE dossier_messages ADD COLUMN IF NOT EXISTS read_at timestamp;
 
-DO $$ BEGIN
-  ALTER TABLE communes DROP CONSTRAINT IF EXISTS communes_name_unique;
-EXCEPTION WHEN OTHERS THEN NULL; END $$;
+ALTER TABLE communes DROP CONSTRAINT IF EXISTS communes_name_unique;
+ALTER TABLE communes DROP CONSTRAINT IF EXISTS communes_name_key;
 `;
 
 async function main() {
