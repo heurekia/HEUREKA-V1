@@ -23,24 +23,29 @@ const DELAI_INSTRUCTION_MOIS: Record<string, number> = {
 };
 
 // ── Dashboard stats ──
-mairieRouter.get("/dashboard", async (_req: AuthRequest, res) => {
+mairieRouter.get("/dashboard", async (req: AuthRequest, res) => {
   try {
-    const total = await db.select({ count: sql<number>`count(*)` }).from(dossiers);
+    const commune = req.query.commune as string | undefined;
+    const communeFilter = commune ? sql`commune ILIKE ${"%" + commune + "%"}` : sql`1=1`;
+
+    const total = await db.select({ count: sql<number>`count(*)` }).from(dossiers).where(communeFilter);
     const parStatut = await db
       .select({ status: dossiers.status, count: sql<number>`count(*)` })
       .from(dossiers)
+      .where(communeFilter)
       .groupBy(dossiers.status);
 
     const recent = await db
       .select()
       .from(dossiers)
+      .where(communeFilter)
       .orderBy(desc(dossiers.updated_at))
       .limit(10);
 
     const pendingCount = await db
       .select({ count: sql<number>`count(*)` })
       .from(dossiers)
-      .where(sql`status NOT IN ('accepte', 'refuse', 'brouillon')`);
+      .where(sql`status NOT IN ('accepte', 'refuse', 'brouillon') AND (${communeFilter})`);
 
     res.json({
       total_dossiers: Number(total[0]?.count ?? 0),
@@ -59,6 +64,8 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
   try {
     const search = req.query.search as string | undefined;
     const status = req.query.status as string | undefined;
+    const commune = req.query.commune as string | undefined;
+    const communeFilter = commune ? sql`dossiers.commune ILIKE ${"%" + commune + "%"}` : sql`1=1`;
 
     const sel = {
       id: dossiers.id, numero: dossiers.numero, type: dossiers.type, status: dossiers.status,
@@ -73,16 +80,17 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
       const pattern = `%${search}%`;
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
-        .where(sql`(dossiers.numero ILIKE ${pattern} OR dossiers.adresse ILIKE ${pattern} OR dossiers.commune ILIKE ${pattern} OR users.prenom ILIKE ${pattern} OR users.nom ILIKE ${pattern} OR CONCAT(users.prenom, ' ', users.nom) ILIKE ${pattern})`)
+        .where(sql`(${communeFilter}) AND (dossiers.numero ILIKE ${pattern} OR dossiers.adresse ILIKE ${pattern} OR dossiers.commune ILIKE ${pattern} OR users.prenom ILIKE ${pattern} OR users.nom ILIKE ${pattern} OR CONCAT(users.prenom, ' ', users.nom) ILIKE ${pattern})`)
         .orderBy(desc(dossiers.created_at));
     } else if (status) {
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
-        .where(eq(dossiers.status, status as any))
+        .where(sql`(${communeFilter}) AND dossiers.status = ${status}`)
         .orderBy(desc(dossiers.created_at));
     } else {
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
+        .where(communeFilter)
         .orderBy(desc(dossiers.created_at));
     }
 
@@ -309,9 +317,10 @@ mairieRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
 
 
 // ── Conversations : liste avec preview et non-lus ──
-// NB: "non lu" = dernier message du citoyen sans réponse de la mairie/instructeur
-mairieRouter.get("/conversations", async (_req: AuthRequest, res) => {
+mairieRouter.get("/conversations", async (req: AuthRequest, res) => {
   try {
+    const commune = req.query.commune as string | undefined;
+    const communeFilter = commune ? sql`AND d.commune ILIKE ${"%" + commune + "%"}` : sql``;
     const rows = await db.execute(sql`
       WITH last_msg AS (
         SELECT DISTINCT ON (dossier_id) dossier_id, content, from_role, created_at
@@ -334,6 +343,7 @@ mairieRouter.get("/conversations", async (_req: AuthRequest, res) => {
       JOIN last_msg lm ON lm.dossier_id = d.id
       LEFT JOIN users u ON u.id = d.user_id
       LEFT JOIN unread ur ON ur.dossier_id = d.id
+      WHERE 1=1 ${communeFilter}
       ORDER BY lm.created_at DESC
     `);
     res.json(rows);
@@ -344,12 +354,15 @@ mairieRouter.get("/conversations", async (_req: AuthRequest, res) => {
 });
 
 // ── Nombre total de messages non lus (pour le badge dashboard) ──
-mairieRouter.get("/conversations/unread-count", async (_req: AuthRequest, res) => {
+mairieRouter.get("/conversations/unread-count", async (req: AuthRequest, res) => {
   try {
+    const commune = req.query.commune as string | undefined;
+    const communeFilter = commune ? sql`AND d.commune ILIKE ${"%" + commune + "%"}` : sql``;
     const rows = await db.execute(sql`
-      SELECT COUNT(DISTINCT dossier_id)::int AS count
-      FROM dossier_messages
-      WHERE from_role = 'citoyen' AND read_at IS NULL
+      SELECT COUNT(DISTINCT dm.dossier_id)::int AS count
+      FROM dossier_messages dm
+      JOIN dossiers d ON d.id = dm.dossier_id
+      WHERE dm.from_role = 'citoyen' AND dm.read_at IS NULL ${communeFilter}
     `) as unknown as [{ count: number }];
     res.json({ count: rows[0]?.count ?? 0 });
   } catch (err) {

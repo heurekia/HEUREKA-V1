@@ -246,7 +246,7 @@ function Sidebar({ active, setActive, commune, setCommune }: { active: string; s
   );
 }
 
-function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void }) {
+function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick, commune = "" }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void; commune?: string }) {
   const [showNotifs, setShowNotifs] = useState(false);
   const [showFAQ, setShowFAQ] = useState(false);
   const [faqQuery, setFaqQuery] = useState("");
@@ -263,7 +263,8 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
   useEffect(() => {
     if (searchQuery.length <= 1) { setSearchResults([]); return; }
     const timer = setTimeout(() => {
-      api.get<ApiDossier[]>(`/mairie/dossiers?search=${encodeURIComponent(searchQuery)}`)
+      const qs = commune ? `search=${encodeURIComponent(searchQuery)}&commune=${encodeURIComponent(commune)}` : `search=${encodeURIComponent(searchQuery)}`;
+      api.get<ApiDossier[]>(`/mairie/dossiers?${qs}`)
         .then(data => setSearchResults(data.slice(0, 8)))
         .catch(() => setSearchResults([]));
     }, 300);
@@ -486,11 +487,11 @@ function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }
       { id: "8", numero: "PC-BM-2024-041", type: "permis_de_construire", status: "refuse", adresse: "Rue du Commerce, Ballan-Miré", lat: 47.3546, lng: 0.5503 },
       { id: "9", numero: "DP-BM-2024-019", type: "declaration_prealable", status: "pre_instruction", adresse: "Rue du Val de l'Indre, Ballan-Miré", lat: 47.3510, lng: 0.5560 },
     ];
-    api.get<MapDossier[]>("/mairie/map-dossiers?commune=Ballan-Mir%C3%A9")
+    api.get<MapDossier[]>(`/mairie/map-dossiers?commune=${encodeURIComponent(commune)}`)
       .then(data => setMapDossiers(data.length > 0 ? data : FALLBACK))
       .catch(() => setMapDossiers(FALLBACK));
 
-    api.get<{ dossiers_par_statut: { status: string; count: number }[] }>("/mairie/dashboard")
+    api.get<{ dossiers_par_statut: { status: string; count: number }[] }>(`/mairie/dashboard?commune=${encodeURIComponent(commune)}`)
       .then(data => {
         const map: Record<string, number> = {};
         data.dossiers_par_statut.forEach(r => { map[r.status] = Number(r.count); });
@@ -498,10 +499,10 @@ function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }
       })
       .catch(() => {});
 
-    api.get<{ count: number }>("/mairie/conversations/unread-count")
+    api.get<{ count: number }>(`/mairie/conversations/unread-count?commune=${encodeURIComponent(commune)}`)
       .then(data => setUnreadMessages(Number(data.count)))
       .catch(() => {});
-  }, []);
+  }, [commune]);
   const [mapExpanded, setMapExpanded] = useState(false);
 
   const countByStatus = (s: string) => statsByStatus[s] ?? 0;
@@ -635,7 +636,7 @@ function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }
   );
 }
 
-function DossiersScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) => void }) {
+function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossierClick: (d: DossierInfo) => void }) {
   const tabs = ["Tous", "Nouveau", "En instruction", "Pré-instruction", "Incomplet", "Décision en cours", "Accepté", "Refusé"];
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState(searchParams.get("filter") ?? "Tous");
@@ -676,19 +677,21 @@ function DossiersScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =
     });
   };
 
-  // On mount: compute missing deadlines then load dossiers
+  // Re-fetch when commune changes; compute deadlines on first load
   useEffect(() => {
+    setLoading(true);
+    const communeQ = `commune=${encodeURIComponent(commune)}`;
     const token = localStorage.getItem("token");
     const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } : {};
     fetch("/api/mairie/admin/compute-deadlines", { method: "POST", headers })
       .catch(() => {})
       .finally(() => {
-        api.get<ApiDossier[]>("/mairie/dossiers")
+        api.get<ApiDossier[]>(`/mairie/dossiers?${communeQ}`)
           .then(d => setApiDossiers(d))
           .catch(() => {})
           .finally(() => setLoading(false));
       });
-  }, []);
+  }, [commune]);
 
   const allRows = apiDossiers.map(d => ({
     id: d.id,
@@ -718,7 +721,7 @@ function DossiersScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =
   return (
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Dossiers</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Dossiers — {commune}</h1>
         <p style={{ color: "#64748b", fontSize: 13 }}>Retrouvez et suivez l'avancement de tous les dossiers.</p>
       </div>
 
@@ -850,7 +853,7 @@ function DossiersScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =
   );
 }
 
-function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) => void }) {
+function MessageScreen({ commune, onDossierClick }: { commune: string; onDossierClick: (d: DossierInfo) => void }) {
   type Conv = { dossier_id: string; numero: string; type: string; status: string; petitionnaire: string; last_content: string; last_from_role: string; last_at: string; unread_count: number };
   type Msg = { id: string; content: string; from_role: string; created_at: string; prenom: string | null; nom: string | null };
 
@@ -860,14 +863,15 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
   const [thread, setThread] = useState<Msg[]>([]);
 
   const refreshConvs = () =>
-    api.get<Conv[]>("/mairie/conversations").then(data => setConvs(data)).catch(() => {});
+    api.get<Conv[]>(`/mairie/conversations?commune=${encodeURIComponent(commune)}`).then(data => setConvs(data)).catch(() => {});
 
   useEffect(() => {
-    api.get<Conv[]>("/mairie/conversations").then(data => {
+    setSelected(null);
+    api.get<Conv[]>(`/mairie/conversations?commune=${encodeURIComponent(commune)}`).then(data => {
       setConvs(data);
-      if (data.length > 0) setSelected(s => s ?? (data[0] ?? null));
+      if (data.length > 0) setSelected(data[0] ?? null);
     }).catch(() => {});
-  }, []);
+  }, [commune]);
 
   // Quand on sélectionne une conversation, charger le thread et marquer comme lu
   useEffect(() => {
@@ -1695,7 +1699,7 @@ function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: str
   );
 }
 
-function CalendrierScreen() {
+function CalendrierScreen({ commune }: { commune: string }) {
   const navigate = useNavigate();
 
   const MONTHS = ["Janvier","Février","Mars","Avril","Mai","Juin","Juillet","Août","Septembre","Octobre","Novembre","Décembre"];
@@ -1733,11 +1737,11 @@ function CalendrierScreen() {
   useEffect(() => {
     const token = localStorage.getItem("token");
     const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-    fetch("/api/mairie/dossiers", { headers })
+    fetch(`/api/mairie/dossiers?commune=${encodeURIComponent(commune)}`, { headers })
       .then(r => r.json())
       .then((data: unknown) => setDossiers(Array.isArray(data) ? data as DossierRow[] : []))
       .catch(() => {});
-  }, []);
+  }, [commune]);
 
   const today = new Date();
   today.setHours(0, 0, 0, 0);
@@ -1839,7 +1843,7 @@ function CalendrierScreen() {
   return (
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 16 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Calendrier</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Calendrier — {commune}</h1>
         <p style={{ color: "#64748b", fontSize: 13 }}>Échéances et dépôts — cliquez sur un dossier pour l'ouvrir.</p>
       </div>
 
@@ -1985,7 +1989,7 @@ function CalendrierScreen() {
   );
 }
 
-function StatistiquesScreen() {
+function StatistiquesScreen({ commune }: { commune: string }) {
   const [stab, setStab] = useState("Vue générale");
   const tabs = ["Vue générale", "Délais", "Types de dossiers", "Services"];
 
@@ -2032,7 +2036,7 @@ function StatistiquesScreen() {
   return (
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 20 }}>
-        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Statistiques</h1>
+        <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Statistiques — {commune}</h1>
         <p style={{ color: "#64748b", fontSize: 13 }}>Analysez l'activité et les performances de traitement des dossiers.</p>
       </div>
 
@@ -4375,17 +4379,17 @@ export function MairieApp() {
       <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} />
+          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           <Routes>
             <Route index element={<DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} onDossierClick={handleDossierClick} />} />
-            <Route path="dossiers" element={<DossiersScreen onDossierClick={handleDossierClick} />} />
+            <Route path="dossiers" element={<DossiersScreen commune={commune} onDossierClick={handleDossierClick} />} />
             <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} />} />
-            <Route path="messagerie" element={<MessageScreen onDossierClick={handleDossierClick} />} />
-            <Route path="calendrier" element={<CalendrierScreen />} />
+            <Route path="messagerie" element={<MessageScreen commune={commune} onDossierClick={handleDossierClick} />} />
+            <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
             <Route path="carte" element={<CarteScreen initialCommune={commune} />} />
-            <Route path="statistiques" element={<StatistiquesScreen />} />
+            <Route path="statistiques" element={<StatistiquesScreen commune={commune} />} />
             <Route path="parametres" element={<ParametresScreen commune={commune} />} />
             <Route path="profil" element={<InfosPersoScreen />} />
             <Route path="*" element={<Navigate to="/mairie" replace />} />
