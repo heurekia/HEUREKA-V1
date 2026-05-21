@@ -26,7 +26,7 @@ const DELAI_INSTRUCTION_MOIS: Record<string, number> = {
 mairieRouter.get("/dashboard", async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
-    const communeFilter = commune ? sql`commune ILIKE ${"%" + commune + "%"}` : sql`1=1`;
+    const communeFilter = commune ? sql`commune ILIKE ${commune}` : sql`1=1`;
 
     const total = await db.select({ count: sql<number>`count(*)` }).from(dossiers).where(communeFilter);
     const parStatut = await db
@@ -65,7 +65,7 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
     const search = req.query.search as string | undefined;
     const status = req.query.status as string | undefined;
     const commune = req.query.commune as string | undefined;
-    const communeFilter = commune ? sql`dossiers.commune ILIKE ${"%" + commune + "%"}` : sql`1=1`;
+    const communeFilter = commune ? sql`dossiers.commune ILIKE ${commune}` : sql`1=1`;
 
     const sel = {
       id: dossiers.id, numero: dossiers.numero, type: dossiers.type, status: dossiers.status,
@@ -265,7 +265,7 @@ mairieRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
       .from(dossiers)
       .where(
         commune
-          ? sql`commune ILIKE ${"%" + commune + "%"} AND adresse IS NOT NULL`
+          ? sql`commune ILIKE ${commune} AND adresse IS NOT NULL`
           : sql`adresse IS NOT NULL`
       )
       .orderBy(desc(dossiers.created_at))
@@ -320,7 +320,7 @@ mairieRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
 mairieRouter.get("/conversations", async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
-    const communeFilter = commune ? sql`AND d.commune ILIKE ${"%" + commune + "%"}` : sql``;
+    const communeFilter = commune ? sql`AND d.commune ILIKE ${commune}` : sql``;
     const rows = await db.execute(sql`
       WITH last_msg AS (
         SELECT DISTINCT ON (dossier_id) dossier_id, content, from_role, created_at
@@ -357,7 +357,7 @@ mairieRouter.get("/conversations", async (req: AuthRequest, res) => {
 mairieRouter.get("/conversations/unread-count", async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
-    const communeFilter = commune ? sql`AND d.commune ILIKE ${"%" + commune + "%"}` : sql``;
+    const communeFilter = commune ? sql`AND d.commune ILIKE ${commune}` : sql``;
     const rows = await db.execute(sql`
       SELECT COUNT(DISTINCT dm.dossier_id)::int AS count
       FROM dossier_messages dm
