@@ -1095,6 +1095,33 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
       }
     }
 
+    // Strategy 3: PLUi communes — look up EPCI SIREN via geo.api.gouv.fr, probe {SIREN}_PLUI
+    // Tours Métropole, Communauté de communes, etc. all have their PLUi indexed under SIREN_PLUI
+    if (!partition && inseeCode) {
+      const epciR = await fetch(
+        `https://geo.api.gouv.fr/communes/${encodeURIComponent(inseeCode)}/epcis?fields=code&limit=5`,
+        { signal: AbortSignal.timeout(8000) }
+      ).catch(() => null);
+      if (epciR?.ok) {
+        const epcis = await epciR.json() as Array<{ code?: string }>;
+        for (const epci of epcis) {
+          if (!epci.code || partition) continue;
+          const candidate = `${epci.code}_PLUI`;
+          // Verify the partition actually has zones in the GPU (no geom needed)
+          const verifyParams = new URLSearchParams({ partition: candidate, _limit: "1" });
+          const verifyR = await fetch(
+            `https://apicarto.ign.fr/api/gpu/zone-urba?${verifyParams.toString()}`,
+            { signal: AbortSignal.timeout(10000) }
+          ).catch(() => null);
+          if (verifyR?.ok) {
+            type ZoneProbe = { features?: Array<unknown> };
+            const verifyJson = await verifyR.json() as ZoneProbe;
+            if ((verifyJson.features?.length ?? 0) > 0) partition = candidate;
+          }
+        }
+      }
+    }
+
     if (!partition) return res.status(404).json({ error: "Aucun document PLU trouvé pour cette commune" });
 
     // Zone-urba with bounding-box geom (avoids URL-length issues with full polygon)
