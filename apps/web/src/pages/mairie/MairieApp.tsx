@@ -1325,6 +1325,391 @@ function IngestPluSection() {
   );
 }
 
+type CommuneData = {
+  id: string; name: string; insee_code: string; zip_code: string | null;
+  email: string | null; telephone: string | null; logo_url: string | null;
+  population: string | null; surface: string | null;
+  departement: string | null; region: string | null; description: string | null;
+};
+
+type StaffUser = {
+  id: string; email: string; prenom: string; nom: string;
+  role: string; commune: string | null; telephone: string | null; created_at: string;
+};
+
+type InseeCandidate = { nom: string; insee: string; zip: string | null; departement: string | null; region: string | null };
+
+function CommuneGeneralTab({ commune, isAdmin }: { commune: string; isAdmin: boolean }) {
+  const [data, setData] = useState<CommuneData | null>(null);
+  const [form, setForm] = useState<Partial<CommuneData>>({});
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+  const [inseeSearch, setInseeSearch] = useState("");
+  const [inseeCandidates, setInseeCandidates] = useState<InseeCandidate[]>([]);
+  const [inseeSearching, setInseeSearching] = useState(false);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get<CommuneData>(`/mairie/admin/commune-details?commune=${encodeURIComponent(commune)}`)
+      .then(d => { setData(d); setForm(d); })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [commune]);
+
+  const searchInsee = async () => {
+    if (inseeSearch.length < 2) return;
+    setInseeSearching(true);
+    try {
+      const results = await api.get<InseeCandidate[]>(`/mairie/admin/insee-lookup?nom=${encodeURIComponent(inseeSearch)}`);
+      setInseeCandidates(results);
+    } catch { /* ignore */ }
+    finally { setInseeSearching(false); }
+  };
+
+  const applyCandidate = (c: InseeCandidate) => {
+    setForm(f => ({ ...f, insee_code: c.insee, zip_code: c.zip ?? f.zip_code, departement: c.departement ?? f.departement, region: c.region ?? f.region }));
+    setInseeCandidates([]);
+    setInseeSearch("");
+  };
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const updated = await api.patch<CommuneData>(`/mairie/admin/commune-details?commune=${encodeURIComponent(commune)}`, form);
+      setData(updated); setForm(updated); setSaved(true);
+      setTimeout(() => setSaved(false), 3000);
+    } catch { /* ignore */ }
+    finally { setSaving(false); }
+  };
+
+  if (loading) return <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>;
+
+  const inp = (label: string, field: keyof CommuneData, readOnly = false) => (
+    <div key={field}>
+      <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>{label}</div>
+      <input
+        value={(form[field] as string) ?? ""}
+        onChange={e => !readOnly && isAdmin && setForm(f => ({ ...f, [field]: e.target.value }))}
+        readOnly={readOnly || !isAdmin}
+        style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", background: (!isAdmin || readOnly) ? "#F8FAFC" : "white", cursor: (!isAdmin || readOnly) ? "default" : "text" }}
+      />
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20, display: "flex", gap: 20, alignItems: "flex-start" }}>
+        <div style={{ width: 80, height: 80, borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden", flexShrink: 0, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center" }}>
+          {form.logo_url
+            ? <img src={form.logo_url} alt="logo" style={{ width: "100%", height: "100%", objectFit: "contain" }} onError={e => { (e.target as HTMLImageElement).style.display = "none"; }} />
+            : <span style={{ fontSize: 28, color: "#CBD5E1" }}>🏛</span>}
+        </div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Logo de la commune</div>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>URL d'un fichier PNG ou SVG (logo officiel de la commune).</div>
+          {isAdmin && (
+            <input
+              value={form.logo_url ?? ""}
+              onChange={e => setForm(f => ({ ...f, logo_url: e.target.value }))}
+              placeholder="https://..."
+              style={{ width: "100%", boxSizing: "border-box" as const, padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", outline: "none" }}
+            />
+          )}
+        </div>
+      </div>
+      <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Informations générales</div>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+          {inp("Nom de la commune", "name", true)}
+          <div>
+            <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Code INSEE</div>
+            <div style={{ display: "flex", gap: 6 }}>
+              <input
+                value={(form.insee_code as string) ?? ""}
+                readOnly
+                style={{ flex: 1, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", background: "#F8FAFC" }}
+              />
+              {isAdmin && (
+                <div style={{ position: "relative" }}>
+                  <div style={{ display: "flex", gap: 4 }}>
+                    <input
+                      value={inseeSearch}
+                      onChange={e => setInseeSearch(e.target.value)}
+                      onKeyDown={e => e.key === "Enter" && searchInsee()}
+                      placeholder="Chercher…"
+                      style={{ width: 120, padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, outline: "none" }}
+                    />
+                    <button onClick={searchInsee} disabled={inseeSearching} style={{ padding: "8px 12px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, fontSize: 12, cursor: "pointer", whiteSpace: "nowrap" }}>
+                      {inseeSearching ? "…" : "Trouver"}
+                    </button>
+                  </div>
+                  {inseeCandidates.length > 0 && (
+                    <div style={{ position: "absolute", top: "100%", right: 0, zIndex: 50, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 280, marginTop: 4 }}>
+                      {inseeCandidates.map(c => (
+                        <div key={c.insee} onClick={() => applyCandidate(c)}
+                          style={{ padding: "10px 14px", cursor: "pointer", borderBottom: "1px solid #F8FAFC" }}
+                          onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
+                          onMouseLeave={e => (e.currentTarget.style.background = "white")}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.nom}</div>
+                          <div style={{ fontSize: 11, color: "#94a3b8" }}>INSEE {c.insee} · {c.zip ?? "—"} · {c.departement ?? "—"}</div>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+          {inp("Département", "departement")}
+          {inp("Région", "region")}
+          {inp("Code postal", "zip_code")}
+          {inp("Population", "population")}
+          {inp("Surface", "surface")}
+          {inp("Email contact urbanisme", "email")}
+          {inp("Téléphone", "telephone")}
+        </div>
+        <div style={{ marginTop: 12 }}>
+          <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Description / Contexte</div>
+          <textarea
+            value={(form.description as string) ?? ""}
+            onChange={e => isAdmin && setForm(f => ({ ...f, description: e.target.value }))}
+            readOnly={!isAdmin}
+            rows={3}
+            style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", resize: "vertical", background: !isAdmin ? "#F8FAFC" : "white" }}
+          />
+        </div>
+        {!isAdmin && (
+          <div style={{ marginTop: 12, padding: "10px 14px", background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 8, fontSize: 12, color: "#92400E" }}>
+            Seuls les administrateurs peuvent modifier les informations de la commune.
+          </div>
+        )}
+        {isAdmin && (
+          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20, gap: 8, alignItems: "center" }}>
+            {saved && <span style={{ fontSize: 12, color: "#22C55E", fontWeight: 600 }}>Enregistré ✓</span>}
+            <button onClick={() => setForm(data ?? {})} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+            <button onClick={save} disabled={saving} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 600, cursor: saving ? "not-allowed" : "pointer" }}>
+              {saving ? "Enregistrement…" : "Enregistrer"}
+            </button>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string; isAdmin: boolean; currentUserId?: string }) {
+  const [userList, setUserList] = useState<StaffUser[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [search, setSearch] = useState("");
+  const [showAddModal, setShowAddModal] = useState(false);
+  const [addForm, setAddForm] = useState({ prenom: "", nom: "", email: "", role: "instructeur", telephone: "" });
+  const [addError, setAddError] = useState("");
+  const [addLoading, setAddLoading] = useState(false);
+  const [addedPw, setAddedPw] = useState("");
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editRole, setEditRole] = useState("");
+  const [deleteId, setDeleteId] = useState<string | null>(null);
+
+  const load = () => {
+    setLoading(true);
+    api.get<StaffUser[]>(`/mairie/admin/users?commune=${encodeURIComponent(commune)}`)
+      .then(setUserList)
+      .catch(() => setUserList([]))
+      .finally(() => setLoading(false));
+  };
+  useEffect(() => { load(); }, [commune]);
+
+  const filtered = userList.filter(u => `${u.prenom} ${u.nom} ${u.email}`.toLowerCase().includes(search.toLowerCase()));
+
+  const addUser = async () => {
+    setAddError("");
+    if (!addForm.prenom || !addForm.nom || !addForm.email || !addForm.role) { setAddError("Tous les champs sont requis."); return; }
+    setAddLoading(true);
+    try {
+      await api.post(`/mairie/admin/users?commune=${encodeURIComponent(commune)}`, addForm);
+      setAddedPw("Heureka2024!");
+      load();
+    } catch (e: unknown) {
+      setAddError(e instanceof Error ? e.message : "Erreur lors de la création.");
+    } finally { setAddLoading(false); }
+  };
+
+  const saveRole = async (id: string) => {
+    await api.patch(`/mairie/admin/users/${id}`, { role: editRole });
+    setEditingId(null);
+    load();
+  };
+
+  const deleteUser = async (id: string) => {
+    await api.delete(`/mairie/admin/users/${id}`);
+    setDeleteId(null);
+    load();
+  };
+
+  const ROLE_LABELS: Record<string, string> = { admin: "Admin", mairie: "Mairie", instructeur: "Instructeur" };
+  const ROLE_COLORS: Record<string, string> = { admin: "#DC2626", mairie: "#4F46E5", instructeur: "#0891B2" };
+
+  const initials = (u: StaffUser) => `${u.prenom[0] ?? ""}${u.nom[0] ?? ""}`.toUpperCase();
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
+        {[
+          ["Agents", String(userList.length), "#4F46E5"],
+          ["Instructeurs", String(userList.filter(u => u.role === "instructeur").length), "#0891B2"],
+          ["Admins", String(userList.filter(u => u.role === "admin").length), "#DC2626"],
+        ].map(([l, v, c]) => (
+          <div key={l} style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
+            <span style={{ fontSize: 22, fontWeight: 700, color: c }}>{v}</span>
+            <span style={{ fontSize: 12, color: "#64748b" }}>{l}</span>
+          </div>
+        ))}
+      </div>
+      <div style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 12, padding: 16, display: "flex", gap: 10, alignItems: "center" }}>
+        <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher un utilisateur…"
+          style={{ flex: 1, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
+        {isAdmin && (
+          <button onClick={() => { setShowAddModal(true); setAddedPw(""); setAddError(""); setAddForm({ prenom: "", nom: "", email: "", role: "instructeur", telephone: "" }); }}
+            style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
+            + Ajouter un agent
+          </button>
+        )}
+      </div>
+      <div style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 12, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <thead>
+            <tr style={{ background: "#F8FAFC" }}>
+              {["Agent", "Email", "Rôle", "Téléphone", ...(isAdmin ? ["Actions"] : [])].map(h => (
+                <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {loading ? (
+              <tr><td colSpan={isAdmin ? 5 : 4} style={{ padding: 32, textAlign: "center", color: "#94a3b8" }}>Chargement…</td></tr>
+            ) : filtered.length === 0 ? (
+              <tr><td colSpan={isAdmin ? 5 : 4} style={{ padding: 32, textAlign: "center", color: "#94a3b8" }}>Aucun utilisateur trouvé.</td></tr>
+            ) : filtered.map(u => (
+              <tr key={u.id} style={{ borderTop: "1px solid #F1F5F9" }}>
+                <td style={{ padding: "12px 16px" }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                    <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{initials(u)}</div>
+                    <div>
+                      <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{u.prenom} {u.nom}</div>
+                      {u.id === currentUserId && <span style={{ fontSize: 10, background: "#EEF2FF", color: "#4F46E5", borderRadius: 4, padding: "1px 5px", fontWeight: 600 }}>Vous</span>}
+                    </div>
+                  </div>
+                </td>
+                <td style={{ padding: "12px 16px", fontSize: 12, color: "#64748b" }}>{u.email}</td>
+                <td style={{ padding: "12px 16px" }}>
+                  {isAdmin && editingId === u.id ? (
+                    <div style={{ display: "flex", gap: 4 }}>
+                      <select value={editRole} onChange={e => setEditRole(e.target.value)}
+                        style={{ padding: "4px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12 }}>
+                        {["mairie", "instructeur", "admin"].map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+                      </select>
+                      <button onClick={() => saveRole(u.id)} style={{ padding: "4px 8px", background: "#4F46E5", color: "white", border: "none", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>✓</button>
+                      <button onClick={() => setEditingId(null)} style={{ padding: "4px 8px", background: "#F1F5F9", color: "#64748b", border: "none", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>✕</button>
+                    </div>
+                  ) : (
+                    <span style={{ background: `${ROLE_COLORS[u.role] ?? "#94a3b8"}18`, color: ROLE_COLORS[u.role] ?? "#94a3b8", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 8px", border: `1px solid ${ROLE_COLORS[u.role] ?? "#94a3b8"}33` }}>{ROLE_LABELS[u.role] ?? u.role}</span>
+                  )}
+                </td>
+                <td style={{ padding: "12px 16px", fontSize: 12, color: "#64748b" }}>{u.telephone ?? "—"}</td>
+                {isAdmin && (
+                  <td style={{ padding: "12px 16px" }}>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button onClick={() => { setEditingId(u.id); setEditRole(u.role); }}
+                        style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>Rôle</button>
+                      {u.id !== currentUserId && (
+                        <button onClick={() => setDeleteId(u.id)}
+                          style={{ border: "1px solid #FEE2E2", background: "#FFF5F5", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#EF4444", cursor: "pointer" }}>Retirer</button>
+                      )}
+                    </div>
+                  </td>
+                )}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {showAddModal && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "white", borderRadius: 16, padding: 28, width: 480, boxShadow: "0 24px 64px rgba(0,0,0,0.2)" }}>
+            {addedPw ? (
+              <>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Compte créé avec succès</div>
+                <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>Communiquez les informations de connexion suivantes à l'utilisateur :</div>
+                <div style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 8, padding: 16, marginBottom: 20 }}>
+                  <div style={{ fontSize: 12, color: "#166534", marginBottom: 4 }}><strong>Email :</strong> {addForm.email}</div>
+                  <div style={{ fontSize: 12, color: "#166534" }}><strong>Mot de passe temporaire :</strong> <code style={{ background: "#DCFCE7", padding: "2px 6px", borderRadius: 4 }}>{addedPw}</code></div>
+                </div>
+                <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 20 }}>L'utilisateur devra changer son mot de passe à la première connexion.</div>
+                <button onClick={() => setShowAddModal(false)} style={{ width: "100%", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "10px 0", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Fermer</button>
+              </>
+            ) : (
+              <>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Ajouter un agent</div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Un mot de passe temporaire sera généré. L'agent pourra le modifier à sa première connexion.</div>
+                {addError && <div style={{ background: "#FFF5F5", border: "1px solid #FECACA", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#DC2626", marginBottom: 14 }}>{addError}</div>}
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
+                  {[["Prénom", "prenom"], ["Nom", "nom"]].map(([l, k]) => (
+                    <div key={k ?? ""}>
+                      <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>{l}</div>
+                      <input value={(addForm as Record<string, string>)[k ?? ""] ?? ""} onChange={e => setAddForm(f => ({ ...f, [k ?? ""]: e.target.value }))}
+                        style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
+                    </div>
+                  ))}
+                </div>
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Email</div>
+                  <input type="email" value={addForm.email} onChange={e => setAddForm(f => ({ ...f, email: e.target.value }))}
+                    style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
+                  <div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Rôle</div>
+                    <select value={addForm.role} onChange={e => setAddForm(f => ({ ...f, role: e.target.value }))}
+                      style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", background: "white" }}>
+                      <option value="instructeur">Instructeur</option>
+                      <option value="mairie">Mairie</option>
+                      <option value="admin">Admin</option>
+                    </select>
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Téléphone</div>
+                    <input value={addForm.telephone} onChange={e => setAddForm(f => ({ ...f, telephone: e.target.value }))}
+                      style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button onClick={() => setShowAddModal(false)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+                  <button onClick={addUser} disabled={addLoading} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 20px", fontSize: 13, fontWeight: 600, cursor: addLoading ? "not-allowed" : "pointer" }}>
+                    {addLoading ? "Création…" : "Créer le compte"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+      {deleteId && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "white", borderRadius: 16, padding: 28, width: 380, boxShadow: "0 24px 64px rgba(0,0,0,0.2)" }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Retirer cet utilisateur ?</div>
+            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 20 }}>Cette action est irréversible. L'utilisateur perdra immédiatement l'accès à la plateforme.</div>
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button onClick={() => setDeleteId(null)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+              <button onClick={() => deleteUser(deleteId)} style={{ background: "#EF4444", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Confirmer la suppression</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false }: { commune?: string; isAdmin?: boolean; communeInseeMap?: Record<string, string> }) {
   const { user } = useAuth();
   const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Intégrations"];
@@ -1436,94 +1821,6 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false }: { commu
           </div>
         </div>
       )}
-      {stab === "Utilisateurs" && (
-        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Utilisateurs</div>
-              <div style={{ fontSize: 12, color: "#94a3b8" }}>Gérez les comptes et les accès des utilisateurs de la commune.</div>
-            </div>
-            <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Ajouter un utilisateur</button>
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 20 }}>
-            {[["18","Utilisateurs",""],["15","Comptes actifs","Actifs 83%"],["2","En attente","11%"],["1","Désactivé","6%"]].map(([n,l,s]) => (
-              <div key={l} style={{ background: "#F8FAFC", borderRadius: 10, padding: 14, display: "flex", alignItems: "center", gap: 12 }}>
-                <span style={{ fontSize: 22, fontWeight: 700, color: "#0F172A" }}>{n}</span>
-                <div>
-                  <div style={{ fontSize: 12, color: "#64748b" }}>{l}</div>
-                  {s && <div style={{ fontSize: 11, color: "#22C55E", fontWeight: 600 }}>{s}</div>}
-                </div>
-              </div>
-            ))}
-          </div>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "#F8FAFC" }}>
-                {["Nom & Prénom","E-mail","Rôle","Services / Accès","Statut","Dernière connexion","Actions"].map(h => (
-                  <th key={h} style={{ padding: "9px 12px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                { init:"ML", name:"Marie L.", you:true, email:"marie.l@saint-martin.fr", role:"Instructrice", service:"Urbanisme, ADS", status:"Actif", conn:"20 mai 2024 à 09:15" },
-                { init:"JD", name:"Julien D.", email:"julien.d@saint-martin.fr", role:"Responsable", service:"Urbanisme, ADS, Voirie", status:"Actif", conn:"20 mai 2024 à 08:42" },
-                { init:"CP", name:"Claire P.", email:"claire.p@saint-martin.fr", role:"Instructrice", service:"Urbanisme, ADS", status:"Actif", conn:"17 mai 2024 à 16:30" },
-                { init:"FG", name:"Florent G.", email:"florent.g@saint-martin.fr", role:"Consultation", service:"Environnement", status:"En attente", conn:"–" },
-                { init:"NA", name:"Nadia A.", email:"nadia.a@saint-martin.fr", role:"Instructrice", service:"Urbanisme, ADS", status:"Désactivé", conn:"12 avr. 2024 à 10:11" },
-              ].map((u) => (
-                <tr key={u.email} style={{ borderBottom: "1px solid #F8FAFC" }}>
-                  <td style={{ padding: "10px 12px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center" }}>{u.init}</div>
-                      <span style={{ fontSize: 13, fontWeight: 500 }}>{u.name}</span>
-                      {u.you && <span style={{ background: "#EEF2FF", color: "#4F46E5", fontSize: 10, borderRadius: 4, padding: "1px 6px", fontWeight: 600 }}>Vous</span>}
-                    </div>
-                  </td>
-                  <td style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>{u.email}</td>
-                  <td style={{ padding: "10px 12px", fontSize: 12 }}>{u.role}</td>
-                  <td style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>{u.service}</td>
-                  <td style={{ padding: "10px 12px" }}><StatusBadge status={u.status} /></td>
-                  <td style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>{u.conn}</td>
-                  <td style={{ padding: "10px 12px" }}><button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button></td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
-      {stab === "Documents" && (
-        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-            <div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Gestion des modèles de documents</div>
-              <div style={{ fontSize: 12, color: "#94a3b8" }}>Configurez les modèles de courriers, arrêtés et formulaires utilisés par la commune.</div>
-            </div>
-            <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouveau modèle</button>
-          </div>
-          {[
-            { name: "Accusé de réception", type: "Courrier", format: "DOCX", updated: "12/05/2024", status: "Actif" },
-            { name: "Demande de pièces complémentaires", type: "Courrier", format: "DOCX", updated: "02/05/2024", status: "Actif" },
-            { name: "Arrêté de permis de construire", type: "Arrêté", format: "PDF", updated: "28/04/2024", status: "Actif" },
-            { name: "Arrêté de refus", type: "Arrêté", format: "PDF", updated: "15/04/2024", status: "Actif" },
-            { name: "Notification de décision", type: "Courrier", format: "DOCX", updated: "10/04/2024", status: "Actif" },
-            { name: "Mise en demeure", type: "Courrier", format: "DOCX", updated: "01/04/2024", status: "Désactivé" },
-          ].map((doc, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
-              <span style={{ fontSize: 20 }}>📄</span>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{doc.name}</div>
-                <div style={{ fontSize: 11, color: "#94a3b8" }}>{doc.type} · {doc.format} · Modifié le {doc.updated}</div>
-              </div>
-              <StatusBadge status={doc.status} />
-              <div style={{ display: "flex", gap: 6 }}>
-                <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "5px 10px", fontSize: 12, color: "#4F46E5", cursor: "pointer" }}>Éditer</button>
-                <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }}><DotsIcon /></button>
-              </div>
-            </div>
-          ))}
-        </div>
-      )}
       {stab === "Workflow & Délais" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
           <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
@@ -1610,23 +1907,6 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false }: { commu
                 </div>
               </div>
             ))}
-          </div>
-        </div>
-      )}
-      {stab === "Général" && (
-        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>Informations générales de la commune</div>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-            {[["Nom de la commune","Ballan-Miré"],["Code INSEE","37018"],["Département","Indre-et-Loire (37)"],["Région","Centre-Val de Loire"],["Population","7 800 habitants"],["Surface","30,7 km²"],["Email contact","urbanisme@ballan-mire.fr"],["Téléphone","02 47 67 XX XX"]].map(([l,v]) => (
-              <div key={l}>
-                <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{l}</div>
-                <input defaultValue={v} style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none" }} />
-              </div>
-            ))}
-          </div>
-          <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20, gap: 8 }}>
-            <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
-            <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
           </div>
         </div>
       )}
