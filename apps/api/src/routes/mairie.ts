@@ -1072,12 +1072,24 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
       const body = await zoneR.text().catch(() => "");
       return res.status(502).json({ error: `Erreur APICarto zone-urba (HTTP ${zoneR.status})`, detail: body.slice(0, 300) });
     }
-    const zoneJson = await zoneR.json() as { features?: unknown[] };
-    if (!zoneJson.features?.length) {
+    type ZoneFeature = { properties?: Record<string, unknown> };
+    const zoneJson = await zoneR.json() as { type?: string; features?: ZoneFeature[] };
+    const all = zoneJson.features ?? [];
+
+    // Filter to this commune only using the codcom property (INSEE code on each feature).
+    // The GPU returns zones from neighbouring communes when geometries overlap.
+    // If codcom is present and matches, keep only those; otherwise fall back to all results.
+    let features = all;
+    if (inseeCode) {
+      const filtered = all.filter(f => String(f.properties?.codcom ?? "") === inseeCode);
+      if (filtered.length > 0) features = filtered;
+    }
+
+    if (!features.length) {
       return res.status(404).json({ error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme" });
     }
     res.setHeader("Cache-Control", "public, max-age=3600");
-    res.json(zoneJson);
+    res.json({ ...zoneJson, features });
   } catch (err) {
     console.error("[plu-zones proxy]", err);
     res.status(500).json({ error: "Erreur serveur", detail: String(err) });
