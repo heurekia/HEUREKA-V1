@@ -1,7 +1,7 @@
 {
   "$schema": "https://railway.app/railway.schema.json",
   "build": {
-    "buildCommand": "pnpm build && pnpm --filter @heureka-v1/db migrate"
+    "buildCommand": "pnpm build && pnpm --filter @heureka-v1/db migrate && pnpm --filter @heureka-v1/api seed"
   },
   "deploy": {
     "numReplicas": 1,
