@@ -15,7 +15,7 @@ const NAV_ITEMS = [
   { label: "Tableau de bord", icon: HomeIcon, path: "/mairie" },
   { label: "Dossiers", icon: FolderIcon, path: "/mairie/dossiers" },
   { label: "Calendrier", icon: CalendarIcon, path: "/mairie/calendrier" },
-  { label: "Messagerie", icon: MessageIcon, badge: 2, path: "/mairie/messagerie" },
+  { label: "Messagerie", icon: MessageIcon, path: "/mairie/messagerie" },
   { label: "Carte", icon: MapIcon, path: "/mairie/carte" },
   { label: "Statistiques", icon: ChartIcon, path: "/mairie/statistiques" },
   { label: "Paramètres", icon: SettingsIcon, path: "/mairie/parametres" },
@@ -161,7 +161,7 @@ function UserIcon({ size = 18, className = "" }) {
   );
 }
 
-function Sidebar({ active, setActive, commune, setCommune }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void }) {
+function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0 }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void; messageBadge?: number }) {
   const [showDrop, setShowDrop] = useState(false);
   const communes = ["Ballan-Miré", "Tours", "Saint-Avertin", "Joué-lès-Tours", "La Riche"];
   return (
@@ -207,8 +207,9 @@ function Sidebar({ active, setActive, commune, setCommune }: { active: string; s
       </div>
 
       <nav style={{ flex: 1, padding: "4px 10px", overflowY: "auto" }}>
-        {NAV_ITEMS.map(({ label, icon: Icon, badge }) => {
+        {NAV_ITEMS.map(({ label, icon: Icon }) => {
           const isActive = active === label;
+          const badge = label === "Messagerie" ? messageBadge : 0;
           return (
             <button key={label} onClick={() => setActive(label)} style={{
               width: "100%", border: "none",
@@ -224,7 +225,7 @@ function Sidebar({ active, setActive, commune, setCommune }: { active: string; s
             >
               <Icon size={16} />
               <span style={{ flex: 1 }}>{label}</span>
-              {badge && (
+              {badge > 0 && (
                 <span style={{ background: isActive ? "rgba(255,255,255,0.25)" : "#4F46E5", color: "white", fontSize: 10, fontWeight: 700, borderRadius: 10, padding: "1px 6px", minWidth: 18, textAlign: "center" }}>
                   {badge}
                 </span>
@@ -853,13 +854,15 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   );
 }
 
-function MessageScreen({ commune, onDossierClick }: { commune: string; onDossierClick: (d: DossierInfo) => void }) {
+function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: string; onDossierClick: (d: DossierInfo) => void; onUnreadChange?: (n: number) => void }) {
   type Conv = { dossier_id: string; numero: string; type: string; status: string; petitionnaire: string; last_content: string; last_from_role: string; last_at: string; unread_count: number };
   type Msg = { id: string; content: string; from_role: string; created_at: string; prenom: string | null; nom: string | null };
+  type ServiceConv = { name: string; dossier: string; preview: string; time: string; badge?: number; initials: string; color: string; thread: { role: string; text: string; time: string }[] };
 
   const [tab, setTab] = useState("Citoyens");
   const [convs, setConvs] = useState<Conv[]>([]);
   const [selected, setSelected] = useState<Conv | null>(null);
+  const [selectedService, setSelectedService] = useState<ServiceConv | null>(null);
   const [thread, setThread] = useState<Msg[]>([]);
 
   const refreshConvs = () =>
@@ -880,9 +883,13 @@ function MessageScreen({ commune, onDossierClick }: { commune: string; onDossier
     // Marquer les messages comme lus et mettre à jour la liste
     api.post(`/mairie/conversations/${selected.dossier_id}/read`)
       .then(() => {
-        setConvs(prev => prev.map(c =>
-          c.dossier_id === selected.dossier_id ? { ...c, unread_count: 0 } : c
-        ));
+        setConvs(prev => {
+          const next = prev.map(c =>
+            c.dossier_id === selected.dossier_id ? { ...c, unread_count: 0 } : c
+          );
+          onUnreadChange?.(next.reduce((s, c) => s + c.unread_count, 0));
+          return next;
+        });
         setSelected(prev => prev ? { ...prev, unread_count: 0 } : prev);
       })
       .catch(() => {});
@@ -892,21 +899,45 @@ function MessageScreen({ commune, onDossierClick }: { commune: string; onDossier
     if (!selected) return;
     api.post(`/mairie/conversations/${selected.dossier_id}/unread`)
       .then(() => {
-        setConvs(prev => prev.map(c =>
-          c.dossier_id === selected.dossier_id ? { ...c, unread_count: 1 } : c
-        ));
+        setConvs(prev => {
+          const next = prev.map(c =>
+            c.dossier_id === selected.dossier_id ? { ...c, unread_count: 1 } : c
+          );
+          onUnreadChange?.(next.reduce((s, c) => s + c.unread_count, 0));
+          return next;
+        });
         setSelected(prev => prev ? { ...prev, unread_count: 1 } : prev);
-        refreshConvs();
       })
       .catch(() => {});
   };
 
-  const serviceConvs = [
-    { name: "ABF – Architecte des Bâtiments de France", dossier: "PC-2024-0123", preview: "Avis favorable avec réserves transmis.", time: "10:30", badge: 1, initials: "AB", color: "#8B5CF6" },
-    { name: "SDIS – Service Incendie", dossier: "PC-2024-0456", preview: "Consultation en cours d'examen.", time: "Hier", initials: "SD", color: "#EF4444" },
-    { name: "Métropole Tours Val de Loire", dossier: "PC-2024-0166", preview: "Retour attendu avant le 17/05.", time: "Hier", initials: "MT", color: "#F97316" },
-    { name: "DREAL Centre-Val de Loire", dossier: "PC-2024-0789", preview: "Documents bien reçus, analyse en cours.", time: "14/05", initials: "DR", color: "#22C55E" },
-    { name: "Service des Eaux", dossier: "DP-2024-0089", preview: "Avis favorable émis.", time: "13/05", initials: "SE", color: "#3B82F6" },
+  const serviceConvs: ServiceConv[] = [
+    { name: "ABF – Architecte des Bâtiments de France", dossier: "PC-BM-2024-001", preview: "Avis favorable avec réserves transmis.", time: "20/05", badge: 1, initials: "AB", color: "#8B5CF6",
+      thread: [
+        { role: "service", text: "Bonjour, nous avons bien reçu la demande de consultation pour le dossier PC-BM-2024-001. Nous procédons à son examen.", time: "09:00" },
+        { role: "mairie", text: "Merci. Pouvez-vous nous indiquer un délai de réponse approximatif ?", time: "10:15" },
+        { role: "service", text: "Avis favorable avec réserves transmis. Le pétitionnaire devra respecter les prescriptions architecturales jointes.", time: "10:30" },
+      ]},
+    { name: "SDIS – Service Incendie", dossier: "PC-BM-2024-022", preview: "Consultation en cours d'examen.", time: "19/05", initials: "SD", color: "#EF4444",
+      thread: [
+        { role: "mairie", text: "Bonjour, nous vous adressons la consultation pour le dossier PC-BM-2024-022 relatif à un immeuble collectif de 12 logements.", time: "08:30" },
+        { role: "service", text: "Consultation bien reçue. L'examen est en cours. Délai de réponse : 15 jours ouvrés.", time: "14:00" },
+      ]},
+    { name: "Métropole Tours Val de Loire", dossier: "PC-BM-2024-001", preview: "Retour attendu avant le 25/05.", time: "18/05", initials: "MT", color: "#F97316",
+      thread: [
+        { role: "mairie", text: "Consultation PLUi — dossier PC-BM-2024-001. Merci de vérifier la conformité avec le règlement de zone UA.", time: "09:00" },
+        { role: "service", text: "Pris en compte. Retour attendu avant le 25/05.", time: "11:30" },
+      ]},
+    { name: "DREAL Centre-Val de Loire", dossier: "DP-BM-2024-015", preview: "Documents bien reçus, analyse en cours.", time: "16/05", initials: "DR", color: "#22C55E",
+      thread: [
+        { role: "mairie", text: "Transmission des pièces pour DP-BM-2024-015 (zone Natura 2000). Merci d'évaluer l'impact environnemental.", time: "10:00" },
+        { role: "service", text: "Documents bien reçus, analyse en cours. Nous reviendrons vers vous sous 10 jours.", time: "15:45" },
+      ]},
+    { name: "Service des Eaux – Grand Cycle", dossier: "DP-BM-2024-008", preview: "Avis favorable émis.", time: "13/05", initials: "SE", color: "#3B82F6",
+      thread: [
+        { role: "mairie", text: "Consultation pour DP-BM-2024-008 — extension avec création d'imperméabilisation. Merci de valider la gestion des eaux pluviales.", time: "09:00" },
+        { role: "service", text: "Avis favorable émis sous réserve de la mise en place d'un dispositif de rétention conforme à la notice jointe.", time: "16:00" },
+      ]},
   ];
 
   const totalUnread = convs.reduce((s, c) => s + c.unread_count, 0);
@@ -932,10 +963,10 @@ function MessageScreen({ commune, onDossierClick }: { commune: string; onDossier
         </div>
         <div style={{ flex: 1, overflowY: "auto" }}>
           {tab === "Citoyens" ? convs.map((c) => {
-            const isActive = selected?.dossier_id === c.dossier_id;
+            const isActive = selected?.dossier_id === c.dossier_id && !selectedService;
             const color = stringToColor(c.petitionnaire);
             return (
-              <div key={c.dossier_id} onClick={() => setSelected(c)} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: isActive ? "#F0F4FF" : "white" }}
+              <div key={c.dossier_id} onClick={() => { setSelected(c); setSelectedService(null); }} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: isActive ? "#F0F4FF" : "white" }}
                 onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
                 onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "white"; }}>
                 <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
@@ -952,10 +983,12 @@ function MessageScreen({ commune, onDossierClick }: { commune: string; onDossier
                 </div>
               </div>
             );
-          }) : serviceConvs.map((c, i) => (
-            <div key={i} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: i === 0 ? "#F0F4FF" : "white" }}
-              onMouseEnter={e => { if (i !== 0) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
-              onMouseLeave={e => { if (i !== 0) (e.currentTarget as HTMLDivElement).style.background = "white"; }}>
+          }) : serviceConvs.map((c, i) => {
+            const isActive = selectedService?.name === c.name;
+            return (
+            <div key={i} onClick={() => { setSelectedService(c); setSelected(null); }} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: isActive ? "#F0F4FF" : "white" }}
+              onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
+              onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "white"; }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
                 <div style={{ width: 36, height: 36, borderRadius: "50%", background: c.color, color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{c.initials}</div>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -969,13 +1002,54 @@ function MessageScreen({ commune, onDossierClick }: { commune: string; onDossier
                 {c.badge && <span style={{ background: "#4F46E5", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{c.badge}</span>}
               </div>
             </div>
-          ))}
+            );
+          })}
         </div>
       </div>
 
       {/* ── Thread ── */}
       <div style={{ flex: 1, display: "flex", flexDirection: "column", background: "#FAFBFD" }}>
-        {selected ? (<>
+        {selectedService ? (<>
+          {/* Service thread */}
+          <div style={{ padding: "14px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+              <div style={{ width: 32, height: 32, borderRadius: "50%", background: selectedService.color, color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{selectedService.initials}</div>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>{selectedService.name}</div>
+                <div style={{ fontSize: 12, color: "#94a3b8" }}>Consultation — {selectedService.dossier}</div>
+              </div>
+            </div>
+            <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
+          </div>
+          <div style={{ flex: 1, padding: 20, overflowY: "auto" }}>
+            {selectedService.thread.map((msg, i) => {
+              const isMairie = msg.role === "mairie";
+              return (
+                <div key={i} style={{ display: "flex", gap: 10, marginBottom: 16, justifyContent: isMairie ? "flex-end" : "flex-start" }}>
+                  {!isMairie && <div style={{ width: 32, height: 32, borderRadius: "50%", background: selectedService.color, color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{selectedService.initials}</div>}
+                  <div style={{ maxWidth: "60%" }}>
+                    {isMairie ? (
+                      <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", borderRadius: "12px 4px 12px 12px", padding: "12px 14px" }}>
+                        <p style={{ margin: 0, fontSize: 13, color: "white", lineHeight: 1.5 }}>{msg.text}</p>
+                      </div>
+                    ) : (
+                      <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "12px 14px", border: "1px solid #E2E8F0", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+                        <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.5 }}>{msg.text}</p>
+                      </div>
+                    )}
+                    <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 4, display: "block", textAlign: isMairie ? "right" : "left" }}>{msg.time}</span>
+                  </div>
+                  {isMairie && <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>ML</div>}
+                </div>
+              );
+            })}
+          </div>
+          <div style={{ padding: "12px 16px", borderTop: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", gap: 10 }}>
+            <input placeholder="Écrire un message..." style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 8, padding: "9px 14px", fontSize: 13, outline: "none" }} />
+            <button style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg, #4F46E5, #6366F1)", border: "none", cursor: "pointer", color: "white", display: "flex", alignItems: "center", justifyContent: "center" }}><SendIcon size={14} /></button>
+          </div>
+        </>) : selected ? (<>
+          {/* Citizen thread */}
           <div style={{ padding: "14px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
               <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>{selected.petitionnaire}</div>
@@ -1035,7 +1109,25 @@ function MessageScreen({ commune, onDossierClick }: { commune: string; onDossier
       {/* ── Panneau info ── */}
       <div style={{ width: 260, borderLeft: "1px solid #E2E8F0", background: "white", padding: 16, overflowY: "auto" }}>
         <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Informations</div>
-        {selected ? (<>
+        {selectedService ? (<>
+          <div style={{ marginBottom: 4, fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em" }}>Service consulté</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 12 }}>
+            <div style={{ width: 32, height: 32, borderRadius: "50%", background: selectedService.color, color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{selectedService.initials}</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", lineHeight: 1.3 }}>{selectedService.name}</div>
+          </div>
+          <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Dossier lié</div>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4 }}>{selectedService.dossier}</div>
+          </div>
+          <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
+            <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Dernier message</div>
+            <div style={{ fontSize: 12, color: "#64748b" }}>{selectedService.preview}</div>
+          </div>
+          <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12 }}>
+            <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Statut consultation</div>
+            <span style={{ display: "inline-block", padding: "3px 10px", borderRadius: 12, background: "#EEF2FF", color: "#4F46E5", fontSize: 11, fontWeight: 600 }}>En cours</span>
+          </div>
+        </>) : selected ? (<>
           <div style={{ marginBottom: 4, fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em" }}>Pétitionnaire</div>
           <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 12 }}>{selected.petitionnaire}</div>
           <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
@@ -4351,8 +4443,20 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
 export function MairieApp() {
   const [commune, setCommune] = useState("Ballan-Miré");
   const [showNouveauDossier, setShowNouveauDossier] = useState(false);
+  const [messageBadge, setMessageBadge] = useState(0);
   const routerNavigate = useNavigate();
   const location = useLocation();
+
+  // Fetch unread message count for the sidebar badge
+  useEffect(() => {
+    const load = () =>
+      api.get<{ count: number }>(`/mairie/conversations/unread-count?commune=${encodeURIComponent(commune)}`)
+        .then(d => setMessageBadge(Number(d.count)))
+        .catch(() => {});
+    load();
+    const interval = setInterval(load, 30000);
+    return () => clearInterval(interval);
+  }, [commune]);
 
   const pathname = location.pathname;
   const active = pathname.startsWith("/mairie/dossiers") ? "Dossiers"
@@ -4376,7 +4480,7 @@ export function MairieApp() {
 
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex" }}>
-      <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} />
+      <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
           <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} />
@@ -4386,7 +4490,7 @@ export function MairieApp() {
             <Route index element={<DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} onDossierClick={handleDossierClick} />} />
             <Route path="dossiers" element={<DossiersScreen commune={commune} onDossierClick={handleDossierClick} />} />
             <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} />} />
-            <Route path="messagerie" element={<MessageScreen commune={commune} onDossierClick={handleDossierClick} />} />
+            <Route path="messagerie" element={<MessageScreen commune={commune} onDossierClick={handleDossierClick} onUnreadChange={setMessageBadge} />} />
             <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
             <Route path="carte" element={<CarteScreen initialCommune={commune} />} />
             <Route path="statistiques" element={<StatistiquesScreen commune={commune} />} />
