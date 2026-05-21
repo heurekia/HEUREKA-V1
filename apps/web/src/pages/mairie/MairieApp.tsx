@@ -5,11 +5,11 @@ import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 
 const COMMUNE_INSEE: Record<string, string> = {
-  "Ballan-Miré": "37018",
+  "Ballan-Miré": "37015",
   "Tours": "37261",
-  "Saint-Avertin": "37207",
+  "Saint-Avertin": "37226",
   "Joué-lès-Tours": "37122",
-  "La Riche": "37125",
+  "La Riche": "37132",
 };
 
 const NAV_ITEMS = [
@@ -586,6 +586,7 @@ function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }
             filterStatus={mapFilter}
             filterType={mapTypeFilter}
             commune={commune}
+            inseeCode={COMMUNE_INSEE[commune]}
             onMarkerClick={(d) => onDossierClick({ id: d.id, numero: d.numero, type: d.type, petitionnaire: "—", adresse: d.adresse, status: d.status, echeance: "—" })}
           />
         </div>
