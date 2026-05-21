@@ -471,7 +471,7 @@ function fmtConvTime(iso: string): string {
   return d.toLocaleDateString("fr-FR");
 }
 
-function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void; commune: string; onDossierClick: (d: DossierInfo) => void }) {
+function DashboardScreen({ navigate, navigateDossiers, commune, inseeCode, onDossierClick }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void; commune: string; inseeCode?: string; onDossierClick: (d: DossierInfo) => void }) {
   const [mapFilter, setMapFilter] = useState<string>("Tous");
   const [mapTypeFilter, setMapTypeFilter] = useState("Tous les types");
   const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
@@ -586,7 +586,7 @@ function DashboardScreen({ navigate, navigateDossiers, commune, onDossierClick }
             filterStatus={mapFilter}
             filterType={mapTypeFilter}
             commune={commune}
-            inseeCode={COMMUNE_INSEE[commune]}
+            inseeCode={inseeCode}
             onMarkerClick={(d) => onDossierClick({ id: d.id, numero: d.numero, type: d.type, petitionnaire: "—", adresse: d.adresse, status: d.status, echeance: "—" })}
           />
         </div>
@@ -1325,8 +1325,9 @@ function IngestPluSection() {
   );
 }
 
-function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
-  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Communes", "Workflow & Délais", "Notifications", "Intégrations"];
+function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false }: { commune?: string; isAdmin?: boolean; communeInseeMap?: Record<string, string> }) {
+  const { user } = useAuth();
+  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Intégrations"];
   const [stab, setStab] = useState("Réglementation");
   const events = [
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
@@ -1349,14 +1350,11 @@ function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
           <button key={t} onClick={() => setStab(t)} style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: stab === t ? 600 : 400, color: stab === t ? "#4F46E5" : "#64748b", borderBottom: stab === t ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>{t}</button>
         ))}
       </div>
+      {stab === "Général" && <CommuneGeneralTab commune={commune} isAdmin={isAdmin} />}
+      {stab === "Utilisateurs" && <CommuneUsersTab commune={commune} isAdmin={isAdmin} currentUserId={user?.id} />}
       {stab === "Réglementation" && (
         <div style={{ minHeight: 400, margin: "0 -24px" }}>
           <ReglementationScreen commune={commune} inseeCode={COMMUNE_INSEE[commune]} />
-        </div>
-      )}
-      {stab === "Communes" && (
-        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-          <IngestPluSection />
         </div>
       )}
       {stab === "Notifications" && (
@@ -1636,10 +1634,10 @@ function ParametresScreen({ commune = "Ballan-Miré" }: { commune?: string }) {
   );
 }
 
-function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: string }) {
+function CarteScreen({ initialCommune = "Ballan-Miré", communeInseeMap = COMMUNE_INSEE }: { initialCommune?: string; communeInseeMap?: Record<string, string> }) {
   const navigate = useNavigate();
   const [commune, setCommune] = useState(initialCommune);
-  const [inseeCode, setInseeCode] = useState<string>(COMMUNE_INSEE[initialCommune] ?? "");
+  const [inseeCode, setInseeCode] = useState<string>(communeInseeMap[initialCommune] ?? "");
   const [communes, setCommunes] = useState<string[]>([initialCommune]);
   const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
   const [filterStatus, setFilterStatus] = useState("Tous");
@@ -1694,7 +1692,7 @@ function CarteScreen({ initialCommune = "Ballan-Miré" }: { initialCommune?: str
             </svg>
             <select
               value={commune}
-              onChange={e => { setCommune(e.target.value); setInseeCode(COMMUNE_INSEE[e.target.value] ?? ""); setMapDossiers([]); }}
+              onChange={e => { setCommune(e.target.value); setInseeCode(communeInseeMap[e.target.value] ?? ""); setMapDossiers([]); }}
               style={{ border: "none", background: "transparent", fontSize: 12, fontWeight: 600, color: "#374151", outline: "none", cursor: "pointer" }}
             >
               {communes.map(c => <option key={c} value={c}>{c}</option>)}
@@ -4472,11 +4470,26 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
 }
 
 export function MairieApp() {
+  const { user } = useAuth();
+  const isAdmin = user?.role === "admin";
   const [commune, setCommune] = useState("Ballan-Miré");
   const [showNouveauDossier, setShowNouveauDossier] = useState(false);
   const [messageBadge, setMessageBadge] = useState(0);
+  const [communeInseeMap, setCommuneInseeMap] = useState<Record<string, string>>(COMMUNE_INSEE);
   const routerNavigate = useNavigate();
   const location = useLocation();
+
+  // Load commune list from DB to get correct INSEE codes
+  useEffect(() => {
+    api.get<{ name: string; insee_code: string }[]>("/mairie/commune-list")
+      .then(data => {
+        if (!data.length) return;
+        const map: Record<string, string> = { ...COMMUNE_INSEE };
+        for (const c of data) { if (c.name && c.insee_code) map[c.name] = c.insee_code; }
+        setCommuneInseeMap(map);
+      })
+      .catch(() => {});
+  }, []);
 
   // Charge le badge initial quand la commune change ; MessageScreen maintient ensuite le total en temps réel
   useEffect(() => {
@@ -4514,14 +4527,14 @@ export function MairieApp() {
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           <Routes>
-            <Route index element={<DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} onDossierClick={handleDossierClick} />} />
+            <Route index element={<DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} inseeCode={communeInseeMap[commune]} onDossierClick={handleDossierClick} />} />
             <Route path="dossiers" element={<DossiersScreen commune={commune} onDossierClick={handleDossierClick} />} />
             <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} />} />
             <Route path="messagerie" element={<MessageScreen commune={commune} onDossierClick={handleDossierClick} onUnreadChange={setMessageBadge} />} />
             <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
-            <Route path="carte" element={<CarteScreen initialCommune={commune} />} />
+            <Route path="carte" element={<CarteScreen initialCommune={commune} communeInseeMap={communeInseeMap} />} />
             <Route path="statistiques" element={<StatistiquesScreen commune={commune} />} />
-            <Route path="parametres" element={<ParametresScreen commune={commune} />} />
+            <Route path="parametres" element={<ParametresScreen commune={commune} isAdmin={isAdmin} communeInseeMap={communeInseeMap} />} />
             <Route path="profil" element={<InfosPersoScreen />} />
             <Route path="*" element={<Navigate to="/mairie" replace />} />
           </Routes>
