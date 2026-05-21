@@ -183,6 +183,9 @@ UPDATE communes SET insee_code = '37195' WHERE name = 'La Riche'    AND insee_co
 UPDATE communes SET insee_code = '37208' WHERE name = 'Saint-Avertin' AND insee_code != '37208';
 DELETE FROM communes a USING communes b
   WHERE a.name = b.name AND a.created_at > b.created_at;
+
+-- Promote mairie@tours.fr to admin
+UPDATE users SET role = 'admin' WHERE email = 'mairie@tours.fr';
 `;
 
 async function main() {
