@@ -10,4 +10,5 @@ export const dossier_messages = pgTable("dossier_messages", {
   parent_id: integer("parent_id"),
   mentions: jsonb("mentions").default([]),
   created_at: timestamp("created_at").notNull().defaultNow(),
+  read_at: timestamp("read_at"),
 });

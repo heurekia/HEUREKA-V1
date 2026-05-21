@@ -321,11 +321,7 @@ mairieRouter.get("/conversations", async (_req: AuthRequest, res) => {
       unread AS (
         SELECT dm.dossier_id, COUNT(*)::int AS cnt
         FROM dossier_messages dm
-        WHERE dm.from_role = 'citoyen'
-          AND dm.created_at > COALESCE((
-            SELECT MAX(dm2.created_at) FROM dossier_messages dm2
-            WHERE dm2.dossier_id = dm.dossier_id AND dm2.from_role != 'citoyen'
-          ), '1970-01-01'::timestamp)
+        WHERE dm.from_role = 'citoyen' AND dm.read_at IS NULL
         GROUP BY dm.dossier_id
       )
       SELECT
@@ -351,13 +347,9 @@ mairieRouter.get("/conversations", async (_req: AuthRequest, res) => {
 mairieRouter.get("/conversations/unread-count", async (_req: AuthRequest, res) => {
   try {
     const rows = await db.execute(sql`
-      SELECT COUNT(DISTINCT dm.dossier_id)::int AS count
-      FROM dossier_messages dm
-      WHERE dm.from_role = 'citoyen'
-        AND dm.created_at > COALESCE((
-          SELECT MAX(dm2.created_at) FROM dossier_messages dm2
-          WHERE dm2.dossier_id = dm.dossier_id AND dm2.from_role != 'citoyen'
-        ), '1970-01-01'::timestamp)
+      SELECT COUNT(DISTINCT dossier_id)::int AS count
+      FROM dossier_messages
+      WHERE from_role = 'citoyen' AND read_at IS NULL
     `) as unknown as [{ count: number }];
     res.json({ count: rows[0]?.count ?? 0 });
   } catch (err) {
@@ -383,6 +375,52 @@ mairieRouter.get("/conversations/:dossierId", async (req: AuthRequest, res) => {
       .where(eq(dossier_messages.dossier_id, req.params.dossierId as string))
       .orderBy(dossier_messages.created_at);
     res.json(msgs);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Marquer tous les messages citoyens d'une conversation comme lus ──
+mairieRouter.post("/conversations/:dossierId/read", async (req: AuthRequest, res) => {
+  try {
+    await db
+      .update(dossier_messages)
+      .set({ read_at: new Date() })
+      .where(
+        and(
+          eq(dossier_messages.dossier_id, req.params.dossierId as string),
+          eq(dossier_messages.from_role, "citoyen"),
+          sql`read_at IS NULL`,
+        )
+      );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Remettre la conversation en non-lu (efface read_at du dernier message citoyen) ──
+mairieRouter.post("/conversations/:dossierId/unread", async (req: AuthRequest, res) => {
+  try {
+    const [last] = await db
+      .select({ id: dossier_messages.id })
+      .from(dossier_messages)
+      .where(
+        and(
+          eq(dossier_messages.dossier_id, req.params.dossierId as string),
+          eq(dossier_messages.from_role, "citoyen"),
+        )
+      )
+      .orderBy(desc(dossier_messages.created_at))
+      .limit(1);
+    if (!last) return res.status(404).json({ error: "Aucun message citoyen" });
+    await db
+      .update(dossier_messages)
+      .set({ read_at: null })
+      .where(eq(dossier_messages.id, last.id));
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

@@ -859,6 +859,9 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
   const [selected, setSelected] = useState<Conv | null>(null);
   const [thread, setThread] = useState<Msg[]>([]);
 
+  const refreshConvs = () =>
+    api.get<Conv[]>("/mairie/conversations").then(data => setConvs(data)).catch(() => {});
+
   useEffect(() => {
     api.get<Conv[]>("/mairie/conversations").then(data => {
       setConvs(data);
@@ -866,10 +869,33 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
     }).catch(() => {});
   }, []);
 
+  // Quand on sélectionne une conversation, charger le thread et marquer comme lu
   useEffect(() => {
     if (!selected) return;
     api.get<Msg[]>(`/mairie/conversations/${selected.dossier_id}`).then(setThread).catch(() => {});
-  }, [selected]);
+    // Marquer les messages comme lus et mettre à jour la liste
+    api.post(`/mairie/conversations/${selected.dossier_id}/read`)
+      .then(() => {
+        setConvs(prev => prev.map(c =>
+          c.dossier_id === selected.dossier_id ? { ...c, unread_count: 0 } : c
+        ));
+        setSelected(prev => prev ? { ...prev, unread_count: 0 } : prev);
+      })
+      .catch(() => {});
+  }, [selected?.dossier_id]);
+
+  const markUnread = () => {
+    if (!selected) return;
+    api.post(`/mairie/conversations/${selected.dossier_id}/unread`)
+      .then(() => {
+        setConvs(prev => prev.map(c =>
+          c.dossier_id === selected.dossier_id ? { ...c, unread_count: 1 } : c
+        ));
+        setSelected(prev => prev ? { ...prev, unread_count: 1 } : prev);
+        refreshConvs();
+      })
+      .catch(() => {});
+  };
 
   const serviceConvs = [
     { name: "ABF – Architecte des Bâtiments de France", dossier: "PC-2024-0123", preview: "Avis favorable avec réserves transmis.", time: "10:30", badge: 1, initials: "AB", color: "#8B5CF6" },
@@ -951,8 +977,18 @@ function MessageScreen({ onDossierClick }: { onDossierClick: (d: DossierInfo) =>
               <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>{selected.petitionnaire}</div>
               <div style={{ fontSize: 12, color: "#94a3b8" }}>{selected.numero} – {TYPE_LABEL[selected.type] ?? selected.type}</div>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
               <button onClick={() => onDossierClick({ id: selected.dossier_id, numero: selected.numero, type: selected.type, petitionnaire: selected.petitionnaire, adresse: "—", status: selected.status, echeance: "—" })} style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}>Voir le dossier ↗</button>
+              <button
+                onClick={markUnread}
+                title="Marquer comme non lu"
+                style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#64748b", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                Non lu
+              </button>
               <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
             </div>
           </div>
