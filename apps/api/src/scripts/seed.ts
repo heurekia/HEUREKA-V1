@@ -20,7 +20,15 @@ async function upsertUser(values: { email: string; password_hash: string; prenom
 
 async function upsertDossier(values: Parameters<typeof db.insert>[0] extends (table: infer T) => any ? never : any) {
   const [row] = await db.insert(dossiers).values(values)
-    .onConflictDoUpdate({ target: dossiers.numero, set: { adresse: values.adresse, commune: values.commune, code_postal: values.code_postal, status: values.status, metadata: values.metadata } })
+    .onConflictDoUpdate({
+      target: dossiers.numero,
+      set: {
+        adresse: values.adresse, commune: values.commune, code_postal: values.code_postal,
+        status: values.status, metadata: values.metadata,
+        date_depot: values.date_depot, date_completude: values.date_completude,
+        date_limite_instruction: values.date_limite_instruction,
+      },
+    })
     .returning();
   return row!;
 }
@@ -138,13 +146,17 @@ async function seed() {
     zoneRecords.push(...existingZones);
   }
 
-  // ── Dossiers de test Tours ──
+  // ── Dossiers de test Tours — dépôts mai 2026, échéances à venir ──
+  // PC : +2 mois | DP : +1 mois | PA/PL : +3 mois | PD : +2 mois | CU : +2 mois
   const dossier1 = await upsertDossier({
     numero: "PC-2024-001", type: "permis_de_construire", status: "en_instruction",
     user_id: citoyen.id, instructeur_id: instructeur.id, parcelle: "AB 123",
     adresse: "12 Rue Nationale, Tours", commune: "Tours", code_postal: "37000",
     description: "Construction d'une maison individuelle de 120m²", surface_plancher: "120",
-    date_depot: new Date("2024-01-15"), date_limite_instruction: new Date("2024-03-15"), metadata: {},
+    date_depot: new Date("2026-05-05"),
+    date_completude: new Date("2026-05-09"),
+    date_limite_instruction: new Date("2026-07-05"), // +2 mois PC
+    metadata: {},
   });
   console.log(`✅ Dossier: ${dossier1.numero}`);
 
@@ -152,7 +164,10 @@ async function seed() {
     numero: "DP-2024-042", type: "declaration_prealable", status: "soumis",
     user_id: citoyen.id, parcelle: "CD 456", adresse: "5 Avenue de la République, Tours",
     commune: "Tours", code_postal: "37000", description: "Extension de 30m² et modification de façade",
-    surface_plancher: "30", date_depot: new Date("2024-02-20"), metadata: {},
+    surface_plancher: "30",
+    date_depot: new Date("2026-05-14"),
+    date_limite_instruction: new Date("2026-06-14"), // +1 mois DP
+    metadata: {},
   });
 
   await upsertDossier({
@@ -160,7 +175,10 @@ async function seed() {
     user_id: citoyen.id, instructeur_id: mairie.id, parcelle: "EF 789",
     adresse: "8 Boulevard Tonnellé, Tours", commune: "Tours", code_postal: "37000",
     description: "Construction d'un garage et d'un abri de jardin", surface_plancher: "45",
-    date_depot: new Date("2023-11-01"), date_limite_instruction: new Date("2024-01-01"), metadata: {},
+    date_depot: new Date("2026-05-02"),
+    date_completude: new Date("2026-05-06"),
+    date_limite_instruction: new Date("2026-07-02"), // +2 mois PC
+    metadata: {},
   });
 
   // ── Commune Ballan-Miré ──
@@ -176,17 +194,104 @@ async function seed() {
   const citoyenBM1 = await upsertUser({ email: "jean.dupont@email.fr", password_hash: pw, prenom: "Jean", nom: "Dupont", role: "citoyen", commune: "Ballan-Miré" });
   const citoyenBM2 = await upsertUser({ email: "sophie.martin@email.fr", password_hash: pw, prenom: "Sophie", nom: "Martin", role: "citoyen", commune: "Ballan-Miré" });
 
-  // Dossiers Ballan-Miré — coordonnées géocodées au premier appel /map-dossiers
+  // Dossiers Ballan-Miré — dépôts mai 2026, échéances réparties juin–août 2026
+  // PC : +2 mois | DP : +1 mois | CU : +2 mois
   const dossiersBM = [
-    { numero: "PC-BM-2024-001", type: "permis_de_construire" as const, status: "en_instruction" as const, user_id: citoyenBM1.id, instructeur_id: instructeurBM.id, parcelle: "BM 001", adresse: "12 Place du 11-Novembre", commune: "Ballan-Miré", code_postal: "37510", description: "Construction d'une maison individuelle R+1, 145 m², avec garage", surface_plancher: "145", date_depot: new Date("2024-02-10"), date_limite_instruction: new Date("2024-08-10"), metadata: {} },
-    { numero: "DP-BM-2024-015", type: "declaration_prealable" as const, status: "soumis" as const, user_id: citoyenBM2.id, parcelle: "BM 015", adresse: "9 Avenue Jean Mermoz", commune: "Ballan-Miré", code_postal: "37510", description: "Extension de 28 m² et création d'une véranda sur maison existante", surface_plancher: "28", date_depot: new Date("2024-04-05"), metadata: {} },
-    { numero: "PC-BM-2024-022", type: "permis_de_construire" as const, status: "en_instruction" as const, user_id: citoyenBM1.id, instructeur_id: instructeurBM.id, parcelle: "BM 022", adresse: "2 Avenue de l'Orée-des-Bois", commune: "Ballan-Miré", code_postal: "37510", description: "Construction d'un immeuble collectif R+2 — 6 logements, 320 m²", surface_plancher: "320", date_depot: new Date("2024-03-18"), date_limite_instruction: new Date("2024-09-18"), metadata: {} },
-    { numero: "DP-BM-2024-008", type: "declaration_prealable" as const, status: "incomplet" as const, user_id: citoyenBM2.id, parcelle: "BM 008", adresse: "9 Rue Jean Mermoz", commune: "Ballan-Miré", code_postal: "37510", description: "Création d'une piscine hors-sol et modification de clôture", surface_plancher: "40", date_depot: new Date("2024-01-22"), metadata: {} },
-    { numero: "PC-BM-2023-044", type: "permis_de_construire" as const, status: "accepte" as const, user_id: citoyenBM1.id, instructeur_id: mairieBM.id, parcelle: "BM 044", adresse: "Avenue Jean Mermoz", commune: "Ballan-Miré", code_postal: "37510", description: "Construction d'un garage double et aménagement de l'entrée", surface_plancher: "60", date_depot: new Date("2023-10-08"), date_completude: new Date("2023-11-01"), date_limite_instruction: new Date("2024-02-08"), metadata: {} },
-    { numero: "DP-BM-2024-033", type: "declaration_prealable" as const, status: "decision_en_cours" as const, user_id: citoyenBM2.id, instructeur_id: instructeurBM.id, parcelle: "BM 033", adresse: "Place du 11-Novembre", commune: "Ballan-Miré", code_postal: "37510", description: "Ravalement de façade, installation de panneaux photovoltaïques", surface_plancher: "20", date_depot: new Date("2024-03-02"), date_completude: new Date("2024-03-20"), metadata: {} },
-    { numero: "CU-BM-2024-007", type: "certificat_urbanisme" as const, status: "soumis" as const, user_id: citoyenBM1.id, parcelle: "BM 007", adresse: "Rue de la Houssaye", commune: "Ballan-Miré", code_postal: "37510", description: "Certificat d'urbanisme opérationnel — viabilité d'un projet de lotissement", surface_plancher: "0", date_depot: new Date("2024-04-15"), metadata: {} },
-    { numero: "PC-BM-2024-041", type: "permis_de_construire" as const, status: "refuse" as const, user_id: citoyenBM2.id, instructeur_id: instructeurBM.id, parcelle: "BM 041", adresse: "Rue du Commerce", commune: "Ballan-Miré", code_postal: "37510", description: "Construction maison individuelle — non conforme PLU zone N", surface_plancher: "100", date_depot: new Date("2024-01-30"), date_completude: new Date("2024-02-15"), date_limite_instruction: new Date("2024-07-30"), metadata: {} },
-    { numero: "DP-BM-2024-019", type: "declaration_prealable" as const, status: "pre_instruction" as const, user_id: citoyenBM1.id, parcelle: "BM 019", adresse: "Rue du Val de l'Indre", commune: "Ballan-Miré", code_postal: "37510", description: "Division parcellaire et création d'un accès indépendant", surface_plancher: "15", date_depot: new Date("2024-04-20"), metadata: {} },
+    {
+      numero: "PC-BM-2024-001", type: "permis_de_construire" as const, status: "en_instruction" as const,
+      user_id: citoyenBM1.id, instructeur_id: instructeurBM.id, parcelle: "BM 001",
+      adresse: "12 Place du 11-Novembre", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Construction d'une maison individuelle R+1, 145 m², avec garage",
+      surface_plancher: "145",
+      date_depot: new Date("2026-05-03"),
+      date_completude: new Date("2026-05-08"),
+      date_limite_instruction: new Date("2026-07-03"), // +2 mois PC
+      metadata: {},
+    },
+    {
+      numero: "DP-BM-2024-015", type: "declaration_prealable" as const, status: "soumis" as const,
+      user_id: citoyenBM2.id, parcelle: "BM 015",
+      adresse: "9 Avenue Jean Mermoz", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Extension de 28 m² et création d'une véranda sur maison existante",
+      surface_plancher: "28",
+      date_depot: new Date("2026-05-16"),
+      date_limite_instruction: new Date("2026-06-16"), // +1 mois DP
+      metadata: {},
+    },
+    {
+      numero: "PC-BM-2024-022", type: "permis_de_construire" as const, status: "en_instruction" as const,
+      user_id: citoyenBM1.id, instructeur_id: instructeurBM.id, parcelle: "BM 022",
+      adresse: "2 Avenue de l'Orée-des-Bois", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Construction d'un immeuble collectif R+2 — 6 logements, 320 m²",
+      surface_plancher: "320",
+      date_depot: new Date("2026-05-07"),
+      date_completude: new Date("2026-05-12"),
+      date_limite_instruction: new Date("2026-07-07"), // +2 mois PC
+      metadata: {},
+    },
+    {
+      numero: "DP-BM-2024-008", type: "declaration_prealable" as const, status: "incomplet" as const,
+      user_id: citoyenBM2.id, parcelle: "BM 008",
+      adresse: "9 Rue Jean Mermoz", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Création d'une piscine hors-sol et modification de clôture",
+      surface_plancher: "40",
+      date_depot: new Date("2026-05-09"),
+      date_limite_instruction: new Date("2026-06-09"), // +1 mois DP
+      metadata: {},
+    },
+    {
+      numero: "PC-BM-2023-044", type: "permis_de_construire" as const, status: "accepte" as const,
+      user_id: citoyenBM1.id, instructeur_id: mairieBM.id, parcelle: "BM 044",
+      adresse: "Avenue Jean Mermoz", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Construction d'un garage double et aménagement de l'entrée",
+      surface_plancher: "60",
+      date_depot: new Date("2026-05-01"),
+      date_completude: new Date("2026-05-05"),
+      date_limite_instruction: new Date("2026-07-01"), // +2 mois PC
+      metadata: {},
+    },
+    {
+      numero: "DP-BM-2024-033", type: "declaration_prealable" as const, status: "decision_en_cours" as const,
+      user_id: citoyenBM2.id, instructeur_id: instructeurBM.id, parcelle: "BM 033",
+      adresse: "Place du 11-Novembre", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Ravalement de façade, installation de panneaux photovoltaïques",
+      surface_plancher: "20",
+      date_depot: new Date("2026-05-08"),
+      date_completude: new Date("2026-05-13"),
+      date_limite_instruction: new Date("2026-06-08"), // +1 mois DP
+      metadata: {},
+    },
+    {
+      numero: "CU-BM-2024-007", type: "certificat_urbanisme" as const, status: "soumis" as const,
+      user_id: citoyenBM1.id, parcelle: "BM 007",
+      adresse: "Rue de la Houssaye", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Certificat d'urbanisme opérationnel — viabilité d'un projet de lotissement",
+      surface_plancher: "0",
+      date_depot: new Date("2026-05-19"),
+      date_limite_instruction: new Date("2026-07-19"), // +2 mois CU
+      metadata: {},
+    },
+    {
+      numero: "PC-BM-2024-041", type: "permis_de_construire" as const, status: "refuse" as const,
+      user_id: citoyenBM2.id, instructeur_id: instructeurBM.id, parcelle: "BM 041",
+      adresse: "Rue du Commerce", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Construction maison individuelle — non conforme PLU zone N",
+      surface_plancher: "100",
+      date_depot: new Date("2026-05-04"),
+      date_completude: new Date("2026-05-09"),
+      date_limite_instruction: new Date("2026-07-04"), // +2 mois PC
+      metadata: {},
+    },
+    {
+      numero: "DP-BM-2024-019", type: "declaration_prealable" as const, status: "pre_instruction" as const,
+      user_id: citoyenBM1.id, parcelle: "BM 019",
+      adresse: "Rue du Val de l'Indre", commune: "Ballan-Miré", code_postal: "37510",
+      description: "Division parcellaire et création d'un accès indépendant",
+      surface_plancher: "15",
+      date_depot: new Date("2026-05-20"),
+      date_limite_instruction: new Date("2026-06-20"), // +1 mois DP
+      metadata: {},
+    },
   ];
 
   for (const d of dossiersBM) {
@@ -197,8 +302,8 @@ async function seed() {
   // ── Messages Tours (skip si dossier1 a déjà des messages) ──
   const existingMessages = await db.select().from(dossier_messages).where(eq(dossier_messages.dossier_id, dossier1.id));
   if (existingMessages.length === 0) {
-    await db.insert(dossier_messages).values({ dossier_id: dossier1.id, from_user_id: citoyen.id, from_role: "citoyen", content: "Bonjour, je souhaiterais savoir où en est l'instruction de mon dossier. Merci.", created_at: new Date("2024-05-10T09:15:00") });
-    await db.insert(dossier_messages).values({ dossier_id: dossier1.id, from_user_id: instructeur.id, from_role: "instructeur", content: "Bonjour, votre dossier est en cours d'instruction. Nous attendons l'avis de l'architecte des Bâtiments de France. Nous reviendrons vers vous sous quinze jours.", created_at: new Date("2024-05-10T14:32:00") });
+    await db.insert(dossier_messages).values({ dossier_id: dossier1.id, from_user_id: citoyen.id, from_role: "citoyen", content: "Bonjour, je souhaiterais savoir où en est l'instruction de mon dossier. Merci.", created_at: new Date("2026-05-09T09:15:00") });
+    await db.insert(dossier_messages).values({ dossier_id: dossier1.id, from_user_id: instructeur.id, from_role: "instructeur", content: "Bonjour, votre dossier est en cours d'instruction. Nous attendons l'avis de l'architecte des Bâtiments de France. Nous reviendrons vers vous sous quinze jours.", created_at: new Date("2026-05-09T14:32:00") });
   }
 
   // ── Conversations Ballan-Miré ──
@@ -212,9 +317,9 @@ async function seed() {
     const d001 = bmMap["PC-BM-2024-001"];
     if (d001) {
       await db.insert(dossier_messages).values([
-        { dossier_id: d001.id, from_user_id: citoyenBM1.id, from_role: "citoyen", content: "Bonjour, pouvez-vous me donner des nouvelles de l'avancement de mon dossier PC-BM-2024-001 ? Merci.", created_at: new Date("2024-05-10T09:15:00") },
-        { dossier_id: d001.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Bonjour M. Dupont, votre dossier est en cours d'instruction. Nous attendons l'avis de l'Architecte des Bâtiments de France. Délai estimé : 3 semaines.", created_at: new Date("2024-05-10T14:32:00") },
-        { dossier_id: d001.id, from_user_id: citoyenBM1.id, from_role: "citoyen", content: "Merci pour cette réponse. Est-ce que je dois fournir des documents supplémentaires de mon côté ?", created_at: new Date("2024-05-11T08:45:00") },
+        { dossier_id: d001.id, from_user_id: citoyenBM1.id, from_role: "citoyen", content: "Bonjour, pouvez-vous me donner des nouvelles de l'avancement de mon dossier PC-BM-2024-001 ? Merci.", created_at: new Date("2026-05-10T09:15:00") },
+        { dossier_id: d001.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Bonjour M. Dupont, votre dossier est en cours d'instruction. Nous attendons l'avis de l'Architecte des Bâtiments de France. Délai estimé : 3 semaines.", created_at: new Date("2026-05-10T14:32:00") },
+        { dossier_id: d001.id, from_user_id: citoyenBM1.id, from_role: "citoyen", content: "Merci pour cette réponse. Est-ce que je dois fournir des documents supplémentaires de mon côté ?", created_at: new Date("2026-05-11T08:45:00") },
       ]);
     }
 
@@ -222,7 +327,7 @@ async function seed() {
     const d015 = bmMap["DP-BM-2024-015"];
     if (d015) {
       await db.insert(dossier_messages).values([
-        { dossier_id: d015.id, from_user_id: citoyenBM2.id, from_role: "citoyen", content: "Bonjour, j'ai déposé ma déclaration préalable pour une extension de 28 m². Pouvez-vous confirmer que toutes les pièces ont bien été reçues ?", created_at: new Date("2024-05-08T10:20:00") },
+        { dossier_id: d015.id, from_user_id: citoyenBM2.id, from_role: "citoyen", content: "Bonjour, j'ai déposé ma déclaration préalable pour une extension de 28 m². Pouvez-vous confirmer que toutes les pièces ont bien été reçues ?", created_at: new Date("2026-05-17T10:20:00") },
       ]);
     }
 
@@ -230,9 +335,9 @@ async function seed() {
     const d008 = bmMap["DP-BM-2024-008"];
     if (d008) {
       await db.insert(dossier_messages).values([
-        { dossier_id: d008.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Bonjour Mme Martin, votre dossier DP-BM-2024-008 est incomplet. Il manque le plan de masse coté et la notice descriptive. Merci de les transmettre dans les meilleurs délais.", created_at: new Date("2024-04-15T11:00:00") },
-        { dossier_id: d008.id, from_user_id: citoyenBM2.id, from_role: "citoyen", content: "Bonjour, voici les documents demandés en pièce jointe. J'espère que cela complète bien mon dossier.", created_at: new Date("2024-04-16T16:30:00") },
-        { dossier_id: d008.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Merci pour l'envoi. Nous procédons à la vérification et vous recontacterons si nécessaire.", created_at: new Date("2024-04-17T09:10:00") },
+        { dossier_id: d008.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Bonjour Mme Martin, votre dossier DP-BM-2024-008 est incomplet. Il manque le plan de masse coté et la notice descriptive. Merci de les transmettre dans les meilleurs délais.", created_at: new Date("2026-05-12T11:00:00") },
+        { dossier_id: d008.id, from_user_id: citoyenBM2.id, from_role: "citoyen", content: "Bonjour, voici les documents demandés en pièce jointe. J'espère que cela complète bien mon dossier.", created_at: new Date("2026-05-13T16:30:00") },
+        { dossier_id: d008.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Merci pour l'envoi. Nous procédons à la vérification et vous recontacterons si nécessaire.", created_at: new Date("2026-05-14T09:10:00") },
       ]);
     }
 
@@ -240,7 +345,7 @@ async function seed() {
     const d022 = bmMap["PC-BM-2024-022"];
     if (d022) {
       await db.insert(dossier_messages).values([
-        { dossier_id: d022.id, from_user_id: citoyenBM1.id, from_role: "citoyen", content: "Bonjour, je souhaitais connaître l'avancement du dossier pour mon immeuble collectif. Y a-t-il des points bloquants à ce stade ?", created_at: new Date("2024-05-12T15:00:00") },
+        { dossier_id: d022.id, from_user_id: citoyenBM1.id, from_role: "citoyen", content: "Bonjour, je souhaitais connaître l'avancement du dossier pour mon immeuble collectif. Y a-t-il des points bloquants à ce stade ?", created_at: new Date("2026-05-15T15:00:00") },
       ]);
     }
 
@@ -248,8 +353,8 @@ async function seed() {
     const d033 = bmMap["DP-BM-2024-033"];
     if (d033) {
       await db.insert(dossier_messages).values([
-        { dossier_id: d033.id, from_user_id: citoyenBM2.id, from_role: "citoyen", content: "Bonjour, mon dossier est en décision depuis un moment. Pouvez-vous m'indiquer le délai prévu pour la réponse ?", created_at: new Date("2024-05-05T09:00:00") },
-        { dossier_id: d033.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Bonjour, la décision sera rendue dans les 5 jours ouvrés. Vous recevrez une notification par email dès qu'elle sera disponible.", created_at: new Date("2024-05-06T11:30:00") },
+        { dossier_id: d033.id, from_user_id: citoyenBM2.id, from_role: "citoyen", content: "Bonjour, mon dossier est en décision depuis un moment. Pouvez-vous m'indiquer le délai prévu pour la réponse ?", created_at: new Date("2026-05-18T09:00:00") },
+        { dossier_id: d033.id, from_user_id: instructeurBM.id, from_role: "instructeur", content: "Bonjour, la décision sera rendue dans les 5 jours ouvrés. Vous recevrez une notification par email dès qu'elle sera disponible.", created_at: new Date("2026-05-19T11:30:00") },
       ]);
     }
 
