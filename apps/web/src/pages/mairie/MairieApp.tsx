@@ -864,6 +864,15 @@ function communeCode(c: string): string {
   return c.replace(/\s+/g, "").slice(0, 3).toUpperCase();
 }
 
+// Numéros de dossiers existants dans la DB par commune, à utiliser dans les consultations services
+const COMMUNE_DOSSIERS: Record<string, { d1: string; d2: string; d3: string; d4: string; d5: string }> = {
+  "Ballan-Miré":    { d1: "PC-BM-2024-001", d2: "PC-BM-2024-022", d3: "PC-BM-2024-001", d4: "DP-BM-2024-015", d5: "DP-BM-2024-008" },
+  "Tours":          { d1: "PC-2024-001",     d2: "PC-TR-2024-004", d3: "PC-TR-2024-011", d4: "DP-2024-042",     d5: "DP-TR-2024-007" },
+  "Saint-Avertin":  { d1: "PC-SA-2024-001",  d2: "PC-SA-2024-009", d3: "PC-SA-2024-001", d4: "PC-SA-2024-009",  d5: "DP-SA-2024-005" },
+  "Joué-lès-Tours": { d1: "PC-JT-2024-003",  d2: "PC-JT-2024-018", d3: "PC-JT-2024-031", d4: "PC-JT-2024-018",  d5: "DP-JT-2024-011" },
+  "La Riche":       { d1: "PC-LR-2024-002",  d2: "PC-LR-2024-027", d3: "PC-LR-2024-002", d4: "PC-LR-2024-027",  d5: "PC-LR-2024-014" },
+};
+
 function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: string; onDossierClick: (d: DossierInfo) => void; onUnreadChange?: (n: number) => void }) {
   type Conv = { dossier_id: string; numero: string; type: string; status: string; petitionnaire: string; last_content: string; last_from_role: string; last_at: string; unread_count: number };
   type Msg = { id: string; content: string; from_role: string; created_at: string; prenom: string | null; nom: string | null };
@@ -920,32 +929,32 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
       .catch(() => {});
   };
 
-  const cc = communeCode(commune);
+  const dos = COMMUNE_DOSSIERS[commune] ?? { d1: `PC-${communeCode(commune)}-2024-001`, d2: `PC-${communeCode(commune)}-2024-022`, d3: `PC-${communeCode(commune)}-2024-001`, d4: `DP-${communeCode(commune)}-2024-015`, d5: `DP-${communeCode(commune)}-2024-008` };
   const serviceConvs: ServiceConv[] = [
-    { name: "ABF – Architecte des Bâtiments de France", dossier: `PC-${cc}-2024-001`, preview: "Avis favorable avec réserves transmis.", time: "20/05", initials: "AB", color: "#8B5CF6",
+    { name: "ABF – Architecte des Bâtiments de France", dossier: dos.d1, preview: "Avis favorable avec réserves transmis.", time: "20/05", initials: "AB", color: "#8B5CF6",
       thread: [
-        { role: "service", text: `Bonjour, nous avons bien reçu la demande de consultation pour le dossier PC-${cc}-2024-001. Nous procédons à son examen.`, time: "09:00" },
+        { role: "service", text: `Bonjour, nous avons bien reçu la demande de consultation pour le dossier ${dos.d1}. Nous procédons à son examen.`, time: "09:00" },
         { role: "mairie", text: "Merci. Pouvez-vous nous indiquer un délai de réponse approximatif ?", time: "10:15" },
         { role: "service", text: "Avis favorable avec réserves transmis. Le pétitionnaire devra respecter les prescriptions architecturales jointes.", time: "10:30" },
       ]},
-    { name: "SDIS – Service Incendie", dossier: `PC-${cc}-2024-022`, preview: "Consultation en cours d'examen.", time: "19/05", initials: "SD", color: "#EF4444",
+    { name: "SDIS – Service Incendie", dossier: dos.d2, preview: "Consultation en cours d'examen.", time: "19/05", initials: "SD", color: "#EF4444",
       thread: [
-        { role: "mairie", text: `Bonjour, nous vous adressons la consultation pour le dossier PC-${cc}-2024-022 relatif à un immeuble collectif de 12 logements.`, time: "08:30" },
+        { role: "mairie", text: `Bonjour, nous vous adressons la consultation pour le dossier ${dos.d2}. Merci de nous faire parvenir votre avis de sécurité incendie.`, time: "08:30" },
         { role: "service", text: "Consultation bien reçue. L'examen est en cours. Délai de réponse : 15 jours ouvrés.", time: "14:00" },
       ]},
-    { name: "Métropole Tours Val de Loire", dossier: `PC-${cc}-2024-001`, preview: "Retour attendu avant le 25/05.", time: "18/05", initials: "MT", color: "#F97316",
+    { name: "Métropole Tours Val de Loire", dossier: dos.d3, preview: "Retour attendu avant le 25/05.", time: "18/05", initials: "MT", color: "#F97316",
       thread: [
-        { role: "mairie", text: `Consultation PLUi — dossier PC-${cc}-2024-001. Merci de vérifier la conformité avec le règlement de zone UA.`, time: "09:00" },
+        { role: "mairie", text: `Consultation PLUi — dossier ${dos.d3}. Merci de vérifier la conformité avec le règlement de zone UA.`, time: "09:00" },
         { role: "service", text: "Pris en compte. Retour attendu avant le 25/05.", time: "11:30" },
       ]},
-    { name: "DREAL Centre-Val de Loire", dossier: `DP-${cc}-2024-015`, preview: "Documents bien reçus, analyse en cours.", time: "16/05", initials: "DR", color: "#22C55E",
+    { name: "DREAL Centre-Val de Loire", dossier: dos.d4, preview: "Documents bien reçus, analyse en cours.", time: "16/05", initials: "DR", color: "#22C55E",
       thread: [
-        { role: "mairie", text: `Transmission des pièces pour DP-${cc}-2024-015 (zone Natura 2000). Merci d'évaluer l'impact environnemental.`, time: "10:00" },
+        { role: "mairie", text: `Transmission des pièces pour ${dos.d4}. Merci d'évaluer l'impact sur l'environnement et les zones sensibles.`, time: "10:00" },
         { role: "service", text: "Documents bien reçus, analyse en cours. Nous reviendrons vers vous sous 10 jours.", time: "15:45" },
       ]},
-    { name: "Service des Eaux – Grand Cycle", dossier: `DP-${cc}-2024-008`, preview: "Avis favorable émis.", time: "13/05", initials: "SE", color: "#3B82F6",
+    { name: "Service des Eaux – Grand Cycle", dossier: dos.d5, preview: "Avis favorable émis.", time: "13/05", initials: "SE", color: "#3B82F6",
       thread: [
-        { role: "mairie", text: `Consultation pour DP-${cc}-2024-008 — extension avec création d'imperméabilisation. Merci de valider la gestion des eaux pluviales.`, time: "09:00" },
+        { role: "mairie", text: `Consultation pour ${dos.d5} — projet avec création ou modification d'imperméabilisation. Merci de valider la gestion des eaux pluviales.`, time: "09:00" },
         { role: "service", text: "Avis favorable émis sous réserve de la mise en place d'un dispositif de rétention conforme à la notice jointe.", time: "16:00" },
       ]},
   ];
