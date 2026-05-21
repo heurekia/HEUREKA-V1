@@ -391,20 +391,21 @@ mairieRouter.post("/admin/users", requireRole("admin"), async (req: AuthRequest,
 // ── Mise à jour rôle/infos d'un utilisateur (admin uniquement) ──
 mairieRouter.patch("/admin/users/:id", requireRole("admin"), async (req: AuthRequest, res) => {
   try {
-    const { id } = req.params;
+    const userId = req.params.id as string;
     const { role, prenom, nom, telephone } = req.body as Record<string, string | undefined>;
     const validRoles = ["mairie", "instructeur", "admin", "citoyen"];
     if (role && !validRoles.includes(role)) return res.status(400).json({ error: "Rôle invalide" });
-    const set: Record<string, unknown> = { updated_at: new Date() };
-    if (role) set.role = role;
-    if (prenom) set.prenom = prenom;
-    if (nom) set.nom = nom;
-    if (telephone !== undefined) set.telephone = telephone;
-    await db.update(users).set(set).where(eq(users.id, id));
+    await db.update(users).set({
+      ...(role ? { role: role as "mairie" | "instructeur" | "admin" | "citoyen" } : {}),
+      ...(prenom ? { prenom } : {}),
+      ...(nom ? { nom } : {}),
+      ...(telephone !== undefined ? { telephone } : {}),
+      updated_at: new Date(),
+    }).where(eq(users.id, userId));
     const [updated] = await db.select({
       id: users.id, email: users.email, prenom: users.prenom, nom: users.nom,
       role: users.role, commune: users.commune, telephone: users.telephone,
-    }).from(users).where(eq(users.id, id));
+    }).from(users).where(eq(users.id, userId));
     res.json(updated);
   } catch (err) {
     console.error(err);
@@ -416,9 +417,9 @@ mairieRouter.patch("/admin/users/:id", requireRole("admin"), async (req: AuthReq
 mairieRouter.delete("/admin/users/:id", requireRole("admin"), async (req: AuthRequest, res) => {
   try {
     const reqUser = req.user as { id: string };
-    const { id } = req.params;
-    if (id === reqUser.id) return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte" });
-    await db.delete(users).where(eq(users.id, id));
+    const userId = req.params.id as string;
+    if (userId === reqUser.id) return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte" });
+    await db.delete(users).where(eq(users.id, userId));
     res.status(204).send();
   } catch (err) {
     console.error(err);
