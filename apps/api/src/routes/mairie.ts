@@ -1009,7 +1009,10 @@ mairieRouter.patch("/reglementation/zones/:id", async (req: AuthRequest, res) =>
 
 // ── Proxy APICarto GPU zones (évite le CORS côté navigateur) ─────────────────
 // GET /mairie/plu-zones?insee_code=37018 (or legacy ?commune=Ballan-Miré)
-// Works for PLU and PLUi communes by accepting any document partition, not just "approuve".
+// Proxy zone-urba GPU — affichage carte uniquement (pas de règlement).
+// Interroge zone-urba par géométrie de la commune (polygone simplifié ≤50 pts).
+// Aucune partition / document nécessaire : le GPU retourne toutes les zones
+// qui intersectent la géométrie fournie, quelque soit le type de PLU/PLUi.
 mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
   try {
     let inseeCode = (req.query.insee_code as string | undefined)?.trim();
@@ -1031,7 +1034,7 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
       }
     }
 
-    // Commune boundary polygon — use code= (INSEE) when available, nom= otherwise
+    // Fetch commune contour
     const lookupQuery = inseeCode
       ? `code=${encodeURIComponent(inseeCode)}`
       : `nom=${encodeURIComponent(communeName!)}`;
@@ -1040,102 +1043,39 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
       { signal: AbortSignal.timeout(8000) }
     );
     if (!geoR.ok) return res.status(502).json({ error: "Erreur geo.api.gouv.fr" });
-    type GeoComm = { features?: Array<{ geometry?: { type: string; coordinates: number[][][] } }> };
+    type GeoComm = { features?: Array<{ geometry?: { coordinates: number[][][] } }> };
     const geoJson = await geoR.json() as GeoComm;
-    const communeGeom = geoJson.features?.[0]?.geometry;
-    if (!communeGeom) return res.status(404).json({ error: "Commune non trouvée sur geo.api.gouv.fr" });
+    const pts = geoJson.features?.[0]?.geometry?.coordinates[0];
+    if (!pts?.length) return res.status(404).json({ error: "Commune non trouvée" });
 
-    const pts = communeGeom.coordinates[0]!;
-    const lats = pts.map(p => p[1]!), lngs = pts.map(p => p[0]!);
-    const center = {
-      lat: (Math.min(...lats) + Math.max(...lats)) / 2,
-      lng: (Math.min(...lngs) + Math.max(...lngs)) / 2,
-    };
-
-    // GPU document lookup — two strategies to maximise coverage for PLUi communes
-    const [minLng, maxLng] = [Math.min(...lngs), Math.max(...lngs)];
-    const [minLat, maxLat] = [Math.min(...lats), Math.max(...lats)];
-    const bboxGeom = JSON.stringify({
-      type: "Polygon",
-      coordinates: [[[minLng, minLat], [maxLng, minLat], [maxLng, maxLat], [minLng, maxLat], [minLng, minLat]]],
-    });
-
-    let partition: string | undefined;
-
-    // Strategy 1: point query on /document endpoint (fast, works for most communes)
-    const ptGeom = JSON.stringify({ type: "Point", coordinates: [center.lng, center.lat] });
-    const docR = await fetch(
-      `https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(ptGeom)}`,
-      { signal: AbortSignal.timeout(10000) }
-    ).catch(() => null);
-    if (docR?.ok) {
-      type GpuDoc = { features?: Array<{ properties: { partition?: string; etat?: string } }> };
-      const docJson = await docR.json() as GpuDoc;
-      const docs = docJson.features ?? [];
-      const doc = docs.find(f => f.properties.etat === "approuve")
-        ?? docs.find(f => !!f.properties.partition)
-        ?? docs[0];
-      partition = doc?.properties.partition ?? undefined;
+    // Simplify polygon to ≤50 points so the URL stays manageable.
+    // This preserves the commune shape well enough to exclude neighbouring communes
+    // (unlike a bounding box which bleeds across borders).
+    const MAX_PTS = 50;
+    let ring = pts;
+    if (pts.length > MAX_PTS) {
+      const step = Math.ceil((pts.length - 1) / (MAX_PTS - 1));
+      ring = pts.filter((_, i) => i % step === 0);
+      if (ring[ring.length - 1] !== pts[pts.length - 1]) ring.push(pts[pts.length - 1]!);
     }
+    const communeGeom = JSON.stringify({ type: "Polygon", coordinates: [ring] });
 
-    // Strategy 2: if /document returned nothing, probe zone-urba with the commune centroid POINT
-    // (point query only returns zones containing that exact point — avoids bleeding into
-    // neighbouring communes whose bbox overlaps, e.g. Saint-Cyr-sur-Loire next to Tours)
-    if (!partition) {
-      const probeParams = new URLSearchParams({ _limit: "5" });
-      probeParams.set("geom", ptGeom);
-      const probeR = await fetch(
-        `https://apicarto.ign.fr/api/gpu/zone-urba?${probeParams.toString()}`,
-        { signal: AbortSignal.timeout(15000) }
-      ).catch(() => null);
-      if (probeR?.ok) {
-        type ZoneProbe = { features?: Array<{ properties?: { partition?: string } }> };
-        const probeJson = await probeR.json() as ZoneProbe;
-        partition = probeJson.features?.find(f => !!f.properties?.partition)?.properties?.partition ?? undefined;
-      }
-    }
-
-    // Strategy 3: PLUi communes — look up EPCI SIREN via geo.api.gouv.fr, probe {SIREN}_PLUI
-    // Tours Métropole, Communauté de communes, etc. all have their PLUi indexed under SIREN_PLUI
-    if (!partition && inseeCode) {
-      const epciR = await fetch(
-        `https://geo.api.gouv.fr/communes/${encodeURIComponent(inseeCode)}/epcis?fields=code&limit=5`,
-        { signal: AbortSignal.timeout(8000) }
-      ).catch(() => null);
-      if (epciR?.ok) {
-        const epcis = await epciR.json() as Array<{ code?: string }>;
-        for (const epci of epcis) {
-          if (!epci.code || partition) continue;
-          const candidate = `${epci.code}_PLUI`;
-          // Verify the partition actually has zones in the GPU (no geom needed)
-          const verifyParams = new URLSearchParams({ partition: candidate, _limit: "1" });
-          const verifyR = await fetch(
-            `https://apicarto.ign.fr/api/gpu/zone-urba?${verifyParams.toString()}`,
-            { signal: AbortSignal.timeout(10000) }
-          ).catch(() => null);
-          if (verifyR?.ok) {
-            type ZoneProbe = { features?: Array<unknown> };
-            const verifyJson = await verifyR.json() as ZoneProbe;
-            if ((verifyJson.features?.length ?? 0) > 0) partition = candidate;
-          }
-        }
-      }
-    }
-
-    if (!partition) return res.status(404).json({ error: "Aucun document PLU trouvé pour cette commune" });
-
-    // Zone-urba with bounding-box geom (avoids URL-length issues with full polygon)
-    const params = new URLSearchParams({ partition, _limit: "1000" });
-    params.set("geom", bboxGeom);
+    // Query zone-urba directly by commune geometry — no partition/document lookup needed.
+    // Works for PLU, PLUi, POS, CC regardless of how the document is stored in the GPU.
+    const params = new URLSearchParams({ _limit: "1000" });
+    params.set("geom", communeGeom);
     const zoneR = await fetch(
       `https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`,
-      { signal: AbortSignal.timeout(20000) }
+      { signal: AbortSignal.timeout(25000) }
     );
     if (!zoneR.ok) {
       const body = await zoneR.text().catch(() => "");
       return res.status(502).json({ error: `Erreur APICarto zone-urba (HTTP ${zoneR.status})`, detail: body.slice(0, 300) });
     }
-    const zoneJson = await zoneR.json();
+    const zoneJson = await zoneR.json() as { features?: unknown[] };
+    if (!zoneJson.features?.length) {
+      return res.status(404).json({ error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme" });
+    }
     res.setHeader("Cache-Control", "public, max-age=3600");
     res.json(zoneJson);
   } catch (err) {
