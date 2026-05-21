@@ -168,6 +168,14 @@ ALTER TABLE dossier_messages ADD COLUMN IF NOT EXISTS read_at timestamp;
 
 ALTER TABLE communes DROP CONSTRAINT IF EXISTS communes_name_unique;
 ALTER TABLE communes DROP CONSTRAINT IF EXISTS communes_name_key;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS email text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS telephone text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS logo_url text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS population text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS surface text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS departement text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS region text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS description text;
 `;
 
 async function main() {

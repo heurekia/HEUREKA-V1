@@ -231,15 +231,195 @@ mairieRouter.get("/instructeurs", async (_req: AuthRequest, res) => {
   }
 });
 
-// ── Communes avec dossiers (pour le sélecteur de la carte) ──
+// ── Liste des communes (noms seuls pour le sélecteur) ──
 mairieRouter.get("/communes", async (_req: AuthRequest, res) => {
   try {
-    const rows = await db
-      .selectDistinct({ commune: dossiers.commune })
-      .from(dossiers)
-      .where(sql`commune IS NOT NULL`)
-      .orderBy(dossiers.commune);
-    res.json(rows.map(r => r.commune).filter(Boolean));
+    const rows = await db.select({ name: communes.name }).from(communes).orderBy(communes.name);
+    const names = rows.map(r => r.name);
+    if (names.length) return res.json(names);
+    // Fallback: read from dossiers if communes table is empty
+    const fallback = await db.selectDistinct({ commune: dossiers.commune }).from(dossiers).where(sql`commune IS NOT NULL`).orderBy(dossiers.commune);
+    res.json(fallback.map(r => r.commune).filter(Boolean));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Liste des communes avec code INSEE (pour la carte et le sélecteur) ──
+mairieRouter.get("/commune-list", async (_req: AuthRequest, res) => {
+  try {
+    const rows = await db.select({
+      name: communes.name,
+      insee_code: communes.insee_code,
+      zip_code: communes.zip_code,
+    }).from(communes).orderBy(communes.name);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Lookup INSEE via geo.api.gouv.fr (évite CORS côté navigateur) ──
+mairieRouter.get("/admin/insee-lookup", async (req: AuthRequest, res) => {
+  try {
+    const nom = (req.query.nom as string ?? "").trim();
+    if (nom.length < 2) return res.status(400).json({ error: "Nom requis (min 2 caractères)" });
+    const r = await fetch(
+      `https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(nom)}&fields=code,nom,codesPostaux,departement,region&limit=8&boost=population`,
+      { signal: AbortSignal.timeout(6000) }
+    );
+    if (!r.ok) return res.status(502).json({ error: "geo.api.gouv.fr indisponible" });
+    const data = await r.json() as Array<{
+      code: string; nom: string;
+      codesPostaux?: string[];
+      departement?: { nom: string; code: string };
+      region?: { nom: string; code: string };
+    }>;
+    res.json(data.map(c => ({
+      nom: c.nom,
+      insee: c.code,
+      zip: c.codesPostaux?.[0] ?? null,
+      departement: c.departement ? `${c.departement.nom} (${c.departement.code})` : null,
+      region: c.region?.nom ?? null,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Détails d'une commune (onglet Général) ──
+mairieRouter.get("/admin/commune-details", async (req: AuthRequest, res) => {
+  try {
+    const communeName = (req.query.commune as string ?? "").trim();
+    if (!communeName) return res.status(400).json({ error: "Paramètre commune requis" });
+    const [row] = await db.select().from(communes).where(ilike(communes.name, communeName));
+    if (!row) return res.status(404).json({ error: "Commune non trouvée" });
+    res.json(row);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Mise à jour d'une commune (admin uniquement) ──
+mairieRouter.patch("/admin/commune-details", requireRole("admin"), async (req: AuthRequest, res) => {
+  try {
+    const communeName = (req.query.commune as string ?? "").trim();
+    if (!communeName) return res.status(400).json({ error: "Paramètre commune requis" });
+    const { email, telephone, logo_url, population, surface, departement, region, description } = req.body as Record<string, string | undefined>;
+    await db.update(communes)
+      .set({ email: email ?? null, telephone: telephone ?? null, logo_url: logo_url ?? null,
+             population: population ?? null, surface: surface ?? null,
+             departement: departement ?? null, region: region ?? null,
+             description: description ?? null, updated_at: new Date() })
+      .where(ilike(communes.name, communeName));
+    const [updated] = await db.select().from(communes).where(ilike(communes.name, communeName));
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Ajout d'une commune (admin, onboarding) ──
+mairieRouter.post("/admin/communes", requireRole("admin"), async (req: AuthRequest, res) => {
+  try {
+    const { name, insee_code, zip_code, email, telephone, population, surface, departement, region, description } = req.body as Record<string, string | undefined>;
+    if (!name || !insee_code) return res.status(400).json({ error: "name et insee_code requis" });
+    const [row] = await db.insert(communes).values({
+      name, insee_code, zip_code: zip_code ?? null,
+      email: email ?? null, telephone: telephone ?? null,
+      population: population ?? null, surface: surface ?? null,
+      departement: departement ?? null, region: region ?? null,
+      description: description ?? null,
+    }).onConflictDoUpdate({
+      target: communes.insee_code,
+      set: { name, zip_code: zip_code ?? null, updated_at: new Date() },
+    }).returning();
+    res.status(201).json(row);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Liste des utilisateurs d'une commune ──
+mairieRouter.get("/admin/users", async (req: AuthRequest, res) => {
+  try {
+    const communeName = (req.query.commune as string ?? "").trim();
+    if (!communeName) return res.status(400).json({ error: "Paramètre commune requis" });
+    const rows = await db.select({
+      id: users.id, email: users.email, prenom: users.prenom, nom: users.nom,
+      role: users.role, commune: users.commune, telephone: users.telephone,
+      created_at: users.created_at,
+    }).from(users).where(ilike(users.commune, communeName));
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Création d'un utilisateur (admin uniquement) ──
+mairieRouter.post("/admin/users", requireRole("admin"), async (req: AuthRequest, res) => {
+  try {
+    const communeName = (req.query.commune as string ?? "").trim();
+    const { email, prenom, nom, role, telephone } = req.body as Record<string, string | undefined>;
+    if (!email || !prenom || !nom || !role) return res.status(400).json({ error: "email, prenom, nom, role requis" });
+    const validRoles = ["mairie", "instructeur", "admin"];
+    if (!validRoles.includes(role)) return res.status(400).json({ error: "Rôle invalide (mairie | instructeur | admin)" });
+    const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email.toLowerCase().trim()));
+    if (existing) return res.status(409).json({ error: "Un compte avec cet email existe déjà" });
+    const { default: bcrypt } = await import("bcryptjs");
+    const hash = await bcrypt.hash("Heureka2024!", 10);
+    const [newUser] = await db.insert(users).values({
+      email: email.toLowerCase().trim(), prenom, nom,
+      role: role as "mairie" | "instructeur" | "admin",
+      commune: communeName || null, telephone: telephone ?? null,
+      password_hash: hash,
+    }).returning({ id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, role: users.role, commune: users.commune });
+    res.status(201).json(newUser);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Mise à jour rôle/infos d'un utilisateur (admin uniquement) ──
+mairieRouter.patch("/admin/users/:id", requireRole("admin"), async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params;
+    const { role, prenom, nom, telephone } = req.body as Record<string, string | undefined>;
+    const validRoles = ["mairie", "instructeur", "admin", "citoyen"];
+    if (role && !validRoles.includes(role)) return res.status(400).json({ error: "Rôle invalide" });
+    const set: Record<string, unknown> = { updated_at: new Date() };
+    if (role) set.role = role;
+    if (prenom) set.prenom = prenom;
+    if (nom) set.nom = nom;
+    if (telephone !== undefined) set.telephone = telephone;
+    await db.update(users).set(set).where(eq(users.id, id));
+    const [updated] = await db.select({
+      id: users.id, email: users.email, prenom: users.prenom, nom: users.nom,
+      role: users.role, commune: users.commune, telephone: users.telephone,
+    }).from(users).where(eq(users.id, id));
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Suppression d'un utilisateur (admin uniquement) ──
+mairieRouter.delete("/admin/users/:id", requireRole("admin"), async (req: AuthRequest, res) => {
+  try {
+    const reqUser = req.user as { id: string };
+    const { id } = req.params;
+    if (id === reqUser.id) return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte" });
+    await db.delete(users).where(eq(users.id, id));
+    res.status(204).send();
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
