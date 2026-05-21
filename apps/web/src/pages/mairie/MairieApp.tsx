@@ -854,6 +854,16 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   );
 }
 
+function communeCode(c: string): string {
+  const l = c.toLowerCase();
+  if (l.includes("ballan")) return "BM";
+  if (l.includes("joué") || l.includes("joue")) return "JT";
+  if (l.includes("tours")) return "TR";
+  if (l.includes("avertin")) return "SA";
+  if (l.includes("riche")) return "LR";
+  return c.replace(/\s+/g, "").slice(0, 3).toUpperCase();
+}
+
 function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: string; onDossierClick: (d: DossierInfo) => void; onUnreadChange?: (n: number) => void }) {
   type Conv = { dossier_id: string; numero: string; type: string; status: string; petitionnaire: string; last_content: string; last_from_role: string; last_at: string; unread_count: number };
   type Msg = { id: string; content: string; from_role: string; created_at: string; prenom: string | null; nom: string | null };
@@ -863,16 +873,23 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
   const [convs, setConvs] = useState<Conv[]>([]);
   const [selected, setSelected] = useState<Conv | null>(null);
   const [selectedService, setSelectedService] = useState<ServiceConv | null>(null);
+  const [serviceUnreadNames, setServiceUnreadNames] = useState<Set<string>>(new Set(["ABF – Architecte des Bâtiments de France"]));
   const [thread, setThread] = useState<Msg[]>([]);
+
+  const refreshUnreadBadge = () =>
+    api.get<{ count: number }>(`/mairie/conversations/unread-count?commune=${encodeURIComponent(commune)}`)
+      .then(d => onUnreadChange?.(Number(d.count)))
+      .catch(() => {});
 
   const refreshConvs = () =>
     api.get<Conv[]>(`/mairie/conversations?commune=${encodeURIComponent(commune)}`).then(data => setConvs(data)).catch(() => {});
 
   useEffect(() => {
     setSelected(null);
+    setSelectedService(null);
+    setServiceUnreadNames(new Set(["ABF – Architecte des Bâtiments de France"]));
     api.get<Conv[]>(`/mairie/conversations?commune=${encodeURIComponent(commune)}`).then(data => {
       setConvs(data);
-      if (data.length > 0) setSelected(data[0] ?? null);
     }).catch(() => {});
   }, [commune]);
 
@@ -883,14 +900,11 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
     // Marquer les messages comme lus et mettre à jour la liste
     api.post(`/mairie/conversations/${selected.dossier_id}/read`)
       .then(() => {
-        setConvs(prev => {
-          const next = prev.map(c =>
-            c.dossier_id === selected.dossier_id ? { ...c, unread_count: 0 } : c
-          );
-          onUnreadChange?.(next.reduce((s, c) => s + c.unread_count, 0));
-          return next;
-        });
+        setConvs(prev => prev.map(c =>
+          c.dossier_id === selected.dossier_id ? { ...c, unread_count: 0 } : c
+        ));
         setSelected(prev => prev ? { ...prev, unread_count: 0 } : prev);
+        refreshUnreadBadge();
       })
       .catch(() => {});
   }, [selected?.dossier_id]);
@@ -899,43 +913,41 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
     if (!selected) return;
     api.post(`/mairie/conversations/${selected.dossier_id}/unread`)
       .then(() => {
-        setConvs(prev => {
-          const next = prev.map(c =>
-            c.dossier_id === selected.dossier_id ? { ...c, unread_count: 1 } : c
-          );
-          onUnreadChange?.(next.reduce((s, c) => s + c.unread_count, 0));
-          return next;
-        });
+        setConvs(prev => prev.map(c =>
+          c.dossier_id === selected.dossier_id ? { ...c, unread_count: 1 } : c
+        ));
         setSelected(prev => prev ? { ...prev, unread_count: 1 } : prev);
+        refreshUnreadBadge();
       })
       .catch(() => {});
   };
 
+  const cc = communeCode(commune);
   const serviceConvs: ServiceConv[] = [
-    { name: "ABF – Architecte des Bâtiments de France", dossier: "PC-BM-2024-001", preview: "Avis favorable avec réserves transmis.", time: "20/05", badge: 1, initials: "AB", color: "#8B5CF6",
+    { name: "ABF – Architecte des Bâtiments de France", dossier: `PC-${cc}-2024-001`, preview: "Avis favorable avec réserves transmis.", time: "20/05", initials: "AB", color: "#8B5CF6",
       thread: [
-        { role: "service", text: "Bonjour, nous avons bien reçu la demande de consultation pour le dossier PC-BM-2024-001. Nous procédons à son examen.", time: "09:00" },
+        { role: "service", text: `Bonjour, nous avons bien reçu la demande de consultation pour le dossier PC-${cc}-2024-001. Nous procédons à son examen.`, time: "09:00" },
         { role: "mairie", text: "Merci. Pouvez-vous nous indiquer un délai de réponse approximatif ?", time: "10:15" },
         { role: "service", text: "Avis favorable avec réserves transmis. Le pétitionnaire devra respecter les prescriptions architecturales jointes.", time: "10:30" },
       ]},
-    { name: "SDIS – Service Incendie", dossier: "PC-BM-2024-022", preview: "Consultation en cours d'examen.", time: "19/05", initials: "SD", color: "#EF4444",
+    { name: "SDIS – Service Incendie", dossier: `PC-${cc}-2024-022`, preview: "Consultation en cours d'examen.", time: "19/05", initials: "SD", color: "#EF4444",
       thread: [
-        { role: "mairie", text: "Bonjour, nous vous adressons la consultation pour le dossier PC-BM-2024-022 relatif à un immeuble collectif de 12 logements.", time: "08:30" },
+        { role: "mairie", text: `Bonjour, nous vous adressons la consultation pour le dossier PC-${cc}-2024-022 relatif à un immeuble collectif de 12 logements.`, time: "08:30" },
         { role: "service", text: "Consultation bien reçue. L'examen est en cours. Délai de réponse : 15 jours ouvrés.", time: "14:00" },
       ]},
-    { name: "Métropole Tours Val de Loire", dossier: "PC-BM-2024-001", preview: "Retour attendu avant le 25/05.", time: "18/05", initials: "MT", color: "#F97316",
+    { name: "Métropole Tours Val de Loire", dossier: `PC-${cc}-2024-001`, preview: "Retour attendu avant le 25/05.", time: "18/05", initials: "MT", color: "#F97316",
       thread: [
-        { role: "mairie", text: "Consultation PLUi — dossier PC-BM-2024-001. Merci de vérifier la conformité avec le règlement de zone UA.", time: "09:00" },
+        { role: "mairie", text: `Consultation PLUi — dossier PC-${cc}-2024-001. Merci de vérifier la conformité avec le règlement de zone UA.`, time: "09:00" },
         { role: "service", text: "Pris en compte. Retour attendu avant le 25/05.", time: "11:30" },
       ]},
-    { name: "DREAL Centre-Val de Loire", dossier: "DP-BM-2024-015", preview: "Documents bien reçus, analyse en cours.", time: "16/05", initials: "DR", color: "#22C55E",
+    { name: "DREAL Centre-Val de Loire", dossier: `DP-${cc}-2024-015`, preview: "Documents bien reçus, analyse en cours.", time: "16/05", initials: "DR", color: "#22C55E",
       thread: [
-        { role: "mairie", text: "Transmission des pièces pour DP-BM-2024-015 (zone Natura 2000). Merci d'évaluer l'impact environnemental.", time: "10:00" },
+        { role: "mairie", text: `Transmission des pièces pour DP-${cc}-2024-015 (zone Natura 2000). Merci d'évaluer l'impact environnemental.`, time: "10:00" },
         { role: "service", text: "Documents bien reçus, analyse en cours. Nous reviendrons vers vous sous 10 jours.", time: "15:45" },
       ]},
-    { name: "Service des Eaux – Grand Cycle", dossier: "DP-BM-2024-008", preview: "Avis favorable émis.", time: "13/05", initials: "SE", color: "#3B82F6",
+    { name: "Service des Eaux – Grand Cycle", dossier: `DP-${cc}-2024-008`, preview: "Avis favorable émis.", time: "13/05", initials: "SE", color: "#3B82F6",
       thread: [
-        { role: "mairie", text: "Consultation pour DP-BM-2024-008 — extension avec création d'imperméabilisation. Merci de valider la gestion des eaux pluviales.", time: "09:00" },
+        { role: "mairie", text: `Consultation pour DP-${cc}-2024-008 — extension avec création d'imperméabilisation. Merci de valider la gestion des eaux pluviales.`, time: "09:00" },
         { role: "service", text: "Avis favorable émis sous réserve de la mise en place d'un dispositif de rétention conforme à la notice jointe.", time: "16:00" },
       ]},
   ];
@@ -985,8 +997,13 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
             );
           }) : serviceConvs.map((c, i) => {
             const isActive = selectedService?.name === c.name;
+            const isUnread = serviceUnreadNames.has(c.name);
             return (
-            <div key={i} onClick={() => { setSelectedService(c); setSelected(null); }} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: isActive ? "#F0F4FF" : "white" }}
+            <div key={i} onClick={() => {
+              setSelectedService(c);
+              setSelected(null);
+              setServiceUnreadNames(prev => { const next = new Set(prev); next.delete(c.name); return next; });
+            }} style={{ padding: "12px 16px", cursor: "pointer", borderBottom: "1px solid #F8FAFC", background: isActive ? "#F0F4FF" : "white" }}
               onMouseEnter={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
               onMouseLeave={e => { if (!isActive) (e.currentTarget as HTMLDivElement).style.background = "white"; }}>
               <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
@@ -999,7 +1016,7 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
                   <div style={{ fontSize: 11, color: "#64748b", marginBottom: 2 }}>{c.dossier}</div>
                   <div style={{ fontSize: 12, color: "#94a3b8", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c.preview}</div>
                 </div>
-                {c.badge && <span style={{ background: "#4F46E5", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{c.badge}</span>}
+                {isUnread && <span style={{ background: "#4F46E5", color: "white", borderRadius: "50%", width: 18, height: 18, fontSize: 10, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>1</span>}
               </div>
             </div>
             );
@@ -1019,7 +1036,19 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
                 <div style={{ fontSize: 12, color: "#94a3b8" }}>Consultation — {selectedService.dossier}</div>
               </div>
             </div>
-            <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <button
+                onClick={() => setServiceUnreadNames(prev => new Set(prev).add(selectedService.name))}
+                title="Marquer comme non lu"
+                style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#64748b", cursor: "pointer", display: "flex", alignItems: "center", gap: 5 }}
+              >
+                <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+                </svg>
+                Non lu
+              </button>
+              <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
+            </div>
           </div>
           <div style={{ flex: 1, padding: 20, overflowY: "auto" }}>
             {selectedService.thread.map((msg, i) => {
