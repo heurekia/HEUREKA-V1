@@ -5,6 +5,8 @@ import bcrypt from "bcryptjs";
 import { eq, sql } from "drizzle-orm";
 
 async function upsertCommune(values: { name: string; insee_code: string; zip_code: string }) {
+  // Remove any stale row with the same name but a different (wrong) INSEE code before upserting
+  await db.delete(communes).where(sql`name = ${values.name} AND insee_code != ${values.insee_code}`);
   const [row] = await db.insert(communes).values(values)
     .onConflictDoUpdate({ target: communes.insee_code, set: { name: values.name, zip_code: values.zip_code } })
     .returning();
