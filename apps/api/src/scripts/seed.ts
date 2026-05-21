@@ -5,6 +5,8 @@ import bcrypt from "bcryptjs";
 import { eq, sql } from "drizzle-orm";
 
 async function upsertCommune(values: { name: string; insee_code: string; zip_code: string }) {
+  // Remove any stale row with the same name but a different (wrong) INSEE code before upserting
+  await db.delete(communes).where(sql`name = ${values.name} AND insee_code != ${values.insee_code}`);
   const [row] = await db.insert(communes).values(values)
     .onConflictDoUpdate({ target: communes.insee_code, set: { name: values.name, zip_code: values.zip_code } })
     .returning();
@@ -57,7 +59,7 @@ async function seed() {
   const communeTours = await upsertCommune({ name: "Tours", insee_code: "37261", zip_code: "37000" });
   console.log(`✅ Commune: ${communeTours.name}`);
 
-  const mairieTR    = await upsertUser({ email: "mairie@tours.fr",        password_hash: pw, prenom: "Sophie",   nom: "Martin",   role: "mairie",      commune: "Tours" });
+  const mairieTR    = await upsertUser({ email: "mairie@tours.fr",        password_hash: pw, prenom: "Sophie",   nom: "Martin",   role: "admin",       commune: "Tours" });
   const instructeurTR = await upsertUser({ email: "instructeur@tours.fr", password_hash: pw, prenom: "Lucas",    nom: "Petit",    role: "instructeur", commune: "Tours" });
   const instr2TR    = await upsertUser({ email: "instructeur2@tours.fr",  password_hash: pw, prenom: "Isabelle", nom: "Morin",    role: "instructeur", commune: "Tours" });
   const citoyenTR1  = await upsertUser({ email: "citoyen@test.fr",        password_hash: pw, prenom: "Marie",    nom: "Dupont",   role: "citoyen",     commune: "Tours" });

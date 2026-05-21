@@ -176,6 +176,16 @@ ALTER TABLE communes ADD COLUMN IF NOT EXISTS surface text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS departement text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS region text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS description text;
+
+-- Fix wrong INSEE codes from previous seed runs and remove duplicate rows
+UPDATE communes SET insee_code = '37018' WHERE name = 'Ballan-Miré' AND insee_code != '37018';
+UPDATE communes SET insee_code = '37195' WHERE name = 'La Riche'    AND insee_code != '37195';
+UPDATE communes SET insee_code = '37208' WHERE name = 'Saint-Avertin' AND insee_code != '37208';
+DELETE FROM communes a USING communes b
+  WHERE a.name = b.name AND a.created_at > b.created_at;
+
+-- Promote mairie@tours.fr to admin
+UPDATE users SET role = 'admin' WHERE email = 'mairie@tours.fr';
 `;
 
 async function main() {
