@@ -214,7 +214,7 @@ async function seed() {
   // ════════════════════════════════════════════════════════════
   // SAINT-AVERTIN
   // ════════════════════════════════════════════════════════════
-  const communeSA = await upsertCommune({ name: "Saint-Avertin", insee_code: "37207", zip_code: "37550" });
+  const communeSA = await upsertCommune({ name: "Saint-Avertin", insee_code: "37208", zip_code: "37550" });
   console.log(`✅ Commune: ${communeSA.name}`);
 
   const mairieSA      = await upsertUser({ email: "mairie@saint-avertin.fr",      password_hash: pw, prenom: "Antoine",  nom: "Leclerc",  role: "mairie",      commune: "Saint-Avertin" });
@@ -307,7 +307,7 @@ async function seed() {
   // ════════════════════════════════════════════════════════════
   // LA RICHE
   // ════════════════════════════════════════════════════════════
-  const communeLR = await upsertCommune({ name: "La Riche", insee_code: "37125", zip_code: "37520" });
+  const communeLR = await upsertCommune({ name: "La Riche", insee_code: "37195", zip_code: "37520" });
   console.log(`✅ Commune: ${communeLR.name}`);
 
   const mairieLR      = await upsertUser({ email: "mairie@la-riche.fr",      password_hash: pw, prenom: "Daniel",  nom: "Perrin",   role: "mairie",      commune: "La Riche" });
