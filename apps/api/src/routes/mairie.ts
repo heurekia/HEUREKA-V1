@@ -1007,12 +1007,31 @@ mairieRouter.patch("/reglementation/zones/:id", async (req: AuthRequest, res) =>
   }
 });
 
+// Ray-casting point-in-polygon (flat-earth precision is sufficient for PLU zones)
+function pointInRing(px: number, py: number, ring: number[][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const [xi, yi] = ring[i]!, [xj, yj] = ring[j]!;
+    if (((yi! > py) !== (yj! > py)) && px < ((xj! - xi!) * (py - yi!) / (yj! - yi!) + xi!)) {
+      inside = !inside;
+    }
+  }
+  return inside;
+}
+
+// Returns the approximate centroid of a GeoJSON geometry (Polygon or MultiPolygon)
+function geomCentroid(geom: { type: string; coordinates: unknown }): [number, number] | null {
+  const rings: number[][][] = [];
+  if (geom.type === "Polygon") rings.push((geom.coordinates as number[][][])[0]!);
+  else if (geom.type === "MultiPolygon") (geom.coordinates as number[][][][]).forEach(p => rings.push(p[0]!));
+  if (!rings.length) return null;
+  let sumX = 0, sumY = 0, count = 0;
+  rings.forEach(r => r.forEach(([x, y]) => { sumX += x!; sumY += y!; count++; }));
+  return count ? [sumX / count, sumY / count] : null;
+}
+
 // ── Proxy APICarto GPU zones (évite le CORS côté navigateur) ─────────────────
 // GET /mairie/plu-zones?insee_code=37018 (or legacy ?commune=Ballan-Miré)
-// Proxy zone-urba GPU — affichage carte uniquement (pas de règlement).
-// Interroge zone-urba par géométrie de la commune (polygone simplifié ≤50 pts).
-// Aucune partition / document nécessaire : le GPU retourne toutes les zones
-// qui intersectent la géométrie fournie, quelque soit le type de PLU/PLUi.
 mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
   try {
     let inseeCode = (req.query.insee_code as string | undefined)?.trim();
@@ -1034,7 +1053,7 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
       }
     }
 
-    // Fetch commune contour
+    // Fetch full commune contour (used both for the query geometry and for server-side clipping)
     const lookupQuery = inseeCode
       ? `code=${encodeURIComponent(inseeCode)}`
       : `nom=${encodeURIComponent(communeName!)}`;
@@ -1045,23 +1064,22 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
     if (!geoR.ok) return res.status(502).json({ error: "Erreur geo.api.gouv.fr" });
     type GeoComm = { features?: Array<{ geometry?: { coordinates: number[][][] } }> };
     const geoJson = await geoR.json() as GeoComm;
-    const pts = geoJson.features?.[0]?.geometry?.coordinates[0];
-    if (!pts?.length) return res.status(404).json({ error: "Commune non trouvée" });
+    const fullRing = geoJson.features?.[0]?.geometry?.coordinates[0];
+    if (!fullRing?.length) return res.status(404).json({ error: "Commune non trouvée" });
 
-    // Simplify polygon to ≤50 points so the URL stays manageable.
-    // This preserves the commune shape well enough to exclude neighbouring communes
-    // (unlike a bounding box which bleeds across borders).
+    // Simplify ring to ≤50 pts for the query URL, keep the full ring for clipping
     const MAX_PTS = 50;
-    let ring = pts;
-    if (pts.length > MAX_PTS) {
-      const step = Math.ceil((pts.length - 1) / (MAX_PTS - 1));
-      ring = pts.filter((_, i) => i % step === 0);
-      if (ring[ring.length - 1] !== pts[pts.length - 1]) ring.push(pts[pts.length - 1]!);
+    let queryRing = fullRing;
+    if (fullRing.length > MAX_PTS) {
+      const step = Math.ceil((fullRing.length - 1) / (MAX_PTS - 1));
+      queryRing = fullRing.filter((_, i) => i % step === 0);
+      if (queryRing[queryRing.length - 1] !== fullRing[fullRing.length - 1]) {
+        queryRing.push(fullRing[fullRing.length - 1]!);
+      }
     }
-    const communeGeom = JSON.stringify({ type: "Polygon", coordinates: [ring] });
+    const communeGeom = JSON.stringify({ type: "Polygon", coordinates: [queryRing] });
 
-    // Query zone-urba directly by commune geometry — no partition/document lookup needed.
-    // Works for PLU, PLUi, POS, CC regardless of how the document is stored in the GPU.
+    // Query zone-urba by commune geometry — no partition needed
     const params = new URLSearchParams({ _limit: "1000" });
     params.set("geom", communeGeom);
     const zoneR = await fetch(
@@ -1072,18 +1090,24 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
       const body = await zoneR.text().catch(() => "");
       return res.status(502).json({ error: `Erreur APICarto zone-urba (HTTP ${zoneR.status})`, detail: body.slice(0, 300) });
     }
-    type ZoneFeature = { properties?: Record<string, unknown> };
+    type ZoneFeature = { properties?: Record<string, unknown>; geometry?: { type: string; coordinates: unknown } };
     const zoneJson = await zoneR.json() as { type?: string; features?: ZoneFeature[] };
     const all = zoneJson.features ?? [];
 
-    // Filter to this commune only using the codcom property (INSEE code on each feature).
-    // The GPU returns zones from neighbouring communes when geometries overlap.
-    // If codcom is present and matches, keep only those; otherwise fall back to all results.
-    let features = all;
-    if (inseeCode) {
-      const filtered = all.filter(f => String(f.properties?.codcom ?? "") === inseeCode);
-      if (filtered.length > 0) features = filtered;
-    }
+    // Server-side clipping: keep only zones whose centroid falls inside the commune polygon.
+    // codcom property is tried first (fast); centroid-in-polygon is the reliable fallback.
+    const inCommune = (f: ZoneFeature): boolean => {
+      // Try codcom property (INSEE on the feature) — works when GPU populates it
+      const codcom = String(f.properties?.codcom ?? "");
+      if (inseeCode && codcom && codcom === inseeCode) return true;
+      if (inseeCode && codcom && codcom !== inseeCode) return false;
+      // Fallback: centroid of zone geometry inside the full commune ring
+      if (!f.geometry) return true; // keep if no geometry info
+      const c = geomCentroid(f.geometry);
+      return c ? pointInRing(c[0], c[1], fullRing) : true;
+    };
+
+    const features = all.filter(inCommune);
 
     if (!features.length) {
       return res.status(404).json({ error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme" });
