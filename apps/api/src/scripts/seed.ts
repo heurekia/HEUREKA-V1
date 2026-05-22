@@ -15,7 +15,7 @@ async function upsertCommune(values: { name: string; insee_code: string; zip_cod
 
 async function upsertUser(values: { email: string; password_hash: string; prenom: string; nom: string; role: "admin" | "mairie" | "instructeur" | "citoyen"; commune?: string }) {
   const [row] = await db.insert(users).values(values)
-    .onConflictDoUpdate({ target: users.email, set: { prenom: values.prenom, nom: values.nom, role: values.role, commune: values.commune ?? null } })
+    .onConflictDoUpdate({ target: users.email, set: { password_hash: values.password_hash, prenom: values.prenom, nom: values.nom, role: values.role, commune: values.commune ?? null } })
     .returning();
   return row!;
 }
