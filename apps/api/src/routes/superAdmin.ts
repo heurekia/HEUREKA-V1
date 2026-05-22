@@ -56,6 +56,7 @@ superAdminRouter.get("/communes", async (_req, res) => {
         description: communes.description,
         epci_id: communes.epci_id,
         epci_name: epci.name,
+        instruction_mutualisee: communes.instruction_mutualisee,
       })
       .from(communes)
       .leftJoin(epci, eq(communes.epci_id, epci.id))
@@ -118,6 +119,7 @@ superAdminRouter.post("/communes", async (req, res) => {
       region?: string;
       description?: string;
       epci_id?: string;
+      instruction_mutualisee?: boolean;
     };
 
     if (!name || !insee_code || !zip_code) {
@@ -126,7 +128,7 @@ superAdminRouter.post("/communes", async (req, res) => {
 
     const [newCommune] = await db
       .insert(communes)
-      .values({ name, insee_code, zip_code, email, telephone, logo_url, population, surface, departement, region, description, epci_id })
+      .values({ name, insee_code, zip_code, email, telephone, logo_url, population, surface, departement, region, description, epci_id, instruction_mutualisee: false })
       .returning();
 
     res.status(201).json(newCommune);
@@ -152,6 +154,7 @@ superAdminRouter.patch("/communes/:id", async (req, res) => {
       region: string;
       description: string;
       epci_id: string | null;
+      instruction_mutualisee: boolean;
     }>;
 
     const [updated] = await db

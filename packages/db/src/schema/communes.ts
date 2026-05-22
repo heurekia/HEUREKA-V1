@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 export const communes = pgTable("communes", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -14,6 +14,7 @@ export const communes = pgTable("communes", {
   region: text("region"),
   description: text("description"),
   epci_id: uuid("epci_id"),
+  instruction_mutualisee: boolean("instruction_mutualisee").notNull().default(false),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

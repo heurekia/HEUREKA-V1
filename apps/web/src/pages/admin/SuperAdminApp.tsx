@@ -26,6 +26,7 @@ interface Commune {
   description: string | null;
   epci_id: string | null;
   epci_name: string | null;
+  instruction_mutualisee: boolean;
   user_count: number;
   dossier_count: number;
 }
@@ -661,7 +662,18 @@ function CommunesList() {
                   </td>
                   <td style={{ padding: "14px 16px", color: C.textMuted, fontSize: 13 }}>{c.insee_code}</td>
                   <td style={{ padding: "14px 16px", color: C.textMuted, fontSize: 13 }}>{c.zip_code ?? "—"}</td>
-                  <td style={{ padding: "14px 16px", color: C.textMuted, fontSize: 13 }}>{c.epci_name ?? "—"}</td>
+                  <td style={{ padding: "14px 16px", fontSize: 13 }}>
+                    {c.epci_name
+                      ? <div>
+                          <span style={{ color: C.text }}>{c.epci_name}</span>
+                          <div style={{ marginTop: 3 }}>
+                            {c.instruction_mutualisee
+                              ? <Badge label="Mutualisée" color={C.accent} bg={C.accentLight} />
+                              : <Badge label="Communale" color={C.textMuted} bg={C.bg} />}
+                          </div>
+                        </div>
+                      : <span style={{ color: C.textMuted }}>—</span>}
+                  </td>
                   <td style={{ padding: "14px 16px", color: C.textMuted, fontSize: 13, textAlign: "center" }}>{c.user_count}</td>
                   <td style={{ padding: "14px 16px", color: C.textMuted, fontSize: 13, textAlign: "center" }}>{c.dossier_count}</td>
                   <td style={{ padding: "14px 16px" }}><StatusBadge commune={c} /></td>
@@ -741,7 +753,7 @@ function CommuneDetail() {
   const [step1, setStep1] = useState({ name: "", insee_code: "", zip_code: "", departement: "", region: "" });
   const [step2, setStep2] = useState({ email: "", telephone: "", description: "" });
   const [step3, setStep3] = useState({ logo_url: "" });
-  const [step4, setStep4] = useState({ epci_id: "" });
+  const [step4, setStep4] = useState({ epci_id: "", instruction_mutualisee: false });
   const [newUser, setNewUser] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
   const [editingUser, setEditingUser] = useState<UserItem | null>(null);
   const [editUserForm, setEditUserForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
@@ -761,7 +773,7 @@ function CommuneDetail() {
         setStep1({ name: found.name, insee_code: found.insee_code, zip_code: found.zip_code ?? "", departement: found.departement ?? "", region: found.region ?? "" });
         setStep2({ email: found.email ?? "", telephone: found.telephone ?? "", description: found.description ?? "" });
         setStep3({ logo_url: found.logo_url ?? "" });
-        setStep4({ epci_id: found.epci_id ?? "" });
+        setStep4({ epci_id: found.epci_id ?? "", instruction_mutualisee: found.instruction_mutualisee ?? false });
 
         const users = await api.get<UserItem[]>(`/admin/users?commune=${encodeURIComponent(found.name)}`);
         setCommuneUsers(users.filter((u) => u.role !== "citoyen"));
@@ -828,7 +840,7 @@ function CommuneDetail() {
     try {
       const created = await api.post<Epci>("/admin/epci", newEpci);
       await api.patch(`/admin/communes/${id}`, { epci_id: created.id });
-      setStep4({ epci_id: created.id });
+      setStep4({ ...step4, epci_id: created.id });
       setToast({ msg: "Groupement créé et associé", type: "success" });
       setShowCreateEpci(false);
       setNewEpci({ name: "", siren: "", type: "CC" });
@@ -1004,13 +1016,32 @@ function CommuneDetail() {
           <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
             <h3 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 700, color: C.text }}>Groupement EPCI</h3>
             <Field label="Groupement">
-              <Select value={step4.epci_id} onChange={(v) => setStep4({ epci_id: v })}>
+              <Select value={step4.epci_id} onChange={(v) => setStep4({ ...step4, epci_id: v, instruction_mutualisee: v ? step4.instruction_mutualisee : false })}>
                 <option value="">— Aucun groupement —</option>
                 {epciList.map((e) => (
                   <option key={e.id} value={e.id}>{e.name} ({e.type})</option>
                 ))}
               </Select>
             </Field>
+
+            {step4.epci_id && (
+              <div
+                onClick={() => setStep4({ ...step4, instruction_mutualisee: !step4.instruction_mutualisee })}
+                style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", background: step4.instruction_mutualisee ? C.accentLight : C.bg, border: `1px solid ${step4.instruction_mutualisee ? C.accent : C.border}`, borderRadius: 10, cursor: "pointer", userSelect: "none" }}
+              >
+                <div style={{ width: 40, height: 22, borderRadius: 11, background: step4.instruction_mutualisee ? C.accent : C.border, position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
+                  <div style={{ position: "absolute", top: 3, left: step4.instruction_mutualisee ? 21 : 3, width: 16, height: 16, borderRadius: "50%", background: "white", transition: "left 0.2s" }} />
+                </div>
+                <div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Instruction mutualisée au groupement</div>
+                  <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>
+                    {step4.instruction_mutualisee
+                      ? "Les dossiers sont instruits par le service urbanisme du groupement."
+                      : "La commune conserve son propre service d'instruction."}
+                  </div>
+                </div>
+              </div>
+            )}
             <div>
               <button
                 onClick={() => setShowCreateEpci(!showCreateEpci)}
@@ -1050,7 +1081,7 @@ function CommuneDetail() {
                 ← Précédent
               </button>
               <button
-                onClick={() => save({ epci_id: step4.epci_id || null })}
+                onClick={() => save({ epci_id: step4.epci_id || null, instruction_mutualisee: step4.instruction_mutualisee })}
                 disabled={saving}
                 style={{ padding: "10px 24px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 700 }}
               >
@@ -1137,6 +1168,7 @@ function CommuneDetail() {
                 { label: "Téléphone", ok: !!commune.telephone, value: commune.telephone ?? "Non renseigné" },
                 { label: "Logo", ok: !!commune.logo_url, value: commune.logo_url ? "Configuré" : "Non configuré" },
                 { label: "Groupement EPCI", ok: !!commune.epci_id, value: commune.epci_name ?? "Non rattaché" },
+                { label: "Instruction", ok: true, value: commune.epci_id ? (commune.instruction_mutualisee ? "Mutualisée (groupement)" : "Communale (propre service)") : "Communale" },
                 { label: "Agents", ok: communeUsers.length > 0, value: `${communeUsers.length} agent(s)` },
               ].map((item) => (
                 <div key={item.label} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "10px 16px", background: item.ok ? C.greenBg : C.bg, borderRadius: 8, border: `1px solid ${item.ok ? "#A7F3D0" : C.border}` }}>
