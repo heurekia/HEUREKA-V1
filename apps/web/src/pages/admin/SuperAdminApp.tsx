@@ -1025,21 +1025,29 @@ function CommuneDetail() {
             </Field>
 
             {step4.epci_id && (
-              <div
-                onClick={() => setStep4({ ...step4, instruction_mutualisee: !step4.instruction_mutualisee })}
-                style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", background: step4.instruction_mutualisee ? C.accentLight : C.bg, border: `1px solid ${step4.instruction_mutualisee ? C.accent : C.border}`, borderRadius: 10, cursor: "pointer", userSelect: "none" }}
-              >
-                <div style={{ width: 40, height: 22, borderRadius: 11, background: step4.instruction_mutualisee ? C.accent : C.border, position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
-                  <div style={{ position: "absolute", top: 3, left: step4.instruction_mutualisee ? 21 : 3, width: 16, height: 16, borderRadius: "50%", background: "white", transition: "left 0.2s" }} />
-                </div>
-                <div>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: C.text }}>Instruction mutualisée au groupement</div>
-                  <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>
-                    {step4.instruction_mutualisee
-                      ? "Les dossiers sont instruits par le service urbanisme du groupement."
-                      : "La commune conserve son propre service d'instruction."}
-                  </div>
-                </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                <div style={{ fontSize: 13, fontWeight: 600, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.05em" }}>Service d'instruction</div>
+                {[
+                  { value: false, title: "Instruction communale", desc: "La commune gère son propre service urbanisme, indépendamment du groupement." },
+                  { value: true,  title: "Instruction mutualisée", desc: "Les dossiers sont instruits par le service urbanisme du groupement." },
+                ].map((opt) => {
+                  const active = step4.instruction_mutualisee === opt.value;
+                  return (
+                    <div
+                      key={String(opt.value)}
+                      onClick={() => setStep4({ ...step4, instruction_mutualisee: opt.value })}
+                      style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", background: active ? C.accentLight : C.bg, border: `1px solid ${active ? C.accent : C.border}`, borderRadius: 10, cursor: "pointer", userSelect: "none" }}
+                    >
+                      <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${active ? C.accent : C.border}`, background: active ? C.accent : "white", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        {active && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "white" }} />}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: active ? C.accent : C.text }}>{opt.title}</div>
+                        <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>{opt.desc}</div>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
             )}
             <div>
