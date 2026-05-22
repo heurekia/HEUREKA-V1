@@ -786,7 +786,7 @@ function CommuneDetail() {
 
   useEffect(() => { loadData(); }, [loadData]);
 
-  const save = async (data: Record<string, string | null | undefined>) => {
+  const save = async (data: Record<string, string | boolean | null | undefined>) => {
     if (!id) return;
     setSaving(true);
     try {
