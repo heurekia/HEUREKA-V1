@@ -190,11 +190,6 @@ CREATE TABLE IF NOT EXISTS epci (
 );
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS epci_id uuid REFERENCES epci(id) ON DELETE SET NULL;
 
--- Full reset of commune-linked data (seed repopulates immediately after)
-DELETE FROM zone_regulatory_rules;
-DELETE FROM zones;
-DELETE FROM communes;
-
 -- Promote mairie@tours.fr to admin
 UPDATE users SET role = 'admin' WHERE email = 'mairie@tours.fr';
 `;
