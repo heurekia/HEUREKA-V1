@@ -1,5 +1,6 @@
 import express from "express";
 import cors from "cors";
+import compression from "compression";
 import path from "path";
 import { fileURLToPath } from "url";
 import { publicRouter } from "./routes/public.js";
@@ -13,6 +14,7 @@ import { superAdminRouter } from "./routes/superAdmin.js";
 
 export const app = express();
 
+app.use(compression());
 app.use(cors({ origin: process.env.FRONTEND_URL ?? process.env.RAILWAY_STATIC_URL ?? "http://localhost:5173", credentials: true }));
 app.use(express.json({ limit: "50mb" }));
 
@@ -29,11 +31,21 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });
 });
 
-
-// ── Servir le frontend buildé en production ──
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const frontendDist = path.resolve(__dirname, "../../web/dist");
-app.use(express.static(frontendDist));
+
+// Hashed JS/CSS assets → cache 1 year
+app.use(express.static(frontendDist, {
+  maxAge: "1y",
+  immutable: true,
+  setHeaders(res, filePath) {
+    if (filePath.endsWith(".html")) {
+      res.setHeader("Cache-Control", "no-cache");
+    }
+  },
+}));
+
 app.get("*", (_req, res) => {
+  res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(frontendDist, "index.html"));
 });
