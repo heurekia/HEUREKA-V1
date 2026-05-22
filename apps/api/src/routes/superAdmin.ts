@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers } from "@heureka-v1/db";
-import { eq, sql, count, desc, and, isNull, isNotNull, ilike } from "drizzle-orm";
+import { communes, epci, users, dossiers, role_permissions } from "@heureka-v1/db";
+import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
 
@@ -285,6 +285,7 @@ superAdminRouter.get("/users", async (req, res) => {
         role: users.role,
         commune: users.commune,
         telephone: users.telephone,
+        role_config_id: users.role_config_id,
         created_at: users.created_at,
       })
       .from(users)
@@ -300,13 +301,14 @@ superAdminRouter.get("/users", async (req, res) => {
 
 superAdminRouter.post("/users", async (req, res) => {
   try {
-    const { email, prenom, nom, role, commune, telephone } = req.body as {
+    const { email, prenom, nom, role, commune, telephone, role_config_id } = req.body as {
       email?: string;
       prenom?: string;
       nom?: string;
       role?: string;
       commune?: string;
       telephone?: string;
+      role_config_id?: string;
     };
 
     if (!email || !prenom || !nom || !role) {
@@ -326,6 +328,7 @@ superAdminRouter.post("/users", async (req, res) => {
         commune,
         telephone,
         password_hash,
+        role_config_id: role_config_id ?? null,
       })
       .returning();
 
@@ -339,17 +342,18 @@ superAdminRouter.post("/users", async (req, res) => {
 superAdminRouter.patch("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { role, prenom, nom, commune, telephone } = req.body as Partial<{
+    const { role, prenom, nom, commune, telephone, role_config_id } = req.body as Partial<{
       role: "citoyen" | "mairie" | "instructeur" | "admin";
       prenom: string;
       nom: string;
       commune: string | null;
       telephone: string;
+      role_config_id: string | null;
     }>;
 
     const [updated] = await db
       .update(users)
-      .set({ role, prenom, nom, commune, telephone, updated_at: new Date() })
+      .set({ role, prenom, nom, commune, telephone, role_config_id, updated_at: new Date() })
       .where(eq(users.id, id))
       .returning();
 
@@ -365,6 +369,106 @@ superAdminRouter.delete("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
     await db.delete(users).where(eq(users.id, id));
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Roles ───────────────────────────────────────────────────────────────────
+superAdminRouter.get("/roles", async (_req, res) => {
+  try {
+    const rows = await db.select().from(role_permissions).orderBy(asc(role_permissions.label));
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.post("/roles", async (req, res) => {
+  try {
+    const { name, label, base_role, description, color, permissions } = req.body as {
+      name?: string;
+      label?: string;
+      base_role?: string;
+      description?: string;
+      color?: string;
+      permissions?: string[];
+    };
+
+    if (!name || !label) {
+      return res.status(400).json({ error: "name et label sont requis" });
+    }
+
+    const [newRole] = await db
+      .insert(role_permissions)
+      .values({
+        name,
+        label,
+        base_role: base_role ?? "instructeur",
+        description: description ?? null,
+        color: color ?? "#4F46E5",
+        permissions: permissions ?? [],
+        is_system: false,
+      })
+      .returning();
+
+    res.status(201).json(newRole);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.patch("/roles/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { label, description, color, permissions, base_role } = req.body as Partial<{
+      label: string;
+      description: string | null;
+      color: string;
+      permissions: string[];
+      base_role: string;
+    }>;
+
+    const [existing] = await db.select().from(role_permissions).where(eq(role_permissions.id, id));
+    if (!existing) return res.status(404).json({ error: "Rôle introuvable" });
+
+    const updateData: Record<string, unknown> = { updated_at: new Date() };
+    if (label !== undefined) updateData.label = label;
+    if (description !== undefined) updateData.description = description;
+    if (color !== undefined) updateData.color = color;
+    if (permissions !== undefined) updateData.permissions = permissions;
+    // Can only change base_role on non-system roles
+    if (base_role !== undefined && !existing.is_system) updateData.base_role = base_role;
+
+    const [updated] = await db
+      .update(role_permissions)
+      .set(updateData)
+      .where(eq(role_permissions.id, id))
+      .returning();
+
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.delete("/roles/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const [existing] = await db.select().from(role_permissions).where(eq(role_permissions.id, id));
+    if (!existing) return res.status(404).json({ error: "Rôle introuvable" });
+
+    if (existing.is_system) {
+      return res.status(400).json({ error: "Impossible de supprimer un rôle système" });
+    }
+
+    await db.delete(role_permissions).where(eq(role_permissions.id, id));
     res.json({ success: true });
   } catch (err) {
     console.error(err);

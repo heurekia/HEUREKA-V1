@@ -1,6 +1,6 @@
 import "dotenv/config";
 import { db } from "../db.js";
-import { users, communes, zones, zone_regulatory_rules, dossiers, dossier_messages } from "@heureka-v1/db";
+import { users, communes, zones, zone_regulatory_rules, dossiers, dossier_messages, role_permissions } from "@heureka-v1/db";
 import bcrypt from "bcryptjs";
 import { eq } from "drizzle-orm";
 
@@ -43,10 +43,50 @@ async function insertMessagesIfNone(dossierId: string, messages: Array<{ from_us
   }
 }
 
+async function seedRoles() {
+  const systemRoles = [
+    {
+      name: "responsable_urbanisme",
+      label: "Responsable urbanisme",
+      base_role: "mairie",
+      color: "#4F46E5",
+      is_system: true,
+      permissions: ["dashboard","dossiers.read","dossiers.instruct","dossiers.decision","messagerie","documents","calendrier","zones.read","zones.edit","stats","utilisateurs","parametres"],
+      description: "Responsable du service urbanisme avec accès complet",
+    },
+    {
+      name: "instructeur",
+      label: "Instructeur",
+      base_role: "instructeur",
+      color: "#0891B2",
+      is_system: true,
+      permissions: ["dashboard","dossiers.read","dossiers.instruct","messagerie","documents","calendrier","zones.read","stats"],
+      description: "Instructeur en charge de l'instruction des dossiers",
+    },
+    {
+      name: "agent_administratif",
+      label: "Agent administratif",
+      base_role: "mairie",
+      color: "#7C3AED",
+      is_system: true,
+      permissions: ["dashboard","dossiers.read","messagerie","documents","calendrier","stats"],
+      description: "Agent administratif avec accès en lecture",
+    },
+  ];
+
+  for (const r of systemRoles) {
+    await db.insert(role_permissions).values(r).onConflictDoNothing();
+    console.log(`✅ Role: ${r.label}`);
+  }
+}
+
 async function seed() {
   console.log("🌱 Seeding HEUREKA V1 database...\n");
 
   const pw = await bcrypt.hash("Heureka2024!", 10);
+
+  // ── System Roles ──
+  await seedRoles();
 
   // ── Admin ──
   const admin = await upsertUser({ email: "admin@heureka.fr", password_hash: pw, prenom: "Evi", nom: "DELETANG", role: "admin" });

@@ -193,6 +193,20 @@ ALTER TABLE communes ADD COLUMN IF NOT EXISTS instruction_mutualisee boolean NOT
 
 -- Promote mairie@tours.fr to admin
 UPDATE users SET role = 'admin' WHERE email = 'mairie@tours.fr';
+
+CREATE TABLE IF NOT EXISTS role_permissions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL UNIQUE,
+  label text NOT NULL,
+  base_role text NOT NULL DEFAULT 'instructeur',
+  description text,
+  color text NOT NULL DEFAULT '#4F46E5',
+  permissions jsonb NOT NULL DEFAULT '[]',
+  is_system boolean NOT NULL DEFAULT false,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role_config_id uuid REFERENCES role_permissions(id) ON DELETE SET NULL;
 `;
 
 async function main() {
