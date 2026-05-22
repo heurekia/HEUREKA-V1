@@ -46,11 +46,10 @@ async function insertMessagesIfNone(dossierId: string, messages: Array<{ from_us
 async function seed() {
   console.log("🌱 Seeding HEUREKA V1 database...\n");
 
-  const pw = await bcrypt.hash("password123", 10);
-  const adminPw = await bcrypt.hash("admin123", 10);
+  const pw = await bcrypt.hash("Heureka2024!", 10);
 
   // ── Admin ──
-  const admin = await upsertUser({ email: "admin@heureka.fr", password_hash: adminPw, prenom: "Admin", nom: "Heureka", role: "admin" });
+  const admin = await upsertUser({ email: "admin@heureka.fr", password_hash: pw, prenom: "Admin", nom: "Heureka", role: "admin" });
   console.log(`✅ Admin: ${admin.email}`);
 
   // ════════════════════════════════════════════════════════════
