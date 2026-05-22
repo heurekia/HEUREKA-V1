@@ -27,7 +27,7 @@ function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="flex items-center justify-center min-h-screen"><div className="animate-spin w-8 h-8 border-4 border-heureka-600 border-t-transparent rounded-full" /></div>;
   if (user) {
-    const redirect = user.role === "mairie" || user.role === "instructeur" ? "/mairie" : "/citoyen";
+    const redirect = user.role === "citoyen" ? "/citoyen" : "/mairie";
     return <Navigate to={redirect} replace />;
   }
   return <>{children}</>;
