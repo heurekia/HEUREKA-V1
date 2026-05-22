@@ -200,11 +200,13 @@ function Input({ value, onChange, placeholder, type = "text", disabled, readOnly
     onChange(type === "tel" ? formatTel(raw) : raw);
   };
 
+  const displayValue = type === "tel" ? formatTel(value) : value;
+
   return (
     <div style={{ position: "relative" }}>
       <input
         type={type === "tel" ? "tel" : type}
-        value={value}
+        value={displayValue}
         onChange={e => handleChange(e.target.value)}
         placeholder={placeholder ?? defaultPlaceholder}
         disabled={disabled}

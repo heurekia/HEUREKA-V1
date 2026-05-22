@@ -1399,7 +1399,8 @@ function CommuneGeneralTab({ commune, isAdmin, onInseeUpdated }: { commune: stri
   };
 
   const inp = (label: string, field: keyof CommuneData, readOnly = false, type = "text") => {
-    const val = (form[field] as string) ?? "";
+    const raw = (form[field] as string) ?? "";
+    const val = type === "tel" ? formatTelInp(raw) : raw;
     const editable = isAdmin && !readOnly;
     const status = editable ? validateInp(type, val) : null;
     const borderColor = status === "valid" ? "#10B981" : status === "invalid" ? "#EF4444" : "#E2E8F0";
