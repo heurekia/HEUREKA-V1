@@ -14,16 +14,12 @@ superAdminRouter.use(requireRole("admin"));
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 superAdminRouter.get("/dashboard", async (_req, res) => {
   try {
-    const [communeCount] = await db.select({ count: count() }).from(communes);
-    const [agentCount] = await db
-      .select({ count: count() })
-      .from(users)
-      .where(sql`role IN ('mairie', 'instructeur', 'admin') AND commune IS NOT NULL`);
-    const [dossierCount] = await db
-      .select({ count: count() })
-      .from(dossiers)
-      .where(sql`status NOT IN ('accepte', 'refuse', 'brouillon')`);
-    const [epciCount] = await db.select({ count: count() }).from(epci);
+    const [[communeCount], [agentCount], [dossierCount], [epciCount]] = await Promise.all([
+      db.select({ count: count() }).from(communes),
+      db.select({ count: count() }).from(users).where(sql`role IN ('mairie', 'instructeur', 'admin') AND commune IS NOT NULL`),
+      db.select({ count: count() }).from(dossiers).where(sql`status NOT IN ('accepte', 'refuse', 'brouillon')`),
+      db.select({ count: count() }).from(epci),
+    ]);
 
     res.json({
       communes: Number(communeCount?.count ?? 0),
@@ -40,51 +36,43 @@ superAdminRouter.get("/dashboard", async (_req, res) => {
 // ─── Communes ────────────────────────────────────────────────────────────────
 superAdminRouter.get("/communes", async (_req, res) => {
   try {
-    const rows = await db
-      .select({
-        id: communes.id,
-        name: communes.name,
-        insee_code: communes.insee_code,
-        zip_code: communes.zip_code,
-        email: communes.email,
-        telephone: communes.telephone,
-        logo_url: communes.logo_url,
-        population: communes.population,
-        surface: communes.surface,
-        departement: communes.departement,
-        region: communes.region,
-        description: communes.description,
-        epci_id: communes.epci_id,
-        epci_name: epci.name,
-        instruction_mutualisee: communes.instruction_mutualisee,
-      })
-      .from(communes)
-      .leftJoin(epci, eq(communes.epci_id, epci.id))
-      .orderBy(communes.name);
-
-    // Get user counts per commune
-    const userCounts = await db
-      .select({
-        commune: users.commune,
-        user_count: count(),
-      })
-      .from(users)
-      .where(sql`role IN ('mairie', 'instructeur')`)
-      .groupBy(users.commune);
+    const [rows, userCounts, dossierCounts] = await Promise.all([
+      db
+        .select({
+          id: communes.id,
+          name: communes.name,
+          insee_code: communes.insee_code,
+          zip_code: communes.zip_code,
+          email: communes.email,
+          telephone: communes.telephone,
+          logo_url: communes.logo_url,
+          population: communes.population,
+          surface: communes.surface,
+          departement: communes.departement,
+          region: communes.region,
+          description: communes.description,
+          epci_id: communes.epci_id,
+          epci_name: epci.name,
+          instruction_mutualisee: communes.instruction_mutualisee,
+        })
+        .from(communes)
+        .leftJoin(epci, eq(communes.epci_id, epci.id))
+        .orderBy(communes.name),
+      db
+        .select({ commune: users.commune, user_count: count() })
+        .from(users)
+        .where(sql`role IN ('mairie', 'instructeur')`)
+        .groupBy(users.commune),
+      db
+        .select({ commune: dossiers.commune, dossier_count: count() })
+        .from(dossiers)
+        .groupBy(dossiers.commune),
+    ]);
 
     const userCountMap: Record<string, number> = {};
     for (const uc of userCounts) {
       if (uc.commune) userCountMap[uc.commune] = Number(uc.user_count);
     }
-
-    // Get dossier counts per commune
-    const dossierCounts = await db
-      .select({
-        commune: dossiers.commune,
-        dossier_count: count(),
-      })
-      .from(dossiers)
-      .groupBy(dossiers.commune);
 
     const dossierCountMap: Record<string, number> = {};
     for (const dc of dossierCounts) {
