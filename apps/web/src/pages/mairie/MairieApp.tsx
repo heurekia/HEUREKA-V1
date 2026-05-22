@@ -1389,7 +1389,7 @@ function CommuneGeneralTab({ commune, isAdmin, onInseeUpdated }: { commune: stri
   const validateInp = (type: string, val: string): "valid" | "invalid" | null => {
     if (!val) return null;
     if (type === "email") return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(val) ? "valid" : "invalid";
-    if (type === "tel") return /^(\+33|0033)?[1-9]\d{8}$/.test(val.replace(/[\s.()-]/g, "")) ? "valid" : "invalid";
+    if (type === "tel") return /^(0[1-9]\d{8}|(\+33|0033)[1-9]\d{8})$/.test(val.replace(/[\s.()-]/g, "")) ? "valid" : "invalid";
     return null;
   };
   const formatTelInp = (raw: string) => {

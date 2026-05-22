@@ -170,7 +170,7 @@ function validateField(type: string, value: string): "valid" | "invalid" | null 
   if (type === "email") return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value) ? "valid" : "invalid";
   if (type === "tel") {
     const digits = value.replace(/[\s.()-]/g, "");
-    return /^(\+33|0033)?[1-9]\d{8}$/.test(digits) ? "valid" : "invalid";
+    return /^(0[1-9]\d{8}|(\+33|0033)[1-9]\d{8})$/.test(digits) ? "valid" : "invalid";
   }
   return null;
 }
