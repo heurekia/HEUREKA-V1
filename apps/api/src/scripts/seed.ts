@@ -2,15 +2,15 @@ import "dotenv/config";
 import { db } from "../db.js";
 import { users, communes, zones, zone_regulatory_rules, dossiers, dossier_messages } from "@heureka-v1/db";
 import bcrypt from "bcryptjs";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 async function upsertCommune(values: { name: string; insee_code: string; zip_code: string }) {
-  // Remove any stale row with the same name but a different (wrong) INSEE code before upserting
-  await db.delete(communes).where(sql`name = ${values.name} AND insee_code != ${values.insee_code}`);
-  const [row] = await db.insert(communes).values(values)
-    .onConflictDoUpdate({ target: communes.insee_code, set: { name: values.name, zip_code: values.zip_code } })
+  const [inserted] = await db.insert(communes).values(values)
+    .onConflictDoNothing()
     .returning();
-  return row!;
+  if (inserted) return inserted;
+  const [existing] = await db.select().from(communes).where(eq(communes.insee_code, values.insee_code));
+  return existing!;
 }
 
 async function upsertUser(values: { email: string; password_hash: string; prenom: string; nom: string; role: "admin" | "mairie" | "instructeur" | "citoyen"; commune?: string }) {
