@@ -177,13 +177,46 @@ ALTER TABLE communes ADD COLUMN IF NOT EXISTS departement text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS region text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS description text;
 
--- Full reset of commune-linked data (seed repopulates immediately after)
-DELETE FROM zone_regulatory_rules;
-DELETE FROM zones;
-DELETE FROM communes;
+CREATE TABLE IF NOT EXISTS epci (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  siren text UNIQUE,
+  type text NOT NULL DEFAULT 'CC',
+  departement text,
+  region text,
+  logo_url text,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS epci_id uuid REFERENCES epci(id) ON DELETE SET NULL;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS instruction_mutualisee boolean NOT NULL DEFAULT false;
 
 -- Promote mairie@tours.fr to admin
 UPDATE users SET role = 'admin' WHERE email = 'mairie@tours.fr';
+
+CREATE TABLE IF NOT EXISTS role_permissions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL UNIQUE,
+  label text NOT NULL,
+  base_role text NOT NULL DEFAULT 'instructeur',
+  description text,
+  color text NOT NULL DEFAULT '#4F46E5',
+  permissions jsonb NOT NULL DEFAULT '[]',
+  is_system boolean NOT NULL DEFAULT false,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS role_config_id uuid REFERENCES role_permissions(id) ON DELETE SET NULL;
+
+-- Performance indexes
+CREATE INDEX IF NOT EXISTS idx_users_commune ON users(commune);
+CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);
+CREATE INDEX IF NOT EXISTS idx_dossiers_commune ON dossiers(commune);
+CREATE INDEX IF NOT EXISTS idx_dossiers_status ON dossiers(status);
+CREATE INDEX IF NOT EXISTS idx_dossiers_user_id ON dossiers(user_id);
+CREATE INDEX IF NOT EXISTS idx_dossiers_instructeur_id ON dossiers(instructeur_id);
+CREATE INDEX IF NOT EXISTS idx_zones_commune_id ON zones(commune_id);
+CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 `;
 
 async function main() {

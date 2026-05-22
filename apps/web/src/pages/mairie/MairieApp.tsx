@@ -1335,6 +1335,11 @@ type CommuneData = {
 type StaffUser = {
   id: string; email: string; prenom: string; nom: string;
   role: string; commune: string | null; telephone: string | null; created_at: string;
+  role_config_id: string | null;
+};
+
+type RoleConfig = {
+  id: string; label: string; base_role: string; color: string; permissions: string[];
 };
 
 type InseeCandidate = { nom: string; insee: string; zip: string | null; departement: string | null; region: string | null };
@@ -1386,17 +1391,52 @@ function CommuneGeneralTab({ commune, isAdmin, onInseeUpdated }: { commune: stri
 
   if (loading) return <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>;
 
-  const inp = (label: string, field: keyof CommuneData, readOnly = false) => (
-    <div key={field}>
-      <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>{label}</div>
-      <input
-        value={(form[field] as string) ?? ""}
-        onChange={e => !readOnly && isAdmin && setForm(f => ({ ...f, [field]: e.target.value }))}
-        readOnly={readOnly || !isAdmin}
-        style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", background: (!isAdmin || readOnly) ? "#F8FAFC" : "white", cursor: (!isAdmin || readOnly) ? "default" : "text" }}
-      />
-    </div>
-  );
+  const validateInp = (type: string, val: string): "valid" | "invalid" | null => {
+    if (!val) return null;
+    if (type === "email") return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(val) ? "valid" : "invalid";
+    if (type === "tel") return /^(0[1-9]\d{8}|(\+33|0033)[1-9]\d{8})$/.test(val.replace(/[\s.()-]/g, "")) ? "valid" : "invalid";
+    return null;
+  };
+  const formatTelInp = (raw: string) => {
+    const d = raw.replace(/[^\d+]/g, "");
+    if (d.startsWith("0") && d.length <= 10) return d.replace(/(\d{2})(?=\d)/g, "$1 ").trim();
+    return raw;
+  };
+
+  const inp = (label: string, field: keyof CommuneData, readOnly = false, type = "text") => {
+    const raw = (form[field] as string) ?? "";
+    const val = type === "tel" ? formatTelInp(raw) : raw;
+    const editable = isAdmin && !readOnly;
+    const status = editable ? validateInp(type, val) : null;
+    const borderColor = status === "valid" ? "#10B981" : status === "invalid" ? "#EF4444" : "#E2E8F0";
+    return (
+      <div key={field}>
+        <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>{label}</div>
+        <div style={{ position: "relative" as const }}>
+          <input
+            type={type === "tel" ? "tel" : type}
+            value={val}
+            onChange={e => editable && setForm(f => ({ ...f, [field]: type === "tel" ? formatTelInp(e.target.value) : e.target.value }))}
+            readOnly={!editable}
+            placeholder={type === "email" ? "mairie@commune.fr" : type === "tel" ? "06 12 34 56 78" : undefined}
+            style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", paddingRight: status ? 28 : 12, border: `1px solid ${borderColor}`, borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", background: !editable ? "#F8FAFC" : "white", cursor: !editable ? "default" : "text", transition: "border-color 0.15s" }}
+            onFocus={e => { if (editable) e.target.style.borderColor = status === "invalid" ? "#EF4444" : "#4F46E5"; }}
+            onBlur={e => { e.target.style.borderColor = borderColor; }}
+          />
+          {status && (
+            <span style={{ position: "absolute" as const, right: 8, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: status === "valid" ? "#10B981" : "#EF4444", pointerEvents: "none" as const }}>
+              {status === "valid" ? "✓" : "✕"}
+            </span>
+          )}
+        </div>
+        {status === "invalid" && (
+          <div style={{ fontSize: 11, color: "#EF4444", marginTop: 3 }}>
+            {type === "email" ? "Format invalide — ex : mairie@commune.fr" : "Format invalide — ex : 06 12 34 56 78"}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1467,8 +1507,8 @@ function CommuneGeneralTab({ commune, isAdmin, onInseeUpdated }: { commune: stri
           {inp("Code postal", "zip_code")}
           {inp("Population", "population")}
           {inp("Surface", "surface")}
-          {inp("Email contact urbanisme", "email")}
-          {inp("Téléphone", "telephone")}
+          {inp("Email contact urbanisme", "email", false, "email")}
+          {inp("Téléphone", "telephone", false, "tel")}
         </div>
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Description / Contexte</div>
@@ -1504,13 +1544,14 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
   const [showAddModal, setShowAddModal] = useState(false);
-  const [addForm, setAddForm] = useState({ prenom: "", nom: "", email: "", role: "instructeur", telephone: "" });
+  const [addForm, setAddForm] = useState({ prenom: "", nom: "", email: "", role: "instructeur", telephone: "", role_config_id: "" });
   const [addError, setAddError] = useState("");
   const [addLoading, setAddLoading] = useState(false);
   const [addedPw, setAddedPw] = useState("");
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [editRole, setEditRole] = useState("");
+  const [editRoleConfigId, setEditRoleConfigId] = useState("");
   const [deleteId, setDeleteId] = useState<string | null>(null);
+  const [roleConfigs, setRoleConfigs] = useState<RoleConfig[]>([]);
 
   const load = () => {
     setLoading(true);
@@ -1521,14 +1562,28 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   };
   useEffect(() => { load(); }, [commune]);
 
+  useEffect(() => {
+    api.get<RoleConfig[]>("/admin/roles").then(setRoleConfigs).catch(() => {});
+  }, []);
+
   const filtered = userList.filter(u => `${u.prenom} ${u.nom} ${u.email}`.toLowerCase().includes(search.toLowerCase()));
 
   const addUser = async () => {
     setAddError("");
-    if (!addForm.prenom || !addForm.nom || !addForm.email || !addForm.role) { setAddError("Tous les champs sont requis."); return; }
+    if (!addForm.prenom || !addForm.nom || !addForm.email) { setAddError("Prénom, nom et email sont requis."); return; }
+    if (!addForm.role_config_id && !addForm.role) { setAddError("Sélectionnez un rôle."); return; }
     setAddLoading(true);
     try {
-      await api.post(`/mairie/admin/users?commune=${encodeURIComponent(commune)}`, addForm);
+      const selectedConfig = roleConfigs.find(rc => rc.id === addForm.role_config_id);
+      const role = selectedConfig ? selectedConfig.base_role : addForm.role;
+      await api.post(`/mairie/admin/users?commune=${encodeURIComponent(commune)}`, {
+        prenom: addForm.prenom,
+        nom: addForm.nom,
+        email: addForm.email,
+        telephone: addForm.telephone,
+        role,
+        role_config_id: addForm.role_config_id || null,
+      });
       setAddedPw("Heureka2024!");
       load();
     } catch (e: unknown) {
@@ -1537,7 +1592,9 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   };
 
   const saveRole = async (id: string) => {
-    await api.patch(`/mairie/admin/users/${id}`, { role: editRole });
+    const selectedConfig = roleConfigs.find(rc => rc.id === editRoleConfigId);
+    const role = selectedConfig ? selectedConfig.base_role : "instructeur";
+    await api.patch(`/mairie/admin/users/${id}`, { role, role_config_id: editRoleConfigId || null });
     setEditingId(null);
     load();
   };
@@ -1550,6 +1607,22 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
 
   const ROLE_LABELS: Record<string, string> = { admin: "Admin", mairie: "Mairie", instructeur: "Instructeur" };
   const ROLE_COLORS: Record<string, string> = { admin: "#DC2626", mairie: "#4F46E5", instructeur: "#0891B2" };
+
+  const getUserRoleLabel = (u: StaffUser) => {
+    if (u.role_config_id) {
+      const config = roleConfigs.find(rc => rc.id === u.role_config_id);
+      if (config) return config.label;
+    }
+    return ROLE_LABELS[u.role] ?? u.role;
+  };
+
+  const getUserRoleColor = (u: StaffUser) => {
+    if (u.role_config_id) {
+      const config = roleConfigs.find(rc => rc.id === u.role_config_id);
+      if (config) return config.color;
+    }
+    return ROLE_COLORS[u.role] ?? "#94a3b8";
+  };
 
   const initials = (u: StaffUser) => `${u.prenom[0] ?? ""}${u.nom[0] ?? ""}`.toUpperCase();
 
@@ -1571,7 +1644,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
         <input value={search} onChange={e => setSearch(e.target.value)} placeholder="Rechercher un utilisateur…"
           style={{ flex: 1, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
         {isAdmin && (
-          <button onClick={() => { setShowAddModal(true); setAddedPw(""); setAddError(""); setAddForm({ prenom: "", nom: "", email: "", role: "instructeur", telephone: "" }); }}
+          <button onClick={() => { setShowAddModal(true); setAddedPw(""); setAddError(""); setAddForm({ prenom: "", nom: "", email: "", role: "instructeur", telephone: "", role_config_id: "" }); }}
             style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" }}>
             + Ajouter un agent
           </button>
@@ -1606,22 +1679,23 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                 <td style={{ padding: "12px 16px" }}>
                   {isAdmin && editingId === u.id ? (
                     <div style={{ display: "flex", gap: 4 }}>
-                      <select value={editRole} onChange={e => setEditRole(e.target.value)}
-                        style={{ padding: "4px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12 }}>
-                        {["mairie", "instructeur", "admin"].map(r => <option key={r} value={r}>{ROLE_LABELS[r]}</option>)}
+                      <select value={editRoleConfigId} onChange={e => setEditRoleConfigId(e.target.value)}
+                        style={{ padding: "4px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12, maxWidth: 160 }}>
+                        <option value="">— Sélectionner —</option>
+                        {roleConfigs.map(rc => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
                       </select>
                       <button onClick={() => saveRole(u.id)} style={{ padding: "4px 8px", background: "#4F46E5", color: "white", border: "none", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>✓</button>
                       <button onClick={() => setEditingId(null)} style={{ padding: "4px 8px", background: "#F1F5F9", color: "#64748b", border: "none", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>✕</button>
                     </div>
                   ) : (
-                    <span style={{ background: `${ROLE_COLORS[u.role] ?? "#94a3b8"}18`, color: ROLE_COLORS[u.role] ?? "#94a3b8", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 8px", border: `1px solid ${ROLE_COLORS[u.role] ?? "#94a3b8"}33` }}>{ROLE_LABELS[u.role] ?? u.role}</span>
+                    <span style={{ background: `${getUserRoleColor(u)}18`, color: getUserRoleColor(u), fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 8px", border: `1px solid ${getUserRoleColor(u)}33` }}>{getUserRoleLabel(u)}</span>
                   )}
                 </td>
                 <td style={{ padding: "12px 16px", fontSize: 12, color: "#64748b" }}>{u.telephone ?? "—"}</td>
                 {isAdmin && (
                   <td style={{ padding: "12px 16px" }}>
                     <div style={{ display: "flex", gap: 6 }}>
-                      <button onClick={() => { setEditingId(u.id); setEditRole(u.role); }}
+                      <button onClick={() => { setEditingId(u.id); setEditRoleConfigId(u.role_config_id ?? ""); }}
                         style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>Rôle</button>
                       {u.id !== currentUserId && (
                         <button onClick={() => setDeleteId(u.id)}
@@ -1665,22 +1739,32 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                 </div>
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Email</div>
-                  <input type="email" value={addForm.email} onChange={e => setAddForm(f => ({ ...f, email: e.target.value }))}
-                    style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
+                  <div style={{ position: "relative" as const }}>
+                    <input type="email" value={addForm.email} onChange={e => setAddForm(f => ({ ...f, email: e.target.value }))}
+                      placeholder="agent@commune.fr"
+                      style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", paddingRight: addForm.email ? 28 : 12, border: `1px solid ${addForm.email ? (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(addForm.email) ? "#10B981" : "#EF4444") : "#E2E8F0"}`, borderRadius: 8, fontSize: 13, outline: "none" }}
+                      onFocus={e => { e.target.style.borderColor = addForm.email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(addForm.email) ? "#EF4444" : "#4F46E5"; }}
+                      onBlur={e => { e.target.style.borderColor = addForm.email ? (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(addForm.email) ? "#10B981" : "#EF4444") : "#E2E8F0"; }} />
+                    {addForm.email && <span style={{ position: "absolute" as const, right: 8, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(addForm.email) ? "#10B981" : "#EF4444" }}>{/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(addForm.email) ? "✓" : "✕"}</span>}
+                  </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
                   <div>
                     <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Rôle</div>
-                    <select value={addForm.role} onChange={e => setAddForm(f => ({ ...f, role: e.target.value }))}
+                    <select value={addForm.role_config_id} onChange={e => {
+                      const rc = roleConfigs.find(r => r.id === e.target.value);
+                      setAddForm(f => ({ ...f, role_config_id: e.target.value, role: rc ? rc.base_role : "instructeur" }));
+                    }}
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", background: "white" }}>
-                      <option value="instructeur">Instructeur</option>
-                      <option value="mairie">Mairie</option>
-                      <option value="admin">Admin</option>
+                      <option value="">— Sélectionner —</option>
+                      {roleConfigs.map(rc => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
                     </select>
                   </div>
                   <div>
                     <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Téléphone</div>
-                    <input value={addForm.telephone} onChange={e => setAddForm(f => ({ ...f, telephone: e.target.value }))}
+                    <input type="tel" value={addForm.telephone}
+                      placeholder="06 12 34 56 78"
+                      onChange={e => { const d = e.target.value.replace(/[^\d+]/g, ""); const fmt = d.startsWith("0") && d.length <= 10 ? d.replace(/(\d{2})(?=\d)/g, "$1 ").trim() : e.target.value; setAddForm(f => ({ ...f, telephone: fmt })); }}
                       style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
                   </div>
                 </div>

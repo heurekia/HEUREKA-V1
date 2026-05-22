@@ -12,6 +12,7 @@ export const users = pgTable("users", {
   commune: text("commune"),
   telephone: text("telephone"),
   avatar_url: text("avatar_url"),
+  role_config_id: uuid("role_config_id"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -354,6 +354,7 @@ mairieRouter.get("/admin/users", async (req: AuthRequest, res) => {
     const rows = await db.select({
       id: users.id, email: users.email, prenom: users.prenom, nom: users.nom,
       role: users.role, commune: users.commune, telephone: users.telephone,
+      role_config_id: users.role_config_id,
       created_at: users.created_at,
     }).from(users).where(ilike(users.commune, communeName));
     res.json(rows);
@@ -367,7 +368,7 @@ mairieRouter.get("/admin/users", async (req: AuthRequest, res) => {
 mairieRouter.post("/admin/users", requireRole("admin"), async (req: AuthRequest, res) => {
   try {
     const communeName = (req.query.commune as string ?? "").trim();
-    const { email, prenom, nom, role, telephone } = req.body as Record<string, string | undefined>;
+    const { email, prenom, nom, role, telephone, role_config_id } = req.body as Record<string, string | undefined>;
     if (!email || !prenom || !nom || !role) return res.status(400).json({ error: "email, prenom, nom, role requis" });
     const validRoles = ["mairie", "instructeur", "admin"];
     if (!validRoles.includes(role)) return res.status(400).json({ error: "Rôle invalide (mairie | instructeur | admin)" });
@@ -380,7 +381,8 @@ mairieRouter.post("/admin/users", requireRole("admin"), async (req: AuthRequest,
       role: role as "mairie" | "instructeur" | "admin",
       commune: communeName || null, telephone: telephone ?? null,
       password_hash: hash,
-    }).returning({ id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, role: users.role, commune: users.commune });
+      role_config_id: role_config_id ?? null,
+    }).returning({ id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, role: users.role, commune: users.commune, role_config_id: users.role_config_id });
     res.status(201).json(newUser);
   } catch (err) {
     console.error(err);
@@ -392,7 +394,7 @@ mairieRouter.post("/admin/users", requireRole("admin"), async (req: AuthRequest,
 mairieRouter.patch("/admin/users/:id", requireRole("admin"), async (req: AuthRequest, res) => {
   try {
     const userId = req.params.id as string;
-    const { role, prenom, nom, telephone } = req.body as Record<string, string | undefined>;
+    const { role, prenom, nom, telephone, role_config_id } = req.body as Record<string, string | undefined>;
     const validRoles = ["mairie", "instructeur", "admin", "citoyen"];
     if (role && !validRoles.includes(role)) return res.status(400).json({ error: "Rôle invalide" });
     await db.update(users).set({
@@ -400,11 +402,13 @@ mairieRouter.patch("/admin/users/:id", requireRole("admin"), async (req: AuthReq
       ...(prenom ? { prenom } : {}),
       ...(nom ? { nom } : {}),
       ...(telephone !== undefined ? { telephone } : {}),
+      ...(role_config_id !== undefined ? { role_config_id: role_config_id || null } : {}),
       updated_at: new Date(),
     }).where(eq(users.id, userId));
     const [updated] = await db.select({
       id: users.id, email: users.email, prenom: users.prenom, nom: users.nom,
       role: users.role, commune: users.commune, telephone: users.telephone,
+      role_config_id: users.role_config_id,
     }).from(users).where(eq(users.id, userId));
     res.json(updated);
   } catch (err) {

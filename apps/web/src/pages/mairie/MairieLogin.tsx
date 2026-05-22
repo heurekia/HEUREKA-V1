@@ -16,7 +16,9 @@ export function MairieLogin() {
     setLoading(true);
     try {
       const u = await login(email, password);
-      if (u.role === "mairie" || u.role === "instructeur" || u.role === "admin") {
+      if (u.role === "admin" && !u.commune) {
+        navigate("/admin", { replace: true });
+      } else if (u.role === "mairie" || u.role === "instructeur" || u.role === "admin") {
         navigate("/mairie", { replace: true });
       } else {
         setError("Ce portail est réservé aux agents de mairie et instructeurs.");

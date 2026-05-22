@@ -1,5 +1,7 @@
 export * from "./users.js";
 export * from "./communes.js";
+export * from "./epci.js";
+export * from "./rolePermissions.js";
 export * from "./dossiers.js";
 export * from "./dossier_messages.js";
 export * from "./dossier_pieces_jointes.js";

@@ -1,21 +1,21 @@
 import "dotenv/config";
 import { db } from "../db.js";
-import { users, communes, zones, zone_regulatory_rules, dossiers, dossier_messages } from "@heureka-v1/db";
+import { users, communes, zones, zone_regulatory_rules, dossiers, dossier_messages, role_permissions } from "@heureka-v1/db";
 import bcrypt from "bcryptjs";
-import { eq, sql } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 
 async function upsertCommune(values: { name: string; insee_code: string; zip_code: string }) {
-  // Remove any stale row with the same name but a different (wrong) INSEE code before upserting
-  await db.delete(communes).where(sql`name = ${values.name} AND insee_code != ${values.insee_code}`);
-  const [row] = await db.insert(communes).values(values)
-    .onConflictDoUpdate({ target: communes.insee_code, set: { name: values.name, zip_code: values.zip_code } })
+  const [inserted] = await db.insert(communes).values(values)
+    .onConflictDoNothing()
     .returning();
-  return row!;
+  if (inserted) return inserted;
+  const [existing] = await db.select().from(communes).where(eq(communes.insee_code, values.insee_code));
+  return existing!;
 }
 
 async function upsertUser(values: { email: string; password_hash: string; prenom: string; nom: string; role: "admin" | "mairie" | "instructeur" | "citoyen"; commune?: string }) {
   const [row] = await db.insert(users).values(values)
-    .onConflictDoUpdate({ target: users.email, set: { prenom: values.prenom, nom: values.nom, role: values.role, commune: values.commune ?? null } })
+    .onConflictDoUpdate({ target: users.email, set: { password_hash: values.password_hash, prenom: values.prenom, nom: values.nom, role: values.role, commune: values.commune ?? null } })
     .returning();
   return row!;
 }
@@ -43,14 +43,53 @@ async function insertMessagesIfNone(dossierId: string, messages: Array<{ from_us
   }
 }
 
+async function seedRoles() {
+  const systemRoles = [
+    {
+      name: "responsable_urbanisme",
+      label: "Responsable urbanisme",
+      base_role: "mairie",
+      color: "#4F46E5",
+      is_system: true,
+      permissions: ["dashboard","dossiers.read","dossiers.instruct","dossiers.decision","messagerie","documents","calendrier","zones.read","zones.edit","stats","utilisateurs","parametres"],
+      description: "Responsable du service urbanisme avec accès complet",
+    },
+    {
+      name: "instructeur",
+      label: "Instructeur",
+      base_role: "instructeur",
+      color: "#0891B2",
+      is_system: true,
+      permissions: ["dashboard","dossiers.read","dossiers.instruct","messagerie","documents","calendrier","zones.read","stats"],
+      description: "Instructeur en charge de l'instruction des dossiers",
+    },
+    {
+      name: "agent_administratif",
+      label: "Agent administratif",
+      base_role: "mairie",
+      color: "#7C3AED",
+      is_system: true,
+      permissions: ["dashboard","dossiers.read","messagerie","documents","calendrier","stats"],
+      description: "Agent administratif avec accès en lecture",
+    },
+  ];
+
+  for (const r of systemRoles) {
+    await db.insert(role_permissions).values(r).onConflictDoNothing();
+    console.log(`✅ Role: ${r.label}`);
+  }
+}
+
 async function seed() {
   console.log("🌱 Seeding HEUREKA V1 database...\n");
 
-  const pw = await bcrypt.hash("password123", 10);
-  const adminPw = await bcrypt.hash("admin123", 10);
+  const pw = await bcrypt.hash("Heureka2024!", 10);
+
+  // ── System Roles ──
+  await seedRoles();
 
   // ── Admin ──
-  const admin = await upsertUser({ email: "admin@heureka.fr", password_hash: adminPw, prenom: "Admin", nom: "Heureka", role: "admin" });
+  const admin = await upsertUser({ email: "admin@heureka.fr", password_hash: pw, prenom: "Evi", nom: "DELETANG", role: "admin" });
   console.log(`✅ Admin: ${admin.email}`);
 
   // ════════════════════════════════════════════════════════════
@@ -357,7 +396,7 @@ async function seed() {
 
   console.log("\n✅✅✅ Seed terminé !");
   console.log("\n📧 Identifiants de test :");
-  console.log("  Admin              : admin@heureka.fr / admin123");
+  console.log("  Admin              : admin@heureka.fr / Heureka2024!");
   console.log("  Mairie Tours       : mairie@tours.fr / password123");
   console.log("  Instructeur Tours  : instructeur@tours.fr / password123");
   console.log("  Citoyen Tours 1    : citoyen@test.fr / password123");
