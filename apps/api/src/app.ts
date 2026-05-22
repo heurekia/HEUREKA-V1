@@ -9,6 +9,7 @@ import { mairieRouter } from "./routes/mairie.js";
 import { calibrationRouter } from "./routes/calibration.js";
 import { calendrierRouter } from "./routes/calendrier.js";
 import { notificationsRouter } from "./routes/notifications.js";
+import { superAdminRouter } from "./routes/superAdmin.js";
 
 export const app = express();
 
@@ -22,6 +23,7 @@ app.use("/api/mairie", mairieRouter);
 app.use("/api/calibration", calibrationRouter);
 app.use("/api/calendrier", calendrierRouter);
 app.use("/api/notifications", notificationsRouter);
+app.use("/api/admin", superAdminRouter);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });

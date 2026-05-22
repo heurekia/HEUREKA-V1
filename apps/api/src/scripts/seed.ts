@@ -49,7 +49,7 @@ async function seed() {
   const pw = await bcrypt.hash("Heureka2024!", 10);
 
   // ── Admin ──
-  const admin = await upsertUser({ email: "admin@heureka.fr", password_hash: pw, prenom: "Admin", nom: "Heureka", role: "admin" });
+  const admin = await upsertUser({ email: "admin@heureka.fr", password_hash: pw, prenom: "Evi", nom: "DELETANG", role: "admin" });
   console.log(`✅ Admin: ${admin.email}`);
 
   // ════════════════════════════════════════════════════════════
@@ -356,7 +356,7 @@ async function seed() {
 
   console.log("\n✅✅✅ Seed terminé !");
   console.log("\n📧 Identifiants de test :");
-  console.log("  Admin              : admin@heureka.fr / admin123");
+  console.log("  Admin              : admin@heureka.fr / Heureka2024!");
   console.log("  Mairie Tours       : mairie@tours.fr / password123");
   console.log("  Instructeur Tours  : instructeur@tours.fr / password123");
   console.log("  Citoyen Tours 1    : citoyen@test.fr / password123");

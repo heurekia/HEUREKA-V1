@@ -177,6 +177,19 @@ ALTER TABLE communes ADD COLUMN IF NOT EXISTS departement text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS region text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS description text;
 
+CREATE TABLE IF NOT EXISTS epci (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  siren text UNIQUE,
+  type text NOT NULL DEFAULT 'CC',
+  departement text,
+  region text,
+  logo_url text,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS epci_id uuid REFERENCES epci(id) ON DELETE SET NULL;
+
 -- Full reset of commune-linked data (seed repopulates immediately after)
 DELETE FROM zone_regulatory_rules;
 DELETE FROM zones;

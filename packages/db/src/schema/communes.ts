@@ -13,6 +13,7 @@ export const communes = pgTable("communes", {
   departement: text("departement"),
   region: text("region"),
   description: text("description"),
+  epci_id: uuid("epci_id"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });
