@@ -911,7 +911,7 @@ function CommuneDetail() {
               <Input type="email" value={step2.email} onChange={(v) => setStep2({ ...step2, email: v })} placeholder="mairie@commune.fr" />
             </Field>
             <Field label="Téléphone">
-              <Input value={step2.telephone} onChange={(v) => setStep2({ ...step2, telephone: v })} placeholder="02 47 xx xx xx" />
+              <Input type="tel" value={step2.telephone} onChange={(v) => setStep2({ ...step2, telephone: v })} />
             </Field>
             <Field label="Description">
               <textarea
@@ -1151,7 +1151,7 @@ function CommuneDetail() {
               </Select>
             </Field>
             <Field label="Téléphone">
-              <Input value={newUser.telephone} onChange={(v) => setNewUser({ ...newUser, telephone: v })} />
+              <Input type="tel" value={newUser.telephone} onChange={(v) => setNewUser({ ...newUser, telephone: v })} />
             </Field>
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
               <button onClick={() => setShowAddUser(false)} style={{ padding: "10px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, color: C.text }}>
@@ -1664,7 +1664,7 @@ function Utilisateurs() {
               </Field>
             </div>
             <Field label="Téléphone">
-              <Input value={form.telephone} onChange={(v) => setForm({ ...form, telephone: v })} />
+              <Input type="tel" value={form.telephone} onChange={(v) => setForm({ ...form, telephone: v })} />
             </Field>
             <div style={{ background: C.orangeBg, border: `1px solid #FDE68A`, borderRadius: 8, padding: "10px 14px", fontSize: 13, color: C.orange }}>
               Le mot de passe temporaire sera <strong>Heureka2024!</strong>
