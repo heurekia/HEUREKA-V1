@@ -73,17 +73,6 @@ interface InseeCandidate {
   region: string;
 }
 
-interface RolePermission {
-  id: string;
-  name: string;
-  label: string;
-  base_role: string;
-  description: string | null;
-  color: string;
-  permissions: string[];
-  is_system: boolean;
-}
-
 // ─── Colors ───────────────────────────────────────────────────────────────────
 const C = {
   sidebar: "#0F172A",
@@ -367,7 +356,6 @@ const navItems = [
   { path: "/admin/groupements", icon: "🤝", label: "Groupements" },
   { path: "/admin/roles", icon: "🔑", label: "Rôles" },
   { path: "/admin/utilisateurs", icon: "👥", label: "Utilisateurs" },
-  { path: "/admin/roles", icon: "🔑", label: "Rôles" },
   { path: "/admin/configuration", icon: "⚙", label: "Configuration" },
 ];
 
@@ -1830,122 +1818,132 @@ function Utilisateurs() {
   );
 }
 
-// ─── Roles ────────────────────────────────────────────────────────────────────
+// ─── Rôles & Permissions ──────────────────────────────────────────────────────
 const PERMISSION_MODULES = [
   { group: "Dossiers", items: [
-    { key: "dossiers.read", label: "Consulter les dossiers", desc: "Voir la liste et le détail des dossiers" },
-    { key: "dossiers.instruct", label: "Instruire", desc: "Changer le statut, ajouter des événements d'instruction" },
-    { key: "dossiers.decision", label: "Émettre une décision", desc: "Accepter, refuser ou prescrire un dossier" },
+    { key: "dossiers.read",     label: "Consulter les dossiers",  desc: "Voir la liste et le détail des dossiers" },
+    { key: "dossiers.instruct", label: "Instruire",               desc: "Changer le statut, ajouter des événements" },
+    { key: "dossiers.decision", label: "Émettre une décision",    desc: "Accepter, refuser ou prescrire un dossier" },
   ]},
   { group: "Communication", items: [
-    { key: "messagerie", label: "Messagerie", desc: "Envoyer et recevoir des messages" },
-    { key: "documents", label: "Documents", desc: "Consulter et télécharger les pièces jointes" },
+    { key: "messagerie", label: "Messagerie",  desc: "Envoyer et recevoir des messages" },
+    { key: "documents",  label: "Documents",   desc: "Consulter et télécharger les pièces jointes" },
   ]},
   { group: "Planification", items: [
-    { key: "calendrier", label: "Calendrier", desc: "Gérer les événements et délais réglementaires" },
-    { key: "stats", label: "Statistiques", desc: "Tableaux de bord et indicateurs" },
-    { key: "dashboard", label: "Tableau de bord", desc: "Accès au dashboard de la commune" },
+    { key: "calendrier", label: "Calendrier",     desc: "Gérer les événements et délais réglementaires" },
+    { key: "stats",      label: "Statistiques",   desc: "Tableaux de bord et indicateurs" },
+    { key: "dashboard",  label: "Tableau de bord",desc: "Accès au dashboard de la commune" },
   ]},
   { group: "Réglementation", items: [
     { key: "zones.read", label: "Consulter le PLU", desc: "Accès en lecture au règlement de zonage" },
-    { key: "zones.edit", label: "Modifier le PLU", desc: "Créer et éditer les zones et règles PLU" },
+    { key: "zones.edit", label: "Modifier le PLU",  desc: "Créer et éditer les zones et règles PLU" },
   ]},
   { group: "Administration", items: [
-    { key: "utilisateurs", label: "Gestion des agents", desc: "Créer, modifier et désactiver les agents" },
-    { key: "parametres", label: "Paramètres commune", desc: "Modifier les informations de la commune" },
+    { key: "utilisateurs", label: "Gestion des agents",   desc: "Créer, modifier et désactiver les agents" },
+    { key: "parametres",   label: "Paramètres commune",   desc: "Modifier les informations de la commune" },
   ]},
 ];
 
+const ALL_PERM_KEYS = PERMISSION_MODULES.flatMap(m => m.items.map(i => i.key));
+const PERM_LABEL: Record<string, string> = Object.fromEntries(PERMISSION_MODULES.flatMap(m => m.items.map(i => [i.key, i.label])));
+
+interface RoleFormState { label: string; name: string; base_role: string; description: string; color: string; permissions: string[] }
+
+function RoleFormPanel({ form, setForm, isSystem }: { form: RoleFormState; setForm: React.Dispatch<React.SetStateAction<RoleFormState>>; isSystem?: boolean }) {
+  const toggle = (key: string) =>
+    setForm(f => ({ ...f, permissions: f.permissions.includes(key) ? f.permissions.filter(p => p !== key) : [...f.permissions, key] }));
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+        <Field label="Nom d'affichage *">
+          <Input value={form.label} onChange={(v) => setForm(f => ({ ...f, label: v }))} placeholder="Ex : Instructeur senior" />
+        </Field>
+        <Field label="Rôle de base *">
+          <Select value={form.base_role} onChange={(v) => setForm(f => ({ ...f, base_role: v }))}>
+            {isSystem
+              ? <option value={form.base_role}>{form.base_role === "mairie" ? "Mairie" : "Instructeur"}</option>
+              : <><option value="instructeur">Instructeur</option><option value="mairie">Mairie</option></>}
+          </Select>
+        </Field>
+      </div>
+      <Field label="Description">
+        <Input value={form.description} onChange={(v) => setForm(f => ({ ...f, description: v }))} placeholder="Courte description du profil" />
+      </Field>
+      <Field label="Couleur du badge">
+        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+          <input type="color" value={form.color} onChange={(e) => setForm(f => ({ ...f, color: e.target.value }))}
+            style={{ width: 40, height: 34, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", padding: 2 }} />
+          <span style={{ padding: "3px 10px", borderRadius: 6, background: `${form.color}20`, color: form.color, fontSize: 12, fontWeight: 700 }}>
+            {form.label || "Aperçu"}
+          </span>
+        </div>
+      </Field>
+      <div>
+        <div style={{ fontSize: 13, fontWeight: 600, color: C.textMuted, textTransform: "uppercase" as const, letterSpacing: "0.05em", marginBottom: 10 }}>
+          Permissions — {form.permissions.length} / {ALL_PERM_KEYS.length} sélectionnées
+        </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+          {PERMISSION_MODULES.map(group => (
+            <div key={group.group}>
+              <div style={{ fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: "uppercase" as const, letterSpacing: "0.08em", marginBottom: 6, paddingBottom: 4, borderBottom: `1px solid ${C.border}` }}>{group.group}</div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                {group.items.map(item => {
+                  const on = form.permissions.includes(item.key);
+                  return (
+                    <div key={item.key} onClick={() => toggle(item.key)}
+                      style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", background: on ? C.accentLight : C.bg, borderRadius: 8, cursor: "pointer", border: `1px solid ${on ? C.accent : C.border}`, userSelect: "none" }}>
+                      <div style={{ width: 16, height: 16, borderRadius: 4, background: on ? C.accent : "white", border: `2px solid ${on ? C.accent : C.border}`, flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        {on && <span style={{ color: "white", fontSize: 9, fontWeight: 900 }}>✓</span>}
+                      </div>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 600, color: on ? C.accent : C.text }}>{item.label}</div>
+                        <div style={{ fontSize: 11, color: C.textMuted }}>{item.desc}</div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const BLANK_ROLE_FORM: RoleFormState = { label: "", name: "", base_role: "instructeur", description: "", color: "#0891B2", permissions: [] };
+
 function Roles() {
-  const [roles, setRoles] = useState<RolePermission[]>([]);
+  const [roleList, setRoleList] = useState<RolePermission[]>([]);
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+  const [editingRole, setEditingRole] = useState<RolePermission | null>(null);
+  const [showCreate, setShowCreate] = useState(false);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
-  const [panelOpen, setPanelOpen] = useState(false);
-  const [editing, setEditing] = useState<RolePermission | null>(null);
-  const [form, setForm] = useState({
-    label: "",
-    base_role: "instructeur",
-    description: "",
-    color: "#4F46E5",
-    permissions: [] as string[],
-  });
-  const [saving, setSaving] = useState(false);
+  const [form, setForm] = useState<RoleFormState>(BLANK_ROLE_FORM);
 
-  const load = () => {
+  const load = useCallback(async () => {
     setLoading(true);
-    api.get<RolePermission[]>("/admin/roles")
-      .then(setRoles)
-      .catch(() => setRoles([]))
-      .finally(() => setLoading(false));
-  };
+    try { setRoleList(await api.get<RolePermission[]>("/admin/roles")); }
+    finally { setLoading(false); }
+  }, []);
 
-  useEffect(() => { load(); }, []);
-
-  const openCreate = () => {
-    setEditing(null);
-    setForm({ label: "", base_role: "instructeur", description: "", color: "#4F46E5", permissions: [] });
-    setPanelOpen(true);
-  };
-
-  const openEdit = (r: RolePermission) => {
-    setEditing(r);
-    setForm({
-      label: r.label,
-      base_role: r.base_role,
-      description: r.description ?? "",
-      color: r.color,
-      permissions: [...r.permissions],
-    });
-    setPanelOpen(true);
-  };
-
-  const closePanel = () => {
-    setPanelOpen(false);
-    setEditing(null);
-  };
-
-  const togglePerm = (key: string) => {
-    setForm(f => ({
-      ...f,
-      permissions: f.permissions.includes(key)
-        ? f.permissions.filter(p => p !== key)
-        : [...f.permissions, key],
-    }));
-  };
+  useEffect(() => { load(); }, [load]);
 
   const handleSave = async () => {
-    if (!form.label.trim()) { setToast({ msg: "Le libellé est requis", type: "error" }); return; }
-    setSaving(true);
     try {
-      if (editing) {
-        await api.patch(`/admin/roles/${editing.id}`, {
-          label: form.label,
-          description: form.description || null,
-          color: form.color,
-          permissions: form.permissions,
-          ...(!editing.is_system ? { base_role: form.base_role } : {}),
-        });
+      if (editingRole) {
+        await api.patch(`/admin/roles/${editingRole.id}`, form);
         setToast({ msg: "Rôle mis à jour", type: "success" });
+        setEditingRole(null);
       } else {
-        const name = form.label.trim().toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
-        await api.post("/admin/roles", {
-          name,
-          label: form.label,
-          base_role: form.base_role,
-          description: form.description || null,
-          color: form.color,
-          permissions: form.permissions,
-        });
+        const name = form.name || form.label.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, "_");
+        await api.post("/admin/roles", { ...form, name });
         setToast({ msg: "Rôle créé", type: "success" });
+        setShowCreate(false);
       }
-      closePanel();
       load();
-    } catch (e) {
-      setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
-    } finally {
-      setSaving(false);
-    }
+    } catch (e) { setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" }); }
   };
 
   const handleDelete = async (id: string) => {
@@ -1954,104 +1952,63 @@ function Roles() {
       setToast({ msg: "Rôle supprimé", type: "success" });
       setConfirmDelete(null);
       load();
-    } catch (e) {
-      setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
-      setConfirmDelete(null);
-    }
+    } catch (e) { setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" }); }
   };
 
   return (
     <PageShell>
       {toast && <Toast message={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
-      {confirmDelete && (
-        <ConfirmDialog
-          message="Supprimer ce rôle définitivement ?"
-          onConfirm={() => handleDelete(confirmDelete)}
-          onCancel={() => setConfirmDelete(null)}
-        />
-      )}
+      {confirmDelete && <ConfirmDialog message="Supprimer ce rôle ? Les utilisateurs qui le possèdent garderont leur rôle de base." onConfirm={() => handleDelete(confirmDelete)} onCancel={() => setConfirmDelete(null)} />}
 
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
         <div>
           <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Rôles & Permissions</h1>
-          <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Définissez les rôles attribuables aux agents des communes</p>
+          <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Définissez les profils d'accès assignables par les responsables de commune.</p>
         </div>
-        <button
-          onClick={openCreate}
-          style={{ padding: "10px 20px", background: C.accent, color: "white", border: "none", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700 }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = C.accentHover)}
-          onMouseLeave={(e) => (e.currentTarget.style.background = C.accent)}
-        >
+        <button onClick={() => { setForm(BLANK_ROLE_FORM); setShowCreate(true); }}
+          style={{ padding: "10px 20px", background: C.accent, color: "white", border: "none", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>
           + Créer un rôle
         </button>
       </div>
 
       {loading ? (
-        <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>
-      ) : roles.length === 0 ? (
-        <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 60, textAlign: "center", color: C.textMuted }}>
-          <div style={{ fontSize: 48, marginBottom: 16 }}>🔑</div>
-          <p style={{ margin: 0, fontSize: 16 }}>Aucun rôle défini. Créez le premier rôle.</p>
-        </div>
+        <div style={{ display: "flex", justifyContent: "center", padding: 80 }}><Spinner size={40} /></div>
       ) : (
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(340px, 1fr))", gap: 16 }}>
-          {roles.map((r) => (
-            <div key={r.id} style={{
-              background: C.white, borderRadius: 12, border: `1px solid ${C.border}`,
-              padding: 20, display: "flex", flexDirection: "column", gap: 12,
-              borderTop: `3px solid ${r.color}`,
-            }}>
-              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 8 }}>
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
-                    <span style={{ fontSize: 15, fontWeight: 700, color: C.text }}>{r.label}</span>
-                    {r.is_system && <span style={{ fontSize: 11, padding: "1px 6px", background: C.orangeBg, color: C.orange, borderRadius: 4, fontWeight: 600 }}>🔒 Système</span>}
-                  </div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{
-                      fontSize: 11, fontWeight: 600, padding: "2px 8px", borderRadius: 12,
-                      background: r.base_role === "mairie" ? C.blueBg : C.greenBg,
-                      color: r.base_role === "mairie" ? C.blue : C.green,
-                    }}>
-                      {r.base_role === "mairie" ? "Mairie" : "Instructeur"}
-                    </span>
-                    <span style={{ fontSize: 12, color: C.textMuted }}>
-                      {r.permissions.length} permission{r.permissions.length !== 1 ? "s" : ""}
-                    </span>
-                  </div>
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {roleList.map(role => (
+            <div key={role.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 20px", display: "flex", alignItems: "flex-start", gap: 16 }}>
+              <div style={{ width: 44, height: 44, borderRadius: 10, background: `${role.color}20`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>
+                {role.base_role === "mairie" ? "🏛" : "📋"}
+              </div>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                  <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>{role.label}</span>
+                  {role.is_system && <span style={{ fontSize: 10, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 6px", color: C.textMuted, fontWeight: 600 }}>🔒 Système</span>}
+                  <span style={{ padding: "3px 8px", borderRadius: 6, background: `${role.color}20`, color: role.color, fontSize: 11, fontWeight: 700 }}>
+                    {role.base_role === "mairie" ? "Mairie" : "Instructeur"}
+                  </span>
                 </div>
-                <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
-                  <button
-                    onClick={() => openEdit(r)}
-                    style={{ padding: "6px 12px", background: C.accentLight, color: C.accent, border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
-                  >
-                    Modifier
-                  </button>
-                  {!r.is_system && (
-                    <button
-                      onClick={() => setConfirmDelete(r.id)}
-                      style={{ padding: "6px 12px", background: C.redBg, color: C.red, border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
-                    >
-                      Supprimer
-                    </button>
-                  )}
+                {role.description && <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 6 }}>{role.description}</div>}
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+                  {(role.permissions as string[]).map(p => (
+                    <span key={p} style={{ padding: "2px 7px", background: `${role.color}15`, color: role.color, fontSize: 10, fontWeight: 600, borderRadius: 4 }}>
+                      {PERM_LABEL[p] ?? p}
+                    </span>
+                  ))}
+                  {role.permissions.length === 0 && <span style={{ fontSize: 12, color: C.textMuted, fontStyle: "italic" }}>Aucune permission</span>}
                 </div>
               </div>
-              {r.description && (
-                <p style={{ margin: 0, fontSize: 13, color: C.textMuted, lineHeight: 1.5 }}>{r.description}</p>
-              )}
-              <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
-                {r.permissions.slice(0, 6).map((p) => (
-                  <span key={p} style={{
-                    fontSize: 10, padding: "2px 7px", borderRadius: 10,
-                    background: `${r.color}15`, color: r.color, fontWeight: 600,
-                    border: `1px solid ${r.color}30`,
-                  }}>{p}</span>
-                ))}
-                {r.permissions.length > 6 && (
-                  <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 10, background: C.bg, color: C.textMuted, fontWeight: 600 }}>
-                    +{r.permissions.length - 6}
-                  </span>
+              <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                <button
+                  onClick={() => { setEditingRole(role); setForm({ label: role.label, name: role.name, base_role: role.base_role, description: role.description ?? "", color: role.color, permissions: [...role.permissions] }); }}
+                  style={{ padding: "6px 14px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}>
+                  Modifier
+                </button>
+                {!role.is_system && (
+                  <button onClick={() => setConfirmDelete(role.id)}
+                    style={{ padding: "6px 14px", background: C.redBg, color: C.red, border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                    Supprimer
+                  </button>
                 )}
               </div>
             </div>
@@ -2059,125 +2016,20 @@ function Roles() {
         </div>
       )}
 
-      {/* Side panel */}
-      {panelOpen && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 8000, display: "flex", justifyContent: "flex-end" }}>
-          <div style={{
-            width: 520, background: C.white, height: "100%", overflowY: "auto",
-            boxShadow: "-8px 0 32px rgba(0,0,0,0.15)",
-            display: "flex", flexDirection: "column",
-          }}>
-            {/* Panel header */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "20px 24px", borderBottom: `1px solid ${C.border}`, flexShrink: 0 }}>
-              <h2 style={{ margin: 0, fontSize: 18, fontWeight: 700, color: C.text }}>
-                {editing ? "Modifier le rôle" : "Créer un rôle"}
-              </h2>
-              <button onClick={closePanel} style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted, fontSize: 20, lineHeight: 1, padding: 4 }}>×</button>
-            </div>
-
-            {/* Panel body */}
-            <div style={{ padding: 24, flex: 1, display: "flex", flexDirection: "column", gap: 20 }}>
-              <Field label="Libellé *">
-                <Input value={form.label} onChange={(v) => setForm({ ...form, label: v })} placeholder="Ex : Responsable urbanisme" />
-              </Field>
-
-              {(!editing || !editing.is_system) && (
-                <Field label="Rôle de base *">
-                  <Select value={form.base_role} onChange={(v) => setForm({ ...form, base_role: v })}>
-                    <option value="instructeur">Instructeur</option>
-                    <option value="mairie">Mairie</option>
-                  </Select>
-                </Field>
-              )}
-
-              <Field label="Description">
-                <textarea
-                  value={form.description}
-                  onChange={(e) => setForm({ ...form, description: e.target.value })}
-                  placeholder="Description du rôle et de ses responsabilités…"
-                  rows={3}
-                  style={{
-                    width: "100%", boxSizing: "border-box", padding: "10px 12px",
-                    border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14,
-                    color: C.text, outline: "none", resize: "vertical", fontFamily: "inherit",
-                  }}
-                />
-              </Field>
-
-              <Field label="Couleur">
-                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                  <input
-                    type="color"
-                    value={form.color}
-                    onChange={(e) => setForm({ ...form, color: e.target.value })}
-                    style={{ width: 40, height: 36, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", padding: 2 }}
-                  />
-                  <span style={{ fontSize: 13, color: C.textMuted, fontFamily: "monospace" }}>{form.color}</span>
-                  <div style={{ width: 28, height: 28, borderRadius: 6, background: form.color }} />
-                </div>
-              </Field>
-
-              <div>
-                <div style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 12 }}>Permissions</div>
-                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-                  {PERMISSION_MODULES.map((mod) => (
-                    <div key={mod.group}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 8, paddingBottom: 6, borderBottom: `1px solid ${C.border}` }}>
-                        {mod.group}
-                      </div>
-                      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                        {mod.items.map((item) => {
-                          const checked = form.permissions.includes(item.key);
-                          return (
-                            <label key={item.key} style={{
-                              display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer",
-                              padding: "8px 10px", borderRadius: 8,
-                              background: checked ? `${C.accent}0D` : "transparent",
-                              border: `1px solid ${checked ? C.accent : "transparent"}`,
-                              transition: "all 0.1s",
-                            }}>
-                              <input
-                                type="checkbox"
-                                checked={checked}
-                                onChange={() => togglePerm(item.key)}
-                                style={{ marginTop: 2, accentColor: C.accent, flexShrink: 0 }}
-                              />
-                              <div>
-                                <div style={{ fontSize: 13, fontWeight: 600, color: C.text }}>{item.label}</div>
-                                <div style={{ fontSize: 11, color: C.textMuted, marginTop: 1 }}>{item.desc}</div>
-                              </div>
-                            </label>
-                          );
-                        })}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Panel footer */}
-            <div style={{ padding: "16px 24px", borderTop: `1px solid ${C.border}`, display: "flex", gap: 10, justifyContent: "flex-end", flexShrink: 0 }}>
-              <button
-                onClick={closePanel}
-                style={{ padding: "10px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, color: C.text }}
-              >
-                Annuler
-              </button>
-              <button
-                onClick={handleSave}
-                disabled={saving}
-                style={{
-                  padding: "10px 24px", background: saving ? C.accentLight : C.accent,
-                  color: saving ? C.accent : "white", border: "none", borderRadius: 8,
-                  cursor: saving ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700,
-                }}
-              >
-                {saving ? "Enregistrement…" : "Enregistrer"}
-              </button>
-            </div>
+      {(showCreate || editingRole) && (
+        <Modal title={editingRole ? `Modifier · ${editingRole.label}` : "Créer un rôle"} onClose={() => { setShowCreate(false); setEditingRole(null); }}>
+          <RoleFormPanel form={form} setForm={setForm} isSystem={editingRole?.is_system} />
+          <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 20 }}>
+            <button onClick={() => { setShowCreate(false); setEditingRole(null); }}
+              style={{ padding: "10px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, color: C.text }}>
+              Annuler
+            </button>
+            <button onClick={handleSave}
+              style={{ padding: "10px 24px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>
+              {editingRole ? "Enregistrer" : "Créer le rôle"}
+            </button>
           </div>
-        </div>
+        </Modal>
       )}
     </PageShell>
   );
