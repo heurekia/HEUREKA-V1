@@ -165,26 +165,71 @@ function Field({ label, children }: { label: string; children: React.ReactNode }
   );
 }
 
+function validateField(type: string, value: string): "valid" | "invalid" | null {
+  if (!value) return null;
+  if (type === "email") return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(value) ? "valid" : "invalid";
+  if (type === "tel") {
+    const digits = value.replace(/[\s.()-]/g, "");
+    return /^(\+33|0033)?[1-9]\d{8}$/.test(digits) ? "valid" : "invalid";
+  }
+  return null;
+}
+
+function formatTel(raw: string): string {
+  const digits = raw.replace(/[^\d+]/g, "");
+  if (digits.startsWith("+33") && digits.length <= 12) {
+    return digits.replace(/(\+33)(\d{1})(\d{2})(\d{2})(\d{2})(\d{0,2})/, (_, p1, p2, p3, p4, p5, p6) =>
+      [p1 + p2, p3, p4, p5, p6].filter(Boolean).join(" "));
+  }
+  if (digits.startsWith("0") && digits.length <= 10) {
+    return digits.replace(/(\d{2})(?=\d)/g, "$1 ").trim();
+  }
+  return raw;
+}
+
 function Input({ value, onChange, placeholder, type = "text", disabled, readOnly }: {
   value: string; onChange?: (v: string) => void; placeholder?: string; type?: string; disabled?: boolean; readOnly?: boolean;
 }) {
+  const [touched, setTouched] = useState(false);
+  const status = touched && !disabled && !readOnly ? validateField(type, value) : null;
+  const borderColor = status === "valid" ? C.green : status === "invalid" ? C.red : C.border;
+  const defaultPlaceholder = type === "email" ? "nom@commune.fr" : type === "tel" ? "06 12 34 56 78" : placeholder;
+
+  const handleChange = (raw: string) => {
+    if (!onChange) return;
+    onChange(type === "tel" ? formatTel(raw) : raw);
+  };
+
   return (
-    <input
-      type={type}
-      value={value}
-      onChange={onChange ? (e) => onChange(e.target.value) : undefined}
-      placeholder={placeholder}
-      disabled={disabled}
-      readOnly={readOnly}
-      style={{
-        width: "100%", boxSizing: "border-box", padding: "10px 12px",
-        border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14,
-        color: C.text, background: disabled || readOnly ? C.bg : C.white,
-        outline: "none", transition: "border-color 0.15s",
-      }}
-      onFocus={(e) => { if (!disabled && !readOnly) e.target.style.borderColor = C.accent; }}
-      onBlur={(e) => { e.target.style.borderColor = C.border; }}
-    />
+    <div style={{ position: "relative" }}>
+      <input
+        type={type === "tel" ? "tel" : type}
+        value={value}
+        onChange={e => handleChange(e.target.value)}
+        placeholder={placeholder ?? defaultPlaceholder}
+        disabled={disabled}
+        readOnly={readOnly}
+        style={{
+          width: "100%", boxSizing: "border-box", padding: "10px 12px",
+          paddingRight: status ? 32 : 12,
+          border: `1px solid ${borderColor}`, borderRadius: 8, fontSize: 14,
+          color: C.text, background: disabled || readOnly ? C.bg : C.white,
+          outline: "none", transition: "border-color 0.15s",
+        }}
+        onFocus={e => { if (!disabled && !readOnly) e.target.style.borderColor = status === "invalid" ? C.red : C.accent; }}
+        onBlur={e => { setTouched(true); e.target.style.borderColor = borderColor; }}
+      />
+      {status && (
+        <span style={{ position: "absolute", right: 10, top: "50%", transform: "translateY(-50%)", fontSize: 14, color: status === "valid" ? C.green : C.red, pointerEvents: "none" }}>
+          {status === "valid" ? "✓" : "✕"}
+        </span>
+      )}
+      {status === "invalid" && (
+        <div style={{ fontSize: 11, color: C.red, marginTop: 3 }}>
+          {type === "email" ? "Format invalide — ex : mairie@commune.fr" : "Format invalide — ex : 06 12 34 56 78"}
+        </div>
+      )}
+    </div>
   );
 }
 

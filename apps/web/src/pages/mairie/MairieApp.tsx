@@ -1386,17 +1386,51 @@ function CommuneGeneralTab({ commune, isAdmin, onInseeUpdated }: { commune: stri
 
   if (loading) return <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>;
 
-  const inp = (label: string, field: keyof CommuneData, readOnly = false) => (
-    <div key={field}>
-      <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>{label}</div>
-      <input
-        value={(form[field] as string) ?? ""}
-        onChange={e => !readOnly && isAdmin && setForm(f => ({ ...f, [field]: e.target.value }))}
-        readOnly={readOnly || !isAdmin}
-        style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", background: (!isAdmin || readOnly) ? "#F8FAFC" : "white", cursor: (!isAdmin || readOnly) ? "default" : "text" }}
-      />
-    </div>
-  );
+  const validateInp = (type: string, val: string): "valid" | "invalid" | null => {
+    if (!val) return null;
+    if (type === "email") return /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(val) ? "valid" : "invalid";
+    if (type === "tel") return /^(\+33|0033)?[1-9]\d{8}$/.test(val.replace(/[\s.()-]/g, "")) ? "valid" : "invalid";
+    return null;
+  };
+  const formatTelInp = (raw: string) => {
+    const d = raw.replace(/[^\d+]/g, "");
+    if (d.startsWith("0") && d.length <= 10) return d.replace(/(\d{2})(?=\d)/g, "$1 ").trim();
+    return raw;
+  };
+
+  const inp = (label: string, field: keyof CommuneData, readOnly = false, type = "text") => {
+    const val = (form[field] as string) ?? "";
+    const editable = isAdmin && !readOnly;
+    const status = editable ? validateInp(type, val) : null;
+    const borderColor = status === "valid" ? "#10B981" : status === "invalid" ? "#EF4444" : "#E2E8F0";
+    return (
+      <div key={field}>
+        <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>{label}</div>
+        <div style={{ position: "relative" as const }}>
+          <input
+            type={type === "tel" ? "tel" : type}
+            value={val}
+            onChange={e => editable && setForm(f => ({ ...f, [field]: type === "tel" ? formatTelInp(e.target.value) : e.target.value }))}
+            readOnly={!editable}
+            placeholder={type === "email" ? "mairie@commune.fr" : type === "tel" ? "06 12 34 56 78" : undefined}
+            style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", paddingRight: status ? 28 : 12, border: `1px solid ${borderColor}`, borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", background: !editable ? "#F8FAFC" : "white", cursor: !editable ? "default" : "text", transition: "border-color 0.15s" }}
+            onFocus={e => { if (editable) e.target.style.borderColor = status === "invalid" ? "#EF4444" : "#4F46E5"; }}
+            onBlur={e => { e.target.style.borderColor = borderColor; }}
+          />
+          {status && (
+            <span style={{ position: "absolute" as const, right: 8, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: status === "valid" ? "#10B981" : "#EF4444", pointerEvents: "none" as const }}>
+              {status === "valid" ? "✓" : "✕"}
+            </span>
+          )}
+        </div>
+        {status === "invalid" && (
+          <div style={{ fontSize: 11, color: "#EF4444", marginTop: 3 }}>
+            {type === "email" ? "Format invalide — ex : mairie@commune.fr" : "Format invalide — ex : 06 12 34 56 78"}
+          </div>
+        )}
+      </div>
+    );
+  };
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1467,8 +1501,8 @@ function CommuneGeneralTab({ commune, isAdmin, onInseeUpdated }: { commune: stri
           {inp("Code postal", "zip_code")}
           {inp("Population", "population")}
           {inp("Surface", "surface")}
-          {inp("Email contact urbanisme", "email")}
-          {inp("Téléphone", "telephone")}
+          {inp("Email contact urbanisme", "email", false, "email")}
+          {inp("Téléphone", "telephone", false, "tel")}
         </div>
         <div style={{ marginTop: 12 }}>
           <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Description / Contexte</div>
@@ -1665,8 +1699,14 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                 </div>
                 <div style={{ marginBottom: 12 }}>
                   <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Email</div>
-                  <input type="email" value={addForm.email} onChange={e => setAddForm(f => ({ ...f, email: e.target.value }))}
-                    style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
+                  <div style={{ position: "relative" as const }}>
+                    <input type="email" value={addForm.email} onChange={e => setAddForm(f => ({ ...f, email: e.target.value }))}
+                      placeholder="agent@commune.fr"
+                      style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", paddingRight: addForm.email ? 28 : 12, border: `1px solid ${addForm.email ? (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(addForm.email) ? "#10B981" : "#EF4444") : "#E2E8F0"}`, borderRadius: 8, fontSize: 13, outline: "none" }}
+                      onFocus={e => { e.target.style.borderColor = addForm.email && !/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(addForm.email) ? "#EF4444" : "#4F46E5"; }}
+                      onBlur={e => { e.target.style.borderColor = addForm.email ? (/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(addForm.email) ? "#10B981" : "#EF4444") : "#E2E8F0"; }} />
+                    {addForm.email && <span style={{ position: "absolute" as const, right: 8, top: "50%", transform: "translateY(-50%)", fontSize: 13, color: /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(addForm.email) ? "#10B981" : "#EF4444" }}>{/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(addForm.email) ? "✓" : "✕"}</span>}
+                  </div>
                 </div>
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
                   <div>
@@ -1680,7 +1720,9 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                   </div>
                   <div>
                     <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Téléphone</div>
-                    <input value={addForm.telephone} onChange={e => setAddForm(f => ({ ...f, telephone: e.target.value }))}
+                    <input type="tel" value={addForm.telephone}
+                      placeholder="06 12 34 56 78"
+                      onChange={e => { const d = e.target.value.replace(/[^\d+]/g, ""); const fmt = d.startsWith("0") && d.length <= 10 ? d.replace(/(\d{2})(?=\d)/g, "$1 ").trim() : e.target.value; setAddForm(f => ({ ...f, telephone: fmt })); }}
                       style={{ width: "100%", boxSizing: "border-box" as const, padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
                   </div>
                 </div>
