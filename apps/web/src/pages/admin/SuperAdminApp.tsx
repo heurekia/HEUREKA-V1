@@ -743,6 +743,9 @@ function CommuneDetail() {
   const [step3, setStep3] = useState({ logo_url: "" });
   const [step4, setStep4] = useState({ epci_id: "" });
   const [newUser, setNewUser] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
+  const [editingUser, setEditingUser] = useState<UserItem | null>(null);
+  const [editUserForm, setEditUserForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
+  const [confirmDeleteUser, setConfirmDeleteUser] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     if (!id) return;
@@ -792,6 +795,29 @@ function CommuneDetail() {
       setToast({ msg: `Agent créé. Mot de passe temporaire: ${result.tempPassword}`, type: "success" });
       setShowAddUser(false);
       setNewUser({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
+      loadData();
+    } catch (e) {
+      setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
+    }
+  };
+
+  const handleEditUser = async () => {
+    if (!editingUser) return;
+    try {
+      await api.patch(`/admin/users/${editingUser.id}`, editUserForm);
+      setToast({ msg: "Agent mis à jour", type: "success" });
+      setEditingUser(null);
+      loadData();
+    } catch (e) {
+      setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
+    }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    try {
+      await api.delete(`/admin/users/${userId}`);
+      setToast({ msg: "Agent supprimé", type: "success" });
+      setConfirmDeleteUser(null);
       loadData();
     } catch (e) {
       setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
@@ -1058,7 +1084,7 @@ function CommuneDetail() {
               <table style={{ width: "100%", borderCollapse: "collapse" }}>
                 <thead>
                   <tr style={{ background: C.bg }}>
-                    {["Nom", "Email", "Rôle", "Téléphone"].map((h) => (
+                    {["Nom", "Email", "Rôle", "Téléphone", ""].map((h) => (
                       <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: 12, fontWeight: 600, color: C.textMuted, textTransform: "uppercase" }}>{h}</th>
                     ))}
                   </tr>
@@ -1070,6 +1096,18 @@ function CommuneDetail() {
                       <td style={{ padding: "10px 12px", color: C.textMuted, fontSize: 13 }}>{u.email}</td>
                       <td style={{ padding: "10px 12px" }}><RoleBadge role={u.role} /></td>
                       <td style={{ padding: "10px 12px", color: C.textMuted, fontSize: 13 }}>{u.telephone ?? "—"}</td>
+                      <td style={{ padding: "10px 12px", textAlign: "right" }}>
+                        <div style={{ display: "flex", gap: 6, justifyContent: "flex-end" }}>
+                          <button
+                            onClick={() => { setEditingUser(u); setEditUserForm({ prenom: u.prenom, nom: u.nom, email: u.email, role: u.role, telephone: u.telephone ?? "" }); }}
+                            style={{ padding: "4px 10px", fontSize: 12, fontWeight: 600, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", color: C.text }}
+                          >Modifier</button>
+                          <button
+                            onClick={() => setConfirmDeleteUser(u.id)}
+                            style={{ padding: "4px 10px", fontSize: 12, fontWeight: 600, background: "transparent", border: `1px solid #FCA5A5`, borderRadius: 6, cursor: "pointer", color: C.red }}
+                          >Supprimer</button>
+                        </div>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -1163,6 +1201,49 @@ function CommuneDetail() {
             </div>
           </div>
         </Modal>
+      )}
+
+      {editingUser && (
+        <Modal title={`Modifier ${editingUser.prenom} ${editingUser.nom}`} onClose={() => setEditingUser(null)}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <Field label="Prénom *">
+                <Input value={editUserForm.prenom} onChange={(v) => setEditUserForm({ ...editUserForm, prenom: v })} />
+              </Field>
+              <Field label="Nom *">
+                <Input value={editUserForm.nom} onChange={(v) => setEditUserForm({ ...editUserForm, nom: v })} />
+              </Field>
+            </div>
+            <Field label="Email *">
+              <Input type="email" value={editUserForm.email} onChange={(v) => setEditUserForm({ ...editUserForm, email: v })} />
+            </Field>
+            <Field label="Rôle *">
+              <Select value={editUserForm.role} onChange={(v) => setEditUserForm({ ...editUserForm, role: v })}>
+                <option value="mairie">Mairie</option>
+                <option value="instructeur">Instructeur</option>
+              </Select>
+            </Field>
+            <Field label="Téléphone">
+              <Input type="tel" value={editUserForm.telephone} onChange={(v) => setEditUserForm({ ...editUserForm, telephone: v })} />
+            </Field>
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
+              <button onClick={() => setEditingUser(null)} style={{ padding: "10px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, color: C.text }}>
+                Annuler
+              </button>
+              <button onClick={handleEditUser} style={{ padding: "10px 24px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>
+                Enregistrer
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {confirmDeleteUser && (
+        <ConfirmDialog
+          message="Supprimer cet agent ? Cette action est irréversible."
+          onConfirm={() => handleDeleteUser(confirmDeleteUser)}
+          onCancel={() => setConfirmDeleteUser(null)}
+        />
       )}
     </PageShell>
   );
