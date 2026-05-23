@@ -15,3 +15,4 @@ export * from "./serviceCommunes.js";
 export * from "./auditLogs.js";
 export * from "./passwordTokens.js";
 export * from "./courrierTemplates.js";
+export * from "./userCommunes.js";

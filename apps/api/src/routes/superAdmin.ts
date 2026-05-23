@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, audit_logs, password_tokens } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens } from "@heureka-v1/db";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
@@ -349,6 +349,34 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
 
     if (!updated) return res.status(404).json({ error: "Utilisateur introuvable" });
     res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.get("/users/:id/communes", async (req, res) => {
+  try {
+    const rows = await db.select({ commune_id: user_communes.commune_id })
+      .from(user_communes).where(eq(user_communes.user_id, req.params.id));
+    res.json(rows.map((r) => r.commune_id));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.put("/users/:id/communes", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { ids } = req.body as { ids: string[] };
+    await db.transaction(async (tx) => {
+      await tx.delete(user_communes).where(eq(user_communes.user_id, id));
+      if (ids.length > 0) {
+        await tx.insert(user_communes).values(ids.map((cid) => ({ user_id: id, commune_id: cid })));
+      }
+    });
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

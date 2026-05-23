@@ -287,6 +287,14 @@ CREATE TABLE IF NOT EXISTS courrier_templates (
 );
 CREATE INDEX IF NOT EXISTS idx_courrier_templates_service_id ON courrier_templates(service_id);
 
+-- Communes multiples par utilisateur
+CREATE TABLE IF NOT EXISTS user_communes (
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  commune_id uuid NOT NULL REFERENCES communes(id) ON DELETE CASCADE,
+  PRIMARY KEY (user_id, commune_id)
+);
+CREATE INDEX IF NOT EXISTS idx_user_communes_user_id ON user_communes(user_id);
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_users_commune ON users(commune);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);

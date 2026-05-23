@@ -1586,6 +1586,8 @@ function Utilisateurs() {
   const [search, setSearch] = useState("");
   const [editRole, setEditRole] = useState<{ id: string; role: string } | null>(null);
   const [editCommune, setEditCommune] = useState<{ id: string; commune: string } | null>(null);
+  const [communesModal, setCommunesModal] = useState<{ id: string; name: string } | null>(null);
+  const [userCommuneIds, setUserCommuneIds] = useState<Set<string>>(new Set());
   const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", commune: "", telephone: "" });
 
   const load = useCallback(async () => {
@@ -1660,6 +1662,24 @@ function Utilisateurs() {
       await api.patch(`/admin/users/${id}`, { commune: commune || null });
       setToast({ msg: "Commune mise à jour", type: "success" });
       setEditCommune(null);
+      load();
+    } catch (e) {
+      setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
+    }
+  };
+
+  const openCommunesModal = async (u: UserItem) => {
+    const ids = await api.get<string[]>(`/admin/users/${u.id}/communes`);
+    setUserCommuneIds(new Set(ids));
+    setCommunesModal({ id: u.id, name: `${u.prenom} ${u.nom}` });
+  };
+
+  const saveCommunesModal = async () => {
+    if (!communesModal) return;
+    try {
+      await api.put(`/admin/users/${communesModal.id}/communes`, { ids: [...userCommuneIds] });
+      setToast({ msg: "Communes mises à jour", type: "success" });
+      setCommunesModal(null);
       load();
     } catch (e) {
       setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
@@ -1806,12 +1826,21 @@ function Utilisateurs() {
                     {new Date(u.created_at).toLocaleDateString("fr-FR")}
                   </td>
                   <td style={{ padding: "12px 16px" }}>
-                    <button
-                      onClick={() => setConfirmDelete(u.id)}
-                      style={{ padding: "6px 12px", background: C.redBg, color: C.red, border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}
-                    >
-                      Supprimer
-                    </button>
+                    <div style={{ display: "flex", gap: 6 }}>
+                      <button
+                        onClick={() => openCommunesModal(u)}
+                        style={{ padding: "6px 10px", background: C.accentLight, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+                        title="Gérer les communes"
+                      >
+                        🏛 Communes
+                      </button>
+                      <button
+                        onClick={() => setConfirmDelete(u.id)}
+                        style={{ padding: "6px 12px", background: C.redBg, color: C.red, border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}
+                      >
+                        Supprimer
+                      </button>
+                    </div>
                   </td>
                 </tr>
               ))}
@@ -1863,6 +1892,26 @@ function Utilisateurs() {
               </button>
               <button onClick={handleCreate} style={{ padding: "10px 24px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>
                 Créer
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Communes modal */}
+      {communesModal && (
+        <Modal title={`Communes — ${communesModal.name}`} onClose={() => setCommunesModal(null)}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <p style={{ margin: 0, fontSize: 13, color: C.textMuted }}>
+              Sélectionnez les communes auxquelles cet utilisateur a accès. La commune principale reste celle définie dans son profil.
+            </p>
+            <CoverageSelector allCommunes={allCommunes} selectedIds={userCommuneIds} onChange={setUserCommuneIds} />
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end" }}>
+              <button onClick={() => setCommunesModal(null)} style={{ padding: "9px 18px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}>
+                Annuler
+              </button>
+              <button onClick={() => void saveCommunesModal()} style={{ padding: "9px 22px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700 }}>
+                Enregistrer
               </button>
             </div>
           </div>
