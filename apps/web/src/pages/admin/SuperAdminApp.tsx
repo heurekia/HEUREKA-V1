@@ -997,17 +997,37 @@ function CommuneDetail() {
         {step === 2 && (
           <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
             <h3 style={{ margin: "0 0 4px", fontSize: 18, fontWeight: 700, color: C.text }}>Logo de la commune</h3>
-            <Field label="URL du logo">
-              <Input value={step3.logo_url} onChange={(v) => setStep3({ logo_url: v })} placeholder="https://…/logo.png" />
-            </Field>
-            {step3.logo_url && (
-              <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
-                <div style={{ width: 80, height: 80, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg }}>
-                  <img src={step3.logo_url} alt="Logo" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} onError={(e) => (e.currentTarget.style.display = "none")} />
-                </div>
-                <span style={{ color: C.textMuted, fontSize: 13 }}>Aperçu du logo</span>
+            <p style={{ margin: 0, fontSize: 13, color: C.textMuted }}>Téléversez un fichier (recommandé) ou saisissez une URL. Les images hébergées sur des sites externes peuvent ne pas s'afficher en raison de restrictions de hotlinking.</p>
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {/* Upload */}
+              <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                <label style={{ padding: "9px 18px", background: C.accentLight, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>
+                  📁 Téléverser un fichier
+                  <input type="file" accept="image/*" style={{ display: "none" }} onChange={async (e) => {
+                    const f = e.target.files?.[0];
+                    if (!f) return;
+                    const reader = new FileReader();
+                    reader.onload = () => setStep3({ logo_url: reader.result as string });
+                    reader.readAsDataURL(f);
+                  }} />
+                </label>
+                <span style={{ color: C.textMuted, fontSize: 13 }}>ou</span>
+                <Input value={step3.logo_url.startsWith("data:") ? "" : step3.logo_url} onChange={(v) => setStep3({ logo_url: v })} placeholder="https://…/logo.png" />
               </div>
-            )}
+              {step3.logo_url && (
+                <div style={{ display: "flex", alignItems: "center", gap: 16 }}>
+                  <div style={{ width: 80, height: 80, borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden", display: "flex", alignItems: "center", justifyContent: "center", background: C.bg, position: "relative" }}>
+                    <img src={step3.logo_url} alt="Logo" style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} onError={(e) => { e.currentTarget.style.display = "none"; }} />
+                  </div>
+                  <div>
+                    <div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>{step3.logo_url.startsWith("data:") ? "Fichier téléversé ✓" : "Aperçu du logo"}</div>
+                    {step3.logo_url.startsWith("data:") && (
+                      <button onClick={() => setStep3({ logo_url: "" })} style={{ fontSize: 12, color: C.red, background: "none", border: "none", cursor: "pointer", padding: 0, marginTop: 4 }}>Supprimer</button>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
             <div style={{ display: "flex", gap: 12 }}>
               <button onClick={() => setStep(1)} style={{ padding: "10px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, color: C.text, fontWeight: 600 }}>
                 ← Précédent
@@ -1565,6 +1585,7 @@ function Utilisateurs() {
   const [filterRole, setFilterRole] = useState("");
   const [search, setSearch] = useState("");
   const [editRole, setEditRole] = useState<{ id: string; role: string } | null>(null);
+  const [editCommune, setEditCommune] = useState<{ id: string; commune: string } | null>(null);
   const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", commune: "", telephone: "" });
 
   const load = useCallback(async () => {
@@ -1628,6 +1649,17 @@ function Utilisateurs() {
       await api.patch(`/admin/users/${id}`, { role });
       setToast({ msg: "Rôle mis à jour", type: "success" });
       setEditRole(null);
+      load();
+    } catch (e) {
+      setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
+    }
+  };
+
+  const handleCommuneUpdate = async (id: string, commune: string) => {
+    try {
+      await api.patch(`/admin/users/${id}`, { commune: commune || null });
+      setToast({ msg: "Commune mise à jour", type: "success" });
+      setEditCommune(null);
       load();
     } catch (e) {
       setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
@@ -1749,7 +1781,27 @@ function Utilisateurs() {
                       </div>
                     )}
                   </td>
-                  <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>{u.commune ?? "—"}</td>
+                  <td style={{ padding: "12px 16px" }}>
+                    {editCommune?.id === u.id ? (
+                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                        <select
+                          value={editCommune.commune}
+                          onChange={(e) => setEditCommune({ ...editCommune, commune: e.target.value })}
+                          style={{ padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, color: C.text, background: C.white, outline: "none" }}
+                        >
+                          <option value="">— Aucune —</option>
+                          {allCommunes.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
+                        </select>
+                        <button onClick={() => handleCommuneUpdate(u.id, editCommune.commune)} style={{ padding: "4px 10px", background: C.green, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓</button>
+                        <button onClick={() => setEditCommune(null)} style={{ padding: "4px 8px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", fontSize: 12 }}>✕</button>
+                      </div>
+                    ) : (
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ color: C.textMuted, fontSize: 13 }}>{u.commune ?? "—"}</span>
+                        <button onClick={() => setEditCommune({ id: u.id, commune: u.commune ?? "" })} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, fontSize: 12, padding: 2 }}>✏️</button>
+                      </div>
+                    )}
+                  </td>
                   <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>
                     {new Date(u.created_at).toLocaleDateString("fr-FR")}
                   </td>
