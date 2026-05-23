@@ -1507,9 +1507,16 @@ async function getCommune(communeName: string | null | undefined) {
   return c ?? null;
 }
 
+async function getCommuneForUser(req: AuthRequest): Promise<string | null> {
+  if (req.user!.commune) return req.user!.commune;
+  // Fallback: look up commune from DB for users with old JWT tokens that don't include commune
+  const [u] = await db.select({ commune: users.commune }).from(users).where(eq(users.id, req.user!.id)).limit(1);
+  return u?.commune ?? null;
+}
+
 mairieRouter.get("/templates", async (req: AuthRequest, res) => {
   try {
-    const commune = req.user!.commune;
+    const commune = await getCommuneForUser(req);
     if (!commune) return res.json([]);
     const rows = await db.select().from(courrier_templates)
       .where(sql`commune ILIKE ${commune}`)
@@ -1523,7 +1530,7 @@ mairieRouter.get("/templates", async (req: AuthRequest, res) => {
 
 mairieRouter.post("/templates", async (req: AuthRequest, res) => {
   try {
-    const commune = req.user!.commune;
+    const commune = await getCommuneForUser(req);
     if (!commune) return res.status(400).json({ error: "Commune introuvable" });
     const { name, category = "general", body = "" } = req.body as { name?: string; category?: string; body?: string };
     if (!name?.trim()) return res.status(400).json({ error: "Nom requis" });
@@ -1543,7 +1550,7 @@ mairieRouter.post("/templates", async (req: AuthRequest, res) => {
 mairieRouter.put("/templates/:templateId", async (req: AuthRequest, res) => {
   try {
     const templateId = req.params.templateId as string;
-    const commune = req.user!.commune;
+    const commune = await getCommuneForUser(req);
     const [existing] = await db.select({ commune: courrier_templates.commune }).from(courrier_templates).where(eq(courrier_templates.id, templateId)).limit(1);
     if (!existing || existing.commune?.toLowerCase() !== commune?.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
     const { name, category, body } = req.body as { name?: string; category?: string; body?: string };
@@ -1564,7 +1571,7 @@ mairieRouter.put("/templates/:templateId", async (req: AuthRequest, res) => {
 mairieRouter.delete("/templates/:templateId", async (req: AuthRequest, res) => {
   try {
     const templateId = req.params.templateId as string;
-    const commune = req.user!.commune;
+    const commune = await getCommuneForUser(req);
     const [existing] = await db.select({ commune: courrier_templates.commune }).from(courrier_templates).where(eq(courrier_templates.id, templateId)).limit(1);
     if (!existing || existing.commune?.toLowerCase() !== commune?.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
     await db.delete(courrier_templates).where(eq(courrier_templates.id, templateId));
@@ -1577,7 +1584,8 @@ mairieRouter.delete("/templates/:templateId", async (req: AuthRequest, res) => {
 
 mairieRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
   try {
-    const commune = await getCommune(req.user!.commune);
+    const communeName = await getCommuneForUser(req);
+    const commune = await getCommune(communeName);
     if (!commune) return res.json({});
     res.json({
       letterhead_logo: commune.letterhead_logo ?? commune.logo_url,
@@ -1596,7 +1604,8 @@ mairieRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
 
 mairieRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
   try {
-    const commune = await getCommune(req.user!.commune);
+    const communeName = await getCommuneForUser(req);
+    const commune = await getCommune(communeName);
     if (!commune) return res.status(404).json({ error: "Commune introuvable" });
     const { letterhead_logo, letterhead_title, letterhead_subtitle, letterhead_address, footer_text, signature_image } = req.body as Record<string, string | null>;
     await db.update(communes).set({

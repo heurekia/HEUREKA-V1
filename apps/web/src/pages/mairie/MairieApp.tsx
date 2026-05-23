@@ -1983,7 +1983,16 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeIn
           </div>
         </div>
       )}
-      {stab === "Courriers" && <CommuneLetterheadPanel />}
+      {stab === "Courriers" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
+          <CommuneLetterheadPanel />
+          <div style={{ borderTop: "1px solid #E2E8F0", paddingTop: 28 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Modèles de courrier</div>
+            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Créez et gérez vos modèles de courrier avec variables dynamiques.</div>
+            <TemplateManagerPanel />
+          </div>
+        </div>
+      )}
       {stab === "Intégrations" && (
         <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Intégrations et services connectés</div>

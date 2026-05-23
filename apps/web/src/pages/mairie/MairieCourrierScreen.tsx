@@ -517,6 +517,7 @@ export function CommuneLetterheadPanel() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
+  const [saveError, setSaveError] = useState<string | null>(null);
 
   useEffect(() => {
     api.get<typeof form & { commune_logo_url?: string | null }>("/mairie/commune-letterhead").then(lh => {
@@ -541,6 +542,7 @@ export function CommuneLetterheadPanel() {
 
   const handleSave = async () => {
     setSaving(true);
+    setSaveError(null);
     try {
       await api.put("/mairie/commune-letterhead", {
         letterhead_logo: form.letterhead_logo || null,
@@ -552,6 +554,8 @@ export function CommuneLetterheadPanel() {
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Erreur lors de l'enregistrement");
     } finally {
       setSaving(false);
     }
@@ -663,6 +667,11 @@ export function CommuneLetterheadPanel() {
           </div>
         )}
 
+        {saveError && (
+          <div style={{ padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#B91C1C" }}>
+            {saveError}
+          </div>
+        )}
         <button onClick={() => void handleSave()} disabled={saving}
           style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 20px", background: saved ? "#16A34A" : "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600, width: "fit-content", transition: "background 0.3s" }}>
           <Save size={13} />
