@@ -3843,11 +3843,11 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
                   {[
                     ["Pétitionnaire", dossier.petitionnaire],
+                    ["Type de dossier", typeLabel],
                     ["Adresse", liveAdresse ?? "—"],
-                    ["Commune", liveCommune ?? "—"],
+                    ["Commune", `${liveCommune ?? "—"}${dossier.code_postal ? ` (${dossier.code_postal})` : ""}`],
                     ["Parcelle", dossier.parcelle ?? "—"],
-                    ["Surface plancher", dossier.surface_plancher ?? "—"],
-                    ["Type", typeLabel],
+                    ["Surface de plancher", dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—"],
                     ["Date de dépôt", dossier.date_depot ? fmtDate(dossier.date_depot) : "—"],
                     ["Échéance", dossier.echeance],
                   ].map(([l, v]) => (
@@ -3909,28 +3909,18 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               </div>
             </div>
 
-            {/* ── Description des travaux (style CERFA) ── */}
-            <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
-              <div style={{ padding: "13px 18px 10px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", gap: 8 }}>
-                <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-                <span style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Description du projet</span>
-                <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: 4, fontStyle: "italic" }}>d'après CERFA</span>
+            {/* ── Description du projet ── */}
+            <div style={{ ...CARD, display: "flex", alignItems: "flex-start", gap: 16 }}>
+              <div style={{ width: 36, height: 36, background: "#EEF2FF", borderRadius: 10, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, marginTop: 2 }}>
+                <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 0 }}>
-                {[
-                  { label: "Nature de l'opération", value: typeLabel, span: 2 },
-                  { label: "Référence cadastrale", value: dossier.parcelle ?? "—", span: 1 },
-                  { label: "Surface de plancher", value: dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—", span: 1 },
-                  { label: "Adresse des travaux", value: liveAdresse ?? dossier.adresse ?? "—", span: 2 },
-                  { label: "Commune", value: liveCommune ?? dossier.commune ?? "—", span: 1 },
-                  { label: "Code postal", value: dossier.code_postal ?? "—", span: 1 },
-                  { label: "Description libre du projet", value: dossier.description ?? "—", span: 4 },
-                ].map(({ label, value, span }) => (
-                  <div key={label} style={{ gridColumn: `span ${span}`, padding: "9px 14px", borderRight: "1px solid #F1F5F9", borderBottom: "1px solid #F1F5F9" }}>
-                    <div style={{ fontSize: 9, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
-                    <div style={{ fontSize: 13, color: "#1E293B", fontWeight: value === "—" ? 400 : 500, fontStyle: value === "—" ? "italic" : "normal" }}>{value}</div>
-                  </div>
-                ))}
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>Description du projet</div>
+                {dossier.description ? (
+                  <p style={{ margin: 0, fontSize: 14, color: "#1E293B", lineHeight: 1.65 }}>{dossier.description}</p>
+                ) : (
+                  <p style={{ margin: 0, fontSize: 13, color: "#94a3b8", fontStyle: "italic" }}>Aucune description renseignée.</p>
+                )}
               </div>
             </div>
 
