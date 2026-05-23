@@ -1,5 +1,6 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
+import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db.js";
 import { users, audit_logs } from "@heureka-v1/db";
@@ -7,6 +8,28 @@ import { eq } from "drizzle-orm";
 import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
 
 export const authRouter = Router();
+
+const loginLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 10,
+  message: { error: "Trop de tentatives de connexion. Réessayez dans 15 minutes." },
+  standardHeaders: true,
+  legacyHeaders: false,
+  keyGenerator: (req) => {
+    // Rate-limit per IP, or per email body if available
+    const email = typeof req.body?.email === "string" ? req.body.email.toLowerCase() : null;
+    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "unknown";
+    return email ? `login:${ip}:${email}` : `login:${ip}`;
+  },
+});
+
+const registerLimiter = rateLimit({
+  windowMs: 60 * 60 * 1000,
+  max: 5,
+  message: { error: "Trop de créations de compte. Réessayez dans 1 heure." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 const IS_PROD = process.env.NODE_ENV === "production";
 
@@ -42,7 +65,7 @@ const registerSchema = z.object({
   telephone: z.string().optional(),
 });
 
-authRouter.post("/register", async (req: AuthRequest, res) => {
+authRouter.post("/register", registerLimiter, async (req: AuthRequest, res) => {
   try {
     const data = registerSchema.parse(req.body);
     const existing = await db.select().from(users).where(eq(users.email, data.email)).limit(1);
@@ -78,7 +101,7 @@ authRouter.post("/register", async (req: AuthRequest, res) => {
   }
 });
 
-authRouter.post("/login", async (req: AuthRequest, res) => {
+authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
