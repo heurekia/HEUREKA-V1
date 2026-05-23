@@ -3,9 +3,11 @@ import bcrypt from "bcryptjs";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db.js";
-import { users, audit_logs, dossiers, dossier_messages, dossier_pieces_jointes, notifications } from "@heureka-v1/db";
-import { eq } from "drizzle-orm";
+import { users, audit_logs, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens } from "@heureka-v1/db";
+import { eq, and, gt, isNull } from "drizzle-orm";
 import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
+import { sendPasswordResetEmail } from "../services/mailer.js";
+import crypto from "crypto";
 
 export const authRouter = Router();
 
@@ -212,6 +214,75 @@ authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {
       avatar_url: user.avatar_url,
       created_at: user.created_at,
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Mot de passe oublié ──────────────────────────────────────────────────────
+authRouter.post("/forgot-password", rateLimit({ windowMs: 15 * 60 * 1000, max: 5, legacyHeaders: false }), async (req: AuthRequest, res) => {
+  try {
+    const { email } = req.body as { email?: string };
+    if (!email) return res.status(400).json({ error: "Email requis" });
+
+    const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    // Always return 200 to avoid user enumeration
+    if (!user) return res.json({ ok: true });
+
+    const token = crypto.randomBytes(32).toString("hex");
+    const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
+    await db.insert(password_tokens).values({ user_id: user.id, token, type: "reset", expires_at: expires });
+    await sendPasswordResetEmail({ to: user.email, prenom: user.prenom, token }).catch(err => console.error("[mailer] reset:", err));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Vérification token (activation ou reset) ─────────────────────────────────
+authRouter.get("/activate/:token", async (req, res) => {
+  try {
+    const { token } = req.params;
+    const [row] = await db.select({ id: password_tokens.id, type: password_tokens.type, user_id: password_tokens.user_id, email: users.email, prenom: users.prenom })
+      .from(password_tokens)
+      .leftJoin(users, eq(password_tokens.user_id, users.id))
+      .where(and(eq(password_tokens.token, token), isNull(password_tokens.used_at), gt(password_tokens.expires_at, new Date())))
+      .limit(1);
+    if (!row) return res.status(400).json({ error: "Lien invalide ou expiré" });
+    res.json({ valid: true, email: row.email, prenom: row.prenom, type: row.type });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Définir le mot de passe via token ────────────────────────────────────────
+authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, legacyHeaders: false }), async (req: AuthRequest, res) => {
+  try {
+    const { token, password } = req.body as { token?: string; password?: string };
+    if (!token || !password) return res.status(400).json({ error: "Token et mot de passe requis" });
+    if (password.length < 12) return res.status(400).json({ error: "Le mot de passe doit contenir au moins 12 caractères" });
+
+    const [row] = await db.select().from(password_tokens)
+      .where(and(eq(password_tokens.token, token), isNull(password_tokens.used_at), gt(password_tokens.expires_at, new Date())))
+      .limit(1);
+    if (!row) return res.status(400).json({ error: "Lien invalide ou expiré" });
+
+    const password_hash = await bcrypt.hash(password, 10);
+    await Promise.all([
+      db.update(users).set({ password_hash }).where(eq(users.id, row.user_id)),
+      db.update(password_tokens).set({ used_at: new Date() }).where(eq(password_tokens.id, row.id)),
+    ]);
+
+    const [user] = await db.select().from(users).where(eq(users.id, row.user_id)).limit(1);
+    if (!user) return res.status(500).json({ error: "Erreur serveur" });
+
+    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role });
+    res.cookie("token", jwtToken, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", maxAge: 7 * 24 * 60 * 60 * 1000, path: "/" });
+    writeAudit(user.id, user.email, row.type === "activation" ? "account_activated" : "password_reset", req);
+    res.json({ user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role } });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

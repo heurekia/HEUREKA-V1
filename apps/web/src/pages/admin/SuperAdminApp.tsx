@@ -2113,7 +2113,7 @@ interface ServiceUser {
 }
 
 const emptyServiceForm = () => ({ name: "", type: "ABF", email: "", telephone: "", description: "" });
-const emptyUserForm = () => ({ email: "", prenom: "", nom: "", telephone: "", password: "" });
+const emptyUserForm = () => ({ email: "", prenom: "", nom: "", telephone: "" });
 
 // ─── Coverage Selector ────────────────────────────────────────────────────────
 function IndeterminateCheckbox({ checked, indeterminate, onChange, style }: {
@@ -2358,13 +2358,13 @@ function ServicesAnnexes() {
 
   const handleAddUser = async () => {
     if (!selected) return;
-    if (!userForm.email || !userForm.prenom || !userForm.nom || !userForm.password) {
-      return showToast("Tous les champs obligatoires doivent être remplis", "error");
+    if (!userForm.email || !userForm.prenom || !userForm.nom) {
+      return showToast("Prénom, nom et email sont obligatoires", "error");
     }
     setSaving(true);
     try {
       await api.post(`/admin/services/${selected.id}/users`, userForm);
-      showToast("Utilisateur créé");
+      showToast("Compte créé — email d'activation envoyé");
       setShowAddUser(false);
       setUserForm(emptyUserForm());
       loadUsers(selected.id);
@@ -2521,11 +2521,9 @@ function ServicesAnnexes() {
             <Field label="Téléphone">
               <Input type="tel" value={userForm.telephone} onChange={(v) => setUserForm({ ...userForm, telephone: v })} />
             </Field>
-            <Field label="Mot de passe provisoire *">
-              <input style={inp()} type="password" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} placeholder="À communiquer à l'utilisateur" />
-            </Field>
-            <div style={{ background: C.blueBg, borderRadius: 8, padding: "10px 14px", fontSize: 13, color: C.blue }}>
-              L'utilisateur pourra se connecter avec ces identifiants et accéder aux dossiers qui lui sont affectés.
+            <div style={{ background: C.blueBg, borderRadius: 8, padding: "12px 14px", fontSize: 13, color: C.blue, lineHeight: 1.5 }}>
+              <strong>Email d'activation automatique</strong><br />
+              L'utilisateur recevra un email lui permettant de définir son propre mot de passe. Le lien est valable 24 heures.
             </div>
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 4 }}>
               <button onClick={() => { setShowAddUser(false); setUserForm(emptyUserForm()); }} style={{ padding: "10px 20px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.text, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>Annuler</button>

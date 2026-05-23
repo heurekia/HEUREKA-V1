@@ -242,6 +242,19 @@ CREATE TABLE IF NOT EXISTS audit_logs (
 CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
 
+-- Tokens d'activation de compte et de réinitialisation de mot de passe
+CREATE TABLE IF NOT EXISTS password_tokens (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  token text NOT NULL UNIQUE,
+  type text NOT NULL DEFAULT 'activation',
+  expires_at timestamp NOT NULL,
+  used_at timestamp,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_password_tokens_token ON password_tokens(token);
+CREATE INDEX IF NOT EXISTS idx_password_tokens_user_id ON password_tokens(user_id);
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_users_commune ON users(commune);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);

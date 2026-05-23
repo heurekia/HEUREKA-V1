@@ -1,7 +1,9 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, audit_logs } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, audit_logs, password_tokens } from "@heureka-v1/db";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte } from "drizzle-orm";
+import crypto from "crypto";
+import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
 
@@ -590,21 +592,34 @@ superAdminRouter.get("/services/:id/users", async (req, res) => {
 superAdminRouter.post("/services/:id/users", async (req, res) => {
   try {
     const { id } = req.params;
-    const { email, prenom, nom, telephone, password } = req.body as {
-      email?: string; prenom?: string; nom?: string; telephone?: string; password?: string;
+    const { email, prenom, nom, telephone } = req.body as {
+      email?: string; prenom?: string; nom?: string; telephone?: string;
     };
-    if (!email || !prenom || !nom || !password) {
-      return res.status(400).json({ error: "email, prenom, nom et password sont requis" });
+    if (!email || !prenom || !nom) {
+      return res.status(400).json({ error: "email, prenom et nom sont requis" });
     }
-    const [existing] = await db.select({ id: external_services.id }).from(external_services).where(eq(external_services.id, id));
-    if (!existing) return res.status(404).json({ error: "Service introuvable" });
 
-    const password_hash = await bcrypt.hash(password, 10);
+    const [service] = await db.select().from(external_services).where(eq(external_services.id, id));
+    if (!service) return res.status(404).json({ error: "Service introuvable" });
+
+    // Create account with locked password — user sets it via activation email
+    const locked_hash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
     const [user] = await db.insert(users).values({
-      email, prenom, nom, telephone, password_hash,
+      email, prenom, nom, telephone,
+      password_hash: locked_hash,
       role: "service_externe" as const,
       service_id: id,
     }).returning({ id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, telephone: users.telephone, created_at: users.created_at });
+
+    // Generate activation token (valid 24h)
+    const token = crypto.randomBytes(32).toString("hex");
+    const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    await db.insert(password_tokens).values({ user_id: user!.id, token, type: "activation", expires_at: expires });
+
+    // Send activation email (fire & forget — don't fail the request if email fails)
+    sendActivationEmail({ to: user!.email, prenom: user!.prenom, serviceName: service.name, token })
+      .catch(err => console.error("[mailer] activation:", err));
+
     res.status(201).json(user);
   } catch (err: unknown) {
     if ((err as { message?: string }).message?.includes("unique")) {

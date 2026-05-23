@@ -13,3 +13,4 @@ export * from "./calendar_events.js";
 export * from "./externalServices.js";
 export * from "./serviceCommunes.js";
 export * from "./auditLogs.js";
+export * from "./passwordTokens.js";
