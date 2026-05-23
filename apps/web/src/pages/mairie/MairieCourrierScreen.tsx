@@ -161,7 +161,7 @@ function EditorToolbar({ editor }: { editor: ReturnType<typeof useEditor> }) {
 }
 
 // ─── TipTap editor ─────────────────────────────────────────────────────────
-function TipTapEditorMairie({ content, onChange, placeholder, minHeight = 280 }: { content: string; onChange: (html: string) => void; placeholder?: string; minHeight?: number }) {
+function TipTapEditorMairie({ content, onChange, placeholder, minHeight = 280, wrapperStyle }: { content: string; onChange: (html: string) => void; placeholder?: string; minHeight?: number; wrapperStyle?: React.CSSProperties }) {
   const editor = useEditor({
     extensions: [
       StarterKit,
@@ -181,7 +181,7 @@ function TipTapEditorMairie({ content, onChange, placeholder, minHeight = 280 }:
   }, [content, editor]);
 
   return (
-    <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden", background: "white" }}>
+    <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden", background: "white", ...wrapperStyle }}>
       <EditorToolbar editor={editor} />
       <style>{`
         .tiptap-mairie { outline: none; min-height: ${minHeight}px; padding: 18px 20px; font-size: 14px; line-height: 1.7; color: #1E293B; font-family: Georgia, serif; }
@@ -358,12 +358,51 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
   );
 }
 
+// ─── Letterhead banner (shown inside template editor as paper context) ────────
+function LetterheadBanner({ lh }: { lh: Letterhead }) {
+  if (!lh.letterhead_logo && !lh.letterhead_title) return null;
+  return (
+    <div style={{ padding: "14px 20px 12px", borderBottom: "2px solid #1E293B", display: "flex", alignItems: "flex-start", gap: 14, background: "white", userSelect: "none", pointerEvents: "none" }}>
+      {lh.letterhead_logo && (
+        <img src={lh.letterhead_logo} alt="" style={{ height: 44, width: "auto", objectFit: "contain", flexShrink: 0 }} />
+      )}
+      <div>
+        {lh.letterhead_title && <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>{lh.letterhead_title}</div>}
+        {lh.letterhead_subtitle && <div style={{ fontSize: 12, color: "#374151" }}>{lh.letterhead_subtitle}</div>}
+        {lh.letterhead_address && <div style={{ fontSize: 11, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{lh.letterhead_address}</div>}
+      </div>
+      <div style={{ marginLeft: "auto", fontSize: 10, color: "#CBD5E1", fontStyle: "italic", alignSelf: "flex-end" }}>En-tête commune</div>
+    </div>
+  );
+}
+
+function LetterheadFooter({ lh }: { lh: Letterhead }) {
+  if (!lh.footer_text && !lh.signature_image) return null;
+  return (
+    <div style={{ background: "white", borderTop: "1px solid #CBD5E1", padding: "10px 20px", userSelect: "none", pointerEvents: "none" }}>
+      {lh.signature_image && (
+        <img src={lh.signature_image} alt="Signature" style={{ height: 48, width: "auto", objectFit: "contain", display: "block", marginBottom: 4 }} />
+      )}
+      {lh.footer_text && (
+        <div style={{ fontSize: 10, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", borderTop: "1px solid #E2E8F0", paddingTop: 8, marginTop: 4 }}>
+          {lh.footer_text}
+        </div>
+      )}
+      <div style={{ fontSize: 10, color: "#CBD5E1", fontStyle: "italic", textAlign: "right", marginTop: 4 }}>Pied de page commune</div>
+    </div>
+  );
+}
+
 // ─── Template Manager Panel ────────────────────────────────────────────────
 export function TemplateManagerPanel() {
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Partial<CourrierTemplate> | null>(null);
   const [saving, setSaving] = useState(false);
+  const [letterhead, setLetterhead] = useState<Letterhead>({
+    letterhead_logo: null, letterhead_title: null, letterhead_subtitle: null,
+    letterhead_address: null, footer_text: null, signature_image: null,
+  });
 
   const load = useCallback(async () => {
     const rows = await api.get<CourrierTemplate[]>("/mairie/templates");
@@ -372,6 +411,11 @@ export function TemplateManagerPanel() {
   }, []);
 
   useEffect(() => { load().catch(() => setLoading(false)); }, [load]);
+  useEffect(() => {
+    api.get<Letterhead & { commune_configured?: boolean }>("/mairie/commune-letterhead")
+      .then(lh => { if (lh.commune_configured !== false) setLetterhead(lh); })
+      .catch(() => {});
+  }, []);
 
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -400,6 +444,9 @@ export function TemplateManagerPanel() {
     await load();
   };
 
+  const hasLetterhead = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
+  const hasFooter = !!(letterhead.footer_text || letterhead.signature_image);
+
   if (editing !== null) {
     const cat = CATEGORY_CONFIG[editing.category ?? "general"] ?? CATEGORY_CONFIG.general!;
     return (
@@ -409,7 +456,7 @@ export function TemplateManagerPanel() {
         </button>
         <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>{editing.id ? "Modifier le modèle" : "Nouveau modèle"}</div>
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 18 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
           <div>
             <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Nom du modèle *</label>
             <input value={editing.name ?? ""} onChange={e => setEditing(p => ({ ...p!, name: e.target.value }))}
@@ -427,17 +474,38 @@ export function TemplateManagerPanel() {
           </div>
         </div>
 
-        <div style={{ marginBottom: 8 }}>
-          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>Corps du courrier</label>
-          <span style={{ fontSize: 11, color: "#94a3b8", marginLeft: 8 }}>— Utilisez <strong>Insérer variable</strong> pour les champs dynamiques</span>
+        {/* Paper view: letterhead header + editable body + letterhead footer */}
+        <div style={{ boxShadow: "0 2px 8px rgba(0,0,0,0.06)", marginBottom: 14 }}>
+          {hasLetterhead && (
+            <div style={{ border: "1px solid #E2E8F0", borderBottom: "none", borderRadius: "10px 10px 0 0", overflow: "hidden" }}>
+              <LetterheadBanner lh={letterhead} />
+            </div>
+          )}
+          <TipTapEditorMairie
+            content={editing.body ?? ""}
+            onChange={body => setEditing(p => ({ ...p!, body }))}
+            placeholder="Rédigez le corps du courrier… Utilisez Insérer variable pour les champs dynamiques."
+            minHeight={220}
+            wrapperStyle={hasLetterhead || hasFooter ? {
+              borderRadius: hasLetterhead && hasFooter ? 0 : hasLetterhead ? "0 0 10px 10px" : "10px 10px 0 0",
+              borderTop: hasLetterhead ? "none" : undefined,
+              borderBottom: hasFooter ? "none" : undefined,
+            } : undefined}
+          />
+          {hasFooter && (
+            <div style={{ border: "1px solid #E2E8F0", borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
+              <LetterheadFooter lh={letterhead} />
+            </div>
+          )}
         </div>
-        <TipTapEditorMairie
-          content={editing.body ?? ""}
-          onChange={body => setEditing(p => ({ ...p!, body }))}
-          placeholder="Rédigez votre modèle de courrier…"
-        />
 
-        <div style={{ marginTop: 14, padding: "12px 14px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #E2E8F0" }}>
+        {!hasLetterhead && (
+          <div style={{ marginBottom: 14, padding: "8px 12px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12, color: "#64748b" }}>
+            💡 Configurez l'en-tête dans <strong>Paramètres → Courriers</strong> pour voir le papier à en-tête ici.
+          </div>
+        )}
+
+        <div style={{ padding: "10px 14px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #E2E8F0", marginBottom: 14 }}>
           <div style={{ fontSize: 11, fontWeight: 700, color: "#374151", marginBottom: 6 }}>Variables disponibles</div>
           <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
             {TEMPLATE_VARIABLES.flatMap(g => g.vars).map(v => (
@@ -447,11 +515,11 @@ export function TemplateManagerPanel() {
         </div>
 
         {saveError && (
-          <div style={{ marginTop: 12, padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#B91C1C" }}>
+          <div style={{ marginBottom: 12, padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#B91C1C" }}>
             {saveError}
           </div>
         )}
-        <div style={{ marginTop: 18, display: "flex", gap: 10, alignItems: "center" }}>
+        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
           <button onClick={() => void handleSave()} disabled={saving || !editing.name?.trim()}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving || !editing.name?.trim() ? "not-allowed" : "pointer", opacity: saving || !editing.name?.trim() ? 0.6 : 1, fontSize: 13, fontWeight: 600 }}>
             <Save size={13} /> {saving ? "Enregistrement…" : "Enregistrer"}

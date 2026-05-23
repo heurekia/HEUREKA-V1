@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes } from "@heureka-v1/db";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
@@ -395,7 +395,14 @@ superAdminRouter.put("/users/:id/communes", async (req, res) => {
 superAdminRouter.delete("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    await db.delete(users).where(eq(users.id, id));
+    await db.transaction(async (tx) => {
+      // Nullify instructeur_id on dossiers assigned to this user (no cascade in schema)
+      await tx.update(dossiers).set({ instructeur_id: null }).where(eq(dossiers.instructeur_id, id));
+      // Delete pieces jointes uploaded by this user (notNull FK, cannot set null)
+      await tx.delete(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.user_id, id));
+      // Delete the user — cascades through user_id FKs (dossiers, notifications, etc.)
+      await tx.delete(users).where(eq(users.id, id));
+    });
     res.json({ success: true });
   } catch (err) {
     console.error(err);
