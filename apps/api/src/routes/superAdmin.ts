@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions } from "@heureka-v1/db";
-import { fetchLegifranceArticle, ARTICLES_TO_CACHE, CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
+import { CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
@@ -760,115 +760,88 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
   }
 });
 
-// ── Legal mentions refresh (calls PISTE / Légifrance) ─────────────────────────
-superAdminRouter.post("/legal-mentions/refresh", async (_req, res) => {
+// ── Legal mentions (Code de l'urbanisme) — CRUD ───────────────────────────────
+
+superAdminRouter.get("/legal-mentions", async (_req, res) => {
   try {
-    const refs = Object.keys(ARTICLES_TO_CACHE);
-    const results: { ref: string; ok: boolean }[] = [];
-
-    for (const articleRef of refs) {
-      const art = await fetchLegifranceArticle(articleRef);
-      if (!art) { results.push({ ref: articleRef, ok: false }); continue; }
-      await db
-        .insert(legal_mentions)
-        .values({
-          code: CODE_URBANISME_ID,
-          code_name: CODE_URBANISME_NAME,
-          article_ref: articleRef,
-          article_title: art.title,
-          article_html: art.html,
-          legifrance_id: art.legiId,
-          fetched_at: new Date(),
-          updated_at: new Date(),
-        })
-        .onConflictDoUpdate({
-          target: [legal_mentions.code, legal_mentions.article_ref],
-          set: {
-            article_title: art.title,
-            article_html: art.html,
-            legifrance_id: art.legiId,
-            updated_at: new Date(),
-          },
-        });
-      results.push({ ref: articleRef, ok: true });
-    }
-
-    const ok = results.filter((r) => r.ok).length;
-    const failed = results.filter((r) => !r.ok).map((r) => r.ref);
-    res.json({ ok, failed, total: refs.length });
+    const rows = await db
+      .select()
+      .from(legal_mentions)
+      .where(eq(legal_mentions.code, CODE_URBANISME_ID))
+      .orderBy(legal_mentions.article_ref);
+    res.json(rows);
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: String(err) });
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
-// ── PISTE diagnostic endpoint ─────────────────────────────────────────────────
-superAdminRouter.get("/legal-mentions/diagnose", async (_req, res) => {
-  const OAUTH_URL = "https://oauth.piste.gouv.fr/api/oauth/token";
-  const API_BASE  = "https://api.piste.gouv.fr/dila/legifrance/lf-engine-app";
-  const results: Record<string, unknown> = {};
+superAdminRouter.patch("/legal-mentions/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { article_title, article_html } = req.body as { article_title?: string; article_html?: string };
 
-  const clientId     = process.env.PISTE_CLIENT_ID     ?? "";
-  const clientSecret = process.env.PISTE_CLIENT_SECRET ?? "";
-  const apiKey       = process.env.PISTE_API_KEY       ?? "";
-  const secretKey    = process.env.PISTE_SECRET_KEY    ?? "";
+    const patch: Record<string, unknown> = { updated_at: new Date() };
+    if (article_title !== undefined) patch.article_title = article_title;
+    if (article_html !== undefined) patch.article_html = article_html;
 
-  // Helper: try one OAuth attempt
-  const tryOAuth = async (label: string, headers: Record<string, string>, body: Record<string, string>) => {
-    try {
-      const r = await fetch(OAUTH_URL, {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers },
-        body: new URLSearchParams(body),
-        signal: AbortSignal.timeout(8_000),
-      });
-      const text = await r.text();
-      results[label] = { status: r.status, body: text.slice(0, 400) };
-      return r.ok ? JSON.parse(text).access_token as string : null;
-    } catch (e) { results[label] = { error: String(e) }; return null; }
-  };
+    const [updated] = await db
+      .update(legal_mentions)
+      .set(patch)
+      .where(eq(legal_mentions.id, id))
+      .returning();
 
-  // Helper: try direct API call with API key only
-  const tryApiKey = async (key: string) => {
-    try {
-      const r = await fetch(`${API_BASE}/search`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json", accept: "application/json", "X-Gravitee-Api-Key": key },
-        body: JSON.stringify({ recherche: { champs: [{ typeChamp: "NUM_ARTICLE", criteres: [{ typeRecherche: "EXACTE", valeur: "L424-1", operateur: "ET" }], operateur: "ET" }], filtres: [{ facette: "NOM_CODE", valeurs: ["Code de l'urbanisme"] }, { facette: "DATE_VERSION", singleDate: Date.now() }], pageNumber: 1, pageSize: 1, operateur: "ET", sort: "PERTINENCE", typePagination: "ARTICLE" }, fond: "CODE_DATE" }),
-        signal: AbortSignal.timeout(8_000),
-      });
-      const text = await r.text();
-      results["apikey_only"] = { status: r.status, body: text.slice(0, 400) };
-    } catch (e) { results["apikey_only"] = { error: String(e) }; }
-  };
-
-  // 1. OAuth: client_id+secret in body, scope=openid
-  const tok1 = await tryOAuth("oauth_body_scope", {}, { grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret, scope: "openid" });
-  // 2. OAuth: client_id+secret in body, no scope
-  const tok2 = await tryOAuth("oauth_body_noscope", {}, { grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret });
-  // 3. OAuth: API key+secret in body, scope=openid
-  const tok3 = await tryOAuth("oauth_apikey_body_scope", {}, { grant_type: "client_credentials", client_id: apiKey, client_secret: secretKey, scope: "openid" });
-  // 4. OAuth: API key+secret in body, no scope
-  const tok4 = await tryOAuth("oauth_apikey_body_noscope", {}, { grant_type: "client_credentials", client_id: apiKey, client_secret: secretKey });
-  // 5. OAuth: API key+secret Basic Auth
-  const tok5 = await tryOAuth("oauth_apikey_basic", { Authorization: `Basic ${Buffer.from(`${apiKey}:${secretKey}`).toString("base64")}` }, { grant_type: "client_credentials", scope: "openid" });
-  // 6. Direct API key only (no OAuth)
-  await tryApiKey(apiKey);
-
-  // If any token worked, try a search with it
-  const goodToken = tok1 ?? tok2 ?? tok3 ?? tok4 ?? tok5;
-  if (goodToken) {
-    try {
-      const r = await fetch(`${API_BASE}/search`, {
-        method: "POST",
-        headers: { Authorization: `Bearer ${goodToken}`, "Content-Type": "application/json", accept: "application/json", "X-Gravitee-Api-Key": apiKey },
-        body: JSON.stringify({ recherche: { champs: [{ typeChamp: "NUM_ARTICLE", criteres: [{ typeRecherche: "EXACTE", valeur: "L424-1", operateur: "ET" }], operateur: "ET" }], filtres: [{ facette: "NOM_CODE", valeurs: ["Code de l'urbanisme"] }, { facette: "DATE_VERSION", singleDate: Date.now() }], pageNumber: 1, pageSize: 1, operateur: "ET", sort: "PERTINENCE", typePagination: "ARTICLE" }, fond: "CODE_DATE" }),
-        signal: AbortSignal.timeout(8_000),
-      });
-      const text = await r.text();
-      results["search_with_token"] = { status: r.status, body: text.slice(0, 600) };
-    } catch (e) { results["search_with_token"] = { error: String(e) }; }
+    if (!updated) return res.status(404).json({ error: "Article introuvable" });
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
+});
 
-  res.json({ env: { clientId: clientId ? "✓" : "✗", clientSecret: clientSecret ? "✓" : "✗", apiKey: apiKey ? "✓" : "✗", secretKey: secretKey ? "✓" : "✗" }, results });
+superAdminRouter.post("/legal-mentions", async (req, res) => {
+  try {
+    const { article_ref, article_title, article_html } = req.body as {
+      article_ref?: string;
+      article_title?: string;
+      article_html?: string;
+    };
+    if (!article_ref?.trim()) return res.status(400).json({ error: "article_ref requis" });
+
+    const [row] = await db
+      .insert(legal_mentions)
+      .values({
+        code: CODE_URBANISME_ID,
+        code_name: CODE_URBANISME_NAME,
+        article_ref: article_ref.trim().toUpperCase(),
+        article_title: article_title ?? null,
+        article_html: article_html ?? null,
+        fetched_at: new Date(),
+        updated_at: new Date(),
+      })
+      .onConflictDoUpdate({
+        target: [legal_mentions.code, legal_mentions.article_ref],
+        set: {
+          article_title: article_title ?? null,
+          article_html: article_html ?? null,
+          updated_at: new Date(),
+        },
+      })
+      .returning();
+
+    res.status(201).json(row);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.delete("/legal-mentions/:id", async (req, res) => {
+  try {
+    await db.delete(legal_mentions).where(eq(legal_mentions.id, req.params.id));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
 });

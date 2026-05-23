@@ -2121,23 +2121,76 @@ function Roles() {
 }
 
 // ─── Configuration ────────────────────────────────────────────────────────────
-function Configuration() {
-  const [syncLoading, setSyncLoading] = useState(false);
-  const [syncResult, setSyncResult] = useState<{ ok: number; failed: string[]; total: number } | null>(null);
-  const [syncError, setSyncError] = useState<string | null>(null);
+interface LegalMentionRow {
+  id: string;
+  article_ref: string;
+  article_title: string | null;
+  article_html: string | null;
+  updated_at: string;
+}
 
-  const handleSync = async () => {
-    setSyncLoading(true);
-    setSyncResult(null);
-    setSyncError(null);
+function Configuration() {
+  const [articles, setArticles] = useState<LegalMentionRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<LegalMentionRow | null>(null);
+  const [editTitle, setEditTitle] = useState("");
+  const [editHtml, setEditHtml] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [addRef, setAddRef] = useState("");
+  const [addTitle, setAddTitle] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+
+  const load = useCallback(async () => {
     try {
-      const res = await api.post<{ ok: number; failed: string[]; total: number }>("/admin/legal-mentions/refresh", {});
-      setSyncResult(res);
-    } catch (err) {
-      setSyncError(String(err));
+      const rows = await api.get<LegalMentionRow[]>("/admin/legal-mentions");
+      setArticles(rows);
+    } catch {
+      // ignore
     } finally {
-      setSyncLoading(false);
+      setLoading(false);
     }
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  const openEdit = (a: LegalMentionRow) => {
+    setEditing(a);
+    setEditTitle(a.article_title ?? "");
+    setEditHtml(a.article_html ?? "");
+  };
+
+  const handleSave = async () => {
+    if (!editing) return;
+    setSaving(true);
+    try {
+      const updated = await api.patch<LegalMentionRow>(`/admin/legal-mentions/${editing.id}`, { article_title: editTitle, article_html: editHtml });
+      setArticles(prev => prev.map(a => a.id === updated.id ? updated : a));
+      setEditing(null);
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleAdd = async () => {
+    if (!addRef.trim()) return;
+    setSaving(true);
+    try {
+      const row = await api.post<LegalMentionRow>("/admin/legal-mentions", { article_ref: addRef, article_title: addTitle });
+      setArticles(prev => [...prev, row].sort((a, b) => a.article_ref.localeCompare(b.article_ref)));
+      setAddRef(""); setAddTitle(""); setShowAdd(false);
+    } catch {
+      // ignore
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("Supprimer cet article ?")) return;
+    await api.delete(`/admin/legal-mentions/${id}`);
+    setArticles(prev => prev.filter(a => a.id !== id));
   };
 
   const todoCards = [
@@ -2154,47 +2207,111 @@ function Configuration() {
         <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Paramètres avancés de la plateforme</p>
       </div>
 
-      {/* ── Légifrance sync ── */}
+      {/* ── Mentions légales ── */}
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 16, marginBottom: 18 }}>
-          <div style={{ width: 48, height: 48, background: "#EFF6FF", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>📜</div>
-          <div style={{ flex: 1 }}>
-            <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.text }}>Synchronisation Légifrance</h3>
-            <p style={{ margin: 0, fontSize: 13, color: C.textMuted, lineHeight: 1.5 }}>
-              Met à jour le cache local des articles du Code de l'urbanisme (26 articles) via l'API PISTE / Légifrance.
-              Les mentions légales dans les courriers sont servies depuis ce cache.
-            </p>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
+            <div style={{ width: 48, height: 48, background: "#EFF6FF", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>📜</div>
+            <div>
+              <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.text }}>Mentions légales — Code de l'urbanisme</h3>
+              <p style={{ margin: 0, fontSize: 13, color: C.textMuted }}>
+                {articles.length} articles · cliquez sur un article pour éditer son titre et son texte HTML.
+              </p>
+            </div>
+          </div>
+          <button onClick={() => setShowAdd(v => !v)}
+            style={{ padding: "8px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            + Ajouter
+          </button>
+        </div>
+
+        {showAdd && (
+          <div style={{ background: C.bg, borderRadius: 10, padding: 16, marginBottom: 16, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+            <div>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Référence (ex : L424-1)</div>
+              <input value={addRef} onChange={e => setAddRef(e.target.value.toUpperCase())} placeholder="L424-1"
+                style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 13, width: 120 }} />
+            </div>
+            <div style={{ flex: 1, minWidth: 200 }}>
+              <div style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Titre</div>
+              <input value={addTitle} onChange={e => setAddTitle(e.target.value)} placeholder="Non-opposition / accord"
+                style={{ width: "100%", padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 13 }} />
+            </div>
+            <button onClick={handleAdd} disabled={saving || !addRef.trim()}
+              style={{ padding: "8px 16px", background: addRef.trim() ? "#0F172A" : "#E2E8F0", color: addRef.trim() ? "white" : "#94a3b8", border: "none", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: addRef.trim() ? "pointer" : "default" }}>
+              Créer
+            </button>
+          </div>
+        )}
+
+        {loading ? (
+          <div style={{ textAlign: "center", padding: 24 }}><Spinner size={20} /></div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+            {articles.map(a => (
+              <div key={a.id} onClick={() => openEdit(a)}
+                style={{ padding: "10px 14px", borderRadius: 9, border: `1px solid ${C.border}`, cursor: "pointer", background: C.bg, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, transition: "box-shadow 0.15s" }}
+                onMouseEnter={e => (e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)")}
+                onMouseLeave={e => (e.currentTarget.style.boxShadow = "none")}>
+                <div style={{ minWidth: 0 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: C.accent }}>Art. {a.article_ref}</div>
+                  <div style={{ fontSize: 12, color: C.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {a.article_title ?? <em>Sans titre</em>}
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                  <div title={a.article_html ? "Texte renseigné" : "Texte vide"} style={{ width: 8, height: 8, borderRadius: "50%", background: a.article_html ? "#22C55E" : "#E2E8F0" }} />
+                  <button onClick={e => { e.stopPropagation(); handleDelete(a.id); }}
+                    style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted, fontSize: 16, lineHeight: 1, padding: "0 2px" }}>×</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      {/* ── Edit modal ── */}
+      {editing && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }}
+          onClick={() => setEditing(null)}>
+          <div style={{ background: "white", borderRadius: 16, padding: 28, width: "min(640px, 95vw)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}
+            onClick={e => e.stopPropagation()}>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Art. {editing.article_ref}</h3>
+              <button onClick={() => setEditing(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, color: C.textMuted }}>×</button>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 6 }}>Titre</label>
+              <input value={editTitle} onChange={e => setEditTitle(e.target.value)}
+                style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
+            </div>
+
+            <div style={{ marginBottom: 20 }}>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 6 }}>
+                Texte HTML <span style={{ fontWeight: 400 }}>(affiché dans les courriers)</span>
+              </label>
+              <textarea value={editHtml} onChange={e => setEditHtml(e.target.value)} rows={10}
+                style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }}
+                placeholder="<p>Texte de l'article...</p>" />
+              <p style={{ margin: "6px 0 0", fontSize: 11, color: C.textMuted }}>
+                Le HTML est rendu directement dans le courrier. Utilise &lt;p&gt;, &lt;strong&gt;, &lt;em&gt;, &lt;ul&gt;/&lt;li&gt;.
+              </p>
+            </div>
+
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+              <button onClick={() => setEditing(null)}
+                style={{ padding: "8px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, cursor: "pointer" }}>
+                Annuler
+              </button>
+              <button onClick={handleSave} disabled={saving}
+                style={{ padding: "8px 20px", background: saving ? "#E2E8F0" : "#0F172A", color: saving ? "#94a3b8" : "white", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: saving ? "default" : "pointer" }}>
+                {saving ? "Enregistrement…" : "Enregistrer"}
+              </button>
+            </div>
           </div>
         </div>
-
-        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-          <button onClick={handleSync} disabled={syncLoading}
-            style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 20px", background: syncLoading ? "#E2E8F0" : "#0F172A", color: syncLoading ? "#94a3b8" : "white", border: "none", borderRadius: 8, cursor: syncLoading ? "default" : "pointer", fontSize: 13, fontWeight: 600 }}>
-            {syncLoading ? (
-              <><Spinner size={14} /> Synchronisation en cours…</>
-            ) : (
-              <><svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></svg>Lancer la synchronisation</>
-            )}
-          </button>
-
-          {syncResult && (
-            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", background: syncResult.failed.length === 0 ? "#F0FDF4" : "#FFFBEB", border: `1px solid ${syncResult.failed.length === 0 ? "#BBF7D0" : "#FDE68A"}`, borderRadius: 8 }}>
-              <span style={{ fontSize: 13, color: syncResult.failed.length === 0 ? "#15803D" : "#92400E", fontWeight: 600 }}>
-                {syncResult.ok}/{syncResult.total} articles synchronisés
-              </span>
-              {syncResult.failed.length > 0 && (
-                <span style={{ fontSize: 12, color: "#92400E" }}>— Échecs : {syncResult.failed.join(", ")}</span>
-              )}
-            </div>
-          )}
-
-          {syncError && (
-            <div style={{ padding: "8px 14px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, fontSize: 12, color: "#DC2626" }}>
-              Erreur : {syncError}
-            </div>
-          )}
-        </div>
-      </div>
+      )}
 
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 }}>
         {todoCards.map((card) => (

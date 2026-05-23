@@ -339,6 +339,36 @@ CREATE TABLE IF NOT EXISTS legal_mentions (
   updated_at timestamp NOT NULL DEFAULT now(),
   CONSTRAINT legal_mentions_code_ref UNIQUE (code, article_ref)
 );
+
+-- Seed: articles du Code de l'urbanisme (textes modifiables depuis l'admin)
+INSERT INTO legal_mentions (code, code_name, article_ref, article_title) VALUES
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L424-1', 'Non-opposition / accord'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L424-2', 'Non-opposition tacite'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L424-3', 'Motivation du refus'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L424-4', 'Sursis à statuer'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L424-5', 'Décision de non-opposition conditionnée'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L424-6', 'Affichage de la décision'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L462-1', 'Déclaration d''achèvement (DAACT)'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L462-2', 'Conformité des travaux'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L462-4', 'Non-conformité partielle'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R462-1', 'Délai de contestation DAACT'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R462-2', 'Procédure de récolement'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R462-3', 'Attestation de conformité'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R423-26', 'Délai d''instruction'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R423-38', 'Demande de pièces complémentaires'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R423-39', 'Suspension du délai — pièces manquantes'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R423-40', 'Retrait de demande incomplète'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R423-43', 'Délai de notification de la décision'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R423-54', 'Prolongation du délai d''instruction'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R424-1', 'Modalités de notification'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R424-2', 'Notification du refus'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R424-3', 'Délai de recours'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'R424-5', 'Affichage et notification'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L600-1', 'Délai de recours contentieux'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L600-2', 'Délai de recours des tiers'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L410-1', 'Nature du certificat d''urbanisme'),
+  ('LEGITEXT000006074075', 'Code de l''urbanisme', 'L410-2', 'Contenu et effets')
+ON CONFLICT (code, article_ref) DO NOTHING;
 `;
 
 async function main() {
