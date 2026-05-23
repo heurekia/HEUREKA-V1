@@ -17,7 +17,7 @@ interface AuthContextType {
   loading: boolean;
   login: (email: string, password: string) => Promise<User>;
   register: (data: { email: string; password: string; prenom: string; nom: string; role?: string; commune?: string }) => Promise<User>;
-  logout: () => void;
+  logout: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | null>(null);
@@ -27,16 +27,11 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [loading, setLoading] = useState(true);
 
   const fetchUser = useCallback(async () => {
-    const token = localStorage.getItem("token");
-    if (!token) {
-      setLoading(false);
-      return;
-    }
     try {
       const me = await api.get<User>("/auth/me");
       setUser(me);
     } catch {
-      localStorage.removeItem("token");
+      setUser(null);
     } finally {
       setLoading(false);
     }
@@ -45,21 +40,19 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => { fetchUser(); }, [fetchUser]);
 
   const login = async (email: string, password: string) => {
-    const res = await api.post<{ token: string; user: User }>("/auth/login", { email, password });
-    localStorage.setItem("token", res.token);
+    const res = await api.post<{ user: User }>("/auth/login", { email, password });
     setUser(res.user);
     return res.user;
   };
 
   const register = async (data: { email: string; password: string; prenom: string; nom: string; role?: string; commune?: string }) => {
-    const res = await api.post<{ token: string; user: User }>("/auth/register", data);
-    localStorage.setItem("token", res.token);
+    const res = await api.post<{ user: User }>("/auth/register", data);
     setUser(res.user);
     return res.user;
   };
 
-  const logout = () => {
-    localStorage.removeItem("token");
+  const logout = async () => {
+    await api.post("/auth/logout").catch(() => {});
     setUser(null);
   };
 

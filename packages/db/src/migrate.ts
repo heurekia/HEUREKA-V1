@@ -229,6 +229,19 @@ CREATE TABLE IF NOT EXISTS service_communes (
   PRIMARY KEY (service_id, commune_id)
 );
 
+-- Audit logs (connexions, actions sensibles)
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  email text,
+  action text NOT NULL,
+  ip text,
+  user_agent text,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_user_id ON audit_logs(user_id);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at ON audit_logs(created_at);
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_users_commune ON users(commune);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);

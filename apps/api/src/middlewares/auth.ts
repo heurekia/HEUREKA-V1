@@ -15,13 +15,21 @@ export function generateToken(payload: { id: string; email: string; role: string
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
 }
 
-export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
+function extractToken(req: Request): string | null {
+  // HttpOnly cookie takes precedence (browser clients)
+  if (req.cookies?.token) return req.cookies.token as string;
+  // Bearer header as fallback (API clients / CLI)
   const header = req.headers.authorization;
-  if (!header?.startsWith("Bearer ")) {
+  if (header?.startsWith("Bearer ")) return header.slice(7);
+  return null;
+}
+
+export function requireAuth(req: AuthRequest, res: Response, next: NextFunction) {
+  const token = extractToken(req);
+  if (!token) {
     return res.status(401).json({ error: "Non authentifié" });
   }
   try {
-    const token = header.slice(7);
     const decoded = jwt.verify(token, JWT_SECRET) as { id: string; email: string; role: string };
     req.user = decoded;
     next();
@@ -40,10 +48,9 @@ export function requireRole(...roles: string[]) {
 }
 
 export async function optionalAuth(req: AuthRequest, _res: Response, next: NextFunction) {
-  const header = req.headers.authorization;
-  if (header?.startsWith("Bearer ")) {
+  const token = extractToken(req);
+  if (token) {
     try {
-      const token = header.slice(7);
       const decoded = jwt.verify(token, JWT_SECRET) as { id: string; email: string; role: string };
       req.user = decoded;
     } catch {

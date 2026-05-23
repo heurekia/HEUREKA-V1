@@ -674,9 +674,7 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   useEffect(() => {
     setLoading(true);
     const communeQ = `commune=${encodeURIComponent(commune)}`;
-    const token = localStorage.getItem("token");
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}`, "Content-Type": "application/json" } : {};
-    fetch("/api/mairie/admin/compute-deadlines", { method: "POST", headers })
+    fetch("/api/mairie/admin/compute-deadlines", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } })
       .catch(() => {})
       .finally(() => {
         api.get<ApiDossier[]>(`/mairie/dossiers?${communeQ}`)
@@ -2221,9 +2219,7 @@ function CalendrierScreen({ commune }: { commune: string }) {
   });
 
   useEffect(() => {
-    const token = localStorage.getItem("token");
-    const headers: Record<string, string> = token ? { Authorization: `Bearer ${token}` } : {};
-    fetch(`/api/mairie/dossiers?commune=${encodeURIComponent(commune)}`, { headers })
+    fetch(`/api/mairie/dossiers?commune=${encodeURIComponent(commune)}`, { credentials: "include" })
       .then(r => r.json())
       .then((data: unknown) => setDossiers(Array.isArray(data) ? data as DossierRow[] : []))
       .catch(() => {});

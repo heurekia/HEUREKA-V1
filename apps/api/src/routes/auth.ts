@@ -2,11 +2,35 @@ import { Router } from "express";
 import bcrypt from "bcryptjs";
 import { z } from "zod";
 import { db } from "../db.js";
-import { users } from "@heureka-v1/db";
+import { users, audit_logs } from "@heureka-v1/db";
 import { eq } from "drizzle-orm";
 import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
 
 export const authRouter = Router();
+
+const IS_PROD = process.env.NODE_ENV === "production";
+
+const COOKIE_OPTIONS = {
+  httpOnly: true,
+  secure: IS_PROD,
+  sameSite: "strict" as const,
+  maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
+  path: "/",
+};
+
+function clientIp(req: AuthRequest): string {
+  return (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "unknown";
+}
+
+function writeAudit(userId: string | null, email: string, action: string, req: AuthRequest) {
+  db.insert(audit_logs).values({
+    user_id: userId ?? undefined,
+    email,
+    action,
+    ip: clientIp(req),
+    user_agent: req.headers["user-agent"] ?? null,
+  }).catch(() => {});
+}
 
 const registerSchema = z.object({
   email: z.string().email(),
@@ -18,7 +42,7 @@ const registerSchema = z.object({
   telephone: z.string().optional(),
 });
 
-authRouter.post("/register", async (req, res) => {
+authRouter.post("/register", async (req: AuthRequest, res) => {
   try {
     const data = registerSchema.parse(req.body);
     const existing = await db.select().from(users).where(eq(users.email, data.email)).limit(1);
@@ -40,8 +64,9 @@ authRouter.post("/register", async (req, res) => {
       .returning();
     const user = rows[0]!;
     const token = generateToken({ id: user.id, email: user.email, role: user.role });
+    res.cookie("token", token, COOKIE_OPTIONS);
+    writeAudit(user.id, user.email, "register", req);
     res.status(201).json({
-      token,
       user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune },
     });
   } catch (err) {
@@ -53,7 +78,7 @@ authRouter.post("/register", async (req, res) => {
   }
 });
 
-authRouter.post("/login", async (req, res) => {
+authRouter.post("/login", async (req: AuthRequest, res) => {
   try {
     const { email, password } = req.body;
     if (!email || !password) {
@@ -61,21 +86,30 @@ authRouter.post("/login", async (req, res) => {
     }
     const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
     if (!user) {
+      writeAudit(null, email, "login_failed", req);
       return res.status(401).json({ error: "Email ou mot de passe incorrect" });
     }
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
+      writeAudit(null, email, "login_failed", req);
       return res.status(401).json({ error: "Email ou mot de passe incorrect" });
     }
     const token = generateToken({ id: user.id, email: user.email, role: user.role });
+    res.cookie("token", token, COOKIE_OPTIONS);
+    writeAudit(user.id, user.email, "login", req);
     res.json({
-      token,
       user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune },
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
   }
+});
+
+authRouter.post("/logout", requireAuth, (req: AuthRequest, res) => {
+  writeAudit(req.user!.id, req.user!.email, "logout", req);
+  res.clearCookie("token", { path: "/" });
+  res.json({ ok: true });
 });
 
 authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {

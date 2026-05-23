@@ -1,0 +1,5 @@
+Contact: mailto:securite@heureka-urba.fr
+Preferred-Languages: fr, en
+Expires: 2027-01-01T00:00:00.000Z
+Policy: https://heureka-urba.fr/politique-securite
+Acknowledgments: https://heureka-urba.fr/hall-of-fame
