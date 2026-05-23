@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
@@ -1501,17 +1501,49 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
 
 // ── Courriers : templates & en-tête commune ───────────────────────────────
 
+async function getCommuneRowForUser(req: AuthRequest) {
+  const userId = req.user!.id;
+
+  // 1. Best: direct join via user_communes (avoids name encoding issues)
+  const [byId] = await db.select({ c: communes })
+    .from(user_communes)
+    .innerJoin(communes, eq(communes.id, user_communes.commune_id))
+    .where(eq(user_communes.user_id, userId))
+    .limit(1);
+  if (byId) return byId.c;
+
+  // 2. Get commune name from JWT or DB
+  const communeName = req.user!.commune
+    ?? (await db.select({ commune: users.commune }).from(users).where(eq(users.id, userId)).limit(1))[0]?.commune;
+  if (!communeName) return null;
+  const name = communeName.trim();
+
+  // 3. Exact ilike match
+  const [byName] = await db.select().from(communes).where(ilike(communes.name, name)).limit(1);
+  if (byName) return byName;
+
+  // 4. Partial match (handles subtle encoding differences)
+  const [byPartial] = await db.select().from(communes)
+    .where(sql`unaccent(name) ILIKE unaccent(${name})`)
+    .limit(1);
+  return byPartial ?? null;
+}
+
+// Keep getCommune for template ownership checks (by name string)
 async function getCommune(communeName: string | null | undefined) {
   if (!communeName) return null;
-  const [c] = await db.select().from(communes).where(ilike(communes.name, communeName)).limit(1);
-  return c ?? null;
+  const name = communeName.trim();
+  const [c] = await db.select().from(communes).where(ilike(communes.name, name)).limit(1);
+  if (c) return c;
+  const [fallback] = await db.select().from(communes)
+    .where(sql`unaccent(name) ILIKE unaccent(${name})`)
+    .limit(1);
+  return fallback ?? null;
 }
 
 async function getCommuneForUser(req: AuthRequest): Promise<string | null> {
-  if (req.user!.commune) return req.user!.commune;
-  // Fallback: look up commune from DB for users with old JWT tokens that don't include commune
-  const [u] = await db.select({ commune: users.commune }).from(users).where(eq(users.id, req.user!.id)).limit(1);
-  return u?.commune ?? null;
+  const row = await getCommuneRowForUser(req);
+  return row?.name ?? null;
 }
 
 mairieRouter.get("/templates", async (req: AuthRequest, res) => {
@@ -1584,8 +1616,7 @@ mairieRouter.delete("/templates/:templateId", async (req: AuthRequest, res) => {
 
 mairieRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
   try {
-    const communeName = await getCommuneForUser(req);
-    const commune = await getCommune(communeName);
+    const commune = await getCommuneRowForUser(req);
     if (!commune) return res.json({});
     res.json({
       letterhead_logo: commune.letterhead_logo ?? commune.logo_url,
@@ -1604,9 +1635,8 @@ mairieRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
 
 mairieRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
   try {
-    const communeName = await getCommuneForUser(req);
-    const commune = await getCommune(communeName);
-    if (!commune) return res.status(404).json({ error: "Commune introuvable" });
+    const commune = await getCommuneRowForUser(req);
+    if (!commune) return res.status(404).json({ error: "Commune introuvable — vérifiez que votre compte est bien rattaché à une commune dans l'administration." });
     const { letterhead_logo, letterhead_title, letterhead_subtitle, letterhead_address, footer_text, signature_image } = req.body as Record<string, string | null>;
     await db.update(communes).set({
       letterhead_logo: letterhead_logo ?? null,
