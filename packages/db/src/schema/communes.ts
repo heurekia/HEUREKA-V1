@@ -21,6 +21,7 @@ export const communes = pgTable("communes", {
   letterhead_address: text("letterhead_address"),
   footer_text: text("footer_text"),
   signature_image: text("signature_image"),
+  tampon_image: text("tampon_image"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -1628,6 +1628,7 @@ mairieRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
       letterhead_address: commune.letterhead_address,
       footer_text: commune.footer_text,
       signature_image: commune.signature_image,
+      tampon_image: commune.tampon_image,
     });
   } catch (err) {
     console.error(err);
@@ -1639,7 +1640,7 @@ mairieRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
   try {
     const commune = await getCommuneRowForUser(req);
     if (!commune) return res.status(404).json({ error: "Commune introuvable — vérifiez que votre compte est bien rattaché à une commune dans l'administration." });
-    const { letterhead_logo, letterhead_title, letterhead_subtitle, letterhead_address, footer_text, signature_image } = req.body as Record<string, string | null>;
+    const { letterhead_logo, letterhead_title, letterhead_subtitle, letterhead_address, footer_text, signature_image, tampon_image } = req.body as Record<string, string | null>;
     await db.update(communes).set({
       letterhead_logo: letterhead_logo ?? null,
       letterhead_title: letterhead_title ?? null,
@@ -1647,6 +1648,7 @@ mairieRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
       letterhead_address: letterhead_address ?? null,
       footer_text: footer_text ?? null,
       signature_image: signature_image ?? null,
+      tampon_image: tampon_image ?? null,
       updated_at: new Date(),
     }).where(eq(communes.id, commune.id));
     res.json({ ok: true });

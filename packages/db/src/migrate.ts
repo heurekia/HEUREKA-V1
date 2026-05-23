@@ -266,6 +266,7 @@ ALTER TABLE communes ADD COLUMN IF NOT EXISTS letterhead_subtitle text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS letterhead_address text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS footer_text text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS signature_image text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS tampon_image text;
 
 -- Letterhead & signature for external services
 ALTER TABLE external_services ADD COLUMN IF NOT EXISTS letterhead_logo text;

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, type Dispatch, type SetStateAction } from "react";
 import { useEditor, EditorContent } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import TextAlign from "@tiptap/extension-text-align";
@@ -217,6 +217,7 @@ interface Letterhead {
   letterhead_address: string | null;
   footer_text: string | null;
   signature_image: string | null;
+  tampon_image: string | null;
 }
 export interface DossierForCourrier {
   id: string; numero: string; type: string; petitionnaire: string;
@@ -224,8 +225,48 @@ export interface DossierForCourrier {
   surface_plancher?: string; date_depot?: string; echeance?: string;
 }
 
+// ─── Draggable stamp / signature overlay ──────────────────────────────────
+type Pos = { x: number; y: number };
+
+function DraggableStamp({ src, pos, setPos, caption, onHide }: {
+  src: string; pos: Pos; setPos: Dispatch<SetStateAction<Pos>>; caption?: string; onHide: () => void;
+}) {
+  const isDragging = useRef(false);
+
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => {
+      if (!isDragging.current) return;
+      setPos(p => ({ x: p.x + e.movementX, y: p.y + e.movementY }));
+    };
+    const onUp = () => { isDragging.current = false; };
+    document.addEventListener("mousemove", onMove);
+    document.addEventListener("mouseup", onUp);
+    return () => {
+      document.removeEventListener("mousemove", onMove);
+      document.removeEventListener("mouseup", onUp);
+    };
+  }, [setPos]);
+
+  return (
+    <div
+      onMouseDown={(e) => { e.preventDefault(); isDragging.current = true; }}
+      style={{ position: "absolute", left: pos.x, top: pos.y, cursor: "grab", userSelect: "none", zIndex: 50 }}
+    >
+      <img src={src} alt="" style={{ display: "block", maxHeight: 80, width: "auto", objectFit: "contain", pointerEvents: "none" }} />
+      {caption && <div style={{ fontSize: 12, fontWeight: 600, color: "#1E293B", marginTop: 2, pointerEvents: "none" }}>{caption}</div>}
+      {/* Remove button — hidden when printing */}
+      <button
+        className="no-print-modal"
+        onClick={(e) => { e.stopPropagation(); onHide(); }}
+        style={{ position: "absolute", top: -8, right: -8, width: 18, height: 18, borderRadius: "50%", background: "#EF4444", border: "none", cursor: "pointer", color: "white", fontSize: 12, lineHeight: "18px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+        ×
+      </button>
+    </div>
+  );
+}
+
 // ─── Courrier preview (print-ready, multi-page) ───────────────────────────
-function CourrierPrintPreview({ html, letterhead, agentName }: { html: string; letterhead: Letterhead; agentName: string }) {
+function CourrierPrintPreview({ html, letterhead }: { html: string; letterhead: Letterhead }) {
   const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
   const hasFooter = !!letterhead.footer_text;
   return (
@@ -245,14 +286,8 @@ function CourrierPrintPreview({ html, letterhead, agentName }: { html: string; l
       )}
 
       {/* Body — padded in print to clear fixed header/footer */}
-      <div className="lh-print-body" style={{ padding: "24px 36px" }}>
-        <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: html }} style={{ minHeight: 200 }} />
-        {(letterhead.signature_image || agentName) && (
-          <div style={{ marginTop: 36 }}>
-            {letterhead.signature_image && <img src={letterhead.signature_image} alt="Signature" style={{ height: 64, width: "auto", objectFit: "contain", display: "block", marginBottom: 3 }} />}
-            {agentName && <div style={{ fontSize: 13, fontWeight: 600 }}>{agentName}</div>}
-          </div>
-        )}
+      <div className="lh-print-body" style={{ padding: "24px 36px", minHeight: 400 }}>
+        <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: html }} />
       </div>
 
       {/* Footer — inline on screen, position:fixed on print (repeats every page) */}
@@ -270,18 +305,25 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
   const { user } = useAuth();
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
   const [selected, setSelected] = useState<CourrierTemplate | null>(null);
-  const [letterhead, setLetterhead] = useState<Letterhead>({ letterhead_logo: null, letterhead_title: null, letterhead_subtitle: null, letterhead_address: null, footer_text: null, signature_image: null });
+  const [letterhead, setLetterhead] = useState<Letterhead>({ letterhead_logo: null, letterhead_title: null, letterhead_subtitle: null, letterhead_address: null, footer_text: null, signature_image: null, tampon_image: null });
   const [substitutedHtml, setSubstitutedHtml] = useState("");
   const [loading, setLoading] = useState(true);
+  // Draggable signature & tampon
+  const [sigPos, setSigPos] = useState<Pos>({ x: 60, y: 520 });
+  const [tampPos, setTampPos] = useState<Pos>({ x: 340, y: 520 });
+  const [showSig, setShowSig] = useState(false);
+  const [showTamp, setShowTamp] = useState(false);
 
   useEffect(() => {
     Promise.all([
       api.get<CourrierTemplate[]>("/mairie/templates"),
-      api.get<Letterhead>("/mairie/commune-letterhead"),
+      api.get<Letterhead & { commune_configured?: boolean }>("/mairie/commune-letterhead"),
     ]).then(([tpls, lh]) => {
       setTemplates(tpls);
       setLetterhead(lh);
       if (tpls.length > 0) setSelected(tpls[0]!);
+      if (lh.signature_image) setShowSig(true);
+      if (lh.tampon_image) setShowTamp(true);
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
@@ -367,12 +409,27 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
       <div className="no-print-modal" style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
       <div className="print-modal-box" style={{ position: "relative", width: "90vw", maxWidth: 1100, maxHeight: "92vh", margin: "auto", background: "white", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 60px rgba(0,0,0,0.25)" }}>
         {/* Header */}
-        <div className="no-print-modal" style={{ padding: "16px 24px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div className="no-print-modal" style={{ padding: "12px 20px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A" }}>Générer un courrier</div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Générer un courrier</div>
             <div style={{ fontSize: 12, color: "#64748b" }}>{dossier.numero} — {dossier.petitionnaire}</div>
           </div>
-          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            {/* Signature toggle */}
+            {letterhead.signature_image && (
+              <button onClick={() => setShowSig(v => !v)}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showSig ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 7, background: showSig ? "#EEF2FF" : "white", color: showSig ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
+                ✍️ Signature
+              </button>
+            )}
+            {/* Tampon toggle */}
+            {letterhead.tampon_image && (
+              <button onClick={() => setShowTamp(v => !v)}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showTamp ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 7, background: showTamp ? "#EEF2FF" : "white", color: showTamp ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
+                🔵 Tampon
+              </button>
+            )}
+            <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
             <button onClick={() => window.print()}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
               <Printer size={14} /> Imprimer / PDF
@@ -409,7 +466,28 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
           {/* Print preview */}
           <div className="print-area" style={{ flex: 1, overflowY: "auto" }}>
             {selected ? (
-              <CourrierPrintPreview html={substitutedHtml} letterhead={letterhead} agentName={`${user?.prenom ?? ""} ${user?.nom ?? ""}`} />
+              <div style={{ position: "relative" }}>
+                <CourrierPrintPreview html={substitutedHtml} letterhead={letterhead} />
+                {/* Draggable signature */}
+                {showSig && letterhead.signature_image && (
+                  <DraggableStamp
+                    src={letterhead.signature_image}
+                    pos={sigPos}
+                    setPos={setSigPos}
+                    caption={`${user?.prenom ?? ""} ${user?.nom ?? ""}`}
+                    onHide={() => setShowSig(false)}
+                  />
+                )}
+                {/* Draggable tampon */}
+                {showTamp && letterhead.tampon_image && (
+                  <DraggableStamp
+                    src={letterhead.tampon_image}
+                    pos={tampPos}
+                    setPos={setTampPos}
+                    onHide={() => setShowTamp(false)}
+                  />
+                )}
+              </div>
             ) : (
               <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "100%", color: "#94a3b8", fontSize: 14 }}>
                 Sélectionnez un modèle pour voir l'aperçu
@@ -465,7 +543,7 @@ export function TemplateManagerPanel() {
   const [saving, setSaving] = useState(false);
   const [letterhead, setLetterhead] = useState<Letterhead>({
     letterhead_logo: null, letterhead_title: null, letterhead_subtitle: null,
-    letterhead_address: null, footer_text: null, signature_image: null,
+    letterhead_address: null, footer_text: null, signature_image: null, tampon_image: null,
   });
 
   const load = useCallback(async () => {
@@ -653,7 +731,7 @@ export function CommuneLetterheadPanel() {
   const { user } = useAuth();
   const [form, setForm] = useState({
     letterhead_logo: "", letterhead_title: "", letterhead_subtitle: "",
-    letterhead_address: "", footer_text: "", signature_image: "",
+    letterhead_address: "", footer_text: "", signature_image: "", tampon_image: "",
   });
   const [communeLogoUrl, setCommuneLogoUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -674,6 +752,7 @@ export function CommuneLetterheadPanel() {
         letterhead_address: lh.letterhead_address ?? "",
         footer_text: lh.footer_text ?? "",
         signature_image: lh.signature_image ?? "",
+        tampon_image: (lh as typeof lh & { tampon_image?: string }).tampon_image ?? "",
       });
     }).catch(() => { setCommuneConfigured(false); }).finally(() => setLoading(false));
   }, [user]);
@@ -696,6 +775,7 @@ export function CommuneLetterheadPanel() {
         letterhead_address: form.letterhead_address || null,
         footer_text: form.footer_text || null,
         signature_image: form.signature_image || null,
+        tampon_image: form.tampon_image || null,
       });
       setSaved(true);
       setTimeout(() => setSaved(false), 2500);
@@ -706,7 +786,7 @@ export function CommuneLetterheadPanel() {
     }
   };
 
-  const imageUpload = (label: string, current: string, fieldName: "letterhead_logo" | "signature_image", hint?: string) => (
+  const imageUpload = (label: string, current: string, fieldName: "letterhead_logo" | "signature_image" | "tampon_image", hint?: string) => (
     <div>
       <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>{label}</label>
       {hint && <p style={{ fontSize: 11, color: "#94a3b8", margin: "0 0 7px" }}>{hint}</p>}
@@ -802,7 +882,8 @@ export function CommuneLetterheadPanel() {
             style={{ width: "100%", padding: "8px 11px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, outline: "none", resize: "vertical", minHeight: 64, fontFamily: "inherit", boxSizing: "border-box" }} />
         </div>
 
-        {imageUpload("Signature", form.signature_image, "signature_image", "PNG fond transparent recommandé")}
+        {imageUpload("Signature", form.signature_image, "signature_image", "PNG fond transparent recommandé. Positionnée librement sur le courrier.")}
+        {imageUpload("Tampon / Cachet", form.tampon_image, "tampon_image", "Image du tampon officiel. Positionné librement sur le courrier.")}
 
         <div>
           <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Pied de page</label>
