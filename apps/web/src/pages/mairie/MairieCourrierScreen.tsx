@@ -224,12 +224,15 @@ export interface DossierForCourrier {
   surface_plancher?: string; date_depot?: string; echeance?: string;
 }
 
-// ─── Courrier preview (print-ready) ───────────────────────────────────────
+// ─── Courrier preview (print-ready, multi-page) ───────────────────────────
 function CourrierPrintPreview({ html, letterhead, agentName }: { html: string; letterhead: Letterhead; agentName: string }) {
+  const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
+  const hasFooter = !!letterhead.footer_text;
   return (
-    <div style={{ background: "white", padding: "28px 36px", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" }}>
-      {(letterhead.letterhead_logo || letterhead.letterhead_title) && (
-        <div style={{ display: "flex", alignItems: "flex-start", gap: 18, marginBottom: 22, paddingBottom: 18, borderBottom: "2px solid #1E293B" }}>
+    <div style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" }}>
+      {/* Header — inline on screen, position:fixed on print (repeats every page) */}
+      {hasHeader && (
+        <div className="lh-print-header" style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
           {letterhead.letterhead_logo && (
             <img src={letterhead.letterhead_logo} alt="" style={{ height: 56, width: "auto", objectFit: "contain", flexShrink: 0 }} />
           )}
@@ -240,15 +243,21 @@ function CourrierPrintPreview({ html, letterhead, agentName }: { html: string; l
           </div>
         </div>
       )}
-      <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: html }} style={{ minHeight: 300 }} />
-      {(letterhead.signature_image || agentName) && (
-        <div style={{ marginTop: 28 }}>
-          {letterhead.signature_image && <img src={letterhead.signature_image} alt="Signature" style={{ height: 64, width: "auto", objectFit: "contain", display: "block", marginBottom: 3 }} />}
-          {agentName && <div style={{ fontSize: 13, fontWeight: 600 }}>{agentName}</div>}
-        </div>
-      )}
-      {letterhead.footer_text && (
-        <div style={{ marginTop: 36, paddingTop: 12, borderTop: "1px solid #CBD5E1", fontSize: 11, color: "#64748b", textAlign: "center", whiteSpace: "pre-line" }}>
+
+      {/* Body — padded in print to clear fixed header/footer */}
+      <div className="lh-print-body" style={{ padding: "24px 36px" }}>
+        <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: html }} style={{ minHeight: 200 }} />
+        {(letterhead.signature_image || agentName) && (
+          <div style={{ marginTop: 36 }}>
+            {letterhead.signature_image && <img src={letterhead.signature_image} alt="Signature" style={{ height: 64, width: "auto", objectFit: "contain", display: "block", marginBottom: 3 }} />}
+            {agentName && <div style={{ fontSize: 13, fontWeight: 600 }}>{agentName}</div>}
+          </div>
+        )}
+      </div>
+
+      {/* Footer — inline on screen, position:fixed on print (repeats every page) */}
+      {hasFooter && (
+        <div className="lh-print-footer" style={{ padding: "10px 36px 14px", borderTop: "1px solid #CBD5E1", fontSize: 11, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", background: "white" }}>
           {letterhead.footer_text}
         </div>
       )}
@@ -298,10 +307,65 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
   }, [selected, letterhead, dossier, user]);
 
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex" }}>
-      <style>{`@media print { .no-print-modal { display: none !important; } .print-area { position: fixed; inset: 0; background: white; z-index: 9999; overflow: auto; } }`}</style>
+    <div className="print-modal-overlay" style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex" }}>
+      <style>{`
+        @media print {
+          .no-print-modal { display: none !important; }
+
+          /* Remove all modal chrome constraints so content paginates freely */
+          .print-modal-overlay {
+            position: static !important;
+            display: block !important;
+            z-index: unset !important;
+          }
+          .print-modal-box {
+            position: static !important;
+            width: 100% !important;
+            max-width: 100% !important;
+            max-height: none !important;
+            height: auto !important;
+            border-radius: 0 !important;
+            box-shadow: none !important;
+            overflow: visible !important;
+            margin: 0 !important;
+            display: block !important;
+          }
+          .print-modal-body {
+            display: block !important;
+            overflow: visible !important;
+            height: auto !important;
+          }
+          .print-area {
+            overflow: visible !important;
+            flex: none !important;
+            height: auto !important;
+          }
+
+          /* Letterhead header: fixed at top of every page */
+          .lh-print-header {
+            position: fixed !important;
+            top: 0; left: 0; right: 0;
+            background: white !important;
+            z-index: 10 !important;
+          }
+
+          /* Letterhead footer: fixed at bottom of every page */
+          .lh-print-footer {
+            position: fixed !important;
+            bottom: 0; left: 0; right: 0;
+            background: white !important;
+            z-index: 10 !important;
+          }
+
+          /* Body: padding to avoid overlap with fixed header (≈160px) and footer (≈60px) */
+          .lh-print-body {
+            padding-top: 160px !important;
+            padding-bottom: 70px !important;
+          }
+        }
+      `}</style>
       <div className="no-print-modal" style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
-      <div style={{ position: "relative", width: "90vw", maxWidth: 1100, maxHeight: "92vh", margin: "auto", background: "white", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 60px rgba(0,0,0,0.25)" }}>
+      <div className="print-modal-box" style={{ position: "relative", width: "90vw", maxWidth: 1100, maxHeight: "92vh", margin: "auto", background: "white", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 60px rgba(0,0,0,0.25)" }}>
         {/* Header */}
         <div className="no-print-modal" style={{ padding: "16px 24px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <div>
@@ -320,7 +384,7 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
         </div>
 
         {/* Body */}
-        <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        <div className="print-modal-body" style={{ flex: 1, display: "flex", overflow: "hidden" }}>
           {/* Template selector */}
           <div className="no-print-modal" style={{ width: 200, borderRight: "1px solid #E2E8F0", padding: "16px 12px", overflowY: "auto", flexShrink: 0 }}>
             {loading ? <div style={{ color: "#94a3b8", fontSize: 13 }}>Chargement…</div>
