@@ -84,8 +84,9 @@ let cachedToken: { value: string; expiresAt: number } | null = null;
 export async function getPisteToken(): Promise<string> {
   if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.value;
 
-  const clientId     = process.env.PISTE_CLIENT_ID!;
-  const clientSecret = process.env.PISTE_CLIENT_SECRET!;
+  // Gravitee uses API Key / Secret Key as OAuth client credentials
+  const clientId     = process.env.PISTE_API_KEY     ?? process.env.PISTE_CLIENT_ID!;
+  const clientSecret = process.env.PISTE_SECRET_KEY  ?? process.env.PISTE_CLIENT_SECRET!;
   const basicAuth    = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
 
   const res = await fetch(OAUTH_URL, {
@@ -121,11 +122,18 @@ export async function fetchLegifranceArticle(
   token: string,
 ): Promise<{ legiId: string; title: string; html: string } | null> {
   const nowMs = Date.now();
+  const apiKey = process.env.PISTE_API_KEY ?? process.env.PISTE_CLIENT_ID!;
+  const apiHeaders = {
+    Authorization: `Bearer ${token}`,
+    "Content-Type": "application/json",
+    accept: "application/json",
+    "X-Gravitee-Api-Key": apiKey,
+  };
 
   // Step 1 — search for LEGIARTI id
   const searchRes = await fetch(`${API_BASE}/search`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", accept: "application/json" },
+    headers: apiHeaders,
     body: JSON.stringify({
       recherche: {
         champs: [{
@@ -153,7 +161,7 @@ export async function fetchLegifranceArticle(
   // Step 2 — get article content
   const artRes = await fetch(`${API_BASE}/consult/getArticle`, {
     method: "POST",
-    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json", accept: "application/json" },
+    headers: apiHeaders,
     body: JSON.stringify({ id: legiId }),
     signal: AbortSignal.timeout(12_000),
   });
