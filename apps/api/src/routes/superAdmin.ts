@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes } from "@heureka-v1/db";
-import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc } from "drizzle-orm";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, audit_logs } from "@heureka-v1/db";
+import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
 
@@ -655,6 +655,45 @@ superAdminRouter.get("/insee-lookup", async (req, res) => {
     }));
 
     res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Audit Logs ──────────────────────────────────────────────────────────────
+superAdminRouter.get("/audit-logs", async (req, res) => {
+  try {
+    const page = Math.max(1, Number(req.query.page ?? 1));
+    const limit = 50;
+    const offset = (page - 1) * limit;
+    const action = req.query.action as string | undefined;
+    const since = req.query.since as string | undefined;
+
+    const where = sql`${action ? sql`action = ${action}` : sql`1=1`} AND ${since ? sql`audit_logs.created_at >= ${new Date(since)}` : sql`1=1`}`;
+
+    const [rows, [total]] = await Promise.all([
+      db.select({
+        id: audit_logs.id,
+        user_id: audit_logs.user_id,
+        email: audit_logs.email,
+        action: audit_logs.action,
+        ip: audit_logs.ip,
+        user_agent: audit_logs.user_agent,
+        created_at: audit_logs.created_at,
+        user_prenom: users.prenom,
+        user_nom: users.nom,
+      })
+        .from(audit_logs)
+        .leftJoin(users, eq(audit_logs.user_id, users.id))
+        .where(where)
+        .orderBy(desc(audit_logs.created_at))
+        .limit(limit)
+        .offset(offset),
+      db.select({ count: count() }).from(audit_logs).where(where),
+    ]);
+
+    res.json({ rows, total: Number(total?.count ?? 0), page, limit });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

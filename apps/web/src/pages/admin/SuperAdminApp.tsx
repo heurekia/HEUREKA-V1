@@ -357,6 +357,7 @@ const navItems = [
   { path: "/admin/roles", icon: "🔑", label: "Rôles" },
   { path: "/admin/utilisateurs", icon: "👥", label: "Utilisateurs" },
   { path: "/admin/services", icon: "🔗", label: "Services annexes" },
+  { path: "/admin/audit", icon: "🔒", label: "Audit sécurité" },
   { path: "/admin/configuration", icon: "⚙", label: "Configuration" },
 ];
 
@@ -2688,6 +2689,161 @@ function ServicesAnnexes() {
   );
 }
 
+// ─── Audit Logs ───────────────────────────────────────────────────────────────
+interface AuditEntry {
+  id: string;
+  email: string | null;
+  action: string;
+  ip: string | null;
+  user_agent: string | null;
+  created_at: string;
+  user_prenom: string | null;
+  user_nom: string | null;
+}
+
+const ACTION_STYLES: Record<string, { label: string; color: string; bg: string }> = {
+  login:          { label: "Connexion",        color: "#16A34A", bg: "#DCFCE7" },
+  login_failed:   { label: "Échec connexion",  color: "#DC2626", bg: "#FEE2E2" },
+  logout:         { label: "Déconnexion",      color: "#6B7280", bg: "#F3F4F6" },
+  register:       { label: "Inscription",      color: "#4F46E5", bg: "#EEF2FF" },
+  data_export:    { label: "Export données",   color: "#0284C7", bg: "#E0F2FE" },
+  account_deleted:{ label: "Compte supprimé",  color: "#B45309", bg: "#FEF3C7" },
+};
+
+const SINCE_OPTIONS = [
+  { label: "7 derniers jours",  value: () => { const d = new Date(); d.setDate(d.getDate() - 7); return d.toISOString(); } },
+  { label: "30 derniers jours", value: () => { const d = new Date(); d.setDate(d.getDate() - 30); return d.toISOString(); } },
+  { label: "3 derniers mois",   value: () => { const d = new Date(); d.setMonth(d.getMonth() - 3); return d.toISOString(); } },
+  { label: "12 derniers mois",  value: () => { const d = new Date(); d.setMonth(d.getMonth() - 12); return d.toISOString(); } },
+  { label: "Tout",              value: () => "" },
+];
+
+function AuditLogs() {
+  const [rows, setRows] = useState<AuditEntry[]>([]);
+  const [total, setTotal] = useState(0);
+  const [page, setPage] = useState(1);
+  const [loading, setLoading] = useState(true);
+  const [actionFilter, setActionFilter] = useState("");
+  const [sinceIdx, setSinceIdx] = useState(1); // default: 30 days
+
+  const load = async (p: number, action: string, idx: number) => {
+    setLoading(true);
+    try {
+      const since = SINCE_OPTIONS[idx]!.value();
+      const qs = new URLSearchParams({ page: String(p) });
+      if (action) qs.set("action", action);
+      if (since) qs.set("since", since);
+      const data = await api.get<{ rows: AuditEntry[]; total: number; page: number; limit: number }>(`/admin/audit-logs?${qs}`);
+      setRows(data.rows);
+      setTotal(data.total);
+    } catch { setRows([]); }
+    finally { setLoading(false); }
+  };
+
+  useEffect(() => { load(page, actionFilter, sinceIdx); }, [page, actionFilter, sinceIdx]);
+
+  const totalPages = Math.ceil(total / 50);
+
+  const fmtDate = (iso: string) => {
+    const d = new Date(iso);
+    return d.toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" });
+  };
+
+  const truncateUA = (ua: string | null) => {
+    if (!ua) return "—";
+    // Extract browser name from user-agent
+    const m = ua.match(/(Firefox|Chrome|Safari|Edge|OPR|Edg)[\/ ]([\d.]+)/);
+    return m ? `${m[1] ?? ""} ${(m[2] ?? "").split(".")[0]}` : ua.slice(0, 30);
+  };
+
+  return (
+    <PageShell>
+      <div style={{ padding: 32 }}>
+        <div style={{ marginBottom: 24 }}>
+          <h1 style={{ fontSize: 24, fontWeight: 800, color: C.text, margin: "0 0 4px" }}>Audit sécurité</h1>
+          <p style={{ fontSize: 14, color: C.textMuted, margin: 0 }}>
+            Journal des connexions et actions sensibles — conservé 12 mois (CCSC §4.14) — {total} entrées
+          </p>
+        </div>
+
+        {/* Filters */}
+        <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+          <select
+            value={actionFilter}
+            onChange={e => { setActionFilter(e.target.value); setPage(1); }}
+            style={{ padding: "7px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.text, background: "white", cursor: "pointer" }}
+          >
+            <option value="">Toutes les actions</option>
+            {Object.entries(ACTION_STYLES).map(([k, v]) => (
+              <option key={k} value={k}>{v.label}</option>
+            ))}
+          </select>
+          <select
+            value={sinceIdx}
+            onChange={e => { setSinceIdx(Number(e.target.value)); setPage(1); }}
+            style={{ padding: "7px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.text, background: "white", cursor: "pointer" }}
+          >
+            {SINCE_OPTIONS.map((o, i) => <option key={i} value={i}>{o.label}</option>)}
+          </select>
+        </div>
+
+        {/* Table */}
+        <div style={{ background: "white", borderRadius: 12, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse" }}>
+            <thead>
+              <tr style={{ background: C.bg }}>
+                {["Date", "Action", "Utilisateur", "Adresse IP", "Navigateur"].map(h => (
+                  <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: C.textMuted, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {loading ? (
+                <tr><td colSpan={5} style={{ padding: 32, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Chargement…</td></tr>
+              ) : rows.length === 0 ? (
+                <tr><td colSpan={5} style={{ padding: 32, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Aucune entrée pour ces filtres</td></tr>
+              ) : rows.map((r, i) => {
+                const style = ACTION_STYLES[r.action] ?? { label: r.action, color: "#6B7280", bg: "#F3F4F6" };
+                return (
+                  <tr key={r.id} style={{ borderBottom: i < rows.length - 1 ? `1px solid ${C.border}` : "none", background: i % 2 === 0 ? "white" : "#FAFAFA" }}>
+                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDate(r.created_at)}</td>
+                    <td style={{ padding: "10px 16px" }}>
+                      <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 20, background: style.bg, color: style.color, fontSize: 12, fontWeight: 700 }}>
+                        {style.label}
+                      </span>
+                    </td>
+                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.text }}>
+                      <div style={{ fontWeight: 500 }}>{r.user_prenom && r.user_nom ? `${r.user_prenom} ${r.user_nom}` : "—"}</div>
+                      <div style={{ fontSize: 12, color: C.textMuted }}>{r.email ?? "—"}</div>
+                    </td>
+                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted, fontFamily: "monospace" }}>{r.ip ?? "—"}</td>
+                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted }}>{truncateUA(r.user_agent)}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div style={{ display: "flex", justifyContent: "center", gap: 8, marginTop: 20 }}>
+            <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={page === 1}
+              style={{ padding: "6px 16px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, cursor: page === 1 ? "default" : "pointer", color: page === 1 ? C.textMuted : C.text, background: "white" }}>
+              ← Précédent
+            </button>
+            <span style={{ padding: "6px 16px", fontSize: 13, color: C.textMuted }}>Page {page} / {totalPages}</span>
+            <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={page === totalPages}
+              style={{ padding: "6px 16px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, cursor: page === totalPages ? "default" : "pointer", color: page === totalPages ? C.textMuted : C.text, background: "white" }}>
+              Suivant →
+            </button>
+          </div>
+        )}
+      </div>
+    </PageShell>
+  );
+}
+
 // ─── App Root ─────────────────────────────────────────────────────────────────
 export function SuperAdminApp() {
   return (
@@ -2707,6 +2863,7 @@ export function SuperAdminApp() {
           <Route path="/utilisateurs" element={<Utilisateurs />} />
           <Route path="/roles" element={<Roles />} />
           <Route path="/services" element={<ServicesAnnexes />} />
+          <Route path="/audit" element={<AuditLogs />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="*" element={<Navigate to="/admin" replace />} />
         </Routes>

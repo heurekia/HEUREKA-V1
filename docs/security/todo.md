@@ -23,7 +23,7 @@
 - [ ] **RGPD** — Export données personnelles (PDF/JSON pour le citoyen)
 - [ ] **RGPD** — Page mentions légales + politique de confidentialité
 - [ ] **RGPD** — Contact DPD dans le pied de page
-- [ ] **Purge audit_logs** — cronjob pour supprimer les entrées > 12 mois
+- [x] **Purge audit_logs** — cronjob quotidien 02:00, supprime les entrées > 12 mois
 - [ ] **pnpm audit** — intégrer dans CI (GitHub Actions)
 - [ ] **Rétention sauvegardes** — documenter la politique Railway dans le Dossier d'Exploitation
 
