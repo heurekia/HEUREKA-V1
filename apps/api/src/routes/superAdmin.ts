@@ -801,3 +801,74 @@ superAdminRouter.post("/legal-mentions/refresh", async (_req, res) => {
     res.status(500).json({ error: String(err) });
   }
 });
+
+// ── PISTE diagnostic endpoint ─────────────────────────────────────────────────
+superAdminRouter.get("/legal-mentions/diagnose", async (_req, res) => {
+  const OAUTH_URL = "https://oauth.piste.gouv.fr/api/oauth/token";
+  const API_BASE  = "https://api.piste.gouv.fr/dila/legifrance/lf-engine-app";
+  const results: Record<string, unknown> = {};
+
+  const clientId     = process.env.PISTE_CLIENT_ID     ?? "";
+  const clientSecret = process.env.PISTE_CLIENT_SECRET ?? "";
+  const apiKey       = process.env.PISTE_API_KEY       ?? "";
+  const secretKey    = process.env.PISTE_SECRET_KEY    ?? "";
+
+  // Helper: try one OAuth attempt
+  const tryOAuth = async (label: string, headers: Record<string, string>, body: Record<string, string>) => {
+    try {
+      const r = await fetch(OAUTH_URL, {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded", ...headers },
+        body: new URLSearchParams(body),
+        signal: AbortSignal.timeout(8_000),
+      });
+      const text = await r.text();
+      results[label] = { status: r.status, body: text.slice(0, 400) };
+      return r.ok ? JSON.parse(text).access_token as string : null;
+    } catch (e) { results[label] = { error: String(e) }; return null; }
+  };
+
+  // Helper: try direct API call with API key only
+  const tryApiKey = async (key: string) => {
+    try {
+      const r = await fetch(`${API_BASE}/search`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json", accept: "application/json", "X-Gravitee-Api-Key": key },
+        body: JSON.stringify({ recherche: { champs: [{ typeChamp: "NUM_ARTICLE", criteres: [{ typeRecherche: "EXACTE", valeur: "L424-1", operateur: "ET" }], operateur: "ET" }], filtres: [{ facette: "NOM_CODE", valeurs: ["Code de l'urbanisme"] }, { facette: "DATE_VERSION", singleDate: Date.now() }], pageNumber: 1, pageSize: 1, operateur: "ET", sort: "PERTINENCE", typePagination: "ARTICLE" }, fond: "CODE_DATE" }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      const text = await r.text();
+      results["apikey_only"] = { status: r.status, body: text.slice(0, 400) };
+    } catch (e) { results["apikey_only"] = { error: String(e) }; }
+  };
+
+  // 1. OAuth: client_id+secret in body, scope=openid
+  const tok1 = await tryOAuth("oauth_body_scope", {}, { grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret, scope: "openid" });
+  // 2. OAuth: client_id+secret in body, no scope
+  const tok2 = await tryOAuth("oauth_body_noscope", {}, { grant_type: "client_credentials", client_id: clientId, client_secret: clientSecret });
+  // 3. OAuth: API key+secret in body, scope=openid
+  const tok3 = await tryOAuth("oauth_apikey_body_scope", {}, { grant_type: "client_credentials", client_id: apiKey, client_secret: secretKey, scope: "openid" });
+  // 4. OAuth: API key+secret in body, no scope
+  const tok4 = await tryOAuth("oauth_apikey_body_noscope", {}, { grant_type: "client_credentials", client_id: apiKey, client_secret: secretKey });
+  // 5. OAuth: API key+secret Basic Auth
+  const tok5 = await tryOAuth("oauth_apikey_basic", { Authorization: `Basic ${Buffer.from(`${apiKey}:${secretKey}`).toString("base64")}` }, { grant_type: "client_credentials", scope: "openid" });
+  // 6. Direct API key only (no OAuth)
+  await tryApiKey(apiKey);
+
+  // If any token worked, try a search with it
+  const goodToken = tok1 ?? tok2 ?? tok3 ?? tok4 ?? tok5;
+  if (goodToken) {
+    try {
+      const r = await fetch(`${API_BASE}/search`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${goodToken}`, "Content-Type": "application/json", accept: "application/json", "X-Gravitee-Api-Key": apiKey },
+        body: JSON.stringify({ recherche: { champs: [{ typeChamp: "NUM_ARTICLE", criteres: [{ typeRecherche: "EXACTE", valeur: "L424-1", operateur: "ET" }], operateur: "ET" }], filtres: [{ facette: "NOM_CODE", valeurs: ["Code de l'urbanisme"] }, { facette: "DATE_VERSION", singleDate: Date.now() }], pageNumber: 1, pageSize: 1, operateur: "ET", sort: "PERTINENCE", typePagination: "ARTICLE" }, fond: "CODE_DATE" }),
+        signal: AbortSignal.timeout(8_000),
+      });
+      const text = await r.text();
+      results["search_with_token"] = { status: r.status, body: text.slice(0, 600) };
+    } catch (e) { results["search_with_token"] = { error: String(e) }; }
+  }
+
+  res.json({ env: { clientId: clientId ? "✓" : "✗", clientSecret: clientSecret ? "✓" : "✗", apiKey: apiKey ? "✓" : "✗", secretKey: secretKey ? "✓" : "✗" }, results });
+});
