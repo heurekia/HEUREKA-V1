@@ -84,13 +84,18 @@ let cachedToken: { value: string; expiresAt: number } | null = null;
 export async function getPisteToken(): Promise<string> {
   if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.value;
 
+  const clientId     = process.env.PISTE_CLIENT_ID!;
+  const clientSecret = process.env.PISTE_CLIENT_SECRET!;
+  const basicAuth    = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
+
   const res = await fetch(OAUTH_URL, {
     method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    headers: {
+      "Content-Type": "application/x-www-form-urlencoded",
+      "Authorization": `Basic ${basicAuth}`,
+    },
     body: new URLSearchParams({
       grant_type: "client_credentials",
-      client_id: process.env.PISTE_CLIENT_ID!,
-      client_secret: process.env.PISTE_CLIENT_SECRET!,
       scope: "openid",
     }),
     signal: AbortSignal.timeout(10_000),
