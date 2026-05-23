@@ -223,6 +223,12 @@ CREATE TABLE IF NOT EXISTS external_services (
 );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS service_id uuid REFERENCES external_services(id) ON DELETE SET NULL;
 
+CREATE TABLE IF NOT EXISTS service_communes (
+  service_id uuid NOT NULL REFERENCES external_services(id) ON DELETE CASCADE,
+  commune_id uuid NOT NULL REFERENCES communes(id) ON DELETE CASCADE,
+  PRIMARY KEY (service_id, commune_id)
+);
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_users_commune ON users(commune);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);

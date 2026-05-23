@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes } from "@heureka-v1/db";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
@@ -467,18 +467,26 @@ superAdminRouter.delete("/roles/:id", async (req, res) => {
 // ─── Services Annexes ─────────────────────────────────────────────────────────
 superAdminRouter.get("/services", async (_req, res) => {
   try {
-    const [services, userCounts] = await Promise.all([
+    const [services, userCounts, communeCounts] = await Promise.all([
       db.select().from(external_services).orderBy(external_services.name),
       db.select({ service_id: users.service_id, cnt: count() })
-        .from(users)
-        .where(isNotNull(users.service_id))
-        .groupBy(users.service_id),
+        .from(users).where(isNotNull(users.service_id)).groupBy(users.service_id),
+      db.select({ service_id: service_communes.service_id, cnt: count() })
+        .from(service_communes).groupBy(service_communes.service_id),
     ]);
-    const countMap: Record<string, number> = {};
+    const userCountMap: Record<string, number> = {};
     for (const uc of userCounts) {
-      if (uc.service_id) countMap[uc.service_id] = Number(uc.cnt);
+      if (uc.service_id) userCountMap[uc.service_id] = Number(uc.cnt);
     }
-    res.json(services.map((s) => ({ ...s, user_count: countMap[s.id] ?? 0 })));
+    const communeCountMap: Record<string, number> = {};
+    for (const cc of communeCounts) {
+      communeCountMap[cc.service_id] = Number(cc.cnt);
+    }
+    res.json(services.map((s) => ({
+      ...s,
+      user_count: userCountMap[s.id] ?? 0,
+      commune_count: communeCountMap[s.id] ?? 0,
+    })));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -524,6 +532,36 @@ superAdminRouter.delete("/services/:id", async (req, res) => {
   try {
     const { id } = req.params;
     await db.delete(external_services).where(eq(external_services.id, id));
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.get("/services/:id/communes", async (req, res) => {
+  try {
+    const rows = await db
+      .select({ commune_id: service_communes.commune_id })
+      .from(service_communes)
+      .where(eq(service_communes.service_id, req.params.id));
+    res.json(rows.map((r) => r.commune_id));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.put("/services/:id/communes", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { ids } = req.body as { ids?: string[] };
+    await db.transaction(async (tx) => {
+      await tx.delete(service_communes).where(eq(service_communes.service_id, id));
+      if (ids && ids.length > 0) {
+        await tx.insert(service_communes).values(ids.map((cid) => ({ service_id: id, commune_id: cid })));
+      }
+    });
     res.json({ success: true });
   } catch (err) {
     console.error(err);

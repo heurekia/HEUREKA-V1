@@ -2098,6 +2098,7 @@ interface ExternalService {
   telephone: string | null;
   description: string | null;
   user_count: number;
+  commune_count: number;
   created_at: string;
 }
 
@@ -2113,6 +2114,126 @@ interface ServiceUser {
 const emptyServiceForm = () => ({ name: "", type: "ABF", email: "", telephone: "", description: "" });
 const emptyUserForm = () => ({ email: "", prenom: "", nom: "", telephone: "", password: "" });
 
+// ─── Coverage Selector ────────────────────────────────────────────────────────
+function IndeterminateCheckbox({ checked, indeterminate, onChange, style }: {
+  checked: boolean; indeterminate: boolean; onChange: () => void; style?: React.CSSProperties;
+}) {
+  const ref = (el: HTMLInputElement | null) => { if (el) el.indeterminate = indeterminate; };
+  return <input ref={ref} type="checkbox" checked={checked} onChange={onChange} style={{ width: 15, height: 15, cursor: "pointer", accentColor: C.accent, ...style }} />;
+}
+
+function CoverageSelector({ allCommunes, selectedIds, onChange }: {
+  allCommunes: Commune[];
+  selectedIds: Set<string>;
+  onChange: (ids: Set<string>) => void;
+}) {
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+
+  // Group communes by EPCI
+  const grouped = allCommunes.reduce<Record<string, { epciName: string; communes: Commune[] }>>(
+    (acc, c) => {
+      const key = c.epci_id ?? "__none__";
+      const label = c.epci_name ?? "Sans groupement";
+      if (!acc[key]) acc[key] = { epciName: label, communes: [] };
+      acc[key].communes.push(c);
+      return acc;
+    },
+    {},
+  );
+
+  // Sort: EPCIs first (alphabetically), then "Sans groupement"
+  const groups = Object.entries(grouped).sort(([ka, a], [kb, b]) => {
+    if (ka === "__none__") return 1;
+    if (kb === "__none__") return -1;
+    return a.epciName.localeCompare(b.epciName);
+  });
+
+  const toggleCommune = (id: string) => {
+    const next = new Set(selectedIds);
+    next.has(id) ? next.delete(id) : next.add(id);
+    onChange(next);
+  };
+
+  const toggleGroup = (key: string) => {
+    const ids = (grouped[key]?.communes ?? []).map((c) => c.id);
+    const allChecked = ids.every((id) => selectedIds.has(id));
+    const next = new Set(selectedIds);
+    if (allChecked) ids.forEach((id) => next.delete(id));
+    else ids.forEach((id) => next.add(id));
+    onChange(next);
+  };
+
+  const toggleExpand = (key: string) => {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      next.has(key) ? next.delete(key) : next.add(key);
+      return next;
+    });
+  };
+
+  return (
+    <div style={{ border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden", maxHeight: 320, overflowY: "auto" }}>
+      {groups.map(([key, { epciName, communes: grpCommunes }]) => {
+        const checkedCount = grpCommunes.filter((c) => selectedIds.has(c.id)).length;
+        const allChecked = checkedCount === grpCommunes.length;
+        const someChecked = checkedCount > 0 && !allChecked;
+        const isExpanded = expanded.has(key);
+
+        return (
+          <div key={key}>
+            {/* Group header */}
+            <div style={{
+              display: "flex", alignItems: "center", gap: 10, padding: "10px 14px",
+              background: C.bg, borderBottom: `1px solid ${C.border}`, userSelect: "none",
+            }}>
+              <IndeterminateCheckbox
+                checked={allChecked}
+                indeterminate={someChecked}
+                onChange={() => toggleGroup(key)}
+              />
+              <button
+                onClick={() => toggleExpand(key)}
+                style={{ flex: 1, background: "none", border: "none", padding: 0, cursor: "pointer", display: "flex", alignItems: "center", gap: 8, textAlign: "left" }}
+              >
+                <span style={{ fontSize: 13, fontWeight: 700, color: C.text }}>{epciName}</span>
+                <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 400 }}>
+                  {checkedCount}/{grpCommunes.length}
+                </span>
+                <span style={{ marginLeft: "auto", fontSize: 11, color: C.textMuted, transform: isExpanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>▶</span>
+              </button>
+            </div>
+            {/* Communes list (collapsible) */}
+            {isExpanded && grpCommunes.map((c) => (
+              <label
+                key={c.id}
+                style={{
+                  display: "flex", alignItems: "center", gap: 10, padding: "8px 14px 8px 38px",
+                  borderBottom: `1px solid ${C.border}`, cursor: "pointer",
+                  background: selectedIds.has(c.id) ? C.accentLight : C.white,
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={selectedIds.has(c.id)}
+                  onChange={() => toggleCommune(c.id)}
+                  style={{ width: 14, height: 14, accentColor: C.accent, cursor: "pointer" }}
+                />
+                <span style={{ fontSize: 13, color: C.text }}>{c.name}</span>
+                {c.zip_code && <span style={{ fontSize: 12, color: C.textMuted }}>{c.zip_code}</span>}
+              </label>
+            ))}
+          </div>
+        );
+      })}
+      {groups.length === 0 && (
+        <div style={{ padding: 24, textAlign: "center", color: C.textMuted, fontSize: 13 }}>
+          Aucune commune configurée
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ServiceTypeBadge({ type }: { type: string }) {
   const color = SERVICE_TYPES[type]?.color ?? "#6B7280";
   const bg = SERVICE_TYPES[type]?.bg ?? "#F9FAFB";
@@ -2126,6 +2247,7 @@ function ServiceTypeBadge({ type }: { type: string }) {
 
 function ServicesAnnexes() {
   const [services, setServices] = useState<ExternalService[]>([]);
+  const [allCommunes, setAllCommunes] = useState<Commune[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<ExternalService | null>(null);
   const [serviceUsers, setServiceUsers] = useState<ServiceUser[]>([]);
@@ -2134,6 +2256,7 @@ function ServicesAnnexes() {
   const [showEdit, setShowEdit] = useState(false);
   const [showAddUser, setShowAddUser] = useState(false);
   const [form, setForm] = useState(emptyServiceForm());
+  const [coverageIds, setCoverageIds] = useState<Set<string>>(new Set());
   const [userForm, setUserForm] = useState(emptyUserForm());
   const [saving, setSaving] = useState(false);
   const [confirmDeleteService, setConfirmDeleteService] = useState<string | null>(null);
@@ -2145,8 +2268,12 @@ function ServicesAnnexes() {
   const loadServices = useCallback(async () => {
     setLoading(true);
     try {
-      const data = await api.get<ExternalService[]>("/admin/services");
-      setServices(data);
+      const [svc, communes] = await Promise.all([
+        api.get<ExternalService[]>("/admin/services"),
+        api.get<Commune[]>("/admin/communes"),
+      ]);
+      setServices(svc);
+      setAllCommunes(communes);
     } finally {
       setLoading(false);
     }
@@ -2164,6 +2291,15 @@ function ServicesAnnexes() {
     }
   }, []);
 
+  const loadCoverage = useCallback(async (serviceId: string) => {
+    const ids = await api.get<string[]>(`/admin/services/${serviceId}/communes`);
+    setCoverageIds(new Set(ids));
+  }, []);
+
+  const saveCoverage = async (serviceId: string) => {
+    await api.put(`/admin/services/${serviceId}/communes`, { ids: [...coverageIds] });
+  };
+
   const handleSelect = (s: ExternalService) => {
     setSelected(s);
     loadUsers(s.id);
@@ -2173,10 +2309,12 @@ function ServicesAnnexes() {
     if (!form.name || !form.type) return showToast("Nom et type sont requis", "error");
     setSaving(true);
     try {
-      await api.post("/admin/services", form);
+      const created = await api.post<ExternalService>("/admin/services", form);
+      await saveCoverage(created.id);
       showToast("Service créé");
       setShowCreate(false);
       setForm(emptyServiceForm());
+      setCoverageIds(new Set());
       loadServices();
     } catch {
       showToast("Erreur lors de la création", "error");
@@ -2189,10 +2327,13 @@ function ServicesAnnexes() {
     if (!selected) return;
     setSaving(true);
     try {
-      const updated = await api.patch<ExternalService>(`/admin/services/${selected.id}`, form);
+      const [updated] = await Promise.all([
+        api.patch<ExternalService>(`/admin/services/${selected.id}`, form),
+        saveCoverage(selected.id),
+      ]);
       showToast("Service mis à jour");
       setShowEdit(false);
-      setSelected({ ...updated, user_count: selected.user_count });
+      setSelected({ ...updated, user_count: selected.user_count, commune_count: coverageIds.size });
       loadServices();
     } catch {
       showToast("Erreur lors de la mise à jour", "error");
@@ -2298,10 +2439,19 @@ function ServicesAnnexes() {
               <Input type="tel" value={form.telephone} onChange={(v) => setForm({ ...form, telephone: v })} />
             </Field>
             <Field label="Description">
-              <textarea style={{ ...inp(), minHeight: 72, resize: "vertical" }} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Périmètre d'intervention, secteurs couverts…" />
+              <textarea style={{ ...inp(), minHeight: 64, resize: "vertical" }} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Notes internes, périmètre d'intervention…" />
             </Field>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 8 }}>
+                Communes couvertes
+                <span style={{ marginLeft: 8, fontWeight: 400, textTransform: "none", letterSpacing: 0, color: C.textLight }}>
+                  — {coverageIds.size} sélectionnée{coverageIds.size > 1 ? "s" : ""}
+                </span>
+              </label>
+              <CoverageSelector allCommunes={allCommunes} selectedIds={coverageIds} onChange={setCoverageIds} />
+            </div>
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
-              <button onClick={() => { setShowCreate(false); setForm(emptyServiceForm()); }} style={{ padding: "10px 20px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.text, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>Annuler</button>
+              <button onClick={() => { setShowCreate(false); setForm(emptyServiceForm()); setCoverageIds(new Set()); }} style={{ padding: "10px 20px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.text, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>Annuler</button>
               <button onClick={handleCreate} disabled={saving} style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: C.accent, color: "white", cursor: saving ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700, opacity: saving ? 0.7 : 1 }}>
                 {saving ? "Création…" : "Créer le service"}
               </button>
@@ -2331,8 +2481,17 @@ function ServicesAnnexes() {
               <Input type="tel" value={form.telephone} onChange={(v) => setForm({ ...form, telephone: v })} />
             </Field>
             <Field label="Description">
-              <textarea style={{ ...inp(), minHeight: 72, resize: "vertical" }} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+              <textarea style={{ ...inp(), minHeight: 64, resize: "vertical" }} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
             </Field>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.05em", display: "block", marginBottom: 8 }}>
+                Communes couvertes
+                <span style={{ marginLeft: 8, fontWeight: 400, textTransform: "none", letterSpacing: 0, color: C.textLight }}>
+                  — {coverageIds.size} sélectionnée{coverageIds.size > 1 ? "s" : ""}
+                </span>
+              </label>
+              <CoverageSelector allCommunes={allCommunes} selectedIds={coverageIds} onChange={setCoverageIds} />
+            </div>
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
               <button onClick={() => setShowEdit(false)} style={{ padding: "10px 20px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.text, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>Annuler</button>
               <button onClick={handleEdit} disabled={saving} style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: C.accent, color: "white", cursor: saving ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700, opacity: saving ? 0.7 : 1 }}>
@@ -2382,7 +2541,7 @@ function ServicesAnnexes() {
         <div style={{ flex: selected ? "0 0 380px" : 1 }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
             <span style={{ color: C.textMuted, fontSize: 14 }}>{services.length} service{services.length > 1 ? "s" : ""}</span>
-            <button onClick={() => { setForm(emptyServiceForm()); setShowCreate(true); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>
+            <button onClick={() => { setForm(emptyServiceForm()); setCoverageIds(new Set()); setShowCreate(true); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>
               + Nouveau service
             </button>
           </div>
@@ -2421,6 +2580,9 @@ function ServicesAnnexes() {
                         <div style={{ display: "flex", gap: 16, fontSize: 12, color: C.textMuted }}>
                           {s.email && <span>✉ {s.email}</span>}
                           {s.telephone && <span>📞 {s.telephone}</span>}
+                          <span style={{ color: s.commune_count > 0 ? C.accent : C.textLight, fontWeight: 600 }}>
+                            🏛 {s.commune_count} commune{s.commune_count > 1 ? "s" : ""}
+                          </span>
                           <span style={{ color: s.user_count > 0 ? C.green : C.textLight, fontWeight: 600 }}>
                             👤 {s.user_count} utilisateur{s.user_count > 1 ? "s" : ""}
                           </span>
@@ -2428,7 +2590,7 @@ function ServicesAnnexes() {
                       </div>
                       <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                         <button
-                          onClick={(e) => { e.stopPropagation(); setSelected(s); setForm({ name: s.name, type: s.type, email: s.email ?? "", telephone: s.telephone ?? "", description: s.description ?? "" }); setShowEdit(true); }}
+                          onClick={async (e) => { e.stopPropagation(); setSelected(s); setForm({ name: s.name, type: s.type, email: s.email ?? "", telephone: s.telephone ?? "", description: s.description ?? "" }); await loadCoverage(s.id); setShowEdit(true); }}
                           style={{ padding: "6px 12px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}
                         >
                           Modifier

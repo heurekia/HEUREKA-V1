@@ -11,3 +11,4 @@ export * from "./zone_regulatory_rules.js";
 export * from "./instruction_events.js";
 export * from "./calendar_events.js";
 export * from "./externalServices.js";
+export * from "./serviceCommunes.js";
