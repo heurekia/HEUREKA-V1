@@ -373,9 +373,12 @@ export function TemplateManagerPanel() {
 
   useEffect(() => { load().catch(() => setLoading(false)); }, [load]);
 
+  const [saveError, setSaveError] = useState<string | null>(null);
+
   const handleSave = async () => {
     if (!editing || !editing.name?.trim()) return;
     setSaving(true);
+    setSaveError(null);
     try {
       if (editing.id) {
         await api.put(`/mairie/templates/${editing.id}`, { name: editing.name, category: editing.category ?? "general", body: editing.body ?? "" });
@@ -384,6 +387,8 @@ export function TemplateManagerPanel() {
       }
       await load();
       setEditing(null);
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Erreur — vérifiez que votre compte est rattaché à une commune.");
     } finally {
       setSaving(false);
     }
@@ -441,6 +446,11 @@ export function TemplateManagerPanel() {
           </div>
         </div>
 
+        {saveError && (
+          <div style={{ marginTop: 12, padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#B91C1C" }}>
+            {saveError}
+          </div>
+        )}
         <div style={{ marginTop: 18, display: "flex", gap: 10, alignItems: "center" }}>
           <button onClick={() => void handleSave()} disabled={saving || !editing.name?.trim()}
             style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving || !editing.name?.trim() ? "not-allowed" : "pointer", opacity: saving || !editing.name?.trim() ? 0.6 : 1, fontSize: 13, fontWeight: 600 }}>
@@ -518,9 +528,12 @@ export function CommuneLetterheadPanel() {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [communeConfigured, setCommuneConfigured] = useState<boolean | null>(null);
 
   useEffect(() => {
-    api.get<typeof form & { commune_logo_url?: string | null }>("/mairie/commune-letterhead").then(lh => {
+    api.get<typeof form & { commune_configured?: boolean; commune_logo_url?: string | null }>("/mairie/commune-letterhead").then(lh => {
+      setCommuneConfigured(lh.commune_configured ?? false);
+      if (lh.commune_configured === false) return;
       setCommuneLogoUrl(lh.commune_logo_url ?? null);
       setForm({
         letterhead_logo: lh.letterhead_logo ?? "",
@@ -530,7 +543,7 @@ export function CommuneLetterheadPanel() {
         footer_text: lh.footer_text ?? "",
         signature_image: lh.signature_image ?? "",
       });
-    }).catch(() => {}).finally(() => setLoading(false));
+    }).catch(() => { setCommuneConfigured(false); }).finally(() => setLoading(false));
   }, [user]);
 
   const toBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
@@ -588,6 +601,21 @@ export function CommuneLetterheadPanel() {
   );
 
   if (loading) return <div style={{ color: "#94a3b8", fontSize: 13, padding: 20 }}>Chargement…</div>;
+
+  if (communeConfigured === false) return (
+    <div style={{ padding: "20px 0", maxWidth: 560 }}>
+      <div style={{ background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 10, padding: "16px 20px", display: "flex", gap: 14, alignItems: "flex-start" }}>
+        <span style={{ fontSize: 22, flexShrink: 0 }}>⚠️</span>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>Votre compte n'est pas rattaché à une commune</div>
+          <div style={{ fontSize: 13, color: "#78350F", lineHeight: 1.6 }}>
+            Pour configurer l'en-tête des courriers et gérer les modèles, votre compte doit être associé à une commune.<br />
+            Demandez à votre administrateur d'assigner une commune via <strong>Super Admin → Utilisateurs → Communes</strong>.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 
   return (
     <div style={{ padding: "20px 0", maxWidth: 640 }}>

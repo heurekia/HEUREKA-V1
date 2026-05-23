@@ -1618,8 +1618,9 @@ mairieRouter.delete("/templates/:templateId", async (req: AuthRequest, res) => {
 mairieRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
   try {
     const commune = await getCommuneRowForUser(req);
-    if (!commune) return res.json({});
+    if (!commune) return res.json({ commune_configured: false });
     res.json({
+      commune_configured: true,
       letterhead_logo: commune.letterhead_logo ?? commune.logo_url,
       commune_logo_url: commune.logo_url,
       letterhead_title: commune.letterhead_title ?? commune.name,
