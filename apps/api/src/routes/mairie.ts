@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
@@ -1496,5 +1496,120 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
   } catch (err) {
     console.error("[plu-zones proxy]", err);
     res.status(500).json({ error: "Erreur serveur", detail: String(err) });
+  }
+});
+
+// ── Courriers : templates & en-tête commune ───────────────────────────────
+
+async function getCommune(communeName: string | null | undefined) {
+  if (!communeName) return null;
+  const [c] = await db.select().from(communes).where(ilike(communes.name, communeName)).limit(1);
+  return c ?? null;
+}
+
+mairieRouter.get("/templates", async (req: AuthRequest, res) => {
+  try {
+    const commune = req.user!.commune;
+    if (!commune) return res.json([]);
+    const rows = await db.select().from(courrier_templates)
+      .where(sql`commune ILIKE ${commune}`)
+      .orderBy(courrier_templates.created_at);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+mairieRouter.post("/templates", async (req: AuthRequest, res) => {
+  try {
+    const commune = req.user!.commune;
+    if (!commune) return res.status(400).json({ error: "Commune introuvable" });
+    const { name, category = "general", body = "" } = req.body as { name?: string; category?: string; body?: string };
+    if (!name?.trim()) return res.status(400).json({ error: "Nom requis" });
+    const [tpl] = await db.insert(courrier_templates).values({
+      commune,
+      name: name.trim(),
+      category,
+      body,
+    }).returning();
+    res.status(201).json(tpl);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+mairieRouter.put("/templates/:templateId", async (req: AuthRequest, res) => {
+  try {
+    const templateId = req.params.templateId as string;
+    const commune = req.user!.commune;
+    const [existing] = await db.select({ commune: courrier_templates.commune }).from(courrier_templates).where(eq(courrier_templates.id, templateId)).limit(1);
+    if (!existing || existing.commune?.toLowerCase() !== commune?.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
+    const { name, category, body } = req.body as { name?: string; category?: string; body?: string };
+    if (!name?.trim()) return res.status(400).json({ error: "Nom requis" });
+    const [tpl] = await db.update(courrier_templates).set({
+      name: name.trim(),
+      category: category ?? "general",
+      body: body ?? "",
+      updated_at: new Date(),
+    }).where(eq(courrier_templates.id, templateId)).returning();
+    res.json(tpl);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+mairieRouter.delete("/templates/:templateId", async (req: AuthRequest, res) => {
+  try {
+    const templateId = req.params.templateId as string;
+    const commune = req.user!.commune;
+    const [existing] = await db.select({ commune: courrier_templates.commune }).from(courrier_templates).where(eq(courrier_templates.id, templateId)).limit(1);
+    if (!existing || existing.commune?.toLowerCase() !== commune?.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
+    await db.delete(courrier_templates).where(eq(courrier_templates.id, templateId));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+mairieRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
+  try {
+    const commune = await getCommune(req.user!.commune);
+    if (!commune) return res.json({});
+    res.json({
+      letterhead_logo: commune.letterhead_logo,
+      letterhead_title: commune.letterhead_title ?? commune.name,
+      letterhead_subtitle: commune.letterhead_subtitle,
+      letterhead_address: commune.letterhead_address,
+      footer_text: commune.footer_text,
+      signature_image: commune.signature_image,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+mairieRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
+  try {
+    const commune = await getCommune(req.user!.commune);
+    if (!commune) return res.status(404).json({ error: "Commune introuvable" });
+    const { letterhead_logo, letterhead_title, letterhead_subtitle, letterhead_address, footer_text, signature_image } = req.body as Record<string, string | null>;
+    await db.update(communes).set({
+      letterhead_logo: letterhead_logo ?? null,
+      letterhead_title: letterhead_title ?? null,
+      letterhead_subtitle: letterhead_subtitle ?? null,
+      letterhead_address: letterhead_address ?? null,
+      footer_text: footer_text ?? null,
+      signature_image: signature_image ?? null,
+      updated_at: new Date(),
+    }).where(eq(communes.id, commune.id));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });

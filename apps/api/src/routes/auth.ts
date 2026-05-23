@@ -88,7 +88,7 @@ authRouter.post("/register", registerLimiter, async (req: AuthRequest, res) => {
       })
       .returning();
     const user = rows[0]!;
-    const token = generateToken({ id: user.id, email: user.email, role: user.role });
+    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined });
     res.cookie("token", token, COOKIE_OPTIONS);
     writeAudit(user.id, user.email, "register", req);
     res.status(201).json({
@@ -119,7 +119,7 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
       writeAudit(null, email, "login_failed", req);
       return res.status(401).json({ error: "Email ou mot de passe incorrect" });
     }
-    const token = generateToken({ id: user.id, email: user.email, role: user.role });
+    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined });
     res.cookie("token", token, COOKIE_OPTIONS);
     writeAudit(user.id, user.email, "login", req);
     res.json({
@@ -279,7 +279,7 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     const [user] = await db.select().from(users).where(eq(users.id, row.user_id)).limit(1);
     if (!user) return res.status(500).json({ error: "Erreur serveur" });
 
-    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role });
+    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined });
     res.cookie("token", jwtToken, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", maxAge: 7 * 24 * 60 * 60 * 1000, path: "/" });
     writeAudit(user.id, user.email, row.type === "activation" ? "account_activated" : "password_reset", req);
     res.json({ user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role } });

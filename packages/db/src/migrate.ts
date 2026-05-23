@@ -255,6 +255,18 @@ CREATE TABLE IF NOT EXISTS password_tokens (
 CREATE INDEX IF NOT EXISTS idx_password_tokens_token ON password_tokens(token);
 CREATE INDEX IF NOT EXISTS idx_password_tokens_user_id ON password_tokens(user_id);
 
+-- Extend courrier_templates for mairie usage
+ALTER TABLE courrier_templates ALTER COLUMN service_id DROP NOT NULL;
+ALTER TABLE courrier_templates ADD COLUMN IF NOT EXISTS commune text;
+
+-- Letterhead & signature for communes (mairie)
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS letterhead_logo text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS letterhead_title text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS letterhead_subtitle text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS letterhead_address text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS footer_text text;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS signature_image text;
+
 -- Letterhead & signature for external services
 ALTER TABLE external_services ADD COLUMN IF NOT EXISTS letterhead_logo text;
 ALTER TABLE external_services ADD COLUMN IF NOT EXISTS letterhead_title text;

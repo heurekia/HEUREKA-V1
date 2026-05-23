@@ -8,10 +8,11 @@ export interface AuthRequest extends Request {
     id: string;
     email: string;
     role: string;
+    commune?: string;
   };
 }
 
-export function generateToken(payload: { id: string; email: string; role: string }): string {
+export function generateToken(payload: { id: string; email: string; role: string; commune?: string }): string {
   return jwt.sign(payload, JWT_SECRET, { expiresIn: "7d" });
 }
 

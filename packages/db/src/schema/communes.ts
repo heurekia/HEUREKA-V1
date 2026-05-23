@@ -15,6 +15,12 @@ export const communes = pgTable("communes", {
   description: text("description"),
   epci_id: uuid("epci_id"),
   instruction_mutualisee: boolean("instruction_mutualisee").notNull().default(false),
+  letterhead_logo: text("letterhead_logo"),
+  letterhead_title: text("letterhead_title"),
+  letterhead_subtitle: text("letterhead_subtitle"),
+  letterhead_address: text("letterhead_address"),
+  footer_text: text("footer_text"),
+  signature_image: text("signature_image"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

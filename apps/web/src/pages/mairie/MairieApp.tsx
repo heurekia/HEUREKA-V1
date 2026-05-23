@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearch
 import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
+import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 
 const COMMUNE_INSEE: Record<string, string> = {
   "Ballan-Miré": "37018",
@@ -1812,7 +1813,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
 
 function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
-  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Intégrations"];
+  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
   const [stab, setStab] = useState("Réglementation");
   const events = [
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
@@ -1982,6 +1983,7 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeIn
           </div>
         </div>
       )}
+      {stab === "Courriers" && <CommuneLetterheadPanel />}
       {stab === "Intégrations" && (
         <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Intégrations et services connectés</div>
@@ -3348,32 +3350,7 @@ function InfosPersoScreen() {
             </div>
           )}
 
-          {stab === "Mes Modèles" && (
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Mes Modèles</div>
-                  <div style={{ fontSize: 12, color: "#94a3b8" }}>Vos modèles de courriers personnalisés.</div>
-                </div>
-                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouveau modèle</button>
-              </div>
-              {[
-                { name: "Demande de pièce complémentaire", type: "Courrier", updated: "12/05/2024" },
-                { name: "Accusé de réception", type: "Courrier", updated: "02/05/2024" },
-                { name: "Notification de décision", type: "Arrêté", updated: "28/04/2024" },
-                { name: "Mise en demeure", type: "Courrier", updated: "15/04/2024" },
-              ].map((m, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
-                  <span style={{ fontSize: 20 }}>📄</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{m.name}</div>
-                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{m.type} · Modifié le {m.updated}</div>
-                  </div>
-                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "5px 10px", fontSize: 12, color: "#4F46E5", cursor: "pointer" }}>Éditer</button>
-                </div>
-              ))}
-            </div>
-          )}
+          {stab === "Mes Modèles" && <TemplateManagerPanel />}
 
           {stab === "Mes Signatures" && (
             <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
@@ -3546,6 +3523,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   navigate: (s: string) => void;
 }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("Résumé");
+  const [showCourrierModal, setShowCourrierModal] = useState(false);
 
   // ── Analyse parcellaire réelle ──
   type ParcelAnalysis = {
@@ -3719,7 +3697,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>
               Contacter le pétitionnaire
             </button>
-            <button style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "7px 15px", fontSize: 12.5, color: "#374151", cursor: "pointer", fontWeight: 500, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+            <button onClick={() => setShowCourrierModal(true)} style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "7px 15px", fontSize: 12.5, color: "#374151", cursor: "pointer", fontWeight: 500, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
               Générer un courrier
             </button>
@@ -4660,6 +4638,24 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         )}
 
       </div>
+      {showCourrierModal && (
+        <CourrierModal
+          dossier={{
+            id: dossier.id,
+            numero: dossier.numero,
+            type: dossier.type,
+            petitionnaire: dossier.petitionnaire,
+            adresse: dossier.adresse,
+            commune: dossier.commune,
+            code_postal: dossier.code_postal,
+            parcelle: dossier.parcelle,
+            surface_plancher: dossier.surface_plancher,
+            date_depot: dossier.date_depot,
+            echeance: dossier.echeance,
+          }}
+          onClose={() => setShowCourrierModal(false)}
+        />
+      )}
     </div>
   );
 }
