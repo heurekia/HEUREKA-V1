@@ -60,6 +60,7 @@ interface UserItem {
   nom: string;
   role: string;
   commune: string | null;
+  commune_insee: string | null;
   telephone: string | null;
   role_config_id: string | null;
   created_at: string;
@@ -1670,15 +1671,8 @@ function Utilisateurs() {
   const saveCommunesModal = async () => {
     if (!communesModal) return;
     try {
-      const ids = [...userCommuneIds];
-      // Sync primary commune field with the first selected commune
-      const primaryCommune = ids.length > 0
-        ? (allCommunes.find((c) => c.id === ids[0])?.name ?? null)
-        : null;
-      await Promise.all([
-        api.put(`/admin/users/${communesModal.id}/communes`, { ids }),
-        api.patch(`/admin/users/${communesModal.id}`, { commune: primaryCommune }),
-      ]);
+      // PUT /communes syncs commune + commune_insee automatically from the first selected commune
+      await api.put(`/admin/users/${communesModal.id}/communes`, { ids: [...userCommuneIds] });
       setToast({ msg: "Communes mises à jour", type: "success" });
       setCommunesModal(null);
       load();
@@ -1802,8 +1796,13 @@ function Utilisateurs() {
                       </div>
                     )}
                   </td>
-                  <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>
-                    {u.commune ?? <span style={{ color: C.textLight, fontStyle: "italic" }}>—</span>}
+                  <td style={{ padding: "12px 16px" }}>
+                    {u.commune
+                      ? <div>
+                          <span style={{ fontSize: 13, color: C.text }}>{u.commune}</span>
+                          {u.commune_insee && <span style={{ fontSize: 11, color: C.textMuted, marginLeft: 6 }}>({u.commune_insee})</span>}
+                        </div>
+                      : <span style={{ color: C.textLight, fontStyle: "italic", fontSize: 13 }}>—</span>}
                   </td>
                   <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>
                     {new Date(u.created_at).toLocaleDateString("fr-FR")}

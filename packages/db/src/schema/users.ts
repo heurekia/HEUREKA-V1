@@ -10,6 +10,7 @@ export const users = pgTable("users", {
   nom: text("nom").notNull(),
   role: userRoleEnum("role").notNull().default("citoyen"),
   commune: text("commune"),
+  commune_insee: text("commune_insee"),
   telephone: text("telephone"),
   avatar_url: text("avatar_url"),
   role_config_id: uuid("role_config_id"),

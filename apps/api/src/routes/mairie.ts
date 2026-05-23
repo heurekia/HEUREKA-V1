@@ -1501,47 +1501,57 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
 
 // ── Courriers : templates & en-tête commune ───────────────────────────────
 
-// Always returns the commune row for the connected user.
-// Source of truth = user.commune (text). Creates a minimal commune row
-// on the fly if one doesn't exist yet so saves never fail.
+// Source of truth: commune_insee (stable) > commune name (fallback).
+// Creates a minimal commune row on the fly if none exists yet.
 async function getCommuneRowForUser(req: AuthRequest) {
   const userId = req.user!.id;
 
-  // Get commune name: JWT first, then DB fallback (for old sessions)
-  const communeName = req.user!.commune
-    ?? (await db.select({ commune: users.commune }).from(users).where(eq(users.id, userId)).limit(1))[0]?.commune;
-  if (!communeName) return null;
-  const name = communeName.trim();
+  // Fetch user fields from DB (always up-to-date even with old JWT tokens)
+  const [u] = await db.select({ commune: users.commune, commune_insee: users.commune_insee })
+    .from(users).where(eq(users.id, userId)).limit(1);
 
-  // Find existing row: ilike then unaccent fallback
-  const [byName] = await db.select().from(communes).where(ilike(communes.name, name)).limit(1);
-  if (byName) return byName;
+  const inseeCode = req.user!.commune_insee ?? u?.commune_insee;
+  const communeName = req.user!.commune ?? u?.commune;
 
-  const [byUnaccent] = await db.select().from(communes)
-    .where(sql`unaccent(name) ILIKE unaccent(${name})`)
-    .limit(1);
-  if (byUnaccent) return byUnaccent;
+  // 1. Lookup by INSEE code (unambiguous)
+  if (inseeCode) {
+    const [byInsee] = await db.select().from(communes).where(eq(communes.insee_code, inseeCode)).limit(1);
+    if (byInsee) return byInsee;
+  }
 
-  // Commune not in communes table yet — create a minimal row so saves work
-  const [created] = await db.insert(communes).values({
-    name,
-    insee_code: `tmp_${name.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now()}`,
-  }).returning();
-  return created ?? null;
+  // 2. Fallback: lookup by name (ilike then unaccent)
+  if (communeName) {
+    const name = communeName.trim();
+    const [byName] = await db.select().from(communes).where(ilike(communes.name, name)).limit(1);
+    if (byName) return byName;
+    const [byUnaccent] = await db.select().from(communes)
+      .where(sql`unaccent(name) ILIKE unaccent(${name})`).limit(1);
+    if (byUnaccent) return byUnaccent;
+
+    // 3. Commune not in table yet — create minimal row
+    const [created] = await db.insert(communes).values({
+      name,
+      insee_code: `tmp_${name.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now()}`,
+    }).returning();
+    return created ?? null;
+  }
+
+  return null;
 }
 
 async function getCommuneForUser(req: AuthRequest): Promise<string | null> {
-  const communeName = req.user!.commune
-    ?? (await db.select({ commune: users.commune }).from(users).where(eq(users.id, req.user!.id)).limit(1))[0]?.commune;
-  return communeName?.trim() ?? null;
+  const [u] = await db.select({ commune: users.commune, commune_insee: users.commune_insee })
+    .from(users).where(eq(users.id, req.user!.id)).limit(1);
+  // Prefer INSEE code as the canonical identifier for template ownership
+  return u?.commune_insee ?? u?.commune?.trim() ?? null;
 }
 
 mairieRouter.get("/templates", async (req: AuthRequest, res) => {
   try {
-    const commune = await getCommuneForUser(req);
-    if (!commune) return res.json([]);
+    const communeKey = await getCommuneForUser(req);
+    if (!communeKey) return res.json([]);
     const rows = await db.select().from(courrier_templates)
-      .where(sql`commune ILIKE ${commune}`)
+      .where(sql`commune_insee = ${communeKey} OR (commune_insee IS NULL AND commune ILIKE ${communeKey})`)
       .orderBy(courrier_templates.created_at);
     res.json(rows);
   } catch (err) {
@@ -1552,12 +1562,12 @@ mairieRouter.get("/templates", async (req: AuthRequest, res) => {
 
 mairieRouter.post("/templates", async (req: AuthRequest, res) => {
   try {
-    const commune = await getCommuneForUser(req);
-    if (!commune) return res.status(400).json({ error: "Commune introuvable" });
+    const communeKey = await getCommuneForUser(req);
+    if (!communeKey) return res.status(400).json({ error: "Commune introuvable" });
     const { name, category = "general", body = "" } = req.body as { name?: string; category?: string; body?: string };
     if (!name?.trim()) return res.status(400).json({ error: "Nom requis" });
     const [tpl] = await db.insert(courrier_templates).values({
-      commune,
+      commune_insee: communeKey,
       name: name.trim(),
       category,
       body,
@@ -1572,16 +1582,15 @@ mairieRouter.post("/templates", async (req: AuthRequest, res) => {
 mairieRouter.put("/templates/:templateId", async (req: AuthRequest, res) => {
   try {
     const templateId = req.params.templateId as string;
-    const commune = await getCommuneForUser(req);
-    const [existing] = await db.select({ commune: courrier_templates.commune }).from(courrier_templates).where(eq(courrier_templates.id, templateId)).limit(1);
-    if (!existing || existing.commune?.toLowerCase() !== commune?.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
+    const communeKey = await getCommuneForUser(req);
+    const [existing] = await db.select({ commune_insee: courrier_templates.commune_insee, commune: courrier_templates.commune })
+      .from(courrier_templates).where(eq(courrier_templates.id, templateId)).limit(1);
+    const ownerKey = existing?.commune_insee ?? existing?.commune;
+    if (!existing || ownerKey?.toLowerCase() !== communeKey?.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
     const { name, category, body } = req.body as { name?: string; category?: string; body?: string };
     if (!name?.trim()) return res.status(400).json({ error: "Nom requis" });
     const [tpl] = await db.update(courrier_templates).set({
-      name: name.trim(),
-      category: category ?? "general",
-      body: body ?? "",
-      updated_at: new Date(),
+      name: name.trim(), category: category ?? "general", body: body ?? "", updated_at: new Date(),
     }).where(eq(courrier_templates.id, templateId)).returning();
     res.json(tpl);
   } catch (err) {
@@ -1593,9 +1602,11 @@ mairieRouter.put("/templates/:templateId", async (req: AuthRequest, res) => {
 mairieRouter.delete("/templates/:templateId", async (req: AuthRequest, res) => {
   try {
     const templateId = req.params.templateId as string;
-    const commune = await getCommuneForUser(req);
-    const [existing] = await db.select({ commune: courrier_templates.commune }).from(courrier_templates).where(eq(courrier_templates.id, templateId)).limit(1);
-    if (!existing || existing.commune?.toLowerCase() !== commune?.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
+    const communeKey = await getCommuneForUser(req);
+    const [existing] = await db.select({ commune_insee: courrier_templates.commune_insee, commune: courrier_templates.commune })
+      .from(courrier_templates).where(eq(courrier_templates.id, templateId)).limit(1);
+    const ownerKey = existing?.commune_insee ?? existing?.commune;
+    if (!existing || ownerKey?.toLowerCase() !== communeKey?.toLowerCase()) return res.status(403).json({ error: "Accès refusé" });
     await db.delete(courrier_templates).where(eq(courrier_templates.id, templateId));
     res.json({ ok: true });
   } catch (err) {

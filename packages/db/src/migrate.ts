@@ -287,6 +287,26 @@ CREATE TABLE IF NOT EXISTS courrier_templates (
 );
 CREATE INDEX IF NOT EXISTS idx_courrier_templates_service_id ON courrier_templates(service_id);
 
+-- Code INSEE comme lien vertical (commune active de l'utilisateur)
+ALTER TABLE users ADD COLUMN IF NOT EXISTS commune_insee text;
+ALTER TABLE courrier_templates ADD COLUMN IF NOT EXISTS commune_insee text;
+
+-- Backfill commune_insee depuis le nom de commune (best-effort)
+UPDATE users SET commune_insee = communes.insee_code
+FROM communes
+WHERE users.commune IS NOT NULL
+  AND users.commune_insee IS NULL
+  AND lower(trim(users.commune)) = lower(trim(communes.name));
+
+UPDATE courrier_templates SET commune_insee = communes.insee_code
+FROM communes
+WHERE courrier_templates.commune IS NOT NULL
+  AND courrier_templates.commune_insee IS NULL
+  AND lower(trim(courrier_templates.commune)) = lower(trim(communes.name));
+
+CREATE INDEX IF NOT EXISTS idx_users_commune_insee ON users(commune_insee);
+CREATE INDEX IF NOT EXISTS idx_courrier_templates_commune_insee ON courrier_templates(commune_insee);
+
 -- Communes multiples par utilisateur
 CREATE TABLE IF NOT EXISTS user_communes (
   user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,

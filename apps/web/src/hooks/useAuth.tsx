@@ -8,6 +8,7 @@ interface User {
   nom: string;
   role: string;
   commune?: string;
+  commune_insee?: string;
   telephone?: string;
   avatar_url?: string;
 }

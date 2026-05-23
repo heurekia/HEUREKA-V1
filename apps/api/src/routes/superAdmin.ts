@@ -332,18 +332,19 @@ superAdminRouter.post("/users", async (req, res) => {
 superAdminRouter.patch("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { role, prenom, nom, commune, telephone, role_config_id } = req.body as Partial<{
+    const { role, prenom, nom, commune, commune_insee, telephone, role_config_id } = req.body as Partial<{
       role: "citoyen" | "mairie" | "instructeur" | "admin";
       prenom: string;
       nom: string;
       commune: string | null;
+      commune_insee: string | null;
       telephone: string;
       role_config_id: string | null;
     }>;
 
     const [updated] = await db
       .update(users)
-      .set({ role, prenom, nom, commune, telephone, role_config_id, updated_at: new Date() })
+      .set({ role, prenom, nom, commune, commune_insee, telephone, role_config_id, updated_at: new Date() })
       .where(eq(users.id, id))
       .returning();
 
@@ -374,6 +375,14 @@ superAdminRouter.put("/users/:id/communes", async (req, res) => {
       await tx.delete(user_communes).where(eq(user_communes.user_id, id));
       if (ids.length > 0) {
         await tx.insert(user_communes).values(ids.map((cid) => ({ user_id: id, commune_id: cid })));
+        // Sync primary commune + INSEE code from first selected commune
+        const [primary] = await tx.select({ name: communes.name, insee_code: communes.insee_code })
+          .from(communes).where(eq(communes.id, ids[0]!)).limit(1);
+        if (primary) {
+          await tx.update(users).set({ commune: primary.name, commune_insee: primary.insee_code, updated_at: new Date() }).where(eq(users.id, id));
+        }
+      } else {
+        await tx.update(users).set({ commune: null, commune_insee: null, updated_at: new Date() }).where(eq(users.id, id));
       }
     });
     res.json({ ok: true });
