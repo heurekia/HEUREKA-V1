@@ -3533,6 +3533,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 }) {
   const [activeTab, setActiveTab] = useState<DetailTab>("Résumé");
   const [showCourrierModal, setShowCourrierModal] = useState(false);
+  const [showMapFull, setShowMapFull] = useState(false);
 
   // ── Analyse parcellaire réelle ──
   type ParcelAnalysis = {
@@ -3887,17 +3888,69 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               </div>
               {/* Mini map */}
               <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", padding: "16px 18px 10px" }}>Localisation</div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px 8px" }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Localisation</div>
+                  {(() => { const rLat = parcelAnalysis?.address?.lat ?? dossier.lat; const rLng = parcelAnalysis?.address?.lng ?? dossier.lng; return (rLat && rLng) ? (
+                    <button onClick={() => setShowMapFull(true)} title="Agrandir la carte"
+                      style={{ display: "flex", alignItems: "center", gap: 4, padding: "3px 8px", border: "1px solid #E2E8F0", borderRadius: 6, background: "white", color: "#64748b", fontSize: 11, cursor: "pointer", fontWeight: 500 }}>
+                      <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9" /><polyline points="9 21 3 21 3 15" /><line x1="21" y1="3" x2="14" y2="10" /><line x1="3" y1="21" x2="10" y2="14" /></svg>
+                      Agrandir
+                    </button>
+                  ) : null; })()}
+                </div>
                 {(() => { const rLat = parcelAnalysis?.address?.lat ?? dossier.lat; const rLng = parcelAnalysis?.address?.lng ?? dossier.lng; return rLat && rLng ? (
-                  <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: rLat, lng: rLng }]} height={220} commune={liveCommune ?? dossier.commune} />
+                  <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: rLat, lng: rLng }]} height={140} commune={liveCommune ?? dossier.commune} />
                 ) : (
-                  <div style={{ height: 220, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 8 }}>
-                    <svg width={36} height={36} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
+                  <div style={{ height: 140, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 8 }}>
+                    <svg width={32} height={32} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
                     <span style={{ fontSize: 12, color: "#94a3b8" }}>Géolocalisation indisponible</span>
                   </div>
                 ); })()}
               </div>
             </div>
+
+            {/* ── Description des travaux (style CERFA) ── */}
+            <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
+              <div style={{ padding: "13px 18px 10px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", gap: 8 }}>
+                <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Description du projet</span>
+                <span style={{ fontSize: 10, color: "#94a3b8", marginLeft: 4, fontStyle: "italic" }}>d'après CERFA</span>
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 0 }}>
+                {[
+                  { label: "Nature de l'opération", value: typeLabel, span: 2 },
+                  { label: "Référence cadastrale", value: dossier.parcelle ?? "—", span: 1 },
+                  { label: "Surface de plancher", value: dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—", span: 1 },
+                  { label: "Adresse des travaux", value: liveAdresse ?? dossier.adresse ?? "—", span: 2 },
+                  { label: "Commune", value: liveCommune ?? dossier.commune ?? "—", span: 1 },
+                  { label: "Code postal", value: dossier.code_postal ?? "—", span: 1 },
+                  { label: "Description libre du projet", value: dossier.description ?? "—", span: 4 },
+                ].map(({ label, value, span }) => (
+                  <div key={label} style={{ gridColumn: `span ${span}`, padding: "9px 14px", borderRight: "1px solid #F1F5F9", borderBottom: "1px solid #F1F5F9" }}>
+                    <div style={{ fontSize: 9, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
+                    <div style={{ fontSize: 13, color: "#1E293B", fontWeight: value === "—" ? 400 : 500, fontStyle: value === "—" ? "italic" : "normal" }}>{value}</div>
+                  </div>
+                ))}
+              </div>
+            </div>
+
+            {/* Map fullscreen modal */}
+            {showMapFull && (() => { const rLat = parcelAnalysis?.address?.lat ?? dossier.lat; const rLng = parcelAnalysis?.address?.lng ?? dossier.lng; return rLat && rLng ? (
+              <div style={{ position: "fixed", inset: 0, zIndex: 1001, background: "rgba(0,0,0,0.7)", display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setShowMapFull(false)}>
+                <div style={{ width: "85vw", maxWidth: 1000, background: "white", borderRadius: 16, overflow: "hidden", boxShadow: "0 24px 60px rgba(0,0,0,0.35)" }} onClick={e => e.stopPropagation()}>
+                  <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 20px", borderBottom: "1px solid #E2E8F0" }}>
+                    <div>
+                      <div style={{ fontWeight: 700, fontSize: 14, color: "#0F172A" }}>Localisation — {dossier.numero}</div>
+                      <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{liveAdresse ?? dossier.adresse}</div>
+                    </div>
+                    <button onClick={() => setShowMapFull(false)} style={{ padding: 6, border: "1px solid #E2E8F0", borderRadius: 8, background: "white", cursor: "pointer", display: "flex" }}>
+                      <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#64748b" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
+                    </button>
+                  </div>
+                  <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: rLat, lng: rLng }]} height={520} commune={liveCommune ?? dossier.commune} />
+                </div>
+              </div>
+            ) : null; })()}
             {/* Alert banners */}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <div style={{ background: "#FFF8F0", border: "1px solid #FDDCB5", borderRadius: 12, padding: "14px 18px", display: "flex", gap: 12, alignItems: "flex-start" }}>
