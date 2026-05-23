@@ -1585,7 +1585,6 @@ function Utilisateurs() {
   const [filterRole, setFilterRole] = useState("");
   const [search, setSearch] = useState("");
   const [editRole, setEditRole] = useState<{ id: string; role: string } | null>(null);
-  const [editCommune, setEditCommune] = useState<{ id: string; commune: string } | null>(null);
   const [communesModal, setCommunesModal] = useState<{ id: string; name: string } | null>(null);
   const [userCommuneIds, setUserCommuneIds] = useState<Set<string>>(new Set());
   const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", commune: "", telephone: "" });
@@ -1657,19 +1656,13 @@ function Utilisateurs() {
     }
   };
 
-  const handleCommuneUpdate = async (id: string, commune: string) => {
-    try {
-      await api.patch(`/admin/users/${id}`, { commune: commune || null });
-      setToast({ msg: "Commune mise à jour", type: "success" });
-      setEditCommune(null);
-      load();
-    } catch (e) {
-      setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
-    }
-  };
-
   const openCommunesModal = async (u: UserItem) => {
     const ids = await api.get<string[]>(`/admin/users/${u.id}/communes`);
+    if (ids.length === 0 && u.commune) {
+      // Pre-select the existing primary commune if no user_communes row yet
+      const match = allCommunes.find((c) => c.name.toLowerCase() === u.commune!.toLowerCase());
+      if (match) ids.push(match.id);
+    }
     setUserCommuneIds(new Set(ids));
     setCommunesModal({ id: u.id, name: `${u.prenom} ${u.nom}` });
   };
@@ -1677,7 +1670,15 @@ function Utilisateurs() {
   const saveCommunesModal = async () => {
     if (!communesModal) return;
     try {
-      await api.put(`/admin/users/${communesModal.id}/communes`, { ids: [...userCommuneIds] });
+      const ids = [...userCommuneIds];
+      // Sync primary commune field with the first selected commune
+      const primaryCommune = ids.length > 0
+        ? (allCommunes.find((c) => c.id === ids[0])?.name ?? null)
+        : null;
+      await Promise.all([
+        api.put(`/admin/users/${communesModal.id}/communes`, { ids }),
+        api.patch(`/admin/users/${communesModal.id}`, { commune: primaryCommune }),
+      ]);
       setToast({ msg: "Communes mises à jour", type: "success" });
       setCommunesModal(null);
       load();
@@ -1801,26 +1802,8 @@ function Utilisateurs() {
                       </div>
                     )}
                   </td>
-                  <td style={{ padding: "12px 16px" }}>
-                    {editCommune?.id === u.id ? (
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
-                        <select
-                          value={editCommune.commune}
-                          onChange={(e) => setEditCommune({ ...editCommune, commune: e.target.value })}
-                          style={{ padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, color: C.text, background: C.white, outline: "none" }}
-                        >
-                          <option value="">— Aucune —</option>
-                          {allCommunes.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
-                        </select>
-                        <button onClick={() => handleCommuneUpdate(u.id, editCommune.commune)} style={{ padding: "4px 10px", background: C.green, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓</button>
-                        <button onClick={() => setEditCommune(null)} style={{ padding: "4px 8px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", fontSize: 12 }}>✕</button>
-                      </div>
-                    ) : (
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ color: C.textMuted, fontSize: 13 }}>{u.commune ?? "—"}</span>
-                        <button onClick={() => setEditCommune({ id: u.id, commune: u.commune ?? "" })} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, fontSize: 12, padding: 2 }}>✏️</button>
-                      </div>
-                    )}
+                  <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>
+                    {u.commune ?? <span style={{ color: C.textLight, fontStyle: "italic" }}>—</span>}
                   </td>
                   <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>
                     {new Date(u.created_at).toLocaleDateString("fr-FR")}
