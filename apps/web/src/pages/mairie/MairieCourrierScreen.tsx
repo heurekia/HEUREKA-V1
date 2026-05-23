@@ -513,12 +513,14 @@ export function CommuneLetterheadPanel() {
     letterhead_logo: "", letterhead_title: "", letterhead_subtitle: "",
     letterhead_address: "", footer_text: "", signature_image: "",
   });
+  const [communeLogoUrl, setCommuneLogoUrl] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
   useEffect(() => {
-    api.get<typeof form>("/mairie/commune-letterhead").then(lh => {
+    api.get<typeof form & { commune_logo_url?: string | null }>("/mairie/commune-letterhead").then(lh => {
+      setCommuneLogoUrl(lh.commune_logo_url ?? null);
       setForm({
         letterhead_logo: lh.letterhead_logo ?? "",
         letterhead_title: lh.letterhead_title ?? (user?.commune ?? ""),
@@ -589,7 +591,36 @@ export function CommuneLetterheadPanel() {
       <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Logo, titre, adresse et pied de page appliqués à tous les courriers générés.</div>
 
       <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
-        {imageUpload("Logo de la commune", form.letterhead_logo, "letterhead_logo", "PNG/SVG, fond transparent recommandé")}
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Logo de la commune</label>
+          <p style={{ fontSize: 11, color: "#94a3b8", margin: "0 0 7px" }}>PNG/SVG, fond transparent recommandé</p>
+          <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+            {form.letterhead_logo && (
+              <div style={{ position: "relative" }}>
+                <img src={form.letterhead_logo} alt="" style={{ height: 36, width: "auto", border: "1px solid #E2E8F0", borderRadius: 5, objectFit: "contain", background: "#F8FAFC", padding: 3 }} />
+                <button onClick={() => setForm(p => ({ ...p, letterhead_logo: "" }))}
+                  style={{ position: "absolute", top: -5, right: -5, width: 16, height: 16, borderRadius: "50%", background: "#EF4444", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <X size={9} color="white" />
+                </button>
+              </div>
+            )}
+            <label style={{ padding: "6px 12px", border: "1px dashed #CBD5E1", borderRadius: 7, cursor: "pointer", fontSize: 12, color: "#64748b", display: "inline-block" }}>
+              {form.letterhead_logo ? "Remplacer" : "Téléverser"}
+              <input type="file" accept="image/*" style={{ display: "none" }} onChange={async e => {
+                const f = e.target.files?.[0];
+                if (f) setForm(p => ({ ...p, letterhead_logo: "" }));
+                if (f) { const b64 = await toBase64(f); setForm(p => ({ ...p, letterhead_logo: b64 })); }
+              }} />
+            </label>
+            {communeLogoUrl && !form.letterhead_logo && (
+              <button onClick={() => setForm(p => ({ ...p, letterhead_logo: communeLogoUrl }))}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 12px", border: "1px solid #C7D2FE", background: "#EEF2FF", borderRadius: 7, cursor: "pointer", fontSize: 12, color: "#4F46E5", fontWeight: 500 }}>
+                <img src={communeLogoUrl} alt="" style={{ height: 18, width: "auto", objectFit: "contain" }} />
+                Utiliser le logo de la commune
+              </button>
+            )}
+          </div>
+        </div>
 
         <div>
           <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Titre</label>

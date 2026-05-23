@@ -1580,7 +1580,8 @@ mairieRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
     const commune = await getCommune(req.user!.commune);
     if (!commune) return res.json({});
     res.json({
-      letterhead_logo: commune.letterhead_logo,
+      letterhead_logo: commune.letterhead_logo ?? commune.logo_url,
+      commune_logo_url: commune.logo_url,
       letterhead_title: commune.letterhead_title ?? commune.name,
       letterhead_subtitle: commune.letterhead_subtitle,
       letterhead_address: commune.letterhead_address,
