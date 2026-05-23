@@ -1501,49 +1501,39 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
 
 // ── Courriers : templates & en-tête commune ───────────────────────────────
 
+// Always returns the commune row for the connected user.
+// Source of truth = user.commune (text). Creates a minimal commune row
+// on the fly if one doesn't exist yet so saves never fail.
 async function getCommuneRowForUser(req: AuthRequest) {
   const userId = req.user!.id;
 
-  // 1. Best: direct join via user_communes (avoids name encoding issues)
-  const [byId] = await db.select({ c: communes })
-    .from(user_communes)
-    .innerJoin(communes, eq(communes.id, user_communes.commune_id))
-    .where(eq(user_communes.user_id, userId))
-    .limit(1);
-  if (byId) return byId.c;
-
-  // 2. Get commune name from JWT or DB
+  // Get commune name: JWT first, then DB fallback (for old sessions)
   const communeName = req.user!.commune
     ?? (await db.select({ commune: users.commune }).from(users).where(eq(users.id, userId)).limit(1))[0]?.commune;
   if (!communeName) return null;
   const name = communeName.trim();
 
-  // 3. Exact ilike match
+  // Find existing row: ilike then unaccent fallback
   const [byName] = await db.select().from(communes).where(ilike(communes.name, name)).limit(1);
   if (byName) return byName;
 
-  // 4. Partial match (handles subtle encoding differences)
-  const [byPartial] = await db.select().from(communes)
+  const [byUnaccent] = await db.select().from(communes)
     .where(sql`unaccent(name) ILIKE unaccent(${name})`)
     .limit(1);
-  return byPartial ?? null;
-}
+  if (byUnaccent) return byUnaccent;
 
-// Keep getCommune for template ownership checks (by name string)
-async function getCommune(communeName: string | null | undefined) {
-  if (!communeName) return null;
-  const name = communeName.trim();
-  const [c] = await db.select().from(communes).where(ilike(communes.name, name)).limit(1);
-  if (c) return c;
-  const [fallback] = await db.select().from(communes)
-    .where(sql`unaccent(name) ILIKE unaccent(${name})`)
-    .limit(1);
-  return fallback ?? null;
+  // Commune not in communes table yet — create a minimal row so saves work
+  const [created] = await db.insert(communes).values({
+    name,
+    insee_code: `tmp_${name.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now()}`,
+  }).returning();
+  return created ?? null;
 }
 
 async function getCommuneForUser(req: AuthRequest): Promise<string | null> {
-  const row = await getCommuneRowForUser(req);
-  return row?.name ?? null;
+  const communeName = req.user!.commune
+    ?? (await db.select({ commune: users.commune }).from(users).where(eq(users.id, req.user!.id)).limit(1))[0]?.commune;
+  return communeName?.trim() ?? null;
 }
 
 mairieRouter.get("/templates", async (req: AuthRequest, res) => {
