@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, dossier_messages, dossier_pieces_jointes, external_services, service_communes, communes } from "@heureka-v1/db";
+import { dossiers, users, dossier_messages, dossier_pieces_jointes, external_services, service_communes, communes, courrier_templates } from "@heureka-v1/db";
 import { eq, desc, sql, inArray } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 
@@ -43,6 +43,31 @@ serviceRouter.get("/info", async (req: AuthRequest, res) => {
   }
 });
 
+// ── Paramètres du service (en-tête, pied, signature) ─────────────────────────
+serviceRouter.put("/settings", async (req: AuthRequest, res) => {
+  try {
+    const [user] = await db.select({ service_id: users.service_id }).from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user?.service_id) return res.status(404).json({ error: "Service introuvable" });
+
+    const { letterhead_logo, letterhead_title, letterhead_subtitle, letterhead_address, footer_text, signature_image } = req.body as Record<string, string | null>;
+
+    await db.update(external_services).set({
+      letterhead_logo: letterhead_logo ?? null,
+      letterhead_title: letterhead_title ?? null,
+      letterhead_subtitle: letterhead_subtitle ?? null,
+      letterhead_address: letterhead_address ?? null,
+      footer_text: footer_text ?? null,
+      signature_image: signature_image ?? null,
+      updated_at: new Date(),
+    }).where(eq(external_services.id, user.service_id));
+
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── Dossiers du périmètre ─────────────────────────────────────────────────────
 serviceRouter.get("/dossiers", async (req: AuthRequest, res) => {
   try {
@@ -59,7 +84,7 @@ serviceRouter.get("/dossiers", async (req: AuthRequest, res) => {
     })
       .from(dossiers)
       .leftJoin(users, eq(dossiers.user_id, users.id))
-      .where(sql.raw(`(${communePattern}) AND dossiers.status NOT IN ('brouillon')`) )
+      .where(sql.raw(`(${communePattern}) AND dossiers.status NOT IN ('brouillon')`))
       .orderBy(desc(dossiers.created_at));
 
     res.json(rows.map(r => ({
@@ -132,6 +157,88 @@ serviceRouter.post("/dossiers/:id/messages", async (req: AuthRequest, res) => {
     }).returning();
 
     res.status(201).json({ ...msg, from_name: user ? `${user.prenom} ${user.nom}` : "Agent" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Courriers templates CRUD ──────────────────────────────────────────────────
+serviceRouter.get("/templates", async (req: AuthRequest, res) => {
+  try {
+    const [user] = await db.select({ service_id: users.service_id }).from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user?.service_id) return res.json([]);
+    const rows = await db.select().from(courrier_templates)
+      .where(eq(courrier_templates.service_id, user.service_id))
+      .orderBy(courrier_templates.created_at);
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+serviceRouter.post("/templates", async (req: AuthRequest, res) => {
+  try {
+    const [user] = await db.select({ service_id: users.service_id }).from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user?.service_id) return res.status(404).json({ error: "Service introuvable" });
+
+    const { name, category = "general", body = "" } = req.body as { name?: string; category?: string; body?: string };
+    if (!name?.trim()) return res.status(400).json({ error: "Nom requis" });
+
+    const [tpl] = await db.insert(courrier_templates).values({
+      service_id: user.service_id,
+      name: name.trim(),
+      category,
+      body,
+    }).returning();
+
+    res.status(201).json(tpl);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+serviceRouter.put("/templates/:templateId", async (req: AuthRequest, res) => {
+  try {
+    const templateId = req.params.templateId as string;
+    const [user] = await db.select({ service_id: users.service_id }).from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user?.service_id) return res.status(404).json({ error: "Service introuvable" });
+
+    const [existing] = await db.select({ service_id: courrier_templates.service_id })
+      .from(courrier_templates).where(eq(courrier_templates.id, templateId)).limit(1);
+    if (!existing || existing.service_id !== user.service_id) return res.status(403).json({ error: "Accès refusé" });
+
+    const { name, category, body } = req.body as { name?: string; category?: string; body?: string };
+    if (!name?.trim()) return res.status(400).json({ error: "Nom requis" });
+
+    const [tpl] = await db.update(courrier_templates).set({
+      name: name.trim(),
+      category: category ?? "general",
+      body: body ?? "",
+      updated_at: new Date(),
+    }).where(eq(courrier_templates.id, templateId)).returning();
+
+    res.json(tpl);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+serviceRouter.delete("/templates/:templateId", async (req: AuthRequest, res) => {
+  try {
+    const templateId = req.params.templateId as string;
+    const [user] = await db.select({ service_id: users.service_id }).from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user?.service_id) return res.status(404).json({ error: "Service introuvable" });
+
+    const [existing] = await db.select({ service_id: courrier_templates.service_id })
+      .from(courrier_templates).where(eq(courrier_templates.id, templateId)).limit(1);
+    if (!existing || existing.service_id !== user.service_id) return res.status(403).json({ error: "Accès refusé" });
+
+    await db.delete(courrier_templates).where(eq(courrier_templates.id, templateId));
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

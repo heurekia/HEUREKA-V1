@@ -1,11 +1,73 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { api } from "../../lib/api";
 import { Avatar } from "../../components/ui/avatar";
-import { LogOut, LayoutDashboard, FolderOpen, MessageSquare, FileText, ChevronRight, Paperclip, Send, Printer } from "lucide-react";
+import { useEditor, EditorContent } from "@tiptap/react";
+import StarterKit from "@tiptap/starter-kit";
+import TextAlign from "@tiptap/extension-text-align";
+import Underline from "@tiptap/extension-underline";
+import Placeholder from "@tiptap/extension-placeholder";
+import { Node as TiptapNode, mergeAttributes, type NodeViewRendererProps } from "@tiptap/core";
+import { LogOut, LayoutDashboard, FolderOpen, FileText, Settings, ChevronRight, Paperclip, Send, Printer, Plus, Pencil, Trash2, Bold, Italic, Underline as UnderlineIcon, AlignLeft, AlignCenter, AlignRight, List, ListOrdered, Type, ChevronDown, X, Save, ArrowLeft } from "lucide-react";
 
-// ─── Shared constants ─────────────────────────────────────────────────────────
+// ─── Variable Node (TipTap custom inline node) ─────────────────────────────
+const VariableNode = TiptapNode.create({
+  name: "variable",
+  group: "inline",
+  inline: true,
+  atom: true,
+  selectable: true,
+  addAttributes() {
+    return { name: { default: null } };
+  },
+  parseHTML() {
+    return [{ tag: "span[data-variable]", getAttrs: (el: HTMLElement) => ({ name: el.dataset.variable ?? null }) }];
+  },
+  renderHTML({ node, HTMLAttributes }: { node: { attrs: Record<string, unknown> }; HTMLAttributes: Record<string, unknown> }) {
+    return ["span", mergeAttributes(HTMLAttributes, {
+      "data-variable": node.attrs.name as string,
+      style: "display:inline-block;background:#dbeafe;color:#1d4ed8;padding:1px 7px;border-radius:10px;font-size:0.8em;font-family:monospace;user-select:none;white-space:nowrap;",
+    }), `{{${node.attrs.name as string}}}`];
+  },
+  addNodeView() {
+    return ({ node }: NodeViewRendererProps) => {
+      const dom = document.createElement("span");
+      dom.setAttribute("data-variable", node.attrs.name as string);
+      dom.setAttribute("contenteditable", "false");
+      dom.style.cssText = "display:inline-block;background:#dbeafe;color:#1d4ed8;padding:1px 7px;border-radius:10px;font-size:0.8em;font-family:monospace;cursor:default;user-select:none;white-space:nowrap;";
+      dom.textContent = `{{${node.attrs.name as string}}}`;
+      return { dom };
+    };
+  },
+});
+
+// ─── Template variable groups ──────────────────────────────────────────────
+const TEMPLATE_VARIABLES = [
+  { group: "Demandeur", vars: [
+    { label: "Nom complet", name: "demandeur_nom" },
+    { label: "Prénom", name: "demandeur_prenom" },
+    { label: "Email", name: "demandeur_email" },
+  ]},
+  { group: "Dossier", vars: [
+    { label: "Numéro dossier", name: "numero_dossier" },
+    { label: "Type de dossier", name: "type_dossier" },
+    { label: "Adresse travaux", name: "adresse_travaux" },
+    { label: "Commune", name: "commune" },
+    { label: "Code postal", name: "code_postal" },
+    { label: "Référence parcelle", name: "parcelle" },
+    { label: "Surface de plancher", name: "surface_plancher" },
+    { label: "Date de dépôt", name: "date_depot" },
+    { label: "Date limite instruction", name: "date_limite_instruction" },
+  ]},
+  { group: "Service & Agent", vars: [
+    { label: "Nom du service", name: "nom_service" },
+    { label: "Nom de l'agent", name: "nom_agent" },
+    { label: "Date du courrier", name: "date_courrier" },
+  ]},
+];
+
+// ─── Shared constants ──────────────────────────────────────────────────────
 const STATUS_LABEL: Record<string, string> = {
   brouillon: "Brouillon", soumis: "Déposé", pre_instruction: "Pré-instruction",
   incomplet: "Incomplet", en_instruction: "En instruction",
@@ -27,139 +89,160 @@ const TYPE_LABEL: Record<string, string> = {
   permis_amenager: "Permis d'aménager", permis_demolir: "Permis de démolir",
   permis_lotir: "Permis de lotir", certificat_urbanisme: "Certificat d'urbanisme",
 };
+const CATEGORY_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
+  avis_favorable: { label: "Avis favorable", color: "#16A34A", bg: "#DCFCE7" },
+  avis_reserves: { label: "Avis avec réserves", color: "#B45309", bg: "#FEF3C7" },
+  avis_defavorable: { label: "Avis défavorable", color: "#DC2626", bg: "#FEE2E2" },
+  pieces_complementaires: { label: "Demande de pièces", color: "#0284C7", bg: "#E0F2FE" },
+  general: { label: "Général", color: "#6B7280", bg: "#F3F4F6" },
+};
 const fmtDate = (d: string | null | undefined) => d ? new Date(d).toLocaleDateString("fr-FR") : "—";
 const fmtDateTime = (d: string | null | undefined) => d ? new Date(d).toLocaleString("fr-FR", { day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit" }) : "—";
 
-// ─── Types ─────────────────────────────────────────────────────────────────────
+// ─── Types ─────────────────────────────────────────────────────────────────
 interface ServiceInfo {
-  service: { id: string; name: string; type: string; email: string | null; telephone: string | null };
+  service: {
+    id: string; name: string; type: string; email: string | null; telephone: string | null;
+    letterhead_logo: string | null; letterhead_title: string | null;
+    letterhead_subtitle: string | null; letterhead_address: string | null;
+    footer_text: string | null; signature_image: string | null;
+  };
   communesCount: number;
   communes: string[];
 }
 interface DossierRow {
   id: string; numero: string; type: string; status: string;
   adresse: string | null; commune: string | null; description: string | null;
-  date_depot: string | null; date_limite_instruction: string | null;
-  demandeur: string;
+  date_depot: string | null; date_limite_instruction: string | null; demandeur: string;
 }
 interface DossierDetail extends DossierRow {
   code_postal: string | null; parcelle: string | null; surface_plancher: string | null;
-  demandeur_email: string | null;
+  demandeur_prenom: string | null; demandeur_nom: string | null; demandeur_email: string | null;
   pieces: Array<{ id: string; nom: string; url: string; type: string; taille: number }>;
 }
 interface Message {
   id: string; from_user_id: string; from_role: string; content: string; created_at: string;
 }
+interface CourrierTemplate {
+  id: string; name: string; category: string; body: string;
+  created_at: string; updated_at: string;
+}
 
-// ─── Letter templates ──────────────────────────────────────────────────────────
-const LETTER_TEMPLATES = [
-  {
-    id: "favorable",
-    label: "Avis favorable",
-    color: "#16A34A", bg: "#DCFCE7",
-    generate: (d: DossierDetail, service: ServiceInfo["service"], agent: { prenom: string; nom: string }) => `
-À ${d.commune}, le ${new Date().toLocaleDateString("fr-FR")}
+// ─── Variable substitution ─────────────────────────────────────────────────
+function substituteVariables(html: string, vars: Record<string, string>): string {
+  return html.replace(
+    /<span[^>]*data-variable="([^"]+)"[^>]*>[^<]*<\/span>/g,
+    (_, name: string) => vars[name] ?? `{{${name}}}`
+  );
+}
 
-${service.name}
-${service.email ?? ""}
+// ─── TipTap editor toolbar ─────────────────────────────────────────────────
+function EditorToolbar({ editor }: { editor: ReturnType<typeof useEditor> }) {
+  const [varMenuOpen, setVarMenuOpen] = useState(false);
+  const menuRef = useRef<HTMLDivElement>(null);
 
-Objet : Avis sur ${TYPE_LABEL[d.type] ?? d.type} n°${d.numero}
-Adresse des travaux : ${d.adresse ?? "—"}, ${d.commune ?? "—"}
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (menuRef.current && !menuRef.current.contains(e.target as Node)) setVarMenuOpen(false);
+    };
+    document.addEventListener("mousedown", handler);
+    return () => document.removeEventListener("mousedown", handler);
+  }, []);
 
-Madame, Monsieur,
+  if (!editor) return null;
 
-J'ai l'honneur de vous informer que le ${service.name} émet un **avis favorable** concernant le dossier ${d.numero} portant sur ${(TYPE_LABEL[d.type] ?? d.type).toLowerCase()} déposé par ${d.demandeur} pour les travaux situés ${d.adresse ?? "—"}.
+  const insertVariable = (name: string) => {
+    editor.chain().focus().insertContent({ type: "variable", attrs: { name } }).run();
+    setVarMenuOpen(false);
+  };
 
-Cet avis ne préjuge pas des décisions qui pourraient être prises par l'autorité compétente au titre d'autres réglementations.
+  const btn = (active: boolean, onClick: () => void, icon: React.ReactNode, title: string) => (
+    <button type="button" title={title} onClick={onClick}
+      style={{ padding: "4px 7px", border: "none", borderRadius: 5, cursor: "pointer", background: active ? "#E0E7FF" : "transparent", color: active ? "#4F46E5" : "#374151", display: "flex", alignItems: "center", transition: "background 0.1s" }}>
+      {icon}
+    </button>
+  );
 
-Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées.
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "8px 12px", borderBottom: "1px solid #E2E8F0", flexWrap: "wrap", background: "#F8FAFC" }}>
+      {btn(editor.isActive("bold"), () => editor.chain().focus().toggleBold().run(), <Bold size={14} />, "Gras")}
+      {btn(editor.isActive("italic"), () => editor.chain().focus().toggleItalic().run(), <Italic size={14} />, "Italique")}
+      {btn(editor.isActive("underline"), () => editor.chain().focus().toggleUnderline().run(), <UnderlineIcon size={14} />, "Souligné")}
+      <div style={{ width: 1, height: 18, background: "#E2E8F0", margin: "0 4px" }} />
+      {btn(editor.isActive("heading", { level: 1 }), () => editor.chain().focus().toggleHeading({ level: 1 }).run(), <span style={{ fontSize: 11, fontWeight: 700 }}>H1</span>, "Titre 1")}
+      {btn(editor.isActive("heading", { level: 2 }), () => editor.chain().focus().toggleHeading({ level: 2 }).run(), <span style={{ fontSize: 11, fontWeight: 700 }}>H2</span>, "Titre 2")}
+      {btn(editor.isActive("paragraph"), () => editor.chain().focus().setParagraph().run(), <Type size={14} />, "Paragraphe")}
+      <div style={{ width: 1, height: 18, background: "#E2E8F0", margin: "0 4px" }} />
+      {btn(editor.isActive({ textAlign: "left" }), () => editor.chain().focus().setTextAlign("left").run(), <AlignLeft size={14} />, "Aligner à gauche")}
+      {btn(editor.isActive({ textAlign: "center" }), () => editor.chain().focus().setTextAlign("center").run(), <AlignCenter size={14} />, "Centrer")}
+      {btn(editor.isActive({ textAlign: "right" }), () => editor.chain().focus().setTextAlign("right").run(), <AlignRight size={14} />, "Aligner à droite")}
+      <div style={{ width: 1, height: 18, background: "#E2E8F0", margin: "0 4px" }} />
+      {btn(editor.isActive("bulletList"), () => editor.chain().focus().toggleBulletList().run(), <List size={14} />, "Liste à puces")}
+      {btn(editor.isActive("orderedList"), () => editor.chain().focus().toggleOrderedList().run(), <ListOrdered size={14} />, "Liste numérotée")}
+      <div style={{ width: 1, height: 18, background: "#E2E8F0", margin: "0 4px" }} />
+      <div style={{ position: "relative" }} ref={menuRef}>
+        <button type="button" onClick={() => setVarMenuOpen(v => !v)}
+          style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", border: "1px solid #C7D2FE", borderRadius: 6, background: varMenuOpen ? "#EEF2FF" : "white", color: "#4F46E5", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+          <span>Insérer variable</span>
+          <ChevronDown size={12} />
+        </button>
+        {varMenuOpen && (
+          <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 50, marginTop: 4, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 220, maxHeight: 340, overflowY: "auto" }}>
+            {TEMPLATE_VARIABLES.map(group => (
+              <div key={group.group}>
+                <div style={{ padding: "8px 12px 4px", fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>{group.group}</div>
+                {group.vars.map(v => (
+                  <button key={v.name} type="button" onClick={() => insertVariable(v.name)}
+                    style={{ width: "100%", padding: "7px 12px", border: "none", background: "none", textAlign: "left", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+                    onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
+                    onMouseLeave={e => (e.currentTarget.style.background = "none")}>
+                    <span>{v.label}</span>
+                    <span style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{`{{${v.name}}}`}</span>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
 
-${agent.prenom} ${agent.nom}
-${service.name}
-    `.trim(),
-  },
-  {
-    id: "favorable_reserves",
-    label: "Avis favorable avec réserves",
-    color: "#B45309", bg: "#FEF3C7",
-    generate: (d: DossierDetail, service: ServiceInfo["service"], agent: { prenom: string; nom: string }) => `
-À ${d.commune}, le ${new Date().toLocaleDateString("fr-FR")}
+// ─── TipTap editor wrapper ─────────────────────────────────────────────────
+function TipTapEditor({ content, onChange, placeholder }: { content: string; onChange: (html: string) => void; placeholder?: string }) {
+  const editor = useEditor({
+    extensions: [
+      StarterKit,
+      Underline,
+      TextAlign.configure({ types: ["heading", "paragraph"] }),
+      Placeholder.configure({ placeholder: placeholder ?? "Rédigez votre courrier…" }),
+      VariableNode,
+    ],
+    content,
+    onUpdate: ({ editor }) => onChange(editor.getHTML()),
+  });
 
-${service.name}
+  useEffect(() => {
+    if (editor && content !== editor.getHTML()) {
+      editor.commands.setContent(content || "", { emitUpdate: false });
+    }
+  }, [content, editor]);
 
-Objet : Avis sur ${TYPE_LABEL[d.type] ?? d.type} n°${d.numero}
+  return (
+    <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden", background: "white" }}>
+      <EditorToolbar editor={editor} />
+      <EditorContent editor={editor} style={{ minHeight: 300 }} />
+    </div>
+  );
+}
 
-Madame, Monsieur,
-
-Le ${service.name} émet un **avis favorable avec réserves** sur le dossier ${d.numero} de ${d.demandeur}.
-
-**Réserves :**
-[À compléter]
-
-Ces réserves devront être levées avant le commencement des travaux.
-
-Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées.
-
-${agent.prenom} ${agent.nom}
-${service.name}
-    `.trim(),
-  },
-  {
-    id: "defavorable",
-    label: "Avis défavorable",
-    color: "#DC2626", bg: "#FEE2E2",
-    generate: (d: DossierDetail, service: ServiceInfo["service"], agent: { prenom: string; nom: string }) => `
-À ${d.commune}, le ${new Date().toLocaleDateString("fr-FR")}
-
-${service.name}
-
-Objet : Avis défavorable — ${TYPE_LABEL[d.type] ?? d.type} n°${d.numero}
-
-Madame, Monsieur,
-
-Après examen du dossier ${d.numero} déposé par ${d.demandeur}, le ${service.name} émet un **avis défavorable** pour les motifs suivants :
-
-[Motifs à compléter]
-
-Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées.
-
-${agent.prenom} ${agent.nom}
-${service.name}
-    `.trim(),
-  },
-  {
-    id: "pieces_complementaires",
-    label: "Demande de pièces complémentaires",
-    color: "#0284C7", bg: "#E0F2FE",
-    generate: (d: DossierDetail, service: ServiceInfo["service"], agent: { prenom: string; nom: string }) => `
-À ${d.commune}, le ${new Date().toLocaleDateString("fr-FR")}
-
-${service.name}
-
-Objet : Demande de pièces complémentaires — Dossier n°${d.numero}
-
-Madame, Monsieur,
-
-Dans le cadre de l'instruction du dossier ${d.numero} (${TYPE_LABEL[d.type] ?? d.type}) déposé par ${d.demandeur}, le ${service.name} sollicite la transmission des pièces complémentaires suivantes :
-
-1. [Pièce 1]
-2. [Pièce 2]
-
-Ces éléments sont nécessaires à l'émission de notre avis. Leur transmission devra intervenir dans un délai de [X] jours à compter de la réception du présent courrier.
-
-Je vous prie d'agréer, Madame, Monsieur, l'expression de mes salutations distinguées.
-
-${agent.prenom} ${agent.nom}
-${service.name}
-    `.trim(),
-  },
-];
-
-// ─── Sidebar ───────────────────────────────────────────────────────────────────
+// ─── Sidebar ───────────────────────────────────────────────────────────────
 const NAV = [
   { path: "/service", exact: true, icon: LayoutDashboard, label: "Tableau de bord" },
   { path: "/service/dossiers", icon: FolderOpen, label: "Dossiers" },
   { path: "/service/courriers", icon: FileText, label: "Courriers types" },
+  { path: "/service/parametres", icon: Settings, label: "Paramètres" },
 ];
 
 function Sidebar({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
@@ -191,7 +274,7 @@ function Sidebar({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
       <nav style={{ flex: 1, padding: "10px 10px" }}>
         {NAV.map(item => {
           const Icon = item.icon;
-          const active = item.exact ? location.pathname === item.path : location.pathname.startsWith(item.path);
+          const active = item.exact ? location.pathname === item.path : location.pathname.startsWith(item.path) && !(item.path === "/service" && location.pathname !== "/service");
           return (
             <button key={item.path} onClick={() => navigate(item.path)}
               style={{ width: "100%", display: "flex", alignItems: "center", gap: 10, padding: "8px 10px", borderRadius: 8, border: "none", cursor: "pointer", marginBottom: 2, background: active ? "#4F46E5" : "transparent", color: active ? "white" : "rgba(255,255,255,0.65)", fontSize: 13, fontWeight: active ? 600 : 400, textAlign: "left", transition: "all 0.15s" }}>
@@ -216,7 +299,7 @@ function Sidebar({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
   );
 }
 
-// ─── Dashboard ─────────────────────────────────────────────────────────────────
+// ─── Dashboard ─────────────────────────────────────────────────────────────
 function Dashboard({ dossiers, serviceInfo }: { dossiers: DossierRow[]; serviceInfo: ServiceInfo | null }) {
   const navigate = useNavigate();
   const enInstruction = dossiers.filter(d => ["soumis", "pre_instruction", "en_instruction", "decision_en_cours"].includes(d.status));
@@ -228,7 +311,6 @@ function Dashboard({ dossiers, serviceInfo }: { dossiers: DossierRow[]; serviceI
       <p style={{ color: "#64748b", fontSize: 14, marginBottom: 28 }}>
         {serviceInfo?.service.name} — {serviceInfo?.communesCount ?? 0} commune{(serviceInfo?.communesCount ?? 0) > 1 ? "s" : ""} couverte{(serviceInfo?.communesCount ?? 0) > 1 ? "s" : ""}
       </p>
-
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, marginBottom: 32 }}>
         {[
           { label: "Dossiers en cours", value: enInstruction.length, color: "#4F46E5", bg: "#EEF2FF" },
@@ -241,18 +323,15 @@ function Dashboard({ dossiers, serviceInfo }: { dossiers: DossierRow[]; serviceI
           </div>
         ))}
       </div>
-
       <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
-        <div style={{ padding: "16px 20px", borderBottom: "1px solid #F1F5F9", fontWeight: 700, fontSize: 14, color: "#0F172A" }}>
-          Dossiers récents
-        </div>
+        <div style={{ padding: "16px 20px", borderBottom: "1px solid #F1F5F9", fontWeight: 700, fontSize: 14, color: "#0F172A" }}>Dossiers récents</div>
         {recents.length === 0 ? (
           <div style={{ padding: 32, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>Aucun dossier dans votre périmètre</div>
         ) : recents.map((d, i) => {
           const sc = STATUS_COLOR[d.status] ?? { color: "#6B7280", bg: "#F3F4F6" };
           return (
             <div key={d.id} onClick={() => navigate(`/service/dossiers/${d.id}`)}
-              style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 20px", borderBottom: i < recents.length - 1 ? "1px solid #F8FAFC" : "none", cursor: "pointer", transition: "background 0.1s" }}
+              style={{ display: "flex", alignItems: "center", gap: 14, padding: "12px 20px", borderBottom: i < recents.length - 1 ? "1px solid #F8FAFC" : "none", cursor: "pointer" }}
               onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
               onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
               <div style={{ flex: 1 }}>
@@ -269,7 +348,7 @@ function Dashboard({ dossiers, serviceInfo }: { dossiers: DossierRow[]; serviceI
   );
 }
 
-// ─── Dossiers list ──────────────────────────────────────────────────────────────
+// ─── Dossiers list ──────────────────────────────────────────────────────────
 function DossiersList({ dossiers, loading }: { dossiers: DossierRow[]; loading: boolean }) {
   const navigate = useNavigate();
   const [search, setSearch] = useState("");
@@ -283,54 +362,99 @@ function DossiersList({ dossiers, loading }: { dossiers: DossierRow[]; loading: 
     <div style={{ padding: 32 }}>
       <h1 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 4 }}>Dossiers</h1>
       <p style={{ color: "#64748b", fontSize: 14, marginBottom: 20 }}>Dossiers de votre périmètre géographique</p>
-
       <input value={search} onChange={e => setSearch(e.target.value)}
         placeholder="Rechercher un dossier, une adresse, un pétitionnaire…"
         style={{ width: "100%", padding: "9px 14px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, marginBottom: 16, outline: "none", boxSizing: "border-box" }} />
-
       <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
-        {loading ? (
-          <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>
-        ) : filtered.length === 0 ? (
-          <div style={{ padding: 40, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>Aucun dossier trouvé</div>
-        ) : (
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "#F8FAFC" }}>
-                {["N° Dossier", "Pétitionnaire", "Type", "Commune", "Dépôt", "Statut", ""].map(h => (
-                  <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0", whiteSpace: "nowrap" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {filtered.map((d, i) => {
-                const sc = STATUS_COLOR[d.status] ?? { color: "#6B7280", bg: "#F3F4F6" };
-                return (
-                  <tr key={d.id} onClick={() => navigate(`/service/dossiers/${d.id}`)}
-                    style={{ borderBottom: i < filtered.length - 1 ? "1px solid #F8FAFC" : "none", cursor: "pointer", transition: "background 0.1s" }}
-                    onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
-                    onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
-                    <td style={{ padding: "11px 16px", fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{d.numero}</td>
-                    <td style={{ padding: "11px 16px", fontSize: 13, color: "#374151" }}>{d.demandeur}</td>
-                    <td style={{ padding: "11px 16px", fontSize: 12, color: "#64748b" }}>{TYPE_LABEL[d.type] ?? d.type}</td>
-                    <td style={{ padding: "11px 16px", fontSize: 13, color: "#374151" }}>{d.commune}</td>
-                    <td style={{ padding: "11px 16px", fontSize: 12, color: "#94a3b8" }}>{fmtDate(d.date_depot)}</td>
-                    <td style={{ padding: "11px 16px" }}>
-                      <span style={{ padding: "3px 10px", borderRadius: 20, background: sc.bg, color: sc.color, fontSize: 11, fontWeight: 700 }}>{STATUS_LABEL[d.status] ?? d.status}</span>
-                    </td>
-                    <td style={{ padding: "11px 16px" }}><ChevronRight size={14} color="#CBD5E1" /></td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+        {loading ? <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>
+          : filtered.length === 0 ? <div style={{ padding: 40, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>Aucun dossier trouvé</div>
+          : (
+            <table style={{ width: "100%", borderCollapse: "collapse" }}>
+              <thead>
+                <tr style={{ background: "#F8FAFC" }}>
+                  {["N° Dossier", "Pétitionnaire", "Type", "Commune", "Dépôt", "Statut", ""].map(h => (
+                    <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0", whiteSpace: "nowrap" }}>{h}</th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {filtered.map((d, i) => {
+                  const sc = STATUS_COLOR[d.status] ?? { color: "#6B7280", bg: "#F3F4F6" };
+                  return (
+                    <tr key={d.id} onClick={() => navigate(`/service/dossiers/${d.id}`)}
+                      style={{ borderBottom: i < filtered.length - 1 ? "1px solid #F8FAFC" : "none", cursor: "pointer" }}
+                      onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
+                      onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+                      <td style={{ padding: "11px 16px", fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{d.numero}</td>
+                      <td style={{ padding: "11px 16px", fontSize: 13, color: "#374151" }}>{d.demandeur}</td>
+                      <td style={{ padding: "11px 16px", fontSize: 12, color: "#64748b" }}>{TYPE_LABEL[d.type] ?? d.type}</td>
+                      <td style={{ padding: "11px 16px", fontSize: 13, color: "#374151" }}>{d.commune}</td>
+                      <td style={{ padding: "11px 16px", fontSize: 12, color: "#94a3b8" }}>{fmtDate(d.date_depot)}</td>
+                      <td style={{ padding: "11px 16px" }}>
+                        <span style={{ padding: "3px 10px", borderRadius: 20, background: sc.bg, color: sc.color, fontSize: 11, fontWeight: 700 }}>{STATUS_LABEL[d.status] ?? d.status}</span>
+                      </td>
+                      <td style={{ padding: "11px 16px" }}><ChevronRight size={14} color="#CBD5E1" /></td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          )}
       </div>
     </div>
   );
 }
 
-// ─── Dossier detail ─────────────────────────────────────────────────────────────
+// ─── Courrier preview (print-ready) ───────────────────────────────────────
+function CourrierPreview({ html, service, agentName }: {
+  html: string;
+  service: ServiceInfo["service"];
+  agentName: string;
+}) {
+  return (
+    <div className="print-page" style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "32px 40px", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B", maxWidth: 760 }}>
+      {/* En-tête */}
+      {(service.letterhead_logo || service.letterhead_title) && (
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 20, marginBottom: 24, paddingBottom: 20, borderBottom: "2px solid #1E293B" }}>
+          {service.letterhead_logo && (
+            <img src={service.letterhead_logo} alt="" style={{ height: 60, width: "auto", objectFit: "contain", flexShrink: 0 }} />
+          )}
+          <div>
+            {service.letterhead_title && <div style={{ fontSize: 16, fontWeight: 700 }}>{service.letterhead_title}</div>}
+            {service.letterhead_subtitle && <div style={{ fontSize: 13 }}>{service.letterhead_subtitle}</div>}
+            {service.letterhead_address && <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{service.letterhead_address}</div>}
+          </div>
+        </div>
+      )}
+
+      {/* Corps du courrier */}
+      <div
+        className="tiptap-preview"
+        dangerouslySetInnerHTML={{ __html: html }}
+        style={{ minHeight: 300 }}
+      />
+
+      {/* Signature */}
+      {(service.signature_image || agentName) && (
+        <div style={{ marginTop: 32 }}>
+          {service.signature_image && (
+            <img src={service.signature_image} alt="Signature" style={{ height: 70, width: "auto", objectFit: "contain", display: "block", marginBottom: 4 }} />
+          )}
+          {agentName && <div style={{ fontSize: 13, fontWeight: 600 }}>{agentName}</div>}
+        </div>
+      )}
+
+      {/* Pied de page */}
+      {service.footer_text && (
+        <div style={{ marginTop: 40, paddingTop: 14, borderTop: "1px solid #CBD5E1", fontSize: 11, color: "#64748b", textAlign: "center", whiteSpace: "pre-line" }}>
+          {service.footer_text}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Dossier detail ─────────────────────────────────────────────────────────
 function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
   const { id } = useParams<{ id: string }>();
   const navigate = useNavigate();
@@ -340,27 +464,50 @@ function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
   const [msgContent, setMsgContent] = useState("");
   const [sending, setSending] = useState(false);
   const [tab, setTab] = useState<"infos" | "messages" | "courrier">("infos");
-  const [selectedTemplate, setSelectedTemplate] = useState(LETTER_TEMPLATES[0]!);
-  const [letterBody, setLetterBody] = useState("");
+  const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
+  const [selectedTpl, setSelectedTpl] = useState<CourrierTemplate | null>(null);
+  const [editedBody, setEditedBody] = useState("");
 
   const load = useCallback(async () => {
     if (!id) return;
-    const [d, msgs] = await Promise.all([
+    const [d, msgs, tpls] = await Promise.all([
       api.get<DossierDetail>(`/service/dossiers/${id}`),
       api.get<Message[]>(`/service/dossiers/${id}/messages`),
+      api.get<CourrierTemplate[]>("/service/templates"),
     ]);
     setDossier(d);
     setMessages(msgs);
-    setLetterBody(selectedTemplate.generate(d, serviceInfo?.service ?? { id: "", name: "Service", type: "", email: null, telephone: null }, { prenom: user?.prenom ?? "", nom: user?.nom ?? "" }));
+    setTemplates(tpls);
+    if (tpls.length > 0) {
+      const first = tpls[0]!;
+      setSelectedTpl(first);
+    }
   }, [id]);
 
   useEffect(() => { load().catch(() => navigate("/service/dossiers")); }, [load]);
 
   useEffect(() => {
-    if (dossier && serviceInfo) {
-      setLetterBody(selectedTemplate.generate(dossier, serviceInfo.service, { prenom: user?.prenom ?? "", nom: user?.nom ?? "" }));
+    if (selectedTpl && dossier && serviceInfo && user) {
+      const vars: Record<string, string> = {
+        demandeur_nom: dossier.demandeur,
+        demandeur_prenom: dossier.demandeur_prenom ?? "",
+        demandeur_email: dossier.demandeur_email ?? "—",
+        numero_dossier: dossier.numero,
+        type_dossier: TYPE_LABEL[dossier.type] ?? dossier.type,
+        adresse_travaux: dossier.adresse ?? "—",
+        commune: dossier.commune ?? "—",
+        code_postal: dossier.code_postal ?? "",
+        parcelle: dossier.parcelle ?? "—",
+        surface_plancher: dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—",
+        date_depot: fmtDate(dossier.date_depot),
+        date_limite_instruction: fmtDate(dossier.date_limite_instruction),
+        nom_service: serviceInfo.service.name,
+        nom_agent: `${user.prenom} ${user.nom}`,
+        date_courrier: new Date().toLocaleDateString("fr-FR"),
+      };
+      setEditedBody(substituteVariables(selectedTpl.body, vars));
     }
-  }, [selectedTemplate, dossier, serviceInfo]);
+  }, [selectedTpl, dossier, serviceInfo, user]);
 
   const sendMessage = async () => {
     if (!msgContent.trim() || !id) return;
@@ -375,7 +522,6 @@ function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
   };
 
   if (!dossier) return <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>;
-
   const sc = STATUS_COLOR[dossier.status] ?? { color: "#6B7280", bg: "#F3F4F6" };
 
   return (
@@ -424,23 +570,20 @@ function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
               </div>
             ))}
           </div>
-
           <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16 }}>
               <Paperclip size={14} color="#64748b" />
               <h3 style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", margin: 0 }}>Pièces jointes ({dossier.pieces.length})</h3>
             </div>
-            {dossier.pieces.length === 0 ? (
-              <p style={{ fontSize: 13, color: "#94a3b8" }}>Aucune pièce jointe</p>
-            ) : dossier.pieces.map(p => (
-              <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer"
-                style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #F8FAFC", textDecoration: "none", color: "#4F46E5", fontSize: 13 }}>
-                <Paperclip size={12} />
-                <span style={{ flex: 1 }}>{p.nom}</span>
-                <span style={{ fontSize: 11, color: "#94a3b8" }}>{(p.taille / 1024).toFixed(0)} Ko</span>
-              </a>
-            ))}
-
+            {dossier.pieces.length === 0 ? <p style={{ fontSize: 13, color: "#94a3b8" }}>Aucune pièce jointe</p>
+              : dossier.pieces.map(p => (
+                <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer"
+                  style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 0", borderBottom: "1px solid #F8FAFC", textDecoration: "none", color: "#4F46E5", fontSize: 13 }}>
+                  <Paperclip size={12} />
+                  <span style={{ flex: 1 }}>{p.nom}</span>
+                  <span style={{ fontSize: 11, color: "#94a3b8" }}>{(p.taille / 1024).toFixed(0)} Ko</span>
+                </a>
+              ))}
             {dossier.description && (
               <div style={{ marginTop: 20 }}>
                 <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 6 }}>Description</div>
@@ -457,7 +600,7 @@ function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
             {messages.length === 0 ? (
               <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8", fontSize: 14 }}>
                 <div style={{ textAlign: "center" }}>
-                  <MessageSquare size={32} color="#CBD5E1" style={{ marginBottom: 8 }} />
+                  <div style={{ marginBottom: 8 }}><Send size={32} color="#CBD5E1" /></div>
                   <p>Démarrez la consultation en envoyant un message</p>
                 </div>
               </div>
@@ -476,13 +619,10 @@ function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
             })}
           </div>
           <div style={{ padding: "12px 16px", borderTop: "1px solid #F1F5F9", display: "flex", gap: 8 }}>
-            <textarea
-              value={msgContent}
-              onChange={e => setMsgContent(e.target.value)}
+            <textarea value={msgContent} onChange={e => setMsgContent(e.target.value)}
               onKeyDown={e => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void sendMessage(); } }}
               placeholder="Votre message de consultation… (Entrée pour envoyer)"
-              style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 12px", fontSize: 13, resize: "none", height: 56, outline: "none", fontFamily: "inherit" }}
-            />
+              style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 12px", fontSize: 13, resize: "none", height: 56, outline: "none", fontFamily: "inherit" }} />
             <button onClick={() => void sendMessage()} disabled={!msgContent.trim() || sending}
               style={{ padding: "8px 16px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: !msgContent.trim() || sending ? "not-allowed" : "pointer", opacity: !msgContent.trim() || sending ? 0.5 : 1, display: "flex", alignItems: "center", gap: 6, fontSize: 13, fontWeight: 600 }}>
               <Send size={14} /> Envoyer
@@ -492,62 +632,361 @@ function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
       )}
 
       {tab === "courrier" && (
-        <div style={{ display: "grid", gridTemplateColumns: "200px 1fr", gap: 20 }}>
-          <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-            {LETTER_TEMPLATES.map(tpl => (
-              <button key={tpl.id} onClick={() => setSelectedTemplate(tpl)}
-                style={{ padding: "10px 14px", border: `2px solid ${selectedTemplate.id === tpl.id ? tpl.color : "#E2E8F0"}`, borderRadius: 10, background: selectedTemplate.id === tpl.id ? tpl.bg : "white", color: selectedTemplate.id === tpl.id ? tpl.color : "#374151", fontSize: 13, fontWeight: selectedTemplate.id === tpl.id ? 700 : 400, cursor: "pointer", textAlign: "left", transition: "all 0.15s" }}>
-                {tpl.label}
-              </button>
-            ))}
-          </div>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", display: "flex", flexDirection: "column" }}>
-            <div style={{ padding: "12px 16px", borderBottom: "1px solid #F1F5F9", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-              <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{selectedTemplate.label}</span>
-              <button onClick={() => window.print()}
-                style={{ display: "flex", alignItems: "center", gap: 6, padding: "6px 14px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 12, fontWeight: 600 }}>
-                <Printer size={13} /> Imprimer / PDF
-              </button>
+        <div>
+          {templates.length === 0 ? (
+            <div style={{ background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 12, padding: 24, textAlign: "center" }}>
+              <p style={{ color: "#92400E", fontSize: 14, margin: "0 0 12px" }}>Aucun modèle de courrier disponible.</p>
+              <p style={{ color: "#78350F", fontSize: 13, margin: 0 }}>Créez des modèles dans <strong>Courriers types</strong> pour pouvoir les utiliser ici.</p>
             </div>
-            <textarea
-              value={letterBody}
-              onChange={e => setLetterBody(e.target.value)}
-              style={{ flex: 1, border: "none", padding: 24, fontSize: 13, lineHeight: 1.8, fontFamily: "Georgia, serif", resize: "none", outline: "none", minHeight: 480, color: "#1E293B" }}
-            />
-          </div>
+          ) : (
+            <div style={{ display: "grid", gridTemplateColumns: "220px 1fr", gap: 20 }}>
+              {/* Template selector */}
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {templates.map(tpl => {
+                  const cat = CATEGORY_CONFIG[tpl.category] ?? CATEGORY_CONFIG.general!;
+                  const isSelected = selectedTpl?.id === tpl.id;
+                  return (
+                    <button key={tpl.id} onClick={() => setSelectedTpl(tpl)}
+                      style={{ padding: "10px 14px", border: `2px solid ${isSelected ? cat.color : "#E2E8F0"}`, borderRadius: 10, background: isSelected ? cat.bg : "white", color: isSelected ? cat.color : "#374151", fontSize: 13, fontWeight: isSelected ? 700 : 400, cursor: "pointer", textAlign: "left", transition: "all 0.15s" }}>
+                      <div>{tpl.name}</div>
+                      <div style={{ fontSize: 11, marginTop: 2, opacity: 0.7 }}>{cat.label}</div>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {/* Preview + print */}
+              <div>
+                <div className="no-print" style={{ display: "flex", justifyContent: "flex-end", marginBottom: 12 }}>
+                  <button onClick={() => window.print()}
+                    style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                    <Printer size={14} /> Imprimer / PDF
+                  </button>
+                </div>
+                {selectedTpl && serviceInfo && user && (
+                  <CourrierPreview
+                    html={editedBody}
+                    service={serviceInfo.service}
+                    agentName={`${user.prenom} ${user.nom}`}
+                  />
+                )}
+              </div>
+            </div>
+          )}
         </div>
       )}
     </div>
   );
 }
 
-// ─── Courriers types (catalog) ──────────────────────────────────────────────────
+// ─── Courriers types (template manager) ──────────────────────────────────────
 function CourriersCatalog() {
+  const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [editing, setEditing] = useState<Partial<CourrierTemplate> | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  const load = async () => {
+    const rows = await api.get<CourrierTemplate[]>("/service/templates");
+    setTemplates(rows);
+    setLoading(false);
+  };
+
+  useEffect(() => { load().catch(() => setLoading(false)); }, []);
+
+  const handleSave = async () => {
+    if (!editing || !editing.name?.trim()) return;
+    setSaving(true);
+    try {
+      if (editing.id) {
+        await api.put(`/service/templates/${editing.id}`, { name: editing.name, category: editing.category ?? "general", body: editing.body ?? "" });
+      } else {
+        await api.post("/service/templates", { name: editing.name, category: editing.category ?? "general", body: editing.body ?? "" });
+      }
+      await load();
+      setEditing(null);
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDelete = async (id: string) => {
+    if (!window.confirm("Supprimer ce modèle de courrier ?")) return;
+    await api.delete(`/service/templates/${id}`);
+    await load();
+  };
+
+  if (editing !== null) {
+    const cat = CATEGORY_CONFIG[editing.category ?? "general"] ?? CATEGORY_CONFIG.general!;
+    return (
+      <div style={{ padding: 32 }}>
+        <button onClick={() => setEditing(null)} style={{ display: "flex", alignItems: "center", gap: 6, border: "none", background: "none", color: "#64748b", fontSize: 13, cursor: "pointer", padding: "0 0 20px" }}>
+          <ArrowLeft size={14} /> Retour à la liste
+        </button>
+        <h1 style={{ fontSize: 20, fontWeight: 800, color: "#0F172A", marginBottom: 24 }}>{editing.id ? "Modifier le modèle" : "Nouveau modèle"}</h1>
+
+        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Nom du modèle *</label>
+            <input value={editing.name ?? ""} onChange={e => setEditing(prev => ({ ...prev!, name: e.target.value }))}
+              placeholder="Ex : Avis favorable ABF"
+              style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+          </div>
+          <div>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>Catégorie</label>
+            <select value={editing.category ?? "general"} onChange={e => setEditing(prev => ({ ...prev!, category: e.target.value }))}
+              style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", background: "white", boxSizing: "border-box" }}>
+              {Object.entries(CATEGORY_CONFIG).map(([value, { label }]) => (
+                <option key={value} value={value}>{label}</option>
+              ))}
+            </select>
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 8, display: "flex", alignItems: "center", gap: 8 }}>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151" }}>Corps du courrier</label>
+          <span style={{ fontSize: 11, color: "#94a3b8" }}>— Utilisez le bouton <strong>Insérer variable</strong> pour les champs dynamiques</span>
+        </div>
+        <TipTapEditor
+          content={editing.body ?? ""}
+          onChange={body => setEditing(prev => ({ ...prev!, body }))}
+          placeholder="Rédigez votre modèle de courrier…"
+        />
+
+        {/* Variable reference */}
+        <div style={{ marginTop: 16, padding: "14px 16px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #E2E8F0" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 8 }}>Variables disponibles</div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {TEMPLATE_VARIABLES.flatMap(g => g.vars).map(v => (
+              <span key={v.name} style={{ background: "#dbeafe", color: "#1d4ed8", padding: "2px 8px", borderRadius: 10, fontSize: 11, fontFamily: "monospace" }}>{`{{${v.name}}}`}</span>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 24, display: "flex", gap: 10 }}>
+          <button onClick={() => void handleSave()} disabled={saving || !editing.name?.trim()}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "9px 20px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving || !editing.name?.trim() ? "not-allowed" : "pointer", opacity: saving || !editing.name?.trim() ? 0.6 : 1, fontSize: 13, fontWeight: 600 }}>
+            <Save size={14} /> {saving ? "Enregistrement…" : "Enregistrer"}
+          </button>
+          <span style={{ padding: "0 4px", display: "inline-flex", alignItems: "center" }}>
+            <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: cat.color, marginRight: 6 }} />
+            <span style={{ fontSize: 12, color: "#64748b" }}>{cat.label}</span>
+          </span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div style={{ padding: 32 }}>
-      <h1 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 4 }}>Courriers types</h1>
-      <p style={{ color: "#64748b", fontSize: 14, marginBottom: 28 }}>Sélectionnez un dossier pour générer et personnaliser un courrier.</p>
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 }}>
-        {LETTER_TEMPLATES.map(tpl => (
-          <div key={tpl.id} style={{ background: tpl.bg, border: `1px solid ${tpl.color}30`, borderRadius: 12, padding: 24 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: tpl.color, marginBottom: 8 }}>{tpl.label}</div>
-            <p style={{ fontSize: 13, color: "#374151", margin: 0, lineHeight: 1.5 }}>
-              Disponible dans le détail d'un dossier, onglet <strong>Générer un courrier</strong>.
-            </p>
-          </div>
-        ))}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+        <h1 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", margin: 0 }}>Courriers types</h1>
+        <button onClick={() => setEditing({ name: "", category: "general", body: "" })}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 16px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+          <Plus size={14} /> Nouveau modèle
+        </button>
       </div>
+      <p style={{ color: "#64748b", fontSize: 14, marginBottom: 24 }}>Créez et gérez vos modèles de courrier avec variables dynamiques.</p>
+
+      {loading ? <div style={{ textAlign: "center", color: "#94a3b8", padding: 40 }}>Chargement…</div>
+        : templates.length === 0 ? (
+          <div style={{ background: "white", borderRadius: 12, border: "1px dashed #CBD5E1", padding: 48, textAlign: "center" }}>
+            <FileText size={36} color="#CBD5E1" style={{ marginBottom: 12 }} />
+            <p style={{ color: "#94a3b8", fontSize: 14, margin: "0 0 16px" }}>Aucun modèle de courrier créé</p>
+            <button onClick={() => setEditing({ name: "", category: "general", body: "" })}
+              style={{ padding: "8px 20px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+              Créer mon premier modèle
+            </button>
+          </div>
+        ) : (
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(300px, 1fr))", gap: 16 }}>
+            {templates.map(tpl => {
+              const cat = CATEGORY_CONFIG[tpl.category] ?? CATEGORY_CONFIG.general!;
+              return (
+                <div key={tpl.id} style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20, display: "flex", flexDirection: "column", gap: 12 }}>
+                  <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>{tpl.name}</div>
+                      <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 20, background: cat.bg, color: cat.color, fontSize: 11, fontWeight: 700 }}>{cat.label}</span>
+                    </div>
+                    <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
+                      <button onClick={() => setEditing(tpl)} title="Modifier"
+                        style={{ padding: "6px 8px", border: "1px solid #E2E8F0", borderRadius: 7, background: "white", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center" }}>
+                        <Pencil size={13} />
+                      </button>
+                      <button onClick={() => void handleDelete(tpl.id)} title="Supprimer"
+                        style={{ padding: "6px 8px", border: "1px solid #FEE2E2", borderRadius: 7, background: "white", cursor: "pointer", color: "#EF4444", display: "flex", alignItems: "center" }}>
+                        <Trash2 size={13} />
+                      </button>
+                    </div>
+                  </div>
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>
+                    Modifié le {fmtDate(tpl.updated_at)}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
     </div>
   );
 }
 
-// ─── App root ──────────────────────────────────────────────────────────────────
+// ─── Service settings (letterhead, footer, signature) ─────────────────────
+function ServiceSettingsPage({ serviceInfo, onSave }: { serviceInfo: ServiceInfo | null; onSave: () => void }) {
+  const [form, setForm] = useState({
+    letterhead_logo: serviceInfo?.service.letterhead_logo ?? "",
+    letterhead_title: serviceInfo?.service.letterhead_title ?? serviceInfo?.service.name ?? "",
+    letterhead_subtitle: serviceInfo?.service.letterhead_subtitle ?? "",
+    letterhead_address: serviceInfo?.service.letterhead_address ?? "",
+    footer_text: serviceInfo?.service.footer_text ?? "",
+    signature_image: serviceInfo?.service.signature_image ?? "",
+  });
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    if (serviceInfo) {
+      setForm({
+        letterhead_logo: serviceInfo.service.letterhead_logo ?? "",
+        letterhead_title: serviceInfo.service.letterhead_title ?? serviceInfo.service.name,
+        letterhead_subtitle: serviceInfo.service.letterhead_subtitle ?? "",
+        letterhead_address: serviceInfo.service.letterhead_address ?? "",
+        footer_text: serviceInfo.service.footer_text ?? "",
+        signature_image: serviceInfo.service.signature_image ?? "",
+      });
+    }
+  }, [serviceInfo]);
+
+  const toBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(reader.result as string);
+    reader.onerror = reject;
+    reader.readAsDataURL(file);
+  });
+
+  const handleImageUpload = async (field: "letterhead_logo" | "signature_image", file: File) => {
+    const b64 = await toBase64(file);
+    setForm(prev => ({ ...prev, [field]: b64 }));
+  };
+
+  const handleSave = async () => {
+    setSaving(true);
+    try {
+      await api.put("/service/settings", {
+        letterhead_logo: form.letterhead_logo || null,
+        letterhead_title: form.letterhead_title || null,
+        letterhead_subtitle: form.letterhead_subtitle || null,
+        letterhead_address: form.letterhead_address || null,
+        footer_text: form.footer_text || null,
+        signature_image: form.signature_image || null,
+      });
+      setSaved(true);
+      setTimeout(() => setSaved(false), 2500);
+      onSave();
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const field = (label: string, value: string, onChange: (v: string) => void, placeholder?: string, multiline?: boolean) => (
+    <div>
+      <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>{label}</label>
+      {multiline ? (
+        <textarea value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+          style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", resize: "vertical", minHeight: 80, fontFamily: "inherit", boxSizing: "border-box" }} />
+      ) : (
+        <input value={value} onChange={e => onChange(e.target.value)} placeholder={placeholder}
+          style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
+      )}
+    </div>
+  );
+
+  const imageUpload = (label: string, current: string, fieldName: "letterhead_logo" | "signature_image", hint?: string) => (
+    <div>
+      <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 6 }}>{label}</label>
+      {hint && <p style={{ fontSize: 11, color: "#94a3b8", margin: "0 0 8px" }}>{hint}</p>}
+      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+        {current ? (
+          <div style={{ position: "relative" }}>
+            <img src={current} alt="" style={{ height: fieldName === "signature_image" ? 50 : 40, width: "auto", border: "1px solid #E2E8F0", borderRadius: 6, objectFit: "contain", background: "#F8FAFC", padding: 4 }} />
+            <button onClick={() => setForm(prev => ({ ...prev, [fieldName]: "" }))}
+              style={{ position: "absolute", top: -6, right: -6, width: 18, height: 18, borderRadius: "50%", background: "#EF4444", border: "none", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <X size={10} color="white" />
+            </button>
+          </div>
+        ) : null}
+        <label style={{ padding: "7px 14px", border: "1px dashed #CBD5E1", borderRadius: 8, cursor: "pointer", fontSize: 12, color: "#64748b", display: "inline-block" }}>
+          {current ? "Remplacer" : "Téléverser"} une image
+          <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => { const f = e.target.files?.[0]; if (f) void handleImageUpload(fieldName, f); }} />
+        </label>
+      </div>
+    </div>
+  );
+
+  return (
+    <div style={{ padding: 32, maxWidth: 720 }}>
+      <h1 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 4 }}>Paramètres du service</h1>
+      <p style={{ color: "#64748b", fontSize: 14, marginBottom: 32 }}>Configurez l'en-tête, le pied de page et la signature pour vos courriers.</p>
+
+      {/* Letterhead section */}
+      <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24, marginBottom: 20 }}>
+        <h2 style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20, marginTop: 0 }}>En-tête du courrier</h2>
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {imageUpload("Logo", form.letterhead_logo, "letterhead_logo", "Format PNG ou SVG recommandé, fond transparent")}
+          {field("Nom / Titre", form.letterhead_title, v => setForm(p => ({ ...p, letterhead_title: v })), serviceInfo?.service.name)}
+          {field("Sous-titre / Direction", form.letterhead_subtitle, v => setForm(p => ({ ...p, letterhead_subtitle: v })), "Ex : Direction Urbanisme et Territoire")}
+          {field("Adresse", form.letterhead_address, v => setForm(p => ({ ...p, letterhead_address: v })), "Ex : 1 place Jean-Jaurès\n37000 Tours", true)}
+        </div>
+      </div>
+
+      {/* Signature */}
+      <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24, marginBottom: 20 }}>
+        <h2 style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20, marginTop: 0 }}>Signature</h2>
+        {imageUpload("Image de signature", form.signature_image, "signature_image", "PNG avec fond transparent recommandé")}
+      </div>
+
+      {/* Footer */}
+      <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24, marginBottom: 24 }}>
+        <h2 style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20, marginTop: 0 }}>Pied de page</h2>
+        {field("Texte du pied de page", form.footer_text, v => setForm(p => ({ ...p, footer_text: v })), "Ex : Tél. : 02 XX XX XX XX | service.abf@culture.gouv.fr\nHoraires d'ouverture : lun-ven 9h-12h / 14h-17h", true)}
+      </div>
+
+      {/* Preview */}
+      <div style={{ marginBottom: 24 }}>
+        <div style={{ fontSize: 13, fontWeight: 600, color: "#374151", marginBottom: 12 }}>Aperçu de l'en-tête</div>
+        <div style={{ background: "white", borderRadius: 10, border: "1px solid #E2E8F0", padding: 24 }}>
+          {(form.letterhead_logo || form.letterhead_title) ? (
+            <div style={{ display: "flex", alignItems: "flex-start", gap: 20, paddingBottom: 16, borderBottom: "2px solid #1E293B" }}>
+              {form.letterhead_logo && <img src={form.letterhead_logo} alt="" style={{ height: 52, width: "auto", objectFit: "contain" }} />}
+              <div>
+                {form.letterhead_title && <div style={{ fontSize: 16, fontWeight: 700, color: "#1E293B" }}>{form.letterhead_title}</div>}
+                {form.letterhead_subtitle && <div style={{ fontSize: 13, color: "#374151" }}>{form.letterhead_subtitle}</div>}
+                {form.letterhead_address && <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{form.letterhead_address}</div>}
+              </div>
+            </div>
+          ) : (
+            <div style={{ color: "#94a3b8", fontSize: 13, fontStyle: "italic" }}>Renseignez le titre ou un logo pour voir l'aperçu</div>
+          )}
+        </div>
+      </div>
+
+      <button onClick={() => void handleSave()} disabled={saving}
+        style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 24px", background: saved ? "#16A34A" : "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 600, transition: "background 0.3s" }}>
+        <Save size={15} />
+        {saved ? "Enregistré ✓" : saving ? "Enregistrement…" : "Enregistrer"}
+      </button>
+    </div>
+  );
+}
+
+// ─── App root ──────────────────────────────────────────────────────────────
 export function ServiceExterneApp() {
   const [serviceInfo, setServiceInfo] = useState<ServiceInfo | null>(null);
   const [dossiers, setDossiers] = useState<DossierRow[]>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const loadData = useCallback(() => {
     Promise.all([
       api.get<ServiceInfo>("/service/info"),
       api.get<DossierRow[]>("/service/dossiers"),
@@ -557,9 +996,33 @@ export function ServiceExterneApp() {
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
+  useEffect(() => { loadData(); }, [loadData]);
+
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "#F0F0F0", fontFamily: "-apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif" }}>
-      <style>{`* { box-sizing: border-box; } @media print { aside { display: none !important; } }`}</style>
+      <style>{`
+        * { box-sizing: border-box; }
+        .tiptap { outline: none; min-height: 280px; padding: 20px 24px; font-size: 14px; line-height: 1.7; color: #1E293B; font-family: Georgia, serif; }
+        .tiptap p { margin: 0 0 12px; }
+        .tiptap h1 { font-size: 1.4em; font-weight: 700; margin: 16px 0 8px; }
+        .tiptap h2 { font-size: 1.2em; font-weight: 600; margin: 14px 0 6px; }
+        .tiptap ul, .tiptap ol { padding-left: 24px; margin: 8px 0; }
+        .tiptap li { margin-bottom: 4px; }
+        .tiptap p.is-editor-empty:first-child::before { color: #9CA3AF; content: attr(data-placeholder); float: left; height: 0; pointer-events: none; }
+        .tiptap-preview p { margin: 0 0 12px; }
+        .tiptap-preview h1 { font-size: 1.4em; font-weight: 700; margin: 16px 0 8px; }
+        .tiptap-preview h2 { font-size: 1.2em; font-weight: 600; margin: 14px 0 6px; }
+        .tiptap-preview ul, .tiptap-preview ol { padding-left: 24px; margin: 8px 0; }
+        .tiptap-preview li { margin-bottom: 4px; }
+        .tiptap-preview strong { font-weight: 700; }
+        .tiptap-preview em { font-style: italic; }
+        .tiptap-preview u { text-decoration: underline; }
+        @media print {
+          aside, .no-print { display: none !important; }
+          main { overflow: visible !important; }
+          .print-page { border: none !important; border-radius: 0 !important; box-shadow: none !important; max-width: 100% !important; padding: 20px !important; }
+        }
+      `}</style>
       <Sidebar serviceInfo={serviceInfo} />
       <main style={{ flex: 1, overflowY: "auto" }}>
         <Routes>
@@ -567,6 +1030,7 @@ export function ServiceExterneApp() {
           <Route path="/dossiers" element={<DossiersList dossiers={dossiers} loading={loading} />} />
           <Route path="/dossiers/:id" element={<DossierDetail serviceInfo={serviceInfo} />} />
           <Route path="/courriers" element={<CourriersCatalog />} />
+          <Route path="/parametres" element={<ServiceSettingsPage serviceInfo={serviceInfo} onSave={loadData} />} />
           <Route path="*" element={<Navigate to="/service" replace />} />
         </Routes>
       </main>

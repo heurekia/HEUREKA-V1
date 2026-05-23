@@ -14,3 +14,4 @@ export * from "./externalServices.js";
 export * from "./serviceCommunes.js";
 export * from "./auditLogs.js";
 export * from "./passwordTokens.js";
+export * from "./courrierTemplates.js";

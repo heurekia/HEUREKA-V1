@@ -255,6 +255,26 @@ CREATE TABLE IF NOT EXISTS password_tokens (
 CREATE INDEX IF NOT EXISTS idx_password_tokens_token ON password_tokens(token);
 CREATE INDEX IF NOT EXISTS idx_password_tokens_user_id ON password_tokens(user_id);
 
+-- Letterhead & signature for external services
+ALTER TABLE external_services ADD COLUMN IF NOT EXISTS letterhead_logo text;
+ALTER TABLE external_services ADD COLUMN IF NOT EXISTS letterhead_title text;
+ALTER TABLE external_services ADD COLUMN IF NOT EXISTS letterhead_subtitle text;
+ALTER TABLE external_services ADD COLUMN IF NOT EXISTS letterhead_address text;
+ALTER TABLE external_services ADD COLUMN IF NOT EXISTS footer_text text;
+ALTER TABLE external_services ADD COLUMN IF NOT EXISTS signature_image text;
+
+-- Courrier templates (WYSIWYG, with variable placeholders)
+CREATE TABLE IF NOT EXISTS courrier_templates (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  service_id uuid NOT NULL REFERENCES external_services(id) ON DELETE CASCADE,
+  name text NOT NULL,
+  category text NOT NULL DEFAULT 'general',
+  body text NOT NULL DEFAULT '',
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_courrier_templates_service_id ON courrier_templates(service_id);
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_users_commune ON users(commune);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);

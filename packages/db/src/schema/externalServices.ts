@@ -7,6 +7,12 @@ export const external_services = pgTable("external_services", {
   email: text("email"),
   telephone: text("telephone"),
   description: text("description"),
+  letterhead_logo: text("letterhead_logo"),
+  letterhead_title: text("letterhead_title"),
+  letterhead_subtitle: text("letterhead_subtitle"),
+  letterhead_address: text("letterhead_address"),
+  footer_text: text("footer_text"),
+  signature_image: text("signature_image"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });
