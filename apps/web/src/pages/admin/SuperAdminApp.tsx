@@ -2292,10 +2292,10 @@ function ServicesAnnexes() {
               <input style={inp()} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={`ex. ABF ${SERVICE_TYPES[form.type]?.label ?? ""} Indre-et-Loire`} />
             </Field>
             <Field label="Email">
-              <input style={inp()} type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="contact@service.gouv.fr" />
+              <Input type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} placeholder="contact@service.gouv.fr" />
             </Field>
             <Field label="Téléphone">
-              <input style={inp()} value={form.telephone} onChange={(e) => setForm({ ...form, telephone: e.target.value })} placeholder="02 XX XX XX XX" />
+              <Input type="tel" value={form.telephone} onChange={(v) => setForm({ ...form, telephone: v })} />
             </Field>
             <Field label="Description">
               <textarea style={{ ...inp(), minHeight: 72, resize: "vertical" }} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Périmètre d'intervention, secteurs couverts…" />
@@ -2325,10 +2325,10 @@ function ServicesAnnexes() {
               <input style={inp()} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
             </Field>
             <Field label="Email">
-              <input style={inp()} type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+              <Input type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
             </Field>
             <Field label="Téléphone">
-              <input style={inp()} value={form.telephone} onChange={(e) => setForm({ ...form, telephone: e.target.value })} />
+              <Input type="tel" value={form.telephone} onChange={(v) => setForm({ ...form, telephone: v })} />
             </Field>
             <Field label="Description">
               <textarea style={{ ...inp(), minHeight: 72, resize: "vertical" }} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
@@ -2356,10 +2356,10 @@ function ServicesAnnexes() {
               </Field>
             </div>
             <Field label="Email *">
-              <input style={inp()} type="email" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })} placeholder="prenom.nom@service.gouv.fr" />
+              <Input type="email" value={userForm.email} onChange={(v) => setUserForm({ ...userForm, email: v })} placeholder="prenom.nom@service.gouv.fr" />
             </Field>
             <Field label="Téléphone">
-              <input style={inp()} value={userForm.telephone} onChange={(e) => setUserForm({ ...userForm, telephone: e.target.value })} />
+              <Input type="tel" value={userForm.telephone} onChange={(v) => setUserForm({ ...userForm, telephone: v })} />
             </Field>
             <Field label="Mot de passe provisoire *">
               <input style={inp()} type="password" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} placeholder="À communiquer à l'utilisateur" />
