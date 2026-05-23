@@ -16,3 +16,4 @@ export * from "./auditLogs.js";
 export * from "./passwordTokens.js";
 export * from "./courrierTemplates.js";
 export * from "./userCommunes.js";
+export * from "./legalMentions.js";

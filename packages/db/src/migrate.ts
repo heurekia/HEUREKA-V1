@@ -325,6 +325,20 @@ CREATE INDEX IF NOT EXISTS idx_dossiers_user_id ON dossiers(user_id);
 CREATE INDEX IF NOT EXISTS idx_dossiers_instructeur_id ON dossiers(instructeur_id);
 CREATE INDEX IF NOT EXISTS idx_zones_commune_id ON zones(commune_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
+
+-- Legal mentions cache (Légifrance / Code de l'urbanisme)
+CREATE TABLE IF NOT EXISTS legal_mentions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code text NOT NULL,
+  code_name text NOT NULL,
+  article_ref text NOT NULL,
+  article_title text,
+  article_html text,
+  legifrance_id text,
+  fetched_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT legal_mentions_code_ref UNIQUE (code, article_ref)
+);
 `;
 
 async function main() {

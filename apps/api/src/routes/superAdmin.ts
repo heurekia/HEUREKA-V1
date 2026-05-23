@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions } from "@heureka-v1/db";
+import { getPisteToken, fetchLegifranceArticle, ARTICLES_TO_CACHE, CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
@@ -756,5 +757,48 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Legal mentions refresh (calls PISTE / Légifrance) ─────────────────────────
+superAdminRouter.post("/legal-mentions/refresh", async (_req, res) => {
+  try {
+    const token = await getPisteToken();
+    const refs = Object.keys(ARTICLES_TO_CACHE);
+    const results: { ref: string; ok: boolean }[] = [];
+
+    for (const articleRef of refs) {
+      const art = await fetchLegifranceArticle(articleRef, token);
+      if (!art) { results.push({ ref: articleRef, ok: false }); continue; }
+      await db
+        .insert(legal_mentions)
+        .values({
+          code: CODE_URBANISME_ID,
+          code_name: CODE_URBANISME_NAME,
+          article_ref: articleRef,
+          article_title: art.title,
+          article_html: art.html,
+          legifrance_id: art.legiId,
+          fetched_at: new Date(),
+          updated_at: new Date(),
+        })
+        .onConflictDoUpdate({
+          target: [legal_mentions.code, legal_mentions.article_ref],
+          set: {
+            article_title: art.title,
+            article_html: art.html,
+            legifrance_id: art.legiId,
+            updated_at: new Date(),
+          },
+        });
+      results.push({ ref: articleRef, ok: true });
+    }
+
+    const ok = results.filter((r) => r.ok).length;
+    const failed = results.filter((r) => !r.ok).map((r) => r.ref);
+    res.json({ ok, failed, total: refs.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: String(err) });
   }
 });

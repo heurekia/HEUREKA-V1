@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike } from "drizzle-orm";
+import { MENTIONS_MAP, CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import Anthropic from "@anthropic-ai/sdk";
@@ -1652,6 +1653,33 @@ mairieRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
       updated_at: new Date(),
     }).where(eq(communes.id, commune.id));
     res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Legal mentions (Code de l'urbanisme cache) ────────────────────────────────
+mairieRouter.get("/legal-mentions", async (req: AuthRequest, res) => {
+  try {
+    const type = (req.query.type as string | undefined) ?? "";
+    const category = (req.query.category as string | undefined) ?? "";
+
+    const suggested = new Set<string>();
+    if (type && category) {
+      const specificKey = `${type}:${category}`;
+      const wildcardKey = `*:${category}`;
+      (MENTIONS_MAP[specificKey] ?? []).forEach((r) => suggested.add(r));
+      (MENTIONS_MAP[wildcardKey] ?? []).forEach((r) => suggested.add(r));
+    }
+
+    const rows = await db
+      .select()
+      .from(legal_mentions)
+      .where(eq(legal_mentions.code, CODE_URBANISME_ID))
+      .orderBy(legal_mentions.article_ref);
+
+    res.json(rows.map((r) => ({ ...r, suggested: suggested.has(r.article_ref) })));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

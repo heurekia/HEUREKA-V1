@@ -224,6 +224,23 @@ export interface DossierForCourrier {
   adresse?: string; commune?: string; code_postal?: string; parcelle?: string;
   surface_plancher?: string; date_depot?: string; echeance?: string;
 }
+interface MentionRow {
+  id: string;
+  article_ref: string;
+  article_title: string | null;
+  article_html: string | null;
+  suggested: boolean;
+}
+
+const MENTION_CATEGORIES = [
+  { value: "", label: "Toutes les mentions" },
+  { value: "avis_favorable", label: "Avis favorable" },
+  { value: "avis_defavorable", label: "Avis défavorable" },
+  { value: "avis_reserves", label: "Avis avec réserves" },
+  { value: "accord_tacite", label: "Accord tacite" },
+  { value: "pieces_complementaires", label: "Pièces complémentaires" },
+  { value: "notification_decision", label: "Notification de décision" },
+];
 
 // ─── Draggable stamp / signature overlay ──────────────────────────────────
 type Pos = { x: number; y: number };
@@ -266,7 +283,7 @@ function DraggableStamp({ src, pos, setPos, caption, onHide }: {
 }
 
 // ─── Courrier preview (print-ready, multi-page) ───────────────────────────
-function CourrierPrintPreview({ html, letterhead }: { html: string; letterhead: Letterhead }) {
+function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; letterhead: Letterhead; extraHtml?: string }) {
   const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
   const hasFooter = !!letterhead.footer_text;
   return (
@@ -288,6 +305,14 @@ function CourrierPrintPreview({ html, letterhead }: { html: string; letterhead: 
       {/* Body — padded in print to clear fixed header/footer */}
       <div className="lh-print-body" style={{ padding: "24px 36px", minHeight: 400 }}>
         <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: html }} />
+        {extraHtml && (
+          <div style={{ marginTop: 28, paddingTop: 18, borderTop: "1px solid #CBD5E1" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>
+              Références législatives et réglementaires
+            </div>
+            <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: extraHtml }} />
+          </div>
+        )}
       </div>
 
       {/* Footer — inline on screen, position:fixed on print (repeats every page) */}
@@ -313,6 +338,41 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
   const [tampPos, setTampPos] = useState<Pos>({ x: 340, y: 520 });
   const [showSig, setShowSig] = useState(false);
   const [showTamp, setShowTamp] = useState(false);
+  // Legal mentions panel
+  const [showMentions, setShowMentions] = useState(false);
+  const [mentionsLoading, setMentionsLoading] = useState(false);
+  const [allMentions, setAllMentions] = useState<MentionRow[]>([]);
+  const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
+  const [mentionCategory, setMentionCategory] = useState("");
+  const [insertedMentionsHtml, setInsertedMentionsHtml] = useState("");
+
+  const loadMentions = useCallback((category: string) => {
+    setMentionsLoading(true);
+    const params = category ? `?type=${encodeURIComponent(dossier.type)}&category=${encodeURIComponent(category)}` : "";
+    api.get<MentionRow[]>(`/mairie/legal-mentions${params}`)
+      .then(setAllMentions)
+      .catch(() => setAllMentions([]))
+      .finally(() => setMentionsLoading(false));
+  }, [dossier.type]);
+
+  const handleToggleMentions = useCallback(() => {
+    setShowMentions(v => {
+      if (!v && allMentions.length === 0) loadMentions(mentionCategory);
+      return !v;
+    });
+  }, [allMentions.length, loadMentions, mentionCategory]);
+
+  const handleInsertMentions = useCallback(() => {
+    if (selectedRefs.size === 0) return;
+    const chosen = allMentions.filter(m => selectedRefs.has(m.article_ref));
+    const html = chosen.map(m => `
+      <div style="margin-bottom:12px;">
+        <div style="font-weight:600;font-size:0.9em;margin-bottom:3px;">Art. ${m.article_ref} — ${m.article_title ?? ""}</div>
+        <div style="font-size:0.85em;color:#374151;">${m.article_html ?? ""}</div>
+      </div>`).join("");
+    setInsertedMentionsHtml(html);
+    setShowMentions(false);
+  }, [allMentions, selectedRefs]);
 
   useEffect(() => {
     Promise.all([
@@ -429,6 +489,11 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
                 🔵 Tampon
               </button>
             )}
+            {/* Mentions légales toggle */}
+            <button onClick={handleToggleMentions}
+              style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showMentions ? "#0284C7" : "#E2E8F0"}`, borderRadius: 7, background: showMentions ? "#E0F2FE" : "white", color: showMentions ? "#0284C7" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
+              📜 Mentions légales
+            </button>
             <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
             <button onClick={() => window.print()}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
@@ -467,7 +532,7 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
           <div className="print-area" style={{ flex: 1, overflowY: "auto" }}>
             {selected ? (
               <div style={{ position: "relative" }}>
-                <CourrierPrintPreview html={substitutedHtml} letterhead={letterhead} />
+                <CourrierPrintPreview html={substitutedHtml} letterhead={letterhead} extraHtml={insertedMentionsHtml || undefined} />
                 {/* Draggable signature */}
                 {showSig && letterhead.signature_image && (
                   <DraggableStamp
@@ -494,6 +559,76 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
               </div>
             )}
           </div>
+
+          {/* Legal mentions panel (slide-in right column) */}
+          {showMentions && (
+            <div className="no-print-modal" style={{ width: 300, borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", flexShrink: 0, background: "#FAFAFA" }}>
+              {/* Panel header */}
+              <div style={{ padding: "12px 14px 10px", borderBottom: "1px solid #E2E8F0", background: "white" }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 8 }}>📜 Mentions légales</div>
+                <select
+                  value={mentionCategory}
+                  onChange={(e) => {
+                    const cat = e.target.value;
+                    setMentionCategory(cat);
+                    loadMentions(cat);
+                  }}
+                  style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12, background: "white", color: "#374151", cursor: "pointer" }}>
+                  {MENTION_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                </select>
+              </div>
+
+              {/* Article list */}
+              <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+                {mentionsLoading ? (
+                  <div style={{ padding: "20px 14px", color: "#94a3b8", fontSize: 12, textAlign: "center" }}>Chargement…</div>
+                ) : allMentions.length === 0 ? (
+                  <div style={{ padding: "20px 14px", color: "#94a3b8", fontSize: 12, textAlign: "center" }}>
+                    <p style={{ margin: 0 }}>Aucune mention en cache.</p>
+                    <p style={{ margin: "6px 0 0", fontSize: 11 }}>Lancez la synchronisation depuis l'administration.</p>
+                  </div>
+                ) : allMentions.map(m => {
+                  const checked = selectedRefs.has(m.article_ref);
+                  return (
+                    <label key={m.article_ref} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 14px", cursor: "pointer", borderBottom: "1px solid #F1F5F9", background: checked ? "#EFF6FF" : "transparent" }}
+                      onMouseEnter={e => { if (!checked) (e.currentTarget as HTMLElement).style.background = "#F8FAFC"; }}
+                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = checked ? "#EFF6FF" : "transparent"; }}>
+                      <input type="checkbox" checked={checked}
+                        onChange={() => setSelectedRefs(prev => {
+                          const next = new Set(prev);
+                          if (next.has(m.article_ref)) next.delete(m.article_ref); else next.add(m.article_ref);
+                          return next;
+                        })}
+                        style={{ marginTop: 2, flexShrink: 0 }} />
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 12, fontWeight: 700, color: "#1E293B" }}>Art. {m.article_ref}</span>
+                          {m.suggested && (
+                            <span style={{ fontSize: 10, fontWeight: 600, color: "#0284C7", background: "#E0F2FE", borderRadius: 4, padding: "1px 5px" }}>Suggéré</span>
+                          )}
+                        </div>
+                        {m.article_title && <div style={{ fontSize: 11, color: "#64748b", marginTop: 1, lineHeight: 1.4 }}>{m.article_title}</div>}
+                      </div>
+                    </label>
+                  );
+                })}
+              </div>
+
+              {/* Insert button */}
+              <div style={{ padding: "10px 14px", borderTop: "1px solid #E2E8F0", background: "white" }}>
+                {insertedMentionsHtml && (
+                  <button onClick={() => { setInsertedMentionsHtml(""); setSelectedRefs(new Set()); }}
+                    style={{ width: "100%", padding: "6px 12px", marginBottom: 6, border: "1px solid #FCA5A5", borderRadius: 7, background: "white", color: "#DC2626", fontSize: 11, cursor: "pointer", fontWeight: 500 }}>
+                    ✕ Retirer les mentions insérées
+                  </button>
+                )}
+                <button onClick={handleInsertMentions} disabled={selectedRefs.size === 0}
+                  style={{ width: "100%", padding: "8px 12px", border: "none", borderRadius: 7, background: selectedRefs.size > 0 ? "#0F172A" : "#E2E8F0", color: selectedRefs.size > 0 ? "white" : "#94a3b8", fontSize: 12, fontWeight: 600, cursor: selectedRefs.size > 0 ? "pointer" : "default" }}>
+                  Insérer {selectedRefs.size > 0 ? `${selectedRefs.size} article${selectedRefs.size > 1 ? "s" : ""}` : "les articles sélectionnés"}
+                </button>
+              </div>
+            </div>
+          )}
         </div>
       </div>
     </div>
