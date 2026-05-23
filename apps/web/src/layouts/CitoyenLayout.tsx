@@ -67,7 +67,7 @@ export function CitoyenLayout() {
               <p className="text-[10px] text-white/50 truncate">{user?.email}</p>
             </div>
             <button
-              onClick={logout}
+              onClick={() => void logout()}
               className="text-white/40 hover:text-white transition-colors"
               title="Déconnexion"
             >

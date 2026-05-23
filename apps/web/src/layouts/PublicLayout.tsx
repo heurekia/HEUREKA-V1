@@ -58,7 +58,7 @@ export function PublicLayout() {
                       Mon espace
                     </Button>
                   </Link>
-                  <Button variant="ghost" size="sm" onClick={logout}>
+                  <Button variant="ghost" size="sm" onClick={() => void logout()}>
                     Déconnexion
                   </Button>
                 </div>

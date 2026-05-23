@@ -3,7 +3,7 @@ import bcrypt from "bcryptjs";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db.js";
-import { users, audit_logs } from "@heureka-v1/db";
+import { users, audit_logs, dossiers, dossier_messages, dossier_pieces_jointes, notifications } from "@heureka-v1/db";
 import { eq } from "drizzle-orm";
 import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
 
@@ -133,6 +133,68 @@ authRouter.post("/logout", requireAuth, (req: AuthRequest, res) => {
   writeAudit(req.user!.id, req.user!.email, "logout", req);
   res.clearCookie("token", { path: "/" });
   res.json({ ok: true });
+});
+
+authRouter.get("/me/export", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const [[user], userDossiers, messages, pieces, notifs] = await Promise.all([
+      db.select().from(users).where(eq(users.id, userId)).limit(1),
+      db.select().from(dossiers).where(eq(dossiers.user_id, userId)),
+      db.select().from(dossier_messages).where(eq(dossier_messages.from_user_id, userId)),
+      db.select().from(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.user_id, userId)),
+      db.select().from(notifications).where(eq(notifications.user_id, userId)),
+    ]);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+
+    const payload = {
+      export_date: new Date().toISOString(),
+      profil: {
+        id: user.id,
+        email: user.email,
+        prenom: user.prenom,
+        nom: user.nom,
+        role: user.role,
+        commune: user.commune,
+        telephone: user.telephone,
+        created_at: user.created_at,
+      },
+      dossiers: userDossiers,
+      messages,
+      documents: pieces,
+      notifications: notifs,
+    };
+
+    res.setHeader("Content-Disposition", `attachment; filename="mes-donnees-heureka-${new Date().toISOString().slice(0, 10)}.json"`);
+    res.setHeader("Content-Type", "application/json");
+    writeAudit(userId, user.email, "data_export", req);
+    res.json(payload);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { password } = req.body;
+    if (!password) return res.status(400).json({ error: "Mot de passe requis" });
+
+    const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+
+    const valid = await bcrypt.compare(password, user.password_hash);
+    if (!valid) return res.status(401).json({ error: "Mot de passe incorrect" });
+
+    writeAudit(user.id, user.email, "account_deleted", req);
+    await db.delete(users).where(eq(users.id, user.id));
+
+    res.clearCookie("token", { path: "/" });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
 });
 
 authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {

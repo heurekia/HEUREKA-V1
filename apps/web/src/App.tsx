@@ -6,6 +6,8 @@ import { Accueil } from "./pages/public/Accueil";
 import { AnalyseParcellaire } from "./pages/public/AnalyseParcellaire";
 import { Login } from "./pages/public/Login";
 import { Register } from "./pages/public/Register";
+import { MentionsLegales } from "./pages/public/MentionsLegales";
+import { PolitiqueConfidentialite } from "./pages/public/PolitiqueConfidentialite";
 import { CitoyenDashboard } from "./pages/citoyen/Dashboard";
 import { MesDemandes } from "./pages/citoyen/MesDemandes";
 import { MessagerieCitoyen } from "./pages/citoyen/Messagerie";
@@ -49,6 +51,8 @@ export function App() {
             <Route path="/" element={<Accueil />} />
             <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
             <Route path="/register" element={<PublicOnlyRoute><Register /></PublicOnlyRoute>} />
+            <Route path="/mentions-legales" element={<MentionsLegales />} />
+            <Route path="/politique-confidentialite" element={<PolitiqueConfidentialite />} />
           </Route>
 
           <Route path="/citoyen" element={<ProtectedRoute roles={["citoyen"]}><CitoyenLayout /></ProtectedRoute>}>

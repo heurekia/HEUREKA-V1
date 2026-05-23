@@ -1,12 +1,64 @@
+import { useState } from "react";
+import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Avatar } from "../../components/ui/avatar";
-import { Camera, Save } from "lucide-react";
+import { Camera, Save, Download, Trash2, AlertTriangle, X } from "lucide-react";
 
 export function Profil() {
-  const { user } = useAuth();
+  const { user, logout } = useAuth();
+  const navigate = useNavigate();
+
+  const [showDeleteModal, setShowDeleteModal] = useState(false);
+  const [deletePassword, setDeletePassword] = useState("");
+  const [deleteError, setDeleteError] = useState("");
+  const [deleting, setDeleting] = useState(false);
+  const [exporting, setExporting] = useState(false);
+
+  const handleExport = async () => {
+    setExporting(true);
+    try {
+      const res = await fetch("/api/auth/me/export", { credentials: "include" });
+      if (!res.ok) throw new Error("Erreur export");
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `mes-donnees-heureka-${new Date().toISOString().slice(0, 10)}.json`;
+      a.click();
+      URL.revokeObjectURL(url);
+    } catch {
+      // silent fail — user sees nothing happened, they can retry
+    } finally {
+      setExporting(false);
+    }
+  };
+
+  const handleDelete = async () => {
+    setDeleteError("");
+    setDeleting(true);
+    try {
+      const res = await fetch("/api/auth/me", {
+        method: "DELETE",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ password: deletePassword }),
+      });
+      const data = await res.json() as { ok?: boolean; error?: string };
+      if (!res.ok) {
+        setDeleteError(data.error ?? "Erreur lors de la suppression");
+        return;
+      }
+      await logout();
+      navigate("/");
+    } catch {
+      setDeleteError("Erreur réseau, réessayez.");
+    } finally {
+      setDeleting(false);
+    }
+  };
 
   return (
     <div className="max-w-3xl mx-auto px-6 py-8">
@@ -66,6 +118,99 @@ export function Profil() {
           </div>
         </CardContent>
       </Card>
+
+      {/* RGPD */}
+      <Card className="border-gray-200/80 mb-6">
+        <CardContent className="p-8">
+          <h2 className="text-base font-semibold text-[#000020] mb-1">Mes données personnelles</h2>
+          <p className="text-sm text-gray-500 mb-6">
+            Conformément au RGPD, vous pouvez télécharger l'ensemble de vos données ou supprimer définitivement votre compte.
+          </p>
+
+          <div className="flex flex-col sm:flex-row gap-3">
+            <Button
+              variant="secondary"
+              className="gap-2"
+              onClick={handleExport}
+              disabled={exporting}
+            >
+              <Download className="w-4 h-4" />
+              {exporting ? "Préparation…" : "Télécharger mes données"}
+            </Button>
+            <Button
+              variant="ghost"
+              className="gap-2 text-red-600 hover:bg-red-50 hover:text-red-700"
+              onClick={() => { setShowDeleteModal(true); setDeletePassword(""); setDeleteError(""); }}
+            >
+              <Trash2 className="w-4 h-4" />
+              Supprimer mon compte
+            </Button>
+          </div>
+
+          <p className="text-xs text-gray-400 mt-4">
+            Pour toute question sur vos données, contactez notre Délégué à la Protection des Données :{" "}
+            <a href="mailto:dpd@heureka-urba.fr" className="underline hover:text-gray-600">
+              dpd@heureka-urba.fr
+            </a>
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Delete confirmation modal */}
+      {showDeleteModal && (
+        <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
+          <div className="bg-white rounded-xl shadow-xl w-full max-w-md p-6">
+            <div className="flex items-start justify-between mb-4">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-full bg-red-100 flex items-center justify-center shrink-0">
+                  <AlertTriangle className="w-5 h-5 text-red-600" />
+                </div>
+                <div>
+                  <h3 className="font-semibold text-[#000020]">Supprimer mon compte</h3>
+                  <p className="text-xs text-gray-500">Cette action est irréversible</p>
+                </div>
+              </div>
+              <button onClick={() => setShowDeleteModal(false)} className="text-gray-400 hover:text-gray-600">
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <p className="text-sm text-gray-600 mb-4">
+              La suppression de votre compte entraîne la suppression définitive de toutes vos données : profil, dossiers en cours, documents et messages. Cette action <strong>ne peut pas être annulée</strong>.
+            </p>
+
+            <div className="mb-4">
+              <label className="block text-sm font-medium text-gray-700 mb-1.5">
+                Confirmez avec votre mot de passe
+              </label>
+              <Input
+                type="password"
+                placeholder="Votre mot de passe"
+                value={deletePassword}
+                onChange={(e) => setDeletePassword(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && deletePassword && handleDelete()}
+              />
+              {deleteError && (
+                <p className="text-xs text-red-600 mt-1">{deleteError}</p>
+              )}
+            </div>
+
+            <div className="flex gap-2 justify-end">
+              <Button variant="ghost" onClick={() => setShowDeleteModal(false)}>
+                Annuler
+              </Button>
+              <Button
+                className="bg-red-600 hover:bg-red-700 text-white gap-2"
+                onClick={handleDelete}
+                disabled={!deletePassword || deleting}
+              >
+                <Trash2 className="w-4 h-4" />
+                {deleting ? "Suppression…" : "Supprimer définitivement"}
+              </Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
