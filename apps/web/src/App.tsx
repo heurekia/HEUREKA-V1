@@ -18,6 +18,7 @@ import { Profil } from "./pages/citoyen/Profil";
 import { MairieApp } from "./pages/mairie/MairieApp";
 import { MairieLogin } from "./pages/mairie/MairieLogin";
 import { SuperAdminApp } from "./pages/admin/SuperAdminApp";
+import { ServiceExterneApp } from "./pages/service/ServiceExterneApp";
 
 function ProtectedRoute({ children, roles, loginPath = "/login" }: { children: React.ReactNode; roles?: string[]; loginPath?: string }) {
   const { user, loading } = useAuth();
@@ -31,7 +32,7 @@ function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
   if (loading) return <div className="flex items-center justify-center min-h-screen"><div className="animate-spin w-8 h-8 border-4 border-heureka-600 border-t-transparent rounded-full" /></div>;
   if (user) {
-    const redirect = user.role === "citoyen" ? "/citoyen" : (user.role === "admin" && !user.commune) ? "/admin" : "/mairie";
+    const redirect = user.role === "citoyen" ? "/citoyen" : user.role === "service_externe" ? "/service" : (user.role === "admin" && !user.commune) ? "/admin" : "/mairie";
     return <Navigate to={redirect} replace />;
   }
   return <>{children}</>;
@@ -80,6 +81,15 @@ export function App() {
             element={
               <ProtectedRoute roles={["mairie", "instructeur", "admin"]} loginPath="/mairie/login">
                 <MairieApp />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="/service/*"
+            element={
+              <ProtectedRoute roles={["service_externe"]} loginPath="/mairie/login">
+                <ServiceExterneApp />
               </ProtectedRoute>
             }
           />

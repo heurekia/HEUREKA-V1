@@ -13,6 +13,7 @@ import { calibrationRouter } from "./routes/calibration.js";
 import { calendrierRouter } from "./routes/calendrier.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { superAdminRouter } from "./routes/superAdmin.js";
+import { serviceRouter } from "./routes/service.js";
 
 export const app = express();
 
@@ -43,6 +44,7 @@ app.use("/api/calibration", calibrationRouter);
 app.use("/api/calendrier", calendrierRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", superAdminRouter);
+app.use("/api/service", serviceRouter);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });
