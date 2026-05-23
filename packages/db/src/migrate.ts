@@ -208,6 +208,21 @@ CREATE TABLE IF NOT EXISTS role_permissions (
 );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS role_config_id uuid REFERENCES role_permissions(id) ON DELETE SET NULL;
 
+-- Services annexes (ABF, SDIS, DDT, etc.)
+ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'service_externe';
+
+CREATE TABLE IF NOT EXISTS external_services (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  name text NOT NULL,
+  type text NOT NULL,
+  email text,
+  telephone text,
+  description text,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+ALTER TABLE users ADD COLUMN IF NOT EXISTS service_id uuid REFERENCES external_services(id) ON DELETE SET NULL;
+
 -- Performance indexes
 CREATE INDEX IF NOT EXISTS idx_users_commune ON users(commune);
 CREATE INDEX IF NOT EXISTS idx_users_role ON users(role);

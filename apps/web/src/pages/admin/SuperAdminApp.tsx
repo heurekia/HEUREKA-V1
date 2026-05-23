@@ -356,6 +356,7 @@ const navItems = [
   { path: "/admin/groupements", icon: "🤝", label: "Groupements" },
   { path: "/admin/roles", icon: "🔑", label: "Rôles" },
   { path: "/admin/utilisateurs", icon: "👥", label: "Utilisateurs" },
+  { path: "/admin/services", icon: "🔗", label: "Services annexes" },
   { path: "/admin/configuration", icon: "⚙", label: "Configuration" },
 ];
 
@@ -2074,6 +2075,457 @@ function Configuration() {
   );
 }
 
+// ─── Services Annexes ─────────────────────────────────────────────────────────
+const SERVICE_TYPES: Record<string, { label: string; color: string; bg: string; desc: string }> = {
+  ABF:                 { label: "ABF",                  color: "#7C3AED", bg: "#F5F3FF", desc: "Architectes des Bâtiments de France" },
+  SDIS:                { label: "SDIS",                 color: "#DC2626", bg: "#FEF2F2", desc: "Service Départemental d'Incendie et de Secours" },
+  DDT:                 { label: "DDT/DDTM",             color: "#0891B2", bg: "#ECFEFF", desc: "Direction Départementale des Territoires" },
+  ARS:                 { label: "ARS",                  color: "#059669", bg: "#ECFDF5", desc: "Agence Régionale de Santé" },
+  DREAL:               { label: "DREAL",                color: "#0EA5E9", bg: "#F0F9FF", desc: "Direction Régionale de l'Environnement" },
+  ENEDIS:              { label: "ENEDIS",               color: "#3B82F6", bg: "#EFF6FF", desc: "Réseau de distribution électrique" },
+  GRDF:                { label: "GRDF",                 color: "#D97706", bg: "#FFFBEB", desc: "Réseau de distribution gaz" },
+  ONF:                 { label: "ONF",                  color: "#16A34A", bg: "#F0FDF4", desc: "Office National des Forêts" },
+  CHAMBRE_AGRICULTURE: { label: "Chambre d'Agriculture",color: "#65A30D", bg: "#F7FEE7", desc: "Chambre d'Agriculture" },
+  SNCF:                { label: "SNCF Réseau",          color: "#6366F1", bg: "#EEF2FF", desc: "Infrastructure ferroviaire" },
+  AUTRE:               { label: "Autre",                color: "#6B7280", bg: "#F9FAFB", desc: "Service externe" },
+};
+
+interface ExternalService {
+  id: string;
+  name: string;
+  type: string;
+  email: string | null;
+  telephone: string | null;
+  description: string | null;
+  user_count: number;
+  created_at: string;
+}
+
+interface ServiceUser {
+  id: string;
+  email: string;
+  prenom: string;
+  nom: string;
+  telephone: string | null;
+  created_at: string;
+}
+
+const emptyServiceForm = () => ({ name: "", type: "ABF", email: "", telephone: "", description: "" });
+const emptyUserForm = () => ({ email: "", prenom: "", nom: "", telephone: "", password: "" });
+
+function ServiceTypeBadge({ type }: { type: string }) {
+  const color = SERVICE_TYPES[type]?.color ?? "#6B7280";
+  const bg = SERVICE_TYPES[type]?.bg ?? "#F9FAFB";
+  const label = SERVICE_TYPES[type]?.label ?? type;
+  return (
+    <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 20, background: bg, color, fontSize: 12, fontWeight: 700 }}>
+      {label}
+    </span>
+  );
+}
+
+function ServicesAnnexes() {
+  const [services, setServices] = useState<ExternalService[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [selected, setSelected] = useState<ExternalService | null>(null);
+  const [serviceUsers, setServiceUsers] = useState<ServiceUser[]>([]);
+  const [usersLoading, setUsersLoading] = useState(false);
+  const [showCreate, setShowCreate] = useState(false);
+  const [showEdit, setShowEdit] = useState(false);
+  const [showAddUser, setShowAddUser] = useState(false);
+  const [form, setForm] = useState(emptyServiceForm());
+  const [userForm, setUserForm] = useState(emptyUserForm());
+  const [saving, setSaving] = useState(false);
+  const [confirmDeleteService, setConfirmDeleteService] = useState<string | null>(null);
+  const [confirmDeleteUser, setConfirmDeleteUser] = useState<string | null>(null);
+  const [toast, setToast] = useState<{ message: string; type: "success" | "error" } | null>(null);
+
+  const showToast = (message: string, type: "success" | "error" = "success") => setToast({ message, type });
+
+  const loadServices = useCallback(async () => {
+    setLoading(true);
+    try {
+      const data = await api.get<ExternalService[]>("/admin/services");
+      setServices(data);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { loadServices(); }, [loadServices]);
+
+  const loadUsers = useCallback(async (serviceId: string) => {
+    setUsersLoading(true);
+    try {
+      const data = await api.get<ServiceUser[]>(`/admin/services/${serviceId}/users`);
+      setServiceUsers(data);
+    } finally {
+      setUsersLoading(false);
+    }
+  }, []);
+
+  const handleSelect = (s: ExternalService) => {
+    setSelected(s);
+    loadUsers(s.id);
+  };
+
+  const handleCreate = async () => {
+    if (!form.name || !form.type) return showToast("Nom et type sont requis", "error");
+    setSaving(true);
+    try {
+      await api.post("/admin/services", form);
+      showToast("Service créé");
+      setShowCreate(false);
+      setForm(emptyServiceForm());
+      loadServices();
+    } catch {
+      showToast("Erreur lors de la création", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleEdit = async () => {
+    if (!selected) return;
+    setSaving(true);
+    try {
+      const updated = await api.patch<ExternalService>(`/admin/services/${selected.id}`, form);
+      showToast("Service mis à jour");
+      setShowEdit(false);
+      setSelected({ ...updated, user_count: selected.user_count });
+      loadServices();
+    } catch {
+      showToast("Erreur lors de la mise à jour", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteService = async (id: string) => {
+    try {
+      await api.delete(`/admin/services/${id}`);
+      showToast("Service supprimé");
+      if (selected?.id === id) setSelected(null);
+      loadServices();
+    } catch {
+      showToast("Erreur lors de la suppression", "error");
+    } finally {
+      setConfirmDeleteService(null);
+    }
+  };
+
+  const handleAddUser = async () => {
+    if (!selected) return;
+    if (!userForm.email || !userForm.prenom || !userForm.nom || !userForm.password) {
+      return showToast("Tous les champs obligatoires doivent être remplis", "error");
+    }
+    setSaving(true);
+    try {
+      await api.post(`/admin/services/${selected.id}/users`, userForm);
+      showToast("Utilisateur créé");
+      setShowAddUser(false);
+      setUserForm(emptyUserForm());
+      loadUsers(selected.id);
+      loadServices();
+    } catch (err: unknown) {
+      const msg = (err as { message?: string }).message ?? "";
+      showToast(msg.includes("409") ? "Cet email est déjà utilisé" : "Erreur lors de la création", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleDeleteUser = async (userId: string) => {
+    if (!selected) return;
+    try {
+      await api.delete(`/admin/services/${selected.id}/users/${userId}`);
+      showToast("Utilisateur retiré");
+      loadUsers(selected.id);
+      loadServices();
+    } catch {
+      showToast("Erreur lors de la suppression", "error");
+    } finally {
+      setConfirmDeleteUser(null);
+    }
+  };
+
+  const inp = (style?: React.CSSProperties): React.CSSProperties => ({
+    padding: "10px 12px", border: `1px solid ${C.border}`, borderRadius: 8,
+    fontSize: 14, color: C.text, background: C.white, outline: "none", width: "100%",
+    boxSizing: "border-box", ...style,
+  });
+
+  return (
+    <PageShell>
+      <div style={{ marginBottom: 28 }}>
+        <h1 style={{ margin: "0 0 6px", fontSize: 24, fontWeight: 800, color: C.text }}>Services annexes</h1>
+        <p style={{ margin: 0, color: C.textMuted, fontSize: 15 }}>Gérez les accès des organismes consultatifs (ABF, SDIS, DDT…)</p>
+      </div>
+      {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+      {confirmDeleteService && (
+        <ConfirmDialog
+          message="Supprimer ce service ? Les comptes utilisateurs associés seront également supprimés."
+          onConfirm={() => handleDeleteService(confirmDeleteService)}
+          onCancel={() => setConfirmDeleteService(null)}
+        />
+      )}
+      {confirmDeleteUser && (
+        <ConfirmDialog
+          message="Retirer cet utilisateur ? Son compte sera définitivement supprimé."
+          onConfirm={() => handleDeleteUser(confirmDeleteUser)}
+          onCancel={() => setConfirmDeleteUser(null)}
+        />
+      )}
+
+      {/* Create service modal */}
+      {showCreate && (
+        <Modal title="Nouveau service annexe" onClose={() => { setShowCreate(false); setForm(emptyServiceForm()); }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <Field label="Type de service *">
+              <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} style={inp()}>
+                {Object.entries(SERVICE_TYPES).map(([k, v]) => (
+                  <option key={k} value={k}>{v.label} — {v.desc}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Nom *">
+              <input style={inp()} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} placeholder={`ex. ABF ${SERVICE_TYPES[form.type]?.label ?? ""} Indre-et-Loire`} />
+            </Field>
+            <Field label="Email">
+              <input style={inp()} type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} placeholder="contact@service.gouv.fr" />
+            </Field>
+            <Field label="Téléphone">
+              <input style={inp()} value={form.telephone} onChange={(e) => setForm({ ...form, telephone: e.target.value })} placeholder="02 XX XX XX XX" />
+            </Field>
+            <Field label="Description">
+              <textarea style={{ ...inp(), minHeight: 72, resize: "vertical" }} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} placeholder="Périmètre d'intervention, secteurs couverts…" />
+            </Field>
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
+              <button onClick={() => { setShowCreate(false); setForm(emptyServiceForm()); }} style={{ padding: "10px 20px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.text, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>Annuler</button>
+              <button onClick={handleCreate} disabled={saving} style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: C.accent, color: "white", cursor: saving ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700, opacity: saving ? 0.7 : 1 }}>
+                {saving ? "Création…" : "Créer le service"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Edit service modal */}
+      {showEdit && selected && (
+        <Modal title={`Modifier — ${selected.name}`} onClose={() => setShowEdit(false)}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <Field label="Type de service">
+              <select value={form.type} onChange={(e) => setForm({ ...form, type: e.target.value })} style={inp()}>
+                {Object.entries(SERVICE_TYPES).map(([k, v]) => (
+                  <option key={k} value={k}>{v.label} — {v.desc}</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Nom *">
+              <input style={inp()} value={form.name} onChange={(e) => setForm({ ...form, name: e.target.value })} />
+            </Field>
+            <Field label="Email">
+              <input style={inp()} type="email" value={form.email} onChange={(e) => setForm({ ...form, email: e.target.value })} />
+            </Field>
+            <Field label="Téléphone">
+              <input style={inp()} value={form.telephone} onChange={(e) => setForm({ ...form, telephone: e.target.value })} />
+            </Field>
+            <Field label="Description">
+              <textarea style={{ ...inp(), minHeight: 72, resize: "vertical" }} value={form.description} onChange={(e) => setForm({ ...form, description: e.target.value })} />
+            </Field>
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
+              <button onClick={() => setShowEdit(false)} style={{ padding: "10px 20px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.text, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>Annuler</button>
+              <button onClick={handleEdit} disabled={saving} style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: C.accent, color: "white", cursor: saving ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700, opacity: saving ? 0.7 : 1 }}>
+                {saving ? "Enregistrement…" : "Enregistrer"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      {/* Add user modal */}
+      {showAddUser && selected && (
+        <Modal title={`Ajouter un utilisateur — ${selected.name}`} onClose={() => { setShowAddUser(false); setUserForm(emptyUserForm()); }}>
+          <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <Field label="Prénom *">
+                <input style={inp()} value={userForm.prenom} onChange={(e) => setUserForm({ ...userForm, prenom: e.target.value })} />
+              </Field>
+              <Field label="Nom *">
+                <input style={inp()} value={userForm.nom} onChange={(e) => setUserForm({ ...userForm, nom: e.target.value })} />
+              </Field>
+            </div>
+            <Field label="Email *">
+              <input style={inp()} type="email" value={userForm.email} onChange={(e) => setUserForm({ ...userForm, email: e.target.value })} placeholder="prenom.nom@service.gouv.fr" />
+            </Field>
+            <Field label="Téléphone">
+              <input style={inp()} value={userForm.telephone} onChange={(e) => setUserForm({ ...userForm, telephone: e.target.value })} />
+            </Field>
+            <Field label="Mot de passe provisoire *">
+              <input style={inp()} type="password" value={userForm.password} onChange={(e) => setUserForm({ ...userForm, password: e.target.value })} placeholder="À communiquer à l'utilisateur" />
+            </Field>
+            <div style={{ background: C.blueBg, borderRadius: 8, padding: "10px 14px", fontSize: 13, color: C.blue }}>
+              L'utilisateur pourra se connecter avec ces identifiants et accéder aux dossiers qui lui sont affectés.
+            </div>
+            <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 4 }}>
+              <button onClick={() => { setShowAddUser(false); setUserForm(emptyUserForm()); }} style={{ padding: "10px 20px", borderRadius: 8, border: `1px solid ${C.border}`, background: C.white, color: C.text, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>Annuler</button>
+              <button onClick={handleAddUser} disabled={saving} style={{ padding: "10px 20px", borderRadius: 8, border: "none", background: C.accent, color: "white", cursor: saving ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700, opacity: saving ? 0.7 : 1 }}>
+                {saving ? "Création…" : "Créer l'accès"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
+
+      <div style={{ display: "flex", gap: 24, alignItems: "flex-start" }}>
+        {/* Left: services list */}
+        <div style={{ flex: selected ? "0 0 380px" : 1 }}>
+          <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
+            <span style={{ color: C.textMuted, fontSize: 14 }}>{services.length} service{services.length > 1 ? "s" : ""}</span>
+            <button onClick={() => { setForm(emptyServiceForm()); setShowCreate(true); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>
+              + Nouveau service
+            </button>
+          </div>
+
+          {loading ? (
+            <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>
+          ) : services.length === 0 ? (
+            <div style={{ background: C.white, borderRadius: 16, border: `1px solid ${C.border}`, padding: 60, textAlign: "center" }}>
+              <div style={{ fontSize: 48, marginBottom: 12 }}>🔗</div>
+              <p style={{ margin: "0 0 4px", fontWeight: 700, fontSize: 16, color: C.text }}>Aucun service annexe</p>
+              <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Créez un premier service pour lui donner accès à la plateforme.</p>
+            </div>
+          ) : (
+            <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+              {services.map((s) => {
+                const t = SERVICE_TYPES[s.type] ?? SERVICE_TYPES.AUTRE;
+                const isActive = selected?.id === s.id;
+                return (
+                  <div
+                    key={s.id}
+                    onClick={() => handleSelect(s)}
+                    style={{
+                      background: C.white, borderRadius: 12, border: `2px solid ${isActive ? C.accent : C.border}`,
+                      padding: "16px 20px", cursor: "pointer", transition: "border-color 0.15s",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
+                          <ServiceTypeBadge type={s.type} />
+                          <span style={{ fontWeight: 700, fontSize: 15, color: C.text, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.name}</span>
+                        </div>
+                        {s.description && (
+                          <p style={{ margin: "0 0 8px", fontSize: 13, color: C.textMuted, lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{s.description}</p>
+                        )}
+                        <div style={{ display: "flex", gap: 16, fontSize: 12, color: C.textMuted }}>
+                          {s.email && <span>✉ {s.email}</span>}
+                          {s.telephone && <span>📞 {s.telephone}</span>}
+                          <span style={{ color: s.user_count > 0 ? C.green : C.textLight, fontWeight: 600 }}>
+                            👤 {s.user_count} utilisateur{s.user_count > 1 ? "s" : ""}
+                          </span>
+                        </div>
+                      </div>
+                      <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setSelected(s); setForm({ name: s.name, type: s.type, email: s.email ?? "", telephone: s.telephone ?? "", description: s.description ?? "" }); setShowEdit(true); }}
+                          style={{ padding: "6px 12px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600, color: C.text }}
+                        >
+                          Modifier
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); setConfirmDeleteService(s.id); }}
+                          style={{ padding: "6px 10px", background: C.redBg, border: "none", borderRadius: 8, cursor: "pointer", color: C.red, fontSize: 13, fontWeight: 700 }}
+                        >
+                          ✕
+                        </button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Right: selected service users */}
+        {selected && (
+          <div style={{ flex: 1, background: C.white, borderRadius: 16, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+            <div style={{ padding: "16px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+              <div>
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <ServiceTypeBadge type={selected.type} />
+                  <span style={{ fontWeight: 700, fontSize: 16, color: C.text }}>{selected.name}</span>
+                </div>
+                <p style={{ margin: "4px 0 0", fontSize: 13, color: C.textMuted }}>{SERVICE_TYPES[selected.type]?.desc}</p>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button
+                  onClick={() => { setShowAddUser(true); setUserForm(emptyUserForm()); }}
+                  style={{ padding: "8px 16px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 700 }}
+                >
+                  + Ajouter un accès
+                </button>
+                <button
+                  onClick={() => setSelected(null)}
+                  style={{ padding: "8px 10px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", color: C.textMuted, fontSize: 16, lineHeight: 1 }}
+                >
+                  ×
+                </button>
+              </div>
+            </div>
+
+            {usersLoading ? (
+              <div style={{ display: "flex", justifyContent: "center", padding: 40 }}><Spinner /></div>
+            ) : serviceUsers.length === 0 ? (
+              <div style={{ padding: 48, textAlign: "center" }}>
+                <div style={{ fontSize: 36, marginBottom: 12 }}>👤</div>
+                <p style={{ margin: "0 0 4px", fontWeight: 700, color: C.text }}>Aucun utilisateur</p>
+                <p style={{ margin: 0, fontSize: 14, color: C.textMuted }}>Ajoutez un accès pour permettre aux agents de ce service de se connecter.</p>
+              </div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                <thead>
+                  <tr style={{ background: C.bg }}>
+                    {["Nom Prénom", "Email", "Téléphone", "Créé le", ""].map((h) => (
+                      <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {serviceUsers.map((u) => (
+                    <tr key={u.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "12px 16px" }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                          <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.accentLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: C.accent, flexShrink: 0 }}>
+                            {u.prenom[0]}{u.nom[0]}
+                          </div>
+                          <span style={{ fontWeight: 600, color: C.text }}>{u.prenom} {u.nom}</span>
+                        </div>
+                      </td>
+                      <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>{u.email}</td>
+                      <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>{u.telephone ?? "—"}</td>
+                      <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>{new Date(u.created_at).toLocaleDateString("fr-FR")}</td>
+                      <td style={{ padding: "12px 16px" }}>
+                        <button
+                          onClick={() => setConfirmDeleteUser(u.id)}
+                          style={{ padding: "6px 12px", background: C.redBg, color: C.red, border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}
+                        >
+                          Retirer
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        )}
+      </div>
+    </PageShell>
+  );
+}
+
 // ─── App Root ─────────────────────────────────────────────────────────────────
 export function SuperAdminApp() {
   return (
@@ -2092,6 +2544,7 @@ export function SuperAdminApp() {
           <Route path="/groupements" element={<Groupements />} />
           <Route path="/utilisateurs" element={<Utilisateurs />} />
           <Route path="/roles" element={<Roles />} />
+          <Route path="/services" element={<ServicesAnnexes />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="*" element={<Navigate to="/admin" replace />} />
         </Routes>

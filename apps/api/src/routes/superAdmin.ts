@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services } from "@heureka-v1/db";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc } from "drizzle-orm";
 import bcrypt from "bcryptjs";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
@@ -457,6 +457,130 @@ superAdminRouter.delete("/roles/:id", async (req, res) => {
     }
 
     await db.delete(role_permissions).where(eq(role_permissions.id, id));
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Services Annexes ─────────────────────────────────────────────────────────
+superAdminRouter.get("/services", async (_req, res) => {
+  try {
+    const [services, userCounts] = await Promise.all([
+      db.select().from(external_services).orderBy(external_services.name),
+      db.select({ service_id: users.service_id, cnt: count() })
+        .from(users)
+        .where(isNotNull(users.service_id))
+        .groupBy(users.service_id),
+    ]);
+    const countMap: Record<string, number> = {};
+    for (const uc of userCounts) {
+      if (uc.service_id) countMap[uc.service_id] = Number(uc.cnt);
+    }
+    res.json(services.map((s) => ({ ...s, user_count: countMap[s.id] ?? 0 })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.post("/services", async (req, res) => {
+  try {
+    const { name, type, email, telephone, description } = req.body as {
+      name?: string; type?: string; email?: string; telephone?: string; description?: string;
+    };
+    if (!name || !type) return res.status(400).json({ error: "name et type sont requis" });
+    const [service] = await db.insert(external_services).values({ name, type, email, telephone, description }).returning();
+    res.status(201).json(service);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.patch("/services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { name, type, email, telephone, description } = req.body as Partial<{
+      name: string; type: string; email: string; telephone: string; description: string;
+    }>;
+    const upd: Record<string, unknown> = { updated_at: new Date() };
+    if (name !== undefined) upd.name = name;
+    if (type !== undefined) upd.type = type;
+    if (email !== undefined) upd.email = email;
+    if (telephone !== undefined) upd.telephone = telephone;
+    if (description !== undefined) upd.description = description;
+    const [updated] = await db.update(external_services).set(upd).where(eq(external_services.id, id)).returning();
+    if (!updated) return res.status(404).json({ error: "Service introuvable" });
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.delete("/services/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    await db.delete(external_services).where(eq(external_services.id, id));
+    res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.get("/services/:id/users", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const rows = await db.select({
+      id: users.id,
+      email: users.email,
+      prenom: users.prenom,
+      nom: users.nom,
+      telephone: users.telephone,
+      created_at: users.created_at,
+    }).from(users).where(eq(users.service_id, id));
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.post("/services/:id/users", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { email, prenom, nom, telephone, password } = req.body as {
+      email?: string; prenom?: string; nom?: string; telephone?: string; password?: string;
+    };
+    if (!email || !prenom || !nom || !password) {
+      return res.status(400).json({ error: "email, prenom, nom et password sont requis" });
+    }
+    const [existing] = await db.select({ id: external_services.id }).from(external_services).where(eq(external_services.id, id));
+    if (!existing) return res.status(404).json({ error: "Service introuvable" });
+
+    const password_hash = await bcrypt.hash(password, 10);
+    const [user] = await db.insert(users).values({
+      email, prenom, nom, telephone, password_hash,
+      role: "service_externe" as const,
+      service_id: id,
+    }).returning({ id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, telephone: users.telephone, created_at: users.created_at });
+    res.status(201).json(user);
+  } catch (err: unknown) {
+    if ((err as { message?: string }).message?.includes("unique")) {
+      return res.status(409).json({ error: "Cet email est déjà utilisé" });
+    }
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.delete("/services/:id/users/:userId", async (req, res) => {
+  try {
+    const { userId } = req.params;
+    await db.delete(users).where(eq(users.id, userId));
     res.json({ success: true });
   } catch (err) {
     console.error(err);
