@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions } from "@heureka-v1/db";
-import { getPisteToken, fetchLegifranceArticle, ARTICLES_TO_CACHE, CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
+import { fetchLegifranceArticle, ARTICLES_TO_CACHE, CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
@@ -763,12 +763,11 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
 // ── Legal mentions refresh (calls PISTE / Légifrance) ─────────────────────────
 superAdminRouter.post("/legal-mentions/refresh", async (_req, res) => {
   try {
-    const token = await getPisteToken();
     const refs = Object.keys(ARTICLES_TO_CACHE);
     const results: { ref: string; ok: boolean }[] = [];
 
     for (const articleRef of refs) {
-      const art = await fetchLegifranceArticle(articleRef, token);
+      const art = await fetchLegifranceArticle(articleRef);
       if (!art) { results.push({ ref: articleRef, ok: false }); continue; }
       await db
         .insert(legal_mentions)

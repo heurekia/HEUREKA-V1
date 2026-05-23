@@ -1,8 +1,7 @@
 // Légifrance / PISTE integration — article caching service
-// OAuth2 CC token is kept in memory and refreshed automatically.
+// Uses API Key plan (X-Gravitee-Api-Key) — no OAuth token required.
 
-const OAUTH_URL = "https://oauth.piste.gouv.fr/api/oauth/token";
-const API_BASE  = "https://api.piste.gouv.fr/dila/legifrance/lf-engine-app";
+const API_BASE = "https://api.piste.gouv.fr/dila/legifrance/lf-engine-app";
 
 export const CODE_URBANISME_ID   = "LEGITEXT000006074075";
 export const CODE_URBANISME_NAME = "Code de l'urbanisme";
@@ -77,37 +76,6 @@ export const MENTIONS_MAP: Record<string, string[]> = {
   "*:notification_decision":                      ["L424-6", "R424-5"],
 };
 
-// ── Token cache ──────────────────────────────────────────────────────────────
-
-let cachedToken: { value: string; expiresAt: number } | null = null;
-
-export async function getPisteToken(): Promise<string> {
-  if (cachedToken && cachedToken.expiresAt > Date.now() + 60_000) return cachedToken.value;
-
-  // Gravitee uses API Key / Secret Key as OAuth client credentials
-  const clientId     = process.env.PISTE_API_KEY     ?? process.env.PISTE_CLIENT_ID!;
-  const clientSecret = process.env.PISTE_SECRET_KEY  ?? process.env.PISTE_CLIENT_SECRET!;
-  const basicAuth    = Buffer.from(`${clientId}:${clientSecret}`).toString("base64");
-
-  const res = await fetch(OAUTH_URL, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/x-www-form-urlencoded",
-      "Authorization": `Basic ${basicAuth}`,
-    },
-    body: new URLSearchParams({
-      grant_type: "client_credentials",
-      scope: "openid",
-    }),
-    signal: AbortSignal.timeout(10_000),
-  });
-
-  if (!res.ok) throw new Error(`PISTE OAuth: ${res.status} ${await res.text()}`);
-  const data = await res.json() as { access_token: string; expires_in: number };
-  cachedToken = { value: data.access_token, expiresAt: Date.now() + data.expires_in * 1000 };
-  return cachedToken.value;
-}
-
 // ── Article fetcher ──────────────────────────────────────────────────────────
 
 type SearchResult = {
@@ -117,23 +85,25 @@ type ArticleResult = {
   article?: { id?: string; titre?: string; texteHtml?: string; texte?: string };
 };
 
-export async function fetchLegifranceArticle(
-  articleRef: string,
-  token: string,
-): Promise<{ legiId: string; title: string; html: string } | null> {
-  const nowMs = Date.now();
+function apiHeaders(): Record<string, string> {
   const apiKey = process.env.PISTE_API_KEY ?? process.env.PISTE_CLIENT_ID!;
-  const apiHeaders = {
-    Authorization: `Bearer ${token}`,
+  return {
     "Content-Type": "application/json",
     accept: "application/json",
     "X-Gravitee-Api-Key": apiKey,
   };
+}
+
+export async function fetchLegifranceArticle(
+  articleRef: string,
+): Promise<{ legiId: string; title: string; html: string } | null> {
+  const nowMs = Date.now();
+  const headers = apiHeaders();
 
   // Step 1 — search for LEGIARTI id
   const searchRes = await fetch(`${API_BASE}/search`, {
     method: "POST",
-    headers: apiHeaders,
+    headers,
     body: JSON.stringify({
       recherche: {
         champs: [{
@@ -153,7 +123,10 @@ export async function fetchLegifranceArticle(
     signal: AbortSignal.timeout(12_000),
   });
 
-  if (!searchRes.ok) return null;
+  if (!searchRes.ok) {
+    console.error(`PISTE search ${articleRef}: ${searchRes.status} ${await searchRes.text()}`);
+    return null;
+  }
   const searchData = await searchRes.json() as SearchResult;
   const legiId = searchData.results?.[0]?.titles?.[0]?.id;
   if (!legiId) return null;
@@ -161,12 +134,15 @@ export async function fetchLegifranceArticle(
   // Step 2 — get article content
   const artRes = await fetch(`${API_BASE}/consult/getArticle`, {
     method: "POST",
-    headers: apiHeaders,
+    headers,
     body: JSON.stringify({ id: legiId }),
     signal: AbortSignal.timeout(12_000),
   });
 
-  if (!artRes.ok) return null;
+  if (!artRes.ok) {
+    console.error(`PISTE getArticle ${legiId}: ${artRes.status} ${await artRes.text()}`);
+    return null;
+  }
   const artData = await artRes.json() as ArticleResult;
   const art = artData.article;
   if (!art) return null;
