@@ -409,7 +409,7 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
   }, [selected, letterhead, dossier, user]);
 
   return (
-    <div className="print-modal-overlay" style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex" }}>
+    <div className="print-modal-overlay" style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex" }}>
       <style>{`
         @media print {
           .no-print-modal { display: none !important; }
