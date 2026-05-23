@@ -2122,7 +2122,25 @@ function Roles() {
 
 // ─── Configuration ────────────────────────────────────────────────────────────
 function Configuration() {
-  const cards = [
+  const [syncLoading, setSyncLoading] = useState(false);
+  const [syncResult, setSyncResult] = useState<{ ok: number; failed: string[]; total: number } | null>(null);
+  const [syncError, setSyncError] = useState<string | null>(null);
+
+  const handleSync = async () => {
+    setSyncLoading(true);
+    setSyncResult(null);
+    setSyncError(null);
+    try {
+      const res = await api.post<{ ok: number; failed: string[]; total: number }>("/admin/legal-mentions/refresh", {});
+      setSyncResult(res);
+    } catch (err) {
+      setSyncError(String(err));
+    } finally {
+      setSyncLoading(false);
+    }
+  };
+
+  const todoCards = [
     { icon: "⚙️", title: "Paramètres plateforme", desc: "Configurez les paramètres généraux de la plateforme HEUREKA." },
     { icon: "🔒", title: "Sécurité", desc: "Gestion des politiques de sécurité, 2FA, sessions et accès." },
     { icon: "📧", title: "Emails & notifications", desc: "Templates d'emails, règles de notification et intégrations SMTP." },
@@ -2136,8 +2154,50 @@ function Configuration() {
         <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Paramètres avancés de la plateforme</p>
       </div>
 
+      {/* ── Légifrance sync ── */}
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "flex-start", gap: 16, marginBottom: 18 }}>
+          <div style={{ width: 48, height: 48, background: "#EFF6FF", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>📜</div>
+          <div style={{ flex: 1 }}>
+            <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.text }}>Synchronisation Légifrance</h3>
+            <p style={{ margin: 0, fontSize: 13, color: C.textMuted, lineHeight: 1.5 }}>
+              Met à jour le cache local des articles du Code de l'urbanisme (26 articles) via l'API PISTE / Légifrance.
+              Les mentions légales dans les courriers sont servies depuis ce cache.
+            </p>
+          </div>
+        </div>
+
+        <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+          <button onClick={handleSync} disabled={syncLoading}
+            style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 20px", background: syncLoading ? "#E2E8F0" : "#0F172A", color: syncLoading ? "#94a3b8" : "white", border: "none", borderRadius: 8, cursor: syncLoading ? "default" : "pointer", fontSize: 13, fontWeight: 600 }}>
+            {syncLoading ? (
+              <><Spinner size={14} /> Synchronisation en cours…</>
+            ) : (
+              <><svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="23 4 23 10 17 10" /><polyline points="1 20 1 14 7 14" /><path d="M3.51 9a9 9 0 0114.85-3.36L23 10M1 14l4.64 4.36A9 9 0 0020.49 15" /></svg>Lancer la synchronisation</>
+            )}
+          </button>
+
+          {syncResult && (
+            <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "8px 14px", background: syncResult.failed.length === 0 ? "#F0FDF4" : "#FFFBEB", border: `1px solid ${syncResult.failed.length === 0 ? "#BBF7D0" : "#FDE68A"}`, borderRadius: 8 }}>
+              <span style={{ fontSize: 13, color: syncResult.failed.length === 0 ? "#15803D" : "#92400E", fontWeight: 600 }}>
+                {syncResult.ok}/{syncResult.total} articles synchronisés
+              </span>
+              {syncResult.failed.length > 0 && (
+                <span style={{ fontSize: 12, color: "#92400E" }}>— Échecs : {syncResult.failed.join(", ")}</span>
+              )}
+            </div>
+          )}
+
+          {syncError && (
+            <div style={{ padding: "8px 14px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, fontSize: 12, color: "#DC2626" }}>
+              Erreur : {syncError}
+            </div>
+          )}
+        </div>
+      </div>
+
       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, 1fr)", gap: 16 }}>
-        {cards.map((card) => (
+        {todoCards.map((card) => (
           <div key={card.title} style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 28, opacity: 0.8 }}>
             <div style={{ display: "flex", alignItems: "flex-start", gap: 16, marginBottom: 16 }}>
               <div style={{ width: 48, height: 48, background: C.accentLight, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>
