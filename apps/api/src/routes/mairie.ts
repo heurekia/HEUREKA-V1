@@ -104,6 +104,63 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
   }
 });
 
+// ── Export CSV dossiers ──
+mairieRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
+  try {
+    const commune = req.query.commune as string | undefined;
+    const communeFilter = commune ? sql`dossiers.commune ILIKE ${commune}` : sql`1=1`;
+
+    const rows = await db.select({
+      id: dossiers.id, numero: dossiers.numero, type: dossiers.type, status: dossiers.status,
+      adresse: dossiers.adresse, commune: dossiers.commune, code_postal: dossiers.code_postal,
+      parcelle: dossiers.parcelle, description: dossiers.description,
+      surface_plancher: dossiers.surface_plancher,
+      date_depot: dossiers.date_depot, date_completude: dossiers.date_completude,
+      date_limite_instruction: dossiers.date_limite_instruction,
+      is_tacite: dossiers.is_tacite, created_at: dossiers.created_at, updated_at: dossiers.updated_at,
+      demandeur_prenom: users.prenom, demandeur_nom: users.nom, demandeur_email: users.email,
+    })
+      .from(dossiers)
+      .leftJoin(users, eq(dossiers.user_id, users.id))
+      .where(communeFilter)
+      .orderBy(desc(dossiers.created_at));
+
+    const esc = (v: unknown): string => {
+      if (v === null || v === undefined) return "";
+      const s = v instanceof Date ? v.toISOString() : String(v);
+      return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+    };
+
+    const headers = [
+      "Numéro", "Type", "Statut", "Pétitionnaire", "Email", "Adresse", "Commune",
+      "Code postal", "Parcelle", "Surface plancher", "Description",
+      "Date dépôt", "Date complétude", "Date limite instruction",
+      "Tacite", "Créé le", "Mis à jour le",
+    ];
+
+    const csvRows = rows.map(r => [
+      r.numero, r.type, r.status,
+      [r.demandeur_prenom, r.demandeur_nom].filter(Boolean).join(" "),
+      r.demandeur_email,
+      r.adresse, r.commune, r.code_postal, r.parcelle, r.surface_plancher, r.description,
+      r.date_depot, r.date_completude, r.date_limite_instruction,
+      r.is_tacite ? "oui" : "non",
+      r.created_at, r.updated_at,
+    ].map(esc).join(","));
+
+    const csv = [headers.join(","), ...csvRows].join("\n");
+    const filename = `dossiers-${commune ?? "all"}-${new Date().toISOString().slice(0, 10)}.csv`;
+
+    res.setHeader("Content-Type", "text/csv; charset=utf-8");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    // BOM for Excel compatibility (UTF-8)
+    res.send("﻿" + csv);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── Détail dossier mairie ──
 mairieRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
   try {

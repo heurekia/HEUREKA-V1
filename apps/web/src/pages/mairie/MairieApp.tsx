@@ -738,6 +738,23 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
             <option>{p}</option>
           </select>
         ))}
+        {/* Export CSV */}
+        <button
+          onClick={() => {
+            const url = `/api/mairie/dossiers/export?commune=${encodeURIComponent(commune)}`;
+            const a = document.createElement("a");
+            a.href = url;
+            a.click();
+          }}
+          style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 12px", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", gap: 6, whiteSpace: "nowrap" }}
+          title="Exporter les dossiers en CSV"
+        >
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Exporter CSV
+        </button>
+
         {/* Column picker */}
         <div style={{ position: "relative" }}>
           <button
