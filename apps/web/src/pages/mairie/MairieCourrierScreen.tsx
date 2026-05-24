@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, type Dispatch, type SetStateAction } from "react";
+import { Rnd } from "react-rnd";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { X, Save, ArrowLeft, Plus, Pencil, Trash2, FileText, Printer } from "lucide-react";
@@ -44,11 +45,48 @@ const TYPE_LABEL: Record<string, string> = {
 };
 const fmtDate = (d: string | null | undefined) => d ? new Date(d).toLocaleDateString("fr-FR") : "—";
 
-function substituteVariables(html: string, vars: Record<string, string>): string {
-  return html.replace(
-    /<span[^>]*data-variable="([^"]+)"[^>]*>[^<]*<\/span>/g,
-    (_, name: string) => vars[name] ?? `{{${name}}}`
-  );
+// ─── Canvas data types & helpers ─────────────────────────────────────────────
+interface CanvasBlock {
+  id: string;
+  x: number; y: number; w: number; h: number;
+  html: string;
+  fontSize: number;
+  fontFamily: "serif" | "sans";
+  textAlign: "left" | "center" | "right";
+  borderStyle: "none" | "light" | "medium" | "dashed";
+  background: "transparent" | "white" | "blue" | "yellow" | "green";
+  padding: number;
+}
+function isCanvasBody(s: string): boolean {
+  try { const d = JSON.parse(s); return d?.version === 1; } catch { return false; }
+}
+function parseCanvasBlocks(body: string): CanvasBlock[] {
+  if (!body) return [];
+  if (isCanvasBody(body)) return (JSON.parse(body) as { version: number; blocks: CanvasBlock[] }).blocks;
+  return [{ id: "legacy", x: 40, y: 20, w: 714, h: 400, html: body, fontSize: 13, fontFamily: "serif", textAlign: "left", borderStyle: "none", background: "transparent", padding: 8 }];
+}
+function serializeCanvas(blocks: CanvasBlock[]): string {
+  return JSON.stringify({ version: 1, blocks });
+}
+
+const BLOCK_BG: Record<CanvasBlock["background"], string> = {
+  transparent: "transparent", white: "white",
+  blue: "#EFF6FF", yellow: "#FEFCE8", green: "#F0FDF4",
+};
+const BLOCK_BORDER: Record<CanvasBlock["borderStyle"], string> = {
+  none: "none", light: "1px solid #E2E8F0",
+  medium: "1.5px solid #94a3b8", dashed: "1px dashed #94a3b8",
+};
+
+function substituteVariables(body: string, vars: Record<string, string>): string {
+  const subHtml = (html: string) =>
+    html.replace(/<span[^>]*data-variable="([^"]+)"[^>]*>[^<]*<\/span>/g,
+      (_, name: string) => vars[name] ?? `{{${name}}}`);
+  if (isCanvasBody(body)) {
+    const data = JSON.parse(body) as { version: number; blocks: CanvasBlock[] };
+    return JSON.stringify({ ...data, blocks: data.blocks.map(b => ({ ...b, html: subHtml(b.html) })) });
+  }
+  return subHtml(body);
 }
 
 
@@ -132,13 +170,61 @@ function DraggableStamp({ src, pos, setPos, caption, onHide }: {
   );
 }
 
+// ─── Canvas print view ────────────────────────────────────────────────────────
+function CanvasPrintView({ blocks, letterhead, extraHtml }: { blocks: CanvasBlock[]; letterhead: Letterhead; extraHtml?: string }) {
+  const maxY = blocks.reduce((m, b) => Math.max(m, b.y + b.h), 0) + 60;
+  const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
+  return (
+    <div style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" }}>
+      {hasHeader && (
+        <div className="lh-print-header" style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
+          {letterhead.letterhead_logo && <img src={letterhead.letterhead_logo} alt="" style={{ height: 56, width: "auto", objectFit: "contain", flexShrink: 0 }} />}
+          <div>
+            {letterhead.letterhead_title && <div style={{ fontSize: 16, fontWeight: 700 }}>{letterhead.letterhead_title}</div>}
+            {letterhead.letterhead_subtitle && <div style={{ fontSize: 13 }}>{letterhead.letterhead_subtitle}</div>}
+            {letterhead.letterhead_address && <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{letterhead.letterhead_address}</div>}
+          </div>
+        </div>
+      )}
+      <div className="lh-print-body" style={{ position: "relative", minHeight: maxY }}>
+        {blocks.map(b => (
+          <div key={b.id} style={{
+            position: "absolute", left: b.x, top: b.y, width: b.w, height: b.h,
+            padding: b.padding, fontSize: b.fontSize, lineHeight: 1.6,
+            fontFamily: b.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif",
+            textAlign: b.textAlign, background: BLOCK_BG[b.background],
+            border: BLOCK_BORDER[b.borderStyle], boxSizing: "border-box", overflow: "hidden",
+          }} dangerouslySetInnerHTML={{ __html: b.html }} />
+        ))}
+      </div>
+      {extraHtml && (
+        <div style={{ padding: "24px 36px", marginTop: maxY }}>
+          <div style={{ paddingTop: 18, borderTop: "1px solid #CBD5E1" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Références législatives et réglementaires</div>
+            <div dangerouslySetInnerHTML={{ __html: extraHtml }} />
+          </div>
+        </div>
+      )}
+      {letterhead.footer_text && (
+        <div className="lh-print-footer" style={{ padding: "10px 36px 14px", borderTop: "1px solid #CBD5E1", fontSize: 11, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", background: "white" }}>
+          {letterhead.footer_text}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Courrier preview (print-ready, multi-page) ───────────────────────────
 function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; letterhead: Letterhead; extraHtml?: string }) {
+  if (isCanvasBody(html)) {
+    const blocks = (JSON.parse(html) as { version: number; blocks: CanvasBlock[] }).blocks;
+    return <CanvasPrintView blocks={blocks} letterhead={letterhead} extraHtml={extraHtml} />;
+  }
+
   const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
   const hasFooter = !!letterhead.footer_text;
   return (
     <div style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" }}>
-      {/* Header — inline on screen, position:fixed on print (repeats every page) */}
       {hasHeader && (
         <div className="lh-print-header" style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
           {letterhead.letterhead_logo && (
@@ -151,8 +237,6 @@ function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; l
           </div>
         </div>
       )}
-
-      {/* Body — padded in print to clear fixed header/footer */}
       <div className="lh-print-body" style={{ padding: "24px 36px", minHeight: 400 }}>
         <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: html }} />
         {extraHtml && (
@@ -164,8 +248,6 @@ function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; l
           </div>
         )}
       </div>
-
-      {/* Footer — inline on screen, position:fixed on print (repeats every page) */}
       {hasFooter && (
         <div className="lh-print-footer" style={{ padding: "10px 36px 14px", borderTop: "1px solid #CBD5E1", fontSize: 11, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", background: "white" }}>
           {letterhead.footer_text}
@@ -554,8 +636,54 @@ function LetterheadFooter({ lh }: { lh: Letterhead }) {
   );
 }
 
-// ─── Canvas template editor (placeholder — implementation next) ───────────
-function CanvasTemplateEditor(_props: {
+// ─── Block content editor (contentEditable via ref to avoid cursor reset) ────
+function BlockEditor({ block, isEditing, onStartEdit, onEndEdit }: {
+  block: CanvasBlock;
+  isEditing: boolean;
+  onStartEdit: () => void;
+  onEndEdit: (html: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Mount: set initial innerHTML
+  useEffect(() => {
+    if (ref.current) ref.current.innerHTML = block.html;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync from state when NOT editing (e.g. after variable insert or external update)
+  useEffect(() => {
+    if (!isEditing && ref.current) ref.current.innerHTML = block.html;
+  }, [block.html, isEditing]);
+
+  return (
+    <div
+      ref={ref}
+      contentEditable={isEditing}
+      suppressContentEditableWarning
+      onDoubleClick={() => { if (!isEditing) onStartEdit(); }}
+      onBlur={(e) => { if (isEditing) onEndEdit(e.currentTarget.innerHTML); }}
+      style={{
+        width: "100%", height: "100%",
+        padding: block.padding, boxSizing: "border-box",
+        fontSize: block.fontSize, lineHeight: 1.6,
+        fontFamily: block.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif",
+        textAlign: block.textAlign,
+        background: BLOCK_BG[block.background],
+        border: BLOCK_BORDER[block.borderStyle],
+        outline: "none",
+        cursor: isEditing ? "text" : "default",
+        overflow: "auto", wordBreak: "break-word",
+        color: "#1E293B",
+      }}
+    />
+  );
+}
+
+// ─── Canvas template editor ───────────────────────────────────────────────
+const CANVAS_W = 794;
+const CANVAS_MARGIN = 40;
+
+function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, saving, saveError }: {
   editing: Partial<CourrierTemplate>;
   setEditing: Dispatch<SetStateAction<Partial<CourrierTemplate> | null>>;
   letterhead: Letterhead;
@@ -563,9 +691,264 @@ function CanvasTemplateEditor(_props: {
   saving: boolean;
   saveError: string | null;
 }) {
+  const [blocks, setBlocks] = useState<CanvasBlock[]>(() => parseCanvasBlocks(editing.body ?? ""));
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Sync blocks → editing.body
+  useEffect(() => {
+    setEditing(prev => prev ? { ...prev, body: serializeCanvas(blocks) } : prev);
+  }, [blocks, setEditing]);
+
+  const selectedBlock = blocks.find(b => b.id === selectedId) ?? null;
+
+  const addBlock = () => {
+    const nb: CanvasBlock = {
+      id: Math.random().toString(36).slice(2),
+      x: CANVAS_MARGIN, y: Math.max(20, ...blocks.map(b => b.y + b.h + 10)),
+      w: CANVAS_W - CANVAS_MARGIN * 2, h: 120,
+      html: "", fontSize: 13, fontFamily: "serif",
+      textAlign: "left", borderStyle: "none", background: "transparent", padding: 8,
+    };
+    setBlocks(prev => [...prev, nb]);
+    setSelectedId(nb.id);
+  };
+
+  const updateBlock = (id: string, patch: Partial<CanvasBlock>) =>
+    setBlocks(prev => prev.map(b => b.id === id ? { ...b, ...patch } : b));
+
+  const deleteBlock = (id: string) => {
+    setBlocks(prev => prev.filter(b => b.id !== id));
+    if (selectedId === id) setSelectedId(null);
+    if (editingId === id) setEditingId(null);
+  };
+
+  const insertVariable = (varName: string) => {
+    if (!editingId) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const span = document.createElement("span");
+    span.setAttribute("data-variable", varName);
+    span.setAttribute("style", "background:#EEF2FF;color:#4F46E5;border-radius:3px;padding:1px 5px;font-size:0.85em;font-weight:500;");
+    span.textContent = varName;
+    range.insertNode(span);
+    const after = document.createRange();
+    after.setStartAfter(span);
+    after.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(after);
+  };
+
   return (
-    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "60vh", color: "#94a3b8", fontSize: 14 }}>
-      Éditeur canvas en cours d'implémentation…
+    <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "#F1F5F9", display: "flex", flexDirection: "column" }}>
+      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      <div style={{ height: 56, background: "white", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", gap: 10, padding: "0 20px", flexShrink: 0 }}>
+        <button onClick={() => setEditing(null)}
+          style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", border: "1px solid #E2E8F0", borderRadius: 7, background: "white", cursor: "pointer", fontSize: 12, color: "#64748b" }}>
+          <ArrowLeft size={13} /> Retour
+        </button>
+        <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
+        <input
+          value={editing.name ?? ""}
+          onChange={e => setEditing(p => p ? { ...p, name: e.target.value } : p)}
+          placeholder="Nom du modèle…"
+          style={{ flex: 1, maxWidth: 280, padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, outline: "none" }}
+        />
+        <select
+          value={editing.category ?? "general"}
+          onChange={e => setEditing(p => p ? { ...p, category: e.target.value } : p)}
+          style={{ padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12, background: "white", outline: "none", cursor: "pointer" }}>
+          {Object.entries(CATEGORY_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <button onClick={addBlock}
+          style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 13px", border: "1px solid #E2E8F0", borderRadius: 7, background: "white", cursor: "pointer", fontSize: 12, color: "#374151", fontWeight: 500 }}>
+          <Plus size={13} /> Ajouter un bloc
+        </button>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          {saveError && <span style={{ fontSize: 11, color: "#DC2626" }}>{saveError}</span>}
+          <button onClick={() => void handleSave()} disabled={saving}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600, opacity: saving ? 0.7 : 1 }}>
+            <Save size={13} /> {saving ? "Enregistrement…" : "Enregistrer"}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Main ────────────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        {/* Canvas scroll area */}
+        <div
+          style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", justifyContent: "center" }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) { setSelectedId(null); setEditingId(null); }
+          }}
+        >
+          {/* A4 paper */}
+          <div style={{ width: CANVAS_W, background: "white", boxShadow: "0 4px 20px rgba(0,0,0,0.12)", borderRadius: 2, flexShrink: 0, position: "relative" }}>
+            <LetterheadBanner lh={letterhead} />
+            {/* Blocks area */}
+            <div
+              style={{ position: "relative", minHeight: 900 }}
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) { setSelectedId(null); setEditingId(null); }
+              }}
+            >
+              {/* Margin guides */}
+              <div style={{ position: "absolute", top: 0, bottom: 0, left: CANVAS_MARGIN, borderLeft: "1px dashed #BFDBFE", pointerEvents: "none" }} />
+              <div style={{ position: "absolute", top: 0, bottom: 0, right: CANVAS_MARGIN, borderRight: "1px dashed #BFDBFE", pointerEvents: "none" }} />
+
+              {blocks.length === 0 && (
+                <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: "#CBD5E1", pointerEvents: "none" }}>
+                  <Plus size={28} color="#CBD5E1" />
+                  <span style={{ fontSize: 13 }}>Cliquez sur "Ajouter un bloc" pour commencer</span>
+                </div>
+              )}
+
+              {blocks.map(block => (
+                <Rnd
+                  key={block.id}
+                  position={{ x: block.x, y: block.y }}
+                  size={{ width: block.w, height: block.h }}
+                  bounds="parent"
+                  disableDragging={editingId === block.id}
+                  enableResizing={selectedId === block.id && editingId !== block.id
+                    ? { top: true, right: true, bottom: true, left: true, topRight: true, bottomRight: true, bottomLeft: true, topLeft: true }
+                    : false}
+                  onDragStop={(_, d) => updateBlock(block.id, { x: d.x, y: d.y })}
+                  onResizeStop={(_, __, ref, ___, pos) => updateBlock(block.id, {
+                    w: parseInt(ref.style.width), h: parseInt(ref.style.height),
+                    x: pos.x, y: pos.y,
+                  })}
+                  style={{ zIndex: selectedId === block.id ? 10 : 1 }}
+                  onMouseDown={() => {
+                    if (editingId !== block.id) setSelectedId(block.id);
+                  }}
+                >
+                  <div style={{
+                    width: "100%", height: "100%",
+                    outline: selectedId === block.id
+                      ? (editingId === block.id ? "2px solid #4F46E5" : "1.5px solid #6366F1")
+                      : "1px dashed #E2E8F0",
+                  }}>
+                    <BlockEditor
+                      block={block}
+                      isEditing={editingId === block.id}
+                      onStartEdit={() => { setSelectedId(block.id); setEditingId(block.id); }}
+                      onEndEdit={(html) => { updateBlock(block.id, { html }); setEditingId(null); }}
+                    />
+                  </div>
+                </Rnd>
+              ))}
+            </div>
+            <LetterheadFooter lh={letterhead} />
+          </div>
+        </div>
+
+        {/* ── Sidebar ─────────────────────────────────────────────────── */}
+        <div style={{ width: 256, background: "white", borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", overflow: "hidden", flexShrink: 0 }}>
+          {/* Block formatting panel */}
+          <div style={{ borderBottom: "1px solid #E2E8F0", padding: "12px 14px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#0F172A", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+              {selectedBlock ? "Bloc sélectionné" : "Blocs"}
+            </div>
+            {selectedBlock ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {/* Font size */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Taille du texte</label>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input type="range" min={9} max={24} value={selectedBlock.fontSize}
+                      onChange={e => updateBlock(selectedBlock.id, { fontSize: Number(e.target.value) })}
+                      style={{ flex: 1 }} />
+                    <span style={{ fontSize: 11, color: "#64748b", minWidth: 20, textAlign: "right" }}>{selectedBlock.fontSize}</span>
+                  </div>
+                </div>
+                {/* Font family */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Police</label>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {(["serif", "sans"] as const).map(f => (
+                      <button key={f} onClick={() => updateBlock(selectedBlock.id, { fontFamily: f })}
+                        style={{ flex: 1, padding: "4px 0", border: `1.5px solid ${selectedBlock.fontFamily === f ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 5, background: selectedBlock.fontFamily === f ? "#EEF2FF" : "white", cursor: "pointer", fontSize: f === "serif" ? 12 : 11, fontFamily: f === "serif" ? "Georgia, serif" : "system-ui", color: selectedBlock.fontFamily === f ? "#4F46E5" : "#374151", fontWeight: selectedBlock.fontFamily === f ? 700 : 400 }}>
+                        {f === "serif" ? "Serif" : "Sans"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Alignment */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Alignement</label>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {([["left", "G"], ["center", "C"], ["right", "D"]] as const).map(([a, lbl]) => (
+                      <button key={a} onClick={() => updateBlock(selectedBlock.id, { textAlign: a })}
+                        style={{ flex: 1, padding: "4px 0", border: `1.5px solid ${selectedBlock.textAlign === a ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 5, background: selectedBlock.textAlign === a ? "#EEF2FF" : "white", cursor: "pointer", fontSize: 11, color: selectedBlock.textAlign === a ? "#4F46E5" : "#374151", fontWeight: selectedBlock.textAlign === a ? 700 : 400 }}>
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Border */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Bordure</label>
+                  <select value={selectedBlock.borderStyle}
+                    onChange={e => updateBlock(selectedBlock.id, { borderStyle: e.target.value as CanvasBlock["borderStyle"] })}
+                    style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 5, fontSize: 11, background: "white", outline: "none", cursor: "pointer" }}>
+                    <option value="none">Aucune</option>
+                    <option value="light">Fine</option>
+                    <option value="medium">Moyenne</option>
+                    <option value="dashed">Pointillée</option>
+                  </select>
+                </div>
+                {/* Background */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Fond</label>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {(["transparent", "white", "blue", "yellow", "green"] as const).map(bg => (
+                      <button key={bg} onClick={() => updateBlock(selectedBlock.id, { background: bg })} title={bg}
+                        style={{ width: 24, height: 24, border: `2px solid ${selectedBlock.background === bg ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 4, background: BLOCK_BG[bg], cursor: "pointer", padding: 0 }} />
+                    ))}
+                  </div>
+                </div>
+                {/* Delete */}
+                <button onClick={() => deleteBlock(selectedBlock.id)}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "6px 0", border: "1px solid #FEE2E2", borderRadius: 7, background: "white", cursor: "pointer", fontSize: 11, color: "#DC2626", fontWeight: 500, marginTop: 2 }}>
+                  <Trash2 size={12} /> Supprimer ce bloc
+                </button>
+              </div>
+            ) : (
+              <p style={{ fontSize: 11, color: "#94a3b8", margin: 0, lineHeight: 1.5 }}>
+                Cliquez sur un bloc pour le sélectionner. Double-cliquez pour éditer son texte.
+              </p>
+            )}
+          </div>
+
+          {/* Variables */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#0F172A", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
+              Variables
+              {editingId && <span style={{ fontSize: 10, fontWeight: 400, color: "#4F46E5", marginLeft: 6, textTransform: "none" }}>cliquez pour insérer</span>}
+            </div>
+            {TEMPLATE_VARIABLES.map(group => (
+              <div key={group.group} style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>{group.group}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {group.vars.map(v => (
+                    <button key={v.name}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => insertVariable(v.name)}
+                      disabled={!editingId}
+                      style={{ padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 5, background: editingId ? "#FAFAFA" : "white", cursor: editingId ? "pointer" : "default", fontSize: 11, textAlign: "left", color: "#374151", display: "flex", justifyContent: "space-between", alignItems: "center", opacity: editingId ? 1 : 0.55 }}>
+                      <span>{v.label}</span>
+                      <span style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{`{{${v.name}}}`}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
     </div>
   );
 }
