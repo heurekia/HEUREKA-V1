@@ -4921,7 +4921,7 @@ export function MairieApp() {
   // Charge le badge initial quand la commune change ; MessageScreen maintient ensuite le total en temps réel
   useEffect(() => {
     api.get<{ count: number }>(`/mairie/conversations/unread-count?commune=${encodeURIComponent(commune)}`)
-      .then(d => setMessageBadge(Number(d.count) + 1)) // +1 pour ABF (service non lu initial)
+      .then(d => setMessageBadge(Number(d.count)))
       .catch(() => {});
   }, [commune]);
 
