@@ -1,44 +1,8 @@
 import { useState, useEffect, useRef, useCallback, type Dispatch, type SetStateAction } from "react";
-import { useEditor, EditorContent } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
-import TextAlign from "@tiptap/extension-text-align";
-import Underline from "@tiptap/extension-underline";
-import Placeholder from "@tiptap/extension-placeholder";
-import { Node as TiptapNode, mergeAttributes, type NodeViewRendererProps } from "@tiptap/core";
+import { Rnd } from "react-rnd";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
-import { Bold, Italic, Underline as UnderlineIcon, AlignLeft, AlignCenter, AlignRight, List, ListOrdered, Type, ChevronDown, X, Save, ArrowLeft, Plus, Pencil, Trash2, FileText, Printer } from "lucide-react";
-
-// ─── Variable Node (TipTap custom inline node) ─────────────────────────────
-const VariableNode = TiptapNode.create({
-  name: "variable",
-  group: "inline",
-  inline: true,
-  atom: true,
-  selectable: true,
-  addAttributes() {
-    return { name: { default: null } };
-  },
-  parseHTML() {
-    return [{ tag: "span[data-variable]", getAttrs: (el: HTMLElement) => ({ name: el.dataset.variable ?? null }) }];
-  },
-  renderHTML({ node, HTMLAttributes }: { node: { attrs: Record<string, unknown> }; HTMLAttributes: Record<string, unknown> }) {
-    return ["span", mergeAttributes(HTMLAttributes, {
-      "data-variable": node.attrs.name as string,
-      style: "display:inline-block;background:#dbeafe;color:#1d4ed8;padding:1px 7px;border-radius:10px;font-size:0.8em;font-family:monospace;user-select:none;white-space:nowrap;",
-    }), `{{${node.attrs.name as string}}}`];
-  },
-  addNodeView() {
-    return ({ node }: NodeViewRendererProps) => {
-      const dom = document.createElement("span");
-      dom.setAttribute("data-variable", node.attrs.name as string);
-      dom.setAttribute("contenteditable", "false");
-      dom.style.cssText = "display:inline-block;background:#dbeafe;color:#1d4ed8;padding:1px 7px;border-radius:10px;font-size:0.8em;font-family:monospace;cursor:default;user-select:none;white-space:nowrap;";
-      dom.textContent = `{{${node.attrs.name as string}}}`;
-      return { dom };
-    };
-  },
-});
+import { X, Save, ArrowLeft, Plus, Pencil, Trash2, FileText, Printer } from "lucide-react";
 
 // ─── Variable groups ───────────────────────────────────────────────────────
 const TEMPLATE_VARIABLES = [
@@ -81,129 +45,50 @@ const TYPE_LABEL: Record<string, string> = {
 };
 const fmtDate = (d: string | null | undefined) => d ? new Date(d).toLocaleDateString("fr-FR") : "—";
 
-function substituteVariables(html: string, vars: Record<string, string>): string {
-  return html.replace(
-    /<span[^>]*data-variable="([^"]+)"[^>]*>[^<]*<\/span>/g,
-    (_, name: string) => vars[name] ?? `{{${name}}}`
-  );
+// ─── Canvas data types & helpers ─────────────────────────────────────────────
+interface CanvasBlock {
+  id: string;
+  x: number; y: number; w: number; h: number;
+  html: string;
+  fontSize: number;
+  fontFamily: "serif" | "sans";
+  textAlign: "left" | "center" | "right";
+  borderStyle: "none" | "light" | "medium" | "dashed";
+  background: "transparent" | "white" | "blue" | "yellow" | "green";
+  padding: number;
+}
+function isCanvasBody(s: string): boolean {
+  try { const d = JSON.parse(s); return d?.version === 1; } catch { return false; }
+}
+function parseCanvasBlocks(body: string): CanvasBlock[] {
+  if (!body) return [];
+  if (isCanvasBody(body)) return (JSON.parse(body) as { version: number; blocks: CanvasBlock[] }).blocks;
+  return [{ id: "legacy", x: 40, y: 20, w: 714, h: 400, html: body, fontSize: 13, fontFamily: "serif", textAlign: "left", borderStyle: "none", background: "transparent", padding: 8 }];
+}
+function serializeCanvas(blocks: CanvasBlock[]): string {
+  return JSON.stringify({ version: 1, blocks });
 }
 
-// ─── Editor toolbar ────────────────────────────────────────────────────────
-function EditorToolbar({ editor }: { editor: ReturnType<typeof useEditor> }) {
-  const [varMenuOpen, setVarMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
+const BLOCK_BG: Record<CanvasBlock["background"], string> = {
+  transparent: "transparent", white: "white",
+  blue: "#EFF6FF", yellow: "#FEFCE8", green: "#F0FDF4",
+};
+const BLOCK_BORDER: Record<CanvasBlock["borderStyle"], string> = {
+  none: "none", light: "1px solid #E2E8F0",
+  medium: "1.5px solid #94a3b8", dashed: "1px dashed #94a3b8",
+};
 
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as globalThis.Node)) setVarMenuOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  if (!editor) return null;
-
-  const insertVariable = (name: string) => {
-    editor.chain().focus().insertContent({ type: "variable", attrs: { name } }).run();
-    setVarMenuOpen(false);
-  };
-
-  const btn = (active: boolean, onClick: () => void, icon: React.ReactNode, title: string) => (
-    <button type="button" title={title} onClick={onClick}
-      style={{ padding: "4px 7px", border: "none", borderRadius: 5, cursor: "pointer", background: active ? "#E0E7FF" : "transparent", color: active ? "#4F46E5" : "#374151", display: "flex", alignItems: "center" }}>
-      {icon}
-    </button>
-  );
-
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "7px 10px", borderBottom: "1px solid #E2E8F0", flexWrap: "wrap", background: "#F8FAFC", borderRadius: "10px 10px 0 0" }}>
-      {btn(editor.isActive("bold"), () => editor.chain().focus().toggleBold().run(), <Bold size={13} />, "Gras")}
-      {btn(editor.isActive("italic"), () => editor.chain().focus().toggleItalic().run(), <Italic size={13} />, "Italique")}
-      {btn(editor.isActive("underline"), () => editor.chain().focus().toggleUnderline().run(), <UnderlineIcon size={13} />, "Souligné")}
-      <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
-      {btn(editor.isActive("heading", { level: 1 }), () => editor.chain().focus().toggleHeading({ level: 1 }).run(), <span style={{ fontSize: 10, fontWeight: 700 }}>H1</span>, "Titre 1")}
-      {btn(editor.isActive("heading", { level: 2 }), () => editor.chain().focus().toggleHeading({ level: 2 }).run(), <span style={{ fontSize: 10, fontWeight: 700 }}>H2</span>, "Titre 2")}
-      {btn(editor.isActive("paragraph"), () => editor.chain().focus().setParagraph().run(), <Type size={13} />, "Paragraphe")}
-      <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
-      {btn(editor.isActive({ textAlign: "left" }), () => editor.chain().focus().setTextAlign("left").run(), <AlignLeft size={13} />, "Gauche")}
-      {btn(editor.isActive({ textAlign: "center" }), () => editor.chain().focus().setTextAlign("center").run(), <AlignCenter size={13} />, "Centré")}
-      {btn(editor.isActive({ textAlign: "right" }), () => editor.chain().focus().setTextAlign("right").run(), <AlignRight size={13} />, "Droite")}
-      <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
-      {btn(editor.isActive("bulletList"), () => editor.chain().focus().toggleBulletList().run(), <List size={13} />, "Liste à puces")}
-      {btn(editor.isActive("orderedList"), () => editor.chain().focus().toggleOrderedList().run(), <ListOrdered size={13} />, "Liste numérotée")}
-      <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
-      <div style={{ position: "relative" }} ref={menuRef}>
-        <button type="button" onClick={() => setVarMenuOpen(v => !v)}
-          style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", border: "1px solid #C7D2FE", borderRadius: 6, background: varMenuOpen ? "#EEF2FF" : "white", color: "#4F46E5", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-          <span>Insérer variable</span><ChevronDown size={11} />
-        </button>
-        {varMenuOpen && (
-          <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 100, marginTop: 4, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 220, maxHeight: 320, overflowY: "auto" }}>
-            {TEMPLATE_VARIABLES.map(group => (
-              <div key={group.group}>
-                <div style={{ padding: "7px 12px 3px", fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>{group.group}</div>
-                {group.vars.map(v => (
-                  <button key={v.name} type="button" onClick={() => insertVariable(v.name)}
-                    style={{ width: "100%", padding: "7px 12px", border: "none", background: "none", textAlign: "left", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
-                    onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
-                    onMouseLeave={e => (e.currentTarget.style.background = "none")}>
-                    <span>{v.label}</span>
-                    <span style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{`{{${v.name}}}`}</span>
-                  </button>
-                ))}
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-    </div>
-  );
+function substituteVariables(body: string, vars: Record<string, string>): string {
+  const subHtml = (html: string) =>
+    html.replace(/<span[^>]*data-variable="([^"]+)"[^>]*>[^<]*<\/span>/g,
+      (_, name: string) => vars[name] ?? `{{${name}}}`);
+  if (isCanvasBody(body)) {
+    const data = JSON.parse(body) as { version: number; blocks: CanvasBlock[] };
+    return JSON.stringify({ ...data, blocks: data.blocks.map(b => ({ ...b, html: subHtml(b.html) })) });
+  }
+  return subHtml(body);
 }
 
-// ─── TipTap editor ─────────────────────────────────────────────────────────
-function TipTapEditorMairie({ content, onChange, placeholder, minHeight = 280, wrapperStyle }: { content: string; onChange: (html: string) => void; placeholder?: string; minHeight?: number; wrapperStyle?: React.CSSProperties }) {
-  const editor = useEditor({
-    extensions: [
-      StarterKit,
-      Underline,
-      TextAlign.configure({ types: ["heading", "paragraph"] }),
-      Placeholder.configure({ placeholder: placeholder ?? "Rédigez votre modèle…" }),
-      VariableNode,
-    ],
-    content,
-    onUpdate: ({ editor }) => onChange(editor.getHTML()),
-  });
-
-  useEffect(() => {
-    if (editor && content !== editor.getHTML()) {
-      editor.commands.setContent(content || "", { emitUpdate: false });
-    }
-  }, [content, editor]);
-
-  return (
-    <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden", background: "white", ...wrapperStyle }}>
-      <EditorToolbar editor={editor} />
-      <style>{`
-        .tiptap-mairie { outline: none; min-height: ${minHeight}px; padding: 18px 20px; font-size: 14px; line-height: 1.7; color: #1E293B; font-family: Georgia, serif; }
-        .tiptap-mairie p { margin: 0 0 10px; }
-        .tiptap-mairie h1 { font-size: 1.4em; font-weight: 700; margin: 14px 0 6px; }
-        .tiptap-mairie h2 { font-size: 1.2em; font-weight: 600; margin: 12px 0 5px; }
-        .tiptap-mairie ul, .tiptap-mairie ol { padding-left: 22px; margin: 6px 0; }
-        .tiptap-mairie li { margin-bottom: 3px; }
-        .tiptap-mairie p.is-editor-empty:first-child::before { color: #9CA3AF; content: attr(data-placeholder); float: left; height: 0; pointer-events: none; }
-        .tiptap-preview-mairie p { margin: 0 0 10px; }
-        .tiptap-preview-mairie h1 { font-size: 1.4em; font-weight: 700; margin: 14px 0 6px; }
-        .tiptap-preview-mairie h2 { font-size: 1.2em; font-weight: 600; margin: 12px 0 5px; }
-        .tiptap-preview-mairie ul, .tiptap-preview-mairie ol { padding-left: 22px; margin: 6px 0; }
-        .tiptap-preview-mairie li { margin-bottom: 3px; }
-        .tiptap-preview-mairie strong { font-weight: 700; }
-        .tiptap-preview-mairie em { font-style: italic; }
-        .tiptap-preview-mairie u { text-decoration: underline; }
-      `}</style>
-      <EditorContent editor={editor} className="tiptap-mairie" />
-    </div>
-  );
-}
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 export interface CourrierTemplate {
@@ -229,17 +114,20 @@ interface MentionRow {
   article_ref: string;
   article_title: string | null;
   article_html: string | null;
+  courrier_types: string[];
+  dossier_types: string[];
+  contexte: string | null;
   suggested: boolean;
 }
 
-const MENTION_CATEGORIES = [
-  { value: "", label: "Toutes les mentions" },
-  { value: "avis_favorable", label: "Avis favorable" },
-  { value: "avis_defavorable", label: "Avis défavorable" },
-  { value: "avis_reserves", label: "Avis avec réserves" },
-  { value: "accord_tacite", label: "Accord tacite" },
+const COURRIER_TYPES = [
   { value: "pieces_complementaires", label: "Pièces complémentaires" },
-  { value: "notification_decision", label: "Notification de décision" },
+  { value: "refus",                  label: "Refus" },
+  { value: "non_opposition",         label: "Non-opposition / accord" },
+  { value: "majoration_delai",       label: "Majoration de délai" },
+  { value: "daact",                  label: "DAACT / achèvement" },
+  { value: "sursis",                 label: "Sursis à statuer" },
+  { value: "notification",           label: "Notification de décision" },
 ];
 
 // ─── Draggable stamp / signature overlay ──────────────────────────────────
@@ -282,13 +170,61 @@ function DraggableStamp({ src, pos, setPos, caption, onHide }: {
   );
 }
 
+// ─── Canvas print view ────────────────────────────────────────────────────────
+function CanvasPrintView({ blocks, letterhead, extraHtml }: { blocks: CanvasBlock[]; letterhead: Letterhead; extraHtml?: string }) {
+  const maxY = blocks.reduce((m, b) => Math.max(m, b.y + b.h), 0) + 60;
+  const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
+  return (
+    <div style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" }}>
+      {hasHeader && (
+        <div className="lh-print-header" style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
+          {letterhead.letterhead_logo && <img src={letterhead.letterhead_logo} alt="" style={{ height: 56, width: "auto", objectFit: "contain", flexShrink: 0 }} />}
+          <div>
+            {letterhead.letterhead_title && <div style={{ fontSize: 16, fontWeight: 700 }}>{letterhead.letterhead_title}</div>}
+            {letterhead.letterhead_subtitle && <div style={{ fontSize: 13 }}>{letterhead.letterhead_subtitle}</div>}
+            {letterhead.letterhead_address && <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{letterhead.letterhead_address}</div>}
+          </div>
+        </div>
+      )}
+      <div className="lh-print-body" style={{ position: "relative", minHeight: maxY }}>
+        {blocks.map(b => (
+          <div key={b.id} style={{
+            position: "absolute", left: b.x, top: b.y, width: b.w, height: b.h,
+            padding: b.padding, fontSize: b.fontSize, lineHeight: 1.6,
+            fontFamily: b.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif",
+            textAlign: b.textAlign, background: BLOCK_BG[b.background],
+            border: BLOCK_BORDER[b.borderStyle], boxSizing: "border-box", overflow: "hidden",
+          }} dangerouslySetInnerHTML={{ __html: b.html }} />
+        ))}
+      </div>
+      {extraHtml && (
+        <div style={{ padding: "24px 36px", marginTop: maxY }}>
+          <div style={{ paddingTop: 18, borderTop: "1px solid #CBD5E1" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Références législatives et réglementaires</div>
+            <div dangerouslySetInnerHTML={{ __html: extraHtml }} />
+          </div>
+        </div>
+      )}
+      {letterhead.footer_text && (
+        <div className="lh-print-footer" style={{ padding: "10px 36px 14px", borderTop: "1px solid #CBD5E1", fontSize: 11, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", background: "white" }}>
+          {letterhead.footer_text}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Courrier preview (print-ready, multi-page) ───────────────────────────
 function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; letterhead: Letterhead; extraHtml?: string }) {
+  if (isCanvasBody(html)) {
+    const blocks = (JSON.parse(html) as { version: number; blocks: CanvasBlock[] }).blocks;
+    return <CanvasPrintView blocks={blocks} letterhead={letterhead} extraHtml={extraHtml} />;
+  }
+
   const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
   const hasFooter = !!letterhead.footer_text;
   return (
     <div style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" }}>
-      {/* Header — inline on screen, position:fixed on print (repeats every page) */}
       {hasHeader && (
         <div className="lh-print-header" style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
           {letterhead.letterhead_logo && (
@@ -301,8 +237,6 @@ function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; l
           </div>
         </div>
       )}
-
-      {/* Body — padded in print to clear fixed header/footer */}
       <div className="lh-print-body" style={{ padding: "24px 36px", minHeight: 400 }}>
         <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: html }} />
         {extraHtml && (
@@ -314,8 +248,6 @@ function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; l
           </div>
         )}
       </div>
-
-      {/* Footer — inline on screen, position:fixed on print (repeats every page) */}
       {hasFooter && (
         <div className="lh-print-footer" style={{ padding: "10px 36px 14px", borderTop: "1px solid #CBD5E1", fontSize: 11, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", background: "white" }}>
           {letterhead.footer_text}
@@ -343,24 +275,31 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
   const [mentionsLoading, setMentionsLoading] = useState(false);
   const [allMentions, setAllMentions] = useState<MentionRow[]>([]);
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
-  const [mentionCategory, setMentionCategory] = useState("");
+  const [courrierType, setCourrierType] = useState("");
   const [insertedMentionsHtml, setInsertedMentionsHtml] = useState("");
+  const [viewingArticle, setViewingArticle] = useState<MentionRow | null>(null);
 
-  const loadMentions = useCallback((category: string) => {
+  const loadMentions = useCallback((ct: string) => {
     setMentionsLoading(true);
-    const params = category ? `?type=${encodeURIComponent(dossier.type)}&category=${encodeURIComponent(category)}` : "";
-    api.get<MentionRow[]>(`/mairie/legal-mentions${params}`)
-      .then(setAllMentions)
+    const params = new URLSearchParams();
+    if (dossier.type) params.set("type", dossier.type);
+    if (ct) params.set("courrier_type", ct);
+    api.get<MentionRow[]>(`/mairie/legal-mentions?${params}`)
+      .then(rows => {
+        setAllMentions(rows);
+        // Auto-select suggested articles
+        setSelectedRefs(new Set(rows.filter(r => r.suggested).map(r => r.article_ref)));
+      })
       .catch(() => setAllMentions([]))
       .finally(() => setMentionsLoading(false));
   }, [dossier.type]);
 
   const handleToggleMentions = useCallback(() => {
     setShowMentions(v => {
-      if (!v && allMentions.length === 0) loadMentions(mentionCategory);
+      if (!v && allMentions.length === 0) loadMentions(courrierType);
       return !v;
     });
-  }, [allMentions.length, loadMentions, mentionCategory]);
+  }, [allMentions.length, loadMentions, courrierType]);
 
   const handleInsertMentions = useCallback(() => {
     if (selectedRefs.size === 0) return;
@@ -382,8 +321,6 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
       setTemplates(tpls);
       setLetterhead(lh);
       if (tpls.length > 0) setSelected(tpls[0]!);
-      if (lh.signature_image) setShowSig(true);
-      if (lh.tampon_image) setShowTamp(true);
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
@@ -565,16 +502,17 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
             <div className="no-print-modal" style={{ width: 300, borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", flexShrink: 0, background: "#FAFAFA" }}>
               {/* Panel header */}
               <div style={{ padding: "12px 14px 10px", borderBottom: "1px solid #E2E8F0", background: "white" }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 8 }}>📜 Mentions légales</div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 8 }}>📜 Mentions légales recommandées</div>
                 <select
-                  value={mentionCategory}
+                  value={courrierType}
                   onChange={(e) => {
-                    const cat = e.target.value;
-                    setMentionCategory(cat);
-                    loadMentions(cat);
+                    const ct = e.target.value;
+                    setCourrierType(ct);
+                    loadMentions(ct);
                   }}
                   style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12, background: "white", color: "#374151", cursor: "pointer" }}>
-                  {MENTION_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  <option value="">— Type de courrier —</option>
+                  {COURRIER_TYPES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
                 </select>
               </div>
 
@@ -584,37 +522,43 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
                   <div style={{ padding: "20px 14px", color: "#94a3b8", fontSize: 12, textAlign: "center" }}>Chargement…</div>
                 ) : allMentions.length === 0 ? (
                   <div style={{ padding: "20px 14px", color: "#94a3b8", fontSize: 12, textAlign: "center" }}>
-                    <p style={{ margin: 0 }}>Aucune mention en cache.</p>
-                    <p style={{ margin: "6px 0 0", fontSize: 11 }}>Lancez la synchronisation depuis l'administration.</p>
+                    <p style={{ margin: 0 }}>Aucune mention disponible.</p>
+                    <p style={{ margin: "6px 0 0", fontSize: 11 }}>Créez des articles dans Administration → Configuration.</p>
                   </div>
                 ) : allMentions.map(m => {
                   const checked = selectedRefs.has(m.article_ref);
                   return (
-                    <label key={m.article_ref} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 14px", cursor: "pointer", borderBottom: "1px solid #F1F5F9", background: checked ? "#EFF6FF" : "transparent" }}
-                      onMouseEnter={e => { if (!checked) (e.currentTarget as HTMLElement).style.background = "#F8FAFC"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = checked ? "#EFF6FF" : "transparent"; }}>
-                      <input type="checkbox" checked={checked}
-                        onChange={() => setSelectedRefs(prev => {
-                          const next = new Set(prev);
-                          if (next.has(m.article_ref)) next.delete(m.article_ref); else next.add(m.article_ref);
-                          return next;
-                        })}
-                        style={{ marginTop: 2, flexShrink: 0 }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: "#1E293B" }}>Art. {m.article_ref}</span>
-                          {m.suggested && (
-                            <span style={{ fontSize: 10, fontWeight: 600, color: "#0284C7", background: "#E0F2FE", borderRadius: 4, padding: "1px 5px" }}>Suggéré</span>
-                          )}
+                    <div key={m.article_ref} style={{ padding: "8px 14px", borderBottom: "1px solid #F1F5F9", background: checked ? "#EFF6FF" : "transparent" }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                        <input type="checkbox" checked={checked}
+                          onChange={() => setSelectedRefs(prev => {
+                            const next = new Set(prev);
+                            if (next.has(m.article_ref)) next.delete(m.article_ref); else next.add(m.article_ref);
+                            return next;
+                          })}
+                          style={{ marginTop: 3, flexShrink: 0, cursor: "pointer" }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "#1E293B" }}>Art. {m.article_ref}</span>
+                            {m.suggested && (
+                              <span style={{ fontSize: 10, fontWeight: 600, color: "#0284C7", background: "#E0F2FE", borderRadius: 4, padding: "1px 5px" }}>Recommandé</span>
+                            )}
+                          </div>
+                          {m.article_title && <div style={{ fontSize: 11, color: "#374151", marginTop: 1, lineHeight: 1.4, fontWeight: 500 }}>{m.article_title}</div>}
+                          {m.contexte && <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2, lineHeight: 1.4 }}>{m.contexte}</div>}
                         </div>
-                        {m.article_title && <div style={{ fontSize: 11, color: "#64748b", marginTop: 1, lineHeight: 1.4 }}>{m.article_title}</div>}
+                        <button onClick={() => setViewingArticle(m)}
+                          title="Voir l'article"
+                          style={{ flexShrink: 0, background: "none", border: "1px solid #E2E8F0", borderRadius: 5, cursor: "pointer", padding: "2px 7px", fontSize: 11, color: "#64748b", whiteSpace: "nowrap" }}>
+                          Voir
+                        </button>
                       </div>
-                    </label>
+                    </div>
                   );
                 })}
               </div>
 
-              {/* Insert button */}
+              {/* Footer */}
               <div style={{ padding: "10px 14px", borderTop: "1px solid #E2E8F0", background: "white" }}>
                 {insertedMentionsHtml && (
                   <button onClick={() => { setInsertedMentionsHtml(""); setSelectedRefs(new Set()); }}
@@ -624,12 +568,38 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
                 )}
                 <button onClick={handleInsertMentions} disabled={selectedRefs.size === 0}
                   style={{ width: "100%", padding: "8px 12px", border: "none", borderRadius: 7, background: selectedRefs.size > 0 ? "#0F172A" : "#E2E8F0", color: selectedRefs.size > 0 ? "white" : "#94a3b8", fontSize: 12, fontWeight: 600, cursor: selectedRefs.size > 0 ? "pointer" : "default" }}>
-                  Insérer {selectedRefs.size > 0 ? `${selectedRefs.size} article${selectedRefs.size > 1 ? "s" : ""}` : "les articles sélectionnés"}
+                  Ajouter au courrier {selectedRefs.size > 0 ? `(${selectedRefs.size})` : ""}
                 </button>
               </div>
             </div>
           )}
         </div>
+
+        {/* Article viewer modal */}
+        {viewingArticle && (
+          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => setViewingArticle(null)}>
+            <div style={{ background: "white", borderRadius: 12, padding: 24, width: "min(560px, 90vw)", maxHeight: "70vh", overflowY: "auto", boxShadow: "0 16px 48px rgba(0,0,0,0.2)" }}
+              onClick={e => e.stopPropagation()}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: "#0F172A" }}>Art. {viewingArticle.article_ref}</div>
+                  {viewingArticle.article_title && <div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>{viewingArticle.article_title}</div>}
+                </div>
+                <button onClick={() => setViewingArticle(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, color: "#94a3b8", lineHeight: 1 }}>×</button>
+              </div>
+              {viewingArticle.contexte && (
+                <div style={{ background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 8, padding: "8px 12px", marginBottom: 14, fontSize: 12, color: "#0369A1" }}>
+                  {viewingArticle.contexte}
+                </div>
+              )}
+              {viewingArticle.article_html
+                ? <div style={{ fontSize: 13, lineHeight: 1.7, color: "#374151" }} dangerouslySetInnerHTML={{ __html: viewingArticle.article_html }} />
+                : <div style={{ fontSize: 13, color: "#94a3b8", fontStyle: "italic" }}>Texte non renseigné. Ajoutez-le dans Administration → Configuration.</div>
+              }
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
@@ -653,22 +623,336 @@ function LetterheadBanner({ lh }: { lh: Letterhead }) {
   );
 }
 
+
 function LetterheadFooter({ lh }: { lh: Letterhead }) {
-  if (!lh.footer_text && !lh.signature_image) return null;
+  if (!lh.footer_text) return null;
   return (
-    <div style={{ background: "white", borderTop: "1px solid #CBD5E1", padding: "10px 20px", userSelect: "none", pointerEvents: "none" }}>
-      {lh.signature_image && (
-        <img src={lh.signature_image} alt="Signature" style={{ height: 48, width: "auto", objectFit: "contain", display: "block", marginBottom: 4 }} />
-      )}
-      {lh.footer_text && (
-        <div style={{ fontSize: 10, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", borderTop: "1px solid #E2E8F0", paddingTop: 8, marginTop: 4 }}>
-          {lh.footer_text}
-        </div>
-      )}
+    <div style={{ background: "white", borderTop: "1px solid #CBD5E1", padding: "8px 20px 10px", userSelect: "none", pointerEvents: "none" }}>
+      <div style={{ fontSize: 10, color: "#64748b", textAlign: "center", whiteSpace: "pre-line" }}>
+        {lh.footer_text}
+      </div>
       <div style={{ fontSize: 10, color: "#CBD5E1", fontStyle: "italic", textAlign: "right", marginTop: 4 }}>Pied de page commune</div>
     </div>
   );
 }
+
+// ─── Block content editor (contentEditable via ref to avoid cursor reset) ────
+function BlockEditor({ block, isEditing, onStartEdit, onEndEdit }: {
+  block: CanvasBlock;
+  isEditing: boolean;
+  onStartEdit: () => void;
+  onEndEdit: (html: string) => void;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+
+  // Mount: set initial innerHTML
+  useEffect(() => {
+    if (ref.current) ref.current.innerHTML = block.html;
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Sync from state when NOT editing (e.g. after variable insert or external update)
+  useEffect(() => {
+    if (!isEditing && ref.current) ref.current.innerHTML = block.html;
+  }, [block.html, isEditing]);
+
+  return (
+    <div
+      ref={ref}
+      contentEditable={isEditing}
+      suppressContentEditableWarning
+      onDoubleClick={() => { if (!isEditing) onStartEdit(); }}
+      onBlur={(e) => { if (isEditing) onEndEdit(e.currentTarget.innerHTML); }}
+      style={{
+        width: "100%", height: "100%",
+        padding: block.padding, boxSizing: "border-box",
+        fontSize: block.fontSize, lineHeight: 1.6,
+        fontFamily: block.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif",
+        textAlign: block.textAlign,
+        background: BLOCK_BG[block.background],
+        border: BLOCK_BORDER[block.borderStyle],
+        outline: "none",
+        cursor: isEditing ? "text" : "default",
+        overflow: "auto", wordBreak: "break-word",
+        color: "#1E293B",
+      }}
+    />
+  );
+}
+
+// ─── Canvas template editor ───────────────────────────────────────────────
+const CANVAS_W = 794;
+const CANVAS_MARGIN = 40;
+
+function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, saving, saveError }: {
+  editing: Partial<CourrierTemplate>;
+  setEditing: Dispatch<SetStateAction<Partial<CourrierTemplate> | null>>;
+  letterhead: Letterhead;
+  handleSave: () => Promise<void>;
+  saving: boolean;
+  saveError: string | null;
+}) {
+  const [blocks, setBlocks] = useState<CanvasBlock[]>(() => parseCanvasBlocks(editing.body ?? ""));
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
+
+  // Sync blocks → editing.body
+  useEffect(() => {
+    setEditing(prev => prev ? { ...prev, body: serializeCanvas(blocks) } : prev);
+  }, [blocks, setEditing]);
+
+  const selectedBlock = blocks.find(b => b.id === selectedId) ?? null;
+
+  const addBlock = () => {
+    const nb: CanvasBlock = {
+      id: Math.random().toString(36).slice(2),
+      x: CANVAS_MARGIN, y: Math.max(20, ...blocks.map(b => b.y + b.h + 10)),
+      w: CANVAS_W - CANVAS_MARGIN * 2, h: 120,
+      html: "", fontSize: 13, fontFamily: "serif",
+      textAlign: "left", borderStyle: "none", background: "transparent", padding: 8,
+    };
+    setBlocks(prev => [...prev, nb]);
+    setSelectedId(nb.id);
+  };
+
+  const updateBlock = (id: string, patch: Partial<CanvasBlock>) =>
+    setBlocks(prev => prev.map(b => b.id === id ? { ...b, ...patch } : b));
+
+  const deleteBlock = (id: string) => {
+    setBlocks(prev => prev.filter(b => b.id !== id));
+    if (selectedId === id) setSelectedId(null);
+    if (editingId === id) setEditingId(null);
+  };
+
+  const insertVariable = (varName: string) => {
+    if (!editingId) return;
+    const sel = window.getSelection();
+    if (!sel || sel.rangeCount === 0) return;
+    const range = sel.getRangeAt(0);
+    range.deleteContents();
+    const span = document.createElement("span");
+    span.setAttribute("data-variable", varName);
+    span.setAttribute("style", "background:#EEF2FF;color:#4F46E5;border-radius:3px;padding:1px 5px;font-size:0.85em;font-weight:500;");
+    span.textContent = varName;
+    range.insertNode(span);
+    const after = document.createRange();
+    after.setStartAfter(span);
+    after.collapse(true);
+    sel.removeAllRanges();
+    sel.addRange(after);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "#F1F5F9", display: "flex", flexDirection: "column" }}>
+      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      <div style={{ height: 56, background: "white", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", gap: 10, padding: "0 20px", flexShrink: 0 }}>
+        <button onClick={() => setEditing(null)}
+          style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", border: "1px solid #E2E8F0", borderRadius: 7, background: "white", cursor: "pointer", fontSize: 12, color: "#64748b" }}>
+          <ArrowLeft size={13} /> Retour
+        </button>
+        <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
+        <input
+          value={editing.name ?? ""}
+          onChange={e => setEditing(p => p ? { ...p, name: e.target.value } : p)}
+          placeholder="Nom du modèle…"
+          style={{ flex: 1, maxWidth: 280, padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, outline: "none" }}
+        />
+        <select
+          value={editing.category ?? "general"}
+          onChange={e => setEditing(p => p ? { ...p, category: e.target.value } : p)}
+          style={{ padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12, background: "white", outline: "none", cursor: "pointer" }}>
+          {Object.entries(CATEGORY_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
+        </select>
+        <button onClick={addBlock}
+          style={{ display: "flex", alignItems: "center", gap: 5, padding: "6px 13px", border: "1px solid #E2E8F0", borderRadius: 7, background: "white", cursor: "pointer", fontSize: 12, color: "#374151", fontWeight: 500 }}>
+          <Plus size={13} /> Ajouter un bloc
+        </button>
+        <div style={{ marginLeft: "auto", display: "flex", alignItems: "center", gap: 10 }}>
+          {saveError && <span style={{ fontSize: 11, color: "#DC2626" }}>{saveError}</span>}
+          <button onClick={() => void handleSave()} disabled={saving}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving ? "not-allowed" : "pointer", fontSize: 13, fontWeight: 600, opacity: saving ? 0.7 : 1 }}>
+            <Save size={13} /> {saving ? "Enregistrement…" : "Enregistrer"}
+          </button>
+        </div>
+      </div>
+
+      {/* ── Main ────────────────────────────────────────────────────────── */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        {/* Canvas scroll area */}
+        <div
+          style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", justifyContent: "center" }}
+          onMouseDown={(e) => {
+            if (e.target === e.currentTarget) { setSelectedId(null); setEditingId(null); }
+          }}
+        >
+          {/* A4 paper */}
+          <div style={{ width: CANVAS_W, background: "white", boxShadow: "0 4px 20px rgba(0,0,0,0.12)", borderRadius: 2, flexShrink: 0, position: "relative" }}>
+            <LetterheadBanner lh={letterhead} />
+            {/* Blocks area */}
+            <div
+              style={{ position: "relative", minHeight: 900 }}
+              onMouseDown={(e) => {
+                if (e.target === e.currentTarget) { setSelectedId(null); setEditingId(null); }
+              }}
+            >
+              {/* Margin guides */}
+              <div style={{ position: "absolute", top: 0, bottom: 0, left: CANVAS_MARGIN, borderLeft: "1px dashed #BFDBFE", pointerEvents: "none" }} />
+              <div style={{ position: "absolute", top: 0, bottom: 0, right: CANVAS_MARGIN, borderRight: "1px dashed #BFDBFE", pointerEvents: "none" }} />
+
+              {blocks.length === 0 && (
+                <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: "#CBD5E1", pointerEvents: "none" }}>
+                  <Plus size={28} color="#CBD5E1" />
+                  <span style={{ fontSize: 13 }}>Cliquez sur "Ajouter un bloc" pour commencer</span>
+                </div>
+              )}
+
+              {blocks.map(block => (
+                <Rnd
+                  key={block.id}
+                  position={{ x: block.x, y: block.y }}
+                  size={{ width: block.w, height: block.h }}
+                  bounds="parent"
+                  disableDragging={editingId === block.id}
+                  enableResizing={selectedId === block.id && editingId !== block.id
+                    ? { top: true, right: true, bottom: true, left: true, topRight: true, bottomRight: true, bottomLeft: true, topLeft: true }
+                    : false}
+                  onDragStop={(_, d) => updateBlock(block.id, { x: d.x, y: d.y })}
+                  onResizeStop={(_, __, ref, ___, pos) => updateBlock(block.id, {
+                    w: parseInt(ref.style.width), h: parseInt(ref.style.height),
+                    x: pos.x, y: pos.y,
+                  })}
+                  style={{ zIndex: selectedId === block.id ? 10 : 1 }}
+                  onMouseDown={() => {
+                    if (editingId !== block.id) setSelectedId(block.id);
+                  }}
+                >
+                  <div style={{
+                    width: "100%", height: "100%",
+                    outline: selectedId === block.id
+                      ? (editingId === block.id ? "2px solid #4F46E5" : "1.5px solid #6366F1")
+                      : "1px dashed #E2E8F0",
+                  }}>
+                    <BlockEditor
+                      block={block}
+                      isEditing={editingId === block.id}
+                      onStartEdit={() => { setSelectedId(block.id); setEditingId(block.id); }}
+                      onEndEdit={(html) => { updateBlock(block.id, { html }); setEditingId(null); }}
+                    />
+                  </div>
+                </Rnd>
+              ))}
+            </div>
+            <LetterheadFooter lh={letterhead} />
+          </div>
+        </div>
+
+        {/* ── Sidebar ─────────────────────────────────────────────────── */}
+        <div style={{ width: 256, background: "white", borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", overflow: "hidden", flexShrink: 0 }}>
+          {/* Block formatting panel */}
+          <div style={{ borderBottom: "1px solid #E2E8F0", padding: "12px 14px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#0F172A", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
+              {selectedBlock ? "Bloc sélectionné" : "Blocs"}
+            </div>
+            {selectedBlock ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                {/* Font size */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Taille du texte</label>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                    <input type="range" min={9} max={24} value={selectedBlock.fontSize}
+                      onChange={e => updateBlock(selectedBlock.id, { fontSize: Number(e.target.value) })}
+                      style={{ flex: 1 }} />
+                    <span style={{ fontSize: 11, color: "#64748b", minWidth: 20, textAlign: "right" }}>{selectedBlock.fontSize}</span>
+                  </div>
+                </div>
+                {/* Font family */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Police</label>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {(["serif", "sans"] as const).map(f => (
+                      <button key={f} onClick={() => updateBlock(selectedBlock.id, { fontFamily: f })}
+                        style={{ flex: 1, padding: "4px 0", border: `1.5px solid ${selectedBlock.fontFamily === f ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 5, background: selectedBlock.fontFamily === f ? "#EEF2FF" : "white", cursor: "pointer", fontSize: f === "serif" ? 12 : 11, fontFamily: f === "serif" ? "Georgia, serif" : "system-ui", color: selectedBlock.fontFamily === f ? "#4F46E5" : "#374151", fontWeight: selectedBlock.fontFamily === f ? 700 : 400 }}>
+                        {f === "serif" ? "Serif" : "Sans"}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Alignment */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Alignement</label>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {([["left", "G"], ["center", "C"], ["right", "D"]] as const).map(([a, lbl]) => (
+                      <button key={a} onClick={() => updateBlock(selectedBlock.id, { textAlign: a })}
+                        style={{ flex: 1, padding: "4px 0", border: `1.5px solid ${selectedBlock.textAlign === a ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 5, background: selectedBlock.textAlign === a ? "#EEF2FF" : "white", cursor: "pointer", fontSize: 11, color: selectedBlock.textAlign === a ? "#4F46E5" : "#374151", fontWeight: selectedBlock.textAlign === a ? 700 : 400 }}>
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Border */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Bordure</label>
+                  <select value={selectedBlock.borderStyle}
+                    onChange={e => updateBlock(selectedBlock.id, { borderStyle: e.target.value as CanvasBlock["borderStyle"] })}
+                    style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 5, fontSize: 11, background: "white", outline: "none", cursor: "pointer" }}>
+                    <option value="none">Aucune</option>
+                    <option value="light">Fine</option>
+                    <option value="medium">Moyenne</option>
+                    <option value="dashed">Pointillée</option>
+                  </select>
+                </div>
+                {/* Background */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Fond</label>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {(["transparent", "white", "blue", "yellow", "green"] as const).map(bg => (
+                      <button key={bg} onClick={() => updateBlock(selectedBlock.id, { background: bg })} title={bg}
+                        style={{ width: 24, height: 24, border: `2px solid ${selectedBlock.background === bg ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 4, background: BLOCK_BG[bg], cursor: "pointer", padding: 0 }} />
+                    ))}
+                  </div>
+                </div>
+                {/* Delete */}
+                <button onClick={() => deleteBlock(selectedBlock.id)}
+                  style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 5, padding: "6px 0", border: "1px solid #FEE2E2", borderRadius: 7, background: "white", cursor: "pointer", fontSize: 11, color: "#DC2626", fontWeight: 500, marginTop: 2 }}>
+                  <Trash2 size={12} /> Supprimer ce bloc
+                </button>
+              </div>
+            ) : (
+              <p style={{ fontSize: 11, color: "#94a3b8", margin: 0, lineHeight: 1.5 }}>
+                Cliquez sur un bloc pour le sélectionner. Double-cliquez pour éditer son texte.
+              </p>
+            )}
+          </div>
+
+          {/* Variables */}
+          <div style={{ flex: 1, overflowY: "auto", padding: "12px 14px" }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#0F172A", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 6 }}>
+              Variables
+              {editingId && <span style={{ fontSize: 10, fontWeight: 400, color: "#4F46E5", marginLeft: 6, textTransform: "none" }}>cliquez pour insérer</span>}
+            </div>
+            {TEMPLATE_VARIABLES.map(group => (
+              <div key={group.group} style={{ marginBottom: 10 }}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.04em", marginBottom: 4 }}>{group.group}</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 2 }}>
+                  {group.vars.map(v => (
+                    <button key={v.name}
+                      onMouseDown={(e) => e.preventDefault()}
+                      onClick={() => insertVariable(v.name)}
+                      disabled={!editingId}
+                      style={{ padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 5, background: editingId ? "#FAFAFA" : "white", cursor: editingId ? "pointer" : "default", fontSize: 11, textAlign: "left", color: "#374151", display: "flex", justifyContent: "space-between", alignItems: "center", opacity: editingId ? 1 : 0.55 }}>
+                      <span>{v.label}</span>
+                      <span style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{`{{${v.name}}}`}</span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 
 // ─── Template Manager Panel ────────────────────────────────────────────────
 export function TemplateManagerPanel() {
@@ -721,92 +1005,16 @@ export function TemplateManagerPanel() {
     await load();
   };
 
-  const hasLetterhead = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
-  const hasFooter = !!(letterhead.footer_text || letterhead.signature_image);
-
   if (editing !== null) {
-    const cat = CATEGORY_CONFIG[editing.category ?? "general"] ?? CATEGORY_CONFIG.general!;
     return (
-      <div style={{ padding: "20px 0" }}>
-        <button onClick={() => setEditing(null)} style={{ display: "flex", alignItems: "center", gap: 6, border: "none", background: "none", color: "#64748b", fontSize: 13, cursor: "pointer", padding: "0 0 16px" }}>
-          <ArrowLeft size={14} /> Retour à la liste
-        </button>
-        <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>{editing.id ? "Modifier le modèle" : "Nouveau modèle"}</div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Nom du modèle *</label>
-            <input value={editing.name ?? ""} onChange={e => setEditing(p => ({ ...p!, name: e.target.value }))}
-              placeholder="Ex : Demande de pièces complémentaires"
-              style={{ width: "100%", padding: "8px 11px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Catégorie</label>
-            <select value={editing.category ?? "general"} onChange={e => setEditing(p => ({ ...p!, category: e.target.value }))}
-              style={{ width: "100%", padding: "8px 11px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, outline: "none", background: "white", boxSizing: "border-box" }}>
-              {Object.entries(CATEGORY_CONFIG).map(([value, { label }]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Paper view: letterhead header + editable body + letterhead footer */}
-        <div style={{ boxShadow: "0 2px 8px rgba(0,0,0,0.06)", marginBottom: 14 }}>
-          {hasLetterhead && (
-            <div style={{ border: "1px solid #E2E8F0", borderBottom: "none", borderRadius: "10px 10px 0 0", overflow: "hidden" }}>
-              <LetterheadBanner lh={letterhead} />
-            </div>
-          )}
-          <TipTapEditorMairie
-            content={editing.body ?? ""}
-            onChange={body => setEditing(p => ({ ...p!, body }))}
-            placeholder="Rédigez le corps du courrier… Utilisez Insérer variable pour les champs dynamiques."
-            minHeight={220}
-            wrapperStyle={hasLetterhead || hasFooter ? {
-              borderRadius: hasLetterhead && hasFooter ? 0 : hasLetterhead ? "0 0 10px 10px" : "10px 10px 0 0",
-              borderTop: hasLetterhead ? "none" : undefined,
-              borderBottom: hasFooter ? "none" : undefined,
-            } : undefined}
-          />
-          {hasFooter && (
-            <div style={{ border: "1px solid #E2E8F0", borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
-              <LetterheadFooter lh={letterhead} />
-            </div>
-          )}
-        </div>
-
-        {!hasLetterhead && (
-          <div style={{ marginBottom: 14, padding: "8px 12px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12, color: "#64748b" }}>
-            💡 Configurez l'en-tête dans <strong>Paramètres → Courriers</strong> pour voir le papier à en-tête ici.
-          </div>
-        )}
-
-        <div style={{ padding: "10px 14px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #E2E8F0", marginBottom: 14 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#374151", marginBottom: 6 }}>Variables disponibles</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-            {TEMPLATE_VARIABLES.flatMap(g => g.vars).map(v => (
-              <span key={v.name} style={{ background: "#dbeafe", color: "#1d4ed8", padding: "1px 7px", borderRadius: 10, fontSize: 10, fontFamily: "monospace" }}>{`{{${v.name}}}`}</span>
-            ))}
-          </div>
-        </div>
-
-        {saveError && (
-          <div style={{ marginBottom: 12, padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#B91C1C" }}>
-            {saveError}
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button onClick={() => void handleSave()} disabled={saving || !editing.name?.trim()}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving || !editing.name?.trim() ? "not-allowed" : "pointer", opacity: saving || !editing.name?.trim() ? 0.6 : 1, fontSize: 13, fontWeight: 600 }}>
-            <Save size={13} /> {saving ? "Enregistrement…" : "Enregistrer"}
-          </button>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: "#64748b" }}>
-            <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: cat.color }} />
-            {cat.label}
-          </span>
-        </div>
-      </div>
+      <CanvasTemplateEditor
+        editing={editing}
+        setEditing={setEditing}
+        letterhead={letterhead}
+        handleSave={handleSave}
+        saving={saving}
+        saveError={saveError}
+      />
     );
   }
 
