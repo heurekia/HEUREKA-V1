@@ -696,18 +696,22 @@ function LetterheadBanner({ lh }: { lh: Letterhead }) {
   );
 }
 
-function LetterheadFooter({ lh }: { lh: Letterhead }) {
-  if (!lh.footer_text && !lh.signature_image) return null;
+function LetterheadSignature({ lh }: { lh: Letterhead }) {
+  if (!lh.signature_image) return null;
   return (
-    <div style={{ background: "white", borderTop: "1px solid #CBD5E1", padding: "10px 20px", userSelect: "none", pointerEvents: "none" }}>
-      {lh.signature_image && (
-        <img src={lh.signature_image} alt="Signature" style={{ height: 48, width: "auto", objectFit: "contain", display: "block", marginBottom: 4 }} />
-      )}
-      {lh.footer_text && (
-        <div style={{ fontSize: 10, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", borderTop: "1px solid #E2E8F0", paddingTop: 8, marginTop: 4 }}>
-          {lh.footer_text}
-        </div>
-      )}
+    <div style={{ background: "white", padding: "12px 20px 8px", userSelect: "none", pointerEvents: "none" }}>
+      <img src={lh.signature_image} alt="Signature" style={{ height: 56, width: "auto", objectFit: "contain", display: "block" }} />
+    </div>
+  );
+}
+
+function LetterheadFooter({ lh }: { lh: Letterhead }) {
+  if (!lh.footer_text) return null;
+  return (
+    <div style={{ background: "white", borderTop: "1px solid #CBD5E1", padding: "8px 20px 10px", userSelect: "none", pointerEvents: "none" }}>
+      <div style={{ fontSize: 10, color: "#64748b", textAlign: "center", whiteSpace: "pre-line" }}>
+        {lh.footer_text}
+      </div>
       <div style={{ fontSize: 10, color: "#CBD5E1", fontStyle: "italic", textAlign: "right", marginTop: 4 }}>Pied de page commune</div>
     </div>
   );
@@ -765,7 +769,9 @@ export function TemplateManagerPanel() {
   };
 
   const hasLetterhead = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
-  const hasFooter = !!(letterhead.footer_text || letterhead.signature_image);
+  const hasSignature = !!letterhead.signature_image;
+  const hasFooter = !!letterhead.footer_text;
+  const hasBelowBody = hasSignature || hasFooter;
 
   if (editing !== null) {
     const cat = CATEGORY_CONFIG[editing.category ?? "general"] ?? CATEGORY_CONFIG.general!;
@@ -794,7 +800,7 @@ export function TemplateManagerPanel() {
           </div>
         </div>
 
-        {/* Paper view: letterhead header + editable body + letterhead footer */}
+        {/* Paper view: header → body → signature → footer */}
         <div style={{ boxShadow: "0 2px 8px rgba(0,0,0,0.06)", marginBottom: 14 }}>
           {hasLetterhead && (
             <div style={{ border: "1px solid #E2E8F0", borderBottom: "none", borderRadius: "10px 10px 0 0", overflow: "hidden" }}>
@@ -806,14 +812,15 @@ export function TemplateManagerPanel() {
             onChange={body => setEditing(p => ({ ...p!, body }))}
             placeholder="Rédigez le corps du courrier… Utilisez Insérer variable pour les champs dynamiques."
             minHeight={220}
-            wrapperStyle={hasLetterhead || hasFooter ? {
-              borderRadius: hasLetterhead && hasFooter ? 0 : hasLetterhead ? "0 0 10px 10px" : "10px 10px 0 0",
+            wrapperStyle={hasLetterhead || hasBelowBody ? {
+              borderRadius: hasLetterhead && hasBelowBody ? 0 : hasLetterhead ? "0 0 10px 10px" : "10px 10px 0 0",
               borderTop: hasLetterhead ? "none" : undefined,
-              borderBottom: hasFooter ? "none" : undefined,
+              borderBottom: hasBelowBody ? "none" : undefined,
             } : undefined}
           />
-          {hasFooter && (
+          {hasBelowBody && (
             <div style={{ border: "1px solid #E2E8F0", borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
+              <LetterheadSignature lh={letterhead} />
               <LetterheadFooter lh={letterhead} />
             </div>
           )}
