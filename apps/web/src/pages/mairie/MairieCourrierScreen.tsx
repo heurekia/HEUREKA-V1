@@ -47,26 +47,37 @@ const fmtDate = (d: string | null | undefined) => d ? new Date(d).toLocaleDateSt
 
 // ─── Canvas data types & helpers ─────────────────────────────────────────────
 interface CanvasBlock {
-  id: string;
-  x: number; y: number; w: number; h: number;
-  html: string;
-  fontSize: number;
+  id: string; x: number; y: number; w: number; h: number;
+  html: string; fontSize: number;
   fontFamily: "serif" | "sans";
   textAlign: "left" | "center" | "right";
+  verticalAlign: "top" | "middle" | "bottom";
   borderStyle: "none" | "light" | "medium" | "dashed";
   background: "transparent" | "white" | "blue" | "yellow" | "green";
   padding: number;
 }
+interface CanvasPage { id: string; blocks: CanvasBlock[]; }
+
+const PAGE_W = 794;
+const PAGE_H = 1123; // A4 at 96 dpi
+const CANVAS_MARGIN = 40;
+const HDR_H = 82;  // letterhead zone height
+const FTR_H = 44;  // footer + page number zone height
+
 function isCanvasBody(s: string): boolean {
-  try { const d = JSON.parse(s); return d?.version === 1; } catch { return false; }
+  try { const d = JSON.parse(s); return d?.version === 1 || d?.version === 2; } catch { return false; }
 }
-function parseCanvasBlocks(body: string): CanvasBlock[] {
-  if (!body) return [];
-  if (isCanvasBody(body)) return (JSON.parse(body) as { version: number; blocks: CanvasBlock[] }).blocks;
-  return [{ id: "legacy", x: 40, y: 20, w: 714, h: 400, html: body, fontSize: 13, fontFamily: "serif", textAlign: "left", borderStyle: "none", background: "transparent", padding: 8 }];
+function parseCanvasDoc(body: string): CanvasPage[] {
+  if (!body) return [{ id: "p1", blocks: [] }];
+  try {
+    const d = JSON.parse(body) as { version: number; blocks?: CanvasBlock[]; pages?: CanvasPage[] };
+    if (d.version === 2 && d.pages) return d.pages;
+    if (d.version === 1 && d.blocks) return [{ id: "p1", blocks: d.blocks }];
+  } catch { /* legacy HTML */ }
+  return [{ id: "p1", blocks: [{ id: "legacy", x: CANVAS_MARGIN, y: 20, w: PAGE_W - CANVAS_MARGIN * 2, h: 400, html: body, fontSize: 13, fontFamily: "serif", textAlign: "left", verticalAlign: "top", borderStyle: "none", background: "transparent", padding: 8 }] }];
 }
-function serializeCanvas(blocks: CanvasBlock[]): string {
-  return JSON.stringify({ version: 1, blocks });
+function serializeDoc(pages: CanvasPage[]): string {
+  return JSON.stringify({ version: 2, pages });
 }
 
 const BLOCK_BG: Record<CanvasBlock["background"], string> = {
@@ -82,11 +93,12 @@ function substituteVariables(body: string, vars: Record<string, string>): string
   const subHtml = (html: string) =>
     html.replace(/<span[^>]*data-variable="([^"]+)"[^>]*>[^<]*<\/span>/g,
       (_, name: string) => vars[name] ?? `{{${name}}}`);
-  if (isCanvasBody(body)) {
-    const data = JSON.parse(body) as { version: number; blocks: CanvasBlock[] };
-    return JSON.stringify({ ...data, blocks: data.blocks.map(b => ({ ...b, html: subHtml(b.html) })) });
+  if (!isCanvasBody(body)) return subHtml(body);
+  const d = JSON.parse(body) as { version: number; blocks?: CanvasBlock[]; pages?: CanvasPage[] };
+  if (d.version === 2 && d.pages) {
+    return JSON.stringify({ ...d, pages: d.pages.map(p => ({ ...p, blocks: p.blocks.map(b => ({ ...b, html: subHtml(b.html) })) })) });
   }
-  return subHtml(body);
+  return JSON.stringify({ ...d, blocks: (d.blocks ?? []).map(b => ({ ...b, html: subHtml(b.html) })) });
 }
 
 
@@ -170,44 +182,52 @@ function DraggableStamp({ src, pos, setPos, caption, onHide }: {
   );
 }
 
-// ─── Canvas print view ────────────────────────────────────────────────────────
-function CanvasPrintView({ blocks, letterhead, extraHtml }: { blocks: CanvasBlock[]; letterhead: Letterhead; extraHtml?: string }) {
-  const maxY = blocks.reduce((m, b) => Math.max(m, b.y + b.h), 0) + 60;
-  const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
+// ─── Canvas print view (multi-page A4) ───────────────────────────────────────
+function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]; letterhead: Letterhead; extraHtml?: string }) {
+  const hasLH = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
+  const hH = hasLH ? HDR_H : 0;
   return (
-    <div style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" }}>
-      {hasHeader && (
-        <div className="lh-print-header" style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
-          {letterhead.letterhead_logo && <img src={letterhead.letterhead_logo} alt="" style={{ height: 56, width: "auto", objectFit: "contain", flexShrink: 0 }} />}
-          <div>
-            {letterhead.letterhead_title && <div style={{ fontSize: 16, fontWeight: 700 }}>{letterhead.letterhead_title}</div>}
-            {letterhead.letterhead_subtitle && <div style={{ fontSize: 13 }}>{letterhead.letterhead_subtitle}</div>}
-            {letterhead.letterhead_address && <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{letterhead.letterhead_address}</div>}
+    <div>
+      {pages.map((page, i) => (
+        <div key={page.id} style={{
+          position: "relative", width: PAGE_W, height: PAGE_H, background: "white",
+          ...(i < pages.length - 1 ? { marginBottom: 32, pageBreakAfter: "always", breakAfter: "page" } : {}),
+        }}>
+          {hasLH && (
+            <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: hH, overflow: "hidden", borderBottom: "2px solid #1E293B", display: "flex", alignItems: "center", padding: "0 20px", gap: 14, background: "white" }}>
+              {letterhead.letterhead_logo && <img src={letterhead.letterhead_logo} alt="" style={{ height: 44, width: "auto", objectFit: "contain", flexShrink: 0 }} />}
+              <div>
+                {letterhead.letterhead_title && <div style={{ fontSize: 15, fontWeight: 700 }}>{letterhead.letterhead_title}</div>}
+                {letterhead.letterhead_subtitle && <div style={{ fontSize: 12 }}>{letterhead.letterhead_subtitle}</div>}
+                {letterhead.letterhead_address && <div style={{ fontSize: 11, color: "#64748b", whiteSpace: "pre-line" }}>{letterhead.letterhead_address}</div>}
+              </div>
+            </div>
+          )}
+          <div style={{ position: "absolute", top: hH, left: 0, right: 0, bottom: FTR_H }}>
+            {page.blocks.map(b => (
+              <div key={b.id} style={{
+                position: "absolute", left: b.x, top: b.y, width: b.w, height: b.h,
+                display: "flex", flexDirection: "column",
+                justifyContent: b.verticalAlign === "middle" ? "center" : b.verticalAlign === "bottom" ? "flex-end" : "flex-start",
+                padding: b.padding, fontSize: b.fontSize, lineHeight: 1.6, boxSizing: "border-box",
+                fontFamily: b.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif",
+                textAlign: b.textAlign, background: BLOCK_BG[b.background],
+                border: BLOCK_BORDER[b.borderStyle], overflow: "hidden",
+              }} dangerouslySetInnerHTML={{ __html: b.html }} />
+            ))}
+          </div>
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: FTR_H, borderTop: "1px solid #CBD5E1", display: "flex", alignItems: "center", padding: "0 20px", background: "white" }}>
+            <span style={{ fontSize: 10, color: "#64748b", flex: 1 }}>{letterhead.footer_text ?? ""}</span>
+            <span style={{ fontSize: 11, color: "#94a3b8" }}>{i + 1} / {pages.length}</span>
           </div>
         </div>
-      )}
-      <div className="lh-print-body" style={{ position: "relative", minHeight: maxY }}>
-        {blocks.map(b => (
-          <div key={b.id} style={{
-            position: "absolute", left: b.x, top: b.y, width: b.w, height: b.h,
-            padding: b.padding, fontSize: b.fontSize, lineHeight: 1.6,
-            fontFamily: b.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif",
-            textAlign: b.textAlign, background: BLOCK_BG[b.background],
-            border: BLOCK_BORDER[b.borderStyle], boxSizing: "border-box", overflow: "hidden",
-          }} dangerouslySetInnerHTML={{ __html: b.html }} />
-        ))}
-      </div>
+      ))}
       {extraHtml && (
-        <div style={{ padding: "24px 36px", marginTop: maxY }}>
+        <div style={{ background: "white", padding: "24px 40px", width: PAGE_W, boxSizing: "border-box" }}>
           <div style={{ paddingTop: 18, borderTop: "1px solid #CBD5E1" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Références législatives et réglementaires</div>
             <div dangerouslySetInnerHTML={{ __html: extraHtml }} />
           </div>
-        </div>
-      )}
-      {letterhead.footer_text && (
-        <div className="lh-print-footer" style={{ padding: "10px 36px 14px", borderTop: "1px solid #CBD5E1", fontSize: 11, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", background: "white" }}>
-          {letterhead.footer_text}
         </div>
       )}
     </div>
@@ -217,8 +237,7 @@ function CanvasPrintView({ blocks, letterhead, extraHtml }: { blocks: CanvasBloc
 // ─── Courrier preview (print-ready, multi-page) ───────────────────────────
 function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; letterhead: Letterhead; extraHtml?: string }) {
   if (isCanvasBody(html)) {
-    const blocks = (JSON.parse(html) as { version: number; blocks: CanvasBlock[] }).blocks;
-    return <CanvasPrintView blocks={blocks} letterhead={letterhead} extraHtml={extraHtml} />;
+    return <CanvasPrintView pages={parseCanvasDoc(html)} letterhead={letterhead} extraHtml={extraHtml} />;
   }
 
   const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
@@ -605,84 +624,40 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
   );
 }
 
-// ─── Letterhead banner (shown inside template editor as paper context) ────────
-function LetterheadBanner({ lh }: { lh: Letterhead }) {
-  if (!lh.letterhead_logo && !lh.letterhead_title) return null;
-  return (
-    <div style={{ padding: "14px 20px 12px", borderBottom: "2px solid #1E293B", display: "flex", alignItems: "flex-start", gap: 14, background: "white", userSelect: "none", pointerEvents: "none" }}>
-      {lh.letterhead_logo && (
-        <img src={lh.letterhead_logo} alt="" style={{ height: 44, width: "auto", objectFit: "contain", flexShrink: 0 }} />
-      )}
-      <div>
-        {lh.letterhead_title && <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>{lh.letterhead_title}</div>}
-        {lh.letterhead_subtitle && <div style={{ fontSize: 12, color: "#374151" }}>{lh.letterhead_subtitle}</div>}
-        {lh.letterhead_address && <div style={{ fontSize: 11, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{lh.letterhead_address}</div>}
-      </div>
-      <div style={{ marginLeft: "auto", fontSize: 10, color: "#CBD5E1", fontStyle: "italic", alignSelf: "flex-end" }}>En-tête commune</div>
-    </div>
-  );
-}
-
-
-function LetterheadFooter({ lh }: { lh: Letterhead }) {
-  if (!lh.footer_text) return null;
-  return (
-    <div style={{ background: "white", borderTop: "1px solid #CBD5E1", padding: "8px 20px 10px", userSelect: "none", pointerEvents: "none" }}>
-      <div style={{ fontSize: 10, color: "#64748b", textAlign: "center", whiteSpace: "pre-line" }}>
-        {lh.footer_text}
-      </div>
-      <div style={{ fontSize: 10, color: "#CBD5E1", fontStyle: "italic", textAlign: "right", marginTop: 4 }}>Pied de page commune</div>
-    </div>
-  );
-}
-
 // ─── Block content editor (contentEditable via ref to avoid cursor reset) ────
 function BlockEditor({ block, isEditing, onStartEdit, onEndEdit }: {
-  block: CanvasBlock;
-  isEditing: boolean;
-  onStartEdit: () => void;
-  onEndEdit: (html: string) => void;
+  block: CanvasBlock; isEditing: boolean;
+  onStartEdit: () => void; onEndEdit: (html: string) => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
-  // Mount: set initial innerHTML
   useEffect(() => {
     if (ref.current) ref.current.innerHTML = block.html;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  // Sync from state when NOT editing (e.g. after variable insert or external update)
   useEffect(() => {
     if (!isEditing && ref.current) ref.current.innerHTML = block.html;
   }, [block.html, isEditing]);
 
+  const justifyContent = block.verticalAlign === "middle" ? "center" : block.verticalAlign === "bottom" ? "flex-end" : "flex-start";
+
   return (
     <div
-      ref={ref}
-      contentEditable={isEditing}
-      suppressContentEditableWarning
+      style={{ width: "100%", height: "100%", display: "flex", flexDirection: "column", justifyContent, background: BLOCK_BG[block.background], border: BLOCK_BORDER[block.borderStyle], boxSizing: "border-box", cursor: isEditing ? "text" : "default" }}
       onDoubleClick={() => { if (!isEditing) onStartEdit(); }}
-      onBlur={(e) => { if (isEditing) onEndEdit(e.currentTarget.innerHTML); }}
-      style={{
-        width: "100%", height: "100%",
-        padding: block.padding, boxSizing: "border-box",
-        fontSize: block.fontSize, lineHeight: 1.6,
-        fontFamily: block.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif",
-        textAlign: block.textAlign,
-        background: BLOCK_BG[block.background],
-        border: BLOCK_BORDER[block.borderStyle],
-        outline: "none",
-        cursor: isEditing ? "text" : "default",
-        overflow: "auto", wordBreak: "break-word",
-        color: "#1E293B",
-      }}
-    />
+    >
+      <div
+        ref={ref}
+        contentEditable={isEditing}
+        suppressContentEditableWarning
+        onBlur={(e) => { if (isEditing) onEndEdit(e.currentTarget.innerHTML); }}
+        style={{ width: "100%", padding: block.padding, boxSizing: "border-box", fontSize: block.fontSize, lineHeight: 1.6, fontFamily: block.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif", textAlign: block.textAlign, outline: "none", cursor: isEditing ? "text" : "default", wordBreak: "break-word", color: "#1E293B" }}
+      />
+    </div>
   );
 }
 
-// ─── Canvas template editor ───────────────────────────────────────────────
-const CANVAS_W = 794;
-const CANVAS_MARGIN = 40;
-
+// ─── Canvas template editor (A4 multi-page) ───────────────────────────────────
 function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, saving, saveError }: {
   editing: Partial<CourrierTemplate>;
   setEditing: Dispatch<SetStateAction<Partial<CourrierTemplate> | null>>;
@@ -691,34 +666,49 @@ function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, sav
   saving: boolean;
   saveError: string | null;
 }) {
-  const [blocks, setBlocks] = useState<CanvasBlock[]>(() => parseCanvasBlocks(editing.body ?? ""));
+  const [pages, setPages] = useState<CanvasPage[]>(() => parseCanvasDoc(editing.body ?? ""));
+  const [activePageIdx, setActivePageIdx] = useState(0);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  // Sync blocks → editing.body
-  useEffect(() => {
-    setEditing(prev => prev ? { ...prev, body: serializeCanvas(blocks) } : prev);
-  }, [blocks, setEditing]);
+  const hasLH = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
+  const hH = hasLH ? HDR_H : 0;
+  const contentH = PAGE_H - hH - FTR_H;
 
-  const selectedBlock = blocks.find(b => b.id === selectedId) ?? null;
+  useEffect(() => {
+    setEditing(prev => prev ? { ...prev, body: serializeDoc(pages) } : prev);
+  }, [pages, setEditing]);
+
+  const activePage = pages[Math.min(activePageIdx, pages.length - 1)];
+  const selectedBlock = activePage?.blocks.find(b => b.id === selectedId) ?? null;
+
+  const addPage = () => {
+    const newPage: CanvasPage = { id: Math.random().toString(36).slice(2), blocks: [] };
+    setPages(prev => [...prev, newPage]);
+    setActivePageIdx(pages.length);
+    setSelectedId(null); setEditingId(null);
+  };
 
   const addBlock = () => {
+    if (!activePage) return;
     const nb: CanvasBlock = {
       id: Math.random().toString(36).slice(2),
-      x: CANVAS_MARGIN, y: Math.max(20, ...blocks.map(b => b.y + b.h + 10)),
-      w: CANVAS_W - CANVAS_MARGIN * 2, h: 120,
+      x: CANVAS_MARGIN,
+      y: activePage.blocks.length > 0 ? Math.max(...activePage.blocks.map(b => b.y + b.h)) + 10 : 10,
+      w: PAGE_W - CANVAS_MARGIN * 2, h: 120,
       html: "", fontSize: 13, fontFamily: "serif",
-      textAlign: "left", borderStyle: "none", background: "transparent", padding: 8,
+      textAlign: "left", verticalAlign: "top", borderStyle: "none", background: "transparent", padding: 8,
     };
-    setBlocks(prev => [...prev, nb]);
+    setPages(prev => prev.map((p, i) => i === activePageIdx ? { ...p, blocks: [...p.blocks, nb] } : p));
     setSelectedId(nb.id);
   };
 
   const updateBlock = (id: string, patch: Partial<CanvasBlock>) =>
-    setBlocks(prev => prev.map(b => b.id === id ? { ...b, ...patch } : b));
+    setPages(prev => prev.map((p, i) => i === activePageIdx
+      ? { ...p, blocks: p.blocks.map(b => b.id === id ? { ...b, ...patch } : b) } : p));
 
   const deleteBlock = (id: string) => {
-    setBlocks(prev => prev.filter(b => b.id !== id));
+    setPages(prev => prev.map((p, i) => i === activePageIdx ? { ...p, blocks: p.blocks.filter(b => b.id !== id) } : p));
     if (selectedId === id) setSelectedId(null);
     if (editingId === id) setEditingId(null);
   };
@@ -734,31 +724,35 @@ function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, sav
     span.setAttribute("style", "background:#EEF2FF;color:#4F46E5;border-radius:3px;padding:1px 5px;font-size:0.85em;font-weight:500;");
     span.textContent = varName;
     range.insertNode(span);
+    // Insert a plain space after the span so typed text doesn't inherit its style
+    const textNode = document.createTextNode(" ");
+    span.parentNode?.insertBefore(textNode, span.nextSibling);
     const after = document.createRange();
-    after.setStartAfter(span);
+    after.setStart(textNode, 1);
     after.collapse(true);
     sel.removeAllRanges();
     sel.addRange(after);
   };
 
+  // Thumbnail scale helpers
+  const THUMB_W = 68; const THUMB_H = 96;
+  const thumbHdrH = Math.round(hH * THUMB_H / PAGE_H);
+  const thumbFtrH = Math.round(FTR_H * THUMB_H / PAGE_H);
+  const thumbContentH = THUMB_H - thumbHdrH - thumbFtrH;
+
   return (
     <div style={{ position: "fixed", inset: 0, zIndex: 200, background: "#F1F5F9", display: "flex", flexDirection: "column" }}>
-      {/* ── Top bar ─────────────────────────────────────────────────────── */}
+      {/* ── Top bar ── */}
       <div style={{ height: 56, background: "white", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", gap: 10, padding: "0 20px", flexShrink: 0 }}>
         <button onClick={() => setEditing(null)}
           style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 10px", border: "1px solid #E2E8F0", borderRadius: 7, background: "white", cursor: "pointer", fontSize: 12, color: "#64748b" }}>
           <ArrowLeft size={13} /> Retour
         </button>
         <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
-        <input
-          value={editing.name ?? ""}
-          onChange={e => setEditing(p => p ? { ...p, name: e.target.value } : p)}
+        <input value={editing.name ?? ""} onChange={e => setEditing(p => p ? { ...p, name: e.target.value } : p)}
           placeholder="Nom du modèle…"
-          style={{ flex: 1, maxWidth: 280, padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, outline: "none" }}
-        />
-        <select
-          value={editing.category ?? "general"}
-          onChange={e => setEditing(p => p ? { ...p, category: e.target.value } : p)}
+          style={{ flex: 1, maxWidth: 280, padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, outline: "none" }} />
+        <select value={editing.category ?? "general"} onChange={e => setEditing(p => p ? { ...p, category: e.target.value } : p)}
           style={{ padding: "6px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12, background: "white", outline: "none", cursor: "pointer" }}>
           {Object.entries(CATEGORY_CONFIG).map(([k, v]) => <option key={k} value={k}>{v.label}</option>)}
         </select>
@@ -775,80 +769,111 @@ function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, sav
         </div>
       </div>
 
-      {/* ── Main ────────────────────────────────────────────────────────── */}
+      {/* ── Main ── */}
       <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        {/* Canvas scroll area */}
-        <div
-          style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", justifyContent: "center" }}
-          onMouseDown={(e) => {
-            if (e.target === e.currentTarget) { setSelectedId(null); setEditingId(null); }
-          }}
-        >
-          {/* A4 paper */}
-          <div style={{ width: CANVAS_W, background: "white", boxShadow: "0 4px 20px rgba(0,0,0,0.12)", borderRadius: 2, flexShrink: 0, position: "relative" }}>
-            <LetterheadBanner lh={letterhead} />
-            {/* Blocks area */}
-            <div
-              style={{ position: "relative", minHeight: 900 }}
-              onMouseDown={(e) => {
-                if (e.target === e.currentTarget) { setSelectedId(null); setEditingId(null); }
-              }}
-            >
-              {/* Margin guides */}
-              <div style={{ position: "absolute", top: 0, bottom: 0, left: CANVAS_MARGIN, borderLeft: "1px dashed #BFDBFE", pointerEvents: "none" }} />
-              <div style={{ position: "absolute", top: 0, bottom: 0, right: CANVAS_MARGIN, borderRight: "1px dashed #BFDBFE", pointerEvents: "none" }} />
-
-              {blocks.length === 0 && (
-                <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 10, color: "#CBD5E1", pointerEvents: "none" }}>
-                  <Plus size={28} color="#CBD5E1" />
-                  <span style={{ fontSize: 13 }}>Cliquez sur "Ajouter un bloc" pour commencer</span>
+        {/* Page list */}
+        <div style={{ width: 100, background: "#E8EDF2", borderRight: "1px solid #CBD5E1", display: "flex", flexDirection: "column", overflow: "hidden", flexShrink: 0 }}>
+          <div style={{ flex: 1, overflowY: "auto", padding: "10px 8px" }}>
+            {pages.map((page, i) => (
+              <div key={page.id} onClick={() => { setActivePageIdx(i); setSelectedId(null); setEditingId(null); }}
+                style={{ marginBottom: 8, cursor: "pointer", textAlign: "center" }}>
+                <div style={{ width: THUMB_W, height: THUMB_H, background: "white", margin: "0 auto 4px", border: `1.5px solid ${i === activePageIdx ? "#4F46E5" : "#CBD5E1"}`, borderRadius: 2, position: "relative", overflow: "hidden", boxShadow: i === activePageIdx ? "0 0 0 2px #C7D2FE" : "none" }}>
+                  {hasLH && <div style={{ height: thumbHdrH, background: "#F1F5F9", borderBottom: "1px solid #CBD5E1" }} />}
+                  {page.blocks.map(b => (
+                    <div key={b.id} style={{
+                      position: "absolute",
+                      left: Math.round(b.x * THUMB_W / PAGE_W),
+                      top: thumbHdrH + Math.round(b.y * thumbContentH / contentH),
+                      width: Math.max(2, Math.round(b.w * THUMB_W / PAGE_W)),
+                      height: Math.max(2, Math.round(b.h * thumbContentH / contentH)),
+                      background: "#CBD5E1", borderRadius: 1,
+                    }} />
+                  ))}
+                  <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: thumbFtrH, background: "#F1F5F9", borderTop: "1px solid #CBD5E1" }} />
                 </div>
-              )}
-
-              {blocks.map(block => (
-                <Rnd
-                  key={block.id}
-                  position={{ x: block.x, y: block.y }}
-                  size={{ width: block.w, height: block.h }}
-                  bounds="parent"
-                  disableDragging={editingId === block.id}
-                  enableResizing={selectedId === block.id && editingId !== block.id
-                    ? { top: true, right: true, bottom: true, left: true, topRight: true, bottomRight: true, bottomLeft: true, topLeft: true }
-                    : false}
-                  onDragStop={(_, d) => updateBlock(block.id, { x: d.x, y: d.y })}
-                  onResizeStop={(_, __, ref, ___, pos) => updateBlock(block.id, {
-                    w: parseInt(ref.style.width), h: parseInt(ref.style.height),
-                    x: pos.x, y: pos.y,
-                  })}
-                  style={{ zIndex: selectedId === block.id ? 10 : 1 }}
-                  onMouseDown={() => {
-                    if (editingId !== block.id) setSelectedId(block.id);
-                  }}
-                >
-                  <div style={{
-                    width: "100%", height: "100%",
-                    outline: selectedId === block.id
-                      ? (editingId === block.id ? "2px solid #4F46E5" : "1.5px solid #6366F1")
-                      : "1px dashed #E2E8F0",
-                  }}>
-                    <BlockEditor
-                      block={block}
-                      isEditing={editingId === block.id}
-                      onStartEdit={() => { setSelectedId(block.id); setEditingId(block.id); }}
-                      onEndEdit={(html) => { updateBlock(block.id, { html }); setEditingId(null); }}
-                    />
-                  </div>
-                </Rnd>
-              ))}
-            </div>
-            <LetterheadFooter lh={letterhead} />
+                <span style={{ fontSize: 10, fontWeight: i === activePageIdx ? 700 : 400, color: i === activePageIdx ? "#4F46E5" : "#64748b" }}>{i + 1}</span>
+              </div>
+            ))}
+          </div>
+          <div style={{ padding: "8px", borderTop: "1px solid #CBD5E1" }}>
+            <button onClick={addPage}
+              style={{ width: "100%", padding: "6px 0", border: "1.5px dashed #94a3b8", borderRadius: 6, background: "white", cursor: "pointer", fontSize: 11, color: "#64748b", display: "flex", alignItems: "center", justifyContent: "center", gap: 3 }}>
+              <Plus size={11} /> Page
+            </button>
           </div>
         </div>
 
-        {/* ── Sidebar ─────────────────────────────────────────────────── */}
+        {/* Canvas scroll area */}
+        <div
+          style={{ flex: 1, overflow: "auto", padding: "32px 40px", display: "flex", alignItems: "flex-start", justifyContent: "center" }}
+          onMouseDown={(e) => { if (e.target === e.currentTarget) { setSelectedId(null); setEditingId(null); } }}
+        >
+          {activePage && (
+            <div style={{ position: "relative", width: PAGE_W, height: PAGE_H, background: "white", boxShadow: "0 4px 24px rgba(0,0,0,0.12)", borderRadius: 2, flexShrink: 0 }}>
+              {/* Header zone */}
+              {hasLH && (
+                <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: hH, zIndex: 2, pointerEvents: "none", borderBottom: "2px solid #1E293B", display: "flex", alignItems: "center", padding: "0 20px", gap: 14, background: "white", overflow: "hidden" }}>
+                  {letterhead.letterhead_logo && <img src={letterhead.letterhead_logo} alt="" style={{ height: 44, width: "auto", objectFit: "contain", flexShrink: 0 }} />}
+                  <div>
+                    {letterhead.letterhead_title && <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>{letterhead.letterhead_title}</div>}
+                    {letterhead.letterhead_subtitle && <div style={{ fontSize: 12, color: "#374151" }}>{letterhead.letterhead_subtitle}</div>}
+                    {letterhead.letterhead_address && <div style={{ fontSize: 11, color: "#64748b", marginTop: 1, whiteSpace: "pre-line" }}>{letterhead.letterhead_address}</div>}
+                  </div>
+                  <span style={{ marginLeft: "auto", fontSize: 10, color: "#CBD5E1", fontStyle: "italic" }}>En-tête commune</span>
+                </div>
+              )}
+
+              {/* Content zone */}
+              <div
+                style={{ position: "absolute", top: hH, left: 0, right: 0, bottom: FTR_H }}
+                onMouseDown={(e) => { if (e.target === e.currentTarget) { setSelectedId(null); setEditingId(null); } }}
+              >
+                <div style={{ position: "absolute", top: 0, bottom: 0, left: CANVAS_MARGIN, borderLeft: "1px dashed #BFDBFE", pointerEvents: "none" }} />
+                <div style={{ position: "absolute", top: 0, bottom: 0, right: CANVAS_MARGIN, borderRight: "1px dashed #BFDBFE", pointerEvents: "none" }} />
+
+                {activePage.blocks.length === 0 && (
+                  <div style={{ position: "absolute", inset: 0, display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#CBD5E1", pointerEvents: "none" }}>
+                    <Plus size={28} color="#CBD5E1" />
+                    <span style={{ fontSize: 13 }}>Cliquez sur "Ajouter un bloc" pour commencer</span>
+                  </div>
+                )}
+
+                {activePage.blocks.map(block => (
+                  <Rnd key={block.id}
+                    position={{ x: block.x, y: block.y }}
+                    size={{ width: block.w, height: block.h }}
+                    bounds="parent"
+                    disableDragging={editingId === block.id}
+                    enableResizing={selectedId === block.id && editingId !== block.id
+                      ? { top: true, right: true, bottom: true, left: true, topRight: true, bottomRight: true, bottomLeft: true, topLeft: true }
+                      : false}
+                    onDragStop={(_, d) => updateBlock(block.id, { x: d.x, y: d.y })}
+                    onResizeStop={(_, __, ref, ___, pos) => updateBlock(block.id, { w: parseInt(ref.style.width), h: parseInt(ref.style.height), x: pos.x, y: pos.y })}
+                    style={{ zIndex: selectedId === block.id ? 10 : 1 }}
+                    onMouseDown={() => { if (editingId !== block.id) setSelectedId(block.id); }}
+                  >
+                    <div style={{ width: "100%", height: "100%", outline: selectedId === block.id ? (editingId === block.id ? "2px solid #4F46E5" : "1.5px solid #6366F1") : "1px dashed #E2E8F0" }}>
+                      <BlockEditor block={block} isEditing={editingId === block.id}
+                        onStartEdit={() => { setSelectedId(block.id); setEditingId(block.id); }}
+                        onEndEdit={(html) => { updateBlock(block.id, { html }); setEditingId(null); }}
+                      />
+                    </div>
+                  </Rnd>
+                ))}
+              </div>
+
+              {/* Footer zone */}
+              <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: FTR_H, borderTop: "1px solid #CBD5E1", display: "flex", alignItems: "center", padding: "0 20px", background: "white", zIndex: 2, pointerEvents: "none" }}>
+                <span style={{ fontSize: 10, color: "#64748b", flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{letterhead.footer_text ?? ""}</span>
+                <span style={{ fontSize: 11, color: "#94a3b8", flexShrink: 0 }}>{activePageIdx + 1} / {pages.length}</span>
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* ── Sidebar ── */}
         <div style={{ width: 256, background: "white", borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", overflow: "hidden", flexShrink: 0 }}>
-          {/* Block formatting panel */}
-          <div style={{ borderBottom: "1px solid #E2E8F0", padding: "12px 14px" }}>
+          <div style={{ borderBottom: "1px solid #E2E8F0", padding: "12px 14px", overflowY: "auto", maxHeight: "60vh" }}>
             <div style={{ fontSize: 11, fontWeight: 700, color: "#0F172A", textTransform: "uppercase", letterSpacing: "0.05em", marginBottom: 10 }}>
               {selectedBlock ? "Bloc sélectionné" : "Blocs"}
             </div>
@@ -859,8 +884,7 @@ function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, sav
                   <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Taille du texte</label>
                   <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
                     <input type="range" min={9} max={24} value={selectedBlock.fontSize}
-                      onChange={e => updateBlock(selectedBlock.id, { fontSize: Number(e.target.value) })}
-                      style={{ flex: 1 }} />
+                      onChange={e => updateBlock(selectedBlock.id, { fontSize: Number(e.target.value) })} style={{ flex: 1 }} />
                     <span style={{ fontSize: 11, color: "#64748b", minWidth: 20, textAlign: "right" }}>{selectedBlock.fontSize}</span>
                   </div>
                 </div>
@@ -876,13 +900,25 @@ function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, sav
                     ))}
                   </div>
                 </div>
-                {/* Alignment */}
+                {/* Horizontal align */}
                 <div>
-                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Alignement</label>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Alignement horizontal</label>
                   <div style={{ display: "flex", gap: 5 }}>
                     {([["left", "G"], ["center", "C"], ["right", "D"]] as const).map(([a, lbl]) => (
                       <button key={a} onClick={() => updateBlock(selectedBlock.id, { textAlign: a })}
                         style={{ flex: 1, padding: "4px 0", border: `1.5px solid ${selectedBlock.textAlign === a ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 5, background: selectedBlock.textAlign === a ? "#EEF2FF" : "white", cursor: "pointer", fontSize: 11, color: selectedBlock.textAlign === a ? "#4F46E5" : "#374151", fontWeight: selectedBlock.textAlign === a ? 700 : 400 }}>
+                        {lbl}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                {/* Vertical align */}
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#374151", display: "block", marginBottom: 3 }}>Alignement vertical</label>
+                  <div style={{ display: "flex", gap: 5 }}>
+                    {([["top", "↑ Haut"], ["middle", "↕ Milieu"], ["bottom", "↓ Bas"]] as const).map(([a, lbl]) => (
+                      <button key={a} onClick={() => updateBlock(selectedBlock.id, { verticalAlign: a })}
+                        style={{ flex: 1, padding: "4px 2px", border: `1.5px solid ${selectedBlock.verticalAlign === a ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 5, background: selectedBlock.verticalAlign === a ? "#EEF2FF" : "white", cursor: "pointer", fontSize: 10, color: selectedBlock.verticalAlign === a ? "#4F46E5" : "#374151", fontWeight: selectedBlock.verticalAlign === a ? 700 : 400 }}>
                         {lbl}
                       </button>
                     ))}
