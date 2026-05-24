@@ -1756,7 +1756,7 @@ function Utilisateurs() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: C.bg }}>
-                {["Nom Prénom", "Email", "Rôle", "Commune", "Créé le", "Actions"].map((h) => (
+                {["Nom Prénom", "Email", "Rôle", "Créé le", "Actions"].map((h) => (
                   <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.05em" }}>{h}</th>
                 ))}
               </tr>
@@ -1795,14 +1795,6 @@ function Utilisateurs() {
                         <button onClick={() => setEditRole({ id: u.id, role: u.role })} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, fontSize: 12, padding: 2 }}>✏️</button>
                       </div>
                     )}
-                  </td>
-                  <td style={{ padding: "12px 16px" }}>
-                    {u.commune
-                      ? <div>
-                          <span style={{ fontSize: 13, color: C.text }}>{u.commune}</span>
-                          {u.commune_insee && <span style={{ fontSize: 11, color: C.textMuted, marginLeft: 6 }}>({u.commune_insee})</span>}
-                        </div>
-                      : <span style={{ color: C.textLight, fontStyle: "italic", fontSize: 13 }}>—</span>}
                   </td>
                   <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>
                     {new Date(u.created_at).toLocaleDateString("fr-FR")}
