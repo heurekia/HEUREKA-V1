@@ -1,137 +1,7 @@
 import { useState, useEffect, useRef, useCallback, type Dispatch, type SetStateAction } from "react";
-import { useEditor, EditorContent } from "@tiptap/react";
-import StarterKit from "@tiptap/starter-kit";
-import TextAlign from "@tiptap/extension-text-align";
-import Underline from "@tiptap/extension-underline";
-import Placeholder from "@tiptap/extension-placeholder";
-import { Node as TiptapNode, mergeAttributes, type NodeViewRendererProps } from "@tiptap/core";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
-import { Bold, Italic, Underline as UnderlineIcon, AlignLeft, AlignCenter, AlignRight, List, ListOrdered, Type, ChevronDown, X, Save, ArrowLeft, Plus, Pencil, Trash2, FileText, Printer } from "lucide-react";
-
-// ─── Cadre types ───────────────────────────────────────────────────────────
-const CADRE_TYPES = [
-  {
-    type: "destinataire",
-    label: "Destinataire",
-    desc: "Bloc adresse du destinataire",
-    icon: "📮",
-    border: "1px solid #93C5FD",
-    background: "#EFF6FF",
-    borderLeft: "none",
-    padding: "14px 18px",
-  },
-  {
-    type: "references",
-    label: "Références",
-    desc: "Objet, N° dossier, date…",
-    icon: "🗂",
-    border: "1px solid #CBD5E1",
-    background: "#F8FAFC",
-    borderLeft: "none",
-    padding: "12px 16px",
-  },
-  {
-    type: "important",
-    label: "Encart important",
-    desc: "Information à mettre en valeur",
-    icon: "⚠️",
-    border: "1px solid #FDE68A",
-    background: "#FFFBEB",
-    borderLeft: "4px solid #F59E0B",
-    padding: "12px 16px",
-  },
-  {
-    type: "standard",
-    label: "Cadre texte",
-    desc: "Bloc neutre avec bordure",
-    icon: "▭",
-    border: "1px solid #E2E8F0",
-    background: "white",
-    borderLeft: "none",
-    padding: "12px 16px",
-  },
-] as const;
-
-type CadreType = (typeof CADRE_TYPES)[number]["type"];
-
-function cadreStyle(type: CadreType): string {
-  const c = CADRE_TYPES.find(ct => ct.type === type) ?? CADRE_TYPES[3]!;
-  const parts = [
-    `border: ${c.border}`,
-    `background: ${c.background}`,
-    `padding: ${c.padding}`,
-    "border-radius: 6px",
-    "margin: 14px 0",
-  ];
-  if (c.borderLeft !== "none") parts.push(`border-left: ${c.borderLeft}`);
-  return parts.join("; ") + ";";
-}
-
-// ─── Cadre Node (TipTap custom block node) ─────────────────────────────────
-const CadreNode = TiptapNode.create({
-  name: "cadre",
-  group: "block",
-  content: "block+",
-  defining: true,
-  isolating: false,
-
-  addAttributes() {
-    return { cadreType: { default: "standard" } };
-  },
-
-  parseHTML() {
-    return [{ tag: "div[data-cadre]", getAttrs: el => ({ cadreType: (el as HTMLElement).dataset.cadre ?? "standard" }) }];
-  },
-
-  renderHTML({ node, HTMLAttributes }) {
-    const type = (node.attrs as { cadreType: CadreType }).cadreType;
-    return ["div", mergeAttributes(HTMLAttributes, { "data-cadre": type, style: cadreStyle(type) }), 0];
-  },
-
-  addNodeView() {
-    return ({ node }: NodeViewRendererProps) => {
-      const type = (node.attrs as { cadreType: CadreType }).cadreType;
-      const dom = document.createElement("div");
-      dom.setAttribute("data-cadre", type);
-      dom.style.cssText = cadreStyle(type);
-      const content = document.createElement("div");
-      dom.appendChild(content);
-      return { dom, contentDOM: content };
-    };
-  },
-});
-
-// ─── Variable Node (TipTap custom inline node) ─────────────────────────────
-const VariableNode = TiptapNode.create({
-  name: "variable",
-  group: "inline",
-  inline: true,
-  atom: true,
-  selectable: true,
-  addAttributes() {
-    return { name: { default: null } };
-  },
-  parseHTML() {
-    return [{ tag: "span[data-variable]", getAttrs: (el: HTMLElement) => ({ name: el.dataset.variable ?? null }) }];
-  },
-  renderHTML({ node, HTMLAttributes }: { node: { attrs: Record<string, unknown> }; HTMLAttributes: Record<string, unknown> }) {
-    return ["span", mergeAttributes(HTMLAttributes, {
-      "data-variable": node.attrs.name as string,
-      style: "display:inline-block;background:#dbeafe;color:#1d4ed8;padding:1px 7px;border-radius:10px;font-size:0.8em;font-family:monospace;user-select:none;white-space:nowrap;",
-    }), `{{${node.attrs.name as string}}}`];
-  },
-  addNodeView() {
-    return ({ node }: NodeViewRendererProps) => {
-      const dom = document.createElement("span");
-      dom.setAttribute("data-variable", node.attrs.name as string);
-      dom.setAttribute("contenteditable", "false");
-      dom.style.cssText = "display:inline-block;background:#dbeafe;color:#1d4ed8;padding:1px 7px;border-radius:10px;font-size:0.8em;font-family:monospace;cursor:default;user-select:none;white-space:nowrap;";
-      dom.textContent = `{{${node.attrs.name as string}}}`;
-      return { dom };
-    };
-  },
-});
+import { X, Save, ArrowLeft, Plus, Pencil, Trash2, FileText, Printer } from "lucide-react";
 
 // ─── Variable groups ───────────────────────────────────────────────────────
 const TEMPLATE_VARIABLES = [
@@ -181,126 +51,6 @@ function substituteVariables(html: string, vars: Record<string, string>): string
   );
 }
 
-// ─── Editor toolbar ────────────────────────────────────────────────────────
-function EditorToolbar({ editor, showVarDropdown = true }: { editor: ReturnType<typeof useEditor>; showVarDropdown?: boolean }) {
-  const [varMenuOpen, setVarMenuOpen] = useState(false);
-  const menuRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const handler = (e: MouseEvent) => {
-      if (menuRef.current && !menuRef.current.contains(e.target as globalThis.Node)) setVarMenuOpen(false);
-    };
-    document.addEventListener("mousedown", handler);
-    return () => document.removeEventListener("mousedown", handler);
-  }, []);
-
-  if (!editor) return null;
-
-  const insertVariable = (name: string) => {
-    editor.chain().focus().insertContent({ type: "variable", attrs: { name } }).run();
-    setVarMenuOpen(false);
-  };
-
-  const btn = (active: boolean, onClick: () => void, icon: React.ReactNode, title: string) => (
-    <button type="button" title={title} onClick={onClick}
-      style={{ padding: "4px 7px", border: "none", borderRadius: 5, cursor: "pointer", background: active ? "#E0E7FF" : "transparent", color: active ? "#4F46E5" : "#374151", display: "flex", alignItems: "center" }}>
-      {icon}
-    </button>
-  );
-
-  return (
-    <div style={{ display: "flex", alignItems: "center", gap: 2, padding: "7px 10px", borderBottom: "1px solid #E2E8F0", flexWrap: "wrap", background: "#F8FAFC", borderRadius: "10px 10px 0 0" }}>
-      {btn(editor.isActive("bold"), () => editor.chain().focus().toggleBold().run(), <Bold size={13} />, "Gras")}
-      {btn(editor.isActive("italic"), () => editor.chain().focus().toggleItalic().run(), <Italic size={13} />, "Italique")}
-      {btn(editor.isActive("underline"), () => editor.chain().focus().toggleUnderline().run(), <UnderlineIcon size={13} />, "Souligné")}
-      <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
-      {btn(editor.isActive("heading", { level: 1 }), () => editor.chain().focus().toggleHeading({ level: 1 }).run(), <span style={{ fontSize: 10, fontWeight: 700 }}>H1</span>, "Titre 1")}
-      {btn(editor.isActive("heading", { level: 2 }), () => editor.chain().focus().toggleHeading({ level: 2 }).run(), <span style={{ fontSize: 10, fontWeight: 700 }}>H2</span>, "Titre 2")}
-      {btn(editor.isActive("paragraph"), () => editor.chain().focus().setParagraph().run(), <Type size={13} />, "Paragraphe")}
-      <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
-      {btn(editor.isActive({ textAlign: "left" }), () => editor.chain().focus().setTextAlign("left").run(), <AlignLeft size={13} />, "Gauche")}
-      {btn(editor.isActive({ textAlign: "center" }), () => editor.chain().focus().setTextAlign("center").run(), <AlignCenter size={13} />, "Centré")}
-      {btn(editor.isActive({ textAlign: "right" }), () => editor.chain().focus().setTextAlign("right").run(), <AlignRight size={13} />, "Droite")}
-      <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
-      {btn(editor.isActive("bulletList"), () => editor.chain().focus().toggleBulletList().run(), <List size={13} />, "Liste à puces")}
-      {btn(editor.isActive("orderedList"), () => editor.chain().focus().toggleOrderedList().run(), <ListOrdered size={13} />, "Liste numérotée")}
-      {showVarDropdown && (
-        <>
-          <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
-          <div style={{ position: "relative" }} ref={menuRef}>
-            <button type="button" onClick={() => setVarMenuOpen(v => !v)}
-              style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", border: "1px solid #C7D2FE", borderRadius: 6, background: varMenuOpen ? "#EEF2FF" : "white", color: "#4F46E5", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-              <span>Insérer variable</span><ChevronDown size={11} />
-            </button>
-            {varMenuOpen && (
-              <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 100, marginTop: 4, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 220, maxHeight: 320, overflowY: "auto" }}>
-                {TEMPLATE_VARIABLES.map(group => (
-                  <div key={group.group}>
-                    <div style={{ padding: "7px 12px 3px", fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>{group.group}</div>
-                    {group.vars.map(v => (
-                      <button key={v.name} type="button" onClick={() => insertVariable(v.name)}
-                        style={{ width: "100%", padding: "7px 12px", border: "none", background: "none", textAlign: "left", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
-                        onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
-                        onMouseLeave={e => (e.currentTarget.style.background = "none")}>
-                        <span>{v.label}</span>
-                        <span style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{`{{${v.name}}}`}</span>
-                      </button>
-                    ))}
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-        </>
-      )}
-    </div>
-  );
-}
-
-// ─── TipTap editor ─────────────────────────────────────────────────────────
-function TipTapEditorMairie({ content, onChange, placeholder, minHeight = 280, wrapperStyle }: { content: string; onChange: (html: string) => void; placeholder?: string; minHeight?: number; wrapperStyle?: React.CSSProperties }) {
-  const editor = useEditor({
-    extensions: [
-      StarterKit,
-      Underline,
-      TextAlign.configure({ types: ["heading", "paragraph"] }),
-      Placeholder.configure({ placeholder: placeholder ?? "Rédigez votre modèle…" }),
-      VariableNode,
-    ],
-    content,
-    onUpdate: ({ editor }) => onChange(editor.getHTML()),
-  });
-
-  useEffect(() => {
-    if (editor && content !== editor.getHTML()) {
-      editor.commands.setContent(content || "", { emitUpdate: false });
-    }
-  }, [content, editor]);
-
-  return (
-    <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden", background: "white", ...wrapperStyle }}>
-      <EditorToolbar editor={editor} />
-      <style>{`
-        .tiptap-mairie { outline: none; min-height: ${minHeight}px; padding: 18px 20px; font-size: 14px; line-height: 1.7; color: #1E293B; font-family: Georgia, serif; }
-        .tiptap-mairie p { margin: 0 0 10px; }
-        .tiptap-mairie h1 { font-size: 1.4em; font-weight: 700; margin: 14px 0 6px; }
-        .tiptap-mairie h2 { font-size: 1.2em; font-weight: 600; margin: 12px 0 5px; }
-        .tiptap-mairie ul, .tiptap-mairie ol { padding-left: 22px; margin: 6px 0; }
-        .tiptap-mairie li { margin-bottom: 3px; }
-        .tiptap-mairie p.is-editor-empty:first-child::before { color: #9CA3AF; content: attr(data-placeholder); float: left; height: 0; pointer-events: none; }
-        .tiptap-preview-mairie p { margin: 0 0 10px; }
-        .tiptap-preview-mairie h1 { font-size: 1.4em; font-weight: 700; margin: 14px 0 6px; }
-        .tiptap-preview-mairie h2 { font-size: 1.2em; font-weight: 600; margin: 12px 0 5px; }
-        .tiptap-preview-mairie ul, .tiptap-preview-mairie ol { padding-left: 22px; margin: 6px 0; }
-        .tiptap-preview-mairie li { margin-bottom: 3px; }
-        .tiptap-preview-mairie strong { font-weight: 700; }
-        .tiptap-preview-mairie em { font-style: italic; }
-        .tiptap-preview-mairie u { text-decoration: underline; }
-      `}</style>
-      <EditorContent editor={editor} className="tiptap-mairie" />
-    </div>
-  );
-}
 
 // ─── Types ─────────────────────────────────────────────────────────────────
 export interface CourrierTemplate {
@@ -791,14 +541,6 @@ function LetterheadBanner({ lh }: { lh: Letterhead }) {
   );
 }
 
-function LetterheadSignature({ lh }: { lh: Letterhead }) {
-  if (!lh.signature_image) return null;
-  return (
-    <div style={{ background: "white", padding: "12px 20px 8px", userSelect: "none", pointerEvents: "none" }}>
-      <img src={lh.signature_image} alt="Signature" style={{ height: 56, width: "auto", objectFit: "contain", display: "block" }} />
-    </div>
-  );
-}
 
 function LetterheadFooter({ lh }: { lh: Letterhead }) {
   if (!lh.footer_text) return null;
@@ -812,10 +554,8 @@ function LetterheadFooter({ lh }: { lh: Letterhead }) {
   );
 }
 
-// ─── Full-page template editor ─────────────────────────────────────────────
-function FullPageTemplateEditor({
-  editing, setEditing, letterhead, handleSave, saving, saveError,
-}: {
+// ─── Canvas template editor (placeholder — implementation next) ───────────
+function CanvasTemplateEditor(_props: {
   editing: Partial<CourrierTemplate>;
   setEditing: Dispatch<SetStateAction<Partial<CourrierTemplate> | null>>;
   letterhead: Letterhead;
@@ -823,163 +563,13 @@ function FullPageTemplateEditor({
   saving: boolean;
   saveError: string | null;
 }) {
-  const editor = useEditor({
-    extensions: [
-      StarterKit,
-      Underline,
-      TextAlign.configure({ types: ["heading", "paragraph"] }),
-      Placeholder.configure({ placeholder: "Rédigez le corps du courrier…" }),
-      VariableNode,
-      CadreNode,
-    ],
-    content: editing.body ?? "",
-    onUpdate: ({ editor: e }) => setEditing(p => ({ ...p!, body: e.getHTML() })),
-  });
-
-  useEffect(() => {
-    if (editor && (editing.body ?? "") !== editor.getHTML()) {
-      editor.commands.setContent(editing.body ?? "", { emitUpdate: false });
-    }
-  }, [editing.body, editor]);
-
-  const insertVariable = (name: string) => {
-    editor?.chain().focus().insertContent({ type: "variable", attrs: { name } }).run();
-  };
-
-  const insertCadre = (type: CadreType) => {
-    editor?.chain().focus().insertContent({
-      type: "cadre",
-      attrs: { cadreType: type },
-      content: [{ type: "paragraph" }],
-    }).run();
-  };
-
-  const hasLetterhead = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
-  const hasFooter = !!letterhead.footer_text;
-  const cat = CATEGORY_CONFIG[editing.category ?? "general"] ?? CATEGORY_CONFIG.general!;
-
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", flexDirection: "column", background: "white" }}>
-      {/* Top bar */}
-      <div style={{ padding: "10px 20px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", gap: 10, flexShrink: 0, background: "white", boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
-        <button onClick={() => setEditing(null)}
-          style={{ display: "flex", alignItems: "center", gap: 5, border: "none", background: "none", color: "#64748b", fontSize: 13, cursor: "pointer", padding: "6px 8px", borderRadius: 6, flexShrink: 0 }}>
-          <ArrowLeft size={14} /> Retour
-        </button>
-        <div style={{ width: 1, height: 20, background: "#E2E8F0", flexShrink: 0 }} />
-        <input value={editing.name ?? ""} onChange={e => setEditing(p => ({ ...p!, name: e.target.value }))}
-          placeholder="Nom du modèle"
-          style={{ flex: "1 1 300px", maxWidth: 420, padding: "7px 11px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 14, fontWeight: 600, outline: "none" }} />
-        <select value={editing.category ?? "general"} onChange={e => setEditing(p => ({ ...p!, category: e.target.value }))}
-          style={{ padding: "7px 11px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, background: "white", outline: "none", flexShrink: 0 }}>
-          {Object.entries(CATEGORY_CONFIG).map(([value, { label }]) => (
-            <option key={value} value={value}>{label}</option>
-          ))}
-        </select>
-        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: cat.color, fontWeight: 600, flexShrink: 0 }}>
-          <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: cat.color }} />
-          {cat.label}
-        </span>
-        {saveError && <span style={{ fontSize: 12, color: "#B91C1C", flex: 1 }}>{saveError}</span>}
-        <button onClick={() => void handleSave()} disabled={saving || !editing.name?.trim()}
-          style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 20px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving || !editing.name?.trim() ? "not-allowed" : "pointer", opacity: saving || !editing.name?.trim() ? 0.6 : 1, fontSize: 13, fontWeight: 600, flexShrink: 0, marginLeft: "auto" }}>
-          <Save size={13} /> {saving ? "Enregistrement…" : "Enregistrer"}
-        </button>
-      </div>
-
-      {/* Content: paper + variables sidebar */}
-      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-        {/* Paper area */}
-        <div style={{ flex: 1, overflowY: "auto", background: "#F1F5F9", padding: "32px 24px" }}>
-          {!hasLetterhead && (
-            <div style={{ maxWidth: 800, margin: "0 auto 14px", padding: "8px 12px", background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 7, fontSize: 12, color: "#92400E" }}>
-              💡 Configurez l'en-tête dans <strong>Paramètres → Courriers</strong> pour afficher le papier à en-tête ici.
-            </div>
-          )}
-          <div style={{ maxWidth: 800, margin: "0 auto" }}>
-            {hasLetterhead && (
-              <div style={{ border: "1px solid #D1D5DB", borderBottom: "none", borderRadius: "10px 10px 0 0", overflow: "hidden", boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}>
-                <LetterheadBanner lh={letterhead} />
-              </div>
-            )}
-            <div style={{
-              border: "1px solid #D1D5DB",
-              borderRadius: hasLetterhead && hasFooter ? 0 : hasLetterhead ? "0 0 10px 10px" : hasFooter ? "10px 10px 0 0" : 10,
-              borderTop: hasLetterhead ? "none" : undefined,
-              borderBottom: hasFooter ? "none" : undefined,
-              background: "white",
-              boxShadow: !hasLetterhead && !hasFooter ? "0 2px 12px rgba(0,0,0,0.06)" : undefined,
-            }}>
-              <EditorToolbar editor={editor} showVarDropdown={false} />
-              <style>{`
-                .tiptap-mairie-full { outline: none; min-height: 520px; padding: 28px 40px; font-size: 14px; line-height: 1.8; color: #1E293B; font-family: Georgia, serif; }
-                .tiptap-mairie-full p { margin: 0 0 12px; }
-                .tiptap-mairie-full h1 { font-size: 1.35em; font-weight: 700; margin: 18px 0 8px; }
-                .tiptap-mairie-full h2 { font-size: 1.15em; font-weight: 600; margin: 14px 0 6px; }
-                .tiptap-mairie-full ul, .tiptap-mairie-full ol { padding-left: 22px; margin: 6px 0; }
-                .tiptap-mairie-full li { margin-bottom: 4px; }
-                .tiptap-mairie-full p.is-editor-empty:first-child::before { color: #9CA3AF; content: attr(data-placeholder); float: left; height: 0; pointer-events: none; }
-              `}</style>
-              <EditorContent editor={editor} className="tiptap-mairie-full" />
-            </div>
-            {hasFooter && (
-              <div style={{ border: "1px solid #D1D5DB", borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden", boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}>
-                <LetterheadFooter lh={letterhead} />
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Sidebar: cadres + variables */}
-        <div style={{ width: 264, borderLeft: "1px solid #E2E8F0", overflowY: "auto", background: "#FAFAFA", flexShrink: 0, display: "flex", flexDirection: "column" }}>
-          {/* Cadres section */}
-          <div style={{ padding: "13px 16px 11px", fontWeight: 700, fontSize: 13, color: "#0F172A", borderBottom: "1px solid #E2E8F0", background: "white", position: "sticky", top: 0, zIndex: 1 }}>
-            Blocs
-            <div style={{ fontSize: 11, fontWeight: 400, color: "#94a3b8", marginTop: 2 }}>Cliquez pour insérer au curseur</div>
-          </div>
-          <div style={{ padding: "8px 12px 4px" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 4px 4px" }}>Cadres</div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8 }}>
-              {CADRE_TYPES.map(ct => (
-                <button key={ct.type} type="button" onClick={() => insertCadre(ct.type as CadreType)}
-                  style={{ padding: "8px 10px", border: `1px solid ${ct.border.replace("1px solid ", "")}`, borderRadius: 7, background: ct.background, cursor: "pointer", textAlign: "left" }}
-                  onMouseEnter={e => (e.currentTarget.style.opacity = "0.75")}
-                  onMouseLeave={e => (e.currentTarget.style.opacity = "1")}>
-                  <div style={{ fontSize: 16, marginBottom: 3 }}>{ct.icon}</div>
-                  <div style={{ fontSize: 11, fontWeight: 600, color: "#374151" }}>{ct.label}</div>
-                  <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 1, lineHeight: 1.3 }}>{ct.desc}</div>
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <div style={{ borderTop: "1px solid #E2E8F0", margin: "0 12px" }} />
-
-          {/* Variables section */}
-          <div style={{ padding: "6px 0 16px" }}>
-            <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", padding: "10px 16px 4px" }}>Variables</div>
-            {TEMPLATE_VARIABLES.map(group => (
-              <div key={group.group}>
-                <div style={{ padding: "6px 16px 3px", fontSize: 10, fontWeight: 700, color: "#CBD5E1", textTransform: "uppercase", letterSpacing: "0.06em" }}>
-                  {group.group}
-                </div>
-                {group.vars.map(v => (
-                  <button key={v.name} type="button" onClick={() => insertVariable(v.name)}
-                    style={{ width: "100%", padding: "7px 16px", border: "none", background: "none", textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
-                    onMouseEnter={e => (e.currentTarget.style.background = "#F1F5F9")}
-                    onMouseLeave={e => (e.currentTarget.style.background = "none")}>
-                    <span style={{ fontSize: 12, color: "#374151" }}>{v.label}</span>
-                    <span style={{ fontSize: 10, color: "#1d4ed8", fontFamily: "monospace", background: "#dbeafe", padding: "1px 6px", borderRadius: 5, flexShrink: 0 }}>{`{{${v.name}}}`}</span>
-                  </button>
-                ))}
-              </div>
-            ))}
-          </div>
-        </div>
-      </div>
+    <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: "60vh", color: "#94a3b8", fontSize: 14 }}>
+      Éditeur canvas en cours d'implémentation…
     </div>
   );
 }
+
 
 // ─── Template Manager Panel ────────────────────────────────────────────────
 export function TemplateManagerPanel() {
@@ -1032,12 +622,9 @@ export function TemplateManagerPanel() {
     await load();
   };
 
-  const hasLetterhead = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
-  const hasFooter = !!letterhead.footer_text;
-
   if (editing !== null) {
     return (
-      <FullPageTemplateEditor
+      <CanvasTemplateEditor
         editing={editing}
         setEditing={setEditing}
         letterhead={letterhead}
