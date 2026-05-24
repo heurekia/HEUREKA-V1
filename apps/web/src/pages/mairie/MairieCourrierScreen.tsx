@@ -392,8 +392,6 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
       setTemplates(tpls);
       setLetterhead(lh);
       if (tpls.length > 0) setSelected(tpls[0]!);
-      if (lh.signature_image) setShowSig(true);
-      if (lh.tampon_image) setShowTamp(true);
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
@@ -769,9 +767,7 @@ export function TemplateManagerPanel() {
   };
 
   const hasLetterhead = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
-  const hasSignature = !!letterhead.signature_image;
   const hasFooter = !!letterhead.footer_text;
-  const hasBelowBody = hasSignature || hasFooter;
 
   if (editing !== null) {
     const cat = CATEGORY_CONFIG[editing.category ?? "general"] ?? CATEGORY_CONFIG.general!;
@@ -800,7 +796,7 @@ export function TemplateManagerPanel() {
           </div>
         </div>
 
-        {/* Paper view: header → body → signature → footer */}
+        {/* Paper view: header → body → footer */}
         <div style={{ boxShadow: "0 2px 8px rgba(0,0,0,0.06)", marginBottom: 14 }}>
           {hasLetterhead && (
             <div style={{ border: "1px solid #E2E8F0", borderBottom: "none", borderRadius: "10px 10px 0 0", overflow: "hidden" }}>
@@ -812,15 +808,14 @@ export function TemplateManagerPanel() {
             onChange={body => setEditing(p => ({ ...p!, body }))}
             placeholder="Rédigez le corps du courrier… Utilisez Insérer variable pour les champs dynamiques."
             minHeight={220}
-            wrapperStyle={hasLetterhead || hasBelowBody ? {
-              borderRadius: hasLetterhead && hasBelowBody ? 0 : hasLetterhead ? "0 0 10px 10px" : "10px 10px 0 0",
+            wrapperStyle={hasLetterhead || hasFooter ? {
+              borderRadius: hasLetterhead && hasFooter ? 0 : hasLetterhead ? "0 0 10px 10px" : "10px 10px 0 0",
               borderTop: hasLetterhead ? "none" : undefined,
-              borderBottom: hasBelowBody ? "none" : undefined,
+              borderBottom: hasFooter ? "none" : undefined,
             } : undefined}
           />
-          {hasBelowBody && (
+          {hasFooter && (
             <div style={{ border: "1px solid #E2E8F0", borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
-              <LetterheadSignature lh={letterhead} />
               <LetterheadFooter lh={letterhead} />
             </div>
           )}
