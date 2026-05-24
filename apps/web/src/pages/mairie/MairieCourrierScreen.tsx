@@ -9,6 +9,99 @@ import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { Bold, Italic, Underline as UnderlineIcon, AlignLeft, AlignCenter, AlignRight, List, ListOrdered, Type, ChevronDown, X, Save, ArrowLeft, Plus, Pencil, Trash2, FileText, Printer } from "lucide-react";
 
+// ─── Cadre types ───────────────────────────────────────────────────────────
+const CADRE_TYPES = [
+  {
+    type: "destinataire",
+    label: "Destinataire",
+    desc: "Bloc adresse du destinataire",
+    icon: "📮",
+    border: "1px solid #93C5FD",
+    background: "#EFF6FF",
+    borderLeft: "none",
+    padding: "14px 18px",
+  },
+  {
+    type: "references",
+    label: "Références",
+    desc: "Objet, N° dossier, date…",
+    icon: "🗂",
+    border: "1px solid #CBD5E1",
+    background: "#F8FAFC",
+    borderLeft: "none",
+    padding: "12px 16px",
+  },
+  {
+    type: "important",
+    label: "Encart important",
+    desc: "Information à mettre en valeur",
+    icon: "⚠️",
+    border: "1px solid #FDE68A",
+    background: "#FFFBEB",
+    borderLeft: "4px solid #F59E0B",
+    padding: "12px 16px",
+  },
+  {
+    type: "standard",
+    label: "Cadre texte",
+    desc: "Bloc neutre avec bordure",
+    icon: "▭",
+    border: "1px solid #E2E8F0",
+    background: "white",
+    borderLeft: "none",
+    padding: "12px 16px",
+  },
+] as const;
+
+type CadreType = (typeof CADRE_TYPES)[number]["type"];
+
+function cadreStyle(type: CadreType): string {
+  const c = CADRE_TYPES.find(ct => ct.type === type) ?? CADRE_TYPES[3]!;
+  const parts = [
+    `border: ${c.border}`,
+    `background: ${c.background}`,
+    `padding: ${c.padding}`,
+    "border-radius: 6px",
+    "margin: 14px 0",
+  ];
+  if (c.borderLeft !== "none") parts.push(`border-left: ${c.borderLeft}`);
+  return parts.join("; ") + ";";
+}
+
+// ─── Cadre Node (TipTap custom block node) ─────────────────────────────────
+const CadreNode = TiptapNode.create({
+  name: "cadre",
+  group: "block",
+  content: "block+",
+  defining: true,
+  isolating: false,
+
+  addAttributes() {
+    return { cadreType: { default: "standard" } };
+  },
+
+  parseHTML() {
+    return [{ tag: "div[data-cadre]", getAttrs: el => ({ cadreType: (el as HTMLElement).dataset.cadre ?? "standard" }) }];
+  },
+
+  renderHTML({ node, HTMLAttributes }) {
+    const type = (node.attrs as { cadreType: CadreType }).cadreType;
+    return ["div", mergeAttributes(HTMLAttributes, { "data-cadre": type, style: cadreStyle(type) }), 0];
+  },
+
+  addNodeView() {
+    return ({ node }: NodeViewRendererProps) => {
+      const type = (node.attrs as { cadreType: CadreType }).cadreType;
+      const dom = document.createElement("div");
+      dom.setAttribute("data-cadre", type);
+      dom.style.cssText = cadreStyle(type);
+      const content = document.createElement("div");
+      dom.appendChild(content);
+      return { dom, contentDOM: content };
+    };
+  },
+});
+
 // ─── Variable Node (TipTap custom inline node) ─────────────────────────────
 const VariableNode = TiptapNode.create({
   name: "variable",
@@ -737,6 +830,7 @@ function FullPageTemplateEditor({
       TextAlign.configure({ types: ["heading", "paragraph"] }),
       Placeholder.configure({ placeholder: "Rédigez le corps du courrier…" }),
       VariableNode,
+      CadreNode,
     ],
     content: editing.body ?? "",
     onUpdate: ({ editor: e }) => setEditing(p => ({ ...p!, body: e.getHTML() })),
@@ -750,6 +844,14 @@ function FullPageTemplateEditor({
 
   const insertVariable = (name: string) => {
     editor?.chain().focus().insertContent({ type: "variable", attrs: { name } }).run();
+  };
+
+  const insertCadre = (type: CadreType) => {
+    editor?.chain().focus().insertContent({
+      type: "cadre",
+      attrs: { cadreType: type },
+      content: [{ type: "paragraph" }],
+    }).run();
   };
 
   const hasLetterhead = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
@@ -828,24 +930,45 @@ function FullPageTemplateEditor({
           </div>
         </div>
 
-        {/* Variables sidebar */}
+        {/* Sidebar: cadres + variables */}
         <div style={{ width: 264, borderLeft: "1px solid #E2E8F0", overflowY: "auto", background: "#FAFAFA", flexShrink: 0, display: "flex", flexDirection: "column" }}>
+          {/* Cadres section */}
           <div style={{ padding: "13px 16px 11px", fontWeight: 700, fontSize: 13, color: "#0F172A", borderBottom: "1px solid #E2E8F0", background: "white", position: "sticky", top: 0, zIndex: 1 }}>
-            Variables disponibles
+            Blocs
             <div style={{ fontSize: 11, fontWeight: 400, color: "#94a3b8", marginTop: 2 }}>Cliquez pour insérer au curseur</div>
           </div>
+          <div style={{ padding: "8px 12px 4px" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", padding: "6px 4px 4px" }}>Cadres</div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 6, marginBottom: 8 }}>
+              {CADRE_TYPES.map(ct => (
+                <button key={ct.type} type="button" onClick={() => insertCadre(ct.type as CadreType)}
+                  style={{ padding: "8px 10px", border: `1px solid ${ct.border.replace("1px solid ", "")}`, borderRadius: 7, background: ct.background, cursor: "pointer", textAlign: "left" }}
+                  onMouseEnter={e => (e.currentTarget.style.opacity = "0.75")}
+                  onMouseLeave={e => (e.currentTarget.style.opacity = "1")}>
+                  <div style={{ fontSize: 16, marginBottom: 3 }}>{ct.icon}</div>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "#374151" }}>{ct.label}</div>
+                  <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 1, lineHeight: 1.3 }}>{ct.desc}</div>
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <div style={{ borderTop: "1px solid #E2E8F0", margin: "0 12px" }} />
+
+          {/* Variables section */}
           <div style={{ padding: "6px 0 16px" }}>
+            <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", padding: "10px 16px 4px" }}>Variables</div>
             {TEMPLATE_VARIABLES.map(group => (
               <div key={group.group}>
-                <div style={{ padding: "10px 16px 4px", fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                <div style={{ padding: "6px 16px 3px", fontSize: 10, fontWeight: 700, color: "#CBD5E1", textTransform: "uppercase", letterSpacing: "0.06em" }}>
                   {group.group}
                 </div>
                 {group.vars.map(v => (
                   <button key={v.name} type="button" onClick={() => insertVariable(v.name)}
-                    style={{ width: "100%", padding: "8px 16px", border: "none", background: "none", textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+                    style={{ width: "100%", padding: "7px 16px", border: "none", background: "none", textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
                     onMouseEnter={e => (e.currentTarget.style.background = "#F1F5F9")}
                     onMouseLeave={e => (e.currentTarget.style.background = "none")}>
-                    <span style={{ fontSize: 13, color: "#374151" }}>{v.label}</span>
+                    <span style={{ fontSize: 12, color: "#374151" }}>{v.label}</span>
                     <span style={{ fontSize: 10, color: "#1d4ed8", fontFamily: "monospace", background: "#dbeafe", padding: "1px 6px", borderRadius: 5, flexShrink: 0 }}>{`{{${v.name}}}`}</span>
                   </button>
                 ))}
