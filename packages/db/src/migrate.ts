@@ -339,6 +339,10 @@ CREATE TABLE IF NOT EXISTS legal_mentions (
   updated_at timestamp NOT NULL DEFAULT now(),
   CONSTRAINT legal_mentions_code_ref UNIQUE (code, article_ref)
 );
+
+ALTER TABLE legal_mentions ADD COLUMN IF NOT EXISTS courrier_types jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE legal_mentions ADD COLUMN IF NOT EXISTS dossier_types jsonb NOT NULL DEFAULT '[]';
+ALTER TABLE legal_mentions ADD COLUMN IF NOT EXISTS contexte text;
 `;
 
 async function main() {

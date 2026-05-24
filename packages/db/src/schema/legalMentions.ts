@@ -1,4 +1,5 @@
-import { pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { jsonb, pgTable, text, timestamp, unique, uuid } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 
 export const legal_mentions = pgTable("legal_mentions", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -10,4 +11,7 @@ export const legal_mentions = pgTable("legal_mentions", {
   legifrance_id: text("legifrance_id"),
   fetched_at: timestamp("fetched_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
+  courrier_types: jsonb("courrier_types").$type<string[]>().default(sql`'[]'::jsonb`),
+  dossier_types: jsonb("dossier_types").$type<string[]>().default(sql`'[]'::jsonb`),
+  contexte: text("contexte"),
 }, (t) => [unique("legal_mentions_code_ref").on(t.code, t.article_ref)]);

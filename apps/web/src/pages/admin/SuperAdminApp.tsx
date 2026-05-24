@@ -2126,8 +2126,28 @@ interface LegalMentionRow {
   article_ref: string;
   article_title: string | null;
   article_html: string | null;
+  courrier_types: string[];
+  dossier_types: string[];
+  contexte: string | null;
   updated_at: string;
 }
+
+const COURRIER_TYPE_OPTIONS = [
+  { value: "pieces_complementaires", label: "Pièces complémentaires" },
+  { value: "refus", label: "Refus" },
+  { value: "non_opposition", label: "Non-opposition / accord" },
+  { value: "majoration_delai", label: "Majoration de délai" },
+  { value: "daact", label: "DAACT / achèvement" },
+  { value: "sursis", label: "Sursis à statuer" },
+  { value: "notification", label: "Notification de décision" },
+];
+const DOSSIER_TYPE_OPTIONS = [
+  { value: "DP", label: "DP — Déclaration préalable" },
+  { value: "PC", label: "PC — Permis de construire" },
+  { value: "PA", label: "PA — Permis d'aménager" },
+  { value: "PD", label: "PD — Permis de démolir" },
+  { value: "CU", label: "CU — Certificat d'urbanisme" },
+];
 
 function Configuration() {
   const [articles, setArticles] = useState<LegalMentionRow[]>([]);
@@ -2135,6 +2155,9 @@ function Configuration() {
   const [editing, setEditing] = useState<LegalMentionRow | null>(null);
   const [editTitle, setEditTitle] = useState("");
   const [editHtml, setEditHtml] = useState("");
+  const [editCourrierTypes, setEditCourrierTypes] = useState<string[]>([]);
+  const [editDossierTypes, setEditDossierTypes] = useState<string[]>([]);
+  const [editContexte, setEditContexte] = useState("");
   const [saving, setSaving] = useState(false);
   const [addRef, setAddRef] = useState("");
   const [addTitle, setAddTitle] = useState("");
@@ -2157,13 +2180,16 @@ function Configuration() {
     setEditing(a);
     setEditTitle(a.article_title ?? "");
     setEditHtml(a.article_html ?? "");
+    setEditCourrierTypes(a.courrier_types ?? []);
+    setEditDossierTypes(a.dossier_types ?? []);
+    setEditContexte(a.contexte ?? "");
   };
 
   const handleSave = async () => {
     if (!editing) return;
     setSaving(true);
     try {
-      const updated = await api.patch<LegalMentionRow>(`/admin/legal-mentions/${editing.id}`, { article_title: editTitle, article_html: editHtml });
+      const updated = await api.patch<LegalMentionRow>(`/admin/legal-mentions/${editing.id}`, { article_title: editTitle, article_html: editHtml, courrier_types: editCourrierTypes, dossier_types: editDossierTypes, contexte: editContexte });
       setArticles(prev => prev.map(a => a.id === updated.id ? updated : a));
       setEditing(null);
     } catch {
@@ -2177,7 +2203,7 @@ function Configuration() {
     if (!addRef.trim()) return;
     setSaving(true);
     try {
-      const row = await api.post<LegalMentionRow>("/admin/legal-mentions", { article_ref: addRef, article_title: addTitle });
+      const row = await api.post<LegalMentionRow>("/admin/legal-mentions", { article_ref: addRef, article_title: addTitle, courrier_types: [], dossier_types: [], contexte: null });
       setArticles(prev => [...prev, row].sort((a, b) => a.article_ref.localeCompare(b.article_ref)));
       setAddRef(""); setAddTitle(""); setShowAdd(false);
     } catch {
@@ -2287,7 +2313,7 @@ function Configuration() {
                 style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14, boxSizing: "border-box" }} />
             </div>
 
-            <div style={{ marginBottom: 20 }}>
+            <div style={{ marginBottom: 14 }}>
               <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 6 }}>
                 Texte HTML <span style={{ fontWeight: 400 }}>(affiché dans les courriers)</span>
               </label>
@@ -2297,6 +2323,36 @@ function Configuration() {
               <p style={{ margin: "6px 0 0", fontSize: 11, color: C.textMuted }}>
                 Le HTML est rendu directement dans le courrier. Utilise &lt;p&gt;, &lt;strong&gt;, &lt;em&gt;, &lt;ul&gt;/&lt;li&gt;.
               </p>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 6 }}>Contexte d'usage</label>
+              <input value={editContexte} onChange={e => setEditContexte(e.target.value)}
+                placeholder="Ex : Utilisé pour interrompre le délai d'instruction"
+                style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, boxSizing: "border-box" }} />
+            </div>
+
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 8 }}>Types de courrier</label>
+                {COURRIER_TYPE_OPTIONS.map(o => (
+                  <label key={o.value} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5, cursor: "pointer", fontSize: 12 }}>
+                    <input type="checkbox" checked={editCourrierTypes.includes(o.value)}
+                      onChange={e => setEditCourrierTypes(prev => e.target.checked ? [...prev, o.value] : prev.filter(v => v !== o.value))} />
+                    {o.label}
+                  </label>
+                ))}
+              </div>
+              <div>
+                <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 8 }}>Types de dossier</label>
+                {DOSSIER_TYPE_OPTIONS.map(o => (
+                  <label key={o.value} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5, cursor: "pointer", fontSize: 12 }}>
+                    <input type="checkbox" checked={editDossierTypes.includes(o.value)}
+                      onChange={e => setEditDossierTypes(prev => e.target.checked ? [...prev, o.value] : prev.filter(v => v !== o.value))} />
+                    {o.label}
+                  </label>
+                ))}
+              </div>
             </div>
 
             <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>

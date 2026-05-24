@@ -779,11 +779,20 @@ superAdminRouter.get("/legal-mentions", async (_req, res) => {
 superAdminRouter.patch("/legal-mentions/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { article_title, article_html } = req.body as { article_title?: string; article_html?: string };
+    const { article_title, article_html, courrier_types, dossier_types, contexte } = req.body as {
+      article_title?: string;
+      article_html?: string;
+      courrier_types?: string[];
+      dossier_types?: string[];
+      contexte?: string;
+    };
 
     const patch: Record<string, unknown> = { updated_at: new Date() };
     if (article_title !== undefined) patch.article_title = article_title;
     if (article_html !== undefined) patch.article_html = article_html;
+    if (courrier_types !== undefined) patch.courrier_types = courrier_types;
+    if (dossier_types !== undefined) patch.dossier_types = dossier_types;
+    if (contexte !== undefined) patch.contexte = contexte;
 
     const [updated] = await db
       .update(legal_mentions)
@@ -801,10 +810,13 @@ superAdminRouter.patch("/legal-mentions/:id", async (req, res) => {
 
 superAdminRouter.post("/legal-mentions", async (req, res) => {
   try {
-    const { article_ref, article_title, article_html } = req.body as {
+    const { article_ref, article_title, article_html, courrier_types, dossier_types, contexte } = req.body as {
       article_ref?: string;
       article_title?: string;
       article_html?: string;
+      courrier_types?: string[];
+      dossier_types?: string[];
+      contexte?: string;
     };
     if (!article_ref?.trim()) return res.status(400).json({ error: "article_ref requis" });
 
@@ -816,6 +828,9 @@ superAdminRouter.post("/legal-mentions", async (req, res) => {
         article_ref: article_ref.trim().toUpperCase(),
         article_title: article_title ?? null,
         article_html: article_html ?? null,
+        courrier_types: courrier_types ?? [],
+        dossier_types: dossier_types ?? [],
+        contexte: contexte ?? null,
         fetched_at: new Date(),
         updated_at: new Date(),
       })
@@ -824,6 +839,9 @@ superAdminRouter.post("/legal-mentions", async (req, res) => {
         set: {
           article_title: article_title ?? null,
           article_html: article_html ?? null,
+          courrier_types: courrier_types ?? [],
+          dossier_types: dossier_types ?? [],
+          contexte: contexte ?? null,
           updated_at: new Date(),
         },
       })

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db } from "../db.js";
 import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike } from "drizzle-orm";
-import { MENTIONS_MAP, CODE_URBANISME_ID } from "../services/legifrance.js";
+import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import Anthropic from "@anthropic-ai/sdk";
@@ -1662,16 +1662,18 @@ mairieRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
 // ── Legal mentions (Code de l'urbanisme cache) ────────────────────────────────
 mairieRouter.get("/legal-mentions", async (req: AuthRequest, res) => {
   try {
-    const type = (req.query.type as string | undefined) ?? "";
-    const category = (req.query.category as string | undefined) ?? "";
+    const dossierType = (req.query.type as string | undefined) ?? "";
+    const courrierType = (req.query.courrier_type as string | undefined) ?? "";
 
-    const suggested = new Set<string>();
-    if (type && category) {
-      const specificKey = `${type}:${category}`;
-      const wildcardKey = `*:${category}`;
-      (MENTIONS_MAP[specificKey] ?? []).forEach((r) => suggested.add(r));
-      (MENTIONS_MAP[wildcardKey] ?? []).forEach((r) => suggested.add(r));
-    }
+    // Map full dossier type name to short code
+    const TYPE_SHORT: Record<string, string> = {
+      permis_de_construire: "PC",
+      declaration_prealable: "DP",
+      permis_amenager: "PA",
+      permis_demolir: "PD",
+      certificat_urbanisme: "CU",
+    };
+    const dossierShort = TYPE_SHORT[dossierType] ?? dossierType.toUpperCase();
 
     const rows = await db
       .select()
@@ -1679,7 +1681,13 @@ mairieRouter.get("/legal-mentions", async (req: AuthRequest, res) => {
       .where(eq(legal_mentions.code, CODE_URBANISME_ID))
       .orderBy(legal_mentions.article_ref);
 
-    res.json(rows.map((r) => ({ ...r, suggested: suggested.has(r.article_ref) })));
+    res.json(rows.map((r) => {
+      const ct = (r.courrier_types as string[]) ?? [];
+      const dt = (r.dossier_types as string[]) ?? [];
+      const matchesCourrier = !courrierType || ct.length === 0 || ct.includes(courrierType);
+      const matchesDossier = !dossierShort || dt.length === 0 || dt.includes(dossierShort);
+      return { ...r, suggested: matchesCourrier && matchesDossier };
+    }));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

@@ -229,17 +229,20 @@ interface MentionRow {
   article_ref: string;
   article_title: string | null;
   article_html: string | null;
+  courrier_types: string[];
+  dossier_types: string[];
+  contexte: string | null;
   suggested: boolean;
 }
 
-const MENTION_CATEGORIES = [
-  { value: "", label: "Toutes les mentions" },
-  { value: "avis_favorable", label: "Avis favorable" },
-  { value: "avis_defavorable", label: "Avis défavorable" },
-  { value: "avis_reserves", label: "Avis avec réserves" },
-  { value: "accord_tacite", label: "Accord tacite" },
+const COURRIER_TYPES = [
   { value: "pieces_complementaires", label: "Pièces complémentaires" },
-  { value: "notification_decision", label: "Notification de décision" },
+  { value: "refus",                  label: "Refus" },
+  { value: "non_opposition",         label: "Non-opposition / accord" },
+  { value: "majoration_delai",       label: "Majoration de délai" },
+  { value: "daact",                  label: "DAACT / achèvement" },
+  { value: "sursis",                 label: "Sursis à statuer" },
+  { value: "notification",           label: "Notification de décision" },
 ];
 
 // ─── Draggable stamp / signature overlay ──────────────────────────────────
@@ -343,24 +346,31 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
   const [mentionsLoading, setMentionsLoading] = useState(false);
   const [allMentions, setAllMentions] = useState<MentionRow[]>([]);
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
-  const [mentionCategory, setMentionCategory] = useState("");
+  const [courrierType, setCourrierType] = useState("");
   const [insertedMentionsHtml, setInsertedMentionsHtml] = useState("");
+  const [viewingArticle, setViewingArticle] = useState<MentionRow | null>(null);
 
-  const loadMentions = useCallback((category: string) => {
+  const loadMentions = useCallback((ct: string) => {
     setMentionsLoading(true);
-    const params = category ? `?type=${encodeURIComponent(dossier.type)}&category=${encodeURIComponent(category)}` : "";
-    api.get<MentionRow[]>(`/mairie/legal-mentions${params}`)
-      .then(setAllMentions)
+    const params = new URLSearchParams();
+    if (dossier.type) params.set("type", dossier.type);
+    if (ct) params.set("courrier_type", ct);
+    api.get<MentionRow[]>(`/mairie/legal-mentions?${params}`)
+      .then(rows => {
+        setAllMentions(rows);
+        // Auto-select suggested articles
+        setSelectedRefs(new Set(rows.filter(r => r.suggested).map(r => r.article_ref)));
+      })
       .catch(() => setAllMentions([]))
       .finally(() => setMentionsLoading(false));
   }, [dossier.type]);
 
   const handleToggleMentions = useCallback(() => {
     setShowMentions(v => {
-      if (!v && allMentions.length === 0) loadMentions(mentionCategory);
+      if (!v && allMentions.length === 0) loadMentions(courrierType);
       return !v;
     });
-  }, [allMentions.length, loadMentions, mentionCategory]);
+  }, [allMentions.length, loadMentions, courrierType]);
 
   const handleInsertMentions = useCallback(() => {
     if (selectedRefs.size === 0) return;
@@ -565,16 +575,17 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
             <div className="no-print-modal" style={{ width: 300, borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", flexShrink: 0, background: "#FAFAFA" }}>
               {/* Panel header */}
               <div style={{ padding: "12px 14px 10px", borderBottom: "1px solid #E2E8F0", background: "white" }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 8 }}>📜 Mentions légales</div>
+                <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 8 }}>📜 Mentions légales recommandées</div>
                 <select
-                  value={mentionCategory}
+                  value={courrierType}
                   onChange={(e) => {
-                    const cat = e.target.value;
-                    setMentionCategory(cat);
-                    loadMentions(cat);
+                    const ct = e.target.value;
+                    setCourrierType(ct);
+                    loadMentions(ct);
                   }}
                   style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12, background: "white", color: "#374151", cursor: "pointer" }}>
-                  {MENTION_CATEGORIES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
+                  <option value="">— Type de courrier —</option>
+                  {COURRIER_TYPES.map(c => <option key={c.value} value={c.value}>{c.label}</option>)}
                 </select>
               </div>
 
@@ -584,37 +595,43 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
                   <div style={{ padding: "20px 14px", color: "#94a3b8", fontSize: 12, textAlign: "center" }}>Chargement…</div>
                 ) : allMentions.length === 0 ? (
                   <div style={{ padding: "20px 14px", color: "#94a3b8", fontSize: 12, textAlign: "center" }}>
-                    <p style={{ margin: 0 }}>Aucune mention en cache.</p>
-                    <p style={{ margin: "6px 0 0", fontSize: 11 }}>Lancez la synchronisation depuis l'administration.</p>
+                    <p style={{ margin: 0 }}>Aucune mention disponible.</p>
+                    <p style={{ margin: "6px 0 0", fontSize: 11 }}>Créez des articles dans Administration → Configuration.</p>
                   </div>
                 ) : allMentions.map(m => {
                   const checked = selectedRefs.has(m.article_ref);
                   return (
-                    <label key={m.article_ref} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 14px", cursor: "pointer", borderBottom: "1px solid #F1F5F9", background: checked ? "#EFF6FF" : "transparent" }}
-                      onMouseEnter={e => { if (!checked) (e.currentTarget as HTMLElement).style.background = "#F8FAFC"; }}
-                      onMouseLeave={e => { (e.currentTarget as HTMLElement).style.background = checked ? "#EFF6FF" : "transparent"; }}>
-                      <input type="checkbox" checked={checked}
-                        onChange={() => setSelectedRefs(prev => {
-                          const next = new Set(prev);
-                          if (next.has(m.article_ref)) next.delete(m.article_ref); else next.add(m.article_ref);
-                          return next;
-                        })}
-                        style={{ marginTop: 2, flexShrink: 0 }} />
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
-                          <span style={{ fontSize: 12, fontWeight: 700, color: "#1E293B" }}>Art. {m.article_ref}</span>
-                          {m.suggested && (
-                            <span style={{ fontSize: 10, fontWeight: 600, color: "#0284C7", background: "#E0F2FE", borderRadius: 4, padding: "1px 5px" }}>Suggéré</span>
-                          )}
+                    <div key={m.article_ref} style={{ padding: "8px 14px", borderBottom: "1px solid #F1F5F9", background: checked ? "#EFF6FF" : "transparent" }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                        <input type="checkbox" checked={checked}
+                          onChange={() => setSelectedRefs(prev => {
+                            const next = new Set(prev);
+                            if (next.has(m.article_ref)) next.delete(m.article_ref); else next.add(m.article_ref);
+                            return next;
+                          })}
+                          style={{ marginTop: 3, flexShrink: 0, cursor: "pointer" }} />
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 5, flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 12, fontWeight: 700, color: "#1E293B" }}>Art. {m.article_ref}</span>
+                            {m.suggested && (
+                              <span style={{ fontSize: 10, fontWeight: 600, color: "#0284C7", background: "#E0F2FE", borderRadius: 4, padding: "1px 5px" }}>Recommandé</span>
+                            )}
+                          </div>
+                          {m.article_title && <div style={{ fontSize: 11, color: "#374151", marginTop: 1, lineHeight: 1.4, fontWeight: 500 }}>{m.article_title}</div>}
+                          {m.contexte && <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2, lineHeight: 1.4 }}>{m.contexte}</div>}
                         </div>
-                        {m.article_title && <div style={{ fontSize: 11, color: "#64748b", marginTop: 1, lineHeight: 1.4 }}>{m.article_title}</div>}
+                        <button onClick={() => setViewingArticle(m)}
+                          title="Voir l'article"
+                          style={{ flexShrink: 0, background: "none", border: "1px solid #E2E8F0", borderRadius: 5, cursor: "pointer", padding: "2px 7px", fontSize: 11, color: "#64748b", whiteSpace: "nowrap" }}>
+                          Voir
+                        </button>
                       </div>
-                    </label>
+                    </div>
                   );
                 })}
               </div>
 
-              {/* Insert button */}
+              {/* Footer */}
               <div style={{ padding: "10px 14px", borderTop: "1px solid #E2E8F0", background: "white" }}>
                 {insertedMentionsHtml && (
                   <button onClick={() => { setInsertedMentionsHtml(""); setSelectedRefs(new Set()); }}
@@ -624,12 +641,38 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
                 )}
                 <button onClick={handleInsertMentions} disabled={selectedRefs.size === 0}
                   style={{ width: "100%", padding: "8px 12px", border: "none", borderRadius: 7, background: selectedRefs.size > 0 ? "#0F172A" : "#E2E8F0", color: selectedRefs.size > 0 ? "white" : "#94a3b8", fontSize: 12, fontWeight: 600, cursor: selectedRefs.size > 0 ? "pointer" : "default" }}>
-                  Insérer {selectedRefs.size > 0 ? `${selectedRefs.size} article${selectedRefs.size > 1 ? "s" : ""}` : "les articles sélectionnés"}
+                  Ajouter au courrier {selectedRefs.size > 0 ? `(${selectedRefs.size})` : ""}
                 </button>
               </div>
             </div>
           )}
         </div>
+
+        {/* Article viewer modal */}
+        {viewingArticle && (
+          <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center" }}
+            onClick={() => setViewingArticle(null)}>
+            <div style={{ background: "white", borderRadius: 12, padding: 24, width: "min(560px, 90vw)", maxHeight: "70vh", overflowY: "auto", boxShadow: "0 16px 48px rgba(0,0,0,0.2)" }}
+              onClick={e => e.stopPropagation()}>
+              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 }}>
+                <div>
+                  <div style={{ fontWeight: 700, fontSize: 15, color: "#0F172A" }}>Art. {viewingArticle.article_ref}</div>
+                  {viewingArticle.article_title && <div style={{ fontSize: 13, color: "#64748b", marginTop: 2 }}>{viewingArticle.article_title}</div>}
+                </div>
+                <button onClick={() => setViewingArticle(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, color: "#94a3b8", lineHeight: 1 }}>×</button>
+              </div>
+              {viewingArticle.contexte && (
+                <div style={{ background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 8, padding: "8px 12px", marginBottom: 14, fontSize: 12, color: "#0369A1" }}>
+                  {viewingArticle.contexte}
+                </div>
+              )}
+              {viewingArticle.article_html
+                ? <div style={{ fontSize: 13, lineHeight: 1.7, color: "#374151" }} dangerouslySetInnerHTML={{ __html: viewingArticle.article_html }} />
+                : <div style={{ fontSize: 13, color: "#94a3b8", fontStyle: "italic" }}>Texte non renseigné. Ajoutez-le dans Administration → Configuration.</div>
+              }
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );
