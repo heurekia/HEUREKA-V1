@@ -625,9 +625,11 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
 }
 
 // ─── Block content editor (contentEditable via ref to avoid cursor reset) ────
-function BlockEditor({ block, isEditing, onStartEdit, onEndEdit }: {
+function BlockEditor({ block, isEditing, onStartEdit, onContentChange, onEndEdit }: {
   block: CanvasBlock; isEditing: boolean;
-  onStartEdit: () => void; onEndEdit: (html: string) => void;
+  onStartEdit: () => void;
+  onContentChange: (html: string) => void;
+  onEndEdit: () => void;
 }) {
   const ref = useRef<HTMLDivElement>(null);
 
@@ -635,6 +637,7 @@ function BlockEditor({ block, isEditing, onStartEdit, onEndEdit }: {
     if (ref.current) ref.current.innerHTML = block.html;
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Only reset DOM from state when not editing (prevents overwriting in-progress text)
   useEffect(() => {
     if (!isEditing && ref.current) ref.current.innerHTML = block.html;
   }, [block.html, isEditing]);
@@ -650,7 +653,8 @@ function BlockEditor({ block, isEditing, onStartEdit, onEndEdit }: {
         ref={ref}
         contentEditable={isEditing}
         suppressContentEditableWarning
-        onBlur={(e) => { if (isEditing) onEndEdit(e.currentTarget.innerHTML); }}
+        onInput={(e) => { if (isEditing) onContentChange(e.currentTarget.innerHTML); }}
+        onBlur={() => { if (isEditing) onEndEdit(); }}
         style={{ width: "100%", padding: block.padding, boxSizing: "border-box", fontSize: block.fontSize, lineHeight: 1.6, fontFamily: block.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif", textAlign: block.textAlign, outline: "none", cursor: isEditing ? "text" : "default", wordBreak: "break-word", color: "#1E293B" }}
       />
     </div>
@@ -713,25 +717,24 @@ function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, sav
     if (editingId === id) setEditingId(null);
   };
 
+  const deletePage = (idx: number) => {
+    if (pages.length <= 1) return;
+    setPages(prev => prev.filter((_, i) => i !== idx));
+    setActivePageIdx(prev => Math.min(prev, pages.length - 2));
+    setSelectedId(null); setEditingId(null);
+  };
+
   const insertVariable = (varName: string) => {
     if (!editingId) return;
-    const sel = window.getSelection();
-    if (!sel || sel.rangeCount === 0) return;
-    const range = sel.getRangeAt(0);
-    range.deleteContents();
-    const span = document.createElement("span");
-    span.setAttribute("data-variable", varName);
-    span.setAttribute("style", "background:#EEF2FF;color:#4F46E5;border-radius:3px;padding:1px 5px;font-size:0.85em;font-weight:500;");
-    span.textContent = varName;
-    range.insertNode(span);
-    // Insert a plain space after the span so typed text doesn't inherit its style
-    const textNode = document.createTextNode(" ");
-    span.parentNode?.insertBefore(textNode, span.nextSibling);
-    const after = document.createRange();
-    after.setStart(textNode, 1);
-    after.collapse(true);
-    sel.removeAllRanges();
-    sel.addRange(after);
+    // execCommand insertHTML properly resets the browser's "pending format" after the span,
+    // preventing Chrome's sticky-formatting from carrying the variable's color to subsequent text.
+    document.execCommand(
+      "insertHTML", false,
+      `<span data-variable="${varName}" style="background:#EEF2FF;color:#4F46E5;border-radius:3px;padding:1px 5px;font-size:0.85em;font-weight:500;">${varName}</span>&#8203;`
+    );
+    // Save the updated HTML
+    const ce = document.activeElement as HTMLElement;
+    if (ce?.isContentEditable) updateBlock(editingId, { html: ce.innerHTML });
   };
 
   // Thumbnail scale helpers
@@ -775,9 +778,9 @@ function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, sav
         <div style={{ width: 100, background: "#E8EDF2", borderRight: "1px solid #CBD5E1", display: "flex", flexDirection: "column", overflow: "hidden", flexShrink: 0 }}>
           <div style={{ flex: 1, overflowY: "auto", padding: "10px 8px" }}>
             {pages.map((page, i) => (
-              <div key={page.id} onClick={() => { setActivePageIdx(i); setSelectedId(null); setEditingId(null); }}
-                style={{ marginBottom: 8, cursor: "pointer", textAlign: "center" }}>
-                <div style={{ width: THUMB_W, height: THUMB_H, background: "white", margin: "0 auto 4px", border: `1.5px solid ${i === activePageIdx ? "#4F46E5" : "#CBD5E1"}`, borderRadius: 2, position: "relative", overflow: "hidden", boxShadow: i === activePageIdx ? "0 0 0 2px #C7D2FE" : "none" }}>
+              <div key={page.id} style={{ marginBottom: 8, textAlign: "center", position: "relative" }}>
+                <div onClick={() => { setActivePageIdx(i); setSelectedId(null); setEditingId(null); }}
+                  style={{ width: THUMB_W, height: THUMB_H, background: "white", margin: "0 auto 4px", border: `1.5px solid ${i === activePageIdx ? "#4F46E5" : "#CBD5E1"}`, borderRadius: 2, position: "relative", overflow: "hidden", boxShadow: i === activePageIdx ? "0 0 0 2px #C7D2FE" : "none", cursor: "pointer" }}>
                   {hasLH && <div style={{ height: thumbHdrH, background: "#F1F5F9", borderBottom: "1px solid #CBD5E1" }} />}
                   {page.blocks.map(b => (
                     <div key={b.id} style={{
@@ -791,6 +794,12 @@ function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, sav
                   ))}
                   <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: thumbFtrH, background: "#F1F5F9", borderTop: "1px solid #CBD5E1" }} />
                 </div>
+                {pages.length > 1 && (
+                  <button onClick={() => deletePage(i)} title="Supprimer la page"
+                    style={{ position: "absolute", top: -4, right: 4, width: 16, height: 16, borderRadius: "50%", background: "#EF4444", border: "none", cursor: "pointer", color: "white", fontSize: 11, lineHeight: "16px", padding: 0, display: "flex", alignItems: "center", justifyContent: "center", zIndex: 5 }}>
+                    ×
+                  </button>
+                )}
                 <span style={{ fontSize: 10, fontWeight: i === activePageIdx ? 700 : 400, color: i === activePageIdx ? "#4F46E5" : "#64748b" }}>{i + 1}</span>
               </div>
             ))}
@@ -855,7 +864,8 @@ function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, sav
                     <div style={{ width: "100%", height: "100%", outline: selectedId === block.id ? (editingId === block.id ? "2px solid #4F46E5" : "1.5px solid #6366F1") : "1px dashed #E2E8F0" }}>
                       <BlockEditor block={block} isEditing={editingId === block.id}
                         onStartEdit={() => { setSelectedId(block.id); setEditingId(block.id); }}
-                        onEndEdit={(html) => { updateBlock(block.id, { html }); setEditingId(null); }}
+                        onContentChange={(html) => updateBlock(block.id, { html })}
+                        onEndEdit={() => setEditingId(null)}
                       />
                     </div>
                   </Rnd>
