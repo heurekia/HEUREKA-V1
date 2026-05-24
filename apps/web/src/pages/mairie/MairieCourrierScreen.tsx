@@ -89,7 +89,7 @@ function substituteVariables(html: string, vars: Record<string, string>): string
 }
 
 // ─── Editor toolbar ────────────────────────────────────────────────────────
-function EditorToolbar({ editor }: { editor: ReturnType<typeof useEditor> }) {
+function EditorToolbar({ editor, showVarDropdown = true }: { editor: ReturnType<typeof useEditor>; showVarDropdown?: boolean }) {
   const [varMenuOpen, setVarMenuOpen] = useState(false);
   const menuRef = useRef<HTMLDivElement>(null);
 
@@ -131,31 +131,35 @@ function EditorToolbar({ editor }: { editor: ReturnType<typeof useEditor> }) {
       <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
       {btn(editor.isActive("bulletList"), () => editor.chain().focus().toggleBulletList().run(), <List size={13} />, "Liste à puces")}
       {btn(editor.isActive("orderedList"), () => editor.chain().focus().toggleOrderedList().run(), <ListOrdered size={13} />, "Liste numérotée")}
-      <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
-      <div style={{ position: "relative" }} ref={menuRef}>
-        <button type="button" onClick={() => setVarMenuOpen(v => !v)}
-          style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", border: "1px solid #C7D2FE", borderRadius: 6, background: varMenuOpen ? "#EEF2FF" : "white", color: "#4F46E5", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
-          <span>Insérer variable</span><ChevronDown size={11} />
-        </button>
-        {varMenuOpen && (
-          <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 100, marginTop: 4, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 220, maxHeight: 320, overflowY: "auto" }}>
-            {TEMPLATE_VARIABLES.map(group => (
-              <div key={group.group}>
-                <div style={{ padding: "7px 12px 3px", fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>{group.group}</div>
-                {group.vars.map(v => (
-                  <button key={v.name} type="button" onClick={() => insertVariable(v.name)}
-                    style={{ width: "100%", padding: "7px 12px", border: "none", background: "none", textAlign: "left", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
-                    onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
-                    onMouseLeave={e => (e.currentTarget.style.background = "none")}>
-                    <span>{v.label}</span>
-                    <span style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{`{{${v.name}}}`}</span>
-                  </button>
+      {showVarDropdown && (
+        <>
+          <div style={{ width: 1, height: 16, background: "#E2E8F0", margin: "0 3px" }} />
+          <div style={{ position: "relative" }} ref={menuRef}>
+            <button type="button" onClick={() => setVarMenuOpen(v => !v)}
+              style={{ display: "flex", alignItems: "center", gap: 4, padding: "4px 9px", border: "1px solid #C7D2FE", borderRadius: 6, background: varMenuOpen ? "#EEF2FF" : "white", color: "#4F46E5", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+              <span>Insérer variable</span><ChevronDown size={11} />
+            </button>
+            {varMenuOpen && (
+              <div style={{ position: "absolute", top: "100%", left: 0, zIndex: 100, marginTop: 4, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 8px 24px rgba(0,0,0,0.12)", minWidth: 220, maxHeight: 320, overflowY: "auto" }}>
+                {TEMPLATE_VARIABLES.map(group => (
+                  <div key={group.group}>
+                    <div style={{ padding: "7px 12px 3px", fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>{group.group}</div>
+                    {group.vars.map(v => (
+                      <button key={v.name} type="button" onClick={() => insertVariable(v.name)}
+                        style={{ width: "100%", padding: "7px 12px", border: "none", background: "none", textAlign: "left", fontSize: 13, color: "#374151", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+                        onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
+                        onMouseLeave={e => (e.currentTarget.style.background = "none")}>
+                        <span>{v.label}</span>
+                        <span style={{ fontSize: 10, color: "#94a3b8", fontFamily: "monospace" }}>{`{{${v.name}}}`}</span>
+                      </button>
+                    ))}
+                  </div>
                 ))}
               </div>
-            ))}
+            )}
           </div>
-        )}
-      </div>
+        </>
+      )}
     </div>
   );
 }
@@ -715,6 +719,145 @@ function LetterheadFooter({ lh }: { lh: Letterhead }) {
   );
 }
 
+// ─── Full-page template editor ─────────────────────────────────────────────
+function FullPageTemplateEditor({
+  editing, setEditing, letterhead, handleSave, saving, saveError,
+}: {
+  editing: Partial<CourrierTemplate>;
+  setEditing: Dispatch<SetStateAction<Partial<CourrierTemplate> | null>>;
+  letterhead: Letterhead;
+  handleSave: () => Promise<void>;
+  saving: boolean;
+  saveError: string | null;
+}) {
+  const editor = useEditor({
+    extensions: [
+      StarterKit,
+      Underline,
+      TextAlign.configure({ types: ["heading", "paragraph"] }),
+      Placeholder.configure({ placeholder: "Rédigez le corps du courrier…" }),
+      VariableNode,
+    ],
+    content: editing.body ?? "",
+    onUpdate: ({ editor: e }) => setEditing(p => ({ ...p!, body: e.getHTML() })),
+  });
+
+  useEffect(() => {
+    if (editor && (editing.body ?? "") !== editor.getHTML()) {
+      editor.commands.setContent(editing.body ?? "", { emitUpdate: false });
+    }
+  }, [editing.body, editor]);
+
+  const insertVariable = (name: string) => {
+    editor?.chain().focus().insertContent({ type: "variable", attrs: { name } }).run();
+  };
+
+  const hasLetterhead = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
+  const hasFooter = !!letterhead.footer_text;
+  const cat = CATEGORY_CONFIG[editing.category ?? "general"] ?? CATEGORY_CONFIG.general!;
+
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 200, display: "flex", flexDirection: "column", background: "white" }}>
+      {/* Top bar */}
+      <div style={{ padding: "10px 20px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", gap: 10, flexShrink: 0, background: "white", boxShadow: "0 1px 4px rgba(0,0,0,0.05)" }}>
+        <button onClick={() => setEditing(null)}
+          style={{ display: "flex", alignItems: "center", gap: 5, border: "none", background: "none", color: "#64748b", fontSize: 13, cursor: "pointer", padding: "6px 8px", borderRadius: 6, flexShrink: 0 }}>
+          <ArrowLeft size={14} /> Retour
+        </button>
+        <div style={{ width: 1, height: 20, background: "#E2E8F0", flexShrink: 0 }} />
+        <input value={editing.name ?? ""} onChange={e => setEditing(p => ({ ...p!, name: e.target.value }))}
+          placeholder="Nom du modèle"
+          style={{ flex: "1 1 300px", maxWidth: 420, padding: "7px 11px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 14, fontWeight: 600, outline: "none" }} />
+        <select value={editing.category ?? "general"} onChange={e => setEditing(p => ({ ...p!, category: e.target.value }))}
+          style={{ padding: "7px 11px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, background: "white", outline: "none", flexShrink: 0 }}>
+          {Object.entries(CATEGORY_CONFIG).map(([value, { label }]) => (
+            <option key={value} value={value}>{label}</option>
+          ))}
+        </select>
+        <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: cat.color, fontWeight: 600, flexShrink: 0 }}>
+          <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: cat.color }} />
+          {cat.label}
+        </span>
+        {saveError && <span style={{ fontSize: 12, color: "#B91C1C", flex: 1 }}>{saveError}</span>}
+        <button onClick={() => void handleSave()} disabled={saving || !editing.name?.trim()}
+          style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 20px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving || !editing.name?.trim() ? "not-allowed" : "pointer", opacity: saving || !editing.name?.trim() ? 0.6 : 1, fontSize: 13, fontWeight: 600, flexShrink: 0, marginLeft: "auto" }}>
+          <Save size={13} /> {saving ? "Enregistrement…" : "Enregistrer"}
+        </button>
+      </div>
+
+      {/* Content: paper + variables sidebar */}
+      <div style={{ flex: 1, display: "flex", overflow: "hidden" }}>
+        {/* Paper area */}
+        <div style={{ flex: 1, overflowY: "auto", background: "#F1F5F9", padding: "32px 24px" }}>
+          {!hasLetterhead && (
+            <div style={{ maxWidth: 800, margin: "0 auto 14px", padding: "8px 12px", background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 7, fontSize: 12, color: "#92400E" }}>
+              💡 Configurez l'en-tête dans <strong>Paramètres → Courriers</strong> pour afficher le papier à en-tête ici.
+            </div>
+          )}
+          <div style={{ maxWidth: 800, margin: "0 auto" }}>
+            {hasLetterhead && (
+              <div style={{ border: "1px solid #D1D5DB", borderBottom: "none", borderRadius: "10px 10px 0 0", overflow: "hidden", boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}>
+                <LetterheadBanner lh={letterhead} />
+              </div>
+            )}
+            <div style={{
+              border: "1px solid #D1D5DB",
+              borderRadius: hasLetterhead && hasFooter ? 0 : hasLetterhead ? "0 0 10px 10px" : hasFooter ? "10px 10px 0 0" : 10,
+              borderTop: hasLetterhead ? "none" : undefined,
+              borderBottom: hasFooter ? "none" : undefined,
+              background: "white",
+              boxShadow: !hasLetterhead && !hasFooter ? "0 2px 12px rgba(0,0,0,0.06)" : undefined,
+            }}>
+              <EditorToolbar editor={editor} showVarDropdown={false} />
+              <style>{`
+                .tiptap-mairie-full { outline: none; min-height: 520px; padding: 28px 40px; font-size: 14px; line-height: 1.8; color: #1E293B; font-family: Georgia, serif; }
+                .tiptap-mairie-full p { margin: 0 0 12px; }
+                .tiptap-mairie-full h1 { font-size: 1.35em; font-weight: 700; margin: 18px 0 8px; }
+                .tiptap-mairie-full h2 { font-size: 1.15em; font-weight: 600; margin: 14px 0 6px; }
+                .tiptap-mairie-full ul, .tiptap-mairie-full ol { padding-left: 22px; margin: 6px 0; }
+                .tiptap-mairie-full li { margin-bottom: 4px; }
+                .tiptap-mairie-full p.is-editor-empty:first-child::before { color: #9CA3AF; content: attr(data-placeholder); float: left; height: 0; pointer-events: none; }
+              `}</style>
+              <EditorContent editor={editor} className="tiptap-mairie-full" />
+            </div>
+            {hasFooter && (
+              <div style={{ border: "1px solid #D1D5DB", borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden", boxShadow: "0 2px 12px rgba(0,0,0,0.06)" }}>
+                <LetterheadFooter lh={letterhead} />
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* Variables sidebar */}
+        <div style={{ width: 264, borderLeft: "1px solid #E2E8F0", overflowY: "auto", background: "#FAFAFA", flexShrink: 0, display: "flex", flexDirection: "column" }}>
+          <div style={{ padding: "13px 16px 11px", fontWeight: 700, fontSize: 13, color: "#0F172A", borderBottom: "1px solid #E2E8F0", background: "white", position: "sticky", top: 0, zIndex: 1 }}>
+            Variables disponibles
+            <div style={{ fontSize: 11, fontWeight: 400, color: "#94a3b8", marginTop: 2 }}>Cliquez pour insérer au curseur</div>
+          </div>
+          <div style={{ padding: "6px 0 16px" }}>
+            {TEMPLATE_VARIABLES.map(group => (
+              <div key={group.group}>
+                <div style={{ padding: "10px 16px 4px", fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                  {group.group}
+                </div>
+                {group.vars.map(v => (
+                  <button key={v.name} type="button" onClick={() => insertVariable(v.name)}
+                    style={{ width: "100%", padding: "8px 16px", border: "none", background: "none", textAlign: "left", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}
+                    onMouseEnter={e => (e.currentTarget.style.background = "#F1F5F9")}
+                    onMouseLeave={e => (e.currentTarget.style.background = "none")}>
+                    <span style={{ fontSize: 13, color: "#374151" }}>{v.label}</span>
+                    <span style={{ fontSize: 10, color: "#1d4ed8", fontFamily: "monospace", background: "#dbeafe", padding: "1px 6px", borderRadius: 5, flexShrink: 0 }}>{`{{${v.name}}}`}</span>
+                  </button>
+                ))}
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Template Manager Panel ────────────────────────────────────────────────
 export function TemplateManagerPanel() {
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
@@ -770,88 +913,15 @@ export function TemplateManagerPanel() {
   const hasFooter = !!letterhead.footer_text;
 
   if (editing !== null) {
-    const cat = CATEGORY_CONFIG[editing.category ?? "general"] ?? CATEGORY_CONFIG.general!;
     return (
-      <div style={{ padding: "20px 0" }}>
-        <button onClick={() => setEditing(null)} style={{ display: "flex", alignItems: "center", gap: 6, border: "none", background: "none", color: "#64748b", fontSize: 13, cursor: "pointer", padding: "0 0 16px" }}>
-          <ArrowLeft size={14} /> Retour à la liste
-        </button>
-        <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>{editing.id ? "Modifier le modèle" : "Nouveau modèle"}</div>
-
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Nom du modèle *</label>
-            <input value={editing.name ?? ""} onChange={e => setEditing(p => ({ ...p!, name: e.target.value }))}
-              placeholder="Ex : Demande de pièces complémentaires"
-              style={{ width: "100%", padding: "8px 11px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, outline: "none", boxSizing: "border-box" }} />
-          </div>
-          <div>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Catégorie</label>
-            <select value={editing.category ?? "general"} onChange={e => setEditing(p => ({ ...p!, category: e.target.value }))}
-              style={{ width: "100%", padding: "8px 11px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, outline: "none", background: "white", boxSizing: "border-box" }}>
-              {Object.entries(CATEGORY_CONFIG).map(([value, { label }]) => (
-                <option key={value} value={value}>{label}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        {/* Paper view: header → body → footer */}
-        <div style={{ boxShadow: "0 2px 8px rgba(0,0,0,0.06)", marginBottom: 14 }}>
-          {hasLetterhead && (
-            <div style={{ border: "1px solid #E2E8F0", borderBottom: "none", borderRadius: "10px 10px 0 0", overflow: "hidden" }}>
-              <LetterheadBanner lh={letterhead} />
-            </div>
-          )}
-          <TipTapEditorMairie
-            content={editing.body ?? ""}
-            onChange={body => setEditing(p => ({ ...p!, body }))}
-            placeholder="Rédigez le corps du courrier… Utilisez Insérer variable pour les champs dynamiques."
-            minHeight={220}
-            wrapperStyle={hasLetterhead || hasFooter ? {
-              borderRadius: hasLetterhead && hasFooter ? 0 : hasLetterhead ? "0 0 10px 10px" : "10px 10px 0 0",
-              borderTop: hasLetterhead ? "none" : undefined,
-              borderBottom: hasFooter ? "none" : undefined,
-            } : undefined}
-          />
-          {hasFooter && (
-            <div style={{ border: "1px solid #E2E8F0", borderTop: "none", borderRadius: "0 0 10px 10px", overflow: "hidden" }}>
-              <LetterheadFooter lh={letterhead} />
-            </div>
-          )}
-        </div>
-
-        {!hasLetterhead && (
-          <div style={{ marginBottom: 14, padding: "8px 12px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12, color: "#64748b" }}>
-            💡 Configurez l'en-tête dans <strong>Paramètres → Courriers</strong> pour voir le papier à en-tête ici.
-          </div>
-        )}
-
-        <div style={{ padding: "10px 14px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #E2E8F0", marginBottom: 14 }}>
-          <div style={{ fontSize: 11, fontWeight: 700, color: "#374151", marginBottom: 6 }}>Variables disponibles</div>
-          <div style={{ display: "flex", flexWrap: "wrap", gap: 5 }}>
-            {TEMPLATE_VARIABLES.flatMap(g => g.vars).map(v => (
-              <span key={v.name} style={{ background: "#dbeafe", color: "#1d4ed8", padding: "1px 7px", borderRadius: 10, fontSize: 10, fontFamily: "monospace" }}>{`{{${v.name}}}`}</span>
-            ))}
-          </div>
-        </div>
-
-        {saveError && (
-          <div style={{ marginBottom: 12, padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#B91C1C" }}>
-            {saveError}
-          </div>
-        )}
-        <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
-          <button onClick={() => void handleSave()} disabled={saving || !editing.name?.trim()}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "8px 18px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, cursor: saving || !editing.name?.trim() ? "not-allowed" : "pointer", opacity: saving || !editing.name?.trim() ? 0.6 : 1, fontSize: 13, fontWeight: 600 }}>
-            <Save size={13} /> {saving ? "Enregistrement…" : "Enregistrer"}
-          </button>
-          <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 12, color: "#64748b" }}>
-            <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: cat.color }} />
-            {cat.label}
-          </span>
-        </div>
-      </div>
+      <FullPageTemplateEditor
+        editing={editing}
+        setEditing={setEditing}
+        letterhead={letterhead}
+        handleSave={handleSave}
+        saving={saving}
+        saveError={saveError}
+      />
     );
   }
 
