@@ -1313,7 +1313,8 @@ mairieRouter.post("/my-absences", async (req: AuthRequest, res) => {
 mairieRouter.delete("/my-absences/:id", async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
-    await db.delete(user_absences).where(and(eq(user_absences.id, req.params.id), eq(user_absences.user_id, userId)));
+    const { id } = req.params as { id: string };
+    await db.delete(user_absences).where(and(eq(user_absences.id, id), eq(user_absences.user_id, userId)));
     res.json({ ok: true });
   } catch (err) { console.error(err); res.status(500).json({ error: "Erreur serveur" }); }
 });
