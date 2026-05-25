@@ -10,9 +10,16 @@ import fs from "fs";
 
 function getAnthropicApiKey(): string {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  const tokenFile = process.env.CLAUDE_SESSION_INGRESS_TOKEN_FILE;
-  if (tokenFile) {
-    try { return fs.readFileSync(tokenFile, "utf8").trim(); } catch { /* fall through */ }
+  const candidates = [
+    process.env.CLAUDE_SESSION_INGRESS_TOKEN_FILE,
+    "/home/claude/.claude/remote/.session_ingress_token",
+  ];
+  for (const p of candidates) {
+    if (!p) continue;
+    try {
+      const token = fs.readFileSync(p, "utf8").trim();
+      if (token) return token;
+    } catch { /* try next */ }
   }
   throw new Error("ANTHROPIC_API_KEY non configurée");
 }
