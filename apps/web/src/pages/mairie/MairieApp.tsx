@@ -1971,12 +1971,6 @@ function SignatairesPanel({ commune }: { commune: string }) {
         </div>
       )}
 
-      <div style={{ marginTop: 20, padding: "14px 16px", background: "#FFFBEB", borderRadius: 10, border: "1px solid #FDE68A" }}>
-        <div style={{ fontSize: 12, fontWeight: 600, color: "#92400E", marginBottom: 3 }}>Information juridique</div>
-        <div style={{ fontSize: 11.5, color: "#78350F", lineHeight: 1.6 }}>
-          Les arrêtés ADS signés via la plateforme Heureka constituent une <strong>validation électronique simple (niveau 1 eIDAS)</strong>. Pour une valeur juridique équivalente à la signature manuscrite, utilisez un service de signature qualifié (YouSign, Docusign) — intégration disponible sur demande.
-        </div>
-      </div>
     </div>
   );
 }
