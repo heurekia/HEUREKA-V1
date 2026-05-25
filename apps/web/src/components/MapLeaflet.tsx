@@ -203,7 +203,11 @@ export function MapLeaflet({
       signal: ctrl.signal,
       credentials: "include",
     })
-      .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.error ?? `HTTP ${r.status}`); }); return r.json(); })
+      .then(r => {
+        if (r.status === 404) return r.json().then(e => { throw new Error(e.error ?? "Aucun PLU disponible"); });
+        if (!r.ok) return r.json().then(e => { throw new Error(e.error ?? `HTTP ${r.status}`); });
+        return r.json();
+      })
       .then((zones: { features?: unknown[] }) => {
         if (!mapRef.current || ctrl.signal.aborted) return;
         if (!zones.features?.length) throw new Error("Aucune zone PLU disponible");

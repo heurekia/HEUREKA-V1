@@ -576,26 +576,74 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
     return res.json(cached.zones);
   }
 
+  const GPU_HEADERS = {
+    Accept: "application/json",
+    "User-Agent": "Mozilla/5.0 (compatible; HerekaUrbanisme/1.0)",
+  };
+
   try {
+    // Step 1 — commune boundary (used as geom fallback + debug context)
+    let communeGeom: string | null = null;
+    try {
+      const geoRes = await fetch(
+        `https://geo.api.gouv.fr/communes?code=${encodeURIComponent(inseeCode)}&fields=contour&format=geojson&geometry=contour&limit=1`
+      );
+      if (geoRes.ok) {
+        const geo = await geoRes.json() as { features?: Array<{ geometry: unknown }> };
+        const geom = geo.features?.[0]?.geometry;
+        if (geom) communeGeom = JSON.stringify(geom);
+      }
+    } catch { /* non-bloquant */ }
+
+    // Step 2 — active PLU document → partition
     const docRes = await fetch(
       `https://apicarto.ign.fr/api/gpu/document?code-insee=${encodeURIComponent(inseeCode)}`,
-      { headers: { Accept: "application/json" } }
+      { headers: GPU_HEADERS }
     );
     if (!docRes.ok) throw new Error(`GPU document HTTP ${docRes.status}`);
     const docs = await docRes.json() as {
-      features?: Array<{ properties: { partition?: string; statut?: string } }>
+      features?: Array<{ properties: { partition?: string; statut?: string; nomproc?: string } }>
     };
+    console.log(`[plu-zones] ${inseeCode} — ${docs.features?.length ?? 0} document(s):`,
+      docs.features?.map(f => `${f.properties.partition} (${f.properties.statut})`));
 
-    const active = docs.features?.find(f => f.properties.statut !== "Archivé") ?? docs.features?.[0];
+    // Prefer "En vigueur" / "Opposable", fallback to first document
+    const active = docs.features?.find(f =>
+      ["En vigueur", "Opposable", "Approuvé"].includes(f.properties.statut ?? "")
+    ) ?? docs.features?.[0];
     const partition = active?.properties?.partition;
     if (!partition) return res.status(404).json({ error: "Aucun document PLU pour cette commune" });
 
+    // Step 3 — zones: partition + geom + _limit=1000 to avoid default pagination cap
+    const params = new URLSearchParams({ partition, _limit: "1000" });
+    if (communeGeom) params.set("geom", communeGeom);
     const zonesRes = await fetch(
-      `https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(partition)}`,
-      { headers: { Accept: "application/json" } }
+      `https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`,
+      { headers: GPU_HEADERS }
     );
-    if (!zonesRes.ok) throw new Error(`GPU zones HTTP ${zonesRes.status}`);
-    const zones = await zonesRes.json();
+    if (!zonesRes.ok) throw new Error(`GPU zone-urba HTTP ${zonesRes.status}`);
+    const zones = await zonesRes.json() as { features?: unknown[] };
+    console.log(`[plu-zones] ${inseeCode} partition=${partition} → ${zones.features?.length ?? 0} zones`);
+
+    if (!zones.features?.length) {
+      // Last resort: geom-only query without partition
+      if (communeGeom) {
+        const fallbackParams = new URLSearchParams({ geom: communeGeom, _limit: "1000" });
+        const fbRes = await fetch(
+          `https://apicarto.ign.fr/api/gpu/zone-urba?${fallbackParams.toString()}`,
+          { headers: GPU_HEADERS }
+        );
+        if (fbRes.ok) {
+          const fbZones = await fbRes.json() as { features?: unknown[] };
+          console.log(`[plu-zones] ${inseeCode} geom-fallback → ${fbZones.features?.length ?? 0} zones`);
+          if (fbZones.features?.length) {
+            pluZonesCache.set(inseeCode, { zones: fbZones, expiresAt: Date.now() + PLU_CACHE_TTL_MS });
+            return res.json(fbZones);
+          }
+        }
+      }
+      return res.status(404).json({ error: "Aucune zone PLU disponible pour cette commune" });
+    }
 
     pluZonesCache.set(inseeCode, { zones, expiresAt: Date.now() + PLU_CACHE_TTL_MS });
     res.json(zones);
