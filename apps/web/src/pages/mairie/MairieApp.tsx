@@ -3607,7 +3607,6 @@ function InfosPersoScreen() {
     { label: "Communes & Rôles", icon: "🏛" },
     { label: "Disponibilités", icon: "📅" },
     { label: "Délégations", icon: "🤝" },
-    { label: "Mes Modèles", icon: "📄" },
     { label: "Mes Signatures", icon: "✍️" },
     { label: "Notifications", icon: "🔔" },
     { label: "Préférences", icon: "⚙️" },
@@ -3742,8 +3741,6 @@ function InfosPersoScreen() {
               ))}
             </div>
           )}
-
-          {stab === "Mes Modèles" && <TemplateManagerPanel />}
 
           {stab === "Mes Signatures" && (
             <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
