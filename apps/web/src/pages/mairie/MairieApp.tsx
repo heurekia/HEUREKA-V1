@@ -1602,6 +1602,11 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   const [editRoleConfigId, setEditRoleConfigId] = useState("");
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [roleConfigs, setRoleConfigs] = useState<RoleConfig[]>([]);
+  const [communeSigs, setCommuneSigs] = useState<{ id: string; user_id: string; role: string; delegation_arrete: string | null }[]>([]);
+  const [sigModal, setSigModal] = useState<{ userId: string; name: string } | null>(null);
+  const [sigRole, setSigRole] = useState("maire");
+  const [sigDelegation, setSigDelegation] = useState("");
+  const [sigSaving, setSigSaving] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -1610,7 +1615,12 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
       .catch(() => setUserList([]))
       .finally(() => setLoading(false));
   };
-  useEffect(() => { load(); }, [commune]);
+  const loadSigs = () => {
+    api.get<{ id: string; user_id: string; role: string; delegation_arrete: string | null }[]>(
+      `/decisions/communes/${encodeURIComponent(commune)}/signataires`
+    ).then(setCommuneSigs).catch(() => {});
+  };
+  useEffect(() => { load(); loadSigs(); }, [commune]);
 
   useEffect(() => {
     api.get<RoleConfig[]>("/admin/roles").then(setRoleConfigs).catch(() => {});
@@ -1675,6 +1685,15 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   };
 
   const initials = (u: StaffUser) => `${u.prenom[0] ?? ""}${u.nom[0] ?? ""}`.toUpperCase();
+  const getSig = (userId: string) => communeSigs.find(s => s.user_id === userId);
+  const SIG_ROLES = [
+    { key: "maire", label: "Maire" },
+    { key: "adjoint", label: "Adjoint au Maire" },
+    { key: "dgs", label: "Dir. Général des Services" },
+    { key: "responsable_ads", label: "Responsable ADS" },
+    { key: "directeur", label: "Directeur de service" },
+  ];
+  const SIG_LABELS: Record<string, string> = Object.fromEntries(SIG_ROLES.map(r => [r.key, r.label]));
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
@@ -1738,7 +1757,14 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                       <button onClick={() => setEditingId(null)} style={{ padding: "4px 8px", background: "#F1F5F9", color: "#64748b", border: "none", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>✕</button>
                     </div>
                   ) : (
-                    <span style={{ background: `${getUserRoleColor(u)}18`, color: getUserRoleColor(u), fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 8px", border: `1px solid ${getUserRoleColor(u)}33` }}>{getUserRoleLabel(u)}</span>
+                    <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 4, alignItems: "center" }}>
+                      <span style={{ background: `${getUserRoleColor(u)}18`, color: getUserRoleColor(u), fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 8px", border: `1px solid ${getUserRoleColor(u)}33` }}>{getUserRoleLabel(u)}</span>
+                      {getSig(u.id) && (
+                        <span style={{ background: "#FEF9C3", color: "#92400E", fontSize: 10, fontWeight: 600, borderRadius: 5, padding: "2px 6px", border: "1px solid #FDE68A" }}>
+                          ✍️ {SIG_LABELS[getSig(u.id)!.role] ?? getSig(u.id)!.role}
+                        </span>
+                      )}
+                    </div>
                   )}
                 </td>
                 <td style={{ padding: "12px 16px", fontSize: 12, color: "#64748b" }}>{u.telephone ?? "—"}</td>
@@ -1747,6 +1773,9 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={() => { setEditingId(u.id); setEditRoleConfigId(u.role_config_id ?? ""); }}
                         style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>Rôle</button>
+                      <button onClick={() => { const s = getSig(u.id); setSigModal({ userId: u.id, name: `${u.prenom} ${u.nom}` }); setSigRole(s?.role ?? "maire"); setSigDelegation(s?.delegation_arrete ?? ""); }}
+                        title="Habilitation signature ADS"
+                        style={{ border: `1px solid ${getSig(u.id) ? "#FDE68A" : "#E2E8F0"}`, background: getSig(u.id) ? "#FEF9C3" : "white", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: getSig(u.id) ? "#92400E" : "#64748b", cursor: "pointer" }}>✍️</button>
                       {u.id !== currentUserId && (
                         <button onClick={() => setDeleteId(u.id)}
                           style={{ border: "1px solid #FEE2E2", background: "#FFF5F5", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#EF4444", cursor: "pointer" }}>Retirer</button>
@@ -1841,6 +1870,57 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
           </div>
         </div>
       )}
+      {/* ── Modal habilitation signature ADS ── */}
+      {sigModal && (() => {
+        const currentSig = getSig(sigModal.userId);
+        return (
+          <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.4)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => setSigModal(null)}>
+            <div style={{ background: "white", borderRadius: 14, padding: 24, width: 460, boxShadow: "0 24px 64px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 3 }}>Signature ADS — {sigModal.name}</div>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 18 }}>Habilitation à signer les arrêtés pour <strong>{commune}</strong>.</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 5 }}>Titre / Fonction</label>
+                  <select value={sigRole} onChange={e => setSigRole(e.target.value)} style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12.5, outline: "none", background: "white" }}>
+                    {SIG_ROLES.map(r => <option key={r.key} value={r.key}>{r.label}</option>)}
+                  </select>
+                </div>
+                <div>
+                  <label style={{ fontSize: 11, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 5 }}>N° arrêté de délégation</label>
+                  <input value={sigDelegation} onChange={e => setSigDelegation(e.target.value)} placeholder="2024-DEL-001 (facultatif)" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12.5, outline: "none", boxSizing: "border-box" as const }} />
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, justifyContent: currentSig ? "space-between" : "flex-end" }}>
+                {currentSig && (
+                  <button onClick={() => {
+                    setSigSaving(true);
+                    api.delete(`/decisions/communes/${encodeURIComponent(commune)}/signataires/${currentSig.id}`)
+                      .then(() => { loadSigs(); setSigModal(null); })
+                      .catch(() => {})
+                      .finally(() => setSigSaving(false));
+                  }} disabled={sigSaving} style={{ border: "1px solid #FECACA", background: "#FFF5F5", borderRadius: 8, padding: "8px 14px", fontSize: 12, color: "#EF4444", cursor: "pointer" }}>
+                    Retirer l'habilitation
+                  </button>
+                )}
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={() => setSigModal(null)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 14px", fontSize: 12, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+                  <button onClick={() => {
+                    setSigSaving(true);
+                    const p = currentSig
+                      ? api.put(`/decisions/communes/${encodeURIComponent(commune)}/signataires/${currentSig.id}`, { role: sigRole, delegation_arrete: sigDelegation || null })
+                      : api.post(`/decisions/communes/${encodeURIComponent(commune)}/signataires`, { user_id: sigModal.userId, role: sigRole, delegation_arrete: sigDelegation || null });
+                    p.then(() => { loadSigs(); setSigModal(null); })
+                      .catch(() => {})
+                      .finally(() => setSigSaving(false));
+                  }} disabled={sigSaving} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                    {sigSaving ? "…" : currentSig ? "Mettre à jour" : "Accorder l'habilitation"}
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+        );
+      })()}
     </div>
   );
 }
@@ -1977,7 +2057,7 @@ function SignatairesPanel({ commune }: { commune: string }) {
 
 function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
-  const settingsTabs = ["Général", "Utilisateurs", "Signataires", "Réglementation", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
+  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
   const [stab, setStab] = useState("Réglementation");
   const events = [
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
@@ -2002,7 +2082,7 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeIn
       </div>
       {stab === "Général" && <CommuneGeneralTab commune={commune} isAdmin={isAdmin} onInseeUpdated={onInseeUpdated} />}
       {stab === "Utilisateurs" && <CommuneUsersTab commune={commune} isAdmin={isAdmin} currentUserId={user?.id} />}
-      {stab === "Signataires" && <SignatairesPanel commune={commune} />}
+
       {stab === "Réglementation" && (
         <div style={{ minHeight: 400, margin: "0 -24px" }}>
           <ReglementationScreen commune={commune} inseeCode={communeInseeMap[commune]} />
