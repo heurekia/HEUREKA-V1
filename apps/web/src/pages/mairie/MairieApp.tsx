@@ -2025,16 +2025,19 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeIn
   );
 }
 
+type CarteRegRule = { id: string; article_number: number | null; article_title: string | null; topic: string; rule_text: string; summary: string | null; validation_status: string };
+type CarteRegZone = { id: string; zone_code: string; zone_label: string | null; rules: CarteRegRule[]; stats: { total: number } };
+
 function CarteScreen({ initialCommune = "Ballan-Miré", communeInseeMap = COMMUNE_INSEE }: { initialCommune?: string; communeInseeMap?: Record<string, string> }) {
-  const navigate = useNavigate();
   const [commune, setCommune] = useState(initialCommune);
   const [inseeCode, setInseeCode] = useState<string>(communeInseeMap[initialCommune] ?? "");
   const [communes, setCommunes] = useState<string[]>([initialCommune]);
-  const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
-  const [filterStatus, setFilterStatus] = useState("Tous");
-  const [filterType, setFilterType] = useState("Tous les types");
   const [pluZones, setPluZones] = useState(true);
   const [baseLayer, setBaseLayer] = useState<BaseLayer>("ign-ortho");
+  const [regZones, setRegZones] = useState<CarteRegZone[]>([]);
+  const [openZoneId, setOpenZoneId] = useState<string | null>(null);
+  const [zoneSearch, setZoneSearch] = useState("");
+  const [regLoading, setRegLoading] = useState(false);
 
   useEffect(() => {
     api.get<string[]>("/mairie/communes")
@@ -2043,29 +2046,32 @@ function CarteScreen({ initialCommune = "Ballan-Miré", communeInseeMap = COMMUN
   }, []);
 
   useEffect(() => {
-    api.get<MapDossier[]>(`/mairie/map-dossiers?commune=${encodeURIComponent(commune)}`)
-      .then(data => setMapDossiers(data))
-      .catch(() => setMapDossiers([]));
-  }, [commune]);
+    if (!inseeCode) return;
+    setRegLoading(true);
+    setRegZones([]);
+    setOpenZoneId(null);
+    api.get<{ zones: CarteRegZone[] }>(`/mairie/reglementation?insee_code=${encodeURIComponent(inseeCode)}`)
+      .then(data => setRegZones(data.zones ?? []))
+      .catch(() => setRegZones([]))
+      .finally(() => setRegLoading(false));
+  }, [inseeCode]);
 
-  const TYPE_OPTIONS = ["Tous les types", "Permis de construire", "Déclaration préalable", "Permis d'aménager", "Permis de démolir", "Certificat d'urbanisme"];
-  const STATUS_OPTIONS = ["Tous", "Nouveau", "Pré-instruction", "Incomplet", "En instruction", "Décision en cours", "Accepté", "Refusé", "Accord avec prescriptions", "Brouillon"];
-
-  const CARTE_STATUS_COLORS: Record<string, string> = {
-    soumis: "#4F46E5", pre_instruction: "#F97316", incomplet: "#EF4444",
-    en_instruction: "#22C55E", decision_en_cours: "#8B5CF6",
-    accepte: "#10B981", refuse: "#EF4444", accord_prescription: "#10B981", brouillon: "#94A3B8",
-  };
-  const CARTE_STATUS_LABELS: Record<string, string> = {
-    brouillon: "Brouillon", soumis: "Nouveau", pre_instruction: "Pré-instruction",
-    incomplet: "Incomplet", en_instruction: "En instruction",
-    decision_en_cours: "Décision en cours", accepte: "Accepté",
-    refuse: "Refusé", accord_prescription: "Accord avec prescriptions",
+  const TOPIC_LABELS: Record<string, string> = {
+    destinations: "Destinations", terrain_min: "Terrain min.",
+    recul_voie: "Recul voie", recul_limite: "Recul limite",
+    emprise_sol: "Emprise sol", hauteur: "Hauteur",
+    aspect: "Aspect extérieur", stationnement: "Stationnement",
+    espaces_verts: "Espaces verts", general: "Général",
   };
 
-  const counts = Object.fromEntries(
-    Object.keys(CARTE_STATUS_LABELS).map(k => [k, mapDossiers.filter(d => d.status === k).length])
-  );
+  const filteredZones = zoneSearch.trim()
+    ? regZones.filter(z =>
+        z.zone_code.toLowerCase().includes(zoneSearch.toLowerCase()) ||
+        (z.zone_label ?? "").toLowerCase().includes(zoneSearch.toLowerCase()))
+    : regZones;
+
+  const zoneColor = (code: string) =>
+    code.startsWith("N") ? "#27AE60" : code.startsWith("A") && !code.startsWith("AU") ? "#D4AC0D" : code.startsWith("U") ? "#C0392B" : "#E67E22";
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 56px)", overflow: "hidden" }}>
@@ -2073,7 +2079,7 @@ function CarteScreen({ initialCommune = "Ballan-Miré", communeInseeMap = COMMUN
       <div style={{ padding: "10px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", gap: 12, flexShrink: 0 }}>
         <div style={{ flex: 1 }}>
           <h1 style={{ fontSize: 17, fontWeight: 700, color: "#0F172A", margin: 0 }}>Carte du territoire</h1>
-          <p style={{ color: "#64748b", fontSize: 12, margin: 0 }}>{commune} — zones PLU (Géoportail Urbanisme) et dossiers</p>
+          <p style={{ color: "#64748b", fontSize: 12, margin: 0 }}>{commune} — zones PLU · règlement d'urbanisme</p>
         </div>
         <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
           {/* Commune selector */}
@@ -2083,7 +2089,7 @@ function CarteScreen({ initialCommune = "Ballan-Miré", communeInseeMap = COMMUN
             </svg>
             <select
               value={commune}
-              onChange={e => { setCommune(e.target.value); setInseeCode(communeInseeMap[e.target.value] ?? ""); setMapDossiers([]); }}
+              onChange={e => { setCommune(e.target.value); setInseeCode(communeInseeMap[e.target.value] ?? ""); }}
               style={{ border: "none", background: "transparent", fontSize: 12, fontWeight: 600, color: "#374151", outline: "none", cursor: "pointer" }}
             >
               {communes.map(c => <option key={c} value={c}>{c}</option>)}
@@ -2126,67 +2132,108 @@ function CarteScreen({ initialCommune = "Ballan-Miré", communeInseeMap = COMMUN
 
       {/* Map + sidebar */}
       <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
-        {/* Map — fills remaining space */}
+        {/* Map */}
         <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
           <MapLeaflet
-            dossiers={mapDossiers}
+            dossiers={[]}
             height="100%"
-            filterStatus={filterStatus}
-            filterType={filterType}
             commune={commune}
             inseeCode={inseeCode || undefined}
             baseLayer={baseLayer}
             pluZoneLayer={pluZones}
             parcelLayer={true}
-            onMarkerClick={d => navigate(`/mairie/dossiers/${d.id}`)}
           />
         </div>
 
-        {/* Sidebar */}
-        <div style={{ width: 248, borderLeft: "1px solid #E2E8F0", background: "white", display: "flex", flexDirection: "column", flexShrink: 0, overflowY: "auto" }}>
-          {/* Filters */}
-          <div style={{ padding: "14px 14px 12px", borderBottom: "1px solid #F1F5F9" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>Filtres</div>
-            <div style={{ marginBottom: 8 }}>
-              <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>Type de dossier</div>
-              <select
-                value={filterType}
-                onChange={e => setFilterType(e.target.value)}
-                style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 11, color: "#374151", background: "white" }}
-              >
-                {TYPE_OPTIONS.map(o => <option key={o}>{o}</option>)}
-              </select>
-            </div>
-            <div>
-              <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>Statut</div>
-              <select
-                value={filterStatus}
-                onChange={e => setFilterStatus(e.target.value)}
-                style={{ width: "100%", padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 11, color: "#374151", background: "white" }}
-              >
-                {STATUS_OPTIONS.map(o => <option key={o}>{o}</option>)}
-              </select>
+        {/* Sidebar — règlement PLU */}
+        <div style={{ width: 260, borderLeft: "1px solid #E2E8F0", background: "white", display: "flex", flexDirection: "column", flexShrink: 0, overflow: "hidden" }}>
+          {/* Search header */}
+          <div style={{ padding: "14px 14px 10px", borderBottom: "1px solid #F1F5F9", flexShrink: 0 }}>
+            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Règlement PLU</div>
+            <div style={{ position: "relative" }}>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                style={{ position: "absolute", left: 8, top: "50%", transform: "translateY(-50%)", pointerEvents: "none" }}>
+                <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+              </svg>
+              <input
+                value={zoneSearch}
+                onChange={e => setZoneSearch(e.target.value)}
+                placeholder="Rechercher une zone…"
+                style={{ width: "100%", boxSizing: "border-box", padding: "5px 8px 5px 26px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 11, color: "#374151", outline: "none", background: "#F8F9FC" }}
+              />
             </div>
           </div>
 
-          {/* Dossier status legend */}
-          <div style={{ padding: "12px 14px", borderBottom: "1px solid #F1F5F9" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Dossiers ({mapDossiers.length})</div>
-            {Object.entries(CARTE_STATUS_LABELS)
-              .filter(([k]) => (counts[k] ?? 0) > 0)
-              .map(([k, label]) => (
-                <div key={k} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5 }}>
-                  <span style={{ width: 9, height: 9, borderRadius: "50%", background: CARTE_STATUS_COLORS[k], display: "inline-block", flexShrink: 0, boxShadow: "0 0 0 1.5px white, 0 0 0 2.5px " + CARTE_STATUS_COLORS[k] + "44" }} />
-                  <span style={{ fontSize: 11, color: "#374151", flex: 1 }}>{label}</span>
-                  <span style={{ fontSize: 11, color: "#94a3b8", fontWeight: 600 }}>{counts[k]}</span>
-                </div>
-              ))}
+          {/* Zone list — scrollable */}
+          <div style={{ flex: 1, overflowY: "auto" }}>
+            {regLoading && (
+              <div style={{ padding: "24px 14px", textAlign: "center", color: "#94a3b8", fontSize: 12 }}>Chargement…</div>
+            )}
+            {!regLoading && regZones.length === 0 && (
+              <div style={{ padding: "24px 14px", textAlign: "center" }}>
+                <svg width="32" height="32" viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" style={{ marginBottom: 8 }}>
+                  <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14 2 14 8 20 8"/>
+                  <line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/>
+                </svg>
+                <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>Aucun règlement ingéré pour cette commune.</div>
+                <div style={{ fontSize: 11, color: "#CBD5E1", marginTop: 4 }}>Importez un PDF PLU depuis les paramètres.</div>
+              </div>
+            )}
+            {!regLoading && filteredZones.map(zone => (
+              <div key={zone.id} style={{ borderBottom: "1px solid #F1F5F9" }}>
+                <button
+                  onClick={() => setOpenZoneId(openZoneId === zone.id ? null : zone.id)}
+                  style={{
+                    width: "100%", display: "flex", alignItems: "center", gap: 8,
+                    padding: "9px 14px", border: "none",
+                    background: openZoneId === zone.id ? "#F8F9FF" : "transparent",
+                    cursor: "pointer", textAlign: "left",
+                  }}
+                >
+                  <span style={{ width: 8, height: 8, borderRadius: 2, flexShrink: 0, background: zoneColor(zone.zone_code) }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A" }}>{zone.zone_code}</div>
+                    {zone.zone_label && (
+                      <div style={{ fontSize: 10, color: "#64748b", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{zone.zone_label}</div>
+                    )}
+                  </div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+                    <span style={{ fontSize: 10, color: "#94a3b8" }}>{zone.stats.total}</span>
+                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"
+                      style={{ transform: openZoneId === zone.id ? "rotate(180deg)" : "none", transition: "transform 0.15s" }}>
+                      <polyline points="6 9 12 15 18 9"/>
+                    </svg>
+                  </div>
+                </button>
+
+                {openZoneId === zone.id && (
+                  <div style={{ background: "#F8F9FC" }}>
+                    {zone.rules.length === 0 ? (
+                      <div style={{ padding: "8px 14px 10px", fontSize: 11, color: "#94a3b8" }}>Aucune règle.</div>
+                    ) : zone.rules.map(rule => (
+                      <div key={rule.id} style={{ padding: "7px 14px 8px", borderTop: "1px solid #EEF2FF" }}>
+                        <div style={{ fontSize: 10, fontWeight: 600, color: "#4F46E5", marginBottom: 2 }}>
+                          {rule.article_number != null ? `Art. ${rule.article_number}` : ""}
+                          {rule.article_number != null && rule.topic ? " · " : ""}
+                          {TOPIC_LABELS[rule.topic] ?? rule.topic}
+                        </div>
+                        <div style={{ fontSize: 11, color: "#374151", lineHeight: 1.45 }}>
+                          {rule.summary
+                            ? rule.summary
+                            : rule.rule_text.length > 130 ? rule.rule_text.slice(0, 130) + "…" : rule.rule_text}
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
 
-          {/* PLU zones legend */}
-          <div style={{ padding: "12px 14px" }}>
-            <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>
-              Zones PLU
+          {/* PLU zones legend — bottom */}
+          <div style={{ padding: "12px 14px", borderTop: "1px solid #F1F5F9", flexShrink: 0 }}>
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>
+              Légende zones PLU
               {!pluZones && <span style={{ fontSize: 10, fontWeight: 400, color: "#94a3b8", marginLeft: 6 }}>(désactivées)</span>}
             </div>
             {[
@@ -2195,12 +2242,12 @@ function CarteScreen({ initialCommune = "Ballan-Miré", communeInseeMap = COMMUN
               { color: "#D4AC0D", label: "Zones A — Agricoles" },
               { color: "#27AE60", label: "Zones N — Naturelles" },
             ].map(({ color, label }) => (
-              <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 5, opacity: pluZones ? 1 : 0.4 }}>
+              <div key={label} style={{ display: "flex", alignItems: "center", gap: 7, marginBottom: 4, opacity: pluZones ? 1 : 0.4 }}>
                 <span style={{ width: 14, height: 10, borderRadius: 2, background: color + "88", border: `1.5px solid ${color}`, display: "inline-block", flexShrink: 0 }} />
-                <span style={{ fontSize: 11, color: "#374151" }}>{label}</span>
+                <span style={{ fontSize: 10, color: "#374151" }}>{label}</span>
               </div>
             ))}
-            <div style={{ marginTop: 8, fontSize: 10, color: "#94a3b8", lineHeight: 1.4 }}>
+            <div style={{ marginTop: 6, fontSize: 10, color: "#94a3b8", lineHeight: 1.4 }}>
               Source : Géoportail de l'Urbanisme<br />
               Couche URBANISME.ZONE_URBA
             </div>
