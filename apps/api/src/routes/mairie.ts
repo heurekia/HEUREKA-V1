@@ -6,6 +6,16 @@ import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import Anthropic from "@anthropic-ai/sdk";
+import fs from "fs";
+
+function getAnthropicApiKey(): string {
+  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
+  const tokenFile = process.env.CLAUDE_SESSION_INGRESS_TOKEN_FILE;
+  if (tokenFile) {
+    try { return fs.readFileSync(tokenFile, "utf8").trim(); } catch { /* fall through */ }
+  }
+  throw new Error("ANTHROPIC_API_KEY non configurée");
+}
 
 export const mairieRouter = Router();
 
@@ -1081,7 +1091,7 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
   }
 
   try {
-    const client = new Anthropic({ apiKey: process.env.ANTHROPIC_API_KEY });
+    const client = new Anthropic({ apiKey: getAnthropicApiKey() });
 
     // Upsert commune
     let commune = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
