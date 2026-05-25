@@ -63,6 +63,17 @@ decisionsRouter.get("/pending", async (req: AuthRequest, res) => {
   res.json(rows);
 });
 
+// ── GET /api/decisions/is-signataire ────────────────────────────────────────
+// Returns whether the current user is an active signataire in any commune
+decisionsRouter.get("/is-signataire", async (req: AuthRequest, res) => {
+  const rows = await db
+    .select({ id: signataires.id })
+    .from(signataires)
+    .where(and(eq(signataires.user_id, req.user!.id), eq(signataires.active, true)))
+    .limit(1);
+  res.json({ isSignataire: rows.length > 0 });
+});
+
 // ── GET /api/decisions/pending-count ────────────────────────────────────────
 decisionsRouter.get("/pending-count", async (req: AuthRequest, res) => {
   const rows = await db

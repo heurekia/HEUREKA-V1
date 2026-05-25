@@ -171,7 +171,7 @@ function UserIcon({ size = 18, className = "" }) {
   );
 }
 
-function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, signaturesBadge = 0, communes = [] }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void; messageBadge?: number; signaturesBadge?: number; communes?: string[] }) {
+function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, signaturesBadge = 0, isSignataire = false, communes = [] }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void; messageBadge?: number; signaturesBadge?: number; isSignataire?: boolean; communes?: string[] }) {
   const [showDrop, setShowDrop] = useState(false);
   const [search, setSearch] = useState("");
   const { logout, user } = useAuth();
@@ -179,6 +179,7 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, sig
   const filtered = manyCommunes
     ? communes.filter(c => c.toLowerCase().includes(search.toLowerCase()))
     : communes;
+  const visibleNavItems = NAV_ITEMS.filter(item => item.label !== "Signatures" || isSignataire);
   return (
     <aside style={{
       width: 200, minWidth: 200, background: "#0f1629",
@@ -241,7 +242,7 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, sig
       </div>
 
       <nav style={{ flex: 1, padding: "4px 10px", overflowY: "auto" }}>
-        {NAV_ITEMS.map(({ label, icon: Icon }) => {
+        {visibleNavItems.map(({ label, icon: Icon }) => {
           const isActive = active === label;
           const badge = label === "Messagerie" ? messageBadge : label === "Signatures" ? signaturesBadge : 0;
           return (
@@ -5872,6 +5873,7 @@ export function MairieApp() {
   const [showNouveauDossier, setShowNouveauDossier] = useState(false);
   const [messageBadge, setMessageBadge] = useState(0);
   const [signaturesBadge, setSignaturesBadge] = useState(0);
+  const [isSignataire, setIsSignataire] = useState(false);
   const [communeInseeMap, setCommuneInseeMap] = useState<Record<string, string>>(COMMUNE_INSEE);
   const routerNavigate = useNavigate();
   const location = useLocation();
@@ -5924,11 +5926,27 @@ export function MairieApp() {
       .catch(() => {});
   }, [commune]);
 
-  useEffect(() => {
-    api.get<{ count: number }>("/decisions/pending-count")
-      .then(d => setSignaturesBadge(d.count))
+  const checkSignataireStatus = useCallback(() => {
+    api.get<{ isSignataire: boolean }>("/decisions/is-signataire")
+      .then(d => {
+        setIsSignataire(d.isSignataire);
+        if (d.isSignataire) {
+          api.get<{ count: number }>("/decisions/pending-count")
+            .then(d2 => setSignaturesBadge(d2.count))
+            .catch(() => {});
+        } else {
+          setSignaturesBadge(0);
+        }
+      })
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    checkSignataireStatus();
+    const onFocus = () => checkSignataireStatus();
+    window.addEventListener("focus", onFocus);
+    return () => window.removeEventListener("focus", onFocus);
+  }, [checkSignataireStatus]);
 
   const pathname = location.pathname;
   const active = pathname.startsWith("/mairie/dossiers") ? "Dossiers"
@@ -5953,7 +5971,7 @@ export function MairieApp() {
 
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex" }}>
-      <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} signaturesBadge={signaturesBadge} communes={userCommunes} />
+      <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} signaturesBadge={signaturesBadge} isSignataire={isSignataire} communes={userCommunes} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
           <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} />
