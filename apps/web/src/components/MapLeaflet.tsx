@@ -145,13 +145,13 @@ export function MapLeaflet({
       `&LAYER=${layer}&STYLE=normal&FORMAT=${format}` +
       `&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}`;
     if (baseLayer === "ign-plan") {
-      baseTileRef.current = L.tileLayer(WMTS("GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2", "image/png"), { attribution: "© IGN — Géoplateforme", maxZoom: 19 }).addTo(map);
+      baseTileRef.current = L.tileLayer(WMTS("GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2", "image/png"), { attribution: "© IGN — Géoplateforme", maxZoom: 19, zIndex: 1 }).addTo(map);
     } else if (baseLayer === "ign-ortho") {
-      baseTileRef.current = L.tileLayer(WMTS("ORTHOIMAGERY.ORTHOPHOTOS", "image/jpeg"), { attribution: "© IGN — Géoplateforme", maxZoom: 21 }).addTo(map);
+      baseTileRef.current = L.tileLayer(WMTS("ORTHOIMAGERY.ORTHOPHOTOS", "image/jpeg"), { attribution: "© IGN — Géoplateforme", maxZoom: 21, zIndex: 1 }).addTo(map);
     } else if (baseLayer === "carto-light") {
-      baseTileRef.current = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/">CARTO</a>', maxZoom: 19 }).addTo(map);
+      baseTileRef.current = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/">CARTO</a>', maxZoom: 19, zIndex: 1 }).addTo(map);
     } else {
-      baseTileRef.current = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>', maxZoom: 19 }).addTo(map);
+      baseTileRef.current = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>', maxZoom: 19, zIndex: 1 }).addTo(map);
     }
   }, [baseLayer]);
 
@@ -166,6 +166,7 @@ export function MapLeaflet({
         transparent: true,
         version: "1.3.0",
         opacity: 0.75,
+        zIndex: 2,
         attribution: "© IGN — Géoplateforme",
       }).addTo(map);
     } else if (!parcelLayer && parcelLayerRef.current) {
@@ -174,8 +175,9 @@ export function MapLeaflet({
     }
   }, [parcelLayer]);
 
-  // GPU PLU zone overlay — WMS tiles from IGN Géoplateforme, same source as Géoportail Urbanisme.
-  // WMS has no feature limit and renders all zones correctly for any viewport.
+  // GPU PLU zone overlay — Géoportail de l'Urbanisme WMS (URBANISME.ZONE_URBA).
+  // zIndex 3 ensures it stays above the basemap (zIndex 1) and cadastral layer (zIndex 2)
+  // regardless of the order layers are added/removed when the basemap changes.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -184,14 +186,39 @@ export function MapLeaflet({
     setZoneError(null);
     if (!pluZoneLayer) return;
 
-    pluLayerRef.current = L.tileLayer.wms("https://data.geopf.fr/wms-r/ows", {
-      layers: "URBANISME.ZONE_URBA",
-      format: "image/png",
-      transparent: true,
-      version: "1.3.0",
-      opacity: 0.55,
-      attribution: '© IGN — <a href="https://www.geoportail-urbanisme.gouv.fr/">Géoportail de l\'Urbanisme</a>',
-    }).addTo(map);
+    // Primary: new Géoplateforme endpoint. Fallback: legacy GPU endpoint.
+    const GPU_WMS_URLS = [
+      "https://data.geopf.fr/wms-r/ows",
+      "https://wxs.ign.fr/gpu/geoportail/r/wms",
+    ];
+
+    const tryLoad = (urlIndex: number) => {
+      if (urlIndex >= GPU_WMS_URLS.length) {
+        setZoneError("Service PLU indisponible");
+        return;
+      }
+      const layer = L.tileLayer.wms(GPU_WMS_URLS[urlIndex]!, {
+        layers: "URBANISME.ZONE_URBA",
+        format: "image/png",
+        transparent: true,
+        version: "1.3.0",
+        opacity: 0.55,
+        zIndex: 3,
+        attribution: '© IGN — <a href="https://www.geoportail-urbanisme.gouv.fr/">Géoportail de l\'Urbanisme</a>',
+      });
+
+      // Catch silent WMS errors (service exception returned as image/XML)
+      layer.on("tileerror", () => {
+        layer.remove();
+        pluLayerRef.current = null;
+        tryLoad(urlIndex + 1);
+      });
+
+      layer.addTo(map);
+      pluLayerRef.current = layer;
+    };
+
+    tryLoad(0);
   }, [pluZoneLayer, mapReady]);
 
   // Highlight geometry (e.g. parcel polygon returned by analysis)
