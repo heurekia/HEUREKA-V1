@@ -6,25 +6,29 @@ import { X, Save, ArrowLeft, Plus, Pencil, Trash2, FileText, Printer } from "luc
 
 // ─── Variable groups ───────────────────────────────────────────────────────
 const TEMPLATE_VARIABLES = [
-  { group: "Demandeur", vars: [
-    { label: "Nom complet", name: "demandeur_nom" },
-    { label: "Email", name: "demandeur_email" },
-  ]},
-  { group: "Dossier", vars: [
-    { label: "Numéro dossier", name: "numero_dossier" },
-    { label: "Type de dossier", name: "type_dossier" },
-    { label: "Adresse travaux", name: "adresse_travaux" },
-    { label: "Commune", name: "commune" },
-    { label: "Code postal", name: "code_postal" },
-    { label: "Référence parcelle", name: "parcelle" },
-    { label: "Surface de plancher", name: "surface_plancher" },
-    { label: "Date de dépôt", name: "date_depot" },
-    { label: "Date limite instruction", name: "date_limite_instruction" },
-  ]},
-  { group: "Service & Agent", vars: [
+  { group: "Identification de la mairie", vars: [
     { label: "Nom de la commune", name: "nom_service" },
+    { label: "Service instructeur", name: "service_instructeur" },
+    { label: "Coordonnées", name: "coordonnees_mairie" },
     { label: "Nom de l'agent", name: "nom_agent" },
     { label: "Date du courrier", name: "date_courrier" },
+  ]},
+  { group: "Références du dossier", vars: [
+    { label: "Numéro de dossier", name: "numero_dossier" },
+    { label: "Type de dossier", name: "type_dossier" },
+    { label: "Identité du demandeur", name: "demandeur_nom" },
+    { label: "Email demandeur", name: "demandeur_email" },
+    { label: "Date de dépôt", name: "date_depot" },
+    { label: "Date de complétude", name: "date_completude" },
+    { label: "Date de délivrance", name: "date_delivrance" },
+    { label: "Date limite instruction", name: "date_limite_instruction" },
+  ]},
+  { group: "Identification du terrain", vars: [
+    { label: "Adresse des travaux", name: "adresse_travaux" },
+    { label: "Commune", name: "commune" },
+    { label: "Code postal", name: "code_postal" },
+    { label: "Références cadastrales", name: "parcelle" },
+    { label: "Superficie (surface plancher)", name: "surface_plancher" },
   ]},
 ];
 
@@ -120,6 +124,7 @@ export interface DossierForCourrier {
   id: string; numero: string; type: string; petitionnaire: string;
   adresse?: string; commune?: string; code_postal?: string; parcelle?: string;
   surface_plancher?: string; date_depot?: string; echeance?: string;
+  date_completude?: string; date_delivrance?: string;
 }
 interface MentionRow {
   id: string;
@@ -346,20 +351,27 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
   useEffect(() => {
     if (!selected || !user) return;
     const vars: Record<string, string> = {
-      demandeur_nom: dossier.petitionnaire,
-      demandeur_email: "—",
-      numero_dossier: dossier.numero,
-      type_dossier: TYPE_LABEL[dossier.type] ?? dossier.type,
-      adresse_travaux: dossier.adresse ?? "—",
-      commune: dossier.commune ?? "—",
-      code_postal: dossier.code_postal ?? "",
-      parcelle: dossier.parcelle ?? "—",
-      surface_plancher: dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—",
-      date_depot: fmtDate(dossier.date_depot),
-      date_limite_instruction: fmtDate(dossier.echeance),
+      // Mairie
       nom_service: letterhead.letterhead_title ?? dossier.commune ?? "Commune",
+      service_instructeur: letterhead.letterhead_subtitle ?? "—",
+      coordonnees_mairie: letterhead.letterhead_address ?? "—",
       nom_agent: `${user.prenom} ${user.nom}`,
       date_courrier: new Date().toLocaleDateString("fr-FR"),
+      // Dossier
+      numero_dossier: dossier.numero,
+      type_dossier: TYPE_LABEL[dossier.type] ?? dossier.type,
+      demandeur_nom: dossier.petitionnaire,
+      demandeur_email: "—",
+      date_depot: fmtDate(dossier.date_depot),
+      date_completude: fmtDate(dossier.date_completude),
+      date_delivrance: fmtDate(dossier.date_delivrance),
+      date_limite_instruction: fmtDate(dossier.echeance),
+      // Terrain
+      adresse_travaux: dossier.adresse ?? "—",
+      commune: dossier.commune ?? "—",
+      code_postal: dossier.code_postal ?? "—",
+      parcelle: dossier.parcelle ?? "—",
+      surface_plancher: dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—",
     };
     setSubstitutedHtml(substituteVariables(selected.body, vars));
   }, [selected, letterhead, dossier, user]);

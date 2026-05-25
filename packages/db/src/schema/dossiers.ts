@@ -39,6 +39,7 @@ export const dossiers = pgTable("dossiers", {
   date_depot: timestamp("date_depot"),
   date_completude: timestamp("date_completude"),
   date_limite_instruction: timestamp("date_limite_instruction"),
+  date_delivrance: timestamp("date_delivrance"),
   is_tacite: boolean("is_tacite").notNull().default(false),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),

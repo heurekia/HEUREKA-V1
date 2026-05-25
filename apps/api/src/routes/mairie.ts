@@ -71,8 +71,12 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
     const sel = {
       id: dossiers.id, numero: dossiers.numero, type: dossiers.type, status: dossiers.status,
       adresse: dossiers.adresse, commune: dossiers.commune, code_postal: dossiers.code_postal,
+      parcelle: dossiers.parcelle, surface_plancher: dossiers.surface_plancher,
       description: dossiers.description, date_depot: dossiers.date_depot,
-      date_limite_instruction: dossiers.date_limite_instruction, created_at: dossiers.created_at,
+      date_completude: dossiers.date_completude,
+      date_limite_instruction: dossiers.date_limite_instruction,
+      date_delivrance: dossiers.date_delivrance,
+      created_at: dossiers.created_at,
       demandeur_prenom: users.prenom, demandeur_nom: users.nom,
     };
 
