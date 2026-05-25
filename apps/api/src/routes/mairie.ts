@@ -293,6 +293,28 @@ mairieRouter.get("/instructeurs", async (_req: AuthRequest, res) => {
   }
 });
 
+// ── Communes de l'utilisateur connecté ──
+mairieRouter.get("/my-communes", async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const rows = await db
+      .select({ name: communes.name, insee_code: communes.insee_code })
+      .from(user_communes)
+      .innerJoin(communes, eq(user_communes.commune_id, communes.id))
+      .where(eq(user_communes.user_id, userId))
+      .orderBy(communes.name);
+    if (rows.length > 0) return res.json(rows);
+    // Fallback: commune principale de l'utilisateur
+    const [user] = await db.select({ commune: users.commune, commune_insee: users.commune_insee })
+      .from(users).where(eq(users.id, userId)).limit(1);
+    if (user?.commune) return res.json([{ name: user.commune, insee_code: user.commune_insee ?? null }]);
+    res.json([]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── Liste des communes (noms seuls pour le sélecteur) ──
 mairieRouter.get("/communes", async (_req: AuthRequest, res) => {
   try {

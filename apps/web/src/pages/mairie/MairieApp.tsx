@@ -163,10 +163,14 @@ function UserIcon({ size = 18, className = "" }) {
   );
 }
 
-function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0 }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void; messageBadge?: number }) {
+function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, communes = [] }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void; messageBadge?: number; communes?: string[] }) {
   const [showDrop, setShowDrop] = useState(false);
-  const communes = ["Ballan-Miré", "Tours", "Saint-Avertin", "Joué-lès-Tours", "La Riche"];
-  const { logout } = useAuth();
+  const [search, setSearch] = useState("");
+  const { logout, user } = useAuth();
+  const manyCommunes = communes.length > 5;
+  const filtered = manyCommunes
+    ? communes.filter(c => c.toLowerCase().includes(search.toLowerCase()))
+    : communes;
   return (
     <aside style={{
       width: 200, minWidth: 200, background: "#0f1629",
@@ -187,26 +191,45 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0 }: {
           <span style={{ color: "white", fontWeight: 800, fontSize: 15, letterSpacing: "0.04em" }}>HEUREKA</span>
         </div>
         {/* Commune selector */}
-        <div style={{ position: "relative" }}>
-          <div onClick={() => setShowDrop(!showDrop)} style={{ background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "8px 10px", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}>
-            <BuildingIcon size={14} />
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1 }}>Commune de</div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", lineHeight: 1.4 }}>{commune}</div>
+        {communes.length > 0 && (
+          <div style={{ position: "relative" }}>
+            <div onClick={() => { setShowDrop(!showDrop); setSearch(""); }} style={{ background: "rgba(255,255,255,0.06)", borderRadius: 8, padding: "8px 10px", cursor: communes.length > 1 ? "pointer" : "default", display: "flex", alignItems: "center", gap: 8 }}>
+              <BuildingIcon size={14} />
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div style={{ fontSize: 10, color: "#64748b", lineHeight: 1 }}>Commune</div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: "#e2e8f0", lineHeight: 1.4, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{commune || "—"}</div>
+              </div>
+              {communes.length > 1 && <ChevronDownIcon size={12} />}
             </div>
-            <ChevronDownIcon size={12} />
+            {showDrop && communes.length > 1 && (
+              <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "#1a2540", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 8px 24px rgba(0,0,0,0.3)", zIndex: 200, overflow: "hidden" }}>
+                {manyCommunes && (
+                  <div style={{ padding: "8px 10px", borderBottom: "1px solid rgba(255,255,255,0.07)" }}>
+                    <input
+                      autoFocus
+                      value={search}
+                      onChange={e => setSearch(e.target.value)}
+                      placeholder="Rechercher…"
+                      style={{ width: "100%", background: "rgba(255,255,255,0.08)", border: "1px solid rgba(255,255,255,0.12)", borderRadius: 6, padding: "5px 8px", color: "#e2e8f0", fontSize: 12, outline: "none", boxSizing: "border-box" as const }}
+                    />
+                  </div>
+                )}
+                <div style={{ maxHeight: 220, overflowY: "auto" }}>
+                  {filtered.length === 0 && (
+                    <div style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>Aucun résultat</div>
+                  )}
+                  {filtered.map(c => (
+                    <button key={c} onClick={() => { setCommune(c); setShowDrop(false); setSearch(""); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" as const, fontSize: 12, color: c === commune ? "#818cf8" : "#94a3b8", fontWeight: c === commune ? 600 : 400 }}>
+                      <BuildingIcon size={12} />
+                      <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c}</span>
+                      {c === commune && <span style={{ color: "#818cf8", flexShrink: 0 }}>✓</span>}
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
           </div>
-          {showDrop && (
-            <div style={{ position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, background: "#1a2540", borderRadius: 8, border: "1px solid rgba(255,255,255,0.1)", boxShadow: "0 8px 24px rgba(0,0,0,0.3)", zIndex: 200, overflow: "hidden" }}>
-              {communes.map(c => (
-                <button key={c} onClick={() => { setCommune(c); setShowDrop(false); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" as const, fontSize: 12, color: c === commune ? "#818cf8" : "#94a3b8", fontWeight: c === commune ? 600 : 400 }}>
-                  <BuildingIcon size={12} />{c}
-                  {c === commune && <span style={{ marginLeft: "auto", color: "#818cf8" }}>✓</span>}
-                </button>
-              ))}
-            </div>
-          )}
-        </div>
+        )}
       </div>
 
       <nav style={{ flex: 1, padding: "4px 10px", overflowY: "auto" }}>
@@ -240,10 +263,12 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0 }: {
 
       <div style={{ borderTop: "1px solid rgba(255,255,255,0.07)", padding: "12px 16px", display: "flex", alignItems: "center", gap: 10 }}>
         <div onClick={() => setActive("Infos Perso")} style={{ display: "flex", alignItems: "center", gap: 10, flex: 1, minWidth: 0, cursor: "pointer" }}>
-          <div style={{ width: 34, height: 34, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "white", flexShrink: 0 }}>ML</div>
+          <div style={{ width: 34, height: 34, background: "linear-gradient(135deg, #4F46E5, #7C3AED)", borderRadius: "50%", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: "white", flexShrink: 0 }}>
+            {user ? `${user.prenom[0] ?? ""}${user.nom[0] ?? ""}`.toUpperCase() : "?"}
+          </div>
           <div style={{ flex: 1, minWidth: 0 }}>
-            <div style={{ color: "white", fontSize: 12, fontWeight: 600 }}>Marie L.</div>
-            <div style={{ color: "#64748b", fontSize: 11 }}>Instructrice</div>
+            <div style={{ color: "white", fontSize: 12, fontWeight: 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user ? `${user.prenom} ${user.nom[0]}.` : "—"}</div>
+            <div style={{ color: "#64748b", fontSize: 11 }}>{user?.role === "instructeur" ? "Instructeur" : user?.role === "admin" ? "Admin" : "Mairie"}</div>
           </div>
         </div>
         <button
@@ -4945,12 +4970,32 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
 export function MairieApp() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const [commune, setCommune] = useState("Ballan-Miré");
+  const [commune, setCommune] = useState(user?.commune ?? "");
+  const [userCommunes, setUserCommunes] = useState<string[]>([]);
   const [showNouveauDossier, setShowNouveauDossier] = useState(false);
   const [messageBadge, setMessageBadge] = useState(0);
   const [communeInseeMap, setCommuneInseeMap] = useState<Record<string, string>>(COMMUNE_INSEE);
   const routerNavigate = useNavigate();
   const location = useLocation();
+
+  // Load communes accessible to this user
+  useEffect(() => {
+    api.get<{ name: string; insee_code: string | null }[]>("/mairie/my-communes")
+      .then(data => {
+        const names = data.map(c => c.name).filter(Boolean);
+        setUserCommunes(names);
+        // Mettre à jour l'INSEE map
+        const map: Record<string, string> = { ...COMMUNE_INSEE };
+        for (const c of data) { if (c.name && c.insee_code) map[c.name] = c.insee_code; }
+        setCommuneInseeMap(map);
+        // Initialiser la commune sélectionnée
+        setCommune(prev => {
+          if (prev && names.includes(prev)) return prev;
+          return names[0] ?? prev;
+        });
+      })
+      .catch(() => {});
+  }, []);
 
   // Load commune list from DB to get correct INSEE codes
   const refreshCommuneInseeMap = useCallback(() => {
@@ -4994,7 +5039,7 @@ export function MairieApp() {
 
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex" }}>
-      <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} />
+      <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} communes={userCommunes} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
           <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} />
