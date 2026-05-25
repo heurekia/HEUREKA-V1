@@ -19,7 +19,7 @@ const RECOURS_MOIS: Record<string, number> = {
 function addMonths(date: Date, months: number): string {
   const d = new Date(date);
   d.setMonth(d.getMonth() + months);
-  return d.toISOString().split("T")[0];
+  return d.toISOString().split("T")[0]!;
 }
 
 const instructeurU = alias(users, "instructeur_user");
@@ -151,7 +151,7 @@ decisionsRouter.post("/dossier/:dossierId", async (req: AuthRequest, res) => {
         motif_refus_signature: null,
         updated_at: new Date(),
       })
-      .where(eq(decisions.id, existing[0].id))
+      .where(eq(decisions.id, existing[0]!.id))
       .returning();
   } else {
     [decision] = await db
@@ -170,7 +170,7 @@ decisionsRouter.post("/dossier/:dossierId", async (req: AuthRequest, res) => {
       .returning();
 
     await db.insert(decision_events).values({
-      decision_id: decision.id,
+      decision_id: decision!.id,
       user_id: req.user!.id,
       event_type: "cree",
     });
@@ -228,7 +228,7 @@ decisionsRouter.post("/:id/sign", async (req: AuthRequest, res) => {
 
   const existing = await db.select().from(decisions).where(eq(decisions.id, id)).limit(1);
   if (!existing.length) return res.status(404).json({ error: "Décision introuvable" });
-  const dec = existing[0];
+  const dec = existing[0]!;
 
   // Any signataire of the commune can sign, or the assigned signataire
   const dossierRow = await db.select({ type: dossiers.type }).from(dossiers)
@@ -250,6 +250,8 @@ decisionsRouter.post("/:id/sign", async (req: AuthRequest, res) => {
     .where(eq(decisions.id, id))
     .returning();
 
+  if (!decision) return res.status(500).json({ error: "Erreur lors de la signature" });
+
   // Update dossier status
   const dossierStatus =
     decision.type === "accord" ? "accepte" :
@@ -269,7 +271,7 @@ decisionsRouter.post("/:id/sign", async (req: AuthRequest, res) => {
     dossier_id: decision.dossier_id,
     type: "decision_signee",
     title: "Arrêté signé",
-    message: `L'arrêté ${decision.arrete_numero} a été signé. Vous pouvez notifier le pétitionnaire.`,
+    message: `L'arrêté ${decision.arrete_numero ?? id} a été signé. Vous pouvez notifier le pétitionnaire.`,
   });
 
   res.json(decision);
@@ -329,7 +331,7 @@ decisionsRouter.post("/:id/notify", async (req: AuthRequest, res) => {
 
 // ── GET /api/decisions/communes/:commune/signataires ─────────────────────────
 decisionsRouter.get("/communes/:commune/signataires", async (req: AuthRequest, res) => {
-  const commune = decodeURIComponent(req.params.commune ?? "");
+  const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
   const rows = await db
     .select({
       id: signataires.id,
@@ -354,7 +356,7 @@ decisionsRouter.get("/communes/:commune/signataires", async (req: AuthRequest, r
 
 // ── POST /api/decisions/communes/:commune/signataires ────────────────────────
 decisionsRouter.post("/communes/:commune/signataires", async (req: AuthRequest, res) => {
-  const commune = decodeURIComponent(req.params.commune ?? "");
+  const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
   const { user_id, role, delegation_arrete, delegation_date } = req.body as {
     user_id: string; role: string; delegation_arrete?: string; delegation_date?: string;
   };
