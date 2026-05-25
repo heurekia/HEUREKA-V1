@@ -175,8 +175,11 @@ export function MapLeaflet({
     }
   }, [parcelLayer]);
 
-  // PLU zones — Géoportail de l'Urbanisme via apicarto REST API.
-  // Returns GeoJSON rendered in overlayPane (zIndex 400), always above tile layers.
+  // PLU zones — apicarto.ign.fr/api/gpu (CORS-enabled, called client-side).
+  // Flow per the OpenAPI spec:
+  //   1. geo.api.gouv.fr → commune centroid (Point, tiny URL-safe geom)
+  //   2. /api/gpu/document?geom={point} → active PLU partition
+  //   3. /api/gpu/zone-urba?partition={partition} → zone polygons
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -184,33 +187,42 @@ export function MapLeaflet({
     if (pluLayerRef.current) { pluLayerRef.current.remove(); pluLayerRef.current = null; }
     setZoneError(null);
     if (!pluZoneLayer) return;
-
-    if (!inseeCode) {
-      setZoneError("Code INSEE requis pour afficher les zones PLU");
-      return;
-    }
+    if (!inseeCode) { setZoneError("Code INSEE requis"); return; }
 
     const ZONE_COLORS: Record<string, string> = {
       U: "#C0392B", AU: "#E67E22", A: "#D4AC0D", N: "#27AE60",
     };
-    const colorFor = (typezone: string) =>
-      ZONE_COLORS[typezone] ?? ZONE_COLORS[typezone.charAt(0)] ?? "#94a3b8";
+    const colorFor = (tz: string) =>
+      ZONE_COLORS[tz] ?? ZONE_COLORS[tz.charAt(0)] ?? "#94a3b8";
 
     const ctrl = new AbortController();
+    const sig = ctrl.signal;
 
-    // Call our backend proxy which caches responses for 24 h
-    fetch(`/api/mairie/plu-zones?insee_code=${encodeURIComponent(inseeCode)}`, {
-      signal: ctrl.signal,
-      credentials: "include",
-    })
-      .then(r => {
-        if (r.status === 404) return r.json().then(e => { throw new Error(e.error ?? "Aucun PLU disponible"); });
-        if (!r.ok) return r.json().then(e => { throw new Error(e.error ?? `HTTP ${r.status}`); });
-        return r.json();
+    // Step 1 — commune centroid (Point geometry, never causes 414)
+    fetch(`https://geo.api.gouv.fr/communes?code=${encodeURIComponent(inseeCode)}&fields=centre&limit=1`, { signal: sig })
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`geo.api HTTP ${r.status}`)))
+      .then((data: Array<{ centre?: unknown }>) => {
+        const centre = data[0]?.centre;
+        if (!centre) throw new Error("Commune introuvable");
+        // Step 2 — find active PLU document for this point
+        const geom = encodeURIComponent(JSON.stringify(centre));
+        return fetch(`https://apicarto.ign.fr/api/gpu/document?geom=${geom}`, { signal: sig })
+          .then(r => r.ok ? r.json() : Promise.reject(new Error(`document HTTP ${r.status}`)));
+      })
+      .then((docs: { features?: Array<{ properties: { partition?: string; statut?: string } }> }) => {
+        if (!docs.features?.length) throw new Error("Aucun document PLU pour cette commune");
+        const active =
+          docs.features.find(f => ["En vigueur", "Opposable", "Approuvé"].includes(f.properties.statut ?? "")) ??
+          docs.features[0];
+        const partition = active?.properties?.partition;
+        if (!partition) throw new Error("Partition GPU introuvable");
+        // Step 3 — all zones for this document
+        return fetch(`https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(partition)}`, { signal: sig })
+          .then(r => r.ok ? r.json() : Promise.reject(new Error(`zone-urba HTTP ${r.status}`)));
       })
       .then((zones: { features?: unknown[] }) => {
-        if (!mapRef.current || ctrl.signal.aborted) return;
-        if (!zones.features?.length) throw new Error("Aucune zone PLU disponible");
+        if (!mapRef.current || sig.aborted) return;
+        if (!zones.features?.length) throw new Error("Aucune zone PLU pour cette commune");
 
         const layer = L.geoJSON(zones as Parameters<typeof L.geoJSON>[0], {
           style: feature => {
@@ -228,7 +240,7 @@ export function MapLeaflet({
         pluLayerRef.current = layer;
       })
       .catch((err: Error) => {
-        if (ctrl.signal.aborted) return;
+        if (sig.aborted) return;
         setZoneError(err.message);
       });
 
