@@ -199,6 +199,42 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
   }
 });
 
+authRouter.patch("/me", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { prenom, nom, telephone } = req.body as { prenom?: string; nom?: string; telephone?: string };
+    const update: Record<string, unknown> = { updated_at: new Date() };
+    if (prenom?.trim()) update.prenom = prenom.trim();
+    if (nom?.trim()) update.nom = nom.trim();
+    if (telephone !== undefined) update.telephone = telephone?.trim() || null;
+    const [updated] = await db.update(users).set(update).where(eq(users.id, req.user!.id)).returning();
+    if (!updated) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    writeAudit(req.user!.id, req.user!.email, "profile_update", req);
+    res.json({ id: updated.id, email: updated.email, prenom: updated.prenom, nom: updated.nom, role: updated.role, commune: updated.commune, commune_insee: updated.commune_insee, telephone: updated.telephone, avatar_url: updated.avatar_url });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+authRouter.patch("/me/password", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { current_password, new_password } = req.body as { current_password?: string; new_password?: string };
+    if (!current_password || !new_password) return res.status(400).json({ error: "Mots de passe requis" });
+    if (new_password.length < 8) return res.status(400).json({ error: "Le nouveau mot de passe doit faire au moins 8 caractères" });
+    const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const valid = await bcrypt.compare(current_password, user.password_hash);
+    if (!valid) return res.status(401).json({ error: "Mot de passe actuel incorrect" });
+    const password_hash = await bcrypt.hash(new_password, 10);
+    await db.update(users).set({ password_hash, updated_at: new Date() }).where(eq(users.id, user.id));
+    writeAudit(user.id, user.email, "password_change", req);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {
   try {
     const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);

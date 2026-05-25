@@ -3352,7 +3352,58 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
 }
 
 function InfosPersoScreen() {
+  const { user, refreshUser } = useAuth();
   const [stab, setStab] = useState("À propos");
+
+  // ── À propos state ──
+  const [prenom, setPrenom] = useState(user?.prenom ?? "");
+  const [nom, setNom] = useState(user?.nom ?? "");
+  const [telephone, setTelephone] = useState(user?.telephone ?? "");
+  const [savingProfile, setSavingProfile] = useState(false);
+  const [profileMsg, setProfileMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    if (user) { setPrenom(user.prenom); setNom(user.nom); setTelephone(user.telephone ?? ""); }
+  }, [user?.id]);
+
+  const saveProfile = async () => {
+    setSavingProfile(true); setProfileMsg(null);
+    try {
+      await api.patch("/auth/me", { prenom, nom, telephone });
+      await refreshUser();
+      setProfileMsg({ ok: true, text: "Profil mis à jour." });
+    } catch (e) {
+      setProfileMsg({ ok: false, text: e instanceof Error ? e.message : "Erreur serveur" });
+    } finally { setSavingProfile(false); }
+  };
+
+  // ── Communes state ──
+  const [myCommunes, setMyCommunes] = useState<{ name: string; insee_code: string | null }[]>([]);
+  useEffect(() => {
+    api.get<{ name: string; insee_code: string | null }[]>("/mairie/my-communes")
+      .then(setMyCommunes).catch(() => {});
+  }, []);
+
+  // ── Password state ──
+  const [pwCurrent, setPwCurrent] = useState("");
+  const [pwNew, setPwNew] = useState("");
+  const [pwConfirm, setPwConfirm] = useState("");
+  const [savingPw, setSavingPw] = useState(false);
+  const [pwMsg, setPwMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const changePassword = async () => {
+    if (pwNew !== pwConfirm) { setPwMsg({ ok: false, text: "Les mots de passe ne correspondent pas." }); return; }
+    if (pwNew.length < 8) { setPwMsg({ ok: false, text: "Le mot de passe doit faire au moins 8 caractères." }); return; }
+    setSavingPw(true); setPwMsg(null);
+    try {
+      await api.patch("/auth/me/password", { current_password: pwCurrent, new_password: pwNew });
+      setPwMsg({ ok: true, text: "Mot de passe modifié." });
+      setPwCurrent(""); setPwNew(""); setPwConfirm("");
+    } catch (e) {
+      setPwMsg({ ok: false, text: e instanceof Error ? e.message : "Erreur serveur" });
+    } finally { setSavingPw(false); }
+  };
+
   const navItems = [
     { label: "À propos", icon: "👤" },
     { label: "Communes & Rôles", icon: "🏛" },
@@ -3366,6 +3417,10 @@ function InfosPersoScreen() {
     { label: "Centre d'aide", icon: "❓" },
   ];
 
+  const initials = user ? `${user.prenom[0] ?? ""}${user.nom[0] ?? ""}`.toUpperCase() : "?";
+  const fullName = user ? `${user.prenom} ${user.nom}` : "—";
+  const roleLabel = user?.role === "instructeur" ? "Instructeur" : user?.role === "admin" ? "Administrateur" : "Mairie";
+
   return (
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 20 }}>
@@ -3375,16 +3430,16 @@ function InfosPersoScreen() {
 
       {/* Profile header */}
       <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24, marginBottom: 20, display: "flex", alignItems: "center", gap: 20 }}>
-        <div style={{ width: 72, height: 72, borderRadius: "50%", background: "linear-gradient(135deg, #4F46E5, #7C3AED)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700, color: "white", flexShrink: 0 }}>ML</div>
+        <div style={{ width: 72, height: 72, borderRadius: "50%", background: "linear-gradient(135deg, #4F46E5, #7C3AED)", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 24, fontWeight: 700, color: "white", flexShrink: 0 }}>{initials}</div>
         <div style={{ flex: 1 }}>
-          <div style={{ fontSize: 18, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Marie Lecomte</div>
-          <div style={{ fontSize: 13, color: "#64748b", marginBottom: 6 }}>Instructrice urbanisme — Commune de Ballan-Miré</div>
+          <div style={{ fontSize: 18, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>{fullName}</div>
+          <div style={{ fontSize: 13, color: "#64748b", marginBottom: 6 }}>{user?.email}{user?.commune ? ` — Commune de ${user.commune}` : ""}</div>
           <div style={{ display: "flex", gap: 8 }}>
-            <span style={{ background: "#EEF2FF", color: "#4F46E5", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 10px" }}>Instructrice</span>
+            <span style={{ background: "#EEF2FF", color: "#4F46E5", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 10px" }}>{roleLabel}</span>
             <span style={{ background: "#F0FDF4", color: "#15803D", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 10px" }}>Actif</span>
           </div>
         </div>
-        <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#374151", cursor: "pointer" }}>Modifier le profil</button>
+        <button onClick={() => setStab("À propos")} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#374151", cursor: "pointer" }}>Modifier le profil</button>
       </div>
 
       <div style={{ display: "flex", gap: 20 }}>
@@ -3413,21 +3468,32 @@ function InfosPersoScreen() {
           {stab === "À propos" && (
             <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>À propos</div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-                {[["Prénom","Marie"],["Nom","Lecomte"],["E-mail","marie.lecomte@ballan-mire.fr"],["Téléphone","02 47 67 XX XX"],["Poste","Instructrice urbanisme"],["Service","Direction de l'urbanisme"]].map(([l,v]) => (
-                  <div key={l}>
-                    <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{l}</div>
-                    <div style={{ fontSize: 13, color: "#0F172A", fontWeight: 500 }}>{v}</div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 20 }}>
+                {([["Prénom", prenom, setPrenom], ["Nom", nom, setNom]] as [string, string, (v: string) => void][]).map(([label, val, setter]) => (
+                  <div key={label}>
+                    <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>{label}</div>
+                    <input value={val} onChange={e => setter(e.target.value)} style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
                   </div>
                 ))}
+                <div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>E-mail</div>
+                  <div style={{ padding: "8px 10px", border: "1px solid #F1F5F9", borderRadius: 8, fontSize: 13, color: "#94a3b8", background: "#F8FAFC" }}>{user?.email}</div>
+                </div>
+                <div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>Téléphone</div>
+                  <input value={telephone} onChange={e => setTelephone(e.target.value)} placeholder="ex : 02 47 00 00 00" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
+                </div>
               </div>
-              <div style={{ borderTop: "1px solid #F1F5F9", marginTop: 20, paddingTop: 20 }}>
-                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>Biographie / Notes</div>
-                <textarea style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "10px 12px", fontSize: 13, outline: "none", resize: "vertical", minHeight: 80, color: "#374151" }} defaultValue="Instructrice urbanisme depuis 2019. Spécialisée dans les permis de construire et les déclarations préalables." />
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16, gap: 8 }}>
-                <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
-                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
+              {profileMsg && (
+                <div style={{ background: profileMsg.ok ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${profileMsg.ok ? "#86EFAC" : "#FECACA"}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, color: profileMsg.ok ? "#15803d" : "#DC2626", marginBottom: 12 }}>
+                  {profileMsg.text}
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8 }}>
+                <button onClick={() => { setPrenom(user?.prenom ?? ""); setNom(user?.nom ?? ""); setTelephone(user?.telephone ?? ""); setProfileMsg(null); }} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+                <button onClick={saveProfile} disabled={savingProfile} style={{ background: savingProfile ? "#A5B4FC" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: savingProfile ? "not-allowed" : "pointer" }}>
+                  {savingProfile ? "Enregistrement…" : "Enregistrer"}
+                </button>
               </div>
             </div>
           )}
@@ -3436,19 +3502,17 @@ function InfosPersoScreen() {
             <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Communes & Rôles</div>
               <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Communes auxquelles vous avez accès et rôles associés.</div>
-              {[
-                { commune: "Ballan-Miré", role: "Instructrice", services: "Urbanisme, ADS", status: "Principal", color: "#4F46E5" },
-                { commune: "Saint-Avertin", role: "Consultation", services: "Urbanisme", status: "Secondaire", color: "#8B5CF6" },
-                { commune: "La Ville-aux-Dames", role: "Lecteur", services: "Tous", status: "Secondaire", color: "#94A3B8" },
-              ].map(c => (
-                <div key={c.commune} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: "1px solid #F1F5F9" }}>
-                  <div style={{ width: 36, height: 36, borderRadius: 8, background: `${c.color}20`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>🏛</div>
+              {myCommunes.length === 0 ? (
+                <div style={{ color: "#94a3b8", fontSize: 13, padding: "12px 0" }}>Aucune commune assignée. Contactez un administrateur.</div>
+              ) : myCommunes.map((c, i) => (
+                <div key={c.name} style={{ display: "flex", alignItems: "center", gap: 12, padding: "12px 0", borderBottom: "1px solid #F1F5F9" }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 8, background: i === 0 ? "#EEF2FF" : "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16 }}>🏛</div>
                   <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.commune}</div>
-                    <div style={{ fontSize: 11, color: "#64748b" }}>{c.services}</div>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.name}</div>
+                    {c.insee_code && <div style={{ fontSize: 11, color: "#64748b" }}>INSEE : {c.insee_code}</div>}
                   </div>
-                  <span style={{ background: `${c.color}20`, color: c.color, fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 10px" }}>{c.role}</span>
-                  <span style={{ fontSize: 11, color: "#94a3b8" }}>{c.status}</span>
+                  <span style={{ background: i === 0 ? "#EEF2FF" : "#F8FAFC", color: i === 0 ? "#4F46E5" : "#64748b", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "3px 10px" }}>{roleLabel}</span>
+                  <span style={{ fontSize: 11, color: "#94a3b8" }}>{i === 0 ? "Principal" : "Secondaire"}</span>
                 </div>
               ))}
             </div>
@@ -3595,38 +3659,29 @@ function InfosPersoScreen() {
             <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
               <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
                 <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Mot de passe</div>
-                {["Mot de passe actuel","Nouveau mot de passe","Confirmer le nouveau mot de passe"].map(l => (
-                  <div key={l} style={{ marginBottom: 12 }}>
-                    <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>{l}</div>
-                    <input type="password" style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} placeholder="••••••••" />
+                {([["Mot de passe actuel", pwCurrent, setPwCurrent], ["Nouveau mot de passe", pwNew, setPwNew], ["Confirmer le nouveau mot de passe", pwConfirm, setPwConfirm]] as [string, string, (v: string) => void][]).map(([label, val, setter]) => (
+                  <div key={label} style={{ marginBottom: 12 }}>
+                    <div style={{ fontSize: 12, color: "#64748b", marginBottom: 4 }}>{label}</div>
+                    <input type="password" value={val} onChange={e => setter(e.target.value)} style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} placeholder="••••••••" />
                   </div>
                 ))}
-                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", marginTop: 4 }}>Modifier le mot de passe</button>
+                {pwMsg && (
+                  <div style={{ background: pwMsg.ok ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${pwMsg.ok ? "#86EFAC" : "#FECACA"}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, color: pwMsg.ok ? "#15803d" : "#DC2626", marginBottom: 12 }}>
+                    {pwMsg.text}
+                  </div>
+                )}
+                <button onClick={changePassword} disabled={savingPw || !pwCurrent || !pwNew || !pwConfirm} style={{ background: savingPw || !pwCurrent || !pwNew || !pwConfirm ? "#A5B4FC" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: savingPw ? "not-allowed" : "pointer", marginTop: 4 }}>
+                  {savingPw ? "Modification…" : "Modifier le mot de passe"}
+                </button>
               </div>
               <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                   <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>Double authentification (2FA)</div>
-                  <div style={{ width: 36, height: 20, borderRadius: 10, background: "#E2E8F0", position: "relative", cursor: "pointer" }}>
+                  <div style={{ width: 36, height: 20, borderRadius: 10, background: "#E2E8F0", position: "relative", cursor: "not-allowed" }}>
                     <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
                   </div>
                 </div>
-                <div style={{ fontSize: 12, color: "#94a3b8" }}>Ajoutez une couche de sécurité supplémentaire à votre compte.</div>
-              </div>
-              <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Sessions actives</div>
-                {[
-                  { device: "Chrome — macOS", location: "Ballan-Miré, France", time: "Maintenant", current: true },
-                  { device: "Safari — iPhone", location: "Tours, France", time: "Il y a 2h", current: false },
-                ].map((s, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
-                    <span style={{ fontSize: 20 }}>{s.device.includes("Chrome") ? "💻" : "📱"}</span>
-                    <div style={{ flex: 1 }}>
-                      <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{s.device}</div>
-                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{s.location} · {s.time}</div>
-                    </div>
-                    {s.current ? <span style={{ background: "#F0FDF4", color: "#15803D", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "2px 8px" }}>Actuelle</span> : <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#EF4444", cursor: "pointer" }}>Révoquer</button>}
-                  </div>
-                ))}
+                <div style={{ fontSize: 12, color: "#94a3b8" }}>Fonctionnalité à venir — authentification double facteur par application TOTP.</div>
               </div>
             </div>
           )}
