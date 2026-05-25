@@ -176,10 +176,8 @@ export function MapLeaflet({
   }, [parcelLayer]);
 
   // PLU zones — apicarto.ign.fr/api/gpu (CORS-enabled, called client-side).
-  // Flow per the OpenAPI spec:
-  //   1. geo.api.gouv.fr → commune centroid (Point, tiny URL-safe geom)
-  //   2. /api/gpu/document?geom={point} → active PLU partition
-  //   3. /api/gpu/zone-urba?partition={partition} → zone polygons
+  // GPU partition format: DU_{inseeCode} for most commune PLU/PLUi.
+  // Fallback: look up active document via centroid if DU_ returns no features.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -198,49 +196,65 @@ export function MapLeaflet({
     const ctrl = new AbortController();
     const sig = ctrl.signal;
 
-    // Step 1 — commune centroid (Point geometry, never causes 414)
-    fetch(`https://geo.api.gouv.fr/communes?code=${encodeURIComponent(inseeCode)}&fields=centre&limit=1`, { signal: sig })
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`geo.api HTTP ${r.status}`)))
-      .then((data: Array<{ centre?: unknown }>) => {
-        const centre = data[0]?.centre;
-        if (!centre) throw new Error("Commune introuvable");
-        // Step 2 — find active PLU document for this point
-        const geom = encodeURIComponent(JSON.stringify(centre));
-        return fetch(`https://apicarto.ign.fr/api/gpu/document?geom=${geom}`, { signal: sig })
-          .then(r => r.ok ? r.json() : Promise.reject(new Error(`document HTTP ${r.status}`)));
-      })
-      .then((docs: { features?: Array<{ properties: { partition?: string; statut?: string } }> }) => {
-        if (!docs.features?.length) throw new Error("Aucun document PLU pour cette commune");
-        const active =
-          docs.features.find(f => ["En vigueur", "Opposable", "Approuvé"].includes(f.properties.statut ?? "")) ??
-          docs.features[0];
-        const partition = active?.properties?.partition;
-        if (!partition) throw new Error("Partition GPU introuvable");
-        // Step 3 — all zones for this document
-        return fetch(`https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(partition)}`, { signal: sig })
-          .then(r => r.ok ? r.json() : Promise.reject(new Error(`zone-urba HTTP ${r.status}`)));
-      })
+    const renderZones = (geojson: { features?: unknown[] }): boolean => {
+      if (!mapRef.current || sig.aborted || !geojson.features?.length) return false;
+      const layer = L.geoJSON(geojson as Parameters<typeof L.geoJSON>[0], {
+        style: feature => {
+          const tz = (feature?.properties as { typezone?: string })?.typezone ?? "";
+          const color = colorFor(tz);
+          return { fillColor: color, fillOpacity: 0.3, color, weight: 1.5, opacity: 0.8 };
+        },
+        onEachFeature: (feature, fLayer) => {
+          const p = feature.properties as { libelle?: string; typezone?: string };
+          const label = p.libelle ? `Zone ${p.libelle}` : p.typezone ? `Type ${p.typezone}` : "";
+          if (label) fLayer.bindTooltip(label, { sticky: true });
+        },
+      }).addTo(mapRef.current);
+      pluLayerRef.current = layer;
+      return true;
+    };
+
+    // Primary: direct partition DU_{inseeCode} — single request, no lookup chain
+    fetch(
+      `https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(`DU_${inseeCode}`)}&_limit=500`,
+      { signal: sig }
+    )
+      .then(r => r.ok ? r.json() : Promise.reject(new Error(`zone-urba HTTP ${r.status}`)))
       .then((zones: { features?: unknown[] }) => {
-        if (!mapRef.current || sig.aborted) return;
-        if (!zones.features?.length) throw new Error("Aucune zone PLU pour cette commune");
-
-        const layer = L.geoJSON(zones as Parameters<typeof L.geoJSON>[0], {
-          style: feature => {
-            const tz = (feature?.properties as { typezone?: string })?.typezone ?? "";
-            const color = colorFor(tz);
-            return { fillColor: color, fillOpacity: 0.3, color, weight: 1.5, opacity: 0.8 };
-          },
-          onEachFeature: (feature, fLayer) => {
-            const p = feature.properties as { libelle?: string; typezone?: string };
-            const label = p.libelle ? `Zone ${p.libelle}` : p.typezone ? `Type ${p.typezone}` : "";
-            if (label) fLayer.bindTooltip(label, { sticky: true });
-          },
-        }).addTo(mapRef.current);
-
-        pluLayerRef.current = layer;
+        if (renderZones(zones)) return;
+        // No features for DU_ partition (EPCI or PSMV) — fall back to document lookup
+        return fetch(
+          `https://geo.api.gouv.fr/communes?code=${encodeURIComponent(inseeCode)}&fields=centre&limit=1`,
+          { signal: sig }
+        )
+          .then(r => r.ok ? r.json() : Promise.reject(new Error(`geo.api HTTP ${r.status}`)))
+          .then((data: Array<{ centre?: unknown }>) => {
+            const centre = data[0]?.centre;
+            if (!centre) throw new Error("Commune introuvable");
+            const geom = encodeURIComponent(JSON.stringify(centre));
+            return fetch(`https://apicarto.ign.fr/api/gpu/document?geom=${geom}`, { signal: sig })
+              .then(r => r.ok ? r.json() : Promise.reject(new Error(`document HTTP ${r.status}`)));
+          })
+          .then((docs: { features?: Array<{ properties: { partition?: string; statut?: string } }> }) => {
+            if (!docs.features?.length) throw new Error("Aucun document PLU pour cette commune");
+            const active =
+              docs.features.find(f =>
+                ["En vigueur", "Opposable", "Approuvé"].includes(f.properties.statut ?? "")
+              ) ?? docs.features[0];
+            const partition = active?.properties?.partition;
+            if (!partition) throw new Error("Partition GPU introuvable");
+            return fetch(
+              `https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(partition)}&_limit=500`,
+              { signal: sig }
+            ).then(r => r.ok ? r.json() : Promise.reject(new Error(`zone-urba HTTP ${r.status}`)));
+          })
+          .then((zones: { features?: unknown[] }) => {
+            if (!renderZones(zones)) throw new Error("Aucune zone PLU pour cette commune");
+          });
       })
       .catch((err: Error) => {
         if (sig.aborted) return;
+        console.error("[PLU zones]", err);
         setZoneError(err.message);
       });
 
