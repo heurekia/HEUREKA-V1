@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike } from "drizzle-orm";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
@@ -1247,6 +1247,68 @@ Correspondance article → topic :
     console.error("[ingest-plu-pdf]", err);
     res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
+});
+
+// ── Disponibilités ────────────────────────────────────────────────────────────
+
+mairieRouter.get("/my-availability", async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const [avail] = await db.select().from(user_availability).where(eq(user_availability.user_id, userId)).limit(1);
+    const absences = await db.select({
+      id: user_absences.id,
+      start_date: user_absences.start_date,
+      end_date: user_absences.end_date,
+      reason: user_absences.reason,
+      note: user_absences.note,
+      delegate_user_id: user_absences.delegate_user_id,
+      delegate_prenom: users.prenom,
+      delegate_nom: users.nom,
+    })
+      .from(user_absences)
+      .leftJoin(users, eq(user_absences.delegate_user_id, users.id))
+      .where(eq(user_absences.user_id, userId))
+      .orderBy(user_absences.start_date);
+    res.json({
+      working_days: avail?.working_days ?? [1, 2, 3, 4, 5],
+      start_time: avail?.start_time ?? "08:30",
+      end_time: avail?.end_time ?? "17:30",
+      absences,
+    });
+  } catch (err) { console.error(err); res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+mairieRouter.put("/my-availability", async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const { working_days, start_time, end_time } = req.body as { working_days: number[]; start_time: string; end_time: string };
+    await db.insert(user_availability)
+      .values({ user_id: userId, working_days, start_time, end_time, updated_at: new Date() })
+      .onConflictDoUpdate({ target: user_availability.user_id, set: { working_days, start_time, end_time, updated_at: new Date() } });
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+mairieRouter.post("/my-absences", async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const { start_date, end_date, reason, note, delegate_user_id } = req.body as {
+      start_date: string; end_date: string; reason?: string; note?: string; delegate_user_id?: string;
+    };
+    if (!start_date || !end_date) return res.status(400).json({ error: "start_date et end_date requis" });
+    const [row] = await db.insert(user_absences)
+      .values({ user_id: userId, start_date, end_date, reason: reason ?? "conges", note: note ?? null, delegate_user_id: delegate_user_id ?? null })
+      .returning();
+    res.status(201).json(row);
+  } catch (err) { console.error(err); res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+mairieRouter.delete("/my-absences/:id", async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    await db.delete(user_absences).where(and(eq(user_absences.id, req.params.id), eq(user_absences.user_id, userId)));
+    res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: "Erreur serveur" }); }
 });
 
 mairieRouter.get("/notifications", async (req: AuthRequest, res) => {

@@ -346,6 +346,30 @@ ALTER TABLE legal_mentions ADD COLUMN IF NOT EXISTS contexte text;
 
 -- Date de délivrance (date de la décision / arrêté)
 ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS date_delivrance timestamp;
+
+-- Disponibilités des instructeurs / agents
+CREATE TABLE IF NOT EXISTS user_availability (
+  user_id uuid PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+  working_days jsonb NOT NULL DEFAULT '[1,2,3,4,5]',
+  start_time text NOT NULL DEFAULT '08:30',
+  end_time text NOT NULL DEFAULT '17:30',
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+
+-- Absences et congés
+CREATE TABLE IF NOT EXISTS user_absences (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  start_date date NOT NULL,
+  end_date date NOT NULL,
+  reason text NOT NULL DEFAULT 'conges',
+  delegate_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  note text,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_user_absences_user_id ON user_absences(user_id);
+CREATE INDEX IF NOT EXISTS idx_user_absences_dates ON user_absences(start_date, end_date);
 `;
 
 async function main() {

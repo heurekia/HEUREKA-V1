@@ -3351,6 +3351,204 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   );
 }
 
+const TIME_SLOTS = Array.from({ length: 32 }, (_, i) => {
+  const h = Math.floor(i / 2) + 6;
+  const m = i % 2 === 0 ? "00" : "30";
+  return `${String(h).padStart(2, "0")}:${m}`;
+});
+
+const REASON_LABELS: Record<string, string> = {
+  conges: "Congés", maladie: "Maladie", formation: "Formation", autre: "Autre",
+};
+
+type Absence = { id: string; start_date: string; end_date: string; reason: string; note: string | null; delegate_user_id: string | null; delegate_prenom: string | null; delegate_nom: string | null };
+
+function DisponibilitesPanel() {
+  const [workingDays, setWorkingDays] = useState<number[]>([1, 2, 3, 4, 5]);
+  const [startTime, setStartTime] = useState("08:30");
+  const [endTime, setEndTime] = useState("17:30");
+  const [absences, setAbsences] = useState<Absence[]>([]);
+  const [loadingAvail, setLoadingAvail] = useState(true);
+  const [savingAvail, setSavingAvail] = useState(false);
+  const [availMsg, setAvailMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  const [showNewAbsence, setShowNewAbsence] = useState(false);
+  const [absStart, setAbsStart] = useState("");
+  const [absEnd, setAbsEnd] = useState("");
+  const [absReason, setAbsReason] = useState("conges");
+  const [absNote, setAbsNote] = useState("");
+  const [savingAbs, setSavingAbs] = useState(false);
+  const [absMsg, setAbsMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    api.get<{ working_days: number[]; start_time: string; end_time: string; absences: Absence[] }>("/mairie/my-availability")
+      .then(d => { setWorkingDays(d.working_days); setStartTime(d.start_time); setEndTime(d.end_time); setAbsences(d.absences); })
+      .catch(() => {})
+      .finally(() => setLoadingAvail(false));
+  }, []);
+
+  const toggleDay = (day: number) => setWorkingDays(prev => prev.includes(day) ? prev.filter(d => d !== day) : [...prev, day].sort());
+
+  const saveAvail = async () => {
+    setSavingAvail(true); setAvailMsg(null);
+    try {
+      await api.put("/mairie/my-availability", { working_days: workingDays, start_time: startTime, end_time: endTime });
+      setAvailMsg({ ok: true, text: "Disponibilités enregistrées." });
+    } catch (e) { setAvailMsg({ ok: false, text: e instanceof Error ? e.message : "Erreur" }); }
+    finally { setSavingAvail(false); }
+  };
+
+  const addAbsence = async () => {
+    if (!absStart || !absEnd) { setAbsMsg({ ok: false, text: "Dates requises." }); return; }
+    if (absStart > absEnd) { setAbsMsg({ ok: false, text: "La date de début doit être avant la date de fin." }); return; }
+    setSavingAbs(true); setAbsMsg(null);
+    try {
+      const row = await api.post<Absence>("/mairie/my-absences", { start_date: absStart, end_date: absEnd, reason: absReason, note: absNote || undefined });
+      setAbsences(prev => [...prev, row]);
+      setShowNewAbsence(false); setAbsStart(""); setAbsEnd(""); setAbsReason("conges"); setAbsNote("");
+    } catch (e) { setAbsMsg({ ok: false, text: e instanceof Error ? e.message : "Erreur" }); }
+    finally { setSavingAbs(false); }
+  };
+
+  const deleteAbsence = async (id: string) => {
+    try {
+      await api.delete(`/mairie/my-absences/${id}`);
+      setAbsences(prev => prev.filter(a => a.id !== id));
+    } catch { /* ignore */ }
+  };
+
+  if (loadingAvail) return <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>;
+
+  const today = new Date().toISOString().slice(0, 10);
+  const upcoming = absences.filter(a => a.end_date >= today);
+  const past = absences.filter(a => a.end_date < today);
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Horaires */}
+      <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Disponibilités</div>
+        <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Définissez vos plages de disponibilité pour le traitement des dossiers.</div>
+
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 10 }}>Jours travaillés</div>
+          <div style={{ display: "flex", gap: 8 }}>
+            {[["Lun",1],["Mar",2],["Mer",3],["Jeu",4],["Ven",5],["Sam",6],["Dim",0]].map(([label, day]) => {
+              const active = workingDays.includes(day as number);
+              return (
+                <button key={String(day)} onClick={() => toggleDay(day as number)} style={{ width: 40, height: 40, borderRadius: 8, border: active ? "2px solid #4F46E5" : "1px solid #E2E8F0", background: active ? "#EEF2FF" : "white", color: active ? "#4F46E5" : "#94a3b8", fontSize: 12, fontWeight: active ? 600 : 400, cursor: "pointer" }}>
+                  {label}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        <div style={{ marginBottom: 20 }}>
+          <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 10 }}>Horaires</div>
+          <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+            <div>
+              <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Début</div>
+              <select value={startTime} onChange={e => setStartTime(e.target.value)} style={{ padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }}>
+                {TIME_SLOTS.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <span style={{ color: "#94a3b8", marginTop: 16 }}>—</span>
+            <div>
+              <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Fin</div>
+              <select value={endTime} onChange={e => setEndTime(e.target.value)} style={{ padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }}>
+                {TIME_SLOTS.map(t => <option key={t} value={t}>{t}</option>)}
+              </select>
+            </div>
+          </div>
+        </div>
+
+        {availMsg && <div style={{ background: availMsg.ok ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${availMsg.ok ? "#86EFAC" : "#FECACA"}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, color: availMsg.ok ? "#15803d" : "#DC2626", marginBottom: 14 }}>{availMsg.text}</div>}
+        <button onClick={saveAvail} disabled={savingAvail} style={{ background: savingAvail ? "#A5B4FC" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 18px", fontSize: 13, fontWeight: 600, cursor: savingAvail ? "not-allowed" : "pointer" }}>
+          {savingAvail ? "Enregistrement…" : "Enregistrer"}
+        </button>
+      </div>
+
+      {/* Absences */}
+      <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Absences et congés</div>
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>Planifiez vos absences pour informer l'équipe.</div>
+          </div>
+          <button onClick={() => { setShowNewAbsence(true); setAbsMsg(null); }} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouvelle absence</button>
+        </div>
+
+        {showNewAbsence && (
+          <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: 16, marginBottom: 16 }}>
+            <div style={{ display: "flex", gap: 10, marginBottom: 10, flexWrap: "wrap" as const }}>
+              <div>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Du</div>
+                <input type="date" value={absStart} onChange={e => setAbsStart(e.target.value)} style={{ padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Au</div>
+                <input type="date" value={absEnd} onChange={e => setAbsEnd(e.target.value)} style={{ padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }} />
+              </div>
+              <div>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Motif</div>
+                <select value={absReason} onChange={e => setAbsReason(e.target.value)} style={{ padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none" }}>
+                  {Object.entries(REASON_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </div>
+              <div style={{ flex: 1, minWidth: 160 }}>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Note (optionnel)</div>
+                <input value={absNote} onChange={e => setAbsNote(e.target.value)} placeholder="ex : dossiers redirigés vers…" style={{ width: "100%", padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
+              </div>
+            </div>
+            {absMsg && <div style={{ background: absMsg.ok ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${absMsg.ok ? "#86EFAC" : "#FECACA"}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, color: absMsg.ok ? "#15803d" : "#DC2626", marginBottom: 10 }}>{absMsg.text}</div>}
+            <div style={{ display: "flex", gap: 8 }}>
+              <button onClick={addAbsence} disabled={savingAbs} style={{ background: savingAbs ? "#A5B4FC" : "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 600, cursor: savingAbs ? "not-allowed" : "pointer" }}>{savingAbs ? "Ajout…" : "Ajouter"}</button>
+              <button onClick={() => setShowNewAbsence(false)} style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 8, padding: "7px 14px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+            </div>
+          </div>
+        )}
+
+        {upcoming.length === 0 && past.length === 0 && <div style={{ color: "#94a3b8", fontSize: 13, padding: "8px 0" }}>Aucune absence enregistrée.</div>}
+
+        {upcoming.length > 0 && (
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ fontSize: 12, fontWeight: 600, color: "#64748b", marginBottom: 8, textTransform: "uppercase" as const, letterSpacing: "0.05em" }}>À venir / En cours</div>
+            {upcoming.map(a => (
+              <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 12px", background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 8, marginBottom: 8 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 500, color: "#C2410C" }}>
+                    {REASON_LABELS[a.reason] ?? a.reason} — {new Date(a.start_date).toLocaleDateString("fr-FR")} au {new Date(a.end_date).toLocaleDateString("fr-FR")}
+                  </div>
+                  {a.note && <div style={{ fontSize: 11, color: "#92400E", marginTop: 2 }}>{a.note}</div>}
+                </div>
+                <button onClick={() => deleteAbsence(a.id)} title="Supprimer" style={{ background: "none", border: "none", cursor: "pointer", color: "#9CA3AF", fontSize: 16, padding: 4, lineHeight: 1 }}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+
+        {past.length > 0 && (
+          <details style={{ marginTop: 8 }}>
+            <summary style={{ fontSize: 12, color: "#94a3b8", cursor: "pointer", userSelect: "none" as const }}>Absences passées ({past.length})</summary>
+            <div style={{ marginTop: 8 }}>
+              {past.map(a => (
+                <div key={a.id} style={{ display: "flex", alignItems: "center", gap: 12, padding: "8px 12px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, marginBottom: 6 }}>
+                  <div style={{ flex: 1, fontSize: 12, color: "#64748b" }}>
+                    {REASON_LABELS[a.reason] ?? a.reason} — {new Date(a.start_date).toLocaleDateString("fr-FR")} au {new Date(a.end_date).toLocaleDateString("fr-FR")}
+                    {a.note && <span style={{ marginLeft: 8, fontStyle: "italic" }}>{a.note}</span>}
+                  </div>
+                  <button onClick={() => deleteAbsence(a.id)} style={{ background: "none", border: "none", cursor: "pointer", color: "#CBD5E1", fontSize: 14, padding: 4 }}>✕</button>
+                </div>
+              ))}
+            </div>
+          </details>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function InfosPersoScreen() {
   const { user, refreshUser } = useAuth();
   const [stab, setStab] = useState("À propos");
@@ -3518,38 +3716,7 @@ function InfosPersoScreen() {
             </div>
           )}
 
-          {stab === "Disponibilités" && (
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Disponibilités</div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Définissez vos plages de disponibilité pour le traitement des dossiers.</div>
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 8 }}>Jours travaillés</div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  {["Lun","Mar","Mer","Jeu","Ven","Sam","Dim"].map((j, i) => (
-                    <button key={j} style={{ width: 40, height: 40, borderRadius: 8, border: i < 5 ? "2px solid #4F46E5" : "1px solid #E2E8F0", background: i < 5 ? "#EEF2FF" : "white", color: i < 5 ? "#4F46E5" : "#94a3b8", fontSize: 12, fontWeight: i < 5 ? 600 : 400, cursor: "pointer" }}>{j}</button>
-                  ))}
-                </div>
-              </div>
-              <div style={{ marginBottom: 16 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 8 }}>Horaires</div>
-                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Début</div>
-                    <select style={{ padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13 }}><option>08:30</option></select>
-                  </div>
-                  <span style={{ color: "#94a3b8", marginTop: 16 }}>—</span>
-                  <div>
-                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 4 }}>Fin</div>
-                    <select style={{ padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13 }}><option>17:30</option></select>
-                  </div>
-                </div>
-              </div>
-              <div style={{ background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#C2410C", marginBottom: 16 }}>
-                <strong>Absence prévue :</strong> 27 mai – 3 juin 2024 (congés). Dossiers redirigés vers Julien D.
-              </div>
-              <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
-            </div>
-          )}
+          {stab === "Disponibilités" && <DisponibilitesPanel />}
 
           {stab === "Délégations" && (
             <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
@@ -5103,16 +5270,23 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
   return <DossierDetailScreen dossier={dossier} onBack={() => routerNavigate(-1 as never)} navigate={navigate} />;
 }
 
+const COMMUNE_STORAGE_KEY = (userId?: string) => `heureka_commune_${userId ?? "anon"}`;
+
 export function MairieApp() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
-  const [commune, setCommune] = useState(user?.commune ?? "");
+  const [commune, setCommuteRaw] = useState(user?.commune ?? "");
   const [userCommunes, setUserCommunes] = useState<string[]>([]);
   const [showNouveauDossier, setShowNouveauDossier] = useState(false);
   const [messageBadge, setMessageBadge] = useState(0);
   const [communeInseeMap, setCommuneInseeMap] = useState<Record<string, string>>(COMMUNE_INSEE);
   const routerNavigate = useNavigate();
   const location = useLocation();
+
+  const setCommune = (c: string) => {
+    setCommuteRaw(c);
+    try { localStorage.setItem(COMMUNE_STORAGE_KEY(user?.id), c); } catch { /* ignore */ }
+  };
 
   // Load communes accessible to this user
   useEffect(() => {
@@ -5124,14 +5298,18 @@ export function MairieApp() {
         const map: Record<string, string> = { ...COMMUNE_INSEE };
         for (const c of data) { if (c.name && c.insee_code) map[c.name] = c.insee_code; }
         setCommuneInseeMap(map);
-        // Initialiser la commune sélectionnée
-        setCommune(prev => {
+        // Restaurer depuis localStorage, sinon première commune de la liste
+        setCommuteRaw(prev => {
+          try {
+            const stored = localStorage.getItem(COMMUNE_STORAGE_KEY(user?.id));
+            if (stored && names.includes(stored)) return stored;
+          } catch { /* ignore */ }
           if (prev && names.includes(prev)) return prev;
           return names[0] ?? prev;
         });
       })
       .catch(() => {});
-  }, []);
+  }, [user?.id]);
 
   // Load commune list from DB to get correct INSEE codes
   const refreshCommuneInseeMap = useCallback(() => {
