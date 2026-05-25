@@ -14,6 +14,7 @@ import { calendrierRouter } from "./routes/calendrier.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { superAdminRouter } from "./routes/superAdmin.js";
 import { serviceRouter } from "./routes/service.js";
+import { decisionsRouter } from "./routes/decisions.js";
 
 export const app = express();
 
@@ -45,6 +46,7 @@ app.use("/api/calendrier", calendrierRouter);
 app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", superAdminRouter);
 app.use("/api/service", serviceRouter);
+app.use("/api/decisions", decisionsRouter);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });

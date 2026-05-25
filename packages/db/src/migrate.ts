@@ -370,6 +370,57 @@ CREATE TABLE IF NOT EXISTS user_absences (
 );
 CREATE INDEX IF NOT EXISTS idx_user_absences_user_id ON user_absences(user_id);
 CREATE INDEX IF NOT EXISTS idx_user_absences_dates ON user_absences(start_date, end_date);
+
+-- Signataires (personnes habilitées à signer les arrêtés par commune)
+CREATE TABLE IF NOT EXISTS signataires (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  commune text NOT NULL,
+  role text NOT NULL,
+  delegation_arrete text,
+  delegation_date date,
+  active boolean NOT NULL DEFAULT true,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_signataires_commune ON signataires(commune);
+CREATE INDEX IF NOT EXISTS idx_signataires_user_id ON signataires(user_id);
+
+-- Décisions ADS (projet d'arrêté lié à un dossier)
+CREATE TABLE IF NOT EXISTS decisions (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  commune text NOT NULL,
+  type text NOT NULL,
+  motif text,
+  prescriptions jsonb NOT NULL DEFAULT '[]'::jsonb,
+  conditions text,
+  status text NOT NULL DEFAULT 'brouillon',
+  instructeur_id uuid NOT NULL REFERENCES users(id),
+  signataire_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  arrete_numero text,
+  date_decision date,
+  date_notification date,
+  date_limite_recours date,
+  motif_refus_signature text,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_dossier_id ON decisions(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_signataire_id ON decisions(signataire_id);
+CREATE INDEX IF NOT EXISTS idx_decisions_status ON decisions(status);
+
+-- Journal des événements décision (audit trail)
+CREATE TABLE IF NOT EXISTS decision_events (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  decision_id uuid NOT NULL REFERENCES decisions(id) ON DELETE CASCADE,
+  user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  event_type text NOT NULL,
+  note text,
+  metadata jsonb,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_decision_events_decision_id ON decision_events(decision_id);
 `;
 
 async function main() {

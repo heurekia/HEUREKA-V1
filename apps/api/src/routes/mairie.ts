@@ -1804,3 +1804,33 @@ mairieRouter.get("/legal-mentions", async (req: AuthRequest, res) => {
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
+
+// ── GET /api/mairie/commune-users?commune=... ────────────────────────────────
+// Returns users with access to a commune (via user_communes OR users.commune)
+mairieRouter.get("/commune-users", requireAuth, async (req: AuthRequest, res) => {
+  const communeName = (req.query.commune as string) ?? "";
+  if (!communeName) return res.json([]);
+
+  // Users linked via user_communes table
+  const viaTable = await db
+    .select({ id: users.id, prenom: users.prenom, nom: users.nom, email: users.email })
+    .from(users)
+    .innerJoin(user_communes, eq(user_communes.user_id, users.id))
+    .innerJoin(communes, eq(communes.id, user_communes.commune_id))
+    .where(sql`lower(${communes.name}) = lower(${communeName})`);
+
+  // Users whose primary commune matches
+  const viaPrimary = await db
+    .select({ id: users.id, prenom: users.prenom, nom: users.nom, email: users.email })
+    .from(users)
+    .where(sql`lower(${users.commune}) = lower(${communeName})`);
+
+  // Merge and deduplicate
+  const all = [...viaTable];
+  const seen = new Set(viaTable.map(u => u.id));
+  for (const u of viaPrimary) {
+    if (!seen.has(u.id)) { all.push(u); seen.add(u.id); }
+  }
+
+  res.json(all.sort((a, b) => a.nom.localeCompare(b.nom)));
+});
