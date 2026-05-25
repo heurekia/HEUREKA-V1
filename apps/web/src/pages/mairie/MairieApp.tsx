@@ -2842,6 +2842,128 @@ function StatistiquesScreen({ commune }: { commune: string }) {
   );
 }
 
+// ── PLU upload panel (état vide Réglementation) ────────────────────────────────
+
+function PluUploadPanel({ commune, inseeCode, onSuccess, loadError }: { commune: string; inseeCode?: string; onSuccess: () => void; loadError: string | null }) {
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [communeInput, setCommuneInput] = useState(commune);
+  const [inseeInput, setInseeInput] = useState(inseeCode ?? "");
+  const [dragging, setDragging] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [step, setStep] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<{ zones: number; rules: number; needs_review: number } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { setCommuneInput(commune); setInseeInput(inseeCode ?? ""); }, [commune, inseeCode]);
+
+  const handleFile = (f: File | null) => { setPdfFile(f); setError(null); setResult(null); };
+
+  const handleDrop = (e: React.DragEvent) => {
+    e.preventDefault();
+    setDragging(false);
+    const f = e.dataTransfer.files[0];
+    if (f?.type === "application/pdf") handleFile(f);
+    else setError("Seuls les fichiers PDF sont acceptés.");
+  };
+
+  const handleSubmit = async () => {
+    if (!communeInput.trim() || !inseeInput.trim() || !pdfFile) { setError("Commune, code INSEE et PDF sont requis."); return; }
+    setLoading(true); setError(null); setResult(null);
+    setStep("Lecture du PDF…");
+    try {
+      const buf = await pdfFile.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = ""; for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
+      const pdf_base64 = btoa(binary);
+      setStep("Analyse des zones et des règles par IA (30–90s selon la taille du PLU)…");
+      const r = await api.post<{ ok: boolean; zones: number; rules: number; needs_review: number }>(
+        "/mairie/admin/ingest-plu-pdf",
+        { commune_name: communeInput.trim(), insee_code: inseeInput.trim(), pdf_base64 },
+      );
+      setResult(r); setStep(null);
+      setTimeout(onSuccess, 1200);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur serveur");
+      setStep(null);
+    } finally { setLoading(false); }
+  };
+
+  return (
+    <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "center", padding: "48px 24px", minHeight: 400 }}>
+      <div style={{ width: "100%", maxWidth: 520, background: "white", borderRadius: 16, border: "1px solid #E2E8F0", padding: 32, boxShadow: "0 2px 16px rgba(0,0,0,0.06)" }}>
+        <div style={{ marginBottom: 24 }}>
+          <div style={{ fontSize: 22, marginBottom: 10 }}>📄</div>
+          <div style={{ fontWeight: 700, color: "#0F172A", fontSize: 16, marginBottom: 6 }}>Charger le PLU de {commune || "la commune"}</div>
+          <div style={{ fontSize: 13, color: "#64748b" }}>
+            Importez le règlement PLU en PDF. L'IA extrait les zones et règles automatiquement — les règles sont créées en brouillon pour validation.
+          </div>
+          {loadError && <div style={{ marginTop: 10, fontSize: 12, color: "#DC2626" }}>Erreur de chargement : {loadError}</div>}
+        </div>
+
+        <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+          <div style={{ flex: 2 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>COMMUNE</div>
+            <input value={communeInput} onChange={e => setCommuneInput(e.target.value)} placeholder="ex : Tours" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
+          </div>
+          <div style={{ flex: 1 }}>
+            <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>CODE INSEE</div>
+            <input value={inseeInput} onChange={e => setInseeInput(e.target.value)} placeholder="ex : 37261" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
+          </div>
+        </div>
+
+        <div
+          onDragOver={e => { e.preventDefault(); setDragging(true); }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={handleDrop}
+          onClick={() => fileRef.current?.click()}
+          style={{ border: `2px dashed ${dragging ? "#4F46E5" : pdfFile ? "#22c55e" : "#CBD5E1"}`, borderRadius: 12, padding: "28px 16px", textAlign: "center", cursor: "pointer", background: dragging ? "#EEF2FF" : pdfFile ? "#F0FDF4" : "#F8FAFC", transition: "all 0.15s", marginBottom: 16 }}
+        >
+          {pdfFile ? (
+            <>
+              <div style={{ fontSize: 13, fontWeight: 600, color: "#16a34a" }}>✓ {pdfFile.name}</div>
+              <div style={{ fontSize: 11, color: "#64748b", marginTop: 3 }}>{(pdfFile.size / 1024 / 1024).toFixed(1)} Mo — cliquez pour changer</div>
+            </>
+          ) : (
+            <>
+              <div style={{ fontSize: 28, marginBottom: 8 }}>📂</div>
+              <div style={{ fontSize: 13, fontWeight: 500, color: "#475569" }}>Glissez le PDF ici ou cliquez pour parcourir</div>
+              <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>Règlement PLU uniquement (pas le RI) · max ~35 Mo</div>
+            </>
+          )}
+          <input ref={fileRef} type="file" accept="application/pdf" style={{ display: "none" }} onChange={e => handleFile(e.target.files?.[0] ?? null)} />
+        </div>
+
+        {step && (
+          <div style={{ background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#4F46E5", display: "flex", alignItems: "center", gap: 8, marginBottom: 14 }}>
+            <div style={{ width: 14, height: 14, border: "2px solid #4F46E5", borderTopColor: "transparent", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+            {step}
+          </div>
+        )}
+        {error && (
+          <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#DC2626", marginBottom: 14 }}>⚠ {error}</div>
+        )}
+        {result && (
+          <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 8, padding: "12px 14px", fontSize: 13, color: "#15803d", marginBottom: 14 }}>
+            ✓ {result.zones} zone{result.zones > 1 ? "s" : ""} · {result.rules} règle{result.rules > 1 ? "s" : ""} extraites
+            {result.needs_review > 0 && ` · ${result.needs_review} à vérifier`} — chargement…
+          </div>
+        )}
+
+        <button
+          onClick={handleSubmit}
+          disabled={loading || !pdfFile || !communeInput || !inseeInput}
+          style={{ width: "100%", background: loading || !pdfFile || !communeInput || !inseeInput ? "#A5B4FC" : "#4F46E5", color: "white", border: "none", borderRadius: 10, padding: "12px 20px", fontSize: 14, fontWeight: 700, cursor: loading || !pdfFile ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}
+        >
+          {loading ? (
+            <><div style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.4)", borderTopColor: "white", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />Analyse en cours…</>
+          ) : "Analyser le PLU"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Réglementation screen ──────────────────────────────────────────────────────
 
 type RuleRow = {
@@ -2883,8 +3005,6 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   const [data, setData] = useState<ReglData | null>(null);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [seeding, setSeeding] = useState(false);
-  const [seedError, setSeedError] = useState<string | null>(null);
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<RuleRow>>({});
@@ -2905,19 +3025,6 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
       })
       .catch(e => { setData(null); setLoadError(e.message ?? "Erreur de chargement"); })
       .finally(() => setLoading(false));
-  };
-
-  const runSeed = async () => {
-    setSeeding(true);
-    setSeedError(null);
-    try {
-      await api.post("/mairie/admin/seed-plu", {});
-      load();
-    } catch (e) {
-      setSeedError(e instanceof Error ? e.message : "Erreur serveur — vérifiez les logs API");
-    } finally {
-      setSeeding(false);
-    }
   };
 
   useEffect(() => { load(); }, [commune, inseeCode]);
@@ -2983,33 +3090,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   );
 
   if (!data || data.zones.length === 0) return (
-    <div style={{ padding: 40, textAlign: "center" }}>
-      <div style={{ fontSize: 48, marginBottom: 16 }}>🏙️</div>
-      <div style={{ fontWeight: 700, color: "#1E293B", fontSize: 16, marginBottom: 8 }}>
-        {data ? "Zones PLU non encore chargées" : `Aucune règle PLU pour ${commune}`}
-      </div>
-      <div style={{ fontSize: 13, color: "#6B7280", maxWidth: 400, margin: "0 auto 24px" }}>
-        {loadError
-          ? `Erreur de chargement : ${loadError}`
-          : "Chargez les règles du PLU de Ballan-Miré pour commencer. L'opération est idempotente — vous pouvez relancer sans risque."}
-      </div>
-      {seedError && (
-        <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "10px 16px", color: "#DC2626", fontSize: 13, maxWidth: 480, margin: "0 auto 16px" }}>
-          ⚠ {seedError}
-        </div>
-      )}
-      <button
-        onClick={runSeed}
-        disabled={seeding}
-        style={{ background: seeding ? "#6366F1" : "#4F46E5", color: "white", border: "none", borderRadius: 10, padding: "12px 28px", fontSize: 14, fontWeight: 700, cursor: seeding ? "wait" : "pointer", display: "inline-flex", alignItems: "center", gap: 10, boxShadow: "0 4px 14px rgba(79,70,229,0.35)" }}>
-        {seeding ? (
-          <>
-            <div style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.4)", borderTopColor: "white", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />
-            Chargement en cours…
-          </>
-        ) : "⬇ Charger le PLU de Ballan-Miré"}
-      </button>
-    </div>
+    <PluUploadPanel commune={commune} inseeCode={inseeCode} onSuccess={load} loadError={loadError} />
   );
 
   const statusDot = (status: string) => {
