@@ -563,6 +563,48 @@ mairieRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
 });
 
 
+// ── Proxy + cache PLU zones (apicarto GPU) ──
+const pluZonesCache = new Map<string, { zones: unknown; expiresAt: number }>();
+const PLU_CACHE_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
+
+mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
+  const inseeCode = (req.query.insee_code as string | undefined)?.trim();
+  if (!inseeCode) return res.status(400).json({ error: "insee_code requis" });
+
+  const cached = pluZonesCache.get(inseeCode);
+  if (cached && cached.expiresAt > Date.now()) {
+    return res.json(cached.zones);
+  }
+
+  try {
+    const docRes = await fetch(
+      `https://apicarto.ign.fr/api/gpu/document?code-insee=${encodeURIComponent(inseeCode)}`,
+      { headers: { Accept: "application/json" } }
+    );
+    if (!docRes.ok) throw new Error(`GPU document HTTP ${docRes.status}`);
+    const docs = await docRes.json() as {
+      features?: Array<{ properties: { partition?: string; statut?: string } }>
+    };
+
+    const active = docs.features?.find(f => f.properties.statut !== "Archivé") ?? docs.features?.[0];
+    const partition = active?.properties?.partition;
+    if (!partition) return res.status(404).json({ error: "Aucun document PLU pour cette commune" });
+
+    const zonesRes = await fetch(
+      `https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(partition)}`,
+      { headers: { Accept: "application/json" } }
+    );
+    if (!zonesRes.ok) throw new Error(`GPU zones HTTP ${zonesRes.status}`);
+    const zones = await zonesRes.json();
+
+    pluZonesCache.set(inseeCode, { zones, expiresAt: Date.now() + PLU_CACHE_TTL_MS });
+    res.json(zones);
+  } catch (err) {
+    console.error("PLU zones proxy error:", err);
+    res.status(502).json({ error: String(err) });
+  }
+});
+
 // ── Conversations : liste avec preview et non-lus ──
 mairieRouter.get("/conversations", async (req: AuthRequest, res) => {
   try {

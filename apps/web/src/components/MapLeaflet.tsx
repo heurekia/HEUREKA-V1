@@ -175,9 +175,8 @@ export function MapLeaflet({
     }
   }, [parcelLayer]);
 
-  // GPU PLU zone overlay — Géoportail de l'Urbanisme WMS (URBANISME.ZONE_URBA).
-  // zIndex 3 ensures it stays above the basemap (zIndex 1) and cadastral layer (zIndex 2)
-  // regardless of the order layers are added/removed when the basemap changes.
+  // PLU zones — Géoportail de l'Urbanisme via apicarto REST API.
+  // Returns GeoJSON rendered in overlayPane (zIndex 400), always above tile layers.
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
@@ -186,40 +185,51 @@ export function MapLeaflet({
     setZoneError(null);
     if (!pluZoneLayer) return;
 
-    // Primary: new Géoplateforme endpoint. Fallback: legacy GPU endpoint.
-    const GPU_WMS_URLS = [
-      "https://data.geopf.fr/wms-r/ows",
-      "https://wxs.ign.fr/gpu/geoportail/r/wms",
-    ];
+    if (!inseeCode) {
+      setZoneError("Code INSEE requis pour afficher les zones PLU");
+      return;
+    }
 
-    const tryLoad = (urlIndex: number) => {
-      if (urlIndex >= GPU_WMS_URLS.length) {
-        setZoneError("Service PLU indisponible");
-        return;
-      }
-      const layer = L.tileLayer.wms(GPU_WMS_URLS[urlIndex]!, {
-        layers: "URBANISME.ZONE_URBA",
-        format: "image/png",
-        transparent: true,
-        version: "1.3.0",
-        opacity: 0.55,
-        zIndex: 3,
-        attribution: '© IGN — <a href="https://www.geoportail-urbanisme.gouv.fr/">Géoportail de l\'Urbanisme</a>',
-      });
-
-      // Catch silent WMS errors (service exception returned as image/XML)
-      layer.on("tileerror", () => {
-        layer.remove();
-        pluLayerRef.current = null;
-        tryLoad(urlIndex + 1);
-      });
-
-      layer.addTo(map);
-      pluLayerRef.current = layer;
+    const ZONE_COLORS: Record<string, string> = {
+      U: "#C0392B", AU: "#E67E22", A: "#D4AC0D", N: "#27AE60",
     };
+    const colorFor = (typezone: string) =>
+      ZONE_COLORS[typezone] ?? ZONE_COLORS[typezone.charAt(0)] ?? "#94a3b8";
 
-    tryLoad(0);
-  }, [pluZoneLayer, mapReady]);
+    const ctrl = new AbortController();
+
+    // Call our backend proxy which caches responses for 24 h
+    fetch(`/api/mairie/plu-zones?insee_code=${encodeURIComponent(inseeCode)}`, {
+      signal: ctrl.signal,
+      credentials: "include",
+    })
+      .then(r => { if (!r.ok) return r.json().then(e => { throw new Error(e.error ?? `HTTP ${r.status}`); }); return r.json(); })
+      .then((zones: { features?: unknown[] }) => {
+        if (!mapRef.current || ctrl.signal.aborted) return;
+        if (!zones.features?.length) throw new Error("Aucune zone PLU disponible");
+
+        const layer = L.geoJSON(zones as Parameters<typeof L.geoJSON>[0], {
+          style: feature => {
+            const tz = (feature?.properties as { typezone?: string })?.typezone ?? "";
+            const color = colorFor(tz);
+            return { fillColor: color, fillOpacity: 0.3, color, weight: 1.5, opacity: 0.8 };
+          },
+          onEachFeature: (feature, fLayer) => {
+            const p = feature.properties as { libelle?: string; typezone?: string };
+            const label = p.libelle ? `Zone ${p.libelle}` : p.typezone ? `Type ${p.typezone}` : "";
+            if (label) fLayer.bindTooltip(label, { sticky: true });
+          },
+        }).addTo(mapRef.current);
+
+        pluLayerRef.current = layer;
+      })
+      .catch((err: Error) => {
+        if (ctrl.signal.aborted) return;
+        setZoneError(err.message);
+      });
+
+    return () => { ctrl.abort(); };
+  }, [pluZoneLayer, inseeCode, mapReady]);
 
   // Highlight geometry (e.g. parcel polygon returned by analysis)
   useEffect(() => {
