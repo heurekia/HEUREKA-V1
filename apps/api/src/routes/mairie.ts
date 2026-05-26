@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences } from "@heureka-v1/db";
-import { eq, desc, and, sql, like, ilike } from "drizzle-orm";
+import { eq, desc, and, sql, like, ilike, inArray } from "drizzle-orm";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
@@ -1120,6 +1120,16 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
       commune = created!;
     } else {
       await db.update(communes).set({ name: commune_name, zip_code: zip_code ?? commune.zip_code ?? "", updated_at: new Date() }).where(eq(communes.id, commune.id));
+    }
+
+    // Purge existing zones (and their rules via CASCADE) before re-ingesting
+    send({ type: "phase", message: "Suppression des anciennes données…" });
+    const oldZones = await db.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, commune.id));
+    if (oldZones.length > 0) {
+      await db.delete(zone_regulatory_rules).where(
+        inArray(zone_regulatory_rules.zone_id, oldZones.map(z => z.id))
+      );
+      await db.delete(zones).where(eq(zones.commune_id, commune.id));
     }
 
     // cache_control marks the PDF for prompt caching so Anthropic reuses the
