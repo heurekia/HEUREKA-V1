@@ -36,7 +36,9 @@ type ParcelAnalysis = {
   available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
   prescriptions?: Array<{ libelle: string; typepsc: string; txtpsc?: string }>;
   servitudes?: Servitude[];
+  informations?: Array<{ libelle: string; typeinf?: string; txtinf?: string }>;
   municipality?: { is_rnu: boolean; libelle?: string } | null;
+  scot?: string;
   data_sources: string[];
   warnings: string[];
 };
@@ -537,6 +539,39 @@ export function AnalyseParcellaire() {
                         <span>🌍 Sismique</span><span>Zone {analysis.risks.seismic_zone}</span>
                       </div>
                     </div>
+                  </div>
+                )}
+
+                {/* SCoT */}
+                {analysis.scot && (
+                  <div style={{ border: "1px solid #E0E7FF", borderRadius: 10, padding: "10px 14px", background: "#EEF2FF", display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 14 }}>🗺</span>
+                    <div>
+                      <p style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", textTransform: "uppercase" as const, letterSpacing: "0.06em", margin: "0 0 1px" }}>SCoT</p>
+                      <p style={{ fontSize: 12, color: "#312E81", fontWeight: 600, margin: 0 }}>{analysis.scot}</p>
+                    </div>
+                  </div>
+                )}
+
+                {/* Périmètres d'informations */}
+                {(analysis.informations?.length ?? 0) > 0 && (
+                  <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, padding: "12px 14px" }}>
+                    <p style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase" as const, letterSpacing: "0.06em", margin: "0 0 8px" }}>
+                      Périmètres d'informations ({analysis.informations!.length})
+                    </p>
+                    {analysis.informations!.map((info, i) => (
+                      <div key={i} style={{ marginBottom: i < analysis.informations!.length - 1 ? 6 : 0 }}>
+                        <div style={{ display: "flex", alignItems: "baseline", gap: 6 }}>
+                          {info.typeinf && (
+                            <span style={{ fontSize: 10, fontWeight: 700, color: "#374151", background: "#F3F4F6", borderRadius: 4, padding: "1px 5px" }}>{info.typeinf}</span>
+                          )}
+                          <span style={{ fontSize: 12, color: "#374151", fontWeight: 500 }}>{info.libelle}</span>
+                        </div>
+                        {info.txtinf && (
+                          <p style={{ fontSize: 11, color: "#6B7280", margin: "2px 0 0", lineHeight: 1.4 }}>{info.txtinf.slice(0, 160)}{info.txtinf.length > 160 ? "…" : ""}</p>
+                        )}
+                      </div>
+                    ))}
                   </div>
                 )}
 

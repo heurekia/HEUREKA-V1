@@ -101,6 +101,12 @@ export interface RegDbRule {
   validation_status: string;
 }
 
+export interface InformationResult {
+  libelle: string;
+  typeinf?: string;
+  txtinf?: string;
+}
+
 export interface ParcelAnalysis {
   query: string;
   address?: AddressResult;
@@ -116,6 +122,8 @@ export interface ParcelAnalysis {
   municipality?: MunicipalityResult | null;
   prescriptions?: PrescriptionResult[];
   servitudes?: ServitudeResult[];
+  informations?: InformationResult[];  // périmètres d'informations GPU (info-surf)
+  scot?: string;                       // nom du SCoT couvrant la parcelle
 }
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
@@ -384,20 +392,34 @@ async function gpuFetch(url: string, timeoutMs = 8000): Promise<Response | null>
 // from coordinates. This is more robust than constructing DU_<INSEE> ourselves
 // because intercommunal PLU (PLUi) use a SIREN-based partition.
 
-export async function getGpuPartition(lat: number, lng: number): Promise<string | null> {
+// Returns both the PLU partition (for zone-urba/prescription queries) and the
+// SCoT name — extracted from the same /document API call at no extra cost.
+export async function getGpuDocuments(lat: number, lng: number): Promise<{ pluPartition: string | null; scotName: string | null }> {
   try {
     const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
     const r = await gpuFetch(`https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(geom)}`, 7000);
-    if (!r) return null;
+    if (!r) return { pluPartition: null, scotName: null };
     const data = await r.json() as {
-      features?: Array<{ properties: { partition?: string; etat?: string } }>;
+      features?: Array<{ properties: { partition?: string; typedoc?: string; etat?: string; libelle?: string } }>;
     };
     const features = data.features ?? [];
-    const approved = features.find(f => f.properties.etat === "approuve") ?? features[0];
-    return approved?.properties.partition ?? null;
+    // PLU partition: first approved PLU/PLUi/CC/PIG document
+    const PLU_TYPES = new Set(["PLU", "PLUi", "CC", "PIG", "RNU"]);
+    const pluDocs = features.filter(f => PLU_TYPES.has(f.properties.typedoc ?? ""));
+    const pluDoc = pluDocs.find(f => f.properties.etat === "approuve") ?? pluDocs[0];
+    // SCoT name
+    const scotDoc = features.find(f => f.properties.typedoc === "SCOT");
+    return {
+      pluPartition: pluDoc?.properties.partition ?? null,
+      scotName: scotDoc?.properties.libelle ?? null,
+    };
   } catch {
-    return null;
+    return { pluPartition: null, scotName: null };
   }
+}
+
+export async function getGpuPartition(lat: number, lng: number): Promise<string | null> {
+  return (await getGpuDocuments(lat, lng)).pluPartition;
 }
 
 // ── GPU PLU Zone lookup ───────────────────────────────────────────────────────
@@ -470,6 +492,30 @@ export async function getPrescriptionsSurf(lat: number, lng: number, partition?:
       libelle: f.properties.libelle ?? "",
       typepsc: f.properties.typepsc ?? "",
       txtpsc: f.properties.txtpsc,
+    }));
+  } catch {
+    return [];
+  }
+}
+
+// ── GPU périmètres d'informations (info-surf) ─────────────────────────────────
+// Displayed as "Périmètres d'informations" on the Géoportail de l'Urbanisme.
+// Includes: zones d'attente, secteurs à étude, périmètres divers liés au PLU.
+
+export async function getInfoSurf(lat: number, lng: number, partition?: string): Promise<InformationResult[]> {
+  try {
+    const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
+    const params = new URLSearchParams({ geom });
+    if (partition) params.set("partition", partition);
+    const r = await gpuFetch(`https://apicarto.ign.fr/api/gpu/info-surf?${params.toString()}`, 6000);
+    if (!r) return [];
+    const data = await r.json() as {
+      features?: Array<{ properties: { libelle?: string; typeinf?: string; txtinf?: string } }>;
+    };
+    return (data.features ?? []).map(f => ({
+      libelle: f.properties.libelle ?? "Information réglementaire",
+      typeinf: f.properties.typeinf,
+      txtinf: f.properties.txtinf,
     }));
   } catch {
     return [];
@@ -871,10 +917,12 @@ export async function analyseParcel(
   // Step 3: GPU — resolve the real document partition first, then query zone + supplementary data
   // getGpuPartition handles both PLU (DU_<INSEE>) and PLUi (DU_<SIREN>) transparently.
   if (lat !== undefined && lng !== undefined) {
-    const gpuPartition = await getGpuPartition(lat, lng)
-      ?? (code_insee ? `DU_${code_insee}` : undefined); // fallback to constructed partition
+    // Single /document call gives us both PLU partition and SCoT name at no extra cost.
+    const { pluPartition, scotName } = await getGpuDocuments(lat, lng);
+    const gpuPartition = pluPartition ?? (code_insee ? `DU_${code_insee}` : undefined);
+    if (scotName) result.scot = scotName;
 
-    const zone = await findPluZone(lat, lng, gpuPartition ?? undefined);
+    const zone = await findPluZone(lat, lng, gpuPartition);
     if (zone) {
       const pluInsee = zone.plu_nom?.match(/^(\d{5})/)?.[1];
       if (pluInsee && code_insee && pluInsee !== code_insee) {
@@ -893,9 +941,10 @@ export async function analyseParcel(
     // Wave 3: generateur (only if servitudes were found — avoids unnecessary call)
     const parcelGeom = result.parcel?.geometry ?? null;
 
-    const [municipality, prescriptions] = await Promise.all([
+    const [municipality, prescriptions, informations] = await Promise.all([
       getMunicipality(lat, lng),
-      getPrescriptionsSurf(lat, lng, gpuPartition ?? undefined),
+      getPrescriptionsSurf(lat, lng, gpuPartition),
+      getInfoSurf(lat, lng, gpuPartition),
     ]);
 
     const [supSurf, supLin] = await Promise.all([
@@ -920,6 +969,10 @@ export async function analyseParcel(
       );
       if (hasEbc) result.warnings.push("Espace Boisé Classé (EBC) sur ou à proximité de la parcelle — défrichement et construction interdits.");
       result.data_sources.push("GPU (prescriptions)");
+    }
+
+    if (informations.length > 0) {
+      result.informations = informations;
     }
 
     // Merge surface + linear SUP, deduplicate by (idsup or categorie+nomsup)
