@@ -1113,9 +1113,12 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
       await db.update(communes).set({ name: commune_name, zip_code: zip_code ?? commune.zip_code ?? "", updated_at: new Date() }).where(eq(communes.id, commune.id));
     }
 
+    // cache_control marks the PDF for prompt caching so Anthropic reuses the
+    // pre-processed tokens across all per-zone extraction calls (same request session).
     const pdfDoc = {
       type: "document" as const,
       source: { type: "base64" as const, media_type: "application/pdf" as const, data: pdf_base64 },
+      cache_control: { type: "ephemeral" as const },
     };
 
     // Phase 1 — Zone discovery
@@ -1146,10 +1149,8 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
       return res.status(422).json({ error: "Aucune zone détectée dans le document. Vérifiez que c'est bien un règlement PLU textuel." });
     }
 
-    // Phase 2 — Règles par zone
-    const results: Array<{ zone: string; rules: number; vision: number }> = [];
-
-    for (const zoneDef of zoneDefs) {
+    // Phase 2 — Règles par zone (parallèle : toutes les zones simultanément)
+    const results = await Promise.all(zoneDefs.map(async (zoneDef) => {
       const ruleMsg = await client.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 4000,
@@ -1237,8 +1238,8 @@ Correspondance article → topic :
         }
       }
 
-      results.push({ zone: zoneDef.code, rules: rules.length, vision: visionCount });
-    }
+      return { zone: zoneDef.code, rules: rules.length, vision: visionCount };
+    }));
 
     res.json({
       ok: true,
