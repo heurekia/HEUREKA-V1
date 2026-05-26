@@ -361,6 +361,24 @@ export async function findParcelByRef(parcelle_id: string): Promise<ParcelResult
   }
 }
 
+// ── GPU retry helper ──────────────────────────────────────────────────────────
+// The IGN GPU API is prone to transient 503/429 errors and rate-limiting when
+// multiple requests are issued in parallel. This wrapper retries once after a
+// short delay before giving up, which is enough to ride over most transients.
+
+async function gpuFetch(url: string, timeoutMs = 8000): Promise<Response | null> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      if (attempt > 0) await new Promise(r => setTimeout(r, 800 + attempt * 400));
+      const r = await fetch(url, { signal: AbortSignal.timeout(timeoutMs) });
+      if (r.ok) return r;
+      // 429 Too Many Requests — wait longer before retry
+      if (r.status === 429) await new Promise(r2 => setTimeout(r2, 1500));
+    } catch { /* network/timeout — retry */ }
+  }
+  return null;
+}
+
 // ── GPU document partition lookup ─────────────────────────────────────────────
 // Resolves the real GPU partition (e.g. DU_37018 for PLU, DU_<SIREN> for PLUi)
 // from coordinates. This is more robust than constructing DU_<INSEE> ourselves
@@ -369,13 +387,11 @@ export async function findParcelByRef(parcelle_id: string): Promise<ParcelResult
 export async function getGpuPartition(lat: number, lng: number): Promise<string | null> {
   try {
     const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
-    const url = `https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(geom)}`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (!r.ok) return null;
+    const r = await gpuFetch(`https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(geom)}`, 7000);
+    if (!r) return null;
     const data = await r.json() as {
       features?: Array<{ properties: { partition?: string; etat?: string } }>;
     };
-    // Return the partition of the first approved document, preferring "approuve" state
     const features = data.features ?? [];
     const approved = features.find(f => f.properties.etat === "approuve") ?? features[0];
     return approved?.properties.partition ?? null;
@@ -388,15 +404,11 @@ export async function getGpuPartition(lat: number, lng: number): Promise<string 
 
 export async function findPluZone(lat: number, lng: number, partition?: string): Promise<PluZoneResult | null> {
   try {
-    // Use geom (GeoJSON Point) + partition to constrain to the correct PLU document.
-    // partition comes from getGpuPartition() which handles both PLU (DU_<INSEE>)
-    // and PLUi (DU_<SIREN>).
     const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
     const params = new URLSearchParams({ geom });
     if (partition) params.set("partition", partition);
-    const url = `https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return null;
+    const r = await gpuFetch(`https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`, 9000);
+    if (!r) return null;
     const data = await r.json() as {
       features?: Array<{
         properties: {
@@ -875,16 +887,20 @@ export async function analyseParcel(
       result.warnings.push("Zone PLU non disponible sur le Géoportail de l'Urbanisme pour cette localisation.");
     }
 
-    // Step 3b: GPU supplementary data — run all in parallel.
-    // SUP functions use the parcel polygon (better than a point for linear features).
-    // Generateur query uses a 700 m bbox to find monuments whose 500 m perimeter covers the parcel.
+    // Step 3b: GPU supplementary data — 2 parallel waves to avoid rate-limiting.
+    // Wave 1: municipality + prescriptions (PLU-partition-dependent, low GPU load)
+    // Wave 2: SUP assiettes (no partition, geometry-based)
+    // Wave 3: generateur (only if servitudes were found — avoids unnecessary call)
     const parcelGeom = result.parcel?.geometry ?? null;
-    const [municipality, prescriptions, supSurf, supLin, genMap] = await Promise.all([
+
+    const [municipality, prescriptions] = await Promise.all([
       getMunicipality(lat, lng),
       getPrescriptionsSurf(lat, lng, gpuPartition ?? undefined),
+    ]);
+
+    const [supSurf, supLin] = await Promise.all([
       getServitudesSurf(lat, lng, parcelGeom),
       getServitudesLin(lat, lng, parcelGeom),
-      getGenerateursSup(lat, lng),
     ]);
 
     if (municipality) {
@@ -916,24 +932,28 @@ export async function analyseParcel(
       return true;
     });
 
-    // Enrich each servitude with generateur data (monument name, protection date, URL, etc.)
-    const enriched = dedupedServitudes.map(s => {
-      const gen = s.ref_acte ? genMap.get(s.ref_acte) : undefined;
-      if (!gen) {
-        // Category might still be recoverable from idsup if catesup was empty
-        return s.categorie ? s : { ...s, categorie: extractCategoryFromId(s.ref_acte ?? "") };
-      }
-      return {
-        ...s,
-        categorie: s.categorie || gen.categorie || "",
-        nomsup: s.nomsup || gen.nomsup,
-        urlacte: s.urlacte || gen.urlacte,
-        gestionnaire: s.gestionnaire || gen.gestionnaire,
-        dessup: s.dessup || gen.dessup,
-        datdecr: s.datdecr || gen.datdecr,
-        typeprotect: s.typeprotect || gen.typeprotect,
-      };
-    });
+    // Wave 3: enrich with générateur data (monument name, protection date, URL)
+    // Only fetched when servitudes actually exist — avoids unnecessary GPU call.
+    let enriched = dedupedServitudes.map(s =>
+      s.categorie ? s : { ...s, categorie: extractCategoryFromId(s.ref_acte ?? "") }
+    );
+    if (dedupedServitudes.length > 0) {
+      const genMap = await getGenerateursSup(lat, lng);
+      enriched = dedupedServitudes.map(s => {
+        const gen = s.ref_acte ? genMap.get(s.ref_acte) : undefined;
+        if (!gen) return s.categorie ? s : { ...s, categorie: extractCategoryFromId(s.ref_acte ?? "") };
+        return {
+          ...s,
+          categorie: s.categorie || gen.categorie || "",
+          nomsup: s.nomsup || gen.nomsup,
+          urlacte: s.urlacte || gen.urlacte,
+          gestionnaire: s.gestionnaire || gen.gestionnaire,
+          dessup: s.dessup || gen.dessup,
+          datdecr: s.datdecr || gen.datdecr,
+          typeprotect: s.typeprotect || gen.typeprotect,
+        };
+      });
+    }
 
     if (enriched.length > 0) {
       result.servitudes = enriched;
