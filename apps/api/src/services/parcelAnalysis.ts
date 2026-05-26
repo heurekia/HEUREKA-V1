@@ -66,11 +66,16 @@ export interface PrescriptionResult {
 }
 
 export interface ServitudeResult {
-  categorie: string;   // ex: AC1, EL7, PM1, T1
-  libelle?: string;
-  nomsup?: string;     // nom complet de la servitude (ex: "Protection MH Château de Villandry")
+  categorie: string;      // ex: AC1, EL7, PM1, T1
+  libelle?: string;       // libellé de la catégorie SUP
+  nomsup?: string;        // nom spécifique (ex: "Église Saint-Symphorien")
+  dessup?: string;        // description textuelle de la SUP
   geometry_type?: "surface" | "lineaire";
-  ref_acte?: string;   // référence légale de l'acte (ex: "AC-37261-0001")
+  ref_acte?: string;      // identifiant SUP (ex: "AC-37214-0001")
+  urlacte?: string;       // URL vers l'acte légal (arrêté, décret)
+  gestionnaire?: string;  // autorité gestionnaire (DRAC, DDT, etc.)
+  datdecr?: string;       // date du décret / arrêté de protection
+  typeprotect?: string;   // type de protection (ex: "Monument Historique classé")
 }
 
 export interface RiskResult {
@@ -459,18 +464,83 @@ export async function getPrescriptionsSurf(lat: number, lng: number, partition?:
   }
 }
 
-// ── GPU assiettes SUP surfaciques (AC1 MH, EL lignes HT, PM inondations…) ───
+// ── GPU assiettes + générateurs SUP ─────────────────────────────────────────
 
-type GpuSupFeature = { properties: { catesup?: string; libelle?: string; libsup?: string; nomsup?: string; idsup?: string } };
+type GpuSupFeature = {
+  properties: {
+    catesup?: string;
+    libelle?: string;
+    libsup?: string;
+    nomsup?: string;
+    dessup?: string;
+    idsup?: string;
+    urlacte?: string;
+    gestionnaire?: string;
+    datdecr?: string;
+    datvalid?: string;
+    typeacte?: string;
+    typeprotect?: string;
+    datprotect?: string;
+    indprecision?: string;
+    urba_etat?: string;
+  };
+};
+
+// GPU idsup format: "AC-37214-0001" or "AC1-37018-0003" or "EL7_37028_001"
+// When catesup is missing, recover the category prefix from the id.
+function extractCategoryFromId(idsup: string): string {
+  const m = idsup.replace(/[_\-]/, "-").match(/^([A-Z]{1,3}\d{0,2})-/);
+  return m?.[1] ?? "";
+}
 
 function mapSupFeature(f: GpuSupFeature, geomType: "surface" | "lineaire"): ServitudeResult {
+  const catesup = f.properties.catesup || extractCategoryFromId(f.properties.idsup ?? "");
   return {
-    categorie: f.properties.catesup ?? "",
-    libelle: f.properties.libsup ?? f.properties.libelle ?? f.properties.nomsup,
+    categorie: catesup,
+    libelle: f.properties.libsup ?? f.properties.libelle,
     nomsup: f.properties.nomsup ?? f.properties.libsup,
+    dessup: f.properties.dessup,
     geometry_type: geomType,
     ref_acte: f.properties.idsup,
+    urlacte: f.properties.urlacte,
+    gestionnaire: f.properties.gestionnaire,
+    datdecr: f.properties.datdecr ?? f.properties.datprotect ?? f.properties.datvalid,
+    typeprotect: f.properties.typeprotect ?? f.properties.typeacte,
   };
+}
+
+// ── GPU générateurs SUP ───────────────────────────────────────────────────────
+// Générateurs = les sources (monuments, lignes, canalisations…) qui créent les SUP.
+// Recherche dans un rayon élargi (700 m) car un MH à 480 m génère un périmètre
+// de 500 m qui couvre la parcelle. Renvoie une Map idsup → enrichissement.
+
+async function getGenerateursSup(lat: number, lng: number): Promise<Map<string, Partial<ServitudeResult>>> {
+  const DLAT = 0.0063; // ~700 m
+  const DLNG = 0.0092;
+  const bbox = JSON.stringify({
+    type: "Polygon",
+    coordinates: [[[lng - DLNG, lat - DLAT], [lng + DLNG, lat - DLAT], [lng + DLNG, lat + DLAT], [lng - DLNG, lat + DLAT], [lng - DLNG, lat - DLAT]]],
+  });
+  const map = new Map<string, Partial<ServitudeResult>>();
+  try {
+    const r = await fetch(`https://apicarto.ign.fr/api/gpu/generateur-sup-s?geom=${encodeURIComponent(bbox)}&_limit=30`, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return map;
+    const data = await r.json() as { features?: GpuSupFeature[] };
+    for (const f of data.features ?? []) {
+      const p = f.properties;
+      if (!p.idsup) continue;
+      map.set(p.idsup, {
+        nomsup: p.nomsup ?? p.libsup,
+        categorie: p.catesup || extractCategoryFromId(p.idsup),
+        urlacte: p.urlacte,
+        gestionnaire: p.gestionnaire,
+        dessup: p.dessup,
+        datdecr: p.datdecr ?? p.datprotect ?? p.datvalid,
+        typeprotect: p.typeprotect ?? p.typeacte,
+      });
+    }
+  } catch { /* best-effort */ }
+  return map;
 }
 
 // SUP queries intentionally do NOT use the PLU partition (DU_xxx) — SUP data lives
@@ -805,14 +875,16 @@ export async function analyseParcel(
       result.warnings.push("Zone PLU non disponible sur le Géoportail de l'Urbanisme pour cette localisation.");
     }
 
-    // Step 3b: GPU supplementary data (municipality RNU, prescriptions, SUP) — run in parallel
-    // SUP functions receive the parcel polygon (more accurate than a point for linear features).
+    // Step 3b: GPU supplementary data — run all in parallel.
+    // SUP functions use the parcel polygon (better than a point for linear features).
+    // Generateur query uses a 700 m bbox to find monuments whose 500 m perimeter covers the parcel.
     const parcelGeom = result.parcel?.geometry ?? null;
-    const [municipality, prescriptions, supSurf, supLin] = await Promise.all([
+    const [municipality, prescriptions, supSurf, supLin, genMap] = await Promise.all([
       getMunicipality(lat, lng),
       getPrescriptionsSurf(lat, lng, gpuPartition ?? undefined),
       getServitudesSurf(lat, lng, parcelGeom),
       getServitudesLin(lat, lng, parcelGeom),
+      getGenerateursSup(lat, lng),
     ]);
 
     if (municipality) {
@@ -834,22 +906,41 @@ export async function analyseParcel(
       result.data_sources.push("GPU (prescriptions)");
     }
 
-    // Merge surface + linear SUP, deduplicate by (categorie + nomsup)
+    // Merge surface + linear SUP, deduplicate by (idsup or categorie+nomsup)
     const allServitudes = [...supSurf, ...supLin];
     const seen = new Set<string>();
     const dedupedServitudes = allServitudes.filter(s => {
-      const key = `${s.categorie}|${s.nomsup ?? s.libelle ?? ""}`;
+      const key = s.ref_acte ?? `${s.categorie}|${s.nomsup ?? s.libelle ?? ""}`;
       if (seen.has(key)) return false;
       seen.add(key);
       return true;
     });
 
-    if (dedupedServitudes.length > 0) {
-      result.servitudes = dedupedServitudes;
-      const ac = dedupedServitudes.find(s => s.categorie?.startsWith("AC"));
-      const el = dedupedServitudes.find(s => s.categorie?.startsWith("EL"));
-      const pm = dedupedServitudes.find(s => s.categorie?.startsWith("PM"));
-      const as_ = dedupedServitudes.find(s => s.categorie?.startsWith("AS"));
+    // Enrich each servitude with generateur data (monument name, protection date, URL, etc.)
+    const enriched = dedupedServitudes.map(s => {
+      const gen = s.ref_acte ? genMap.get(s.ref_acte) : undefined;
+      if (!gen) {
+        // Category might still be recoverable from idsup if catesup was empty
+        return s.categorie ? s : { ...s, categorie: extractCategoryFromId(s.ref_acte ?? "") };
+      }
+      return {
+        ...s,
+        categorie: s.categorie || gen.categorie || "",
+        nomsup: s.nomsup || gen.nomsup,
+        urlacte: s.urlacte || gen.urlacte,
+        gestionnaire: s.gestionnaire || gen.gestionnaire,
+        dessup: s.dessup || gen.dessup,
+        datdecr: s.datdecr || gen.datdecr,
+        typeprotect: s.typeprotect || gen.typeprotect,
+      };
+    });
+
+    if (enriched.length > 0) {
+      result.servitudes = enriched;
+      const ac = enriched.find(s => s.categorie?.startsWith("AC"));
+      const el = enriched.find(s => s.categorie?.startsWith("EL"));
+      const pm = enriched.find(s => s.categorie?.startsWith("PM"));
+      const as_ = enriched.find(s => s.categorie?.startsWith("AS"));
       if (ac) result.warnings.push(`Périmètre ABF — ${ac.nomsup ?? ac.libelle ?? "monument historique"} (SUP ${ac.categorie}) : avis de l'Architecte des Bâtiments de France requis.`);
       if (el) result.warnings.push("Ligne électrique haute tension (SUP EL) — distances de sécurité réglementaires applicables.");
       if (pm) result.warnings.push("Plan de Prévention des Risques (SUP PM) — prescriptions applicables.");

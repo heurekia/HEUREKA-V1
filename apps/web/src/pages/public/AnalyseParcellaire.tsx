@@ -6,7 +6,18 @@ import type { BaseLayer } from "../../components/MapLeaflet";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
-type Servitude = { categorie: string; libelle?: string; nomsup?: string; geometry_type?: "surface" | "lineaire"; ref_acte?: string };
+type Servitude = {
+  categorie: string;
+  libelle?: string;
+  nomsup?: string;
+  dessup?: string;
+  geometry_type?: "surface" | "lineaire";
+  ref_acte?: string;
+  urlacte?: string;
+  gestionnaire?: string;
+  datdecr?: string;
+  typeprotect?: string;
+};
 
 type ParcelAnalysis = {
   query: string;
@@ -549,10 +560,9 @@ export function AnalyseParcellaire() {
 
                 {/* Servitudes d'utilité publique */}
                 {(analysis.servitudes?.length ?? 0) > 0 && (() => {
-                  // Group by prefix (AC, EL, PM, T, I, AS, A…)
                   const groups = new Map<string, Servitude[]>();
                   for (const s of analysis.servitudes!) {
-                    const prefix = s.categorie.replace(/\d/g, "");
+                    const prefix = (s.categorie || "SUP").replace(/\d/g, "");
                     if (!groups.has(prefix)) groups.set(prefix, []);
                     groups.get(prefix)!.push(s);
                   }
@@ -565,32 +575,80 @@ export function AnalyseParcellaire() {
                         const g = getSupGroup(items[0]?.categorie ?? "");
                         return (
                           <div key={prefix} style={{ border: `1px solid ${g.border}`, borderRadius: 10, padding: "12px 14px", background: g.bg }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                            {/* Group header */}
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 4 }}>
                               <span style={{ fontSize: 16 }}>{g.icon}</span>
                               <span style={{ fontSize: 12, fontWeight: 700, color: g.color }}>{g.label}</span>
                             </div>
-                            <p style={{ fontSize: 11, color: g.color, opacity: 0.8, margin: "0 0 8px", lineHeight: 1.4 }}>{g.desc}</p>
+                            <p style={{ fontSize: 11, color: g.color, opacity: 0.75, margin: "0 0 10px", lineHeight: 1.4 }}>{g.desc}</p>
+
+                            {/* Per-servitude cards */}
                             {items.map((s, i) => (
-                              <div key={i} style={{ background: "rgba(255,255,255,0.6)", borderRadius: 6, padding: "7px 10px", marginBottom: i < items.length - 1 ? 4 : 0 }}>
-                                <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" as const }}>
-                                  <span style={{ fontSize: 10, fontWeight: 700, color: g.color, background: g.bg, border: `1px solid ${g.border}`, borderRadius: 4, padding: "1px 5px" }}>
-                                    {s.categorie}
-                                  </span>
+                              <div key={i} style={{ background: "rgba(255,255,255,0.7)", borderRadius: 8, padding: "10px 12px", marginBottom: i < items.length - 1 ? 6 : 0, border: `1px solid ${g.border}` }}>
+
+                                {/* Top row: badge + sous-type + géom */}
+                                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" as const, marginBottom: 4 }}>
+                                  {s.categorie && (
+                                    <span style={{ fontSize: 10, fontWeight: 700, color: g.color, background: g.bg, border: `1px solid ${g.border}`, borderRadius: 4, padding: "1px 6px" }}>
+                                      {s.categorie}
+                                    </span>
+                                  )}
                                   {SUP_CAT_DETAIL[s.categorie] && (
-                                    <span style={{ fontSize: 10, color: g.color, opacity: 0.7 }}>{SUP_CAT_DETAIL[s.categorie]}</span>
+                                    <span style={{ fontSize: 10, color: g.color, opacity: 0.75, fontStyle: "italic" }}>{SUP_CAT_DETAIL[s.categorie]}</span>
+                                  )}
+                                  {s.typeprotect && !SUP_CAT_DETAIL[s.categorie] && (
+                                    <span style={{ fontSize: 10, color: g.color, opacity: 0.75, fontStyle: "italic" }}>{s.typeprotect}</span>
                                   )}
                                   {s.geometry_type === "lineaire" && (
                                     <span style={{ fontSize: 9, color: "#6B7280", background: "#F3F4F6", borderRadius: 4, padding: "1px 4px" }}>linéaire</span>
                                   )}
                                 </div>
-                                {(s.nomsup || s.libelle) && (
-                                  <p style={{ fontSize: 11, color: g.color, fontWeight: 500, margin: "3px 0 0" }}>
-                                    {s.nomsup ?? s.libelle}
+
+                                {/* Monument / nom principal */}
+                                {s.nomsup && (
+                                  <p style={{ fontSize: 12, color: g.color, fontWeight: 600, margin: "0 0 3px", lineHeight: 1.3 }}>
+                                    {s.nomsup}
                                   </p>
                                 )}
-                                {s.ref_acte && (
-                                  <p style={{ fontSize: 10, color: "#9CA3AF", margin: "2px 0 0" }}>Réf. {s.ref_acte}</p>
+
+                                {/* Libellé de la catégorie si différent du nom */}
+                                {s.libelle && s.libelle !== s.nomsup && (
+                                  <p style={{ fontSize: 11, color: g.color, opacity: 0.8, margin: "0 0 3px" }}>{s.libelle}</p>
                                 )}
+
+                                {/* Description textuelle */}
+                                {s.dessup && (
+                                  <p style={{ fontSize: 11, color: "#374151", margin: "0 0 4px", lineHeight: 1.4 }}>{s.dessup}</p>
+                                )}
+
+                                {/* Meta row: gestionnaire + date */}
+                                {(s.gestionnaire || s.datdecr) && (
+                                  <div style={{ display: "flex", gap: 10, flexWrap: "wrap" as const, marginTop: 4 }}>
+                                    {s.gestionnaire && (
+                                      <span style={{ fontSize: 10, color: "#6B7280", background: "#F3F4F6", borderRadius: 4, padding: "1px 6px" }}>
+                                        {s.gestionnaire}
+                                      </span>
+                                    )}
+                                    {s.datdecr && (
+                                      <span style={{ fontSize: 10, color: "#6B7280" }}>
+                                        Protégé le {new Date(s.datdecr).toLocaleDateString("fr-FR", { day: "numeric", month: "long", year: "numeric" })}
+                                      </span>
+                                    )}
+                                  </div>
+                                )}
+
+                                {/* Footer: réf. acte + lien */}
+                                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 5, gap: 6 }}>
+                                  {s.ref_acte && (
+                                    <span style={{ fontSize: 10, color: "#9CA3AF" }}>Réf. {s.ref_acte}</span>
+                                  )}
+                                  {s.urlacte && (
+                                    <a href={s.urlacte} target="_blank" rel="noopener noreferrer"
+                                      style={{ fontSize: 10, color: g.color, fontWeight: 600, textDecoration: "underline", marginLeft: "auto" }}>
+                                      Voir l'acte →
+                                    </a>
+                                  )}
+                                </div>
                               </div>
                             ))}
                           </div>
