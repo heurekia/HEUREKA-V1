@@ -533,9 +533,11 @@ type GpuSupFeature = {
 };
 
 // Known GPU API property names for the SUP category code (e.g. "AC1", "EL7").
-const SUP_CAT_FIELDS = ["natsup", "catesup", "typesup", "nat_sup", "cat_sup", "type_acte"] as const;
-// Known fields that contain the SUP identifier (used as fallback for category extraction).
-const SUP_ID_FIELDS  = ["idsup", "idacte", "id_sup", "id_acte", "identifiant"] as const;
+// "suptype" is the primary field in the current GPU API (value is lowercase: "ac1" → uppercased).
+const SUP_CAT_FIELDS = ["suptype", "natsup", "catesup", "typesup", "nat_sup", "cat_sup"] as const;
+// Known fields that contain SUP identifiers (used as fallback for category extraction).
+// "idass" / "idgen" / "nomass" are the primary identifiers in the current GPU API.
+const SUP_ID_FIELDS  = ["idass", "idgen", "nomass", "idsup", "idacte", "id_sup", "id_acte"] as const;
 
 // GPU idsup format examples: "AC1-37214-0001", "AC1_37018_0003", "EL7_37028_001",
 // or partition-prefixed: "37214-AC1-001". Tries to recover the category prefix.
@@ -564,20 +566,20 @@ function scanPropsForCategory(props: Record<string, unknown>): string {
   const lower: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(props)) lower[k.toLowerCase()] = v;
 
-  // SUP category codes: 1-3 uppercase letters + 0-2 digits, total ≥ 2 chars
-  const EXACT = /^[A-Z]{1,3}\d{0,2}$/;
-  // Pattern embedded in a longer string (e.g. "AC1 - Protection MH classé" or "(AC1)")
-  const EMBEDDED = /\b((AC|EL|PM|AS|PT|INT?|T\d|A\d?|I\d?)[1-9]?\d?)\b/;
+  // SUP category codes: 1-3 letters + 0-2 digits, total ≥ 2 chars (case-insensitive — API returns "ac1")
+  const EXACT = /^[A-Za-z]{1,3}\d{0,2}$/;
+  // Pattern embedded in a longer string (e.g. "AC1_Perimetre-delimite…" or "ac1")
+  const EMBEDDED = /\b((ac|AC|el|EL|pm|PM|as|AS|pt|PT|int?|INT?|t\d|T\d|a\d?|A\d?|i\d?|I\d?)[1-9]?\d?)\b/i;
 
-  // 1. Known category field names (case-normalised)
+  // 1. Known category field names (case-normalised) — always uppercase the result
   for (const field of SUP_CAT_FIELDS) {
     const v = lower[field];
     if (typeof v !== "string" || !v.trim()) continue;
     const t = v.trim();
-    if (EXACT.test(t) && t.length >= 2) return t;
-    // Value might be a longer label with the code embedded
+    if (EXACT.test(t) && t.length >= 2) return t.toUpperCase();
+    // Value might be a longer label or identifier with the code embedded
     const m = t.match(EMBEDDED);
-    if (m) return m[1] ?? "";
+    if (m) return (m[1] ?? "").toUpperCase();
   }
 
   // 2. Known identifier fields — try to extract category prefix
@@ -591,14 +593,14 @@ function scanPropsForCategory(props: Record<string, unknown>): string {
 
   // 3. Scan ALL string properties — exact code match
   for (const v of Object.values(lower)) {
-    if (typeof v === "string" && EXACT.test(v.trim()) && v.trim().length >= 2) return v.trim();
+    if (typeof v === "string" && EXACT.test(v.trim()) && v.trim().length >= 2) return v.trim().toUpperCase();
   }
 
   // 4. Scan ALL string properties — embedded code match
   for (const v of Object.values(lower)) {
     if (typeof v === "string") {
       const m = v.match(EMBEDDED);
-      if (m) return m[1] ?? "";
+      if (m) return (m[1] ?? "").toUpperCase();
     }
   }
 
@@ -606,29 +608,44 @@ function scanPropsForCategory(props: Record<string, unknown>): string {
   for (const v of Object.values(lower)) {
     if (typeof v === "string") {
       const cat = extractCategoryFromId(v);
-      if (cat) return cat;
+      if (cat) return cat.toUpperCase();
     }
   }
 
   return "";
 }
 
+// GPU date fields come in YYYYMMDD format (e.g. "20180101") — normalise to ISO "YYYY-MM-DD".
+function parseGpuDate(raw: unknown): string | undefined {
+  if (typeof raw !== "string" || !raw.trim()) return undefined;
+  const t = raw.trim();
+  if (/^\d{8}$/.test(t)) return `${t.slice(0,4)}-${t.slice(4,6)}-${t.slice(6,8)}`;
+  return t;
+}
+
+function str(props: Record<string, unknown>, ...keys: string[]): string | undefined {
+  for (const k of keys) { const v = props[k]; if (typeof v === "string" && v.trim()) return v.trim(); }
+  return undefined;
+}
+
 function mapSupFeature(f: GpuSupFeature, geomType: "surface" | "lineaire"): ServitudeResult {
   const p = f.properties;
   const categorie = scanPropsForCategory(p);
-  // Determine the best available identifier for cross-referencing with generateurs
-  const ref_acte = (SUP_ID_FIELDS.map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined;
+  // "idgen" links the assiette to its generateur — used as the cross-reference key.
+  // Fall back to "idass" (assiette id) if idgen is absent.
+  const ref_acte = str(p, "idgen", "idass", "idsup", "idacte");
   return {
     categorie,
-    libelle:      typeof p["libsup"]   === "string" ? p["libsup"]  : typeof p["libelle"]  === "string" ? p["libelle"]  : undefined,
-    nomsup:       typeof p["nomsup"]   === "string" ? p["nomsup"]  : typeof p["libsup"]   === "string" ? p["libsup"]   : undefined,
-    dessup:       typeof p["dessup"]   === "string" ? p["dessup"]  : undefined,
+    // "nomsuplitt" is the human-readable SUP name in the current GPU API (e.g. "Périmètre délimité des abords - La Gruette")
+    libelle:      str(p, "nomsuplitt", "typeass", "libsup", "libelle"),
+    nomsup:       str(p, "nomsuplitt", "libsup", "nomsup"),
+    dessup:       str(p, "dessup"),
     geometry_type: geomType,
     ref_acte,
-    urlacte:      typeof p["urlacte"]  === "string" ? p["urlacte"] : undefined,
-    gestionnaire: typeof p["gestionnaire"] === "string" ? p["gestionnaire"] : undefined,
-    datdecr:      (["datdecr","datprotect","datvalid"].map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined,
-    typeprotect:  (["typeprotect","typeacte"].map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined,
+    urlacte:      str(p, "urlreg", "urlacte") || undefined,
+    gestionnaire: str(p, "gestionnaire"),
+    datdecr:      parseGpuDate(p["datesrcass"]) ?? str(p, "datdecr", "datprotect", "datvalid"),
+    typeprotect:  str(p, "typeass", "typeprotect", "typeacte"),
     _debug_props: p, // temporary — removed once category extraction is confirmed stable
   };
 }
@@ -652,17 +669,17 @@ async function getGenerateursSup(lat: number, lng: number): Promise<Map<string, 
     const data = await r.json() as { features?: GpuSupFeature[] };
     for (const f of data.features ?? []) {
       const p = f.properties as Record<string, unknown>;
-      // Find the best available identifier to key the map
-      const ref = (SUP_ID_FIELDS.map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined;
+      // Generateurs are keyed by "idgen" so assiettes can cross-reference via their own "idgen" field
+      const ref = str(p, "idgen", "idass", "idsup", "idacte");
       if (!ref) continue;
       map.set(ref, {
-        nomsup:       typeof p["nomsup"] === "string" ? p["nomsup"] : typeof p["libsup"] === "string" ? p["libsup"] : undefined,
+        nomsup:       str(p, "nomsuplitt", "nomsup", "libsup"),
         categorie:    scanPropsForCategory(p),
-        urlacte:      typeof p["urlacte"] === "string" ? p["urlacte"] : undefined,
-        gestionnaire: typeof p["gestionnaire"] === "string" ? p["gestionnaire"] : undefined,
-        dessup:       typeof p["dessup"] === "string" ? p["dessup"] : undefined,
-        datdecr:      (["datdecr","datprotect","datvalid"].map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined,
-        typeprotect:  (["typeprotect","typeacte"].map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined,
+        urlacte:      str(p, "urlreg", "urlacte") || undefined,
+        gestionnaire: str(p, "gestionnaire"),
+        dessup:       str(p, "dessup"),
+        datdecr:      parseGpuDate(p["datesrcass"]) ?? str(p, "datdecr", "datprotect", "datvalid"),
+        typeprotect:  str(p, "typeass", "typeprotect", "typeacte"),
       });
     }
   } catch { /* best-effort */ }
