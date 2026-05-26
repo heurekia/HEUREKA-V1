@@ -1096,13 +1096,24 @@ export async function analyseParcel(
     // 2a. Cache HIT (fresh) → use immediately.
     // 2b. Cache MISS or STALE → call GPU API; on success write cache; on 503 use stale.
     const cacheKey = gpuCacheKey(result.parcel?.parcelle_id, lat, lng);
-    const cached = await readGpuCache(cacheKey);
+    let cached = await readGpuCache(cacheKey);
+
+    // When no current-version cache exists, try older versions as stale fallback.
+    // These are only used if the live GPU API is also unavailable (prevents old bad data
+    // from being served when GPU is healthy and can give us fresh data).
+    if (!cached) {
+      const base = result.parcel?.parcelle_id ?? `${lat.toFixed(4)},${lng.toFixed(4)}`;
+      for (const oldV of [2, 1]) {
+        const legacy = await readGpuCache(`v${oldV}:${base}`);
+        if (legacy) { cached = { ...legacy, stale: true }; break; }
+      }
+    }
 
     let gpuPayload: GpuCachePayload | null = null;
     let gpuFromCache = false;
 
     if (cached && !cached.stale) {
-      // Fresh cache hit — no GPU calls needed
+      // Fresh current-version cache hit — no GPU calls needed
       gpuPayload = cached.payload;
       gpuFromCache = true;
     } else {
@@ -1135,12 +1146,12 @@ export async function analyseParcel(
 
         gpuPayload = { pluPartition, scotName, zone_urba: zone, municipality, prescriptions, informations, sup_surf: supSurf, sup_lin: supLin, generateurs };
 
-        // Write to cache (fire-and-forget if zone or documents resolved)
+        // Write to current-version cache when GPU gave us useful data
         if (zone || pluPartition) {
           writeGpuCache(cacheKey, result.parcel?.parcelle_id, gpuPayload);
         }
       } else if (cached) {
-        // GPU down + stale cache → use stale data with warning
+        // GPU down + stale cache (current or legacy version) → use stale with warning
         gpuPayload = cached.payload;
         gpuFromCache = true;
         result.warnings.push("Données GPU servies depuis le cache (API IGN temporairement indisponible) — données réglementaires potentiellement datées.");
