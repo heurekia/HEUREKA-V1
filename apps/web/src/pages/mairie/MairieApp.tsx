@@ -297,7 +297,31 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, sig
   );
 }
 
-function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick, commune = "" }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void; commune?: string }) {
+type ApiNotif = { id: string; type: string; title: string; message: string; is_read: boolean; dossier_id: string | null; created_at: string };
+
+function notifIcon(type: string) {
+  if (type.includes("message")) return "💬";
+  if (type.includes("delai") || type.includes("echeance") || type.includes("incomplet")) return "⏰";
+  if (type.includes("decision") || type.includes("accepte") || type.includes("refuse")) return "✅";
+  if (type.includes("dossier") || type.includes("nouveau")) return "📁";
+  return "🔔";
+}
+function notifColor(type: string) {
+  if (type.includes("delai") || type.includes("echeance") || type.includes("incomplet") || type.includes("refuse")) return "#EF4444";
+  if (type.includes("message")) return "#3B82F6";
+  return "#4F46E5";
+}
+function relTime(d: string) {
+  const ms = Date.now() - new Date(d).getTime();
+  if (ms < 60_000) return "À l'instant";
+  if (ms < 3_600_000) return `Il y a ${Math.floor(ms / 60_000)} min`;
+  if (ms < 86_400_000) return `Il y a ${Math.floor(ms / 3_600_000)}h`;
+  if (ms < 172_800_000) return "Hier";
+  return `Il y a ${Math.floor(ms / 86_400_000)}j`;
+}
+
+function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick, commune = "", onViewAllNotifications }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void; commune?: string; onViewAllNotifications?: () => void }) {
+  const routerNav = useNavigate();
   const [showNotifs, setShowNotifs] = useState(false);
   const [showFAQ, setShowFAQ] = useState(false);
   const [faqQuery, setFaqQuery] = useState("");
@@ -305,11 +329,29 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchResults, setSearchResults] = useState<ApiDossier[]>([]);
-  const notifs = [
-    { icon: "📁", text: "Nouveau dossier PC-2024-0801 déposé", sub: "Il y a 12 min", color: "#4F46E5" },
-    { icon: "💬", text: "Nouveau message de Jean Dupont", sub: "Il y a 1h", color: "#4F46E5" },
-    { icon: "⏰", text: "Délai dépassé — DP-2024-0111", sub: "Hier", color: "#EF4444" },
-  ];
+  const [apiNotifs, setApiNotifs] = useState<ApiNotif[]>([]);
+
+  const loadNotifs = () => {
+    api.get<ApiNotif[]>("/notifications").then(setApiNotifs).catch(() => {});
+  };
+
+  useEffect(() => { loadNotifs(); }, []);
+
+  const unreadCount = apiNotifs.filter(n => !n.is_read).length;
+
+  const markAllRead = async () => {
+    await api.patch("/notifications/read-all").catch(() => {});
+    setApiNotifs(ns => ns.map(n => ({ ...n, is_read: true })));
+  };
+
+  const handleNotifClick = async (n: ApiNotif) => {
+    if (!n.is_read) {
+      api.patch(`/notifications/${n.id}/read`).catch(() => {});
+      setApiNotifs(ns => ns.map(x => x.id === n.id ? { ...x, is_read: true } : x));
+    }
+    setShowNotifs(false);
+    if (n.dossier_id) routerNav(`/mairie/dossiers/${n.dossier_id}`);
+  };
 
   useEffect(() => {
     if (searchQuery.length <= 1) { setSearchResults([]); return; }
@@ -359,27 +401,44 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
 
         {/* Bell */}
         <div style={{ position: "relative" }}>
-          <button onClick={() => { setShowNotifs(!showNotifs); setShowFAQ(false); }} style={{ border: "none", background: showNotifs ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
+          <button onClick={() => { setShowNotifs(!showNotifs); setShowFAQ(false); if (!showNotifs) loadNotifs(); }} style={{ border: "none", background: showNotifs ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
             <BellIcon size={20} />
           </button>
-          <span style={{ position: "absolute", top: 2, right: 2, width: 16, height: 16, background: "#EF4444", borderRadius: "50%", fontSize: 9, fontWeight: 700, color: "white", display: "flex", alignItems: "center", justifyContent: "center", pointerEvents: "none" }}>3</span>
+          {unreadCount > 0 && (
+            <span style={{ position: "absolute", top: 2, right: 2, minWidth: 16, height: 16, background: "#EF4444", borderRadius: 8, fontSize: 9, fontWeight: 700, color: "white", display: "flex", alignItems: "center", justifyContent: "center", padding: "0 3px", pointerEvents: "none" }}>
+              {unreadCount > 99 ? "99+" : unreadCount}
+            </span>
+          )}
           {showNotifs && (
-            <div style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, width: 320, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.14)", zIndex: 200 }}>
+            <div style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, width: 340, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.14)", zIndex: 200 }}>
               <div style={{ padding: "12px 16px", borderBottom: "1px solid #F1F5F9", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
-                <span style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Notifications</span>
-                <button style={{ border: "none", background: "none", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>Tout marquer lu</button>
+                <span style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>
+                  Notifications {unreadCount > 0 && <span style={{ background: "#EF4444", color: "white", borderRadius: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", marginLeft: 4 }}>{unreadCount}</span>}
+                </span>
+                {unreadCount > 0 && (
+                  <button onClick={markAllRead} style={{ border: "none", background: "none", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 500 }}>Tout marquer lu</button>
+                )}
               </div>
-              {notifs.map((n, i) => (
-                <div key={i} style={{ padding: "10px 16px", display: "flex", alignItems: "flex-start", gap: 10, borderBottom: "1px solid #F8FAFC", cursor: "pointer" }} onClick={closeAll}>
-                  <div style={{ width: 32, height: 32, borderRadius: 8, background: n.color + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{n.icon}</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 12, color: "#0F172A", fontWeight: 500 }}>{n.text}</div>
-                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{n.sub}</div>
+              <div style={{ maxHeight: 320, overflowY: "auto" }}>
+                {apiNotifs.length === 0 ? (
+                  <div style={{ padding: "24px 16px", textAlign: "center", fontSize: 12, color: "#94a3b8" }}>Aucune notification</div>
+                ) : apiNotifs.slice(0, 8).map(n => (
+                  <div key={n.id} onClick={() => handleNotifClick(n)}
+                    style={{ padding: "10px 16px", display: "flex", alignItems: "flex-start", gap: 10, borderBottom: "1px solid #F8FAFC", cursor: "pointer", background: n.is_read ? "white" : "#F8F7FF", transition: "background 0.15s" }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 8, background: notifColor(n.type) + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{notifIcon(n.type)}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 12, color: "#0F172A", fontWeight: n.is_read ? 400 : 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.title}</div>
+                      <div style={{ fontSize: 11, color: "#64748b", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.message}</div>
+                      <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>{relTime(n.created_at)}</div>
+                    </div>
+                    {!n.is_read && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 4 }} />}
                   </div>
-                </div>
-              ))}
-              <div style={{ padding: "10px 16px", textAlign: "center" }}>
-                <button style={{ border: "none", background: "none", fontSize: 12, color: "#4F46E5", cursor: "pointer" }}>Voir toutes les notifications</button>
+                ))}
+              </div>
+              <div style={{ padding: "10px 16px", textAlign: "center", borderTop: "1px solid #F1F5F9" }}>
+                <button onClick={() => { setShowNotifs(false); onViewAllNotifications?.(); }} style={{ border: "none", background: "none", fontSize: 12, color: "#4F46E5", cursor: "pointer", fontWeight: 500 }}>
+                  Voir toutes les notifications →
+                </button>
               </div>
             </div>
           )}
@@ -2060,8 +2119,9 @@ function SignatairesPanel({ commune }: { commune: string }) {
 function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
   const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
-  const [stab, setStab] = useState("Réglementation");
-  const events = [
+  const [searchParams] = useSearchParams();
+  const [stab, setStab] = useState(() => searchParams.get("tab") === "notifications" ? "Notifications" : "Réglementation");
+  const [events, setEvents] = useState([
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
     { label: "Dossier assigné", sub: "Lorsqu'un dossier vous est assigné.", icon: "👤", active: true },
     { label: "Demande de pièces", sub: "Lorsqu'une demande de pièces complémentaires est envoyée.", icon: "📎", active: true },
@@ -2070,7 +2130,33 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeIn
     { label: "Décision prise", sub: "Lorsqu'une décision est prise sur un dossier.", icon: "✅", active: true },
     { label: "Délai dépassé", sub: "Lorsqu'un délai de traitement est dépassé.", icon: "⚠️", active: true },
     { label: "Commentaire sur un dossier", sub: "Lorsqu'un commentaire est ajouté sur un dossier.", icon: "💭", active: true },
-  ];
+  ]);
+  const toggleEvent = (label: string) => setEvents(es => es.map(e => e.label === label ? { ...e, active: !e.active } : e));
+  const [channels, setChannels] = useState([
+    { icon: "✉️", label: "Email", sub: "Recevoir les notifications par email.", active: true },
+    { icon: "🔔", label: "Plateforme", sub: "Notifications dans la plateforme.", active: true },
+    { icon: "💬", label: "SMS", sub: "Recevoir les notifications par SMS.", active: false },
+  ]);
+  const toggleChannel = (label: string) => setChannels(cs => cs.map(c => c.label === label ? { ...c, active: !c.active } : c));
+  const [recipientMode, setRecipientMode] = useState(0);
+  const [notifSubTab, setNotifSubTab] = useState<"historique" | "evenements" | "canaux">("historique");
+  const [histNotifs, setHistNotifs] = useState<ApiNotif[]>([]);
+  const [histLoading, setHistLoading] = useState(false);
+  const loadHistNotifs = () => {
+    setHistLoading(true);
+    api.get<ApiNotif[]>("/notifications").then(setHistNotifs).catch(() => {}).finally(() => setHistLoading(false));
+  };
+  useEffect(() => { if (stab === "Notifications") loadHistNotifs(); }, [stab]);
+  const markAllHistRead = async () => {
+    await api.patch("/notifications/read-all").catch(() => {});
+    setHistNotifs(ns => ns.map(n => ({ ...n, is_read: true })));
+  };
+  const markOneRead = (n: ApiNotif) => {
+    if (!n.is_read) {
+      api.patch(`/notifications/${n.id}/read`).catch(() => {});
+      setHistNotifs(ns => ns.map(x => x.id === n.id ? { ...x, is_read: true } : x));
+    }
+  };
   return (
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 16 }}>
@@ -2096,82 +2182,149 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeIn
         </div>
       )}
       {stab === "Notifications" && (
-        <div style={{ display: "flex", gap: 24 }}>
-          <div style={{ flex: 1, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ marginBottom: 12 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Gestion des notifications</div>
-              <div style={{ fontSize: 12, color: "#94a3b8" }}>Configurez les notifications envoyées par la plateforme.</div>
-            </div>
-            <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
-              {["Par événement", "Par canal"].map((t, i) => (
-                <button key={t} style={{ border: "1px solid #E2E8F0", borderRadius: 8, background: i === 0 ? "#EEF2FF" : "white", color: i === 0 ? "#4F46E5" : "#64748b", padding: "6px 14px", fontSize: 13, fontWeight: i === 0 ? 600 : 400, cursor: "pointer" }}>{t}</button>
-              ))}
-            </div>
-            <input placeholder="Rechercher un événement..." style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", marginBottom: 12 }} />
-            <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
-              <span>ÉVÉNEMENT</span><span>ACTIVÉ</span>
-            </div>
-            {events.map((ev) => (
-              <div key={ev.label} style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
-                <span style={{ fontSize: 18, marginRight: 10 }}>{ev.icon}</span>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{ev.label}</div>
-                  <div style={{ fontSize: 11, color: "#94a3b8" }}>{ev.sub}</div>
-                </div>
-                <div style={{ width: 36, height: 20, borderRadius: 10, background: ev.active ? "#4F46E5" : "#E2E8F0", position: "relative", cursor: "pointer", flexShrink: 0, marginRight: 8 }}>
-                  <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: ev.active ? 18 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-                </div>
-                <span style={{ color: "#CBD5E1" }}>›</span>
-              </div>
+        <div>
+          {/* Sub-tabs */}
+          <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #E2E8F0", marginBottom: 20 }}>
+            {([["historique", "Historique"], ["evenements", "Par événement"], ["canaux", "Canaux & Préférences"]] as const).map(([val, label]) => (
+              <button key={val} onClick={() => setNotifSubTab(val)}
+                style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, cursor: "pointer",
+                  fontWeight: notifSubTab === val ? 600 : 400, color: notifSubTab === val ? "#4F46E5" : "#64748b",
+                  borderBottom: notifSubTab === val ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -1 }}>
+                {label}
+                {val === "historique" && histNotifs.filter(n => !n.is_read).length > 0 && (
+                  <span style={{ background: "#EF4444", color: "white", borderRadius: 6, fontSize: 10, fontWeight: 700, padding: "1px 5px", marginLeft: 6 }}>
+                    {histNotifs.filter(n => !n.is_read).length}
+                  </span>
+                )}
+              </button>
             ))}
-            <div style={{ marginTop: 12, fontSize: 12, color: "#94a3b8" }}>8 événements</div>
           </div>
-          <div style={{ width: 340, display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Canaux de notification</div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 12 }}>Sélectionnez les canaux que vous souhaitez utiliser.</div>
-              {[{ icon: "✉️", label: "Email", sub: "Recevoir les notifications par email.", active: true }, { icon: "🔔", label: "Plateforme", sub: "Notifications dans la plateforme.", active: true }, { icon: "💬", label: "SMS", sub: "Recevoir les notifications par SMS.", active: false }].map(c => (
-                <div key={c.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, padding: 8, background: "#F8FAFC", borderRadius: 8 }}>
-                  <span style={{ fontSize: 16 }}>{c.icon}</span>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{c.label}</div>
-                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{c.sub}</div>
-                  </div>
-                  <div style={{ width: 32, height: 18, borderRadius: 9, background: c.active ? "#4F46E5" : "#E2E8F0", position: "relative", cursor: "pointer" }}>
-                    <div style={{ width: 14, height: 14, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: c.active ? 16 : 2, transition: "left 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }} />
-                  </div>
+
+          {/* Historique */}
+          {notifSubTab === "historique" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
+              <div style={{ padding: "14px 20px", borderBottom: "1px solid #F1F5F9", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                <span style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>
+                  Toutes les notifications
+                  {histNotifs.filter(n => !n.is_read).length > 0 && (
+                    <span style={{ background: "#EF4444", color: "white", borderRadius: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", marginLeft: 8 }}>
+                      {histNotifs.filter(n => !n.is_read).length} non lues
+                    </span>
+                  )}
+                </span>
+                <div style={{ display: "flex", gap: 8 }}>
+                  <button onClick={loadHistNotifs} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "5px 12px", fontSize: 12, color: "#64748b", cursor: "pointer" }}>↻ Actualiser</button>
+                  {histNotifs.some(n => !n.is_read) && (
+                    <button onClick={markAllHistRead} style={{ border: "1px solid #4F46E5", background: "white", borderRadius: 7, padding: "5px 12px", fontSize: 12, color: "#4F46E5", fontWeight: 600, cursor: "pointer" }}>Tout marquer lu</button>
+                  )}
                 </div>
-              ))}
-            </div>
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Destinataires</div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 10 }}>Choisissez qui reçoit les notifications.</div>
-              {[{ label: "Utilisateurs concernés uniquement", sub: "Seuls les utilisateurs liés au dossier reçoivent les notifications.", active: true }, { label: "Tous les instructeurs", sub: "Tous les instructeurs de la commune reçoivent les notifications.", active: false }, { label: "Personnaliser", sub: "Choisir les utilisateurs qui recevront les notifications.", active: false }].map(d => (
-                <div key={d.label} style={{ display: "flex", alignItems: "flex-start", gap: 8, marginBottom: 10 }}>
-                  <div style={{ width: 16, height: 16, borderRadius: "50%", flexShrink: 0, marginTop: 1, border: d.active ? "5px solid #4F46E5" : "2px solid #CBD5E1", background: "white" }} />
-                  <div>
-                    <div style={{ fontSize: 12, fontWeight: 500, color: "#0F172A" }}>{d.label}</div>
-                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{d.sub}</div>
-                  </div>
-                </div>
-              ))}
-            </div>
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Plages horaires</div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 10 }}>Définissez les horaires d'envoi des notifications.</div>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span style={{ fontSize: 12, color: "#64748b" }}>De</span>
-                <select style={{ padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12 }}><option>08:00</option></select>
-                <span style={{ fontSize: 12, color: "#64748b" }}>à</span>
-                <select style={{ padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12 }}><option>18:00</option></select>
               </div>
-              <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>Les notifications en dehors de cette plage seront envoyées le jour ouvré suivant.</div>
+              {histLoading ? (
+                <div style={{ padding: 40, textAlign: "center", fontSize: 13, color: "#94a3b8" }}>Chargement…</div>
+              ) : histNotifs.length === 0 ? (
+                <div style={{ padding: 48, textAlign: "center" }}>
+                  <div style={{ fontSize: 32, marginBottom: 8 }}>🔔</div>
+                  <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Aucune notification</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8" }}>Vous êtes à jour !</div>
+                </div>
+              ) : histNotifs.map(n => (
+                <div key={n.id} onClick={() => markOneRead(n)}
+                  style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 20px", borderBottom: "1px solid #F8FAFC", background: n.is_read ? "white" : "#F8F7FF", cursor: "pointer", transition: "background 0.15s" }}>
+                  <div style={{ width: 36, height: 36, borderRadius: 10, background: notifColor(n.type) + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{notifIcon(n.type)}</div>
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                      <span style={{ fontSize: 13, fontWeight: n.is_read ? 500 : 700, color: "#0F172A" }}>{n.title}</span>
+                      <span style={{ fontSize: 11, color: "#94a3b8", flexShrink: 0 }}>{relTime(n.created_at)}</span>
+                    </div>
+                    <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{n.message}</div>
+                  </div>
+                  {!n.is_read && <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 6 }} />}
+                </div>
+              ))}
             </div>
-            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-              <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Réinitialiser</button>
-              <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer les modifications</button>
+          )}
+
+          {/* Par événement */}
+          {notifSubTab === "evenements" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+              <div style={{ marginBottom: 12 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Événements déclencheurs</div>
+                <div style={{ fontSize: 12, color: "#94a3b8" }}>Activez les événements pour lesquels vous souhaitez recevoir une notification.</div>
+              </div>
+              <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 8, display: "flex", justifyContent: "space-between" }}>
+                <span>ÉVÉNEMENT</span><span>ACTIVÉ</span>
+              </div>
+              {events.map(ev => (
+                <div key={ev.label} onClick={() => toggleEvent(ev.label)}
+                  style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #F8FAFC", cursor: "pointer" }}>
+                  <span style={{ fontSize: 18, marginRight: 10 }}>{ev.icon}</span>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{ev.label}</div>
+                    <div style={{ fontSize: 11, color: "#94a3b8" }}>{ev.sub}</div>
+                  </div>
+                  <div onClick={e => { e.stopPropagation(); toggleEvent(ev.label); }}
+                    style={{ width: 36, height: 20, borderRadius: 10, background: ev.active ? "#4F46E5" : "#E2E8F0", position: "relative", cursor: "pointer", flexShrink: 0, transition: "background 0.2s" }}>
+                    <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: ev.active ? 18 : 2, transition: "left 0.2s", boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
+                  </div>
+                </div>
+              ))}
+              <div style={{ marginTop: 12, fontSize: 12, color: "#94a3b8" }}>{events.filter(e => e.active).length}/{events.length} événements activés</div>
             </div>
-          </div>
+          )}
+
+          {/* Canaux & Préférences */}
+          {notifSubTab === "canaux" && (
+            <div style={{ display: "flex", gap: 16, flexWrap: "wrap" as const }}>
+              <div style={{ flex: 1, minWidth: 260, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Canaux de notification</div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 14 }}>Sélectionnez les canaux actifs.</div>
+                {channels.map(c => (
+                  <div key={c.label} onClick={() => toggleChannel(c.label)}
+                    style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10, padding: 10, background: "#F8FAFC", borderRadius: 8, cursor: "pointer" }}>
+                    <span style={{ fontSize: 16 }}>{c.icon}</span>
+                    <div style={{ flex: 1 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{c.label}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8" }}>{c.sub}</div>
+                    </div>
+                    <div style={{ width: 32, height: 18, borderRadius: 9, background: c.active ? "#4F46E5" : "#E2E8F0", position: "relative", transition: "background 0.2s", flexShrink: 0 }}>
+                      <div style={{ width: 14, height: 14, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: c.active ? 16 : 2, transition: "left 0.2s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              <div style={{ flex: 1, minWidth: 260, display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Destinataires</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 12 }}>Choisissez qui reçoit les notifications.</div>
+                  {[
+                    { label: "Utilisateurs concernés uniquement", sub: "Seuls les utilisateurs liés au dossier." },
+                    { label: "Tous les instructeurs", sub: "Tous les instructeurs de la commune." },
+                    { label: "Personnaliser", sub: "Choisir manuellement les destinataires." },
+                  ].map((d, i) => (
+                    <div key={d.label} onClick={() => setRecipientMode(i)}
+                      style={{ display: "flex", alignItems: "flex-start", gap: 10, marginBottom: 10, cursor: "pointer" }}>
+                      <div style={{ width: 16, height: 16, borderRadius: "50%", flexShrink: 0, marginTop: 1, border: recipientMode === i ? "5px solid #4F46E5" : "2px solid #CBD5E1", background: "white", transition: "border 0.15s" }} />
+                      <div>
+                        <div style={{ fontSize: 12, fontWeight: 500, color: "#0F172A" }}>{d.label}</div>
+                        <div style={{ fontSize: 11, color: "#94a3b8" }}>{d.sub}</div>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+                <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+                  <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Plages horaires</div>
+                  <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 12 }}>Horaires d'envoi des notifications.</div>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                    <span style={{ fontSize: 12, color: "#64748b" }}>De</span>
+                    <select style={{ padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12 }}><option>08:00</option><option>09:00</option></select>
+                    <span style={{ fontSize: 12, color: "#64748b" }}>à</span>
+                    <select style={{ padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12 }}><option>18:00</option><option>19:00</option></select>
+                  </div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>Les notifications hors plage seront envoyées le jour ouvré suivant.</div>
+                </div>
+              </div>
+            </div>
+          )}
         </div>
       )}
       {stab === "Workflow & Délais" && (
@@ -6429,7 +6582,7 @@ export function MairieApp() {
       <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} signaturesBadge={signaturesBadge} isSignataire={isSignataire} communes={userCommunes} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} />
+          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} onViewAllNotifications={() => routerNavigate("/mairie/parametres?tab=notifications")} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           <Routes>
