@@ -3321,6 +3321,9 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   const [addingZoneId, setAddingZoneId] = useState<string | null>(null);
   const [newRule, setNewRule] = useState<Partial<RuleRow>>({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
   const [showUpload, setShowUpload] = useState(false);
+  const [addingZone, setAddingZone] = useState(false);
+  const [newZone, setNewZone] = useState({ code: "", label: "", type: "U" });
+  const [savingZone, setSavingZone] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -3378,6 +3381,30 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     } : null);
     setAddingZoneId(null);
     setNewRule({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
+  };
+
+  const addZone = async () => {
+    if (!newZone.code.trim() || !newZone.label.trim()) return;
+    setSavingZone(true);
+    try {
+      const created = await api.post<ZoneRow>("/mairie/reglementation/zones", {
+        ...(inseeCode ? { insee_code: inseeCode } : { commune_name: commune }),
+        zone_code: newZone.code.trim().toUpperCase(),
+        zone_label: newZone.label.trim(),
+        zone_type: newZone.type,
+      });
+      setData(prev => prev ? { ...prev, zones: [...prev.zones, { ...created, rules: [], stats: { total: 0, valide: 0, brouillon: 0, rejete: 0 } }] } : null);
+      setSelectedZoneId(created.id);
+      setAddingZone(false);
+      setNewZone({ code: "", label: "", type: "U" });
+    } finally { setSavingZone(false); }
+  };
+
+  const deleteZone = async (zoneId: string) => {
+    if (!confirm("Supprimer cette zone et toutes ses règles ?")) return;
+    await api.delete(`/mairie/reglementation/zones/${zoneId}`);
+    setData(prev => prev ? { ...prev, zones: prev.zones.filter(z => z.id !== zoneId) } : null);
+    if (selectedZoneId === zoneId) setSelectedZoneId(null);
   };
 
   const computeStats = (rules: RuleRow[]) => ({
@@ -3471,6 +3498,41 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
             );
           })}
         </div>
+
+        {/* ── Nouvelle zone ── */}
+        <div style={{ padding: "12px 12px 16px", borderTop: "1px solid #F1F5F9" }}>
+          {addingZone ? (
+            <div style={{ background: "#F8FAFC", borderRadius: 10, border: "1px solid #E2E8F0", padding: 12 }}>
+              <input
+                value={newZone.code} onChange={e => setNewZone(z => ({ ...z, code: e.target.value.toUpperCase() }))}
+                placeholder="Code (ex : Ni)"
+                style={{ width: "100%", padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12.5, outline: "none", marginBottom: 8, boxSizing: "border-box" as const }}
+              />
+              <input
+                value={newZone.label} onChange={e => setNewZone(z => ({ ...z, label: e.target.value }))}
+                placeholder="Libellé (ex : Zone Ni – Naturelle inondable)"
+                style={{ width: "100%", padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12.5, outline: "none", marginBottom: 8, boxSizing: "border-box" as const }}
+              />
+              <select value={newZone.type} onChange={e => setNewZone(z => ({ ...z, type: e.target.value }))}
+                style={{ width: "100%", padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12.5, outline: "none", marginBottom: 10, background: "white", boxSizing: "border-box" as const }}>
+                <option value="U">U — Urbaine</option>
+                <option value="AU">AU — À urbaniser</option>
+                <option value="A">A — Agricole</option>
+                <option value="N">N — Naturelle</option>
+              </select>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={() => { setAddingZone(false); setNewZone({ code: "", label: "", type: "U" }); }} style={{ flex: 1, padding: "7px 0", border: "1px solid #E2E8F0", background: "white", borderRadius: 7, fontSize: 12, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+                <button onClick={addZone} disabled={savingZone || !newZone.code || !newZone.label} style={{ flex: 1, padding: "7px 0", border: "none", background: "#4F46E5", color: "white", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                  {savingZone ? "…" : "Créer"}
+                </button>
+              </div>
+            </div>
+          ) : (
+            <button onClick={() => setAddingZone(true)} style={{ width: "100%", padding: "8px 0", border: "1px dashed #C7D2FE", background: "#F5F3FF", borderRadius: 8, fontSize: 12, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>
+              + Nouvelle zone
+            </button>
+          )}
+        </div>
       </div>
 
       {/* ── Right: rules ── */}
@@ -3489,7 +3551,8 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                     {selectedZone.zone_code} — {ts.label}
                   </span>
                 ); })()}
-                <span style={{ fontSize: 16, fontWeight: 700, color: "#000020" }}>{selectedZone.zone_label}</span>
+                <span style={{ fontSize: 16, fontWeight: 700, color: "#000020", flex: 1 }}>{selectedZone.zone_label}</span>
+                <button onClick={() => deleteZone(selectedZone.id)} title="Supprimer la zone" style={{ border: "1px solid #FECACA", background: "#FFF5F5", borderRadius: 7, padding: "4px 10px", fontSize: 11, color: "#EF4444", cursor: "pointer" }}>✕ Zone</button>
               </div>
               {selectedZone.summary && (
                 <p style={{ fontSize: 13, color: "#6B7280", margin: 0 }}>{selectedZone.summary}</p>

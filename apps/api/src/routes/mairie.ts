@@ -1056,6 +1056,8 @@ type PluRuleInput = {
   conditions?: string | null;
   summary: string;
   needs_vision?: boolean;
+  needs_external_doc?: boolean;
+  external_doc_name?: string | null;
 };
 
 const PLU_SAVE_RULE_TOOL: Anthropic.Tool = {
@@ -1079,9 +1081,11 @@ const PLU_SAVE_RULE_TOOL: Anthropic.Tool = {
       unit: { type: "string", enum: ["m","%","m²","places"], description: "Unité. Omettre si pas de valeur numérique." },
       conditions: { type: "string", description: "Conditions ou exceptions. Omettre si aucune." },
       summary: { type: "string", description: "Résumé en 10 mots maximum." },
-      needs_vision: { type: "boolean", description: "True si le texte renvoie à un schéma pour la valeur numérique principale." },
+      needs_vision: { type: "boolean", description: "True si la valeur numérique principale est dans un schéma graphique du document." },
+      needs_external_doc: { type: "boolean", description: "True si la règle renvoie explicitement à un document externe (PPRI, PLH, cahier des charges ZAC, servitude…)." },
+      external_doc_name: { type: "string", description: "Nom du document externe référencé (ex: 'PPRI', 'PLH', 'cahier des charges ZAC'). Remplir si needs_external_doc = true." },
     },
-    required: ["article_number","article_title","topic","rule_text","not_regulated","summary","needs_vision"],
+    required: ["article_number","article_title","topic","rule_text","not_regulated","summary","needs_vision","needs_external_doc"],
   },
 };
 
@@ -1140,7 +1144,7 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
       cache_control: { type: "ephemeral" as const },
     };
 
-    // Phase 1 — Zone discovery
+    // Phase 1 — Zone discovery via sommaire
     send({ type: "phase", message: "Détection des zones…" });
     const zoneMsg = await client.messages.create({
       model: "claude-sonnet-4-6",
@@ -1152,8 +1156,14 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
           {
             type: "text",
             text: `Ce document est un règlement PLU français.
-Liste toutes les zones qui ont un règlement distinct (UA, UB, UC, 1AU, N, A, etc.).
-Exclure les sous-secteurs sans règlement propre sauf s'ils ont un article complet dédié.
+
+ÉTAPE 1 — Lis d'abord le sommaire ou la table des matières (généralement en début de document).
+Le sommaire liste exhaustivement toutes les zones réglementées : c'est la source de référence.
+
+ÉTAPE 2 — Liste TOUTES les zones et sous-zones qui apparaissent dans le sommaire avec un titre de section dédié (UA, UB, UC, Ni, Nj, A, Ab, 1AU, 2AU, etc.).
+Inclure les sous-zones avec un règlement distinct (ex : zone Ni ≠ zone N si elle a sa propre section).
+Ne pas exclure une zone parce qu'elle semble petite ou restrictive.
+
 Répondre UNIQUEMENT avec un JSON array, sans autre texte :
 [{"code":"UA","label":"Zone UA – Centre ancien","type":"U"},…]
 Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
@@ -1197,7 +1207,8 @@ Correspondance article → topic :
 
 - Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
 - Plusieurs valeurs selon sous-secteurs → valeur principale dans value_max, variantes dans conditions.
-- Si le texte renvoie à un schéma pour la valeur numérique principale → needs_vision = true.
+- Si la valeur numérique est dans un schéma graphique du document → needs_vision = true.
+- Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact du document cité.
 - N'invente aucune valeur. Si incertain, omets value_min/max/exact.`,
             },
           ],
@@ -1239,7 +1250,7 @@ Correspondance article → topic :
           .where(and(eq(zone_regulatory_rules.zone_id, zoneId), eq(zone_regulatory_rules.topic, rule.topic)))
           .limit(1);
 
-        if (rule.needs_vision) visionCount++;
+        if (rule.needs_vision || rule.needs_external_doc) visionCount++;
 
         const payload = {
           article_number: rule.article_number ?? null,
@@ -1252,7 +1263,10 @@ Correspondance article → topic :
           unit: rule.unit ?? null,
           conditions: rule.conditions ?? null,
           summary: rule.summary,
-          instructor_note: rule.needs_vision ? "⚠ La valeur est dans un schéma — à vérifier manuellement." : null,
+          instructor_note: [
+            rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
+            rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
+          ].filter(Boolean).join(" | ") || null,
           validation_status: "brouillon" as const,
         };
 
@@ -1482,6 +1496,47 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules", async (req: AuthRequest
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /mairie/reglementation/zones — create a zone manually
+mairieRouter.post("/reglementation/zones", async (req: AuthRequest, res) => {
+  try {
+    const { insee_code, commune_name, zone_code, zone_label, zone_type } = req.body as {
+      insee_code?: string; commune_name?: string;
+      zone_code: string; zone_label: string; zone_type: string;
+    };
+    if (!zone_code || !zone_label || !zone_type) return res.status(400).json({ error: "zone_code, zone_label, zone_type requis" });
+    if (!insee_code && !commune_name) return res.status(400).json({ error: "insee_code ou commune_name requis" });
+
+    const [commune] = await db.select().from(communes)
+      .where(insee_code ? eq(communes.insee_code, insee_code) : ilike(communes.name, `%${commune_name!}%`))
+      .limit(1);
+    if (!commune) return res.status(404).json({ error: "Commune non trouvée" });
+
+    const [zone] = await db.insert(zones).values({
+      commune_id: commune.id,
+      zone_code: zone_code.toUpperCase(),
+      zone_label,
+      zone_type,
+      summary: "",
+      status: "active",
+      is_active: true,
+    }).returning();
+    res.status(201).json(zone);
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+  }
+});
+
+// DELETE /mairie/reglementation/zones/:id — delete a zone and its rules
+mairieRouter.delete("/reglementation/zones/:id", async (req: AuthRequest, res) => {
+  try {
+    await db.delete(zone_regulatory_rules).where(eq(zone_regulatory_rules.zone_id, req.params.id as string));
+    await db.delete(zones).where(eq(zones.id, req.params.id as string));
+    res.json({ ok: true });
+  } catch (err) {
+    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
   }
 });
 
