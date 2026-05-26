@@ -800,7 +800,7 @@ export async function getRisks(lat: number, lng: number, code_insee: string): Pr
 const GPU_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 // Increment GPU_CACHE_VERSION whenever the extraction logic changes significantly.
 // This busts all old cache entries (they become misses) without a DB migration.
-const GPU_CACHE_VERSION = 2;
+const GPU_CACHE_VERSION = 3;
 
 function gpuCacheKey(parcelle_id: string | undefined, lat: number, lng: number): string {
   const base = parcelle_id ?? `${lat.toFixed(4)},${lng.toFixed(4)}`;
