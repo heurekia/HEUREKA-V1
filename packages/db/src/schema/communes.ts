@@ -1,4 +1,4 @@
-import { boolean, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { boolean, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 export const communes = pgTable("communes", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -22,6 +22,8 @@ export const communes = pgTable("communes", {
   footer_text: text("footer_text"),
   signature_image: text("signature_image"),
   tampon_image: text("tampon_image"),
+  plu_zones_geojson: jsonb("plu_zones_geojson"),
+  plu_zones_cached_at: timestamp("plu_zones_cached_at"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

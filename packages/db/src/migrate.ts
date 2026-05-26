@@ -421,6 +421,10 @@ CREATE TABLE IF NOT EXISTS decision_events (
   created_at timestamp NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_decision_events_decision_id ON decision_events(decision_id);
+
+-- Cache GPU zones PLU par commune (survit aux redémarrages serveur)
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_zones_geojson jsonb;
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_zones_cached_at timestamp;
 `;
 
 async function main() {
