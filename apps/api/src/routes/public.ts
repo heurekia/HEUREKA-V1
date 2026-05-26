@@ -1,5 +1,6 @@
 import { Router } from "express";
 import { analyseParcel } from "../services/parcelAnalysis.js";
+import { gpuDebug } from "../services/gpuDebug.js";
 
 export const publicRouter = Router();
 
@@ -27,6 +28,24 @@ publicRouter.get("/analyse", async (req, res) => {
       coords: hasCoords ? { lat: lat!, lng: lng! } : undefined,
     });
     res.json(analysis);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+/**
+ * GET /public/debug/gpu?lat=47.40317&lng=0.65321
+ * Returns raw GPU API responses for all endpoints at the given coordinates.
+ * Used to verify field names, available data and mappings.
+ */
+publicRouter.get("/debug/gpu", async (req, res) => {
+  const lat = parseFloat(req.query.lat as string);
+  const lng = parseFloat(req.query.lng as string);
+  if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ error: "lat et lng requis" });
+  try {
+    const data = await gpuDebug(lat, lng);
+    res.json(data);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
