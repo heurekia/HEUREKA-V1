@@ -3064,7 +3064,7 @@ function StatistiquesScreen({ commune }: { commune: string }) {
 
 // ── PLU upload panel (état vide Réglementation) ────────────────────────────────
 
-function PluUploadPanel({ commune, inseeCode, onSuccess, loadError }: { commune: string; inseeCode?: string; onSuccess: () => void; loadError: string | null }) {
+function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel }: { commune: string; inseeCode?: string; onSuccess: () => void; loadError: string | null; onCancel?: () => void }) {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [communeInput, setCommuneInput] = useState(commune);
   const [inseeInput, setInseeInput] = useState(inseeCode ?? "");
@@ -3179,6 +3179,11 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError }: { commune:
             <><div style={{ width: 16, height: 16, border: "2px solid rgba(255,255,255,0.4)", borderTopColor: "white", borderRadius: "50%", animation: "spin 0.8s linear infinite" }} />Analyse en cours…</>
           ) : "Analyser le PLU"}
         </button>
+        {onCancel && (
+          <button onClick={onCancel} style={{ width: "100%", marginTop: 10, background: "none", border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 20px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>
+            ← Retour à la réglementation
+          </button>
+        )}
       </div>
     </div>
   );
@@ -3231,6 +3236,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   const [saving, setSaving] = useState(false);
   const [addingZoneId, setAddingZoneId] = useState<string | null>(null);
   const [newRule, setNewRule] = useState<Partial<RuleRow>>({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
+  const [showUpload, setShowUpload] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -3309,8 +3315,8 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     </div>
   );
 
-  if (!data || data.zones.length === 0) return (
-    <PluUploadPanel commune={commune} inseeCode={inseeCode} onSuccess={load} loadError={loadError} />
+  if (!data || data.zones.length === 0 || showUpload) return (
+    <PluUploadPanel commune={commune} inseeCode={inseeCode} onSuccess={() => { setShowUpload(false); load(); }} loadError={loadError} onCancel={data && data.zones.length > 0 ? () => setShowUpload(false) : undefined} />
   );
 
   const statusDot = (status: string) => {
@@ -3329,7 +3335,10 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
       <div style={{ width: 288, flexShrink: 0, borderRight: "1px solid #E2E8F0", background: "white", display: "flex", flexDirection: "column", overflowY: "auto" }}>
         {/* Header */}
         <div style={{ padding: "20px 20px 16px", borderBottom: "1px solid #F1F5F9" }}>
-          <div style={{ fontSize: 15, fontWeight: 700, color: "#000020", marginBottom: 4 }}>Réglementation PLU</div>
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#000020" }}>Réglementation PLU</div>
+            <button onClick={() => setShowUpload(true)} title="Réimporter le PLU" style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>↑ Réimporter</button>
+          </div>
           <div style={{ fontSize: 12, color: "#9CA3AF" }}>{commune}</div>
           {totalStats && (
             <div style={{ marginTop: 12, background: "#F8FAFC", borderRadius: 10, padding: "10px 14px", border: "1px solid #E2E8F0" }}>
