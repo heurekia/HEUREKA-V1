@@ -473,12 +473,29 @@ function mapSupFeature(f: GpuSupFeature, geomType: "surface" | "lineaire"): Serv
   };
 }
 
-export async function getServitudesSurf(lat: number, lng: number, partition?: string): Promise<ServitudeResult[]> {
+// SUP queries intentionally do NOT use the PLU partition (DU_xxx) — SUP data lives
+// under its own partition scheme (SUP_xxx / national). Passing a DU_ partition silently
+// returns zero results. Omit partition and let the GPU API filter spatially.
+// Use the parcel polygon when available; fall back to a ~100 m bbox around the point
+// so that nearby linear features (power lines, pipeline buffers) are caught.
+
+function supGeom(lat: number, lng: number, parcelGeom?: Geometry | null): string {
+  if (parcelGeom && (parcelGeom.type === "Polygon" || parcelGeom.type === "MultiPolygon")) {
+    return JSON.stringify(parcelGeom);
+  }
+  // ~100 m bbox at 47° latitude
+  const DLAT = 0.00090;
+  const DLNG = 0.00130;
+  return JSON.stringify({
+    type: "Polygon",
+    coordinates: [[[lng - DLNG, lat - DLAT], [lng + DLNG, lat - DLAT], [lng + DLNG, lat + DLAT], [lng - DLNG, lat + DLAT], [lng - DLNG, lat - DLAT]]],
+  });
+}
+
+export async function getServitudesSurf(lat: number, lng: number, parcelGeom?: Geometry | null): Promise<ServitudeResult[]> {
   try {
-    const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
-    const params = new URLSearchParams({ geom });
-    if (partition) params.set("partition", partition);
-    const r = await fetch(`https://apicarto.ign.fr/api/gpu/assiette-sup-s?${params.toString()}`, { signal: AbortSignal.timeout(6000) });
+    const geom = supGeom(lat, lng, parcelGeom);
+    const r = await fetch(`https://apicarto.ign.fr/api/gpu/assiette-sup-s?geom=${encodeURIComponent(geom)}&_limit=20`, { signal: AbortSignal.timeout(8000) });
     if (!r.ok) return [];
     const data = await r.json() as { features?: GpuSupFeature[] };
     return (data.features ?? []).map(f => mapSupFeature(f, "surface"));
@@ -487,12 +504,10 @@ export async function getServitudesSurf(lat: number, lng: number, partition?: st
   }
 }
 
-export async function getServitudesLin(lat: number, lng: number, partition?: string): Promise<ServitudeResult[]> {
+export async function getServitudesLin(lat: number, lng: number, parcelGeom?: Geometry | null): Promise<ServitudeResult[]> {
   try {
-    const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
-    const params = new URLSearchParams({ geom, _limit: "20" });
-    if (partition) params.set("partition", partition);
-    const r = await fetch(`https://apicarto.ign.fr/api/gpu/assiette-sup-l?${params.toString()}`, { signal: AbortSignal.timeout(6000) });
+    const geom = supGeom(lat, lng, parcelGeom);
+    const r = await fetch(`https://apicarto.ign.fr/api/gpu/assiette-sup-l?geom=${encodeURIComponent(geom)}&_limit=20`, { signal: AbortSignal.timeout(8000) });
     if (!r.ok) return [];
     const data = await r.json() as { features?: GpuSupFeature[] };
     return (data.features ?? []).map(f => mapSupFeature(f, "lineaire"));
@@ -791,12 +806,13 @@ export async function analyseParcel(
     }
 
     // Step 3b: GPU supplementary data (municipality RNU, prescriptions, SUP) — run in parallel
-    // Reuse gpuPartition for consistent document scope
+    // SUP functions receive the parcel polygon (more accurate than a point for linear features).
+    const parcelGeom = result.parcel?.geometry ?? null;
     const [municipality, prescriptions, supSurf, supLin] = await Promise.all([
       getMunicipality(lat, lng),
       getPrescriptionsSurf(lat, lng, gpuPartition ?? undefined),
-      getServitudesSurf(lat, lng, gpuPartition ?? undefined),
-      getServitudesLin(lat, lng, gpuPartition ?? undefined),
+      getServitudesSurf(lat, lng, parcelGeom),
+      getServitudesLin(lat, lng, parcelGeom),
     ]);
 
     if (municipality) {
