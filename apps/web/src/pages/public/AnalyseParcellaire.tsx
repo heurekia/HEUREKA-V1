@@ -8,10 +8,10 @@ import type { BaseLayer } from "../../components/MapLeaflet";
 
 type ParcelAnalysis = {
   query: string;
-  address?: { label: string; lat: number; lng: number; city: string; postcode: string; citycode: string };
+  address?: { label: string; lat: number; lng: number; city: string; postcode: string; citycode: string; score?: number };
   parcel?: { parcelle_id: string; section: string; numero: string; surface_m2: number; commune: string; code_insee: string; geometry?: unknown };
-  plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string };
-  risks?: { flood_risk: string; seismic_zone: string };
+  plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string; plu_etat?: string };
+  risks?: { flood_risk: string; seismic_zone: string; clay_risk?: string; landslide_risk?: string; radon_level?: string };
   db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
   rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null }>;
   buildability: {
@@ -45,15 +45,26 @@ const ZONE_TYPE_COLOR: Record<string, { bg: string; text: string; border: string
   N:  { bg: "#DCFCE7", text: "#166534", border: "#86EFAC" },
 };
 
-function floodColor(v: string) {
-  return v === "fort" || v === "moyen" ? { bg: "#FEE2E2", color: "#991B1B" }
-    : v === "faible" ? { bg: "#FEF3C7", color: "#92400E" }
-    : v === "nul" ? { bg: "#D1FAE5", color: "#065F46" }
+const ZONE_TYPE_LABEL: Record<string, string> = {
+  U: "Urbaine", AU: "À urbaniser", A: "Agricole", N: "Naturelle et forestière",
+};
+
+function riskColor(v: string) {
+  return v === "fort" ? { bg: "#FEE2E2", color: "#991B1B" }
+    : v === "moyen" ? { bg: "#FEF3C7", color: "#92400E" }
+    : v === "faible" ? { bg: "#ECFDF5", color: "#065F46" }
+    : v === "nul" ? { bg: "#F0FDF4", color: "#166534" }
     : { bg: "#F9FAFB", color: "#6B7280" };
 }
 
+function riskLabel(v: string, labels?: Record<string, string>) {
+  const map = labels ?? { fort: "Aléa fort", moyen: "Aléa moyen", faible: "Aléa faible", nul: "Nul", inconnu: "Non déterminé" };
+  return map[v] ?? v;
+}
+
+function floodColor(v: string) { return riskColor(v); }
 function floodLabel(v: string) {
-  return { fort: "Aléa fort – PPRI", moyen: "Aléa moyen", faible: "Aléa faible", nul: "Hors zone inondable", inconnu: "Non déterminé" }[v] ?? v;
+  return riskLabel(v, { fort: "Aléa fort – PPRI", moyen: "Aléa moyen", faible: "Aléa faible", nul: "Hors zone inondable", inconnu: "Non déterminé" });
 }
 
 // ── Component ────────────────────────────────────────────────────────────────
@@ -318,13 +329,35 @@ export function AnalyseParcellaire() {
                     {analysis.address?.label ?? analysis.parcel?.parcelle_id ?? analysis.query}
                   </p>
                   {analysis.parcel && (
-                    <p style={{ fontSize: 12, color: "#6B7280", margin: 0 }}>
-                      Parcelle {analysis.parcel.parcelle_id} · {analysis.parcel.surface_m2.toLocaleString("fr-FR")} m² · {analysis.parcel.commune}
-                    </p>
+                    <div style={{ marginBottom: 6 }}>
+                      <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 4px" }}>
+                        {analysis.parcel.commune} ({analysis.parcel.code_insee}) · {analysis.parcel.surface_m2.toLocaleString("fr-FR")} m²
+                      </p>
+                      <div style={{ display: "flex", gap: 12, flexWrap: "wrap" as const }}>
+                        <span style={{ fontSize: 11, color: "#374151" }}>
+                          <span style={{ color: "#9CA3AF" }}>Réf. cadastrale </span>
+                          <strong>{analysis.parcel.parcelle_id}</strong>
+                        </span>
+                        <span style={{ fontSize: 11, color: "#374151" }}>
+                          <span style={{ color: "#9CA3AF" }}>Section </span>
+                          <strong>{analysis.parcel.section}</strong>
+                          <span style={{ color: "#9CA3AF" }}> N° </span>
+                          <strong>{analysis.parcel.numero}</strong>
+                        </span>
+                      </div>
+                      {analysis.address && (
+                        <p style={{ fontSize: 10, color: "#9CA3AF", margin: "4px 0 0" }}>
+                          {analysis.address.lat.toFixed(5)}, {analysis.address.lng.toFixed(5)}
+                          {analysis.address.score != null && analysis.address.score < 0.7 && (
+                            <span style={{ marginLeft: 6, color: "#D97706" }}>⚠ Géocodage approx. ({Math.round(analysis.address.score * 100)}%)</span>
+                          )}
+                        </p>
+                      )}
+                    </div>
                   )}
                   {/* Data sources */}
                   {analysis.data_sources.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap", gap: 4, marginTop: 8 }}>
+                    <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 4, marginTop: 8 }}>
                       {analysis.data_sources.map(s => (
                         <span key={s} style={{ fontSize: 10, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", borderRadius: 20, padding: "2px 8px" }}>{s}</span>
                       ))}
@@ -336,15 +369,27 @@ export function AnalyseParcellaire() {
                 {zone && (() => {
                   const zoneTypeKey = zone.zone_type?.startsWith("AU") ? "AU" : zone.zone_type?.startsWith("U") ? "U" : zone.zone_type?.startsWith("N") ? "N" : zone.zone_type?.startsWith("A") ? "A" : "U";
                   const zc = ZONE_TYPE_COLOR[zoneTypeKey] ?? ZONE_TYPE_COLOR["U"]!;
+                  const pluEtat = analysis.plu_zone?.plu_etat?.toLowerCase() ?? "";
+                  const isApproved = pluEtat.includes("approuv");
                   return (
                     <div style={{ border: `1.5px solid ${zc.border}`, borderRadius: 10, padding: "12px 14px", background: zc.bg }}>
-                      <p style={{ fontSize: 10, fontWeight: 700, color: zc.text, textTransform: "uppercase", letterSpacing: "0.06em", margin: "0 0 6px" }}>Zone réglementaire</p>
-                      <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 6 }}>
+                        <p style={{ fontSize: 10, fontWeight: 700, color: zc.text, textTransform: "uppercase" as const, letterSpacing: "0.06em", margin: 0 }}>Zone réglementaire</p>
+                        {pluEtat && (
+                          <span style={{ fontSize: 10, fontWeight: 600, padding: "2px 7px", borderRadius: 20, background: isApproved ? "#D1FAE5" : "#FEF3C7", color: isApproved ? "#065F46" : "#92400E" }}>
+                            PLU {isApproved ? "approuvé" : "en cours"}
+                          </span>
+                        )}
+                      </div>
+                      <div style={{ display: "flex", alignItems: "baseline", gap: 8, marginBottom: 4 }}>
                         <span style={{ fontSize: 28, fontWeight: 900, color: zc.text, lineHeight: 1 }}>{zone.zone_code}</span>
                         <span style={{ fontSize: 13, color: zc.text, fontWeight: 500 }}>{zone.zone_label}</span>
                       </div>
+                      <p style={{ fontSize: 11, color: zc.text, opacity: 0.8, margin: "0 0 2px" }}>
+                        Zone {zoneTypeKey} — {ZONE_TYPE_LABEL[zoneTypeKey] ?? zoneTypeKey}
+                      </p>
                       {analysis.plu_zone?.plu_nom && (
-                        <p style={{ fontSize: 11, color: zc.text, opacity: 0.7, margin: "4px 0 0" }}>{analysis.plu_zone.plu_nom}</p>
+                        <p style={{ fontSize: 10, color: zc.text, opacity: 0.6, margin: "2px 0 0" }}>{analysis.plu_zone.plu_nom}</p>
                       )}
                     </div>
                   );
@@ -401,15 +446,47 @@ export function AnalyseParcellaire() {
                 {/* Risks */}
                 {analysis.risks && (
                   <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, padding: "12px 14px" }}>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.06em", margin: "0 0 8px" }}>Risques</p>
-                    <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    <p style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase" as const, letterSpacing: "0.06em", margin: "0 0 8px" }}>Risques naturels</p>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 5 }}>
+                      {/* Inondation */}
                       {(() => { const c = floodColor(analysis.risks.flood_risk); return (
                         <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, background: c.bg, color: c.color, borderRadius: 6, padding: "6px 10px" }}>
-                          <span>Inondation</span><span>{floodLabel(analysis.risks.flood_risk)}</span>
+                          <span>💧 Inondation</span><span>{floodLabel(analysis.risks.flood_risk)}</span>
                         </div>
                       ); })()}
+                      {/* Mouvement de terrain */}
+                      {analysis.risks.landslide_risk && analysis.risks.landslide_risk !== "inconnu" && (() => {
+                        const c = riskColor(analysis.risks.landslide_risk!);
+                        return (
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, background: c.bg, color: c.color, borderRadius: 6, padding: "6px 10px" }}>
+                            <span>⛰ Mouvement de terrain</span>
+                            <span>{riskLabel(analysis.risks.landslide_risk!)}</span>
+                          </div>
+                        );
+                      })()}
+                      {/* Retrait-gonflement argiles */}
+                      {analysis.risks.clay_risk && analysis.risks.clay_risk !== "inconnu" && (() => {
+                        const c = riskColor(analysis.risks.clay_risk!);
+                        return (
+                          <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, background: c.bg, color: c.color, borderRadius: 6, padding: "6px 10px" }}>
+                            <span>🪨 Argiles (R-G)</span>
+                            <span>{riskLabel(analysis.risks.clay_risk!, { fort: "Aléa fort", moyen: "Aléa moyen", faible: "Aléa faible", nul: "Nul" })}</span>
+                          </div>
+                        );
+                      })()}
+                      {/* Radon */}
+                      {analysis.risks.radon_level && analysis.risks.radon_level !== "inconnu" && (
+                        <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600,
+                          background: analysis.risks.radon_level === "3" ? "#FEE2E2" : analysis.risks.radon_level === "2" ? "#FEF3C7" : "#F9FAFB",
+                          color: analysis.risks.radon_level === "3" ? "#991B1B" : analysis.risks.radon_level === "2" ? "#92400E" : "#374151",
+                          borderRadius: 6, padding: "6px 10px" }}>
+                          <span>☢ Radon</span>
+                          <span>Zone {analysis.risks.radon_level} {analysis.risks.radon_level === "3" ? "(potentiel élevé)" : analysis.risks.radon_level === "2" ? "(potentiel moyen)" : "(potentiel faible)"}</span>
+                        </div>
+                      )}
+                      {/* Sismique */}
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, background: "#F9FAFB", color: "#374151", borderRadius: 6, padding: "6px 10px" }}>
-                        <span>Sismique</span><span>Zone {analysis.risks.seismic_zone}</span>
+                        <span>🌍 Sismique</span><span>Zone {analysis.risks.seismic_zone}</span>
                       </div>
                     </div>
                   </div>

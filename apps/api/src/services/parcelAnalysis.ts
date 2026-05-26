@@ -74,6 +74,8 @@ export interface RiskResult {
   flood_risk: "fort" | "moyen" | "faible" | "nul" | "inconnu";
   seismic_zone: string;
   clay_risk: "fort" | "moyen" | "faible" | "nul" | "inconnu";
+  landslide_risk: "fort" | "moyen" | "faible" | "nul" | "inconnu";
+  radon_level: "3" | "2" | "1" | "inconnu";
   raw?: Record<string, unknown>;
 }
 
@@ -478,11 +480,21 @@ export async function getServitudesSurf(lat: number, lng: number, partition?: st
 
 // ── GéoRisques risk lookup ────────────────────────────────────────────────────
 
+function parseAleaLevel(niv: string): "fort" | "moyen" | "faible" | "nul" {
+  const n = niv.toLowerCase();
+  return n.includes("fort") || n.includes("eleve") || n.includes("élevé") ? "fort"
+    : n.includes("moyen") ? "moyen"
+    : n.includes("faible") || n.includes("bas") ? "faible"
+    : "nul";
+}
+
 export async function getRisks(lat: number, lng: number, code_insee: string): Promise<RiskResult> {
   const result: RiskResult = {
     flood_risk: "inconnu",
     seismic_zone: "inconnu",
     clay_risk: "inconnu",
+    landslide_risk: "inconnu",
+    radon_level: "inconnu",
   };
   try {
     const url = `https://georisques.gouv.fr/api/v1/gaspar/alea?latlon=${lng}%2C${lat}&code_insee=${code_insee}`;
@@ -493,9 +505,24 @@ export async function getRisks(lat: number, lng: number, code_insee: string): Pr
       };
       result.raw = data as Record<string, unknown>;
       for (const item of data.data ?? []) {
-        if (item.codePhenomene === "INONDATION") {
-          const niv = item.niveauAlea?.toLowerCase() ?? "";
-          result.flood_risk = niv.includes("fort") ? "fort" : niv.includes("moyen") ? "moyen" : niv.includes("faible") ? "faible" : "nul";
+        const code = (item.codePhenomene ?? "").toUpperCase();
+        const niv = item.niveauAlea ?? "";
+        if (code.includes("INOND")) {
+          result.flood_risk = parseAleaLevel(niv);
+        } else if (code.includes("MVMT") || code.includes("MOUVEMENT") || code.includes("GLISSMT") || code.includes("EBOUL")) {
+          // Keep worst level if multiple entries
+          const lvl = parseAleaLevel(niv);
+          const order = ["nul", "faible", "moyen", "fort"];
+          if (order.indexOf(lvl) > order.indexOf(result.landslide_risk === "inconnu" ? "nul" : result.landslide_risk)) {
+            result.landslide_risk = lvl;
+          }
+        } else if (code.includes("ARGILE") || code.includes("RETRAIT")) {
+          result.clay_risk = parseAleaLevel(niv);
+        } else if (code.includes("RADON")) {
+          const n = niv.toLowerCase();
+          result.radon_level = n.includes("3") || n.includes("eleve") || n.includes("élevé") ? "3"
+            : n.includes("2") || n.includes("moyen") ? "2"
+            : "1";
         }
       }
     }
