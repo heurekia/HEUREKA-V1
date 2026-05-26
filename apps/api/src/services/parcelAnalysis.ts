@@ -556,27 +556,60 @@ function extractCategoryFromId(idsup: string): string {
   return "";
 }
 
-// Last-resort scan: look for any short uppercase+digit code across all string properties.
+// Scan feature properties for a SUP category code (e.g. "AC1", "EL7", "PM1").
+// The IGN GPU API field naming varies across versions and responses; this function
+// tries every reasonable extraction strategy in priority order.
 function scanPropsForCategory(props: Record<string, unknown>): string {
-  // SUP category codes are 2–5 chars: 1-3 uppercase letters + 0-2 digits (e.g. "AC1", "EL", "PM3")
-  const PATTERN = /^[A-Z]{1,3}\d{0,2}$/;
-  // Scan known category fields first
+  // Normalise keys to lowercase for case-insensitive lookup (API may return NATSUP etc.)
+  const lower: Record<string, unknown> = {};
+  for (const [k, v] of Object.entries(props)) lower[k.toLowerCase()] = v;
+
+  // SUP category codes: 1-3 uppercase letters + 0-2 digits, total ≥ 2 chars
+  const EXACT = /^[A-Z]{1,3}\d{0,2}$/;
+  // Pattern embedded in a longer string (e.g. "AC1 - Protection MH classé" or "(AC1)")
+  const EMBEDDED = /\b((AC|EL|PM|AS|PT|INT?|T\d|A\d?|I\d?)[1-9]?\d?)\b/;
+
+  // 1. Known category field names (case-normalised)
   for (const field of SUP_CAT_FIELDS) {
-    const v = props[field];
-    if (typeof v === "string" && PATTERN.test(v.trim()) && v.trim().length >= 2) return v.trim();
+    const v = lower[field];
+    if (typeof v !== "string" || !v.trim()) continue;
+    const t = v.trim();
+    if (EXACT.test(t) && t.length >= 2) return t;
+    // Value might be a longer label with the code embedded
+    const m = t.match(EMBEDDED);
+    if (m) return m[1] ?? "";
   }
-  // Then try extracting from known id fields
+
+  // 2. Known identifier fields — try to extract category prefix
   for (const field of SUP_ID_FIELDS) {
-    const v = props[field];
+    const v = lower[field];
     if (typeof v === "string") {
       const cat = extractCategoryFromId(v);
       if (cat) return cat;
     }
   }
-  // Scan every string value — final safety net
-  for (const v of Object.values(props)) {
-    if (typeof v === "string" && PATTERN.test(v.trim()) && v.trim().length >= 2) return v.trim();
+
+  // 3. Scan ALL string properties — exact code match
+  for (const v of Object.values(lower)) {
+    if (typeof v === "string" && EXACT.test(v.trim()) && v.trim().length >= 2) return v.trim();
   }
+
+  // 4. Scan ALL string properties — embedded code match
+  for (const v of Object.values(lower)) {
+    if (typeof v === "string") {
+      const m = v.match(EMBEDDED);
+      if (m) return m[1] ?? "";
+    }
+  }
+
+  // 5. Try extractCategoryFromId on every string property as last resort
+  for (const v of Object.values(lower)) {
+    if (typeof v === "string") {
+      const cat = extractCategoryFromId(v);
+      if (cat) return cat;
+    }
+  }
+
   return "";
 }
 
