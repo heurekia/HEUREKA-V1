@@ -76,6 +76,7 @@ export interface ServitudeResult {
   gestionnaire?: string;  // autorité gestionnaire (DRAC, DDT, etc.)
   datdecr?: string;       // date du décret / arrêté de protection
   typeprotect?: string;   // type de protection (ex: "Monument Historique classé")
+  _debug_props?: Record<string, unknown>; // raw GPU props for diagnosis (removed once category extraction is stable)
 }
 
 export interface RiskResult {
@@ -524,52 +525,78 @@ export async function getInfoSurf(lat: number, lng: number, partition?: string):
 
 // ── GPU assiettes + générateurs SUP ─────────────────────────────────────────
 
+// GpuSupFeature — open record so we can inspect unknown fields returned by the GPU API.
+// The IGN GPU API field naming is inconsistent across versions; we keep an open map
+// and extract from whatever the response actually provides.
 type GpuSupFeature = {
-  properties: {
-    // IGN GPU API uses "natsup" for category (e.g. "AC1", "EL7").
-    // Older docs mention "catesup" — keep both for compatibility.
-    natsup?: string;
-    catesup?: string;
-    libelle?: string;
-    libsup?: string;
-    nomsup?: string;
-    dessup?: string;
-    idsup?: string;
-    urlacte?: string;
-    gestionnaire?: string;
-    datdecr?: string;
-    datvalid?: string;
-    typeacte?: string;
-    typeprotect?: string;
-    datprotect?: string;
-    indprecision?: string;
-    urba_etat?: string;
-  };
+  properties: Record<string, unknown>;
 };
 
-// GPU idsup format: "AC-37214-0001" or "AC1-37018-0003" or "EL7_37028_001"
-// When category fields are missing, recover the prefix from the id.
+// Known GPU API property names for the SUP category code (e.g. "AC1", "EL7").
+const SUP_CAT_FIELDS = ["natsup", "catesup", "typesup", "nat_sup", "cat_sup", "type_acte"] as const;
+// Known fields that contain the SUP identifier (used as fallback for category extraction).
+const SUP_ID_FIELDS  = ["idsup", "idacte", "id_sup", "id_acte", "identifiant"] as const;
+
+// GPU idsup format examples: "AC1-37214-0001", "AC1_37018_0003", "EL7_37028_001",
+// or partition-prefixed: "37214-AC1-001". Tries to recover the category prefix.
 function extractCategoryFromId(idsup: string): string {
-  // Normalise first separator (underscore or hyphen) to hyphen, then match leading category code.
-  const norm = idsup.replace(/[_\-]/, "-");
-  const m = norm.match(/^([A-Z]{1,3}\d{0,2})-/) ?? norm.match(/^([A-Z]{1,3}\d{0,2})$/);
-  return m?.[1] ?? "";
+  if (!idsup) return "";
+  // Normalise ALL separators to hyphens for uniform matching
+  const norm = idsup.replace(/[_\s\.\/]/g, "-");
+  // Standard prefix: AC1-37214-001
+  let m = norm.match(/^([A-Z]{1,3}\d{0,2})-/);
+  if (m) return m[1] ?? "";
+  // Embedded pattern — handles commune-prefixed IDs like "37214-AC1-001"
+  // Anchored to known SUP prefixes to avoid false positives
+  m = norm.match(/(?:^|-)((AC|EL|PM|AS|PT|INT?|T|A|I)\d{0,2})(?:-|$)/);
+  if (m) return m[1] ?? "";
+  // Exact match — the value IS the category code
+  m = norm.match(/^([A-Z]{1,3}\d{0,2})$/);
+  if (m) return m[1] ?? "";
+  return "";
+}
+
+// Last-resort scan: look for any short uppercase+digit code across all string properties.
+function scanPropsForCategory(props: Record<string, unknown>): string {
+  // SUP category codes are 2–5 chars: 1-3 uppercase letters + 0-2 digits (e.g. "AC1", "EL", "PM3")
+  const PATTERN = /^[A-Z]{1,3}\d{0,2}$/;
+  // Scan known category fields first
+  for (const field of SUP_CAT_FIELDS) {
+    const v = props[field];
+    if (typeof v === "string" && PATTERN.test(v.trim()) && v.trim().length >= 2) return v.trim();
+  }
+  // Then try extracting from known id fields
+  for (const field of SUP_ID_FIELDS) {
+    const v = props[field];
+    if (typeof v === "string") {
+      const cat = extractCategoryFromId(v);
+      if (cat) return cat;
+    }
+  }
+  // Scan every string value — final safety net
+  for (const v of Object.values(props)) {
+    if (typeof v === "string" && PATTERN.test(v.trim()) && v.trim().length >= 2) return v.trim();
+  }
+  return "";
 }
 
 function mapSupFeature(f: GpuSupFeature, geomType: "surface" | "lineaire"): ServitudeResult {
-  // natsup is the primary category field in the current IGN GPU API; catesup is legacy
-  const catesup = f.properties.natsup || f.properties.catesup || extractCategoryFromId(f.properties.idsup ?? "");
+  const p = f.properties;
+  const categorie = scanPropsForCategory(p);
+  // Determine the best available identifier for cross-referencing with generateurs
+  const ref_acte = (SUP_ID_FIELDS.map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined;
   return {
-    categorie: catesup,
-    libelle: f.properties.libsup ?? f.properties.libelle,
-    nomsup: f.properties.nomsup ?? f.properties.libsup,
-    dessup: f.properties.dessup,
+    categorie,
+    libelle:      typeof p["libsup"]   === "string" ? p["libsup"]  : typeof p["libelle"]  === "string" ? p["libelle"]  : undefined,
+    nomsup:       typeof p["nomsup"]   === "string" ? p["nomsup"]  : typeof p["libsup"]   === "string" ? p["libsup"]   : undefined,
+    dessup:       typeof p["dessup"]   === "string" ? p["dessup"]  : undefined,
     geometry_type: geomType,
-    ref_acte: f.properties.idsup,
-    urlacte: f.properties.urlacte,
-    gestionnaire: f.properties.gestionnaire,
-    datdecr: f.properties.datdecr ?? f.properties.datprotect ?? f.properties.datvalid,
-    typeprotect: f.properties.typeprotect ?? f.properties.typeacte,
+    ref_acte,
+    urlacte:      typeof p["urlacte"]  === "string" ? p["urlacte"] : undefined,
+    gestionnaire: typeof p["gestionnaire"] === "string" ? p["gestionnaire"] : undefined,
+    datdecr:      (["datdecr","datprotect","datvalid"].map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined,
+    typeprotect:  (["typeprotect","typeacte"].map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined,
+    _debug_props: p, // temporary — removed once category extraction is confirmed stable
   };
 }
 
@@ -591,16 +618,18 @@ async function getGenerateursSup(lat: number, lng: number): Promise<Map<string, 
     if (!r.ok) return map;
     const data = await r.json() as { features?: GpuSupFeature[] };
     for (const f of data.features ?? []) {
-      const p = f.properties;
-      if (!p.idsup) continue;
-      map.set(p.idsup, {
-        nomsup: p.nomsup ?? p.libsup,
-        categorie: p.natsup || p.catesup || extractCategoryFromId(p.idsup),
-        urlacte: p.urlacte,
-        gestionnaire: p.gestionnaire,
-        dessup: p.dessup,
-        datdecr: p.datdecr ?? p.datprotect ?? p.datvalid,
-        typeprotect: p.typeprotect ?? p.typeacte,
+      const p = f.properties as Record<string, unknown>;
+      // Find the best available identifier to key the map
+      const ref = (SUP_ID_FIELDS.map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined;
+      if (!ref) continue;
+      map.set(ref, {
+        nomsup:       typeof p["nomsup"] === "string" ? p["nomsup"] : typeof p["libsup"] === "string" ? p["libsup"] : undefined,
+        categorie:    scanPropsForCategory(p),
+        urlacte:      typeof p["urlacte"] === "string" ? p["urlacte"] : undefined,
+        gestionnaire: typeof p["gestionnaire"] === "string" ? p["gestionnaire"] : undefined,
+        dessup:       typeof p["dessup"] === "string" ? p["dessup"] : undefined,
+        datdecr:      (["datdecr","datprotect","datvalid"].map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined,
+        typeprotect:  (["typeprotect","typeacte"].map(k => p[k]).find(v => typeof v === "string") ?? undefined) as string | undefined,
       });
     }
   } catch { /* best-effort */ }
