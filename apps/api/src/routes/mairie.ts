@@ -1162,8 +1162,11 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
 
     send({ type: "zones_found", zones: zoneDefs.map(z => ({ code: z.code, label: z.label, type: z.type })) });
 
-    // Phase 2 — Règles par zone (parallèle : toutes les zones simultanément)
-    const results = await Promise.all(zoneDefs.map(async (zoneDef) => {
+    // Phase 2 — Règles par zone (séquentiel pour respecter le rate limit Anthropic).
+    // Le PDF est mis en cache après le 1er appel (phase 1) ; chaque appel suivant
+    // profite du cache — d'où l'importance de ne pas les lancer tous en même temps.
+    const results: Array<{ zone: string; rules: number; vision: number }> = [];
+    for (const zoneDef of zoneDefs) { await (async (zoneDef) => {
       const ruleMsg = await client.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 4000,
@@ -1253,8 +1256,8 @@ Correspondance article → topic :
 
       const result = { zone: zoneDef.code, rules: rules.length, vision: visionCount };
       send({ type: "zone_done", ...result });
-      return result;
-    }));
+      results.push(result);
+    })(zoneDef); }
 
     send({
       type: "done",
