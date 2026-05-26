@@ -508,6 +508,7 @@ function fmtConvTime(iso: string): string {
 }
 
 function DashboardScreen({ navigate, navigateDossiers, commune, inseeCode, onDossierClick }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void; commune: string; inseeCode?: string; onDossierClick: (d: DossierInfo) => void }) {
+  const { user } = useAuth();
   const [mapFilter, setMapFilter] = useState<string>("Tous");
   const [mapTypeFilter, setMapTypeFilter] = useState("Tous les types");
   const [mapDossiers, setMapDossiers] = useState<MapDossier[]>([]);
@@ -556,7 +557,7 @@ function DashboardScreen({ navigate, navigateDossiers, commune, inseeCode, onDos
     <div style={{ padding: "28px 32px", display: "flex", flexDirection: "column", gap: 24, background: "#F8F9FC", minHeight: "100%" }}>
       {/* Greeting */}
       <div>
-        <h1 style={{ fontSize: 28, fontWeight: 700, color: "#0F172A", margin: "0 0 4px" }}>Bonjour Marie,</h1>
+        <h1 style={{ fontSize: 28, fontWeight: 700, color: "#0F172A", margin: "0 0 4px" }}>Bonjour {user?.prenom ?? ""},</h1>
         <p style={{ color: "#64748b", fontSize: 14, margin: 0 }}>Voici l'essentiel de votre activité aujourd'hui.</p>
       </div>
 
