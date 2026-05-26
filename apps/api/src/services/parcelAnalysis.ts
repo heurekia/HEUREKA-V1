@@ -68,6 +68,9 @@ export interface PrescriptionResult {
 export interface ServitudeResult {
   categorie: string;   // ex: AC1, EL7, PM1, T1
   libelle?: string;
+  nomsup?: string;     // nom complet de la servitude (ex: "Protection MH Château de Villandry")
+  geometry_type?: "surface" | "lineaire";
+  ref_acte?: string;   // référence légale de l'acte (ex: "AC-37261-0001")
 }
 
 export interface RiskResult {
@@ -458,21 +461,41 @@ export async function getPrescriptionsSurf(lat: number, lng: number, partition?:
 
 // ── GPU assiettes SUP surfaciques (AC1 MH, EL lignes HT, PM inondations…) ───
 
+type GpuSupFeature = { properties: { catesup?: string; libelle?: string; libsup?: string; nomsup?: string; idsup?: string } };
+
+function mapSupFeature(f: GpuSupFeature, geomType: "surface" | "lineaire"): ServitudeResult {
+  return {
+    categorie: f.properties.catesup ?? "",
+    libelle: f.properties.libsup ?? f.properties.libelle ?? f.properties.nomsup,
+    nomsup: f.properties.nomsup ?? f.properties.libsup,
+    geometry_type: geomType,
+    ref_acte: f.properties.idsup,
+  };
+}
+
 export async function getServitudesSurf(lat: number, lng: number, partition?: string): Promise<ServitudeResult[]> {
   try {
     const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
     const params = new URLSearchParams({ geom });
     if (partition) params.set("partition", partition);
-    const url = `https://apicarto.ign.fr/api/gpu/assiette-sup-s?${params.toString()}`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    const r = await fetch(`https://apicarto.ign.fr/api/gpu/assiette-sup-s?${params.toString()}`, { signal: AbortSignal.timeout(6000) });
     if (!r.ok) return [];
-    const data = await r.json() as {
-      features?: Array<{ properties: { catesup?: string; libelle?: string; libsup?: string; nomsup?: string } }>;
-    };
-    return (data.features ?? []).map(f => ({
-      categorie: f.properties.catesup ?? "",
-      libelle: f.properties.libsup ?? f.properties.libelle ?? f.properties.nomsup,
-    }));
+    const data = await r.json() as { features?: GpuSupFeature[] };
+    return (data.features ?? []).map(f => mapSupFeature(f, "surface"));
+  } catch {
+    return [];
+  }
+}
+
+export async function getServitudesLin(lat: number, lng: number, partition?: string): Promise<ServitudeResult[]> {
+  try {
+    const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
+    const params = new URLSearchParams({ geom, _limit: "20" });
+    if (partition) params.set("partition", partition);
+    const r = await fetch(`https://apicarto.ign.fr/api/gpu/assiette-sup-l?${params.toString()}`, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return [];
+    const data = await r.json() as { features?: GpuSupFeature[] };
+    return (data.features ?? []).map(f => mapSupFeature(f, "lineaire"));
   } catch {
     return [];
   }
@@ -769,10 +792,11 @@ export async function analyseParcel(
 
     // Step 3b: GPU supplementary data (municipality RNU, prescriptions, SUP) — run in parallel
     // Reuse gpuPartition for consistent document scope
-    const [municipality, prescriptions, servitudes] = await Promise.all([
+    const [municipality, prescriptions, supSurf, supLin] = await Promise.all([
       getMunicipality(lat, lng),
       getPrescriptionsSurf(lat, lng, gpuPartition ?? undefined),
       getServitudesSurf(lat, lng, gpuPartition ?? undefined),
+      getServitudesLin(lat, lng, gpuPartition ?? undefined),
     ]);
 
     if (municipality) {
@@ -794,14 +818,26 @@ export async function analyseParcel(
       result.data_sources.push("GPU (prescriptions)");
     }
 
-    if (servitudes.length > 0) {
-      result.servitudes = servitudes;
-      const ac = servitudes.find(s => s.categorie?.startsWith("AC"));
-      const el = servitudes.find(s => s.categorie?.startsWith("EL"));
-      const pm = servitudes.find(s => s.categorie?.startsWith("PM"));
-      if (ac) result.warnings.push("Périmètre de protection d'un monument historique (SUP AC) — avis de l'ABF requis.");
-      if (el) result.warnings.push("Ligne électrique haute tension à proximité (SUP EL) — distances de sécurité réglementaires applicables.");
-      if (pm) result.warnings.push("Zone de servitude inondation (SUP PM) — prescriptions PPRI applicables.");
+    // Merge surface + linear SUP, deduplicate by (categorie + nomsup)
+    const allServitudes = [...supSurf, ...supLin];
+    const seen = new Set<string>();
+    const dedupedServitudes = allServitudes.filter(s => {
+      const key = `${s.categorie}|${s.nomsup ?? s.libelle ?? ""}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+
+    if (dedupedServitudes.length > 0) {
+      result.servitudes = dedupedServitudes;
+      const ac = dedupedServitudes.find(s => s.categorie?.startsWith("AC"));
+      const el = dedupedServitudes.find(s => s.categorie?.startsWith("EL"));
+      const pm = dedupedServitudes.find(s => s.categorie?.startsWith("PM"));
+      const as_ = dedupedServitudes.find(s => s.categorie?.startsWith("AS"));
+      if (ac) result.warnings.push(`Périmètre ABF — ${ac.nomsup ?? ac.libelle ?? "monument historique"} (SUP ${ac.categorie}) : avis de l'Architecte des Bâtiments de France requis.`);
+      if (el) result.warnings.push("Ligne électrique haute tension (SUP EL) — distances de sécurité réglementaires applicables.");
+      if (pm) result.warnings.push("Plan de Prévention des Risques (SUP PM) — prescriptions applicables.");
+      if (as_) result.warnings.push("Zone de présomption de prescription archéologique (SUP AS) — diagnostic archéologique possible.");
       result.data_sources.push("GPU (SUP)");
     }
   }

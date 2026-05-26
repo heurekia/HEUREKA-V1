@@ -6,6 +6,8 @@ import type { BaseLayer } from "../../components/MapLeaflet";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
+type Servitude = { categorie: string; libelle?: string; nomsup?: string; geometry_type?: "surface" | "lineaire"; ref_acte?: string };
+
 type ParcelAnalysis = {
   query: string;
   address?: { label: string; lat: number; lng: number; city: string; postcode: string; citycode: string; score?: number };
@@ -22,7 +24,7 @@ type ParcelAnalysis = {
   } | null;
   available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
   prescriptions?: Array<{ libelle: string; typepsc: string; txtpsc?: string }>;
-  servitudes?: Array<{ categorie: string; libelle?: string }>;
+  servitudes?: Servitude[];
   municipality?: { is_rnu: boolean; libelle?: string } | null;
   data_sources: string[];
   warnings: string[];
@@ -47,6 +49,41 @@ const ZONE_TYPE_COLOR: Record<string, { bg: string; text: string; border: string
 
 const ZONE_TYPE_LABEL: Record<string, string> = {
   U: "Urbaine", AU: "À urbaniser", A: "Agricole", N: "Naturelle et forestière",
+};
+
+// Servitude d'Utilité Publique (SUP) category descriptions
+const SUP_GROUPS: Record<string, { label: string; icon: string; color: string; bg: string; border: string; desc: string }> = {
+  AC: { label: "Patrimoine — ABF", icon: "⚜", color: "#7C3AED", bg: "#F5F3FF", border: "#C4B5FD",
+    desc: "Périmètre de protection d'un monument historique ou secteur sauvegardé. L'Architecte des Bâtiments de France doit donner son avis sur tout projet." },
+  EL: { label: "Lignes électriques", icon: "⚡", color: "#B45309", bg: "#FFFBEB", border: "#FCD34D",
+    desc: "Présence de lignes électriques (HTA, HTB, THT). Des distances minimales de sécurité s'appliquent aux constructions." },
+  PM: { label: "Prévention des risques", icon: "⛔", color: "#991B1B", bg: "#FEF2F2", border: "#FECACA",
+    desc: "Plan de Prévention des Risques Naturels ou Technologiques. Des restrictions de construction peuvent s'appliquer." },
+  T:  { label: "Réseaux de transport", icon: "🛣", color: "#374151", bg: "#F9FAFB", border: "#E5E7EB",
+    desc: "Infrastructure de transport (route, autoroute, voie ferrée). Des marges de recul peuvent être imposées." },
+  I:  { label: "Infrastructure industrielle", icon: "🔧", color: "#92400E", bg: "#FFFBEB", border: "#FDE68A",
+    desc: "Canalisation de transport d'hydrocarbures ou réseau industriel. Zones de sécurité réglementaires." },
+  AS: { label: "Archéologie", icon: "🏛", color: "#1D4ED8", bg: "#EFF6FF", border: "#BFDBFE",
+    desc: "Zone de présomption de prescription archéologique. Un diagnostic archéologique peut être requis avant les travaux." },
+  A:  { label: "Agriculture", icon: "🌾", color: "#065F46", bg: "#ECFDF5", border: "#A7F3D0",
+    desc: "Espaces agricoles sensibles ou périmètre de protection agricole." },
+};
+
+function getSupGroup(categorie: string) {
+  const prefix = categorie.replace(/\d/g, "");
+  return SUP_GROUPS[prefix] ?? { label: `SUP ${categorie}`, icon: "📌", color: "#374151", bg: "#F9FAFB", border: "#E5E7EB", desc: "Servitude d'utilité publique." };
+}
+
+const SUP_CAT_DETAIL: Record<string, string> = {
+  AC1: "Protection MH classé (500 m)", AC2: "Protection MH inscrit (500 m)",
+  AC3: "ZPPAUP / AVAP", AC4: "Secteur sauvegardé",
+  EL1: "HTA (> 50 kV)", EL2: "HTB / THT", EL3: "Ferroviaire électrifié",
+  EL7: "Distribution HTA publique", EL11: "Tramway",
+  PM1: "PPRn Inondation", PM2: "PPRn Sécheresse/Argiles", PM3: "PPRn Avalanche",
+  PM4: "PPRn Incendie forêt", PM5: "PPRn Séisme", PM8: "PPRn Mouvement de terrain",
+  T1: "Route nationale", T2: "Autoroute", T4: "Voie ferrée", T7: "Voie navigable",
+  I3: "Canalisation hydrocarbures", I4: "Gazoduc",
+  AS1: "Zone archéologique présomptive",
 };
 
 function riskColor(v: string) {
@@ -492,18 +529,76 @@ export function AnalyseParcellaire() {
                   </div>
                 )}
 
-                {/* Prescriptions / SUP */}
-                {((analysis.prescriptions?.length ?? 0) > 0 || (analysis.servitudes?.length ?? 0) > 0) && (
+                {/* Prescriptions PLU */}
+                {(analysis.prescriptions?.length ?? 0) > 0 && (
                   <div style={{ border: "1px solid #FDE68A", borderRadius: 10, padding: "12px 14px", background: "#FFFBEB" }}>
-                    <p style={{ fontSize: 11, fontWeight: 700, color: "#92400E", textTransform: "uppercase", letterSpacing: "0.06em", margin: "0 0 8px" }}>Prescriptions & servitudes</p>
-                    {analysis.prescriptions?.map((p, i) => (
-                      <p key={i} style={{ fontSize: 12, color: "#92400E", margin: i > 0 ? "4px 0 0" : 0 }}>• {p.libelle || p.typepsc}</p>
-                    ))}
-                    {analysis.servitudes?.map((s, i) => (
-                      <p key={i} style={{ fontSize: 12, color: "#92400E", margin: "4px 0 0" }}>• {s.categorie}{s.libelle ? ` — ${s.libelle}` : ""}</p>
+                    <p style={{ fontSize: 11, fontWeight: 700, color: "#92400E", textTransform: "uppercase" as const, letterSpacing: "0.06em", margin: "0 0 8px" }}>
+                      Prescriptions PLU ({analysis.prescriptions!.length})
+                    </p>
+                    {analysis.prescriptions!.map((p, i) => (
+                      <div key={i} style={{ marginBottom: i < analysis.prescriptions!.length - 1 ? 6 : 0 }}>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "#92400E" }}>
+                          {p.typepsc && <span style={{ background: "#FEF3C7", borderRadius: 4, padding: "1px 5px", fontSize: 10, marginRight: 6 }}>{p.typepsc}</span>}
+                          {p.libelle || p.typepsc}
+                        </div>
+                        {p.txtpsc && <div style={{ fontSize: 11, color: "#B45309", marginTop: 2, lineHeight: 1.4 }}>{p.txtpsc.slice(0, 140)}{p.txtpsc.length > 140 ? "…" : ""}</div>}
+                      </div>
                     ))}
                   </div>
                 )}
+
+                {/* Servitudes d'utilité publique */}
+                {(analysis.servitudes?.length ?? 0) > 0 && (() => {
+                  // Group by prefix (AC, EL, PM, T, I, AS, A…)
+                  const groups = new Map<string, Servitude[]>();
+                  for (const s of analysis.servitudes!) {
+                    const prefix = s.categorie.replace(/\d/g, "");
+                    if (!groups.has(prefix)) groups.set(prefix, []);
+                    groups.get(prefix)!.push(s);
+                  }
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                      <p style={{ fontSize: 11, fontWeight: 700, color: "#374151", textTransform: "uppercase" as const, letterSpacing: "0.06em", margin: 0 }}>
+                        Servitudes d'utilité publique ({analysis.servitudes!.length})
+                      </p>
+                      {Array.from(groups.entries()).map(([prefix, items]) => {
+                        const g = getSupGroup(items[0]?.categorie ?? "");
+                        return (
+                          <div key={prefix} style={{ border: `1px solid ${g.border}`, borderRadius: 10, padding: "12px 14px", background: g.bg }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 6 }}>
+                              <span style={{ fontSize: 16 }}>{g.icon}</span>
+                              <span style={{ fontSize: 12, fontWeight: 700, color: g.color }}>{g.label}</span>
+                            </div>
+                            <p style={{ fontSize: 11, color: g.color, opacity: 0.8, margin: "0 0 8px", lineHeight: 1.4 }}>{g.desc}</p>
+                            {items.map((s, i) => (
+                              <div key={i} style={{ background: "rgba(255,255,255,0.6)", borderRadius: 6, padding: "7px 10px", marginBottom: i < items.length - 1 ? 4 : 0 }}>
+                                <div style={{ display: "flex", alignItems: "baseline", gap: 6, flexWrap: "wrap" as const }}>
+                                  <span style={{ fontSize: 10, fontWeight: 700, color: g.color, background: g.bg, border: `1px solid ${g.border}`, borderRadius: 4, padding: "1px 5px" }}>
+                                    {s.categorie}
+                                  </span>
+                                  {SUP_CAT_DETAIL[s.categorie] && (
+                                    <span style={{ fontSize: 10, color: g.color, opacity: 0.7 }}>{SUP_CAT_DETAIL[s.categorie]}</span>
+                                  )}
+                                  {s.geometry_type === "lineaire" && (
+                                    <span style={{ fontSize: 9, color: "#6B7280", background: "#F3F4F6", borderRadius: 4, padding: "1px 4px" }}>linéaire</span>
+                                  )}
+                                </div>
+                                {(s.nomsup || s.libelle) && (
+                                  <p style={{ fontSize: 11, color: g.color, fontWeight: 500, margin: "3px 0 0" }}>
+                                    {s.nomsup ?? s.libelle}
+                                  </p>
+                                )}
+                                {s.ref_acte && (
+                                  <p style={{ fontSize: 10, color: "#9CA3AF", margin: "2px 0 0" }}>Réf. {s.ref_acte}</p>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  );
+                })()}
 
                 {/* Regulatory rules */}
                 {analysis.rules.length > 0 ? (
