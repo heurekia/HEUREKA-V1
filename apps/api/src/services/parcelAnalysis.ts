@@ -16,8 +16,8 @@
 
 import type { Geometry, Polygon } from "geojson";
 import { db } from "../db.js";
-import { zones, zone_regulatory_rules, communes } from "@heureka-v1/db";
-import { eq, and, ilike } from "drizzle-orm";
+import { zones, zone_regulatory_rules, communes, gpu_parcel_cache } from "@heureka-v1/db";
+import { eq, and, ilike, sql } from "drizzle-orm";
 import { calculateBuildability, type BuildabilityInput } from "./buildability.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -707,6 +707,91 @@ export async function getRisks(lat: number, lng: number, code_insee: string): Pr
   return result;
 }
 
+// ── GPU response cache (DB-backed) ───────────────────────────────────────────
+// Cache TTL: 30 days. PLU zones and SUP change very rarely.
+// On GPU 503/timeout: serve stale data + add warning.
+// Cache key: parcelle_id (preferred) or "lat4,lng4" (rounded to 4 decimal places).
+
+const GPU_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+
+function gpuCacheKey(parcelle_id: string | undefined, lat: number, lng: number): string {
+  return parcelle_id ?? `${lat.toFixed(4)},${lng.toFixed(4)}`;
+}
+
+type GpuCachePayload = {
+  pluPartition: string | null;
+  scotName: string | null;
+  zone_urba: PluZoneResult | null;
+  municipality: MunicipalityResult | null;
+  prescriptions: PrescriptionResult[];
+  informations: InformationResult[];
+  sup_surf: ServitudeResult[];
+  sup_lin: ServitudeResult[];
+  generateurs: Record<string, Partial<ServitudeResult>>;
+};
+
+async function readGpuCache(key: string): Promise<{ payload: GpuCachePayload; stale: boolean } | null> {
+  try {
+    const [row] = await db.select().from(gpu_parcel_cache).where(eq(gpu_parcel_cache.cache_key, key)).limit(1);
+    if (!row) return null;
+    const ageMs = Date.now() - row.cached_at.getTime();
+    const payload: GpuCachePayload = {
+      pluPartition:  row.plu_partition ?? null,
+      scotName:      row.scot_name ?? null,
+      zone_urba:     (row.zone_urba as PluZoneResult | null) ?? null,
+      municipality:  (row.municipality as MunicipalityResult | null) ?? null,
+      prescriptions: (row.prescriptions as PrescriptionResult[]) ?? [],
+      informations:  (row.informations as InformationResult[]) ?? [],
+      sup_surf:      (row.sup_surf as ServitudeResult[]) ?? [],
+      sup_lin:       (row.sup_lin as ServitudeResult[]) ?? [],
+      generateurs:   (row.generateurs as Record<string, Partial<ServitudeResult>>) ?? {},
+    };
+    // Increment hit counter asynchronously (fire-and-forget)
+    db.update(gpu_parcel_cache)
+      .set({ hit_count: sql`${gpu_parcel_cache.hit_count} + 1` })
+      .where(eq(gpu_parcel_cache.cache_key, key))
+      .catch(() => {});
+    return { payload, stale: ageMs > GPU_CACHE_TTL_MS };
+  } catch {
+    return null;
+  }
+}
+
+async function writeGpuCache(key: string, parcelle_id: string | undefined, payload: GpuCachePayload): Promise<void> {
+  try {
+    await db.insert(gpu_parcel_cache).values({
+      cache_key:    key,
+      parcelle_id:  parcelle_id ?? null,
+      plu_partition: payload.pluPartition,
+      scot_name:    payload.scotName,
+      zone_urba:    payload.zone_urba as never,
+      municipality: payload.municipality as never,
+      prescriptions: payload.prescriptions as never,
+      informations: payload.informations as never,
+      sup_surf:     payload.sup_surf as never,
+      sup_lin:      payload.sup_lin as never,
+      generateurs:  payload.generateurs as never,
+      cached_at:    new Date(),
+      hit_count:    0,
+    }).onConflictDoUpdate({
+      target: gpu_parcel_cache.cache_key,
+      set: {
+        plu_partition: payload.pluPartition,
+        scot_name:     payload.scotName,
+        zone_urba:     payload.zone_urba as never,
+        municipality:  payload.municipality as never,
+        prescriptions: payload.prescriptions as never,
+        informations:  payload.informations as never,
+        sup_surf:      payload.sup_surf as never,
+        sup_lin:       payload.sup_lin as never,
+        generateurs:   payload.generateurs as never,
+        cached_at:     new Date(),
+        hit_count:     0,
+      },
+    });
+  } catch { /* cache write failure is non-fatal */ }
+}
+
 // ── DB regulatory rules lookup ────────────────────────────────────────────────
 
 async function findDbZoneAndRules(zoneCode: string, communeNom?: string, codeInsee?: string): Promise<{
@@ -917,108 +1002,133 @@ export async function analyseParcel(
   // Step 3: GPU — resolve the real document partition first, then query zone + supplementary data
   // getGpuPartition handles both PLU (DU_<INSEE>) and PLUi (DU_<SIREN>) transparently.
   if (lat !== undefined && lng !== undefined) {
-    // Single /document call gives us both PLU partition and SCoT name at no extra cost.
-    const { pluPartition, scotName } = await getGpuDocuments(lat, lng);
-    const gpuPartition = pluPartition ?? (code_insee ? `DU_${code_insee}` : undefined);
-    if (scotName) result.scot = scotName;
+    // ── GPU cache-aside pattern ────────────────────────────────────────────────
+    // 1. Check DB cache first.
+    // 2a. Cache HIT (fresh) → use immediately.
+    // 2b. Cache MISS or STALE → call GPU API; on success write cache; on 503 use stale.
+    const cacheKey = gpuCacheKey(result.parcel?.parcelle_id, lat, lng);
+    const cached = await readGpuCache(cacheKey);
 
-    const zone = await findPluZone(lat, lng, gpuPartition);
-    if (zone) {
-      const pluInsee = zone.plu_nom?.match(/^(\d{5})/)?.[1];
-      if (pluInsee && code_insee && pluInsee !== code_insee) {
-        result.warnings.push(`Zone PLU GPU (${zone.plu_nom}) appartient à la commune ${pluInsee}, différente de ${code_insee}. Zone ignorée.`);
-      } else {
-        result.plu_zone = zone;
-        result.data_sources.push("GPU (Géoportail de l'Urbanisme)");
+    let gpuPayload: GpuCachePayload | null = null;
+    let gpuFromCache = false;
+
+    if (cached && !cached.stale) {
+      // Fresh cache hit — no GPU calls needed
+      gpuPayload = cached.payload;
+      gpuFromCache = true;
+    } else {
+      // Try live GPU API
+      const { pluPartition, scotName } = await getGpuDocuments(lat, lng);
+      const gpuPartition = pluPartition ?? (code_insee ? `DU_${code_insee}` : undefined);
+      const gpuAvailable = pluPartition !== null || await findPluZone(lat, lng, gpuPartition).then(z => z !== null).catch(() => false);
+
+      if (gpuAvailable || !cached) {
+        // GPU is responding — fetch all data
+        const zone = await findPluZone(lat, lng, gpuPartition);
+        const parcelGeom = result.parcel?.geometry ?? null;
+
+        const [municipality, prescriptions, informations] = await Promise.all([
+          getMunicipality(lat, lng),
+          getPrescriptionsSurf(lat, lng, gpuPartition),
+          getInfoSurf(lat, lng, gpuPartition),
+        ]);
+
+        const [supSurf, supLin] = await Promise.all([
+          getServitudesSurf(lat, lng, parcelGeom),
+          getServitudesLin(lat, lng, parcelGeom),
+        ]);
+
+        let generateurs: Record<string, Partial<ServitudeResult>> = {};
+        if (supSurf.length > 0 || supLin.length > 0) {
+          const genMap = await getGenerateursSup(lat, lng);
+          generateurs = Object.fromEntries(genMap.entries());
+        }
+
+        gpuPayload = { pluPartition, scotName, zone_urba: zone, municipality, prescriptions, informations, sup_surf: supSurf, sup_lin: supLin, generateurs };
+
+        // Write to cache (fire-and-forget if zone or documents resolved)
+        if (zone || pluPartition) {
+          writeGpuCache(cacheKey, result.parcel?.parcelle_id, gpuPayload);
+        }
+      } else if (cached) {
+        // GPU down + stale cache → use stale data with warning
+        gpuPayload = cached.payload;
+        gpuFromCache = true;
+        result.warnings.push("Données GPU servies depuis le cache (API IGN temporairement indisponible) — données réglementaires potentiellement datées.");
+      }
+    }
+
+    // ── Apply GPU payload to result ────────────────────────────────────────────
+    if (gpuPayload) {
+      if (gpuPayload.scotName) result.scot = gpuPayload.scotName;
+      const gpuPartitionForDisplay = gpuPayload.pluPartition ?? (code_insee ? `DU_${code_insee}` : undefined);
+
+      const zone = gpuPayload.zone_urba;
+      if (zone) {
+        const pluInsee = zone.plu_nom?.match(/^(\d{5})/)?.[1];
+        if (pluInsee && code_insee && pluInsee !== code_insee) {
+          result.warnings.push(`Zone PLU GPU (${zone.plu_nom}) appartient à la commune ${pluInsee}, différente de ${code_insee}. Zone ignorée.`);
+        } else {
+          result.plu_zone = zone;
+          result.data_sources.push(gpuFromCache ? "GPU (cache)" : "GPU (Géoportail de l'Urbanisme)");
+        }
+      } else if (!gpuFromCache) {
+        result.warnings.push("Zone PLU non disponible sur le Géoportail de l'Urbanisme pour cette localisation.");
+      }
+      void gpuPartitionForDisplay; // used above via pluPartition passed to helper calls
+
+      const { municipality, prescriptions, informations, sup_surf: supSurf, sup_lin: supLin, generateurs } = gpuPayload;
+
+      if (municipality) {
+        result.municipality = municipality;
+        if (municipality.is_rnu) result.warnings.push("Cette commune est soumise au Règlement National d'Urbanisme (RNU) — le PLU local n'est pas applicable.");
+        result.data_sources.push("GPU (commune)");
+      }
+
+      if (prescriptions.length > 0) {
+        result.prescriptions = prescriptions;
+        const hasEbc = prescriptions.some(p =>
+          p.libelle?.toUpperCase().includes("EBC") ||
+          p.typepsc?.toUpperCase().includes("EBC") ||
+          p.txtpsc?.toLowerCase().includes("espace boisé")
+        );
+        if (hasEbc) result.warnings.push("Espace Boisé Classé (EBC) sur ou à proximité de la parcelle — défrichement et construction interdits.");
+        result.data_sources.push("GPU (prescriptions)");
+      }
+
+      if (informations.length > 0) result.informations = informations;
+
+      // Merge + deduplicate SUP, enrich with generateur data
+      const allServitudes = [...supSurf, ...supLin];
+      const seen = new Set<string>();
+      const deduped = allServitudes.filter(s => {
+        const k = s.ref_acte ?? `${s.categorie}|${s.nomsup ?? s.libelle ?? ""}`;
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+      const genMap = new Map(Object.entries(generateurs));
+      const enriched = deduped.map(s => {
+        const gen = s.ref_acte ? genMap.get(s.ref_acte) : undefined;
+        const base = s.categorie ? s : { ...s, categorie: extractCategoryFromId(s.ref_acte ?? "") };
+        if (!gen) return base;
+        return { ...base, categorie: base.categorie || gen.categorie || "", nomsup: base.nomsup || gen.nomsup, urlacte: base.urlacte || gen.urlacte, gestionnaire: base.gestionnaire || gen.gestionnaire, dessup: base.dessup || gen.dessup, datdecr: base.datdecr || gen.datdecr, typeprotect: base.typeprotect || gen.typeprotect };
+      });
+
+      if (enriched.length > 0) {
+        result.servitudes = enriched;
+        const ac = enriched.find(s => s.categorie?.startsWith("AC"));
+        const el = enriched.find(s => s.categorie?.startsWith("EL"));
+        const pm = enriched.find(s => s.categorie?.startsWith("PM"));
+        const as_ = enriched.find(s => s.categorie?.startsWith("AS"));
+        if (ac) result.warnings.push(`Périmètre ABF — ${ac.nomsup ?? ac.libelle ?? "monument historique"} (SUP ${ac.categorie}) : avis de l'Architecte des Bâtiments de France requis.`);
+        if (el) result.warnings.push("Ligne électrique haute tension (SUP EL) — distances de sécurité réglementaires applicables.");
+        if (pm) result.warnings.push("Plan de Prévention des Risques (SUP PM) — prescriptions applicables.");
+        if (as_) result.warnings.push("Zone de présomption de prescription archéologique (SUP AS) — diagnostic archéologique possible.");
+        result.data_sources.push("GPU (SUP)");
       }
     } else {
-      result.warnings.push("Zone PLU non disponible sur le Géoportail de l'Urbanisme pour cette localisation.");
-    }
-
-    // Step 3b: GPU supplementary data — 2 parallel waves to avoid rate-limiting.
-    // Wave 1: municipality + prescriptions (PLU-partition-dependent, low GPU load)
-    // Wave 2: SUP assiettes (no partition, geometry-based)
-    // Wave 3: generateur (only if servitudes were found — avoids unnecessary call)
-    const parcelGeom = result.parcel?.geometry ?? null;
-
-    const [municipality, prescriptions, informations] = await Promise.all([
-      getMunicipality(lat, lng),
-      getPrescriptionsSurf(lat, lng, gpuPartition),
-      getInfoSurf(lat, lng, gpuPartition),
-    ]);
-
-    const [supSurf, supLin] = await Promise.all([
-      getServitudesSurf(lat, lng, parcelGeom),
-      getServitudesLin(lat, lng, parcelGeom),
-    ]);
-
-    if (municipality) {
-      result.municipality = municipality;
-      if (municipality.is_rnu) {
-        result.warnings.push("Cette commune est soumise au Règlement National d'Urbanisme (RNU) — le PLU local n'est pas applicable.");
-      }
-      result.data_sources.push("GPU (commune)");
-    }
-
-    if (prescriptions.length > 0) {
-      result.prescriptions = prescriptions;
-      const hasEbc = prescriptions.some(p =>
-        p.libelle?.toUpperCase().includes("EBC") ||
-        p.typepsc?.toUpperCase().includes("EBC") ||
-        p.txtpsc?.toLowerCase().includes("espace boisé")
-      );
-      if (hasEbc) result.warnings.push("Espace Boisé Classé (EBC) sur ou à proximité de la parcelle — défrichement et construction interdits.");
-      result.data_sources.push("GPU (prescriptions)");
-    }
-
-    if (informations.length > 0) {
-      result.informations = informations;
-    }
-
-    // Merge surface + linear SUP, deduplicate by (idsup or categorie+nomsup)
-    const allServitudes = [...supSurf, ...supLin];
-    const seen = new Set<string>();
-    const dedupedServitudes = allServitudes.filter(s => {
-      const key = s.ref_acte ?? `${s.categorie}|${s.nomsup ?? s.libelle ?? ""}`;
-      if (seen.has(key)) return false;
-      seen.add(key);
-      return true;
-    });
-
-    // Wave 3: enrich with générateur data (monument name, protection date, URL)
-    // Only fetched when servitudes actually exist — avoids unnecessary GPU call.
-    let enriched = dedupedServitudes.map(s =>
-      s.categorie ? s : { ...s, categorie: extractCategoryFromId(s.ref_acte ?? "") }
-    );
-    if (dedupedServitudes.length > 0) {
-      const genMap = await getGenerateursSup(lat, lng);
-      enriched = dedupedServitudes.map(s => {
-        const gen = s.ref_acte ? genMap.get(s.ref_acte) : undefined;
-        if (!gen) return s.categorie ? s : { ...s, categorie: extractCategoryFromId(s.ref_acte ?? "") };
-        return {
-          ...s,
-          categorie: s.categorie || gen.categorie || "",
-          nomsup: s.nomsup || gen.nomsup,
-          urlacte: s.urlacte || gen.urlacte,
-          gestionnaire: s.gestionnaire || gen.gestionnaire,
-          dessup: s.dessup || gen.dessup,
-          datdecr: s.datdecr || gen.datdecr,
-          typeprotect: s.typeprotect || gen.typeprotect,
-        };
-      });
-    }
-
-    if (enriched.length > 0) {
-      result.servitudes = enriched;
-      const ac = enriched.find(s => s.categorie?.startsWith("AC"));
-      const el = enriched.find(s => s.categorie?.startsWith("EL"));
-      const pm = enriched.find(s => s.categorie?.startsWith("PM"));
-      const as_ = enriched.find(s => s.categorie?.startsWith("AS"));
-      if (ac) result.warnings.push(`Périmètre ABF — ${ac.nomsup ?? ac.libelle ?? "monument historique"} (SUP ${ac.categorie}) : avis de l'Architecte des Bâtiments de France requis.`);
-      if (el) result.warnings.push("Ligne électrique haute tension (SUP EL) — distances de sécurité réglementaires applicables.");
-      if (pm) result.warnings.push("Plan de Prévention des Risques (SUP PM) — prescriptions applicables.");
-      if (as_) result.warnings.push("Zone de présomption de prescription archéologique (SUP AS) — diagnostic archéologique possible.");
-      result.data_sources.push("GPU (SUP)");
+      result.warnings.push("Géoportail de l'Urbanisme indisponible — données réglementaires (zone PLU, servitudes) non chargées.");
     }
   }
 

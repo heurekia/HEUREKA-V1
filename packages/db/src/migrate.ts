@@ -441,6 +441,24 @@ CREATE TABLE IF NOT EXISTS commune_documents (
   updated_at timestamp NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_commune_documents_commune_id ON commune_documents(commune_id);
+
+CREATE TABLE IF NOT EXISTS gpu_parcel_cache (
+  cache_key       text PRIMARY KEY,
+  parcelle_id     text,
+  documents       jsonb,
+  zone_urba       jsonb,
+  municipality    jsonb,
+  prescriptions   jsonb,
+  informations    jsonb,
+  sup_surf        jsonb,
+  sup_lin         jsonb,
+  generateurs     jsonb,
+  plu_partition   text,
+  scot_name       text,
+  cached_at       timestamp NOT NULL DEFAULT now(),
+  hit_count       integer NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_gpu_parcel_cache_parcelle ON gpu_parcel_cache(parcelle_id);
 `;
 
 async function main() {

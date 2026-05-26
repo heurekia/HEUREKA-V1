@@ -23,3 +23,4 @@ export * from "./decisions.js";
 export * from "./signataires.js";
 export * from "./decisionEvents.js";
 export * from "./communeDocuments.js";
+export * from "./gpuCache.js";
