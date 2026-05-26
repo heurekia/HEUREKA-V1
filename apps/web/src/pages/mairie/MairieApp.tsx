@@ -7,6 +7,7 @@ import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./M
 
 const COMMUNE_INSEE: Record<string, string> = {
   "Ballan-Miré": "37018",
+  "Berthenay": "37024",
   "Tours": "37261",
   "Saint-Avertin": "37208",
   "Joué-lès-Tours": "37122",
@@ -2273,10 +2274,9 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeIn
 type CarteRegRule = { id: string; article_number: number | null; article_title: string | null; topic: string; rule_text: string; summary: string | null; validation_status: string };
 type CarteRegZone = { id: string; zone_code: string; zone_label: string | null; rules: CarteRegRule[]; stats: { total: number } };
 
-function CarteScreen({ initialCommune = "Ballan-Miré", communeInseeMap = COMMUNE_INSEE }: { initialCommune?: string; communeInseeMap?: Record<string, string> }) {
-  const [commune, setCommune] = useState(initialCommune);
-  const [inseeCode, setInseeCode] = useState<string>(communeInseeMap[initialCommune] ?? "");
-  const [communes, setCommunes] = useState<string[]>([initialCommune]);
+function CarteScreen({ commune, setCommune, communeInseeMap = COMMUNE_INSEE }: { commune: string; setCommune: (c: string) => void; communeInseeMap?: Record<string, string> }) {
+  const inseeCode = communeInseeMap[commune] ?? "";
+  const [communes, setCommunes] = useState<string[]>([commune]);
   const [pluZones, setPluZones] = useState(true);
   const [baseLayer, setBaseLayer] = useState<BaseLayer>("ign-ortho");
   const [regZones, setRegZones] = useState<CarteRegZone[]>([]);
@@ -2334,7 +2334,7 @@ function CarteScreen({ initialCommune = "Ballan-Miré", communeInseeMap = COMMUN
             </svg>
             <select
               value={commune}
-              onChange={e => { setCommune(e.target.value); setInseeCode(communeInseeMap[e.target.value] ?? ""); }}
+              onChange={e => setCommune(e.target.value)}
               style={{ border: "none", background: "transparent", fontSize: 12, fontWeight: 600, color: "#374151", outline: "none", cursor: "pointer" }}
             >
               {communes.map(c => <option key={c} value={c}>{c}</option>)}
@@ -6213,7 +6213,7 @@ export function MairieApp() {
             <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} />} />
             <Route path="messagerie" element={<MessageScreen commune={commune} onDossierClick={handleDossierClick} onUnreadChange={setMessageBadge} />} />
             <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
-            <Route path="carte" element={<CarteScreen initialCommune={commune} communeInseeMap={communeInseeMap} />} />
+            <Route path="carte" element={<CarteScreen commune={commune} setCommune={setCommune} communeInseeMap={communeInseeMap} />} />
             <Route path="statistiques" element={<StatistiquesScreen commune={commune} />} />
             <Route path="parametres" element={<ParametresScreen commune={commune} isAdmin={isAdmin} communeInseeMap={communeInseeMap} onInseeUpdated={refreshCommuneInseeMap} />} />
             <Route path="signatures" element={<SignaturesPendantesScreen />} />

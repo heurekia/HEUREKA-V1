@@ -380,11 +380,12 @@ export function MapLeaflet({
       {pluZoneLayer && zoneError && (
         <div style={{
           position: "absolute", bottom: 8, left: 8, zIndex: 1000,
-          background: "rgba(239,68,68,0.92)", color: "white",
-          borderRadius: 8, padding: "6px 12px", fontSize: 11, fontWeight: 600,
-          backdropFilter: "blur(4px)", maxWidth: 280,
+          background: "rgba(255,255,255,0.93)", color: "#6B7280",
+          border: "1px solid #E5E7EB", borderRadius: 8, padding: "6px 12px", fontSize: 11,
+          backdropFilter: "blur(4px)", maxWidth: 300, display: "flex", alignItems: "center", gap: 6,
         }}>
-          ⚠ Zones PLU indisponibles — {zoneError}
+          <span style={{ color: "#9CA3AF", fontSize: 13 }}>ℹ</span>
+          Zones PLU non disponibles pour cette commune
         </div>
       )}
     </div>
