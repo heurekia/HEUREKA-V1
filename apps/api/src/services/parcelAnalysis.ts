@@ -748,9 +748,13 @@ export async function getRisks(lat: number, lng: number, code_insee: string): Pr
 // Cache key: parcelle_id (preferred) or "lat4,lng4" (rounded to 4 decimal places).
 
 const GPU_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
+// Increment GPU_CACHE_VERSION whenever the extraction logic changes significantly.
+// This busts all old cache entries (they become misses) without a DB migration.
+const GPU_CACHE_VERSION = 2;
 
 function gpuCacheKey(parcelle_id: string | undefined, lat: number, lng: number): string {
-  return parcelle_id ?? `${lat.toFixed(4)},${lng.toFixed(4)}`;
+  const base = parcelle_id ?? `${lat.toFixed(4)},${lng.toFixed(4)}`;
+  return `v${GPU_CACHE_VERSION}:${base}`;
 }
 
 type GpuCachePayload = {
@@ -1047,16 +1051,9 @@ export async function analyseParcel(
     let gpuPayload: GpuCachePayload | null = null;
     let gpuFromCache = false;
 
-    // A cached entry is considered degraded (and treated as stale) when servitudes
-    // were stored without a category — this happened when the API field was `natsup`
-    // but we were reading `catesup`. Force a refresh so the fix takes effect.
-    const cachedHasBadSup = cached?.payload.sup_surf.some(s => !s.categorie) ||
-                            cached?.payload.sup_lin.some(s => !s.categorie);
-    const cacheIsUsable = cached && !cached.stale && !cachedHasBadSup;
-
-    if (cacheIsUsable) {
+    if (cached && !cached.stale) {
       // Fresh cache hit — no GPU calls needed
-      gpuPayload = cached!.payload;
+      gpuPayload = cached.payload;
       gpuFromCache = true;
     } else {
       // Try live GPU API
