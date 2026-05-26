@@ -526,6 +526,9 @@ export async function getInfoSurf(lat: number, lng: number, partition?: string):
 
 type GpuSupFeature = {
   properties: {
+    // IGN GPU API uses "natsup" for category (e.g. "AC1", "EL7").
+    // Older docs mention "catesup" — keep both for compatibility.
+    natsup?: string;
     catesup?: string;
     libelle?: string;
     libsup?: string;
@@ -545,14 +548,17 @@ type GpuSupFeature = {
 };
 
 // GPU idsup format: "AC-37214-0001" or "AC1-37018-0003" or "EL7_37028_001"
-// When catesup is missing, recover the category prefix from the id.
+// When category fields are missing, recover the prefix from the id.
 function extractCategoryFromId(idsup: string): string {
-  const m = idsup.replace(/[_\-]/, "-").match(/^([A-Z]{1,3}\d{0,2})-/);
+  // Normalise first separator (underscore or hyphen) to hyphen, then match leading category code.
+  const norm = idsup.replace(/[_\-]/, "-");
+  const m = norm.match(/^([A-Z]{1,3}\d{0,2})-/) ?? norm.match(/^([A-Z]{1,3}\d{0,2})$/);
   return m?.[1] ?? "";
 }
 
 function mapSupFeature(f: GpuSupFeature, geomType: "surface" | "lineaire"): ServitudeResult {
-  const catesup = f.properties.catesup || extractCategoryFromId(f.properties.idsup ?? "");
+  // natsup is the primary category field in the current IGN GPU API; catesup is legacy
+  const catesup = f.properties.natsup || f.properties.catesup || extractCategoryFromId(f.properties.idsup ?? "");
   return {
     categorie: catesup,
     libelle: f.properties.libsup ?? f.properties.libelle,
@@ -589,7 +595,7 @@ async function getGenerateursSup(lat: number, lng: number): Promise<Map<string, 
       if (!p.idsup) continue;
       map.set(p.idsup, {
         nomsup: p.nomsup ?? p.libsup,
-        categorie: p.catesup || extractCategoryFromId(p.idsup),
+        categorie: p.natsup || p.catesup || extractCategoryFromId(p.idsup),
         urlacte: p.urlacte,
         gestionnaire: p.gestionnaire,
         dessup: p.dessup,
@@ -1012,9 +1018,16 @@ export async function analyseParcel(
     let gpuPayload: GpuCachePayload | null = null;
     let gpuFromCache = false;
 
-    if (cached && !cached.stale) {
+    // A cached entry is considered degraded (and treated as stale) when servitudes
+    // were stored without a category — this happened when the API field was `natsup`
+    // but we were reading `catesup`. Force a refresh so the fix takes effect.
+    const cachedHasBadSup = cached?.payload.sup_surf.some(s => !s.categorie) ||
+                            cached?.payload.sup_lin.some(s => !s.categorie);
+    const cacheIsUsable = cached && !cached.stale && !cachedHasBadSup;
+
+    if (cacheIsUsable) {
       // Fresh cache hit — no GPU calls needed
-      gpuPayload = cached.payload;
+      gpuPayload = cached!.payload;
       gpuFromCache = true;
     } else {
       // Try live GPU API
