@@ -1097,6 +1097,15 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     return res.status(400).json({ error: "commune_name, insee_code et pdf_base64 requis" });
   }
 
+  // SSE streaming so the client sees progress zone by zone
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("X-Accel-Buffering", "no");
+
+  const send = (data: Record<string, unknown>) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  };
+
   try {
     const client = new Anthropic({ apiKey: getAnthropicApiKey() });
 
@@ -1122,6 +1131,7 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     };
 
     // Phase 1 — Zone discovery
+    send({ type: "phase", message: "Détection des zones…" });
     const zoneMsg = await client.messages.create({
       model: "claude-sonnet-4-6",
       max_tokens: 2000,
@@ -1146,8 +1156,11 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
     const zoneDefs = JSON.parse(zoneRaw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
 
     if (zoneDefs.length === 0) {
-      return res.status(422).json({ error: "Aucune zone détectée dans le document. Vérifiez que c'est bien un règlement PLU textuel." });
+      send({ type: "error", message: "Aucune zone détectée. Vérifiez que c'est bien un règlement PLU textuel." });
+      return res.end();
     }
+
+    send({ type: "zones_found", zones: zoneDefs.map(z => ({ code: z.code, label: z.label, type: z.type })) });
 
     // Phase 2 — Règles par zone (parallèle : toutes les zones simultanément)
     const results = await Promise.all(zoneDefs.map(async (zoneDef) => {
@@ -1238,10 +1251,13 @@ Correspondance article → topic :
         }
       }
 
-      return { zone: zoneDef.code, rules: rules.length, vision: visionCount };
+      const result = { zone: zoneDef.code, rules: rules.length, vision: visionCount };
+      send({ type: "zone_done", ...result });
+      return result;
     }));
 
-    res.json({
+    send({
+      type: "done",
       ok: true,
       commune: commune.name,
       insee_code: commune.insee_code,
@@ -1253,8 +1269,10 @@ Correspondance article → topic :
 
   } catch (err) {
     console.error("[ingest-plu-pdf]", err);
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
+    send({ type: "error", message: err instanceof Error ? err.message : String(err) });
   }
+
+  res.end();
 });
 
 // ── Disponibilités ────────────────────────────────────────────────────────────
