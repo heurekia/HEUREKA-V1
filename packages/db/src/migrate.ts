@@ -425,6 +425,22 @@ CREATE INDEX IF NOT EXISTS idx_decision_events_decision_id ON decision_events(de
 -- Cache GPU zones PLU par commune (survit aux redémarrages serveur)
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_zones_geojson jsonb;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_zones_cached_at timestamp;
+
+-- Référentiel documentaire par commune (PPRI, OAP, PEB, etc.)
+CREATE TABLE IF NOT EXISTS commune_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  commune_id uuid NOT NULL REFERENCES communes(id) ON DELETE CASCADE,
+  type text NOT NULL,
+  name text NOT NULL,
+  original_filename text NOT NULL,
+  file_size integer,
+  pdf_content text,
+  status text NOT NULL DEFAULT 'uploaded',
+  ingested_at timestamp,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_commune_documents_commune_id ON commune_documents(commune_id);
 `;
 
 async function main() {

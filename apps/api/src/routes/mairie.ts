@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike, inArray } from "drizzle-orm";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
@@ -1948,4 +1948,91 @@ mairieRouter.get("/commune-users", requireAuth, async (req: AuthRequest, res) =>
   }
 
   res.json(all.sort((a, b) => a.nom.localeCompare(b.nom)));
+});
+
+// ── Référentiel documentaire par commune ──────────────────────────────────────
+
+mairieRouter.get("/documents", async (req: AuthRequest, res) => {
+  try {
+    const communeName = req.query.commune as string | undefined;
+    if (!communeName) return res.status(400).json({ error: "Paramètre commune requis" });
+
+    const [commune] = await db.select({ id: communes.id })
+      .from(communes).where(ilike(communes.name, communeName)).limit(1);
+    if (!commune) return res.json([]);
+
+    const docs = await db.select({
+      id: commune_documents.id,
+      commune_id: commune_documents.commune_id,
+      type: commune_documents.type,
+      name: commune_documents.name,
+      original_filename: commune_documents.original_filename,
+      file_size: commune_documents.file_size,
+      status: commune_documents.status,
+      ingested_at: commune_documents.ingested_at,
+      created_at: commune_documents.created_at,
+    })
+      .from(commune_documents)
+      .where(eq(commune_documents.commune_id, commune.id))
+      .orderBy(commune_documents.type, commune_documents.created_at);
+
+    res.json(docs);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+mairieRouter.post("/documents", async (req: AuthRequest, res) => {
+  try {
+    const { commune_name, type, name, original_filename, file_size, pdf_base64 } = req.body as {
+      commune_name: string;
+      type: string;
+      name: string;
+      original_filename: string;
+      file_size?: number;
+      pdf_base64?: string;
+    };
+
+    if (!commune_name || !type || !name || !original_filename) {
+      return res.status(400).json({ error: "Champs requis manquants" });
+    }
+
+    const [commune] = await db.select({ id: communes.id })
+      .from(communes).where(ilike(communes.name, commune_name)).limit(1);
+    if (!commune) return res.status(404).json({ error: "Commune introuvable" });
+
+    const [doc] = await db.insert(commune_documents).values({
+      commune_id: commune.id,
+      type,
+      name,
+      original_filename,
+      file_size: file_size ?? null,
+      pdf_content: pdf_base64 ?? null,
+      status: "uploaded",
+    }).returning({
+      id: commune_documents.id,
+      type: commune_documents.type,
+      name: commune_documents.name,
+      original_filename: commune_documents.original_filename,
+      file_size: commune_documents.file_size,
+      status: commune_documents.status,
+      created_at: commune_documents.created_at,
+    });
+
+    res.json(doc);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+mairieRouter.delete("/documents/:id", async (req: AuthRequest, res) => {
+  try {
+    await db.delete(commune_documents).where(eq(commune_documents.id, req.params.id as string));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
 });

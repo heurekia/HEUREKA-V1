@@ -2058,7 +2058,7 @@ function SignatairesPanel({ commune }: { commune: string }) {
 
 function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
-  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
+  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
   const [stab, setStab] = useState("Réglementation");
   const events = [
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
@@ -2087,6 +2087,11 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeIn
       {stab === "Réglementation" && (
         <div style={{ minHeight: 400, margin: "0 -24px" }}>
           <ReglementationScreen commune={commune} inseeCode={communeInseeMap[commune]} />
+        </div>
+      )}
+      {stab === "Documents" && (
+        <div style={{ minHeight: 400, margin: "0 -24px" }}>
+          <DocumentsPanel commune={commune} />
         </div>
       )}
       {stab === "Notifications" && (
@@ -3056,6 +3061,225 @@ function StatistiquesScreen({ commune }: { commune: string }) {
               ))}
             </tbody>
           </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Référentiel documentaire ───────────────────────────────────────────────────
+
+const DOC_TYPES: { value: string; label: string; color: string }[] = [
+  { value: "ppri",  label: "PPRI",  color: "#EF4444" },
+  { value: "oap",   label: "OAP",   color: "#8B5CF6" },
+  { value: "peb",   label: "PEB",   color: "#F59E0B" },
+  { value: "pprt",  label: "PPRT",  color: "#EC4899" },
+  { value: "plh",   label: "PLH",   color: "#10B981" },
+  { value: "zac",   label: "ZAC",   color: "#3B82F6" },
+  { value: "autre", label: "Autre", color: "#64748B" },
+];
+
+type CommuneDoc = {
+  id: string; type: string; name: string; original_filename: string;
+  file_size: number | null; status: string; created_at: string;
+};
+
+function DocumentsPanel({ commune }: { commune: string }) {
+  const [docs, setDocs] = useState<CommuneDoc[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [showForm, setShowForm] = useState(false);
+  const [uploading, setUploading] = useState(false);
+  const [form, setForm] = useState({ type: "ppri", name: "", file: null as File | null });
+  const [dragOver, setDragOver] = useState(false);
+
+  const load = () => {
+    setLoading(true);
+    api.get<CommuneDoc[]>(`/mairie/documents?commune=${encodeURIComponent(commune)}`)
+      .then(setDocs)
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, [commune]);
+
+  const handleFile = (file: File) => {
+    if (file.type !== "application/pdf") return;
+    setForm(f => ({ ...f, file, name: f.name || file.name.replace(/\.pdf$/i, "") }));
+  };
+
+  const upload = async () => {
+    if (!form.file || !form.name.trim()) return;
+    setUploading(true);
+    try {
+      const b64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => {
+          const result = reader.result as string;
+          resolve(result.split(",")[1] ?? "");
+        };
+        reader.onerror = reject;
+        reader.readAsDataURL(form.file!);
+      });
+      await api.post("/mairie/documents", {
+        commune_name: commune,
+        type: form.type,
+        name: form.name.trim(),
+        original_filename: form.file.name,
+        file_size: form.file.size,
+        pdf_base64: b64,
+      });
+      setShowForm(false);
+      setForm({ type: "ppri", name: "", file: null });
+      load();
+    } catch {
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const deleteDoc = async (id: string) => {
+    await api.delete(`/mairie/documents/${id}`).catch(() => {});
+    setDocs(d => d.filter(x => x.id !== id));
+  };
+
+  const grouped = DOC_TYPES.map(t => ({
+    ...t,
+    items: docs.filter(d => d.type === t.value),
+  })).filter(g => g.items.length > 0);
+
+  const fmt = (bytes: number | null) => {
+    if (!bytes) return "";
+    if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)} Ko`;
+    return `${(bytes / (1024 * 1024)).toFixed(1)} Mo`;
+  };
+
+  return (
+    <div style={{ padding: 24 }}>
+      {/* Header */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
+        <div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Documents réglementaires</div>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
+            PPRI, OAP, PEB, PLH, ZAC et autres plans réglementaires de {commune}
+          </div>
+        </div>
+        {!showForm && (
+          <button onClick={() => setShowForm(true)} style={{
+            display: "flex", alignItems: "center", gap: 6, background: "#4F46E5", color: "white",
+            border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600,
+            cursor: "pointer",
+          }}>
+            + Ajouter un document
+          </button>
+        )}
+      </div>
+
+      {/* Upload form */}
+      {showForm && (
+        <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 12, padding: 20, marginBottom: 20 }}>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 16 }}>Nouveau document</div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12, marginBottom: 16 }}>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 4 }}>Type</label>
+              <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
+                style={{ width: "100%", border: "1px solid #D1D5DB", borderRadius: 8, padding: "8px 10px", fontSize: 13, background: "white" }}>
+                {DOC_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </select>
+            </div>
+            <div>
+              <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 4 }}>Nom</label>
+              <input value={form.name} onChange={e => setForm(f => ({ ...f, name: e.target.value }))}
+                placeholder="Ex. PPRI Vallée de l'Indre 2023"
+                style={{ width: "100%", border: "1px solid #D1D5DB", borderRadius: 8, padding: "8px 10px", fontSize: 13, boxSizing: "border-box" }} />
+            </div>
+          </div>
+
+          {/* Drop zone */}
+          <div
+            onDragOver={e => { e.preventDefault(); setDragOver(true); }}
+            onDragLeave={() => setDragOver(false)}
+            onDrop={e => { e.preventDefault(); setDragOver(false); const f = e.dataTransfer.files[0]; if (f) handleFile(f); }}
+            onClick={() => { const inp = document.createElement("input"); inp.type = "file"; inp.accept = "application/pdf"; inp.onchange = () => { if (inp.files?.[0]) handleFile(inp.files[0]); }; inp.click(); }}
+            style={{
+              border: `2px dashed ${dragOver ? "#4F46E5" : "#CBD5E1"}`,
+              borderRadius: 10, padding: "20px 16px", textAlign: "center", cursor: "pointer",
+              background: dragOver ? "#EEF2FF" : "white", marginBottom: 16, transition: "all 0.15s",
+            }}
+          >
+            {form.file ? (
+              <div style={{ fontSize: 13, color: "#374151" }}>
+                <span style={{ fontWeight: 600 }}>📄 {form.file.name}</span>
+                <span style={{ color: "#64748b", marginLeft: 8 }}>({fmt(form.file.size)})</span>
+              </div>
+            ) : (
+              <div style={{ fontSize: 13, color: "#64748b" }}>
+                Glissez un PDF ici ou <span style={{ color: "#4F46E5", fontWeight: 600 }}>cliquez pour parcourir</span>
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button onClick={() => { setShowForm(false); setForm({ type: "ppri", name: "", file: null }); }}
+              style={{ border: "1px solid #E2E8F0", borderRadius: 8, background: "white", padding: "8px 16px", fontSize: 13, cursor: "pointer", color: "#374151" }}>
+              Annuler
+            </button>
+            <button onClick={upload} disabled={uploading || !form.file || !form.name.trim()}
+              style={{ border: "none", borderRadius: 8, background: uploading || !form.file || !form.name.trim() ? "#A5B4FC" : "#4F46E5", color: "white", padding: "8px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              {uploading ? "Envoi en cours…" : "Enregistrer"}
+            </button>
+          </div>
+        </div>
+      )}
+
+      {/* Document list */}
+      {loading ? (
+        <div style={{ textAlign: "center", color: "#94a3b8", padding: 40, fontSize: 13 }}>Chargement…</div>
+      ) : docs.length === 0 && !showForm ? (
+        <div style={{ textAlign: "center", padding: 48, color: "#94a3b8" }}>
+          <div style={{ fontSize: 36, marginBottom: 8 }}>📂</div>
+          <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Aucun document pour le moment</div>
+          <div style={{ fontSize: 12 }}>Ajoutez les plans réglementaires de votre commune (PPRI, OAP…)</div>
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
+          {grouped.map(group => (
+            <div key={group.value}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+                <span style={{ background: group.color, color: "white", borderRadius: 6, padding: "2px 10px", fontSize: 11, fontWeight: 700 }}>{group.label}</span>
+                <span style={{ fontSize: 12, color: "#94a3b8" }}>{group.items.length} document{group.items.length > 1 ? "s" : ""}</span>
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {group.items.map(doc => (
+                  <div key={doc.id} style={{
+                    display: "flex", alignItems: "center", gap: 12,
+                    background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px 16px",
+                  }}>
+                    <span style={{ fontSize: 20 }}>📄</span>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div>
+                      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
+                        {doc.original_filename}
+                        {doc.file_size && <span style={{ marginLeft: 8 }}>{fmt(doc.file_size)}</span>}
+                        <span style={{ marginLeft: 8 }}>· {new Date(doc.created_at).toLocaleDateString("fr-FR")}</span>
+                      </div>
+                    </div>
+                    <span style={{
+                      fontSize: 11, fontWeight: 600,
+                      color: doc.status === "ingested" ? "#10B981" : "#94a3b8",
+                      background: doc.status === "ingested" ? "#D1FAE5" : "#F1F5F9",
+                      borderRadius: 6, padding: "2px 8px",
+                    }}>
+                      {doc.status === "ingested" ? "Ingéré" : "Importé"}
+                    </span>
+                    <button onClick={() => deleteDoc(doc.id)}
+                      style={{ border: "none", background: "none", color: "#94a3b8", cursor: "pointer", padding: 4, fontSize: 16, lineHeight: 1 }}
+                      title="Supprimer">✕</button>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ))}
         </div>
       )}
     </div>
