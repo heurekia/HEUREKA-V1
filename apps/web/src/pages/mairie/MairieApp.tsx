@@ -3094,10 +3094,12 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel }: 
     if (!communeInput.trim() || !inseeInput.trim() || !pdfFile) { setError("Commune, code INSEE et PDF sont requis."); return; }
     setLoading(true); setError(null); setDone(null); setZoneProgress([]); setPhase("Lecture du PDF…");
 
-    const buf = await pdfFile.arrayBuffer();
-    const bytes = new Uint8Array(buf);
-    let binary = ""; for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]!);
-    const pdf_base64 = btoa(binary);
+    const pdf_base64 = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader();
+      reader.onload = () => resolve((reader.result as string).split(",")[1]!);
+      reader.onerror = reject;
+      reader.readAsDataURL(pdfFile);
+    });
 
     try {
       const resp = await fetch("/api/mairie/admin/ingest-plu-pdf", {
