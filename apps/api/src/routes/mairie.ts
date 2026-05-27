@@ -465,14 +465,17 @@ mairieRouter.get("/admin/users", async (req: AuthRequest, res) => {
   }
 });
 
-// ── Création d'un utilisateur (admin uniquement) ──
-mairieRouter.post("/admin/users", requireRole("admin"), async (req: AuthRequest, res) => {
+// ── Création d'un utilisateur (admin ou mairie pour leur commune) ──
+mairieRouter.post("/admin/users", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   try {
-    const communeName = (req.query.commune as string ?? "").trim();
+    // "mairie" users can only create agents for their own commune
+    const communeName = req.user?.role === "admin"
+      ? (req.query.commune as string ?? "").trim()
+      : (req.user?.commune ?? "");
     const { email, prenom, nom, role, telephone, role_config_id } = req.body as Record<string, string | undefined>;
     if (!email || !prenom || !nom || !role) return res.status(400).json({ error: "email, prenom, nom, role requis" });
-    const validRoles = ["mairie", "instructeur", "admin"];
-    if (!validRoles.includes(role)) return res.status(400).json({ error: "Rôle invalide (mairie | instructeur | admin)" });
+    const validRoles = req.user?.role === "admin" ? ["mairie", "instructeur", "admin"] : ["mairie", "instructeur"];
+    if (!validRoles.includes(role)) return res.status(400).json({ error: "Rôle invalide" });
     const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, email.toLowerCase().trim()));
     if (existing) return res.status(409).json({ error: "Un compte avec cet email existe déjà" });
     const { default: bcrypt } = await import("bcryptjs");
@@ -497,7 +500,7 @@ mairieRouter.post("/admin/users", requireRole("admin"), async (req: AuthRequest,
     await sendActivationEmail({
       to: email.toLowerCase().trim(),
       prenom,
-      serviceName: communeName || "HEUREKA",
+      serviceName: communeName || "Heurekia",
       token,
     }).catch((err) => console.error("[mailer] invitation:", err));
     res.status(201).json({ ...newUser, invited: true });
@@ -507,12 +510,19 @@ mairieRouter.post("/admin/users", requireRole("admin"), async (req: AuthRequest,
   }
 });
 
-// ── Mise à jour rôle/infos d'un utilisateur (admin uniquement) ──
-mairieRouter.patch("/admin/users/:id", requireRole("admin"), async (req: AuthRequest, res) => {
+// ── Mise à jour rôle/infos d'un utilisateur (admin ou mairie pour leur commune) ──
+mairieRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   try {
     const userId = req.params.id as string;
     const { role, prenom, nom, telephone, role_config_id } = req.body as Record<string, string | undefined>;
-    const validRoles = ["mairie", "instructeur", "admin", "citoyen"];
+    // "mairie" users can only update agents in their commune
+    if (req.user?.role === "mairie") {
+      const [target] = await db.select({ commune: users.commune }).from(users).where(eq(users.id, userId));
+      if (!target || target.commune?.toLowerCase() !== (req.user.commune ?? "").toLowerCase()) {
+        return res.status(403).json({ error: "Accès refusé" });
+      }
+    }
+    const validRoles = req.user?.role === "admin" ? ["mairie", "instructeur", "admin", "citoyen"] : ["mairie", "instructeur"];
     if (role && !validRoles.includes(role)) return res.status(400).json({ error: "Rôle invalide" });
     await db.update(users).set({
       ...(role ? { role: role as "mairie" | "instructeur" | "admin" | "citoyen" } : {}),
@@ -534,12 +544,19 @@ mairieRouter.patch("/admin/users/:id", requireRole("admin"), async (req: AuthReq
   }
 });
 
-// ── Suppression d'un utilisateur (admin uniquement) ──
-mairieRouter.delete("/admin/users/:id", requireRole("admin"), async (req: AuthRequest, res) => {
+// ── Suppression d'un utilisateur (admin ou mairie pour leur commune) ──
+mairieRouter.delete("/admin/users/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   try {
-    const reqUser = req.user as { id: string };
+    const reqUser = req.user as { id: string; role: string; commune?: string };
     const userId = req.params.id as string;
     if (userId === reqUser.id) return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte" });
+    // "mairie" users can only delete agents in their commune
+    if (reqUser.role === "mairie") {
+      const [target] = await db.select({ commune: users.commune }).from(users).where(eq(users.id, userId));
+      if (!target || target.commune?.toLowerCase() !== (reqUser.commune ?? "").toLowerCase()) {
+        return res.status(403).json({ error: "Accès refusé" });
+      }
+    }
     await db.delete(users).where(eq(users.id, userId));
     res.status(204).send();
   } catch (err) {

@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db } from "../db.js";
 import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions } from "@heureka-v1/db";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
-import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte } from "drizzle-orm";
+import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, inArray } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
@@ -292,18 +292,30 @@ superAdminRouter.get("/users", async (req, res) => {
 
 superAdminRouter.post("/users", async (req, res) => {
   try {
-    const { email, prenom, nom, role, commune, telephone, role_config_id } = req.body as {
+    const { email, prenom, nom, role, communeIds, telephone, role_config_id } = req.body as {
       email?: string;
       prenom?: string;
       nom?: string;
       role?: string;
-      commune?: string;
+      communeIds?: string[];
       telephone?: string;
       role_config_id?: string;
     };
 
     if (!email || !prenom || !nom || !role) {
       return res.status(400).json({ error: "email, prenom, nom et role sont requis" });
+    }
+
+    // Resolve commune names from IDs
+    let communeNames: string[] = [];
+    let primaryCommune: string | undefined;
+    if (communeIds && communeIds.length > 0) {
+      const communeRows = await db
+        .select({ id: communes.id, name: communes.name })
+        .from(communes)
+        .where(inArray(communes.id, communeIds));
+      communeNames = communeIds.map((id) => communeRows.find((c) => c.id === id)?.name ?? "").filter(Boolean);
+      primaryCommune = communeNames[0];
     }
 
     // Mot de passe inutilisable — l'utilisateur définira le sien via le lien d'activation
@@ -316,12 +328,17 @@ superAdminRouter.post("/users", async (req, res) => {
         prenom,
         nom,
         role: role as "citoyen" | "mairie" | "instructeur" | "admin",
-        commune,
+        commune: primaryCommune ?? null,
         telephone,
         password_hash,
         role_config_id: role_config_id ?? null,
       })
       .returning();
+
+    // Insert commune relationships
+    if (communeIds && communeIds.length > 0) {
+      await db.insert(user_communes).values(communeIds.map((id) => ({ user_id: newUser!.id, commune_id: id })));
+    }
 
     // Token d'activation valable 7 jours
     const token = crypto.randomBytes(32).toString("hex");
@@ -334,7 +351,8 @@ superAdminRouter.post("/users", async (req, res) => {
     await sendActivationEmail({
       to: email,
       prenom,
-      serviceName: commune ?? "HEUREKA",
+      serviceName: primaryCommune ?? "Heurekia",
+      communeNames: communeNames.length > 0 ? communeNames : undefined,
       token,
     }).catch((err) => console.error("[mailer] invitation:", err));
 

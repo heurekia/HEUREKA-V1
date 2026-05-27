@@ -1588,7 +1588,8 @@ function Utilisateurs() {
   const [editRole, setEditRole] = useState<{ id: string; role: string } | null>(null);
   const [communesModal, setCommunesModal] = useState<{ id: string; name: string } | null>(null);
   const [userCommuneIds, setUserCommuneIds] = useState<Set<string>>(new Set());
-  const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", commune: "", telephone: "" });
+  const [formCommuneIds, setFormCommuneIds] = useState<Set<string>>(new Set());
+  const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1625,10 +1626,11 @@ function Utilisateurs() {
       setToast({ msg: "Tous les champs obligatoires sont requis", type: "error" }); return;
     }
     try {
-      await api.post("/admin/users", form);
+      await api.post("/admin/users", { ...form, communeIds: [...formCommuneIds] });
       setToast({ msg: `Invitation envoyée à ${form.email} — lien valable 7 jours.`, type: "success" });
       setShowModal(false);
-      setForm({ prenom: "", nom: "", email: "", role: "mairie", commune: "", telephone: "" });
+      setForm({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
+      setFormCommuneIds(new Set());
       load();
     } catch (e) {
       setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
@@ -1844,7 +1846,7 @@ function Utilisateurs() {
 
       {/* Create modal */}
       {showModal && (
-        <Modal title="Ajouter un utilisateur" onClose={() => setShowModal(false)}>
+        <Modal title="Ajouter un utilisateur" onClose={() => { setShowModal(false); setFormCommuneIds(new Set()); }}>
           <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <Field label="Prénom *">
@@ -1857,22 +1859,17 @@ function Utilisateurs() {
             <Field label="Email *">
               <Input type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
             </Field>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <Field label="Rôle *">
-                <Select value={form.role} onChange={(v) => setForm({ ...form, role: v })}>
-                  <option value="admin">Admin</option>
-                  <option value="mairie">Mairie</option>
-                  <option value="instructeur">Instructeur</option>
-                  <option value="citoyen">Citoyen</option>
-                </Select>
-              </Field>
-              <Field label="Commune">
-                <Select value={form.commune} onChange={(v) => setForm({ ...form, commune: v })}>
-                  <option value="">— Aucune —</option>
-                  {allCommunes.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
-                </Select>
-              </Field>
-            </div>
+            <Field label="Rôle *">
+              <Select value={form.role} onChange={(v) => setForm({ ...form, role: v })}>
+                <option value="admin">Admin</option>
+                <option value="mairie">Mairie</option>
+                <option value="instructeur">Instructeur</option>
+                <option value="citoyen">Citoyen</option>
+              </Select>
+            </Field>
+            <Field label={`Communes${formCommuneIds.size > 0 ? ` (${formCommuneIds.size} sélectionnée${formCommuneIds.size > 1 ? "s" : ""})` : ""}`}>
+              <CoverageSelector allCommunes={allCommunes} selectedIds={formCommuneIds} onChange={setFormCommuneIds} />
+            </Field>
             <Field label="Téléphone">
               <Input type="tel" value={form.telephone} onChange={(v) => setForm({ ...form, telephone: v })} />
             </Field>
@@ -1880,7 +1877,7 @@ function Utilisateurs() {
               ✉️ Un email d'invitation sera envoyé à cette adresse avec un lien d'activation valable 7 jours.
             </div>
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
-              <button onClick={() => setShowModal(false)} style={{ padding: "10px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, color: C.text }}>
+              <button onClick={() => { setShowModal(false); setFormCommuneIds(new Set()); }} style={{ padding: "10px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, color: C.text }}>
                 Annuler
               </button>
               <button onClick={handleCreate} style={{ padding: "10px 24px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 700 }}>

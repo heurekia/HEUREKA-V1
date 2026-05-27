@@ -2115,7 +2115,7 @@ function SignatairesPanel({ commune }: { commune: string }) {
   );
 }
 
-function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
+function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
   const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
   const [searchParams] = useSearchParams();
@@ -2168,7 +2168,7 @@ function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, communeIn
         ))}
       </div>
       {stab === "Général" && <CommuneGeneralTab commune={commune} isAdmin={isAdmin} onInseeUpdated={onInseeUpdated} />}
-      {stab === "Utilisateurs" && <CommuneUsersTab commune={commune} isAdmin={isAdmin} currentUserId={user?.id} />}
+      {stab === "Utilisateurs" && <CommuneUsersTab commune={commune} isAdmin={canManageUsers} currentUserId={user?.id} />}
 
       {stab === "Réglementation" && (
         <div style={{ minHeight: 400, margin: "0 -24px" }}>
@@ -6590,6 +6590,7 @@ const COMMUNE_STORAGE_KEY = (userId?: string) => `heureka_commune_${userId ?? "a
 export function MairieApp() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
+  const canManageUsers = user?.role === "admin" || user?.role === "mairie";
   const [commune, setCommuteRaw] = useState(user?.commune ?? "");
   const [userCommunes, setUserCommunes] = useState<string[]>([]);
   const [showNouveauDossier, setShowNouveauDossier] = useState(false);
@@ -6707,7 +6708,7 @@ export function MairieApp() {
             <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
             <Route path="carte" element={<CarteScreen commune={commune} setCommune={setCommune} communeInseeMap={communeInseeMap} />} />
             <Route path="statistiques" element={<StatistiquesScreen commune={commune} />} />
-            <Route path="parametres" element={<ParametresScreen commune={commune} isAdmin={isAdmin} communeInseeMap={communeInseeMap} onInseeUpdated={refreshCommuneInseeMap} />} />
+            <Route path="parametres" element={<ParametresScreen commune={commune} isAdmin={isAdmin} canManageUsers={canManageUsers} communeInseeMap={communeInseeMap} onInseeUpdated={refreshCommuneInseeMap} />} />
             <Route path="signatures" element={<SignaturesPendantesScreen />} />
             <Route path="profil" element={<InfosPersoScreen />} />
             <Route path="*" element={<Navigate to="/mairie" replace />} />

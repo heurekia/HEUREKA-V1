@@ -5,20 +5,43 @@ const resend = new Resend(process.env.RESEND_API_KEY);
 const FROM = process.env.SMTP_FROM ?? "Heurekia <notifications@heurekia.com>";
 const BASE_URL = process.env.FRONTEND_URL ?? "https://heurekia.com";
 
+function formatCommuneList(names: string[]): { html: string; text: string } {
+  if (names.length === 0) return { html: "", text: "" };
+  if (names.length === 1) return {
+    html: `de <strong>${names[0]}</strong>`,
+    text: `de ${names[0]}`,
+  };
+  const rest = names.slice(0, -1);
+  const last = names[names.length - 1]!;
+  return {
+    html: `de <strong>${rest.join("</strong>, <strong>")}</strong> et <strong>${last}</strong>`,
+    text: `de ${rest.join(", ")} et ${last}`,
+  };
+}
+
 export async function sendActivationEmail(opts: {
   to: string;
   prenom: string;
   serviceName: string;
   token: string;
   roleLabel?: string;
+  communeNames?: string[];
 }) {
   const link = `${BASE_URL}/activer-compte?token=${opts.token}`;
-  const identity = opts.roleLabel
-    ? `<strong>${opts.roleLabel}</strong> pour le compte de <strong>${opts.serviceName}</strong>`
-    : `agent du service urbanisme de <strong>${opts.serviceName}</strong>`;
-  const identityText = opts.roleLabel
-    ? `${opts.roleLabel} pour le compte de ${opts.serviceName}`
-    : `agent du service urbanisme de ${opts.serviceName}`;
+
+  let identity: string;
+  let identityText: string;
+  if (opts.roleLabel) {
+    identity = `<strong>${opts.roleLabel}</strong> pour le compte de <strong>${opts.serviceName}</strong>`;
+    identityText = `${opts.roleLabel} pour le compte de ${opts.serviceName}`;
+  } else if (opts.communeNames && opts.communeNames.length > 0) {
+    const { html, text } = formatCommuneList(opts.communeNames);
+    identity = `agent du service urbanisme ${html}`;
+    identityText = `agent du service urbanisme ${text}`;
+  } else {
+    identity = `agent du service urbanisme de <strong>${opts.serviceName}</strong>`;
+    identityText = `agent du service urbanisme de ${opts.serviceName}`;
+  }
 
   await resend.emails.send({
     from: FROM,
