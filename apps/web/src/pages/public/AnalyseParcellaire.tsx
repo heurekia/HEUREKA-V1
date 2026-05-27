@@ -727,7 +727,7 @@ export function AnalyseParcellaire() {
                 )}
 
                 {/* CTA */}
-                <Link to="/register" style={{ display: "block", background: "#4F46E5", color: "white", textAlign: "center", padding: "11px", borderRadius: 10, fontWeight: 700, fontSize: 14, textDecoration: "none", marginTop: 4 }}>
+                <Link to="/register?next=/citoyen/nouvelle-demande" style={{ display: "block", background: "#4F46E5", color: "white", textAlign: "center", padding: "11px", borderRadius: 10, fontWeight: 700, fontSize: 14, textDecoration: "none", marginTop: 4 }}>
                   Déposer une demande d'urbanisme →
                 </Link>
               </div>
