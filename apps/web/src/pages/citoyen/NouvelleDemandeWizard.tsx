@@ -224,7 +224,7 @@ export function NouvelleDemandeWizard() {
     try {
       const result = await api.post<Classification>("/dossiers/classify", {
         nature,
-        surface,
+        surface: nature !== "certificat" ? surface : undefined,
         parcelData: parcel,
         empriseExistante: empriseExistante || undefined,
         amenagementType: amenagementType || undefined,
