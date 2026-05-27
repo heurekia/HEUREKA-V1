@@ -12,6 +12,9 @@ type NatureId =
   | "petite_construction"
   | "amenagement"
   | "demolition"
+  | "changement_destination"
+  | "modification_aspect"
+  | "division_terrain"
   | "certificat";
 
 interface ParcelInfo {
@@ -124,6 +127,33 @@ const NATURES: Array<{
     activeText: "#991B1B",
   },
   {
+    id: "changement_destination",
+    emoji: "🔄",
+    label: "Changer la destination",
+    desc: "Garage → logement, commerce → habitat…",
+    color: "#FFEDD5",
+    border: "#FED7AA",
+    activeText: "#C2410C",
+  },
+  {
+    id: "modification_aspect",
+    emoji: "🎨",
+    label: "Modifier l'aspect extérieur",
+    desc: "Ravalement, toiture, fenêtres, volets…",
+    color: "#FDF4FF",
+    border: "#E9D5FF",
+    activeText: "#7E22CE",
+  },
+  {
+    id: "division_terrain",
+    emoji: "✂️",
+    label: "Diviser mon terrain",
+    desc: "Détachement, lotissement, partage…",
+    color: "#F0FDFA",
+    border: "#99F6E4",
+    activeText: "#0F766E",
+  },
+  {
     id: "certificat",
     emoji: "📋",
     label: "Connaître les règles",
@@ -150,6 +180,9 @@ const NATURE_LABELS: Record<string, string> = {
   petite_construction: "Petite construction (garage, abri de jardin, pergola…)",
   amenagement: "Aménagement de terrain",
   demolition: "Démolition",
+  changement_destination: "Changement de destination d'un bâtiment",
+  modification_aspect: "Modification de l'aspect extérieur",
+  division_terrain: "Division foncière / lotissement",
   certificat: "Demande de certificat d'urbanisme",
 };
 
@@ -223,6 +256,39 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
     descriptionPlaceholder: "Ex. : Ancien garage en parpaing de 40 m² en bout de parcelle, le bâtiment principal reste intact…",
     descriptionRequired: false,
   },
+  changement_destination: {
+    title: "Changement de destination",
+    subtitle: "Précisez la surface concernée et décrivez l'usage actuel et futur du bâtiment.",
+    surfaceLabel: "Surface plancher concernée",
+    surfaceMax: 500,
+    surfaceExistanteLabel: null,
+    showAmenagementType: false,
+    descriptionLabel: "Usage actuel → usage futur",
+    descriptionPlaceholder: "Ex. : Ancien commerce de 80 m² au rez-de-chaussée transformé en appartement. Pas de travaux de structure prévus, uniquement aménagement intérieur…",
+    descriptionRequired: false,
+  },
+  modification_aspect: {
+    title: "Modification de l'aspect extérieur",
+    subtitle: "Décrivez les éléments que vous souhaitez modifier (façade, toiture, ouvertures…).",
+    surfaceLabel: null,
+    surfaceMax: 300,
+    surfaceExistanteLabel: null,
+    showAmenagementType: false,
+    descriptionLabel: "Décrivez les modifications",
+    descriptionPlaceholder: "Ex. : Ravalement de façade avec nouvelle couleur (blanc cassé), remplacement des fenêtres bois par du PVC anthracite, remplacement des tuiles canal par tuiles mécaniques…",
+    descriptionRequired: false,
+  },
+  division_terrain: {
+    title: "Division foncière",
+    subtitle: "Précisez la surface du lot détaché et l'usage prévu.",
+    surfaceLabel: "Surface du lot à détacher",
+    surfaceMax: 2000,
+    surfaceExistanteLabel: null,
+    showAmenagementType: false,
+    descriptionLabel: "Décrivez la division envisagée",
+    descriptionPlaceholder: "Ex. : Détachement d'un lot de 400 m² au fond du jardin pour y construire une maison. Le terrain total fait 1 200 m². Accès par la rue latérale…",
+    descriptionRequired: false,
+  },
   certificat: {
     title: "Votre projet",
     subtitle: "Décrivez le projet envisagé — c'est la seule information dont nous avons besoin pour un CU.",
@@ -251,8 +317,10 @@ export function NouvelleDemandeWizard() {
   const [searching, setSearching] = useState(false);
   const [parcel, setParcel] = useState<ParcelInfo | null>(null);
 
-  // Step 2 – Nature
-  const [nature, setNature] = useState<NatureId | null>(null);
+  // Step 2 – Nature (multi-select)
+  const [natures, setNatures] = useState<NatureId[]>([]);
+  const toggleNature = (id: NatureId) =>
+    setNatures((prev) => prev.includes(id) ? prev.filter((n) => n !== id) : [...prev, id]);
 
   // Step 3 – Précisions
   const [surface, setSurface] = useState(20);
@@ -306,8 +374,8 @@ export function NouvelleDemandeWizard() {
     setStep(4);
     try {
       const result = await api.post<Classification>("/dossiers/classify", {
-        nature,
-        surface: nature !== "certificat" ? surface : undefined,
+        natures,
+        surface: natures.some((n) => n !== "certificat") ? surface : undefined,
         parcelData: parcel,
         empriseExistante: empriseExistante || undefined,
         amenagementType: amenagementType || undefined,
@@ -345,7 +413,7 @@ export function NouvelleDemandeWizard() {
     } finally {
       setClassifying(false);
     }
-  }, [nature, surface, parcel, empriseExistante, amenagementType, description]);
+  }, [natures, surface, parcel, empriseExistante, amenagementType, description]);
 
   // ── Submit dossier ───────────────────────────────────────────────────────────
   const submitDossier = useCallback(async () => {
@@ -357,13 +425,13 @@ export function NouvelleDemandeWizard() {
         adresse: parcel?.adresse ?? "",
         commune: parcel?.commune ?? "",
         description: description || undefined,
-        surface_plancher: nature !== "certificat" ? String(surface) : undefined,
+        surface_plancher: natures.some((n) => n !== "certificat") ? String(surface) : undefined,
       });
       setSubmitted(result);
     } finally {
       setSubmitting(false);
     }
-  }, [classification, parcel, description, nature, surface]);
+  }, [classification, parcel, description, natures, surface]);
 
   const next = () => setStep((s) => (s + 1) as Step);
   const prev = () => setStep((s) => (s - 1) as Step);
@@ -690,68 +758,83 @@ export function NouvelleDemandeWizard() {
           {/* ───── STEP 2 : Nature du projet ───── */}
           {step === 2 && (
             <div>
-              <div style={{ textAlign: "center", marginBottom: 28 }}>
+              <div style={{ textAlign: "center", marginBottom: 24 }}>
                 <div style={{ fontSize: 52, marginBottom: 10 }}>🔍</div>
                 <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
                   Quel est votre projet ?
                 </h2>
                 <p style={{ fontSize: 14, color: "#64748b" }}>
-                  Choisissez ce qui correspond le mieux à ce que vous souhaitez faire.
+                  Sélectionnez tout ce qui s'applique — vous pouvez cocher plusieurs cases.
                 </p>
               </div>
 
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
-                  gap: 12,
-                  marginBottom: 28,
+                  gridTemplateColumns: "1fr 1fr 1fr",
+                  gap: 10,
+                  marginBottom: 16,
                 }}
               >
                 {NATURES.map((n) => {
-                  const active = nature === n.id;
+                  const active = natures.includes(n.id);
                   return (
                     <button
                       key={n.id}
-                      onClick={() => setNature(n.id)}
+                      onClick={() => toggleNature(n.id)}
                       style={{
-                        padding: "18px 16px",
+                        padding: "14px 12px",
                         border: `2px solid ${active ? n.border : "#E2E8F0"}`,
-                        borderRadius: 14,
+                        borderRadius: 12,
                         background: active ? n.color : "white",
                         textAlign: "left",
                         cursor: "pointer",
                         transition: "all 0.15s",
                         display: "flex",
-                        alignItems: "flex-start",
-                        gap: 14,
+                        flexDirection: "column",
+                        gap: 8,
+                        position: "relative",
                       }}
                     >
-                      <span style={{ fontSize: 32, lineHeight: 1, flexShrink: 0 }}>{n.emoji}</span>
+                      {active && (
+                        <div style={{
+                          position: "absolute",
+                          top: 8,
+                          right: 8,
+                          width: 18,
+                          height: 18,
+                          borderRadius: "50%",
+                          background: n.activeText,
+                          display: "flex",
+                          alignItems: "center",
+                          justifyContent: "center",
+                          fontSize: 10,
+                          color: "white",
+                          fontWeight: 800,
+                          flexShrink: 0,
+                        }}>✓</div>
+                      )}
+                      <span style={{ fontSize: 28, lineHeight: 1 }}>{n.emoji}</span>
                       <div>
-                        <div
-                          style={{
-                            fontSize: 14,
-                            fontWeight: 700,
-                            color: active ? n.activeText : "#0F172A",
-                            marginBottom: 3,
-                          }}
-                        >
+                        <div style={{ fontSize: 13, fontWeight: 700, color: active ? n.activeText : "#0F172A", marginBottom: 2, lineHeight: 1.3 }}>
                           {n.label}
                         </div>
-                        <div style={{ fontSize: 12, color: active ? n.activeText : "#64748b", opacity: active ? 0.8 : 1 }}>
+                        <div style={{ fontSize: 11, color: active ? n.activeText : "#94a3b8", lineHeight: 1.4, opacity: active ? 0.85 : 1 }}>
                           {n.desc}
                         </div>
                       </div>
-                      {active && (
-                        <div style={{ marginLeft: "auto", color: n.activeText, fontSize: 16, flexShrink: 0 }}>
-                          ✓
-                        </div>
-                      )}
                     </button>
                   );
                 })}
               </div>
+
+              {natures.length > 0 && (
+                <div style={{ fontSize: 12, color: "#6366F1", marginBottom: 20, textAlign: "center" }}>
+                  {natures.length === 1
+                    ? "1 type de projet sélectionné"
+                    : `${natures.length} types de projet sélectionnés`}
+                </div>
+              )}
 
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <button
@@ -770,7 +853,7 @@ export function NouvelleDemandeWizard() {
                 </button>
                 <button
                   onClick={next}
-                  disabled={!nature}
+                  disabled={natures.length === 0}
                   style={{
                     padding: "11px 28px",
                     background: "#4F46E5",
@@ -779,8 +862,8 @@ export function NouvelleDemandeWizard() {
                     borderRadius: 10,
                     fontSize: 14,
                     fontWeight: 600,
-                    cursor: !nature ? "not-allowed" : "pointer",
-                    opacity: !nature ? 0.4 : 1,
+                    cursor: natures.length === 0 ? "not-allowed" : "pointer",
+                    opacity: natures.length === 0 ? 0.4 : 1,
                     transition: "opacity 0.2s",
                   }}
                 >
@@ -791,8 +874,19 @@ export function NouvelleDemandeWizard() {
           )}
 
           {/* ───── STEP 3 : Précisions ───── */}
-          {step === 3 && nature && (() => {
-            const cfg = STEP3_CONFIGS[nature];
+          {step === 3 && natures.length > 0 && (() => {
+            const primaryNature = natures.length === 1 ? natures[0] : null;
+            const cfg: Step3Config = primaryNature ? STEP3_CONFIGS[primaryNature] : {
+              title: "Votre projet",
+              subtitle: "Précisez les surfaces concernées et décrivez l'ensemble des travaux envisagés.",
+              surfaceLabel: natures.some((n) => n !== "certificat") ? "Surface plancher totale concernée" : null,
+              surfaceMax: 400,
+              surfaceExistanteLabel: null,
+              showAmenagementType: false,
+              descriptionLabel: "Décrivez l'ensemble de votre projet",
+              descriptionPlaceholder: "Décrivez les différents travaux envisagés, les surfaces concernées, et leur enchaînement prévu…",
+              descriptionRequired: false,
+            };
             const canAnalyse = !cfg.descriptionRequired || description.trim().length > 0;
             return (
               <div>
@@ -1362,9 +1456,9 @@ export function NouvelleDemandeWizard() {
                   {
                     icon: "🔨",
                     label: "Type de projet",
-                    value: NATURES.find((n) => n.id === nature)?.label ?? String(nature),
+                    value: natures.map((id) => NATURES.find((n) => n.id === id)?.label ?? id).join(", "),
                   },
-                  ...(nature !== "certificat"
+                  ...(natures.some((n) => n !== "certificat")
                     ? [{ icon: "📐", label: "Surface plancher", value: `${surface} m²` }]
                     : []),
                   { icon: "📋", label: "Procédure", value: classification?.libelle ?? "—" },
