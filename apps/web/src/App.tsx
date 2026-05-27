@@ -11,6 +11,7 @@ import { PolitiqueConfidentialite } from "./pages/public/PolitiqueConfidentialit
 import { ActiverCompte } from "./pages/public/ActiverCompte";
 import { CitoyenDashboard } from "./pages/citoyen/Dashboard";
 import { MesDemandes } from "./pages/citoyen/MesDemandes";
+import { NouvelleDemandeWizard } from "./pages/citoyen/NouvelleDemandeWizard";
 import { MessagerieCitoyen } from "./pages/citoyen/Messagerie";
 import { MesDocuments } from "./pages/citoyen/MesDocuments";
 import { CentreAide } from "./pages/citoyen/CentreAide";
@@ -61,6 +62,7 @@ export function App() {
           <Route path="/citoyen" element={<ProtectedRoute roles={["citoyen"]}><CitoyenLayout /></ProtectedRoute>}>
             <Route index element={<CitoyenDashboard />} />
             <Route path="mes-demandes" element={<MesDemandes />} />
+            <Route path="nouvelle-demande" element={<NouvelleDemandeWizard />} />
             <Route path="messagerie" element={<MessagerieCitoyen />} />
             <Route path="mes-documents" element={<MesDocuments />} />
             <Route path="centre-aide" element={<CentreAide />} />

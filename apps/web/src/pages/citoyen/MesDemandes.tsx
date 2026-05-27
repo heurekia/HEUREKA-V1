@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { api } from "../../lib/api";
 import { Button } from "../../components/ui/button";
 import { Card, CardContent } from "../../components/ui/card";
@@ -9,6 +9,7 @@ import { Input } from "../../components/ui/input";
 import { Search, Plus, Filter } from "lucide-react";
 
 export function MesDemandes() {
+  const navigate = useNavigate();
   const [dossiers, setDossiers] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState("");
@@ -28,7 +29,7 @@ export function MesDemandes() {
           <h1 className="text-2xl font-bold text-[#000020]">Mes demandes</h1>
           <p className="text-gray-500 text-sm">Suivez l'avancement de vos dossiers</p>
         </div>
-        <Button className="gap-2">
+        <Button className="gap-2" onClick={() => navigate("/citoyen/nouvelle-demande")}>
           <Plus className="w-4 h-4" />
           Nouvelle demande
         </Button>
@@ -57,7 +58,7 @@ export function MesDemandes() {
           ) : filtered.length === 0 ? (
             <div className="p-12 text-center text-gray-400">
               <p className="mb-4">Aucune demande trouvée.</p>
-              <Button>Déposer une demande</Button>
+              <Button onClick={() => navigate("/citoyen/nouvelle-demande")}>Déposer une demande</Button>
             </div>
           ) : (
             <Table>
