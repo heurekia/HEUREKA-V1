@@ -17,8 +17,6 @@ type Servitude = {
   gestionnaire?: string;
   datdecr?: string;
   typeprotect?: string;
-  // Temporary: raw GPU API properties for diagnosing category extraction
-  _debug_props?: Record<string, unknown>;
 };
 
 type ParcelAnalysis = {
@@ -687,15 +685,6 @@ export function AnalyseParcellaire() {
                                   )}
                                 </div>
 
-                                {/* Temporary debug — shows raw GPU API fields when category is missing */}
-                                {!s.categorie && s._debug_props && (
-                                  <details style={{ marginTop: 6 }}>
-                                    <summary style={{ fontSize: 10, color: "#9CA3AF", cursor: "pointer" }}>🔧 debug props (champs bruts API)</summary>
-                                    <pre style={{ fontSize: 9, color: "#6B7280", background: "#F9FAFB", borderRadius: 4, padding: 6, marginTop: 4, overflow: "auto", maxHeight: 200 }}>
-                                      {JSON.stringify(s._debug_props, null, 2)}
-                                    </pre>
-                                  </details>
-                                )}
                               </div>
                             ))}
                           </div>

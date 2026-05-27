@@ -76,7 +76,6 @@ export interface ServitudeResult {
   gestionnaire?: string;  // autorité gestionnaire (DRAC, DDT, etc.)
   datdecr?: string;       // date du décret / arrêté de protection
   typeprotect?: string;   // type de protection (ex: "Monument Historique classé")
-  _debug_props?: Record<string, unknown>; // raw GPU props for diagnosis (removed once category extraction is stable)
 }
 
 export interface RiskResult {
@@ -646,7 +645,6 @@ function mapSupFeature(f: GpuSupFeature, geomType: "surface" | "lineaire"): Serv
     gestionnaire: str(p, "gestionnaire"),
     datdecr:      parseGpuDate(p["datesrcass"]) ?? str(p, "datdecr", "datprotect", "datvalid"),
     typeprotect:  str(p, "typeass", "typeprotect", "typeacte"),
-    _debug_props: p, // temporary — removed once category extraction is confirmed stable
   };
 }
 
