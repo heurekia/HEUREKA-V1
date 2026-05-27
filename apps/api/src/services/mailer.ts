@@ -1,6 +1,11 @@
 import { Resend } from "resend";
 
-const resend = new Resend(process.env.RESEND_API_KEY);
+// Lazy init — avoids crash at startup when RESEND_API_KEY is not set (dev/test)
+let _resend: Resend | null = null;
+function getResend(): Resend {
+  if (!_resend) _resend = new Resend(process.env.RESEND_API_KEY ?? "");
+  return _resend;
+}
 
 const FROM = process.env.SMTP_FROM ?? "Heurekia <notifications@heurekia.com>";
 const BASE_URL = process.env.FRONTEND_URL ?? "https://heurekia.com";
@@ -43,7 +48,7 @@ export async function sendActivationEmail(opts: {
     identityText = `agent du service urbanisme de ${opts.serviceName}`;
   }
 
-  await resend.emails.send({
+  await getResend().emails.send({
     from: FROM,
     to: opts.to,
     subject: "Activez votre accès Heurekia",
@@ -107,7 +112,7 @@ export async function sendPasswordResetEmail(opts: {
   token: string;
 }) {
   const link = `${BASE_URL}/activer-compte?token=${opts.token}&mode=reset`;
-  await resend.emails.send({
+  await getResend().emails.send({
     from: FROM,
     to: opts.to,
     subject: "Réinitialisation de votre mot de passe Heurekia",
