@@ -64,6 +64,7 @@ interface UserItem {
   telephone: string | null;
   role_config_id: string | null;
   created_at: string;
+  activation_pending: boolean;
 }
 
 interface InseeCandidate {
@@ -1590,6 +1591,7 @@ function Utilisateurs() {
   const [userCommuneIds, setUserCommuneIds] = useState<Set<string>>(new Set());
   const [formCommuneIds, setFormCommuneIds] = useState<Set<string>>(new Set());
   const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
+  const [resendingId, setResendingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -1657,6 +1659,19 @@ function Utilisateurs() {
       load();
     } catch (e) {
       setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
+    }
+  };
+
+  const handleResend = async (id: string, email: string) => {
+    setResendingId(id);
+    try {
+      await api.post(`/admin/users/${id}/resend-invitation`);
+      setToast({ msg: `Invitation renvoyée à ${email}`, type: "success" });
+      load();
+    } catch (e) {
+      setToast({ msg: e instanceof Error ? e.message : "Erreur lors du renvoi", type: "error" });
+    } finally {
+      setResendingId(null);
     }
   };
 
@@ -1790,7 +1805,14 @@ function Utilisateurs() {
                       <div style={{ width: 32, height: 32, borderRadius: "50%", background: C.accentLight, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 12, fontWeight: 700, color: C.accent, flexShrink: 0 }}>
                         {u.prenom[0]}{u.nom[0]}
                       </div>
-                      <span style={{ fontWeight: 600, color: C.text }}>{u.prenom} {u.nom}</span>
+                      <div>
+                        <span style={{ fontWeight: 600, color: C.text }}>{u.prenom} {u.nom}</span>
+                        {u.activation_pending && (
+                          <div style={{ fontSize: 11, color: "#92400E", background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 4, padding: "1px 6px", marginTop: 2, display: "inline-block" }}>
+                            ⏳ En attente d'activation
+                          </div>
+                        )}
+                      </div>
                     </div>
                   </td>
                   <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>{u.email}</td>
@@ -1821,7 +1843,17 @@ function Utilisateurs() {
                     {new Date(u.created_at).toLocaleDateString("fr-FR")}
                   </td>
                   <td style={{ padding: "12px 16px" }}>
-                    <div style={{ display: "flex", gap: 6 }}>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+                      {u.activation_pending && (
+                        <button
+                          onClick={() => handleResend(u.id, u.email)}
+                          disabled={resendingId === u.id}
+                          style={{ padding: "6px 10px", background: "#FEF3C7", color: "#92400E", border: "1px solid #FDE68A", borderRadius: 6, cursor: resendingId === u.id ? "not-allowed" : "pointer", fontSize: 12, fontWeight: 600 }}
+                          title="Renvoyer l'email d'invitation"
+                        >
+                          ✉ {resendingId === u.id ? "…" : "Renvoyer"}
+                        </button>
+                      )}
                       <button
                         onClick={() => openCommunesModal(u)}
                         style={{ padding: "6px 10px", background: C.accentLight, color: C.accent, border: `1px solid ${C.accent}`, borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}

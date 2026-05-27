@@ -278,6 +278,12 @@ superAdminRouter.get("/users", async (req, res) => {
         telephone: users.telephone,
         role_config_id: users.role_config_id,
         created_at: users.created_at,
+        activation_pending: sql<boolean>`EXISTS (
+          SELECT 1 FROM password_tokens pt
+          WHERE pt.user_id = ${users.id}
+            AND pt.type = 'activation'
+            AND pt.used_at IS NULL
+        )`,
       })
       .from(users)
       .where(conditions.length > 0 ? and(...conditions) : undefined)
@@ -357,6 +363,41 @@ superAdminRouter.post("/users", async (req, res) => {
     }).catch((err) => console.error("[mailer] invitation:", err));
 
     res.status(201).json({ ...newUser, invited: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Resend invitation email to a user who hasn't activated their account
+superAdminRouter.post("/users/:id/resend-invitation", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [user] = await db.select({ id: users.id, email: users.email, prenom: users.prenom, commune: users.commune }).from(users).where(eq(users.id, id));
+    if (!user) return res.status(404).json({ error: "Utilisateur introuvable" });
+
+    // Expire all previous pending activation tokens
+    await db.update(password_tokens)
+      .set({ used_at: new Date() })
+      .where(and(eq(password_tokens.user_id, id), eq(password_tokens.type, "activation"), isNull(password_tokens.used_at)));
+
+    // Create a fresh 7-day token
+    const token = crypto.randomBytes(32).toString("hex");
+    await db.insert(password_tokens).values({
+      user_id: id,
+      token,
+      type: "activation",
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    });
+
+    await sendActivationEmail({
+      to: user.email,
+      prenom: user.prenom,
+      serviceName: user.commune ?? "Heurekia",
+      token,
+    }).catch((err) => console.error("[mailer] resend-invitation:", err));
+
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
