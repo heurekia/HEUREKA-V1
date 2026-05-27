@@ -15,7 +15,7 @@ export async function sendActivationEmail(opts: {
   await resend.emails.send({
     from: FROM,
     to: opts.to,
-    subject: "Activez votre compte Heurekia",
+    subject: "Activez votre accès Heurekia",
     html: `
 <!DOCTYPE html>
 <html lang="fr">
@@ -38,29 +38,27 @@ export async function sendActivationEmail(opts: {
         </tr>
         <tr>
           <td style="padding:40px 32px 32px">
-            <h1 style="margin:0 0 8px;font-size:22px;font-weight:800;color:#0F172A">Activez votre compte</h1>
-            <p style="margin:0 0 24px;font-size:15px;color:#64748b">Bonjour ${opts.prenom},</p>
-            <p style="margin:0 0 24px;font-size:15px;color:#374151;line-height:1.6">
-              Un accès à la plateforme Heurekia a été créé pour vous en tant qu'agent du service <strong>${opts.serviceName}</strong>.
-              Cliquez sur le bouton ci-dessous pour activer votre compte et définir votre mot de passe.
+            <h1 style="margin:0 0 20px;font-size:22px;font-weight:800;color:#0F172A">Activez votre accès Heurekia</h1>
+            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${opts.prenom},</p>
+            <p style="margin:0 0 28px;font-size:15px;color:#374151;line-height:1.7">
+              Un accès sécurisé à la plateforme Heurekia vient d'être créé pour vous en tant qu'agent du service urbanisme de <strong>${opts.serviceName}</strong>.<br><br>
+              Afin de finaliser l'activation de votre compte et définir votre mot de passe personnel, cliquez sur le bouton ci-dessous.
             </p>
             <table cellpadding="0" cellspacing="0" style="margin:0 0 32px">
               <tr>
-                <td style="background:#4F46E5;border-radius:8px;padding:14px 28px">
-                  <a href="${link}" style="color:white;text-decoration:none;font-size:15px;font-weight:600">Activer mon compte →</a>
+                <td style="background:#4F46E5;border-radius:8px;padding:14px 32px">
+                  <a href="${link}" style="color:white;text-decoration:none;font-size:15px;font-weight:600">Activer mon accès →</a>
                 </td>
               </tr>
             </table>
-            <p style="margin:0 0 8px;font-size:13px;color:#94a3b8">Ce lien est valable <strong>7 jours</strong> et ne peut être utilisé qu'une seule fois.</p>
-            <p style="margin:0;font-size:13px;color:#94a3b8">Si vous n'attendiez pas cet email, ignorez-le.</p>
+            <p style="margin:0 0 8px;font-size:13px;color:#94a3b8">Ce lien d'activation est personnel, valable <strong>7 jours</strong> et utilisable une seule fois.</p>
+            <p style="margin:0;font-size:13px;color:#94a3b8">Si vous n'êtes pas à l'origine de cette invitation, vous pouvez ignorer cet email.</p>
           </td>
         </tr>
         <tr>
           <td style="padding:20px 32px;border-top:1px solid #F1F5F9;background:#FAFAFA">
-            <p style="margin:0;font-size:12px;color:#94a3b8">
-              Heurekia — Plateforme de gestion des autorisations d'urbanisme<br>
-              <a href="${BASE_URL}/politique-confidentialite" style="color:#94a3b8">Politique de confidentialité</a>
-            </p>
+            <p style="margin:0 0 4px;font-size:12px;color:#94a3b8">Heurekia — Plateforme intelligente de gestion des autorisations d'urbanisme</p>
+            <p style="margin:0;font-size:12px;color:#94a3b8">© Heurekia — Tous droits réservés</p>
           </td>
         </tr>
       </table>
@@ -68,7 +66,7 @@ export async function sendActivationEmail(opts: {
   </table>
 </body>
 </html>`,
-    text: `Bonjour ${opts.prenom},\n\nUn accès Heurekia a été créé pour vous (${opts.serviceName}).\n\nActivez votre compte : ${link}\n\nCe lien est valable 7 jours.\n\nHeurekia`,
+    text: `Bonjour ${opts.prenom},\n\nUn accès sécurisé à la plateforme Heurekia vient d'être créé pour vous en tant qu'agent du service urbanisme de ${opts.serviceName}.\n\nAfin de finaliser l'activation de votre compte et définir votre mot de passe personnel, cliquez sur ce lien :\n${link}\n\nCe lien d'activation est personnel, valable 7 jours et utilisable une seule fois.\n\nSi vous n'êtes pas à l'origine de cette invitation, vous pouvez ignorer cet email.\n\nHeurekia — Plateforme intelligente de gestion des autorisations d'urbanisme`,
   });
 }
 
