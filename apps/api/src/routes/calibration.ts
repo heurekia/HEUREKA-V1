@@ -40,10 +40,19 @@ calibrationRouter.get("/zones/:id", async (req: AuthRequest, res) => {
 // ── Mettre à jour une règle ──
 calibrationRouter.patch("/rules/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
-    const updates = req.body;
+    const { topic, rule_text, value_min, value_max, value_exact, unit, validation_status, article_number } = req.body as Record<string, unknown>;
+    const updates: Record<string, unknown> = { updated_at: new Date() };
+    if (topic !== undefined) updates.topic = topic;
+    if (rule_text !== undefined) updates.rule_text = rule_text;
+    if (value_min !== undefined) updates.value_min = value_min;
+    if (value_max !== undefined) updates.value_max = value_max;
+    if (value_exact !== undefined) updates.value_exact = value_exact;
+    if (unit !== undefined) updates.unit = unit;
+    if (validation_status !== undefined) updates.validation_status = validation_status;
+    if (article_number !== undefined) updates.article_number = article_number;
     const [rule] = await db
       .update(zone_regulatory_rules)
-      .set({ ...updates, updated_at: new Date() })
+      .set(updates)
       .where(eq(zone_regulatory_rules.id, req.params.id as string))
       .returning();
     if (!rule) return res.status(404).json({ error: "Règle non trouvée" });

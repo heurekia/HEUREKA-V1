@@ -1,7 +1,11 @@
 import type { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 
-const JWT_SECRET = process.env.JWT_SECRET ?? "dev-secret-change-me";
+if (!process.env.JWT_SECRET) {
+  console.error("FATAL: JWT_SECRET env var is not set");
+  process.exit(1);
+}
+const JWT_SECRET = process.env.JWT_SECRET as string;
 
 export interface AuthRequest extends Request {
   user?: {

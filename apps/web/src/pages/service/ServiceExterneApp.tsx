@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
+import DOMPurify from "dompurify";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { api } from "../../lib/api";
@@ -435,7 +436,7 @@ function CourrierPreview({ html, service, agentName }: {
       {/* Corps du courrier */}
       <div
         className="tiptap-preview"
-        dangerouslySetInnerHTML={{ __html: html }}
+        dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }}
         style={{ minHeight: 300 }}
       />
 

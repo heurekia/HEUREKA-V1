@@ -5,7 +5,7 @@ import {
 } from "@heureka-v1/db";
 import { eq, and, or, desc } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
-import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
+import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 
 export const decisionsRouter = Router();
 decisionsRouter.use(requireAuth);
@@ -127,7 +127,7 @@ decisionsRouter.get("/dossier/:dossierId", async (req: AuthRequest, res) => {
 
 // ── POST /api/decisions/dossier/:dossierId ───────────────────────────────────
 // Create or update the draft decision (upsert)
-decisionsRouter.post("/dossier/:dossierId", async (req: AuthRequest, res) => {
+decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { dossierId } = req.params as { dossierId: string };
   const { type, motif, prescriptions, conditions, signataire_id, commune } = req.body as {
     type: string;
@@ -195,7 +195,7 @@ decisionsRouter.post("/dossier/:dossierId", async (req: AuthRequest, res) => {
 });
 
 // ── POST /api/decisions/:id/submit ──────────────────────────────────────────
-decisionsRouter.post("/:id/submit", async (req: AuthRequest, res) => {
+decisionsRouter.post("/:id/submit", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
 
   const [decision] = await db
@@ -230,7 +230,7 @@ decisionsRouter.post("/:id/submit", async (req: AuthRequest, res) => {
 });
 
 // ── POST /api/decisions/:id/sign ────────────────────────────────────────────
-decisionsRouter.post("/:id/sign", async (req: AuthRequest, res) => {
+decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const { arrete_numero } = req.body as { arrete_numero?: string };
 
@@ -289,7 +289,7 @@ decisionsRouter.post("/:id/sign", async (req: AuthRequest, res) => {
 });
 
 // ── POST /api/decisions/:id/refuse-signature ─────────────────────────────────
-decisionsRouter.post("/:id/refuse-signature", async (req: AuthRequest, res) => {
+decisionsRouter.post("/:id/refuse-signature", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const { motif } = req.body as { motif: string };
 
@@ -317,7 +317,7 @@ decisionsRouter.post("/:id/refuse-signature", async (req: AuthRequest, res) => {
 });
 
 // ── POST /api/decisions/:id/notify ──────────────────────────────────────────
-decisionsRouter.post("/:id/notify", async (req: AuthRequest, res) => {
+decisionsRouter.post("/:id/notify", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const { date_notification } = req.body as { date_notification?: string };
 
@@ -366,7 +366,7 @@ decisionsRouter.get("/communes/:commune/signataires", async (req: AuthRequest, r
 });
 
 // ── POST /api/decisions/communes/:commune/signataires ────────────────────────
-decisionsRouter.post("/communes/:commune/signataires", async (req: AuthRequest, res) => {
+decisionsRouter.post("/communes/:commune/signataires", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
   const { user_id, role, delegation_arrete, delegation_date } = req.body as {
     user_id: string; role: string; delegation_arrete?: string; delegation_date?: string;
@@ -382,7 +382,7 @@ decisionsRouter.post("/communes/:commune/signataires", async (req: AuthRequest, 
 });
 
 // ── PUT /api/decisions/communes/:commune/signataires/:id ─────────────────────
-decisionsRouter.put("/communes/:commune/signataires/:id", async (req: AuthRequest, res) => {
+decisionsRouter.put("/communes/:commune/signataires/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const { role, delegation_arrete, delegation_date, active } = req.body as {
     role?: string; delegation_arrete?: string; delegation_date?: string; active?: boolean;
@@ -399,7 +399,7 @@ decisionsRouter.put("/communes/:commune/signataires/:id", async (req: AuthReques
 });
 
 // ── DELETE /api/decisions/communes/:commune/signataires/:id ──────────────────
-decisionsRouter.delete("/communes/:commune/signataires/:id", async (req: AuthRequest, res) => {
+decisionsRouter.delete("/communes/:commune/signataires/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   await db.update(signataires).set({ active: false }).where(eq(signataires.id, id));
   res.json({ ok: true });

@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { dossiers, users, dossier_messages, dossier_pieces_jointes, external_services, service_communes, communes, courrier_templates, dossier_consultations } from "@heureka-v1/db";
-import { eq, desc, sql, inArray, and } from "drizzle-orm";
+import { eq, desc, ilike, inArray, and, or, notInArray } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 
 export const serviceRouter = Router();
@@ -74,7 +74,7 @@ serviceRouter.get("/dossiers", async (req: AuthRequest, res) => {
     const { names } = await getServiceCommunes(req.user!.id);
     if (names.length === 0) return res.json([]);
 
-    const communePattern = names.map(n => `dossiers.commune ILIKE '${n.replace(/'/g, "''")}'`).join(" OR ");
+    const communeFilter = or(...names.map(n => ilike(dossiers.commune, n)));
     const rows = await db.select({
       id: dossiers.id, numero: dossiers.numero, type: dossiers.type, status: dossiers.status,
       adresse: dossiers.adresse, commune: dossiers.commune, description: dossiers.description,
@@ -84,7 +84,7 @@ serviceRouter.get("/dossiers", async (req: AuthRequest, res) => {
     })
       .from(dossiers)
       .leftJoin(users, eq(dossiers.user_id, users.id))
-      .where(sql.raw(`(${communePattern}) AND dossiers.status NOT IN ('brouillon')`))
+      .where(and(communeFilter, notInArray(dossiers.status, ["brouillon" as const])))
       .orderBy(desc(dossiers.created_at));
 
     res.json(rows.map(r => ({

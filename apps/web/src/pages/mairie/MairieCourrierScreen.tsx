@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback, type Dispatch, type SetStateAction } from "react";
+import DOMPurify from "dompurify";
 import { Rnd } from "react-rnd";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
@@ -218,7 +219,7 @@ function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]
                 fontFamily: b.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif",
                 textAlign: b.textAlign, background: BLOCK_BG[b.background],
                 border: BLOCK_BORDER[b.borderStyle], overflow: "hidden",
-              }} dangerouslySetInnerHTML={{ __html: b.html }} />
+              }} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(b.html) }} />
             ))}
           </div>
           <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: FTR_H, borderTop: "1px solid #CBD5E1", display: "flex", alignItems: "center", padding: "0 20px", background: "white" }}>
@@ -231,7 +232,7 @@ function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]
         <div style={{ background: "white", padding: "24px 40px", width: PAGE_W, boxSizing: "border-box" }}>
           <div style={{ paddingTop: 18, borderTop: "1px solid #CBD5E1" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>Références législatives et réglementaires</div>
-            <div dangerouslySetInnerHTML={{ __html: extraHtml }} />
+            <div dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(extraHtml) }} />
           </div>
         </div>
       )}
@@ -262,13 +263,13 @@ function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; l
         </div>
       )}
       <div className="lh-print-body" style={{ padding: "24px 36px", minHeight: 400 }}>
-        <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: html }} />
+        <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />
         {extraHtml && (
           <div style={{ marginTop: 28, paddingTop: 18, borderTop: "1px solid #CBD5E1" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>
               Références législatives et réglementaires
             </div>
-            <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: extraHtml }} />
+            <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(extraHtml) }} />
           </div>
         )}
       </div>
@@ -625,7 +626,7 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
                 </div>
               )}
               {viewingArticle.article_html
-                ? <div style={{ fontSize: 13, lineHeight: 1.7, color: "#374151" }} dangerouslySetInnerHTML={{ __html: viewingArticle.article_html }} />
+                ? <div style={{ fontSize: 13, lineHeight: 1.7, color: "#374151" }} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(viewingArticle.article_html) }} />
                 : <div style={{ fontSize: 13, color: "#94a3b8", fontStyle: "italic" }}>Texte non renseigné. Ajoutez-le dans Administration → Configuration.</div>
               }
             </div>

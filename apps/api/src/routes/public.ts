@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import { gpuDebug } from "../services/gpuDebug.js";
+import { requireAuth, requireRole } from "../middlewares/auth.js";
 
 export const publicRouter = Router();
 
@@ -39,7 +40,7 @@ publicRouter.get("/analyse", async (req, res) => {
  * Returns raw GPU API responses for all endpoints at the given coordinates.
  * Used to verify field names, available data and mappings.
  */
-publicRouter.get("/debug/gpu", async (req, res) => {
+publicRouter.get("/debug/gpu", requireAuth, requireRole("admin"), async (req, res) => {
   const lat = parseFloat(req.query.lat as string);
   const lng = parseFloat(req.query.lng as string);
   if (isNaN(lat) || isNaN(lng)) return res.status(400).json({ error: "lat et lng requis" });

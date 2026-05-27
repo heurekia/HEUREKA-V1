@@ -18,6 +18,9 @@ import { decisionsRouter } from "./routes/decisions.js";
 
 export const app = express();
 
+// Trust the first proxy (Railway, Render, etc.) so rate-limiters see the real client IP
+app.set("trust proxy", 1);
+
 app.use(compression());
 app.use(helmet({
   contentSecurityPolicy: {
@@ -35,7 +38,7 @@ app.use(helmet({
 }));
 app.use(cookieParser());
 app.use(cors({ origin: process.env.FRONTEND_URL ?? process.env.RAILWAY_STATIC_URL ?? "http://localhost:5173", credentials: true }));
-app.use(express.json({ limit: "50mb" }));
+app.use(express.json({ limit: "2mb" }));
 
 app.use("/api/public", publicRouter);
 app.use("/api/auth", authRouter);

@@ -62,7 +62,6 @@ const registerSchema = z.object({
   password: z.string().min(8),
   prenom: z.string().min(1),
   nom: z.string().min(1),
-  role: z.enum(["citoyen", "mairie", "instructeur", "admin"]).default("citoyen"),
   commune: z.string().optional(),
   telephone: z.string().optional(),
 });
@@ -82,7 +81,7 @@ authRouter.post("/register", registerLimiter, async (req: AuthRequest, res) => {
         password_hash,
         prenom: data.prenom,
         nom: data.nom,
-        role: data.role,
+        role: "citoyen" as const,
         commune: data.commune,
         telephone: data.telephone,
       })

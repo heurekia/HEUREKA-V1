@@ -70,10 +70,13 @@ async function seed() {
     console.log(`✅ Admin déjà présent : ${adminEmail} (mot de passe inchangé)`);
   } else {
     const adminPassword = process.env.ADMIN_PASSWORD;
-    if (!adminPassword) throw new Error("ADMIN_PASSWORD requis pour créer le compte admin initial");
-    const pw = await bcrypt.hash(adminPassword, 10);
-    const admin = await upsertUser({ email: adminEmail, password_hash: pw, prenom: "Evi", nom: "DELETANG", role: "admin" });
-    console.log(`✅ Admin créé : ${admin.email}`);
+    if (!adminPassword) {
+      console.warn(`⚠️  ADMIN_PASSWORD non défini — compte admin non créé. Définissez ADMIN_PASSWORD et relancez le seed.`);
+    } else {
+      const pw = await bcrypt.hash(adminPassword, 10);
+      const admin = await upsertUser({ email: adminEmail, password_hash: pw, prenom: "Evi", nom: "DELETANG", role: "admin" });
+      console.log(`✅ Admin créé : ${admin.email}`);
+    }
   }
 
   const communes_ref = [
