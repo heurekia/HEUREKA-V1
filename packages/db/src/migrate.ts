@@ -459,6 +459,24 @@ CREATE TABLE IF NOT EXISTS gpu_parcel_cache (
   hit_count       integer NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_gpu_parcel_cache_parcelle ON gpu_parcel_cache(parcelle_id);
+
+CREATE TABLE IF NOT EXISTS dossier_consultations (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id      uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  service_name    text NOT NULL,
+  service_type    text NOT NULL,
+  status          text NOT NULL DEFAULT 'en_attente',
+  favorable       boolean,
+  avis            text,
+  date_envoi      timestamp NOT NULL DEFAULT now(),
+  date_reponse    timestamp,
+  created_by_id   uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at      timestamp NOT NULL DEFAULT now(),
+  updated_at      timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dossier_consultations_dossier ON dossier_consultations(dossier_id);
+ALTER TABLE dossier_consultations ADD COLUMN IF NOT EXISTS external_service_id uuid REFERENCES external_services(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_dossier_consultations_service ON dossier_consultations(external_service_id);
 `;
 
 async function main() {

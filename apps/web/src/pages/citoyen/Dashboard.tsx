@@ -45,7 +45,7 @@ export function CitoyenDashboard() {
       title: "Nouvelle demande",
       desc: "Permis de construire, déclaration préalable...",
       icon: FilePlus,
-      to: "/citoyen/mes-demandes",
+      to: "/citoyen/nouvelle-demande",
       color: "bg-heureka-500 text-white",
     },
     {
