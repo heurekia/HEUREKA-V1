@@ -819,8 +819,8 @@ function CommuneDetail() {
   const handleAddUser = async () => {
     if (!commune) return;
     try {
-      const result = await api.post<{ tempPassword: string } & UserItem>("/admin/users", { ...newUser, commune: commune.name });
-      setToast({ msg: `Agent créé. Mot de passe temporaire: ${result.tempPassword}`, type: "success" });
+      await api.post("/admin/users", { ...newUser, commune: commune.name });
+      setToast({ msg: `Invitation envoyée à ${newUser.email} — lien valable 7 jours.`, type: "success" });
       setShowAddUser(false);
       setNewUser({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
       loadData();
@@ -1624,8 +1624,8 @@ function Utilisateurs() {
       setToast({ msg: "Tous les champs obligatoires sont requis", type: "error" }); return;
     }
     try {
-      const result = await api.post<{ tempPassword: string } & UserItem>("/admin/users", form);
-      setToast({ msg: `Utilisateur créé ! Mot de passe temporaire : ${result.tempPassword}`, type: "success" });
+      await api.post("/admin/users", form);
+      setToast({ msg: `Invitation envoyée à ${form.email} — lien valable 7 jours.`, type: "success" });
       setShowModal(false);
       setForm({ prenom: "", nom: "", email: "", role: "mairie", commune: "", telephone: "" });
       load();

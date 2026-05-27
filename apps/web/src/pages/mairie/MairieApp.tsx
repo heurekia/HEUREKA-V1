@@ -1697,7 +1697,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
     try {
       const selectedConfig = roleConfigs.find(rc => rc.id === addForm.role_config_id);
       const role = selectedConfig ? selectedConfig.base_role : addForm.role;
-      const created = await api.post<{ tempPassword?: string }>(`/mairie/admin/users?commune=${encodeURIComponent(commune)}`, {
+      await api.post(`/mairie/admin/users?commune=${encodeURIComponent(commune)}`, {
         prenom: addForm.prenom,
         nom: addForm.nom,
         email: addForm.email,
@@ -1705,7 +1705,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
         role,
         role_config_id: addForm.role_config_id || null,
       });
-      setAddedPw(created.tempPassword ?? "—");
+      setAddedPw("invitation_sent");
       load();
     } catch (e: unknown) {
       setAddError(e instanceof Error ? e.message : "Erreur lors de la création.");
@@ -1854,19 +1854,18 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
           <div style={{ background: "white", borderRadius: 16, padding: 28, width: 480, boxShadow: "0 24px 64px rgba(0,0,0,0.2)" }}>
             {addedPw ? (
               <>
-                <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Compte créé avec succès</div>
-                <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>Communiquez les informations de connexion suivantes à l'utilisateur :</div>
-                <div style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 8, padding: 16, marginBottom: 20 }}>
-                  <div style={{ fontSize: 12, color: "#166534", marginBottom: 4 }}><strong>Email :</strong> {addForm.email}</div>
-                  <div style={{ fontSize: 12, color: "#166534" }}><strong>Mot de passe temporaire :</strong> <code style={{ background: "#DCFCE7", padding: "2px 6px", borderRadius: 4 }}>{addedPw}</code></div>
+                <div style={{ fontSize: 36, textAlign: "center", marginBottom: 12 }}>✉️</div>
+                <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 8, textAlign: "center" }}>Invitation envoyée !</div>
+                <div style={{ background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 8, padding: 16, marginBottom: 20, fontSize: 13, color: "#166534", lineHeight: 1.6 }}>
+                  Un email d'invitation a été envoyé à <strong>{addForm.email}</strong>.<br />
+                  L'agent recevra un lien pour définir son mot de passe, valable <strong>7 jours</strong>.
                 </div>
-                <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 20 }}>L'utilisateur devra changer son mot de passe à la première connexion.</div>
                 <button onClick={() => setShowAddModal(false)} style={{ width: "100%", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "10px 0", fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Fermer</button>
               </>
             ) : (
               <>
                 <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Ajouter un agent</div>
-                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Un mot de passe temporaire sera généré. L'agent pourra le modifier à sa première connexion.</div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Un email d'invitation sera envoyé à l'agent pour qu'il définisse son propre mot de passe.</div>
                 {addError && <div style={{ background: "#FFF5F5", border: "1px solid #FECACA", borderRadius: 8, padding: "10px 14px", fontSize: 12, color: "#DC2626", marginBottom: 14 }}>{addError}</div>}
                 <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 12 }}>
                   {[["Prénom", "prenom"], ["Nom", "nom"]].map(([l, k]) => (

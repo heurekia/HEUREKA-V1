@@ -306,8 +306,8 @@ superAdminRouter.post("/users", async (req, res) => {
       return res.status(400).json({ error: "email, prenom, nom et role sont requis" });
     }
 
-    const tempPassword = crypto.randomBytes(12).toString("base64url").slice(0, 16);
-    const password_hash = await bcrypt.hash(tempPassword, 10);
+    // Mot de passe inutilisable — l'utilisateur définira le sien via le lien d'activation
+    const password_hash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
 
     const [newUser] = await db
       .insert(users)
@@ -323,7 +323,22 @@ superAdminRouter.post("/users", async (req, res) => {
       })
       .returning();
 
-    res.status(201).json({ ...newUser, tempPassword });
+    // Token d'activation valable 7 jours
+    const token = crypto.randomBytes(32).toString("hex");
+    await db.insert(password_tokens).values({
+      user_id: newUser!.id,
+      token,
+      type: "activation",
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    });
+    await sendActivationEmail({
+      to: email,
+      prenom,
+      serviceName: commune ?? "HEUREKA",
+      token,
+    }).catch((err) => console.error("[mailer] invitation:", err));
+
+    res.status(201).json({ ...newUser, invited: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

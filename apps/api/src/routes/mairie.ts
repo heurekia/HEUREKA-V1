@@ -477,8 +477,9 @@ mairieRouter.post("/admin/users", requireRole("admin"), async (req: AuthRequest,
     if (existing) return res.status(409).json({ error: "Un compte avec cet email existe déjà" });
     const { default: bcrypt } = await import("bcryptjs");
     const { randomBytes } = await import("crypto");
-    const tempPassword = randomBytes(12).toString("base64url").slice(0, 16);
-    const hash = await bcrypt.hash(tempPassword, 10);
+    const { sendActivationEmail } = await import("../services/mailer.js");
+    const { password_tokens } = await import("@heureka-v1/db");
+    const hash = await bcrypt.hash(randomBytes(32).toString("hex"), 10);
     const [newUser] = await db.insert(users).values({
       email: email.toLowerCase().trim(), prenom, nom,
       role: role as "mairie" | "instructeur" | "admin",
@@ -486,7 +487,20 @@ mairieRouter.post("/admin/users", requireRole("admin"), async (req: AuthRequest,
       password_hash: hash,
       role_config_id: role_config_id ?? null,
     }).returning({ id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, role: users.role, commune: users.commune, role_config_id: users.role_config_id });
-    res.status(201).json({ ...newUser, tempPassword });
+    const token = randomBytes(32).toString("hex");
+    await db.insert(password_tokens).values({
+      user_id: newUser!.id,
+      token,
+      type: "activation",
+      expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+    });
+    await sendActivationEmail({
+      to: email.toLowerCase().trim(),
+      prenom,
+      serviceName: communeName || "HEUREKA",
+      token,
+    }).catch((err) => console.error("[mailer] invitation:", err));
+    res.status(201).json({ ...newUser, invited: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

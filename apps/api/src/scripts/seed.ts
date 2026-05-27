@@ -60,16 +60,21 @@ async function seedRoles() {
 async function seed() {
   console.log("🌱 Seeding HEUREKA V1 database...\n");
 
-  const adminPassword = process.env.ADMIN_PASSWORD;
-  if (!adminPassword) throw new Error("ADMIN_PASSWORD manquant dans les variables d'environnement");
-  const pw = await bcrypt.hash(adminPassword, 10);
-
   const adminEmail = process.env.ADMIN_EMAIL ?? "admin@heureka.fr";
 
   await seedRoles();
 
-  const admin = await upsertUser({ email: adminEmail, password_hash: pw, prenom: "Evi", nom: "DELETANG", role: "admin" });
-  console.log(`✅ Admin: ${admin.email}`);
+  // Si l'admin existe déjà, on ne touche pas au mot de passe
+  const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, adminEmail)).limit(1);
+  if (existing) {
+    console.log(`✅ Admin déjà présent : ${adminEmail} (mot de passe inchangé)`);
+  } else {
+    const adminPassword = process.env.ADMIN_PASSWORD;
+    if (!adminPassword) throw new Error("ADMIN_PASSWORD requis pour créer le compte admin initial");
+    const pw = await bcrypt.hash(adminPassword, 10);
+    const admin = await upsertUser({ email: adminEmail, password_hash: pw, prenom: "Evi", nom: "DELETANG", role: "admin" });
+    console.log(`✅ Admin créé : ${admin.email}`);
+  }
 
   const communes_ref = [
     { name: "Tours",               insee_code: "37261", zip_code: "37000" },
