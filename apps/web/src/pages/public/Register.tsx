@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -11,6 +11,8 @@ export function Register() {
   const [loading, setLoading] = useState(false);
   const { register } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const next = searchParams.get("next");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -18,13 +20,15 @@ export function Register() {
     setLoading(true);
     try {
       await register(form);
-      navigate("/citoyen", { replace: true });
+      navigate(next ?? "/citoyen", { replace: true });
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur d'inscription");
     } finally {
       setLoading(false);
     }
   };
+
+  const loginHref = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -36,8 +40,13 @@ export function Register() {
             </div>
             <span className="text-xl font-bold text-gray-900">HEUREKA</span>
           </Link>
-          <h1 className="text-2xl font-bold text-gray-900">Inscription</h1>
-          <p className="text-gray-500 text-sm">Créez votre compte citoyen</p>
+          {next && (
+            <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3 mb-2 text-sm text-indigo-700">
+              Créez votre compte pour déposer votre demande — c'est gratuit et rapide.
+            </div>
+          )}
+          <h1 className="text-2xl font-bold text-gray-900">Créer mon compte</h1>
+          <p className="text-gray-500 text-sm">Gratuit · Aucun engagement</p>
         </CardHeader>
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
@@ -47,11 +56,11 @@ export function Register() {
             <div className="grid grid-cols-2 gap-3">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Prénom</label>
-                <Input value={form.prenom} onChange={(e) => setForm({ ...form, prenom: e.target.value })} required />
+                <Input value={form.prenom} onChange={(e) => setForm({ ...form, prenom: e.target.value })} required placeholder="Marie" />
               </div>
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-1">Nom</label>
-                <Input value={form.nom} onChange={(e) => setForm({ ...form, nom: e.target.value })} required />
+                <Input value={form.nom} onChange={(e) => setForm({ ...form, nom: e.target.value })} required placeholder="Dupont" />
               </div>
             </div>
             <div>
@@ -63,12 +72,16 @@ export function Register() {
               <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required placeholder="Minimum 8 caractères" minLength={8} />
             </div>
             <Button type="submit" className="w-full" disabled={loading}>
-              {loading ? "Inscription..." : "Créer mon compte"}
+              {loading ? "Création du compte..." : "Créer mon compte →"}
             </Button>
+            <p className="text-center text-xs text-gray-400">
+              En créant un compte, vous acceptez nos{" "}
+              <Link to="/mentions-legales" className="underline hover:text-gray-600">conditions d'utilisation</Link>.
+            </p>
           </form>
           <p className="text-center text-sm text-gray-500 mt-4">
             Déjà un compte ?{" "}
-            <Link to="/login" className="text-heureka-600 font-medium hover:underline">
+            <Link to={loginHref} className="text-heureka-600 font-medium hover:underline">
               Se connecter
             </Link>
           </p>

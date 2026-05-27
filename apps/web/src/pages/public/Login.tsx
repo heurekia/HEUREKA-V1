@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { useNavigate, Link } from "react-router-dom";
+import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
@@ -12,6 +12,8 @@ export function Login() {
   const [loading, setLoading] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const next = searchParams.get("next");
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -19,13 +21,19 @@ export function Login() {
     setLoading(true);
     try {
       const u = await login(email, password);
-      navigate(u.role === "mairie" || u.role === "instructeur" ? "/mairie" : "/citoyen", { replace: true });
+      if (u.role === "mairie" || u.role === "instructeur") {
+        navigate("/mairie", { replace: true });
+      } else {
+        navigate(next ?? "/citoyen", { replace: true });
+      }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Erreur de connexion");
+      setError(err instanceof Error ? err.message : "Identifiants incorrects");
     } finally {
       setLoading(false);
     }
   };
+
+  const registerHref = next ? `/register?next=${encodeURIComponent(next)}` : "/register";
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -37,6 +45,11 @@ export function Login() {
             </div>
             <span className="text-xl font-bold text-gray-900">HEUREKA</span>
           </Link>
+          {next && (
+            <div className="bg-indigo-50 border border-indigo-100 rounded-lg px-4 py-3 mb-2 text-sm text-indigo-700">
+              Connectez-vous pour continuer votre démarche.
+            </div>
+          )}
           <h1 className="text-2xl font-bold text-gray-900">Connexion</h1>
           <p className="text-gray-500 text-sm">Accédez à votre espace personnel</p>
         </CardHeader>
@@ -59,8 +72,8 @@ export function Login() {
           </form>
           <p className="text-center text-sm text-gray-500 mt-4">
             Pas encore de compte ?{" "}
-            <Link to="/register" className="text-heureka-600 font-medium hover:underline">
-              S'inscrire
+            <Link to={registerHref} className="text-heureka-600 font-medium hover:underline">
+              S'inscrire gratuitement
             </Link>
           </p>
         </CardContent>

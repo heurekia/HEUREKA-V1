@@ -1,6 +1,7 @@
 import { useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { FileText, MessageSquare, Eye, Search } from "lucide-react";
+import { useAuth } from "../../hooks/useAuth";
 
 type BanSuggestion = { label: string };
 
@@ -91,6 +92,12 @@ export function Accueil() {
   const [showSugg, setShowSugg] = useState(false);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
+  const { user } = useAuth();
+
+  const handleDeposer = () => {
+    if (user?.role === "citoyen") navigate("/citoyen/nouvelle-demande");
+    else navigate("/register?next=/citoyen/nouvelle-demande");
+  };
 
   const goAnalyse = (q: string) => {
     setSuggestions([]);
@@ -122,11 +129,31 @@ export function Accueil() {
             simplifié,{" "}
             <span className="text-heureka-500">pour tous.</span>
           </h1>
-          <p className="text-lg text-gray-500 leading-relaxed">
+          <p className="text-lg text-gray-500 leading-relaxed mb-8">
             Comprenez les règles applicables à votre projet,<br />
             déposez vos demandes et suivez leur avancement,<br />
             simplement.
           </p>
+          <div className="flex items-center gap-3 flex-wrap">
+            <button
+              onClick={handleDeposer}
+              className="flex items-center gap-2 bg-heureka-500 hover:bg-heureka-600 text-white px-6 py-3.5 rounded-xl font-semibold text-base transition-colors shadow-sm shadow-heureka-200"
+            >
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="12" y1="18" x2="12" y2="12"/><line x1="9" y1="15" x2="15" y2="15"/>
+              </svg>
+              Déposer une demande d'urbanisme
+            </button>
+            <Link to="/analyse-parcellaire">
+              <button className="flex items-center gap-2 border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 px-5 py-3.5 rounded-xl font-medium text-base transition-colors">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z"/><circle cx="12" cy="10" r="3"/>
+                </svg>
+                Analyser mon terrain
+              </button>
+            </Link>
+          </div>
+          <p className="text-xs text-gray-400 mt-4">Gratuit · Sans rendez-vous · En 10 minutes</p>
         </div>
         <div className="hidden lg:block flex-shrink-0">
           <HouseIllustration />
@@ -232,16 +259,19 @@ export function Accueil() {
             <p className="text-sm text-gray-500">Créez votre compte gratuitement pour déposer vos demandes<br />et suivre tous vos projets.</p>
           </div>
           <div className="flex gap-3 flex-shrink-0">
-            <Link to="/analyse-parcellaire">
-              <button className="border border-heureka-500 text-heureka-500 bg-white hover:bg-indigo-50 px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors">
-                En savoir plus
-              </button>
-            </Link>
-            <Link to="/register">
-              <button className="bg-heureka-500 hover:bg-heureka-600 text-white px-5 py-2.5 rounded-lg text-sm font-semibold transition-colors">
-                Créer un compte
-              </button>
-            </Link>
+            <button
+              onClick={handleDeposer}
+              className="bg-heureka-500 hover:bg-heureka-600 text-white px-6 py-3 rounded-lg text-sm font-semibold transition-colors"
+            >
+              Déposer une demande →
+            </button>
+            {!user && (
+              <Link to="/login">
+                <button className="border border-gray-200 bg-white hover:bg-gray-50 text-gray-700 px-5 py-3 rounded-lg text-sm font-semibold transition-colors">
+                  Se connecter
+                </button>
+              </Link>
+            )}
           </div>
         </div>
       </section>
