@@ -64,7 +64,7 @@ export function MairieLogin() {
               </svg>
             </div>
             <div>
-              <div style={{ color: "white", fontWeight: 800, fontSize: 20, letterSpacing: "0.05em", lineHeight: 1 }}>HEUREKA</div>
+              <div style={{ color: "white", fontWeight: 800, fontSize: 20, letterSpacing: "0.05em", lineHeight: 1 }}>HEUREKIA</div>
               <div style={{ color: "#64748b", fontSize: 11, marginTop: 2, letterSpacing: "0.08em", textTransform: "uppercase" }}>Espace Mairie</div>
             </div>
           </div>

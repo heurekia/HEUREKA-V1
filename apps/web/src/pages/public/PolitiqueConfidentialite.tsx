@@ -7,11 +7,11 @@ export function PolitiqueConfidentialite() {
       <section className="mb-8">
         <h2 className="text-lg font-semibold text-[#000020] mb-3">1. Responsable du traitement</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
-          HEUREKA SAS, [adresse], est responsable du traitement de vos données personnelles collectées via la plateforme HEUREKA.
+          HEUREKIA SAS, [adresse], est responsable du traitement de vos données personnelles collectées via la plateforme HEUREKIA.
         </p>
         <p className="text-sm text-gray-600 mt-2">
           Délégué à la Protection des Données (DPD) :{" "}
-          <a href="mailto:dpd@heureka-urba.fr" className="text-heureka-500 hover:underline">dpd@heureka-urba.fr</a>
+          <a href="mailto:dpd@heurekia-urba.fr" className="text-heureka-500 hover:underline">dpd@heurekia-urba.fr</a>
         </p>
       </section>
 
@@ -80,7 +80,7 @@ export function PolitiqueConfidentialite() {
         </ul>
         <p className="text-sm text-gray-600 mt-3">
           Pour exercer ces droits ou pour toute question, contactez le DPD :{" "}
-          <a href="mailto:dpd@heureka-urba.fr" className="text-heureka-500 hover:underline">dpd@heureka-urba.fr</a>.
+          <a href="mailto:dpd@heurekia-urba.fr" className="text-heureka-500 hover:underline">dpd@heurekia-urba.fr</a>.
           En cas de réclamation non résolue, vous pouvez saisir la <strong>CNIL</strong> ({" "}
           <a href="https://www.cnil.fr" target="_blank" rel="noopener noreferrer" className="text-heureka-500 hover:underline">www.cnil.fr</a>).
         </p>

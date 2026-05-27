@@ -198,7 +198,7 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, sig
               <text x="17" y="21" textAnchor="middle" fontSize="9" fontWeight="800" fill="white" fontFamily="sans-serif">H</text>
             </svg>
           </div>
-          <span style={{ color: "white", fontWeight: 800, fontSize: 15, letterSpacing: "0.04em" }}>HEUREKA</span>
+          <span style={{ color: "white", fontWeight: 800, fontSize: 15, letterSpacing: "0.04em" }}>HEUREKIA</span>
         </div>
         {/* Commune selector */}
         {communes.length > 0 && (

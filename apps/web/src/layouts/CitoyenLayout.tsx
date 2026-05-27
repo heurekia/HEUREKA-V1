@@ -32,7 +32,7 @@ export function CitoyenLayout() {
             <div className="w-8 h-8 bg-heureka-500 rounded-lg flex items-center justify-center shrink-0">
               <span className="text-white font-bold text-xs">H</span>
             </div>
-            <span className="text-base font-bold text-white">HEUREKA</span>
+            <span className="text-base font-bold text-white">HEUREKIA</span>
           </Link>
         </div>
         <nav className="flex-1 px-2 py-2 space-y-0.5">

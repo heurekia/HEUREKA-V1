@@ -18,7 +18,7 @@ const subNav = [
 const channels = [
   { name: "Email", icon: Mail, desc: "Notifications par courrier électronique", enabled: true },
   { name: "SMS", icon: Smartphone, desc: "Notifications par message texte", enabled: false },
-  { name: "Messagerie interne", icon: MessageSquare, desc: "Notifications dans la messagerie HEUREKA", enabled: true },
+  { name: "Messagerie interne", icon: MessageSquare, desc: "Notifications dans la messagerie HEUREKIA", enabled: true },
   { name: "Push", icon: Bell, desc: "Notifications push navigateur", enabled: true },
 ];
 

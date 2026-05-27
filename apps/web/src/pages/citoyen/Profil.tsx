@@ -26,7 +26,7 @@ export function Profil() {
       const url = URL.createObjectURL(blob);
       const a = document.createElement("a");
       a.href = url;
-      a.download = `mes-donnees-heureka-${new Date().toISOString().slice(0, 10)}.json`;
+      a.download = `mes-donnees-heurekia-${new Date().toISOString().slice(0, 10)}.json`;
       a.click();
       URL.revokeObjectURL(url);
     } catch {

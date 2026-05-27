@@ -264,7 +264,7 @@ function Sidebar({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
             <span style={{ color: "white", fontWeight: 800, fontSize: 14 }}>H</span>
           </div>
           <div>
-            <div style={{ color: "white", fontWeight: 700, fontSize: 14 }}>HEUREKA</div>
+            <div style={{ color: "white", fontWeight: 700, fontSize: 14 }}>HEUREKIA</div>
             <div style={{ color: "rgba(255,255,255,0.5)", fontSize: 10 }}>Services annexes</div>
           </div>
         </div>

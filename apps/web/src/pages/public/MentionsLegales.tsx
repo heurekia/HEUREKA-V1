@@ -7,13 +7,13 @@ export function MentionsLegales() {
       <section className="mb-8">
         <h2 className="text-lg font-semibold text-[#000020] mb-3">Éditeur</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
-          HEUREKA est une solution logicielle éditée par <strong>HEUREKA SAS</strong>, société par actions simplifiée au capital de [X] €,
+          HEUREKIA est une solution logicielle éditée par <strong>HEUREKIA SAS</strong>, société par actions simplifiée au capital de [X] €,
           immatriculée au Registre du Commerce et des Sociétés de Tours sous le numéro SIRET [SIRET],
           dont le siège social est situé [adresse].
         </p>
         <p className="text-sm text-gray-600 mt-2">
           Directeur de la publication : [Nom du directeur]<br />
-          Contact : <a href="mailto:contact@heureka-urba.fr" className="text-heureka-500 hover:underline">contact@heureka-urba.fr</a>
+          Contact : <a href="mailto:contact@heurekia-urba.fr" className="text-heureka-500 hover:underline">contact@heurekia-urba.fr</a>
         </p>
       </section>
 
@@ -28,7 +28,7 @@ export function MentionsLegales() {
       <section className="mb-8">
         <h2 className="text-lg font-semibold text-[#000020] mb-3">Propriété intellectuelle</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
-          L'ensemble du contenu de cette plateforme (textes, graphismes, logos, icônes, images, données) est la propriété exclusive de HEUREKA SAS
+          L'ensemble du contenu de cette plateforme (textes, graphismes, logos, icônes, images, données) est la propriété exclusive de HEUREKIA SAS
           ou de ses partenaires. Toute reproduction, distribution ou utilisation sans autorisation préalable est interdite.
         </p>
       </section>
@@ -40,9 +40,9 @@ export function MentionsLegales() {
           et à la loi Informatique et Libertés du 6 janvier 1978 modifiée.
         </p>
         <p className="text-sm text-gray-600 mt-2">
-          Responsable de traitement : [Nom de la collectivité ou de HEUREKA SAS selon le contexte]<br />
+          Responsable de traitement : [Nom de la collectivité ou de HEUREKIA SAS selon le contexte]<br />
           Délégué à la Protection des Données (DPD) :{" "}
-          <a href="mailto:dpd@heureka-urba.fr" className="text-heureka-500 hover:underline">dpd@heureka-urba.fr</a>
+          <a href="mailto:dpd@heurekia-urba.fr" className="text-heureka-500 hover:underline">dpd@heurekia-urba.fr</a>
         </p>
         <p className="text-sm text-gray-600 mt-2">
           Pour plus d'informations sur le traitement de vos données, consultez notre{" "}
@@ -62,7 +62,7 @@ export function MentionsLegales() {
         <h2 className="text-lg font-semibold text-[#000020] mb-3">Signalement de vulnérabilité</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
           Si vous découvrez une vulnérabilité de sécurité, merci de la signaler de manière responsable à{" "}
-          <a href="mailto:securite@heureka-urba.fr" className="text-heureka-500 hover:underline">securite@heureka-urba.fr</a>{" "}
+          <a href="mailto:securite@heurekia-urba.fr" className="text-heureka-500 hover:underline">securite@heurekia-urba.fr</a>{" "}
           avant toute divulgation publique. Nous nous engageons à traiter votre signalement dans les meilleurs délais.
         </p>
       </section>

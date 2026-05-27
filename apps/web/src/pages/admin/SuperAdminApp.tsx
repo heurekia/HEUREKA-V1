@@ -388,7 +388,7 @@ function Sidebar() {
             </svg>
           </div>
           <div>
-            <div style={{ color: "white", fontWeight: 800, fontSize: 15, letterSpacing: "0.06em" }}>HEUREKA</div>
+            <div style={{ color: "white", fontWeight: 800, fontSize: 15, letterSpacing: "0.06em" }}>HEUREKIA</div>
             <div style={{ color: "#475569", fontSize: 10, letterSpacing: "0.1em", textTransform: "uppercase", marginTop: 1 }}>Platform</div>
           </div>
         </div>
@@ -514,7 +514,7 @@ function Dashboard() {
       {/* Header */}
       <div style={{ marginBottom: 32 }}>
         <h1 style={{ margin: "0 0 6px", fontSize: 26, fontWeight: 800, color: C.text }}>
-          Bonjour, {user?.prenom ?? "Admin"} — Plateforme HEUREKA
+          Bonjour, {user?.prenom ?? "Admin"} — Plateforme HEUREKIA
         </h1>
         <p style={{ margin: 0, color: C.textMuted, fontSize: 15 }}>
           Tableau de bord super-administrateur · {new Date().toLocaleDateString("fr-FR", { weekday: "long", year: "numeric", month: "long", day: "numeric" })}
@@ -2231,7 +2231,7 @@ function Configuration() {
   };
 
   const todoCards = [
-    { icon: "⚙️", title: "Paramètres plateforme", desc: "Configurez les paramètres généraux de la plateforme HEUREKA." },
+    { icon: "⚙️", title: "Paramètres plateforme", desc: "Configurez les paramètres généraux de la plateforme HEUREKIA." },
     { icon: "🔒", title: "Sécurité", desc: "Gestion des politiques de sécurité, 2FA, sessions et accès." },
     { icon: "📧", title: "Emails & notifications", desc: "Templates d'emails, règles de notification et intégrations SMTP." },
     { icon: "📊", title: "Logs d'activité", desc: "Historique des actions, audits et traçabilité des opérations." },

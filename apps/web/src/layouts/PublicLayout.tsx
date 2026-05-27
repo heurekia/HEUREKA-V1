@@ -23,7 +23,7 @@ export function PublicLayout() {
               <div className="w-7 h-7 bg-heureka-500 rounded flex items-center justify-center">
                 <span className="text-white font-bold text-xs">H</span>
               </div>
-              <span className="text-lg font-bold text-[#000020]">HEUREKA</span>
+              <span className="text-lg font-bold text-[#000020]">HEUREKIA</span>
             </Link>
             <nav className="hidden md:flex items-center gap-6">
               {navLinks.map((link) => {
@@ -92,7 +92,7 @@ export function PublicLayout() {
               <div className="w-5 h-5 bg-heureka-500 rounded flex items-center justify-center">
                 <span className="text-white font-bold text-[10px]">H</span>
               </div>
-              <span className="text-sm text-gray-500">© 2024 Heureka</span>
+              <span className="text-sm text-gray-500">© {new Date().getFullYear()} Heurekia</span>
             </div>
             <div className="flex items-center gap-4 text-xs text-gray-500">
               <Link to="/mentions-legales" className="hover:text-gray-900">Mentions légales</Link>

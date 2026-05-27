@@ -230,7 +230,7 @@ export function AnalyseParcellaire() {
           <div style={{ width: 28, height: 28, background: "#4F46E5", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <span style={{ color: "white", fontWeight: 800, fontSize: 11 }}>H</span>
           </div>
-          <span style={{ fontWeight: 800, fontSize: 15, color: "#000020" }}>HEUREKA</span>
+          <span style={{ fontWeight: 800, fontSize: 15, color: "#000020" }}>HEUREKIA</span>
         </Link>
 
         <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#D1D5DB" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
@@ -734,7 +734,7 @@ export function AnalyseParcellaire() {
                   </div>
                 ) : analysis && !loading && (
                   <div style={{ border: "1px dashed #E5E7EB", borderRadius: 10, padding: "16px", textAlign: "center", color: "#9CA3AF", fontSize: 12 }}>
-                    Aucune règle enregistrée dans la base HEUREKA pour cette zone.
+                    Aucune règle enregistrée dans la base HEUREKIA pour cette zone.
                   </div>
                 )}
 
