@@ -1,4 +1,4 @@
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { AuthProvider, useAuth } from "./hooks/useAuth";
 import { PublicLayout } from "./layouts/PublicLayout";
 import { CitoyenLayout } from "./layouts/CitoyenLayout";
@@ -32,10 +32,13 @@ function ProtectedRoute({ children, roles, loginPath = "/login" }: { children: R
 
 function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
   if (loading) return <div className="flex items-center justify-center min-h-screen"><div className="animate-spin w-8 h-8 border-4 border-heureka-600 border-t-transparent rounded-full" /></div>;
   if (user) {
-    const redirect = user.role === "citoyen" ? "/citoyen" : user.role === "service_externe" ? "/service" : (user.role === "admin" && !user.commune) ? "/admin" : "/mairie";
-    return <Navigate to={redirect} replace />;
+    const params = new URLSearchParams(location.search);
+    const next = params.get("next");
+    const fallback = user.role === "citoyen" ? "/citoyen" : user.role === "service_externe" ? "/service" : (user.role === "admin" && !user.commune) ? "/admin" : "/mairie";
+    return <Navigate to={next ?? fallback} replace />;
   }
   return <>{children}</>;
 }

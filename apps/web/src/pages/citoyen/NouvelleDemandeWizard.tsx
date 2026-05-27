@@ -1,5 +1,5 @@
-import { useState, useCallback } from "react";
-import { useNavigate } from "react-router-dom";
+import { useState, useCallback, useEffect } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { api } from "../../lib/api";
 
@@ -132,11 +132,13 @@ const NATURE_LABELS: Record<string, string> = {
 export function NouvelleDemandeWizard() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const [searchParams] = useSearchParams();
+  const qParam = searchParams.get("q") ?? "";
 
   const [step, setStep] = useState<Step>(1);
 
   // Step 1 – Localisation
-  const [search, setSearch] = useState("");
+  const [search, setSearch] = useState(qParam);
   const [searching, setSearching] = useState(false);
   const [parcel, setParcel] = useState<ParcelInfo | null>(null);
 
@@ -161,6 +163,25 @@ export function NouvelleDemandeWizard() {
   // Step 7 – Résultat
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<{ id: string; numero: string } | null>(null);
+
+  // ── Auto-search when wizard is opened with ?q= (from AnalyseParcellaire) ───
+  useEffect(() => {
+    if (!qParam) return;
+    setSearching(true);
+    api.get<Record<string, unknown>>(`/public/analyse?q=${encodeURIComponent(qParam)}`)
+      .then((result) => {
+        const servitudes = (result.servitudes as Array<{ categorie?: string; libelle?: string }>) ?? [];
+        setParcel({
+          zone: (result.zone as { code?: string } | undefined)?.code ?? (result.zoneCode as string | undefined),
+          commune: (result.commune as string | undefined) ?? (result.municipality as { nom?: string } | undefined)?.nom,
+          adresse: (result.adresse as string | undefined) ?? qParam,
+          servitudes,
+        });
+      })
+      .catch(() => setParcel({ adresse: qParam }))
+      .finally(() => setSearching(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentional: only on mount
 
   // ── Parcel lookup ────────────────────────────────────────────────────────────
   const searchParcel = useCallback(async () => {

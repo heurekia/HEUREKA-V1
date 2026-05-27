@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams, useNavigate } from "react-router-dom";
+import { useAuth } from "../../hooks/useAuth";
 import { MapLeaflet } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 import type { BaseLayer } from "../../components/MapLeaflet";
@@ -121,7 +122,18 @@ function floodLabel(v: string) {
 
 export function AnalyseParcellaire() {
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { user } = useAuth();
   const [query, setQuery] = useState(searchParams.get("q") ?? "");
+
+  const handleDeposer = () => {
+    const wizardUrl = `/citoyen/nouvelle-demande${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`;
+    if (user?.role === "citoyen") {
+      navigate(wizardUrl);
+    } else {
+      navigate(`/register?next=${encodeURIComponent(wizardUrl)}`);
+    }
+  };
   const [suggestions, setSuggestions] = useState<BanSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
   const [analysis, setAnalysis] = useState<ParcelAnalysis | null>(null);
@@ -727,9 +739,9 @@ export function AnalyseParcellaire() {
                 )}
 
                 {/* CTA */}
-                <Link to="/register?next=/citoyen/nouvelle-demande" style={{ display: "block", background: "#4F46E5", color: "white", textAlign: "center", padding: "11px", borderRadius: 10, fontWeight: 700, fontSize: 14, textDecoration: "none", marginTop: 4 }}>
+                <button onClick={handleDeposer} style={{ display: "block", width: "100%", background: "#4F46E5", color: "white", textAlign: "center", padding: "11px", borderRadius: 10, fontWeight: 700, fontSize: 14, border: "none", cursor: "pointer", marginTop: 4 }}>
                   Déposer une demande d'urbanisme →
-                </Link>
+                </button>
               </div>
             )}
 
