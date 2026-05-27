@@ -1583,7 +1583,7 @@ function Utilisateurs() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [filterCommune, setFilterCommune] = useState("");
-  const [filterRole, setFilterRole] = useState("");
+  const [activeTab, setActiveTab] = useState<"tous" | "mairie" | "instructeur" | "citoyen" | "admin">("tous");
   const [search, setSearch] = useState("");
   const [editRole, setEditRole] = useState<{ id: string; role: string } | null>(null);
   const [communesModal, setCommunesModal] = useState<{ id: string; name: string } | null>(null);
@@ -1594,7 +1594,6 @@ function Utilisateurs() {
     setLoading(true);
     const params = new URLSearchParams();
     if (filterCommune) params.set("commune", filterCommune);
-    if (filterRole) params.set("role", filterRole);
     const [users, communes] = await Promise.all([
       api.get<UserItem[]>(`/admin/users?${params.toString()}`),
       api.get<Commune[]>("/admin/communes"),
@@ -1602,22 +1601,24 @@ function Utilisateurs() {
     setUsersData(users);
     setAllCommunes(communes);
     setLoading(false);
-  }, [filterCommune, filterRole]);
+  }, [filterCommune]);
 
   useEffect(() => { load(); }, [load]);
 
+  const counts = {
+    tous: usersData.length,
+    mairie: usersData.filter((u) => u.role === "mairie").length,
+    instructeur: usersData.filter((u) => u.role === "instructeur").length,
+    citoyen: usersData.filter((u) => u.role === "citoyen").length,
+    admin: usersData.filter((u) => u.role === "admin").length,
+  };
+
   const filtered = usersData.filter((u) => {
+    if (activeTab !== "tous" && u.role !== activeTab) return false;
     if (!search) return true;
     const q = search.toLowerCase();
     return `${u.prenom} ${u.nom} ${u.email}`.toLowerCase().includes(q);
   });
-
-  const stats = {
-    total: usersData.length,
-    mairie: usersData.filter((u) => u.role === "mairie").length,
-    instructeur: usersData.filter((u) => u.role === "instructeur").length,
-    admin: usersData.filter((u) => u.role === "admin").length,
-  };
 
   const handleCreate = async () => {
     if (!form.prenom || !form.nom || !form.email || !form.role) {
@@ -1686,10 +1687,10 @@ function Utilisateurs() {
       {toast && <Toast message={toast.msg} type={toast.type} onClose={() => setToast(null)} />}
       {confirmDelete && <ConfirmDialog message="Supprimer cet utilisateur définitivement ?" onConfirm={() => handleDelete(confirmDelete)} onCancel={() => setConfirmDelete(null)} />}
 
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 24 }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
         <div>
           <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Utilisateurs</h1>
-          <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>{stats.total} utilisateur{stats.total !== 1 ? "s" : ""}</p>
+          <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>{counts.tous} utilisateur{counts.tous !== 1 ? "s" : ""}</p>
         </div>
         <button
           onClick={() => setShowModal(true)}
@@ -1701,20 +1702,49 @@ function Utilisateurs() {
         </button>
       </div>
 
-      {/* Stats */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 12, marginBottom: 24 }}>
-        <StatCard label="Total" value={stats.total} icon="👥" color={C.text} bg={C.bg} />
-        <StatCard label="Mairie" value={stats.mairie} icon="🏛" color={C.blue} bg={C.blueBg} />
-        <StatCard label="Instructeurs" value={stats.instructeur} icon="📋" color={C.green} bg={C.greenBg} />
-        <StatCard label="Admins" value={stats.admin} icon="⭐" color={C.purple} bg={C.purpleBg} />
-      </div>
+      {/* Tabs */}
+      {(() => {
+        const tabs: { key: typeof activeTab; label: string; icon: string; color: string; bg: string }[] = [
+          { key: "tous", label: "Tous", icon: "👥", color: C.text, bg: C.bg },
+          { key: "mairie", label: "Mairie", icon: "🏛", color: C.blue, bg: C.blueBg },
+          { key: "instructeur", label: "Instructeurs", icon: "📋", color: C.green, bg: C.greenBg },
+          { key: "citoyen", label: "Citoyens", icon: "🏠", color: "#D97706", bg: "#FEF3C7" },
+          { key: "admin", label: "Admins", icon: "⭐", color: C.purple, bg: C.purpleBg },
+        ];
+        return (
+          <div style={{ display: "flex", gap: 8, marginBottom: 16, borderBottom: `2px solid ${C.border}`, paddingBottom: 0 }}>
+            {tabs.map((t) => {
+              const isActive = activeTab === t.key;
+              return (
+                <button
+                  key={t.key}
+                  onClick={() => setActiveTab(t.key)}
+                  style={{
+                    padding: "10px 16px", border: "none", background: "none", cursor: "pointer",
+                    fontSize: 13, fontWeight: isActive ? 700 : 500,
+                    color: isActive ? t.color : C.textMuted,
+                    borderBottom: isActive ? `3px solid ${t.color}` : "3px solid transparent",
+                    marginBottom: -2, transition: "all 0.15s", display: "flex", alignItems: "center", gap: 6,
+                  }}
+                >
+                  <span>{t.icon}</span>
+                  <span>{t.label}</span>
+                  <span style={{ background: isActive ? t.bg : C.bg, color: isActive ? t.color : C.textMuted, borderRadius: 999, padding: "1px 8px", fontSize: 11, fontWeight: 700 }}>
+                    {counts[t.key]}
+                  </span>
+                </button>
+              );
+            })}
+          </div>
+        );
+      })()}
 
       {/* Filters */}
-      <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: "16px 20px", marginBottom: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
+      <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: "14px 16px", marginBottom: 16, display: "flex", gap: 12, flexWrap: "wrap" }}>
         <input
           value={search}
           onChange={(e) => setSearch(e.target.value)}
-          placeholder="Rechercher…"
+          placeholder="Rechercher par nom ou email…"
           style={{ flex: 1, minWidth: 180, padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14, outline: "none", color: C.text }}
         />
         <select
@@ -1725,19 +1755,8 @@ function Utilisateurs() {
           <option value="">Toutes communes</option>
           {allCommunes.map((c) => <option key={c.id} value={c.name}>{c.name}</option>)}
         </select>
-        <select
-          value={filterRole}
-          onChange={(e) => setFilterRole(e.target.value)}
-          style={{ padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.text, background: C.white, cursor: "pointer", outline: "none" }}
-        >
-          <option value="">Tous rôles</option>
-          <option value="admin">Admin</option>
-          <option value="mairie">Mairie</option>
-          <option value="instructeur">Instructeur</option>
-          <option value="citoyen">Citoyen</option>
-        </select>
-        {(filterCommune || filterRole || search) && (
-          <button onClick={() => { setFilterCommune(""); setFilterRole(""); setSearch(""); }} style={{ padding: "8px 14px", background: C.redBg, color: C.red, border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+        {(filterCommune || search) && (
+          <button onClick={() => { setFilterCommune(""); setSearch(""); }} style={{ padding: "8px 14px", background: C.redBg, color: C.red, border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
             Réinitialiser
           </button>
         )}
