@@ -1876,8 +1876,8 @@ function Utilisateurs() {
             <Field label="Téléphone">
               <Input type="tel" value={form.telephone} onChange={(v) => setForm({ ...form, telephone: v })} />
             </Field>
-            <div style={{ background: C.orangeBg, border: `1px solid #FDE68A`, borderRadius: 8, padding: "10px 14px", fontSize: 13, color: C.orange }}>
-              Un mot de passe temporaire aléatoire sera généré et affiché après la création.
+            <div style={{ background: "#EFF6FF", border: `1px solid #BFDBFE`, borderRadius: 8, padding: "10px 14px", fontSize: 13, color: "#1D4ED8" }}>
+              ✉️ Un email d'invitation sera envoyé à cette adresse avec un lien d'activation valable 7 jours.
             </div>
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
               <button onClick={() => setShowModal(false)} style={{ padding: "10px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, color: C.text }}>
