@@ -238,8 +238,10 @@ async function findBestParcelNearPoint(lat: number, lng: number, codeInsee: stri
     properties: { id: string; section: string; numero: string; contenance: number; nom_com: string; code_insee: string };
     geometry: Geometry;
   };
+  const buildId = (p: Feature["properties"]): string =>
+    p.id || `${p.code_insee}000${p.section}${String(p.numero).padStart(4, "0")}`;
   const toParcel = (f: Feature): ParcelResult => ({
-    parcelle_id: f.properties.id,
+    parcelle_id: buildId(f.properties),
     section: f.properties.section,
     numero: f.properties.numero,
     surface_m2: f.properties.contenance,
@@ -320,13 +322,14 @@ export async function findParcelByLatLng(lat: number, lng: number, codeInsee?: s
     };
     const f = data.features?.[0];
     if (!f) return null;
+    const p = f.properties;
     return {
-      parcelle_id: f.properties.id,
-      section: f.properties.section,
-      numero: f.properties.numero,
-      surface_m2: f.properties.contenance,
-      commune: f.properties.nom_com,
-      code_insee: f.properties.code_insee,
+      parcelle_id: p.id || `${p.code_insee}000${p.section}${String(p.numero).padStart(4, "0")}`,
+      section: p.section,
+      numero: p.numero,
+      surface_m2: p.contenance,
+      commune: p.nom_com,
+      code_insee: p.code_insee,
       geometry: f.geometry ?? null,
     };
   } catch {
