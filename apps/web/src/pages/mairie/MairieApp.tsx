@@ -5255,8 +5255,60 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     "Respecter les prescriptions de l'avis ABF joint au dossier.",
   ]);
   const [editingPrescriptions, setEditingPrescriptions] = useState(false);
-  const [selectedConsultation, setSelectedConsultation] = useState<number | null>(0);
+
+  // ── Consultations réelles ──
+  type Consultation = {
+    id: string;
+    dossier_id: string;
+    service_name: string;
+    service_type: string;
+    status: string;
+    favorable: boolean | null;
+    avis: string | null;
+    date_envoi: string | null;
+    date_reponse: string | null;
+    created_at: string;
+  };
+  const [consultations, setConsultations] = useState<Consultation[] | null>(null);
+  const [consultationsLoading, setConsultationsLoading] = useState(false);
+  const [consultationsMissioning, setConsultationsMissioning] = useState(false);
+  const [selectedConsultation, setSelectedConsultation] = useState<string | null>(null);
   const [selectedDoc, setSelectedDoc] = useState<number>(0);
+
+  const fetchConsultations = useCallback(() => {
+    setConsultationsLoading(true);
+    api.get<Consultation[]>(`/mairie/dossiers/${dossier.id}/consultations`)
+      .then(data => {
+        setConsultations(data);
+        if (data.length > 0 && !selectedConsultation) setSelectedConsultation(data[0]?.id ?? null);
+      })
+      .catch(() => setConsultations([]))
+      .finally(() => setConsultationsLoading(false));
+  }, [dossier.id, selectedConsultation]);
+
+  useEffect(() => {
+    if (activeTab !== "Consultations" || consultations !== null) return;
+    fetchConsultations();
+  }, [activeTab, consultations, fetchConsultations]);
+
+  const hasABFServitude = parcelAnalysis?.servitudes?.some(s => s.categorie?.startsWith("AC")) ?? false;
+
+  const missionnerABF = async () => {
+    setConsultationsMissioning(true);
+    try {
+      await api.post(`/mairie/dossiers/${dossier.id}/consultations`, {
+        service_name: "ABF – Architecte des Bâtiments de France",
+        service_type: "ABF",
+      });
+      // Refresh and switch to consultations tab
+      setConsultations(null);
+      setActiveTab("Consultations");
+    } catch {
+      // silently ignore
+    } finally {
+      setConsultationsMissioning(false);
+    }
+  };
 
   const daysLeft = dossier.echeance && dossier.echeance !== "—"
     ? Math.ceil((new Date(dossier.echeance.split("/").reverse().join("-")).getTime() - Date.now()) / 86400000)
@@ -5264,14 +5316,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
   const typeLabel = TYPE_LABEL[dossier.type] ?? dossier.type;
   const instructeurName = dossier.instructeur ?? "Non assigné";
-
-  const CONSULTATIONS_DATA = [
-    { service: "ABF – Architecte des Bâtiments de France", status: "Avis reçu", favorable: true, date: "30/04/2024", detail: "Avis favorable avec réserves. Respecter le gabarit des constructions avoisinantes et les matériaux traditionnels.", color: "#15803D", bg: "#F0FDF4" },
-    { service: "SDIS – Service Incendie", status: "En attente", favorable: null, date: "—", detail: "Consultation envoyée le 22/04/2024. Délai de réponse : 45 jours.", color: "#C2410C", bg: "#FFF7ED" },
-    { service: "Métropole Tours Val de Loire", status: "En attente", favorable: null, date: "—", detail: "En attente de transmission.", color: "#C2410C", bg: "#FFF7ED" },
-    { service: "Réseaux (ENEDIS)", status: "Avis reçu", favorable: true, date: "25/04/2024", detail: "Aucune contrainte réseau identifiée. Raccordement possible.", color: "#15803D", bg: "#F0FDF4" },
-    { service: "ARS – Agence Régionale de Santé", status: "Non requis", favorable: null, date: "—", detail: "Non requis pour ce type de dossier.", color: "#475569", bg: "#F8FAFC" },
-  ];
 
   const DOCUMENTS_DATA = [
     { name: "Formulaire CERFA 13406*08", ext: "PDF", size: "1.2 Mo", date: "12/05/2024", status: "Validé", ia: "Formulaire complet. Toutes les rubriques obligatoires sont renseignées." },
@@ -5797,6 +5841,26 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     </div>
                   </div>
 
+                  {/* Alerte ABF — missionnement direct */}
+                  {hasABFServitude && (
+                    <div style={{ background: "#FFFBEB", borderRadius: 12, padding: "16px 18px", border: "1.5px solid #FCD34D", boxShadow: "0 1px 4px rgba(245,158,11,0.12)" }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                        <div style={{ flexShrink: 0, width: 32, height: 32, borderRadius: "50%", background: "#FEF3C7", border: "2px solid #FCD34D", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>⚜</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>Périmètre ABF — consultation obligatoire</div>
+                          <div style={{ fontSize: 12, color: "#B45309", lineHeight: 1.6, marginBottom: 12 }}>Cette parcelle est en périmètre de protection des Monuments Historiques. L'avis de l'Architecte des Bâtiments de France est requis avant toute décision.</div>
+                          <button
+                            onClick={missionnerABF}
+                            disabled={consultationsMissioning}
+                            style={{ background: consultationsMissioning ? "#F5F3FF" : "linear-gradient(135deg,#8B5CF6,#7C3AED)", color: consultationsMissioning ? "#8B5CF6" : "white", border: consultationsMissioning ? "1px solid #C4B5FD" : "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(124,58,237,0.3)" }}
+                          >
+                            {consultationsMissioning ? "Envoi en cours…" : "Missionner l'ABF"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {/* Constructibilité */}
                   {pa?.buildability && (
                     <div style={CARD}>
@@ -6028,63 +6092,114 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         )}
 
         {/* ── CONSULTATIONS ── */}
-        {activeTab === "Consultations" && (
-          <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
-              {[
-                { label: "Total", value: "5", color: "#4F46E5", bg: "#EEF2FF", border: "#C7D2FE" },
-                { label: "Avis reçus", value: "2", color: "#15803D", bg: "#F0FDF4", border: "#BBF7D0" },
-                { label: "En attente", value: "2", color: "#C2410C", bg: "#FFF7ED", border: "#FED7AA" },
-                { label: "Non requis", value: "1", color: "#475569", bg: "#F8FAFC", border: "#E2E8F0" },
-              ].map(s => (
-                <div key={s.label} style={{ background: s.bg, borderRadius: 12, padding: "16px 20px", border: `1px solid ${s.border}`, boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
-                  <div style={{ fontSize: 28, fontWeight: 900, color: s.color, letterSpacing: "-1px", lineHeight: 1 }}>{s.value}</div>
-                  <div style={{ fontSize: 12, color: "#64748b", fontWeight: 600, marginTop: 5 }}>{s.label}</div>
-                </div>
-              ))}
-            </div>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, alignItems: "flex-start" }}>
-              <div style={CARD}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", display: "flex", alignItems: "center", gap: 8 }}>
-                    <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
-                    Organismes consultés
+        {activeTab === "Consultations" && (() => {
+          const cList = consultations ?? [];
+          const countTotal = cList.length;
+          const countAvis = cList.filter(c => c.status === "avis_recu").length;
+          const countAttente = cList.filter(c => c.status === "en_attente").length;
+          const countNonRequis = cList.filter(c => c.status === "non_requis").length;
+
+          const statusMeta = (status: string, favorable: boolean | null) => {
+            if (status === "avis_recu") return { label: favorable === false ? "Avis défavorable" : favorable === true ? "Avis favorable" : "Avis reçu", color: favorable === false ? "#DC2626" : "#15803D", bg: favorable === false ? "#FEF2F2" : "#F0FDF4" };
+            if (status === "non_requis") return { label: "Non requis", color: "#475569", bg: "#F8FAFC" };
+            if (status === "refuse") return { label: "Refusé", color: "#DC2626", bg: "#FEF2F2" };
+            return { label: "En attente", color: "#C2410C", bg: "#FFF7ED" };
+          };
+
+          const fmtDateConsult = (d: string | null) => {
+            if (!d) return "—";
+            const dt = new Date(d);
+            return isNaN(dt.getTime()) ? "—" : dt.toLocaleDateString("fr-FR");
+          };
+
+          const selectedC = selectedConsultation ? cList.find(c => c.id === selectedConsultation) ?? null : null;
+
+          return (
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+              {/* Stats */}
+              <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12 }}>
+                {[
+                  { label: "Total", value: String(countTotal), color: "#4F46E5", bg: "#EEF2FF", border: "#C7D2FE" },
+                  { label: "Avis reçus", value: String(countAvis), color: "#15803D", bg: "#F0FDF4", border: "#BBF7D0" },
+                  { label: "En attente", value: String(countAttente), color: "#C2410C", bg: "#FFF7ED", border: "#FED7AA" },
+                  { label: "Non requis", value: String(countNonRequis), color: "#475569", bg: "#F8FAFC", border: "#E2E8F0" },
+                ].map(s => (
+                  <div key={s.label} style={{ background: s.bg, borderRadius: 12, padding: "16px 20px", border: `1px solid ${s.border}`, boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+                    <div style={{ fontSize: 28, fontWeight: 900, color: s.color, letterSpacing: "-1px", lineHeight: 1 }}>{s.value}</div>
+                    <div style={{ fontSize: 12, color: "#64748b", fontWeight: 600, marginTop: 5 }}>{s.label}</div>
                   </div>
-                  <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 9, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 5px rgba(79,70,229,0.3)" }}>+ Lancer une consultation</button>
-                </div>
-                <div style={{ display: "flex", flexDirection: "column" as const, gap: 3 }}>
-                  {CONSULTATIONS_DATA.map((c, i) => (
-                    <button key={i} onClick={() => setSelectedConsultation(i)} style={{
-                      display: "grid", gridTemplateColumns: "1fr auto auto", gap: 14, alignItems: "center", padding: "12px 14px", border: selectedConsultation === i ? "1.5px solid #C7D2FE" : "1.5px solid transparent", cursor: "pointer", borderRadius: 10, textAlign: "left" as const,
-                      background: selectedConsultation === i ? "#EEF2FF" : i % 2 === 0 ? "#F8FAFC" : "white",
-                    }}>
-                      <span style={{ fontSize: 13, color: "#374151", fontWeight: 500 }}>{c.service}</span>
-                      <span style={{ fontSize: 11.5, color: "#94a3b8" }}>{c.date}</span>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: c.color, background: c.bg, borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" as const, border: `1px solid ${c.color}33` }}>{c.status}</span>
-                    </button>
-                  ))}
-                </div>
+                ))}
               </div>
-              {selectedConsultation !== null && (() => {
-                const c = CONSULTATIONS_DATA[selectedConsultation];
-                if (!c) return null;
-                return (
-                  <div style={CARD}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>{c.service}</div>
-                    <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
-                      <span style={{ fontSize: 11, fontWeight: 700, color: c.color, background: c.bg, borderRadius: 20, padding: "3px 10px", border: `1px solid ${c.color}33` }}>{c.status}</span>
-                      <span style={{ fontSize: 11.5, color: "#94a3b8" }}>Date : {c.date}</span>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 360px", gap: 16, alignItems: "flex-start" }}>
+                <div style={CARD}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", display: "flex", alignItems: "center", gap: 8 }}>
+                      <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
+                      Organismes consultés
                     </div>
-                    <div style={{ fontSize: 12.5, color: "#374151", lineHeight: 1.7, padding: "13px 14px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #EAECF0" }}>{c.detail}</div>
-                    {c.favorable === null && c.status === "En attente" && (
-                      <button style={{ marginTop: 12, width: "100%", border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "9px 0", fontSize: 12.5, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>Relancer</button>
-                    )}
+                    <button
+                      onClick={missionnerABF}
+                      disabled={consultationsMissioning}
+                      style={{ background: consultationsMissioning ? "#EEF2FF" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: consultationsMissioning ? "#4F46E5" : "white", border: consultationsMissioning ? "1px solid #C7D2FE" : "none", borderRadius: 9, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(79,70,229,0.3)" }}
+                    >
+                      {consultationsMissioning ? "En cours…" : "+ Missionner l'ABF"}
+                    </button>
                   </div>
-                );
-              })()}
+                  {consultationsLoading ? (
+                    <div style={{ textAlign: "center" as const, padding: "32px 0", color: "#94a3b8", fontSize: 13 }}>Chargement…</div>
+                  ) : cList.length === 0 ? (
+                    <div style={{ textAlign: "center" as const, padding: "32px 0", color: "#94a3b8", fontSize: 13 }}>Aucune consultation lancée pour ce dossier.</div>
+                  ) : (
+                    <div style={{ display: "flex", flexDirection: "column" as const, gap: 3 }}>
+                      {cList.map((c, i) => {
+                        const m = statusMeta(c.status, c.favorable);
+                        return (
+                          <button key={c.id} onClick={() => setSelectedConsultation(c.id)} style={{
+                            display: "grid", gridTemplateColumns: "1fr auto auto", gap: 14, alignItems: "center", padding: "12px 14px", border: selectedConsultation === c.id ? "1.5px solid #C7D2FE" : "1.5px solid transparent", cursor: "pointer", borderRadius: 10, textAlign: "left" as const,
+                            background: selectedConsultation === c.id ? "#EEF2FF" : i % 2 === 0 ? "#F8FAFC" : "white",
+                          }}>
+                            <span style={{ fontSize: 13, color: "#374151", fontWeight: 500 }}>{c.service_name}</span>
+                            <span style={{ fontSize: 11.5, color: "#94a3b8" }}>{fmtDateConsult(c.date_envoi)}</span>
+                            <span style={{ fontSize: 11, fontWeight: 700, color: m.color, background: m.bg, borderRadius: 20, padding: "3px 10px", whiteSpace: "nowrap" as const, border: `1px solid ${m.color}33` }}>{m.label}</span>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  )}
+                </div>
+                {selectedC && (() => {
+                  const m = statusMeta(selectedC.status, selectedC.favorable);
+                  return (
+                    <div style={CARD}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>{selectedC.service_name}</div>
+                      <div style={{ display: "flex", gap: 8, alignItems: "center", marginBottom: 14 }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: m.color, background: m.bg, borderRadius: 20, padding: "3px 10px", border: `1px solid ${m.color}33` }}>{m.label}</span>
+                        <span style={{ fontSize: 11.5, color: "#94a3b8" }}>Envoyée le {fmtDateConsult(selectedC.date_envoi)}</span>
+                      </div>
+                      {selectedC.avis ? (
+                        <div style={{ fontSize: 12.5, color: "#374151", lineHeight: 1.7, padding: "13px 14px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #EAECF0" }}>{selectedC.avis}</div>
+                      ) : (
+                        <div style={{ fontSize: 12.5, color: "#94a3b8", lineHeight: 1.7, padding: "13px 14px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #EAECF0", fontStyle: "italic" }}>Aucun avis reçu pour l'instant.</div>
+                      )}
+                      {selectedC.status === "en_attente" && (
+                        <button
+                          onClick={() => {
+                            api.patch(`/mairie/dossiers/${dossier.id}/consultations/${selectedC.id}`, { status: "avis_recu", favorable: true })
+                              .then(() => { setConsultations(null); })
+                              .catch(() => {});
+                          }}
+                          style={{ marginTop: 12, width: "100%", border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "9px 0", fontSize: 12.5, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}
+                        >
+                          Marquer avis reçu
+                        </button>
+                      )}
+                    </div>
+                  );
+                })()}
+              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ── CHRONOLOGIE ── */}
         {activeTab === "Chronologie" && (
