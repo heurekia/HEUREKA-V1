@@ -1858,7 +1858,7 @@ function Utilisateurs() {
               <Input type="tel" value={form.telephone} onChange={(v) => setForm({ ...form, telephone: v })} />
             </Field>
             <div style={{ background: C.orangeBg, border: `1px solid #FDE68A`, borderRadius: 8, padding: "10px 14px", fontSize: 13, color: C.orange }}>
-              Le mot de passe temporaire sera <strong>Heureka2024!</strong>
+              Un mot de passe temporaire aléatoire sera généré et affiché après la création.
             </div>
             <div style={{ display: "flex", gap: 12, justifyContent: "flex-end", marginTop: 8 }}>
               <button onClick={() => setShowModal(false)} style={{ padding: "10px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, color: C.text }}>

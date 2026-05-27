@@ -1697,7 +1697,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
     try {
       const selectedConfig = roleConfigs.find(rc => rc.id === addForm.role_config_id);
       const role = selectedConfig ? selectedConfig.base_role : addForm.role;
-      await api.post(`/mairie/admin/users?commune=${encodeURIComponent(commune)}`, {
+      const created = await api.post<{ tempPassword?: string }>(`/mairie/admin/users?commune=${encodeURIComponent(commune)}`, {
         prenom: addForm.prenom,
         nom: addForm.nom,
         email: addForm.email,
@@ -1705,7 +1705,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
         role,
         role_config_id: addForm.role_config_id || null,
       });
-      setAddedPw("Heureka2024!");
+      setAddedPw(created.tempPassword ?? "—");
       load();
     } catch (e: unknown) {
       setAddError(e instanceof Error ? e.message : "Erreur lors de la création.");

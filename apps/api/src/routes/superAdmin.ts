@@ -306,7 +306,7 @@ superAdminRouter.post("/users", async (req, res) => {
       return res.status(400).json({ error: "email, prenom, nom et role sont requis" });
     }
 
-    const tempPassword = "Heureka2024!";
+    const tempPassword = crypto.randomBytes(12).toString("base64url").slice(0, 16);
     const password_hash = await bcrypt.hash(tempPassword, 10);
 
     const [newUser] = await db

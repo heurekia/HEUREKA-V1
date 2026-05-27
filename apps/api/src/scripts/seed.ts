@@ -60,11 +60,15 @@ async function seedRoles() {
 async function seed() {
   console.log("🌱 Seeding HEUREKA V1 database...\n");
 
-  const pw = await bcrypt.hash("Heureka2024!", 10);
+  const adminPassword = process.env.ADMIN_PASSWORD;
+  if (!adminPassword) throw new Error("ADMIN_PASSWORD manquant dans les variables d'environnement");
+  const pw = await bcrypt.hash(adminPassword, 10);
+
+  const adminEmail = process.env.ADMIN_EMAIL ?? "admin@heureka.fr";
 
   await seedRoles();
 
-  const admin = await upsertUser({ email: "admin@heureka.fr", password_hash: pw, prenom: "Evi", nom: "DELETANG", role: "admin" });
+  const admin = await upsertUser({ email: adminEmail, password_hash: pw, prenom: "Evi", nom: "DELETANG", role: "admin" });
   console.log(`✅ Admin: ${admin.email}`);
 
   const communes_ref = [
@@ -81,7 +85,7 @@ async function seed() {
 
   console.log("\n✅✅✅ Seed terminé !");
   console.log("\n📧 Compte administrateur :");
-  console.log("  admin@heureka.fr / Heureka2024!");
+  console.log(`  ${adminEmail} / (mot de passe défini via ADMIN_PASSWORD)`);
 }
 
 export { seed };
