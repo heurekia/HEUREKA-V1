@@ -43,12 +43,14 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       parcelData,
       empriseExistante,
       amenagementType,
+      description,
     } = req.body as {
       nature: string;
       surface?: number;
       parcelData?: { zone?: string; commune?: string; servitudes?: Array<{ categorie?: string; libelle?: string }> };
       empriseExistante?: string;
       amenagementType?: string;
+      description?: string;
     };
 
     const client = new Anthropic({ apiKey: getAnthropicKey() });
@@ -58,6 +60,7 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       surface ? `Surface plancher du projet : ${surface} m²` : null,
       empriseExistante ? `Surface plancher existante : ${empriseExistante} m²` : null,
       amenagementType ? `Type d'aménagement : ${amenagementType}` : null,
+      description ? `Description du projet : ${description}` : null,
       parcelData?.zone ? `Zone PLU : ${parcelData.zone}` : null,
       parcelData?.commune ? `Commune : ${parcelData.commune}` : null,
       parcelData?.servitudes?.length

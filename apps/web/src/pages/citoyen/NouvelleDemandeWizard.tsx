@@ -153,6 +153,89 @@ const NATURE_LABELS: Record<string, string> = {
   certificat: "Demande de certificat d'urbanisme",
 };
 
+// ─── Step 3 config per project type ──────────────────────────────────────────
+
+interface Step3Config {
+  title: string;
+  subtitle: string;
+  surfaceLabel: string | null;       // null → hide surface block
+  surfaceMax: number;
+  surfaceExistanteLabel: string | null; // null → hide
+  showAmenagementType: boolean;
+  descriptionLabel: string;
+  descriptionPlaceholder: string;
+  descriptionRequired: boolean;
+}
+
+const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
+  maison_neuve: {
+    title: "Votre maison",
+    subtitle: "Précisez la surface et décrivez brièvement votre projet.",
+    surfaceLabel: "Surface plancher totale créée",
+    surfaceMax: 400,
+    surfaceExistanteLabel: null,
+    showAmenagementType: false,
+    descriptionLabel: "Décrivez votre projet",
+    descriptionPlaceholder: "Ex. : Maison de plain-pied, 4 pièces, garage intégré, bardage bois et enduit blanc…",
+    descriptionRequired: false,
+  },
+  agrandissement: {
+    title: "Votre agrandissement",
+    subtitle: "Précisez les surfaces créée et existante pour déterminer la procédure.",
+    surfaceLabel: "Surface plancher créée",
+    surfaceMax: 200,
+    surfaceExistanteLabel: "Surface plancher existante du bâtiment",
+    showAmenagementType: false,
+    descriptionLabel: "Que souhaitez-vous agrandir ?",
+    descriptionPlaceholder: "Ex. : Extension côté jardin pour créer une cuisine ouverte et une chambre en R+1…",
+    descriptionRequired: false,
+  },
+  petite_construction: {
+    title: "Votre construction",
+    subtitle: "Précisez la surface au sol de la construction.",
+    surfaceLabel: "Surface au sol de la construction",
+    surfaceMax: 100,
+    surfaceExistanteLabel: null,
+    showAmenagementType: false,
+    descriptionLabel: "Décrivez la construction",
+    descriptionPlaceholder: "Ex. : Abri de jardin en bois 4×3 m, toit monopente, pas de fondation béton…",
+    descriptionRequired: false,
+  },
+  amenagement: {
+    title: "Votre aménagement",
+    subtitle: "Précisez le type et la surface concernée.",
+    surfaceLabel: "Surface concernée",
+    surfaceMax: 200,
+    surfaceExistanteLabel: null,
+    showAmenagementType: true,
+    descriptionLabel: "Décrivez l'aménagement",
+    descriptionPlaceholder: "Ex. : Piscine 6×3 m avec local technique, entourée d'une terrasse dallée de 30 m²…",
+    descriptionRequired: false,
+  },
+  demolition: {
+    title: "Votre démolition",
+    subtitle: "Précisez la surface à démolir et ce qui sera conservé.",
+    surfaceLabel: "Surface plancher à démolir",
+    surfaceMax: 500,
+    surfaceExistanteLabel: "Surface plancher conservée après démolition",
+    showAmenagementType: false,
+    descriptionLabel: "Décrivez ce qui sera démoli",
+    descriptionPlaceholder: "Ex. : Ancien garage en parpaing de 40 m² en bout de parcelle, le bâtiment principal reste intact…",
+    descriptionRequired: false,
+  },
+  certificat: {
+    title: "Votre projet",
+    subtitle: "Décrivez le projet envisagé — c'est la seule information dont nous avons besoin pour un CU.",
+    surfaceLabel: null,
+    surfaceMax: 300,
+    surfaceExistanteLabel: null,
+    showAmenagementType: false,
+    descriptionLabel: "Décrivez le projet envisagé",
+    descriptionPlaceholder: "Ex. : Projet de construction d'une maison de 120 m² avec piscine sur terrain de 600 m². Besoin de vérifier la constructibilité et les servitudes avant de lancer le projet…",
+    descriptionRequired: true,
+  },
+};
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function NouvelleDemandeWizard() {
@@ -228,6 +311,7 @@ export function NouvelleDemandeWizard() {
         parcelData: parcel,
         empriseExistante: empriseExistante || undefined,
         amenagementType: amenagementType || undefined,
+        description: description || undefined,
       });
       setClassification(result);
     } catch {
@@ -261,7 +345,7 @@ export function NouvelleDemandeWizard() {
     } finally {
       setClassifying(false);
     }
-  }, [nature, surface, parcel, empriseExistante, amenagementType]);
+  }, [nature, surface, parcel, empriseExistante, amenagementType, description]);
 
   // ── Submit dossier ───────────────────────────────────────────────────────────
   const submitDossier = useCallback(async () => {
@@ -707,194 +791,110 @@ export function NouvelleDemandeWizard() {
           )}
 
           {/* ───── STEP 3 : Précisions ───── */}
-          {step === 3 && nature && (
-            <div>
-              <div style={{ textAlign: "center", marginBottom: 28 }}>
-                <div style={{ fontSize: 52, marginBottom: 10 }}>📐</div>
-                <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
-                  {nature === "certificat" ? "Parfait, presque fini !" : "Quelques chiffres…"}
-                </h2>
-                <p style={{ fontSize: 14, color: "#64748b" }}>
-                  {nature === "certificat"
-                    ? "Pour un certificat d'urbanisme on n'a pas besoin de dimensions. On passe à l'analyse !"
-                    : "Ces informations nous permettent de trouver la bonne procédure pour vous."}
-                </p>
-              </div>
+          {step === 3 && nature && (() => {
+            const cfg = STEP3_CONFIGS[nature];
+            const canAnalyse = !cfg.descriptionRequired || description.trim().length > 0;
+            return (
+              <div>
+                <div style={{ textAlign: "center", marginBottom: 28 }}>
+                  <div style={{ fontSize: 52, marginBottom: 10 }}>📐</div>
+                  <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
+                    {cfg.title}
+                  </h2>
+                  <p style={{ fontSize: 14, color: "#64748b", maxWidth: 460, margin: "0 auto" }}>
+                    {cfg.subtitle}
+                  </p>
+                </div>
 
-              {nature !== "certificat" && (
-                <div style={{ marginBottom: 28 }}>
-                  <label
-                    style={{
-                      fontSize: 14,
-                      fontWeight: 700,
-                      color: "#0F172A",
-                      display: "block",
-                      marginBottom: 12,
-                    }}
-                  >
-                    {nature === "agrandissement"
-                      ? "Surface plancher à créer"
-                      : "Surface plancher du projet"}
-                  </label>
-
-                  <div
-                    style={{
-                      display: "flex",
-                      alignItems: "center",
-                      gap: 18,
-                      marginBottom: 12,
-                    }}
-                  >
-                    <input
-                      type="range"
-                      min={1}
-                      max={300}
-                      value={surface}
-                      onChange={(e) => setSurface(Number(e.target.value))}
-                      style={{ flex: 1, accentColor: "#4F46E5", height: 6, cursor: "pointer" }}
-                    />
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                      <input
-                        type="number"
-                        min={1}
-                        max={9999}
-                        value={surface}
-                        onChange={(e) => setSurface(Math.max(1, Number(e.target.value)))}
-                        style={{
-                          width: 76,
-                          padding: "10px",
-                          border: "2px solid #C7D2FE",
-                          borderRadius: 10,
-                          fontSize: 20,
-                          fontWeight: 800,
-                          textAlign: "center",
-                          outline: "none",
-                          fontFamily: "inherit",
-                          color: "#4F46E5",
-                        }}
-                      />
-                      <span style={{ fontSize: 16, color: "#64748b", fontWeight: 600 }}>m²</span>
+                {/* Type d'aménagement */}
+                {cfg.showAmenagementType && (
+                  <div style={{ marginBottom: 20 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 10 }}>
+                      Type d'aménagement
+                    </label>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                      {([["piscine", "🏊 Piscine"], ["cloture", "🧱 Clôture / portail"], ["terrasse", "🪑 Terrasse"], ["autre", "✨ Autre"]] as [string, string][]).map(([val, label]) => (
+                        <button key={val} onClick={() => setAmenagementType(val)}
+                          style={{ padding: "13px", border: `2px solid ${amenagementType === val ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 12, background: amenagementType === val ? "#EEF2FF" : "white", fontSize: 14, fontWeight: amenagementType === val ? 700 : 400, color: amenagementType === val ? "#4F46E5" : "#374151", cursor: "pointer", transition: "all 0.15s" }}>
+                          {label}
+                        </button>
+                      ))}
                     </div>
                   </div>
+                )}
 
-                  <div
-                    style={{
-                      fontSize: 13,
-                      color: "#64748b",
-                      background: "#F8FAFC",
-                      borderRadius: 10,
-                      padding: "10px 16px",
-                      border: "1px solid #E2E8F0",
-                    }}
-                  >
-                    💡 {surfaceHelper(surface)}
+                {/* Surface principale */}
+                {cfg.surfaceLabel && (
+                  <div style={{ marginBottom: 22 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 12 }}>
+                      {cfg.surfaceLabel}
+                    </label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 10 }}>
+                      <input type="range" min={1} max={cfg.surfaceMax} value={surface}
+                        onChange={(e) => setSurface(Number(e.target.value))}
+                        style={{ flex: 1, accentColor: "#4F46E5", height: 6, cursor: "pointer" }} />
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
+                        <input type="number" min={1} max={9999} value={surface}
+                          onChange={(e) => setSurface(Math.max(1, Number(e.target.value)))}
+                          style={{ width: 76, padding: "10px", border: "2px solid #C7D2FE", borderRadius: 10, fontSize: 20, fontWeight: 800, textAlign: "center", outline: "none", fontFamily: "inherit", color: "#4F46E5" }} />
+                        <span style={{ fontSize: 16, color: "#64748b", fontWeight: 600 }}>m²</span>
+                      </div>
+                    </div>
+                    <div style={{ fontSize: 13, color: "#64748b", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0" }}>
+                      💡 {surfaceHelper(surface)}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
 
-              {nature === "agrandissement" && (
-                <div style={{ marginBottom: 20 }}>
-                  <label
-                    style={{
-                      fontSize: 14,
-                      fontWeight: 700,
-                      color: "#0F172A",
-                      display: "block",
-                      marginBottom: 8,
-                    }}
-                  >
-                    Surface plancher existante (m²){" "}
-                    <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>
-                      facultatif
-                    </span>
+                {/* Surface existante / conservée */}
+                {cfg.surfaceExistanteLabel && (
+                  <div style={{ marginBottom: 20 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                      {cfg.surfaceExistanteLabel}{" "}
+                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
+                    </label>
+                    <input type="number" value={empriseExistante}
+                      onChange={(e) => setEmpriseExistante(e.target.value)}
+                      placeholder="Ex : 80"
+                      style={inputStyle}
+                      onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
+                      onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")} />
+                  </div>
+                )}
+
+                {/* Description du projet */}
+                <div style={{ marginBottom: 24 }}>
+                  <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                    {cfg.descriptionLabel}{" "}
+                    {!cfg.descriptionRequired && (
+                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
+                    )}
                   </label>
-                  <input
-                    type="number"
-                    value={empriseExistante}
-                    onChange={(e) => setEmpriseExistante(e.target.value)}
-                    placeholder="Ex : 80"
-                    style={inputStyle}
+                  <textarea value={description} onChange={(e) => setDescription(e.target.value)}
+                    placeholder={cfg.descriptionPlaceholder} rows={3}
+                    style={{ ...inputStyle, resize: "vertical", lineHeight: 1.6 }}
                     onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
-                    onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
-                  />
+                    onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")} />
+                  {cfg.descriptionRequired && !description.trim() && (
+                    <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>
+                      ↑ Nécessaire pour analyser votre projet de certificat.
+                    </p>
+                  )}
                 </div>
-              )}
 
-              {nature === "amenagement" && (
-                <div style={{ marginBottom: 20 }}>
-                  <label
-                    style={{
-                      fontSize: 14,
-                      fontWeight: 700,
-                      color: "#0F172A",
-                      display: "block",
-                      marginBottom: 10,
-                    }}
-                  >
-                    Type d'aménagement
-                  </label>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
-                    {[
-                      ["piscine", "🏊 Piscine"],
-                      ["cloture", "🧱 Clôture / portail"],
-                      ["terrasse", "🪑 Terrasse"],
-                      ["autre", "✨ Autre"],
-                    ].map(([val, label]) => (
-                      <button
-                        key={val}
-                        onClick={() => setAmenagementType(val ?? "")}
-                        style={{
-                          padding: "13px",
-                          border: `2px solid ${amenagementType === val ? "#4F46E5" : "#E2E8F0"}`,
-                          borderRadius: 12,
-                          background: amenagementType === val ? "#EEF2FF" : "white",
-                          fontSize: 14,
-                          fontWeight: amenagementType === val ? 700 : 400,
-                          color: amenagementType === val ? "#4F46E5" : "#374151",
-                          cursor: "pointer",
-                          transition: "all 0.15s",
-                        }}
-                      >
-                        {label}
-                      </button>
-                    ))}
-                  </div>
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <button onClick={prev}
+                    style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}>
+                    ← Retour
+                  </button>
+                  <button onClick={() => void classify()} disabled={!canAnalyse}
+                    style={{ padding: "11px 28px", background: "#4F46E5", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: canAnalyse ? "pointer" : "not-allowed", opacity: canAnalyse ? 1 : 0.4, transition: "opacity 0.2s" }}>
+                    Analyser mon projet →
+                  </button>
                 </div>
-              )}
-
-              <div style={{ display: "flex", justifyContent: "space-between", marginTop: 8 }}>
-                <button
-                  onClick={prev}
-                  style={{
-                    padding: "10px 20px",
-                    background: "white",
-                    color: "#374151",
-                    border: "1px solid #E2E8F0",
-                    borderRadius: 10,
-                    fontSize: 13,
-                    cursor: "pointer",
-                  }}
-                >
-                  ← Retour
-                </button>
-                <button
-                  onClick={() => void classify()}
-                  style={{
-                    padding: "11px 28px",
-                    background: "#4F46E5",
-                    color: "white",
-                    border: "none",
-                    borderRadius: 10,
-                    fontSize: 14,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                  }}
-                >
-                  Analyser mon projet →
-                </button>
               </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* ───── STEP 4 : Classification IA ───── */}
           {step === 4 && (
@@ -1146,36 +1146,6 @@ export function NouvelleDemandeWizard() {
                   type="email"
                   placeholder="votre@email.fr"
                   style={inputStyle}
-                  onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
-                  onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
-                />
-              </div>
-
-              <div style={{ marginBottom: 24 }}>
-                <label
-                  style={{
-                    fontSize: 13,
-                    fontWeight: 700,
-                    color: "#374151",
-                    display: "block",
-                    marginBottom: 7,
-                  }}
-                >
-                  Description du projet{" "}
-                  <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>
-                    facultatif
-                  </span>
-                </label>
-                <textarea
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
-                  placeholder="Décrivez votre projet : nature des travaux, matériaux, contexte…"
-                  rows={4}
-                  style={{
-                    ...inputStyle,
-                    resize: "vertical",
-                    lineHeight: 1.6,
-                  }}
                   onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
                   onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
                 />
