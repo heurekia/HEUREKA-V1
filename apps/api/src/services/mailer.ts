@@ -10,8 +10,16 @@ export async function sendActivationEmail(opts: {
   prenom: string;
   serviceName: string;
   token: string;
+  roleLabel?: string;
 }) {
   const link = `${BASE_URL}/activer-compte?token=${opts.token}`;
+  const identity = opts.roleLabel
+    ? `<strong>${opts.roleLabel}</strong> pour le compte de <strong>${opts.serviceName}</strong>`
+    : `agent du service urbanisme de <strong>${opts.serviceName}</strong>`;
+  const identityText = opts.roleLabel
+    ? `${opts.roleLabel} pour le compte de ${opts.serviceName}`
+    : `agent du service urbanisme de ${opts.serviceName}`;
+
   await resend.emails.send({
     from: FROM,
     to: opts.to,
@@ -41,7 +49,7 @@ export async function sendActivationEmail(opts: {
             <h1 style="margin:0 0 20px;font-size:22px;font-weight:800;color:#0F172A">Activez votre accès Heurekia</h1>
             <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${opts.prenom},</p>
             <p style="margin:0 0 28px;font-size:15px;color:#374151;line-height:1.7">
-              Un accès sécurisé à la plateforme Heurekia vient d'être créé pour vous en tant qu'agent du service urbanisme de <strong>${opts.serviceName}</strong>.<br><br>
+              Un accès sécurisé à la plateforme Heurekia vient d'être créé pour vous en tant qu'${identity}.<br><br>
               Afin de finaliser l'activation de votre compte et définir votre mot de passe personnel, cliquez sur le bouton ci-dessous.
             </p>
             <table cellpadding="0" cellspacing="0" style="margin:0 0 32px">
@@ -66,7 +74,7 @@ export async function sendActivationEmail(opts: {
   </table>
 </body>
 </html>`,
-    text: `Bonjour ${opts.prenom},\n\nUn accès sécurisé à la plateforme Heurekia vient d'être créé pour vous en tant qu'agent du service urbanisme de ${opts.serviceName}.\n\nAfin de finaliser l'activation de votre compte et définir votre mot de passe personnel, cliquez sur ce lien :\n${link}\n\nCe lien d'activation est personnel, valable 7 jours et utilisable une seule fois.\n\nSi vous n'êtes pas à l'origine de cette invitation, vous pouvez ignorer cet email.\n\nHeurekia — Plateforme intelligente de gestion des autorisations d'urbanisme`,
+    text: `Bonjour ${opts.prenom},\n\nUn accès sécurisé à la plateforme Heurekia vient d'être créé pour vous en tant qu'${identityText}.\n\nAfin de finaliser l'activation de votre compte et définir votre mot de passe personnel, cliquez sur ce lien :\n${link}\n\nCe lien d'activation est personnel, valable 7 jours et utilisable une seule fois.\n\nSi vous n'êtes pas à l'origine de cette invitation, vous pouvez ignorer cet email.\n\nHeurekia — Plateforme intelligente de gestion des autorisations d'urbanisme`,
   });
 }
 

@@ -671,13 +671,27 @@ superAdminRouter.post("/services/:id/users", async (req, res) => {
       service_id: id,
     }).returning({ id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, telephone: users.telephone, created_at: users.created_at });
 
-    // Generate activation token (valid 24h)
+    // Generate activation token (valid 7 days)
     const token = crypto.randomBytes(32).toString("hex");
-    const expires = new Date(Date.now() + 24 * 60 * 60 * 1000);
+    const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
     await db.insert(password_tokens).values({ user_id: user!.id, token, type: "activation", expires_at: expires });
 
+    const SERVICE_ROLE_LABELS: Record<string, string> = {
+      ABF:                 "Architecte des Bâtiments de France",
+      SDIS:                "Agent du Service Départemental d'Incendie et de Secours",
+      DDT:                 "Agent de la Direction Départementale des Territoires",
+      ARS:                 "Agent de l'Agence Régionale de Santé",
+      DREAL:               "Agent de la Direction Régionale de l'Environnement",
+      ENEDIS:              "Agent Enedis",
+      GRDF:                "Agent GRDF",
+      ONF:                 "Agent de l'Office National des Forêts",
+      CHAMBRE_AGRICULTURE: "Agent de la Chambre d'Agriculture",
+      SNCF:                "Agent SNCF Réseau",
+    };
+    const roleLabel = SERVICE_ROLE_LABELS[service.type] ?? undefined;
+
     // Send activation email (fire & forget — don't fail the request if email fails)
-    sendActivationEmail({ to: user!.email, prenom: user!.prenom, serviceName: service.name, token })
+    sendActivationEmail({ to: user!.email, prenom: user!.prenom, serviceName: service.name, token, roleLabel })
       .catch(err => console.error("[mailer] activation:", err));
 
     res.status(201).json(user);
