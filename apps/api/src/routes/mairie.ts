@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations, external_services, service_communes } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike, inArray } from "drizzle-orm";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
@@ -2063,12 +2063,36 @@ mairieRouter.post("/dossiers/:id/consultations", async (req: AuthRequest, res) =
     if (!service_name?.trim() || !service_type?.trim()) {
       return res.status(400).json({ error: "service_name et service_type sont requis" });
     }
+
+    // Resolve external_service_id by matching service_type + dossier commune coverage
+    let externalServiceId: string | null = null;
+    const [dossierRow] = await db.select({ commune: dossiers.commune })
+      .from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
+    if (dossierRow?.commune) {
+      const [communeRow] = await db.select({ id: communes.id })
+        .from(communes)
+        .where(sql`lower(trim(${communes.name})) = lower(trim(${dossierRow.commune}))`)
+        .limit(1);
+      if (communeRow) {
+        const [serviceRow] = await db.select({ id: external_services.id })
+          .from(external_services)
+          .innerJoin(service_communes, eq(service_communes.service_id, external_services.id))
+          .where(and(
+            eq(external_services.type, service_type.trim()),
+            eq(service_communes.commune_id, communeRow.id),
+          ))
+          .limit(1);
+        externalServiceId = serviceRow?.id ?? null;
+      }
+    }
+
     const [row] = await db
       .insert(dossier_consultations)
       .values({
         dossier_id: req.params.id as string,
         service_name: service_name.trim(),
         service_type: service_type.trim(),
+        external_service_id: externalServiceId,
         status: "en_attente",
         avis: avis?.trim() ?? null,
         created_by_id: req.user?.id ?? null,

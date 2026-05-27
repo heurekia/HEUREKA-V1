@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, dossier_messages, dossier_pieces_jointes, external_services, service_communes, communes, courrier_templates } from "@heureka-v1/db";
-import { eq, desc, sql, inArray } from "drizzle-orm";
+import { dossiers, users, dossier_messages, dossier_pieces_jointes, external_services, service_communes, communes, courrier_templates, dossier_consultations } from "@heureka-v1/db";
+import { eq, desc, sql, inArray, and } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 
 export const serviceRouter = Router();
@@ -157,6 +157,60 @@ serviceRouter.post("/dossiers/:id/messages", async (req: AuthRequest, res) => {
     }).returning();
 
     res.status(201).json({ ...msg, from_name: user ? `${user.prenom} ${user.nom}` : "Agent" });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Consultations adressées à ce service ─────────────────────────────────────
+serviceRouter.get("/dossiers/:id/consultations", async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const [user] = await db.select({ service_id: users.service_id }).from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user?.service_id) return res.json([]);
+
+    const rows = await db.select()
+      .from(dossier_consultations)
+      .where(and(
+        eq(dossier_consultations.dossier_id, dossierId),
+        eq(dossier_consultations.external_service_id, user.service_id),
+      ))
+      .orderBy(desc(dossier_consultations.created_at));
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+serviceRouter.patch("/dossiers/:id/consultations/:consultationId", async (req: AuthRequest, res) => {
+  try {
+    const { consultationId, id: dossierId } = req.params as { consultationId: string; id: string };
+    const [user] = await db.select({ service_id: users.service_id }).from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user?.service_id) return res.status(403).json({ error: "Service introuvable" });
+
+    const [existing] = await db.select({ external_service_id: dossier_consultations.external_service_id })
+      .from(dossier_consultations)
+      .where(and(
+        eq(dossier_consultations.id, consultationId),
+        eq(dossier_consultations.dossier_id, dossierId),
+      ))
+      .limit(1);
+    if (!existing) return res.status(404).json({ error: "Consultation introuvable" });
+    if (existing.external_service_id !== user.service_id) return res.status(403).json({ error: "Accès refusé" });
+
+    const { favorable, avis } = req.body as { favorable?: boolean | null; avis?: string };
+
+    const [row] = await db.update(dossier_consultations).set({
+      favorable: favorable ?? null,
+      avis: avis?.trim() ?? null,
+      status: "avis_recu",
+      date_reponse: new Date(),
+      updated_at: new Date(),
+    }).where(eq(dossier_consultations.id, consultationId)).returning();
+
+    res.json(row);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

@@ -1,12 +1,14 @@
 import { pgTable, text, timestamp, boolean, uuid } from "drizzle-orm/pg-core";
 import { dossiers } from "./dossiers.js";
 import { users } from "./users.js";
+import { external_services } from "./externalServices.js";
 
 export const dossier_consultations = pgTable("dossier_consultations", {
   id: uuid("id").primaryKey().defaultRandom(),
   dossier_id: uuid("dossier_id").notNull().references(() => dossiers.id, { onDelete: "cascade" }),
   service_name: text("service_name").notNull(),
   service_type: text("service_type").notNull(),
+  external_service_id: uuid("external_service_id").references(() => external_services.id, { onDelete: "set null" }),
   // status: en_attente | avis_recu | non_requis | refuse
   status: text("status").notNull().default("en_attente"),
   favorable: boolean("favorable"),

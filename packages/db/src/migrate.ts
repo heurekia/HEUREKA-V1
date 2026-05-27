@@ -475,6 +475,8 @@ CREATE TABLE IF NOT EXISTS dossier_consultations (
   updated_at      timestamp NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_consultations_dossier ON dossier_consultations(dossier_id);
+ALTER TABLE dossier_consultations ADD COLUMN IF NOT EXISTS external_service_id uuid REFERENCES external_services(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_dossier_consultations_service ON dossier_consultations(external_service_id);
 `;
 
 async function main() {

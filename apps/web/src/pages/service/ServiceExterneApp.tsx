@@ -127,6 +127,11 @@ interface CourrierTemplate {
   id: string; name: string; category: string; body: string;
   created_at: string; updated_at: string;
 }
+interface Consultation {
+  id: string; dossier_id: string; service_name: string; service_type: string;
+  external_service_id: string | null; status: string; favorable: boolean | null;
+  avis: string | null; date_envoi: string; date_reponse: string | null;
+}
 
 // ─── Variable substitution ─────────────────────────────────────────────────
 function substituteVariables(html: string, vars: Record<string, string>): string {
@@ -463,21 +468,26 @@ function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
   const [messages, setMessages] = useState<Message[]>([]);
   const [msgContent, setMsgContent] = useState("");
   const [sending, setSending] = useState(false);
-  const [tab, setTab] = useState<"infos" | "messages" | "courrier">("infos");
+  const [tab, setTab] = useState<"infos" | "messages" | "courrier" | "consultation">("infos");
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
   const [selectedTpl, setSelectedTpl] = useState<CourrierTemplate | null>(null);
   const [editedBody, setEditedBody] = useState("");
+  const [consultations, setConsultations] = useState<Consultation[]>([]);
+  const [avisForm, setAvisForm] = useState<{ favorable: boolean | null; avis: string }>({ favorable: null, avis: "" });
+  const [submittingAvis, setSubmittingAvis] = useState(false);
 
   const load = useCallback(async () => {
     if (!id) return;
-    const [d, msgs, tpls] = await Promise.all([
+    const [d, msgs, tpls, consults] = await Promise.all([
       api.get<DossierDetail>(`/service/dossiers/${id}`),
       api.get<Message[]>(`/service/dossiers/${id}/messages`),
       api.get<CourrierTemplate[]>("/service/templates"),
+      api.get<Consultation[]>(`/service/dossiers/${id}/consultations`),
     ]);
     setDossier(d);
     setMessages(msgs);
     setTemplates(tpls);
+    setConsultations(consults);
     if (tpls.length > 0) {
       const first = tpls[0]!;
       setSelectedTpl(first);
@@ -508,6 +518,20 @@ function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
       setEditedBody(substituteVariables(selectedTpl.body, vars));
     }
   }, [selectedTpl, dossier, serviceInfo, user]);
+
+  const submitAvis = async (consultationId: string) => {
+    if (avisForm.favorable === null) return;
+    setSubmittingAvis(true);
+    try {
+      const updated = await api.patch<Consultation>(`/service/dossiers/${id}/consultations/${consultationId}`, {
+        favorable: avisForm.favorable,
+        avis: avisForm.avis,
+      });
+      setConsultations(prev => prev.map(c => c.id === consultationId ? updated : c));
+    } finally {
+      setSubmittingAvis(false);
+    }
+  };
 
   const sendMessage = async () => {
     if (!msgContent.trim() || !id) return;
@@ -542,12 +566,21 @@ function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
 
       {/* Tabs */}
       <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #E2E8F0", marginBottom: 24 }}>
-        {([["infos", "Informations"], ["messages", `Messagerie (${messages.length})`], ["courrier", "Générer un courrier"]] as [typeof tab, string][]).map(([key, label]) => (
-          <button key={key} onClick={() => setTab(key)}
-            style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: tab === key ? 600 : 400, color: tab === key ? "#4F46E5" : "#64748b", borderBottom: tab === key ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>
-            {label}
-          </button>
-        ))}
+        {([
+          ["infos", "Informations"],
+          ["messages", `Messagerie (${messages.length})`],
+          ["consultation", consultations.length > 0 ? `Consultation (${consultations.length})` : "Consultation"],
+          ["courrier", "Générer un courrier"],
+        ] as [typeof tab, string][]).map(([key, label]) => {
+          const hasPending = key === "consultation" && consultations.some(c => c.status === "en_attente");
+          return (
+            <button key={key} onClick={() => setTab(key)}
+              style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: tab === key ? 600 : 400, color: tab === key ? "#4F46E5" : "#64748b", borderBottom: tab === key ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer", position: "relative" }}>
+              {label}
+              {hasPending && <span style={{ display: "inline-block", width: 7, height: 7, background: "#EF4444", borderRadius: "50%", position: "absolute", top: 6, right: 4 }} />}
+            </button>
+          );
+        })}
       </div>
 
       {tab === "infos" && (
@@ -628,6 +661,84 @@ function DossierDetail({ serviceInfo }: { serviceInfo: ServiceInfo | null }) {
               <Send size={14} /> Envoyer
             </button>
           </div>
+        </div>
+      )}
+
+      {tab === "consultation" && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {consultations.length === 0 ? (
+            <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 12, padding: 32, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>
+              Aucune demande de consultation adressée à votre service pour ce dossier.
+            </div>
+          ) : consultations.map(c => {
+            const isPending = c.status === "en_attente";
+            const isDone = c.status === "avis_recu";
+            return (
+              <div key={c.id} style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 12, padding: 24 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 16 }}>
+                  <div>
+                    <span style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>{c.service_name}</span>
+                    <span style={{ marginLeft: 12, fontSize: 12, color: "#94a3b8" }}>Saisine du {fmtDate(c.date_envoi)}</span>
+                  </div>
+                  <span style={{
+                    padding: "3px 10px", borderRadius: 20, fontSize: 11, fontWeight: 700,
+                    background: isPending ? "#FFF7ED" : isDone ? "#DCFCE7" : "#F1F5F9",
+                    color: isPending ? "#C2410C" : isDone ? "#15803D" : "#64748B",
+                  }}>
+                    {isPending ? "En attente d'avis" : isDone ? "Avis rendu" : c.status}
+                  </span>
+                </div>
+
+                {isDone && (
+                  <div style={{ background: c.favorable ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${c.favorable ? "#BBF7D0" : "#FECACA"}`, borderRadius: 8, padding: 16, marginBottom: 8 }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: c.favorable ? "#15803D" : "#DC2626", marginBottom: c.avis ? 8 : 0 }}>
+                      {c.favorable ? "Avis favorable" : "Avis défavorable"}
+                    </div>
+                    {c.avis && <p style={{ fontSize: 13, color: "#374151", margin: 0, lineHeight: 1.6, whiteSpace: "pre-wrap" }}>{c.avis}</p>}
+                    {c.date_reponse && <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>Rendu le {fmtDate(c.date_reponse)}</div>}
+                  </div>
+                )}
+
+                {isPending && (
+                  <div style={{ background: "#F8FAFC", borderRadius: 8, padding: 20, display: "flex", flexDirection: "column", gap: 14 }}>
+                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>Rendre votre avis</div>
+
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {[
+                        { value: true, label: "Favorable", color: "#15803D", bg: "#DCFCE7", border: "#86EFAC" },
+                        { value: false, label: "Défavorable", color: "#DC2626", bg: "#FEE2E2", border: "#FCA5A5" },
+                      ].map(opt => {
+                        const isActive = avisForm.favorable === opt.value;
+                        return (
+                          <button key={String(opt.value)} type="button" onClick={() => setAvisForm(f => ({ ...f, favorable: opt.value }))}
+                            style={{ flex: 1, padding: "10px 16px", border: `2px solid ${isActive ? opt.border : "#E2E8F0"}`, borderRadius: 8, background: isActive ? opt.bg : "white", color: isActive ? opt.color : "#374151", fontSize: 13, fontWeight: isActive ? 700 : 400, cursor: "pointer", transition: "all 0.15s" }}>
+                            {opt.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+
+                    <textarea
+                      value={avisForm.avis}
+                      onChange={e => setAvisForm(f => ({ ...f, avis: e.target.value }))}
+                      placeholder="Motivations, prescriptions, conditions particulières…"
+                      rows={5}
+                      style={{ width: "100%", border: "1px solid #E2E8F0", borderRadius: 8, padding: "10px 12px", fontSize: 13, resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                    />
+
+                    <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                      <button
+                        onClick={() => void submitAvis(c.id)}
+                        disabled={avisForm.favorable === null || submittingAvis}
+                        style={{ padding: "9px 22px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: avisForm.favorable === null || submittingAvis ? "not-allowed" : "pointer", opacity: avisForm.favorable === null || submittingAvis ? 0.5 : 1 }}>
+                        {submittingAvis ? "Envoi…" : "Soumettre l'avis"}
+                      </button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
 
