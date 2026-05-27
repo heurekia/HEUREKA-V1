@@ -15,10 +15,36 @@ type NatureId =
   | "certificat";
 
 interface ParcelInfo {
-  zone?: string;
-  commune?: string;
   adresse?: string;
+  commune?: string;
+  zone?: string;       // zone_code  e.g. "UA"
+  zoneLabel?: string;  // zone_label e.g. "Zone Urbaine Centrale"
+  parcelle?: string;   // parcelle_id e.g. "37218000AB0050"
+  surfaceTerrain?: number; // m²
   servitudes?: Array<{ categorie?: string; libelle?: string }>;
+}
+
+function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): ParcelInfo {
+  type Addr = { label?: string; city?: string };
+  type Parcel = { parcelle_id?: string; commune?: string; surface_m2?: number };
+  type PluZone = { zone_code?: string; zone_label?: string };
+  type Municipality = { libelle?: string };
+
+  const address = result.address as Addr | undefined;
+  const parcel = result.parcel as Parcel | undefined;
+  const pluZone = result.plu_zone as PluZone | undefined;
+  const municipality = result.municipality as Municipality | undefined;
+  const servitudes = (result.servitudes as Array<{ categorie?: string; libelle?: string }>) ?? [];
+
+  return {
+    adresse: address?.label ?? fallbackAdresse,
+    commune: address?.city ?? parcel?.commune ?? municipality?.libelle,
+    zone: pluZone?.zone_code,
+    zoneLabel: pluZone?.zone_label,
+    parcelle: parcel?.parcelle_id,
+    surfaceTerrain: parcel?.surface_m2,
+    servitudes,
+  };
 }
 
 interface Classification {
@@ -169,15 +195,7 @@ export function NouvelleDemandeWizard() {
     if (!qParam) return;
     setSearching(true);
     api.get<Record<string, unknown>>(`/public/analyse?q=${encodeURIComponent(qParam)}`)
-      .then((result) => {
-        const servitudes = (result.servitudes as Array<{ categorie?: string; libelle?: string }>) ?? [];
-        setParcel({
-          zone: (result.zone as { code?: string } | undefined)?.code ?? (result.zoneCode as string | undefined),
-          commune: (result.commune as string | undefined) ?? (result.municipality as { nom?: string } | undefined)?.nom,
-          adresse: (result.adresse as string | undefined) ?? qParam,
-          servitudes,
-        });
-      })
+      .then((result) => setParcel(mapAnalysis(result, qParam)))
       .catch(() => setParcel({ adresse: qParam }))
       .finally(() => setSearching(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -191,17 +209,7 @@ export function NouvelleDemandeWizard() {
       const result = await api.get<Record<string, unknown>>(
         `/public/analyse?q=${encodeURIComponent(search.trim())}`,
       );
-      const servitudes = (result.servitudes as Array<{ categorie?: string; libelle?: string }>) ?? [];
-      setParcel({
-        zone:
-          (result.zone as { code?: string } | undefined)?.code ??
-          (result.zoneCode as string | undefined),
-        commune:
-          (result.commune as string | undefined) ??
-          (result.municipality as { nom?: string } | undefined)?.nom,
-        adresse: (result.adresse as string | undefined) ?? search.trim(),
-        servitudes,
-      });
+      setParcel(mapAnalysis(result, search.trim()));
     } catch {
       setParcel({ adresse: search.trim() });
     } finally {
@@ -514,13 +522,17 @@ export function NouvelleDemandeWizard() {
                   >
                     ✓ Parcelle analysée
                   </div>
-                  <div
-                    style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}
-                  >
+                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                     {[
                       ["📌 Adresse", parcel.adresse],
                       ["🏘️ Commune", parcel.commune ?? "—"],
-                      ["🗺️ Zone PLU", parcel.zone ?? "Non déterminée"],
+                      ["🗺️ Zone PLU", parcel.zone
+                        ? `${parcel.zone}${parcel.zoneLabel ? ` — ${parcel.zoneLabel}` : ""}`
+                        : "Non déterminée"],
+                      ["📐 Référence parcelle", parcel.parcelle ?? "—"],
+                      ...(parcel.surfaceTerrain
+                        ? [["🌿 Surface du terrain", `${parcel.surfaceTerrain.toLocaleString("fr-FR")} m²`] as [string, string]]
+                        : []),
                     ].map(([label, value]) => (
                       <div key={label}>
                         <div style={{ fontSize: 11, color: "#64748b", marginBottom: 3 }}>{label}</div>
