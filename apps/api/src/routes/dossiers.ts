@@ -7,6 +7,8 @@ import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
+import { classifyPermit, type ClassificationInput } from "../services/classificationEngine.js";
+import { getPiecesForType, buildPiecesContext } from "../data/piecesRequises.js";
 
 function getAnthropicKey(): string {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
@@ -27,6 +29,9 @@ const NATURE_LABELS: Record<string, string> = {
   petite_construction: "Petite construction (garage, abri de jardin, pergola, carport…)",
   amenagement: "Aménagement de terrain",
   demolition: "Démolition",
+  changement_destination: "Changement de destination d'un bâtiment",
+  modification_aspect: "Modification de l'aspect extérieur",
+  division_terrain: "Division foncière / lotissement",
   certificat: "Demande de certificat d'urbanisme",
 };
 
@@ -34,7 +39,7 @@ export const dossiersRouter = Router();
 
 dossiersRouter.use(requireAuth);
 
-// ── Classification IA de la procédure d'urbanisme ──
+// ── Classification déterministe + explication IA ──
 dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
   try {
     const {
@@ -57,59 +62,88 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
 
     const naturesToUse: string[] = naturesArr ?? (nature ? [nature] : []);
 
-    const client = new Anthropic({ apiKey: getAnthropicKey() });
+    // ── Étape 1 : classification déterministe (Code de l'urbanisme) ──
+    const classInput: ClassificationInput = {
+      natures: naturesToUse,
+      surface: surface ?? 0,
+      empriseExistante: empriseExistante ? Number(empriseExistante) : undefined,
+      zone: parcelData?.zone,
+      servitudes: parcelData?.servitudes,
+      amenagementType,
+    };
+    const classification = classifyPermit(classInput);
 
-    const contextLines = [
-      naturesToUse.length > 1
-        ? `Projets combinés : ${naturesToUse.map((n) => NATURE_LABELS[n] ?? n).join(", ")}`
-        : `Projet : ${NATURE_LABELS[naturesToUse[0] ?? ""] ?? naturesToUse[0] ?? "Non précisé"}`,
-      surface ? `Surface plancher du projet : ${surface} m²` : null,
-      empriseExistante ? `Surface plancher existante : ${empriseExistante} m²` : null,
-      amenagementType ? `Type d'aménagement : ${amenagementType}` : null,
-      description ? `Description du projet : ${description}` : null,
-      parcelData?.zone ? `Zone PLU : ${parcelData.zone}` : null,
-      parcelData?.commune ? `Commune : ${parcelData.commune}` : null,
-      parcelData?.servitudes?.length
-        ? `Servitudes : ${parcelData.servitudes.map((s) => s.libelle ?? s.categorie).filter(Boolean).join(", ")}`
-        : null,
-    ].filter(Boolean).join("\n");
+    // ── Étape 2 : pièces officielles (arrêté du 13 février 2020) ──
+    const piecesCtx = buildPiecesContext(
+      naturesToUse,
+      surface ?? 0,
+      parcelData?.servitudes,
+      amenagementType,
+    );
+    const pieces = getPiecesForType(classification.type, piecesCtx);
 
-    const msg = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
-      system: `Tu es expert en droit de l'urbanisme français (Code de l'urbanisme). Analyse le projet et détermine la procédure administrative requise.
+    // ── Étape 3 : explication citoyen + alertes (IA, best-effort) ──
+    let explication = "";
+    let alertes: string[] = [];
 
-Règles principales :
-- < 5 m² surface plancher : pas d'autorisation (sauf zone protégée ou ABF)
-- 5 à 20 m² en zone U avec PLU : Déclaration Préalable
-- Extension > 20 m² en zone U : DP jusqu'à 40 m², Permis de Construire au-delà
-- Maison neuve : Permis de Construire (maison individuelle)
-- Permis d'Aménager : lotissements, terrains de camping, aires de stationnement > 50 places
-- Démolition > 20 m² ou en zone protégée : Permis de Démolir
-- Piscine > 10 m² ou profondeur > 1,80 m : Déclaration Préalable
-- Clôture : DP si PLU le prescrit ou en commune soumise au RNU
-- Zone ABF (servitude AC) : consultation ABF obligatoire, +1 mois sur délais
-- Certificat d'urbanisme : type a (informatif) ou b (opérationnel)
+    try {
+      const client = new Anthropic({ apiKey: getAnthropicKey() });
 
-Réponds UNIQUEMENT avec du JSON valide (aucun texte avant ou après) :
+      const contextLines = [
+        `Procédure déterminée : ${classification.libelle} (${classification.libelle_court})`,
+        classification.articles.length ? `Articles : ${classification.articles.join(", ")}` : null,
+        naturesToUse.length > 1
+          ? `Projets combinés : ${naturesToUse.map((n) => NATURE_LABELS[n] ?? n).join(", ")}`
+          : `Projet : ${NATURE_LABELS[naturesToUse[0] ?? ""] ?? naturesToUse[0] ?? "Non précisé"}`,
+        surface ? `Surface : ${surface} m²` : null,
+        amenagementType ? `Type d'aménagement : ${amenagementType}` : null,
+        description ? `Description : ${description}` : null,
+        parcelData?.zone ? `Zone PLU : ${parcelData.zone}` : null,
+        parcelData?.commune ? `Commune : ${parcelData.commune}` : null,
+        parcelData?.servitudes?.length
+          ? `Servitudes : ${parcelData.servitudes.map((s) => s.libelle ?? s.categorie).filter(Boolean).join(", ")}`
+          : null,
+        classification.modifiers.includes("ABF") ? "Zone ABF : oui (délai +1 mois)" : null,
+      ].filter(Boolean).join("\n");
+
+      const msg = await client.messages.create({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 512,
+        system: `Tu es expert en droit de l'urbanisme français. La procédure a été déterminée de façon certaine par le moteur réglementaire. Rédige une explication simple pour un citoyen non-expert et liste les points d'attention spécifiques.
+
+Réponds UNIQUEMENT avec du JSON valide :
 {
-  "type": "declaration_prealable|permis_de_construire|permis_amenager|permis_demolir|certificat_urbanisme",
-  "libelle": "Nom court",
-  "explication": "2 à 3 phrases simples pour un citoyen",
-  "delai_moyen": "X à Y mois",
-  "pieces_requises": [
-    {"nom": "Nom du document", "requis": true, "aide": "Description courte"}
-  ],
-  "alertes": ["string si point important, sinon tableau vide"],
-  "confiance": "haute|moyenne|faible"
+  "explication": "2 à 3 phrases simples pour un citoyen, expliquant pourquoi cette procédure s'applique",
+  "alertes": ["point d'attention si pertinent — tableau vide si aucun"]
 }`,
-      messages: [{ role: "user", content: contextLines }],
-    });
+        messages: [{ role: "user", content: contextLines }],
+      });
 
-    const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    const result = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
-    res.json(result);
+      const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
+      const jsonMatch = text.match(/\{[\s\S]*\}/);
+      const aiResult = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
+      explication = typeof aiResult.explication === "string" ? aiResult.explication : "";
+      alertes = Array.isArray(aiResult.alertes) ? aiResult.alertes : [];
+    } catch {
+      // IA indisponible — explication de secours basée sur le résultat déterministe
+      explication = `Votre projet nécessite une ${classification.libelle}. Délai moyen : ${classification.delai_moyen}.`;
+      if (classification.modifiers.includes("ABF")) {
+        alertes = ["Votre terrain est en périmètre ABF : prévoyez un délai supplémentaire d'1 mois."];
+      }
+    }
+
+    res.json({
+      type: classification.type,
+      libelle: classification.libelle,
+      libelle_court: classification.libelle_court,
+      articles: classification.articles,
+      explication,
+      delai_moyen: classification.delai_moyen,
+      pieces_requises: pieces,
+      alertes,
+      confiance: classification.confidence === "deterministic" ? "haute" : "faible",
+      modifiers: classification.modifiers,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur classification" });
@@ -156,6 +190,7 @@ const createSchema = z.object({
   code_postal: z.string().optional(),
   description: z.string().optional(),
   surface_plancher: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
 });
 
 dossiersRouter.post("/", async (req: AuthRequest, res) => {
@@ -164,7 +199,7 @@ dossiersRouter.post("/", async (req: AuthRequest, res) => {
     const numero = `DOS-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
     const [dossier] = await db
       .insert(dossiers)
-      .values({ ...data, numero, user_id: req.user!.id })
+      .values({ ...data, numero, user_id: req.user!.id, metadata: data.metadata ?? {} })
       .returning();
     res.status(201).json(dossier);
   } catch (err) {

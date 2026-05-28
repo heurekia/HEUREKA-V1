@@ -5,7 +5,7 @@ import { api } from "../../lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 type NatureId =
   | "maison_neuve"
   | "agrandissement"
@@ -53,11 +53,14 @@ function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): Par
 interface Classification {
   type: string;
   libelle: string;
+  libelle_court?: string;
+  articles?: string[];
   explication: string;
   delai_moyen: string;
   pieces_requises: Array<{ nom: string; requis: boolean; aide: string }>;
   alertes: string[];
   confiance: "haute" | "moyenne" | "faible";
+  modifiers?: string[];
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -67,9 +70,21 @@ const STEP_LABELS = [
   "Mon projet",
   "Détails",
   "Analyse",
+  "Compléments",
   "Mes infos",
   "Documents",
   "Dépôt",
+];
+
+const CERFA_DESTINATIONS = [
+  { value: "habitation", label: "Habitation" },
+  { value: "hebergement_hotelier", label: "Hébergement hôtelier" },
+  { value: "bureaux", label: "Bureaux" },
+  { value: "commerce_services", label: "Commerce et activités de services" },
+  { value: "industrie", label: "Industrie" },
+  { value: "exploitation_agricole", label: "Exploitation agricole ou forestière" },
+  { value: "entrepot", label: "Entrepôt" },
+  { value: "service_public", label: "Service public ou d'intérêt collectif" },
 ];
 
 const NATURES: Array<{
@@ -323,7 +338,8 @@ export function NouvelleDemandeWizard() {
     setNatures((prev) => prev.includes(id) ? prev.filter((n) => n !== id) : [...prev, id]);
 
   // Step 3 – Précisions
-  const [surface, setSurface] = useState(20);
+  const [surface, setSurface] = useState<number>(0);
+  const [surfaceStr, setSurfaceStr] = useState<string>("");
   const [empriseExistante, setEmpriseExistante] = useState("");
   const [amenagementType, setAmenagementType] = useState("");
 
@@ -331,13 +347,21 @@ export function NouvelleDemandeWizard() {
   const [classifying, setClassifying] = useState(false);
   const [classification, setClassification] = useState<Classification | null>(null);
 
-  // Step 5 – Infos personnelles
+  // Step 5 – Compléments CERFA
+  const [qualiteDemandeur, setQualiteDemandeur] = useState("");
+  const [empriseSol, setEmpriseSol] = useState("");
+  const [hauteurProjet, setHauteurProjet] = useState("");
+  const [destinationActuelle, setDestinationActuelle] = useState("");
+  const [destinationFuture, setDestinationFuture] = useState("");
+  const [nbLogements, setNbLogements] = useState("");
+
+  // Step 6 – Infos personnelles
   const [nom, setNom] = useState(user?.nom ?? "");
   const [prenom, setPrenom] = useState(user?.prenom ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
   const [description, setDescription] = useState("");
 
-  // Step 7 – Résultat
+  // Step 8 – Résultat
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<{ id: string; numero: string } | null>(null);
 
@@ -375,7 +399,7 @@ export function NouvelleDemandeWizard() {
     try {
       const result = await api.post<Classification>("/dossiers/classify", {
         natures,
-        surface: natures.some((n) => n !== "certificat") ? surface : undefined,
+        surface: natures.some((n) => n !== "certificat") && surface > 0 ? surface : undefined,
         parcelData: parcel,
         empriseExistante: empriseExistante || undefined,
         amenagementType: amenagementType || undefined,
@@ -417,7 +441,7 @@ export function NouvelleDemandeWizard() {
 
   // ── Submit dossier ───────────────────────────────────────────────────────────
   const submitDossier = useCallback(async () => {
-    if (!classification) return;
+    if (!classification || classification.type === "aucune_autorisation") return;
     setSubmitting(true);
     try {
       const result = await api.post<{ id: string; numero: string }>("/dossiers", {
@@ -425,13 +449,26 @@ export function NouvelleDemandeWizard() {
         adresse: parcel?.adresse ?? "",
         commune: parcel?.commune ?? "",
         description: description || undefined,
-        surface_plancher: natures.some((n) => n !== "certificat") ? String(surface) : undefined,
+        surface_plancher: natures.some((n) => n !== "certificat") && surface > 0 ? String(surface) : undefined,
+        metadata: {
+          natures,
+          zone: parcel?.zone,
+          parcelle: parcel?.parcelle,
+          cerfa_data: {
+            qualiteDemandeur: qualiteDemandeur || undefined,
+            empriseSol: empriseSol || undefined,
+            hauteurProjet: hauteurProjet || undefined,
+            destinationActuelle: destinationActuelle || undefined,
+            destinationFuture: destinationFuture || undefined,
+            nbLogements: nbLogements || undefined,
+          },
+        },
       });
       setSubmitted(result);
     } finally {
       setSubmitting(false);
     }
-  }, [classification, parcel, description, natures, surface]);
+  }, [classification, parcel, description, natures, surface, qualiteDemandeur, empriseSol, hauteurProjet, destinationActuelle, destinationFuture, nbLogements]);
 
   const next = () => setStep((s) => (s + 1) as Step);
   const prev = () => setStep((s) => (s - 1) as Step);
@@ -887,7 +924,10 @@ export function NouvelleDemandeWizard() {
               descriptionPlaceholder: "Décrivez les différents travaux envisagés, les surfaces concernées, et leur enchaînement prévu…",
               descriptionRequired: false,
             };
-            const canAnalyse = !cfg.descriptionRequired || description.trim().length > 0;
+            const surfaceRequired = cfg.surfaceLabel !== null;
+            const canAnalyse =
+              (!cfg.descriptionRequired || description.trim().length > 0) &&
+              (!surfaceRequired || surface > 0);
             return (
               <div>
                 <div style={{ textAlign: "center", marginBottom: 28 }}>
@@ -924,19 +964,43 @@ export function NouvelleDemandeWizard() {
                       {cfg.surfaceLabel}
                     </label>
                     <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 10 }}>
-                      <input type="range" min={1} max={cfg.surfaceMax} value={surface}
-                        onChange={(e) => setSurface(Number(e.target.value))}
-                        style={{ flex: 1, accentColor: "#4F46E5", height: 6, cursor: "pointer" }} />
+                      <input type="range" min={1} max={cfg.surfaceMax} value={surface > 0 ? surface : 1}
+                        onChange={(e) => {
+                          const v = Number(e.target.value);
+                          setSurface(v);
+                          setSurfaceStr(String(v));
+                        }}
+                        style={{ flex: 1, accentColor: "#4F46E5", height: 6, cursor: "pointer", opacity: surface === 0 ? 0.4 : 1 }} />
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                        <input type="number" min={1} max={9999} value={surface}
-                          onChange={(e) => setSurface(Math.max(1, Number(e.target.value)))}
-                          style={{ width: 76, padding: "10px", border: "2px solid #C7D2FE", borderRadius: 10, fontSize: 20, fontWeight: 800, textAlign: "center", outline: "none", fontFamily: "inherit", color: "#4F46E5" }} />
+                        <input
+                          type="number"
+                          min={1}
+                          max={9999}
+                          value={surfaceStr}
+                          placeholder="Ex : 19"
+                          onChange={(e) => {
+                            setSurfaceStr(e.target.value);
+                            const v = parseInt(e.target.value, 10);
+                            if (!isNaN(v) && v > 0) setSurface(v);
+                            else if (e.target.value === "") setSurface(0);
+                          }}
+                          onBlur={() => {
+                            if (surface > 0) setSurfaceStr(String(surface));
+                          }}
+                          style={{ width: 76, padding: "10px", border: `2px solid ${surface > 0 ? "#C7D2FE" : "#E2E8F0"}`, borderRadius: 10, fontSize: 20, fontWeight: 800, textAlign: "center", outline: "none", fontFamily: "inherit", color: surface > 0 ? "#4F46E5" : "#94a3b8" }}
+                        />
                         <span style={{ fontSize: 16, color: "#64748b", fontWeight: 600 }}>m²</span>
                       </div>
                     </div>
-                    <div style={{ fontSize: 13, color: "#64748b", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0" }}>
-                      💡 {surfaceHelper(surface)}
-                    </div>
+                    {surface > 0 ? (
+                      <div style={{ fontSize: 13, color: "#64748b", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0" }}>
+                        💡 {surfaceHelper(surface)}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 13, color: "#94a3b8", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0" }}>
+                        ↑ Entrez la surface exacte en m²
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1134,47 +1198,226 @@ export function NouvelleDemandeWizard() {
                     </div>
                   )}
 
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <button
-                      onClick={() => {
-                        setClassification(null);
-                        setStep(3);
-                      }}
-                      style={{
-                        padding: "10px 20px",
-                        background: "white",
-                        color: "#374151",
-                        border: "1px solid #E2E8F0",
-                        borderRadius: 10,
-                        fontSize: 13,
-                        cursor: "pointer",
-                      }}
-                    >
-                      ← Modifier
-                    </button>
-                    <button
-                      onClick={next}
-                      style={{
-                        padding: "11px 28px",
-                        background: "#4F46E5",
-                        color: "white",
-                        border: "none",
-                        borderRadius: 10,
-                        fontSize: 14,
-                        fontWeight: 600,
-                        cursor: "pointer",
-                      }}
-                    >
-                      Continuer avec cette procédure →
-                    </button>
-                  </div>
+                  {classification.type === "aucune_autorisation" ? (
+                    <div>
+                      <div
+                        style={{
+                          background: "#F0FDF4",
+                          border: "1px solid #86EFAC",
+                          borderRadius: 12,
+                          padding: "16px 18px",
+                          marginBottom: 24,
+                          fontSize: 14,
+                          color: "#15803D",
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        ✅ <strong>Aucune autorisation d'urbanisme n'est requise</strong> pour votre projet en l'état. Vous pouvez réaliser vos travaux sans démarche préalable. En cas de doute, rapprochez-vous de votre mairie pour confirmation.
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <button
+                          onClick={() => { setClassification(null); setStep(3); }}
+                          style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}
+                        >
+                          ← Modifier mon projet
+                        </button>
+                        <button
+                          onClick={() => navigate("/citoyen")}
+                          style={{ padding: "11px 28px", background: "#15803D", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          Retour à l'accueil
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <button
+                        onClick={() => { setClassification(null); setStep(3); }}
+                        style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}
+                      >
+                        ← Modifier
+                      </button>
+                      <button
+                        onClick={next}
+                        style={{ padding: "11px 28px", background: "#4F46E5", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        Continuer avec cette procédure →
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : null}
             </div>
           )}
 
-          {/* ───── STEP 5 : Informations ───── */}
+          {/* ───── STEP 5 : Compléments CERFA ───── */}
           {step === 5 && (
+            <div>
+              <div style={{ textAlign: "center", marginBottom: 28 }}>
+                <div style={{ fontSize: 52, marginBottom: 10 }}>📋</div>
+                <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
+                  Informations CERFA
+                </h2>
+                <p style={{ fontSize: 14, color: "#64748b", maxWidth: 460, margin: "0 auto" }}>
+                  Ces informations serviront à préremplir votre formulaire officiel. Tous les champs sont facultatifs.
+                </p>
+              </div>
+
+              {/* Qualité du demandeur */}
+              <div style={{ marginBottom: 22 }}>
+                <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 10 }}>
+                  Vous êtes{" "}
+                  <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
+                </label>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {(["Propriétaire", "Mandataire du propriétaire", "Autre"] as const).map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => setQualiteDemandeur(qualiteDemandeur === q ? "" : q)}
+                      style={{
+                        padding: "10px 16px",
+                        border: `2px solid ${qualiteDemandeur === q ? "#4F46E5" : "#E2E8F0"}`,
+                        borderRadius: 10,
+                        background: qualiteDemandeur === q ? "#EEF2FF" : "white",
+                        fontSize: 13,
+                        fontWeight: qualiteDemandeur === q ? 700 : 400,
+                        color: qualiteDemandeur === q ? "#4F46E5" : "#374151",
+                        cursor: "pointer",
+                        transition: "all 0.15s",
+                      }}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {/* Emprise au sol créée */}
+              {!natures.includes("certificat") && (
+                <div style={{ marginBottom: 20 }}>
+                  <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                    Emprise au sol créée{" "}
+                    <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif · m²</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={empriseSol}
+                    onChange={(e) => setEmpriseSol(e.target.value)}
+                    placeholder="Ex : 25"
+                    style={inputStyle}
+                    onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
+                    onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
+                  />
+                  <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>
+                    Surface au sol de la construction projetée (projection verticale sur le terrain).
+                  </p>
+                </div>
+              )}
+
+              {/* Changement de destination */}
+              {natures.includes("changement_destination") && (
+                <>
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                      Destination actuelle{" "}
+                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
+                    </label>
+                    <select
+                      value={destinationActuelle}
+                      onChange={(e) => setDestinationActuelle(e.target.value)}
+                      style={{ ...inputStyle, background: "white", cursor: "pointer" }}
+                    >
+                      <option value="">— Sélectionner —</option>
+                      {CERFA_DESTINATIONS.map((d) => (
+                        <option key={d.value} value={d.value}>{d.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                  <div style={{ marginBottom: 20 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                      Destination future{" "}
+                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
+                    </label>
+                    <select
+                      value={destinationFuture}
+                      onChange={(e) => setDestinationFuture(e.target.value)}
+                      style={{ ...inputStyle, background: "white", cursor: "pointer" }}
+                    >
+                      <option value="">— Sélectionner —</option>
+                      {CERFA_DESTINATIONS.map((d) => (
+                        <option key={d.value} value={d.value}>{d.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              )}
+
+              {/* PC uniquement : hauteur + nombre de logements */}
+              {classification?.type === "permis_de_construire" && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
+                  <div>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                      Hauteur maximale{" "}
+                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif · m</span>
+                    </label>
+                    <input
+                      type="number"
+                      value={hauteurProjet}
+                      onChange={(e) => setHauteurProjet(e.target.value)}
+                      placeholder="Ex : 6.5"
+                      step="0.1"
+                      style={inputStyle}
+                      onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
+                      onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                      Logements créés{" "}
+                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
+                    </label>
+                    <input
+                      type="number"
+                      value={nbLogements}
+                      onChange={(e) => setNbLogements(e.target.value)}
+                      placeholder="Ex : 1"
+                      min={0}
+                      style={inputStyle}
+                      onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
+                      onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div
+                style={{
+                  background: "#EFF6FF",
+                  border: "1px solid #BFDBFE",
+                  borderRadius: 12,
+                  padding: "13px 18px",
+                  marginBottom: 24,
+                  fontSize: 13,
+                  color: "#1E40AF",
+                  lineHeight: 1.6,
+                }}
+              >
+                💡 Ces informations sont facultatives. Elles permettront de préremplir votre formulaire CERFA officiel lors du dépôt final.
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <button onClick={prev} style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}>
+                  ← Retour
+                </button>
+                <button onClick={next} style={{ padding: "11px 28px", background: "#4F46E5", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                  Continuer →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ───── STEP 6 : Informations ───── */}
+          {step === 6 && (
             <div>
               <div style={{ textAlign: "center", marginBottom: 28 }}>
                 <div style={{ fontSize: 52, marginBottom: 10 }}>👤</div>
@@ -1282,8 +1525,8 @@ export function NouvelleDemandeWizard() {
             </div>
           )}
 
-          {/* ───── STEP 6 : Documents ───── */}
-          {step === 6 && (
+          {/* ───── STEP 7 : Documents ───── */}
+          {step === 7 && (
             <div>
               <div style={{ textAlign: "center", marginBottom: 28 }}>
                 <div style={{ fontSize: 52, marginBottom: 10 }}>📁</div>
@@ -1430,8 +1673,8 @@ export function NouvelleDemandeWizard() {
             </div>
           )}
 
-          {/* ───── STEP 7 : Récapitulatif & Dépôt ───── */}
-          {step === 7 && (
+          {/* ───── STEP 8 : Récapitulatif & Dépôt ───── */}
+          {step === 8 && (
             <div>
               <div style={{ textAlign: "center", marginBottom: 28 }}>
                 <div style={{ fontSize: 52, marginBottom: 10 }}>🚀</div>
@@ -1458,7 +1701,7 @@ export function NouvelleDemandeWizard() {
                     label: "Type de projet",
                     value: natures.map((id) => NATURES.find((n) => n.id === id)?.label ?? id).join(", "),
                   },
-                  ...(natures.some((n) => n !== "certificat")
+                  ...(natures.some((n) => n !== "certificat") && surface > 0
                     ? [{ icon: "📐", label: "Surface plancher", value: `${surface} m²` }]
                     : []),
                   { icon: "📋", label: "Procédure", value: classification?.libelle ?? "—" },
