@@ -21,7 +21,7 @@ interface Piece {
   code: string;
   nom: string;
   requis: boolean | ((ctx: PiecesContext) => boolean);
-  aide: string;
+  aide: string | ((ctx: PiecesContext) => string);
 }
 
 // ── Déclaration Préalable ─────────────────────────────────────────────────────
@@ -30,49 +30,70 @@ const PIECES_DP: Piece[] = [
     code: "DP1",
     nom: "Plan de situation du terrain (DP1)",
     requis: true,
-    aide: "Extrait de plan localisant le terrain dans la commune. Disponible sur Géoportail (geoportail.gouv.fr) ou le cadastre (cadastre.gouv.fr).",
+    aide: "Localise la parcelle dans la commune. Échelle recommandée : 1/5 000 ou 1/25 000. À télécharger sur Géoportail (geoportail.gouv.fr) ou le cadastre (cadastre.gouv.fr).",
   },
   {
     code: "DP2",
     nom: "Plan de masse des constructions (DP2)",
     requis: (ctx) => ctx.hasConstruction || ctx.hasChangementDestination,
-    aide: "Vue de dessus à l'échelle avec les constructions existantes et projetées, leurs dimensions et distances aux limites séparatives.",
+    aide: (ctx) => ctx.hasChangementDestination
+      ? "Vue de dessus à l'échelle indiquant maison, garage ou local concerné, accès véhicules, emplacements de stationnement et limites séparatives. Important : montrer clairement la suppression ou reconversion du garage et prévoir un emplacement de stationnement de substitution — le PLU impose souvent une place par logement."
+      : "Vue de dessus à l'échelle avec les constructions existantes et projetées, leurs dimensions, distances aux limites séparatives, accès véhicules et emplacements de stationnement.",
   },
   {
     code: "DP3",
     nom: "Plan en coupe du terrain et de la construction (DP3)",
     requis: (ctx) => ctx.hasConstruction || ctx.natures.includes("agrandissement"),
-    aide: "Coupe verticale montrant le terrain naturel, la construction et les niveaux (sous-sol, rez-de-chaussée, étages).",
+    aide: "Coupe verticale montrant le terrain naturel, les niveaux et la hauteur de la construction. Conseillé même en cas de modification légère, pour attester de l'absence de travaux sur les structures porteuses.",
   },
   {
     code: "DP4",
     nom: "Notice descriptive du terrain et du projet (DP4)",
     requis: true,
-    aide: "Description de l'état actuel du terrain, des matériaux utilisés, et de l'aspect extérieur après travaux. Format libre.",
+    aide: (ctx) => ctx.hasABF
+      ? "Description de l'état actuel et du projet : matériaux, teintes RAL, type de menuiseries, dimensions des ouvertures. En zone ABF, le niveau de détail est déterminant pour l'avis — précisez couleurs, matériaux et justification architecturale."
+      : "Description de l'état actuel du terrain et du projet : matériaux, couleurs, type d'ouvertures. Format libre.",
   },
   {
     code: "DP5",
-    nom: "Plans des façades et des toitures (DP5)",
+    nom: "Plans des façades et des toitures AVANT / APRÈS (DP5)",
     requis: (ctx) => ctx.hasModifAspect || ctx.hasConstruction || ctx.hasChangementDestination,
-    aide: "Représentation de toutes les façades (avant / après travaux) avec les matériaux, couleurs et ouvertures. Inclure la toiture si modifiée.",
+    aide: (ctx) => ctx.hasABF
+      ? "Plans AVANT et APRÈS travaux de toutes les façades modifiées avec cotes, matériaux, couleurs, dimensions des ouvertures et type de menuiseries. Pièce clé pour l'instruction et l'avis ABF — soigner la présentation."
+      : "Représentation AVANT et APRÈS travaux de toutes les façades modifiées, avec matériaux, couleurs, ouvertures et toiture si concernée.",
   },
   {
     code: "DP6",
     nom: "Document graphique d'insertion dans l'environnement (DP6)",
-    requis: (ctx) => ctx.hasConstruction || ctx.hasABF || ctx.hasChangementDestination,
-    aide: "Photomontage, croquis perspectif ou vue 3D montrant comment le projet s'insère dans son environnement bâti et paysager. Requis si construction visible depuis l'espace public ou terrain en périmètre protégé.",
+    requis: (ctx) => ctx.hasConstruction || ctx.hasABF || ctx.hasChangementDestination || ctx.hasModifAspect,
+    aide: (ctx) => ctx.hasABF
+      ? "Photomontage ou insertion graphique couleur montrant l'intégration du projet dans la rue et le contexte bâti. L'ABF y est particulièrement attentif pour vérifier la cohérence architecturale et patrimoniale."
+      : "Photomontage, croquis perspectif ou vue 3D montrant comment le projet s'insère dans son environnement bâti et paysager.",
   },
   {
     code: "DP7",
     nom: "Photographies de situation (DP7)",
     requis: (ctx) => ctx.hasConstruction || ctx.hasABF || ctx.hasChangementDestination || ctx.hasModifAspect,
-    aide: "Au minimum : 1 photo depuis la rue/voie publique, 1 photo depuis le terrain vers les constructions voisines. Doit permettre de situer le terrain dans son environnement proche et lointain.",
+    aide: "Photo de la façade concernée depuis la rue (environnement proche) et vue plus large du quartier ou de la rue (environnement lointain). Doit permettre de situer le projet dans son contexte.",
   },
   {
     code: "DP8",
-    nom: "Consultation de l'Architecte des Bâtiments de France (ABF)",
+    nom: "Consultation ABF — Architecte des Bâtiments de France",
     requis: (ctx) => ctx.hasABF,
-    aide: "Votre terrain est en périmètre ABF. La mairie saisit automatiquement l'ABF — vous n'avez pas à joindre son avis. Prévoyez +1 mois de délai.",
+    aide: "Votre terrain est en périmètre ABF. La mairie saisit l'ABF automatiquement — vous n'avez rien à joindre. L'ABF peut imposer couleurs, matériaux, menuiseries, divisions de vitrages et type de baies. Délai d'instruction porté à 2 mois minimum.",
+  },
+  // ── Pièces recommandées ABF ──
+  {
+    code: "DP-ABF-NDA",
+    nom: "Notice descriptive architecturale (recommandée ABF)",
+    requis: (ctx) => ctx.hasABF,
+    aide: "Document libre (1-2 pages) décrivant la teinte et le RAL des menuiseries, les matériaux, le type d'ouverture, la conservation de l'esthétique existante et la justification architecturale. Fortement recommandée pour faciliter l'avis ABF et éviter une demande de compléments.",
+  },
+  {
+    code: "DP-ABF-FTM",
+    nom: "Fiche technique menuiseries (recommandée ABF)",
+    requis: (ctx) => ctx.hasABF && ctx.hasModifAspect,
+    aide: "Fiche fabricant ou descriptif indiquant : couleur, matériau (alu, bois, PVC), dimensions, type de profils et aspect extérieur. Permet d'éviter une demande de pièces complémentaires de l'ABF.",
   },
   // ── Pièces situationnelles ──
   {
@@ -277,6 +298,6 @@ export function getPiecesForType(
   return pieces.map((p) => ({
     nom: p.nom,
     requis: typeof p.requis === "function" ? p.requis(ctx) : p.requis,
-    aide: p.aide,
+    aide: typeof p.aide === "function" ? p.aide(ctx) : p.aide,
   }));
 }

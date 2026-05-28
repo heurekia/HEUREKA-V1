@@ -53,6 +53,7 @@ function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): Par
 interface Classification {
   type: string;
   libelle: string;
+  cerfa?: string;
   explication: string;
   delai_moyen: string;
   pieces_requises: Array<{ nom: string; requis: boolean; aide: string }>;
@@ -1152,15 +1153,25 @@ export function NouvelleDemandeWizard() {
                     >
                       Procédure requise
                     </div>
-                    <div
-                      style={{
-                        fontSize: 26,
-                        fontWeight: 900,
-                        color: "#0F172A",
-                        marginBottom: 14,
-                      }}
-                    >
-                      {classification.libelle}
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
+                      <div style={{ fontSize: 26, fontWeight: 900, color: "#0F172A" }}>
+                        {classification.libelle}
+                      </div>
+                      {classification.cerfa && (
+                        <div style={{
+                          fontSize: 11,
+                          fontWeight: 700,
+                          color: "#6366F1",
+                          background: "white",
+                          border: "1px solid #C7D2FE",
+                          borderRadius: 6,
+                          padding: "3px 9px",
+                          letterSpacing: "0.03em",
+                          whiteSpace: "nowrap",
+                        }}>
+                          CERFA {classification.cerfa}
+                        </div>
+                      )}
                     </div>
                     <p
                       style={{
@@ -1688,7 +1699,13 @@ export function NouvelleDemandeWizard() {
                   ...(natures.some((n) => n !== "certificat")
                     ? [{ icon: "📐", label: "Surface plancher", value: `${surface} m²` }]
                     : []),
-                  { icon: "📋", label: "Procédure", value: classification?.libelle ?? "—" },
+                  {
+                    icon: "📋",
+                    label: "Procédure",
+                    value: classification
+                      ? `${classification.libelle}${classification.cerfa ? `  ·  CERFA ${classification.cerfa}` : ""}`
+                      : "—",
+                  },
                   { icon: "⏱", label: "Délai estimé", value: classification?.delai_moyen ?? "—" },
                   {
                     icon: "👤",

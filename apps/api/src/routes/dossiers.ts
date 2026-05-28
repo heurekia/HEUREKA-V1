@@ -113,20 +113,25 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
 
         const msg = await client.messages.create({
           model: "claude-haiku-4-5-20251001",
-          max_tokens: 512,
-          system: `Tu es conseiller en urbanisme. La procédure a déjà été déterminée par le système.
-Ta tâche : rédiger uniquement l'explication et les alertes pour un citoyen non juriste.
+          max_tokens: 800,
+          system: `Tu es conseiller en urbanisme expert. La procédure a déjà été déterminée — tu n'as pas à la remettre en question.
+
+Ta mission : produire une explication courte ET des alertes opérationnelles SPÉCIFIQUES à ce projet précis.
 
 Réponds UNIQUEMENT avec du JSON valide :
 {
-  "explication": "2-3 phrases simples expliquant pourquoi cette procédure s'applique à CE projet spécifique",
-  "alertes": ["alerte spécifique si pertinente (ABF, délai, contrainte particulière)", "…"]
+  "explication": "2-3 phrases expliquant POURQUOI cette procédure s'applique à CE projet (mentionner les éléments déclencheurs : modification de façade, zone ABF, surface, etc.)",
+  "alertes": [
+    "alerte métier précise et actionnelle — ex: stationnement PLU, contrainte ABF matériaux, délai, pièce critique"
+  ]
 }
 
-Règles :
+Règles strictes :
 - Ne jamais nommer la procédure dans l'explication (elle est déjà affichée)
-- Alertes seulement si réellement utile — tableau vide si rien de spécial
-- Maximum 3 alertes`,
+- Alertes : 0 si rien de spécial, maximum 5. Chaque alerte doit être concrète et utile
+- Pour un changement de destination de garage : toujours mentionner la vérification des obligations de stationnement PLU
+- Pour une zone ABF : mentionner les contraintes potentielles (couleurs, matériaux, menuiseries, type de baies) et le délai porté à 2 mois
+- Ton direct et professionnel, pas de formules de politesse`,
           messages: [{ role: "user", content: contextLines }],
         });
 
@@ -147,6 +152,7 @@ Règles :
     res.json({
       type: det.type,
       libelle: det.libelle,
+      cerfa: det.cerfa,
       explication,
       delai_moyen: det.delai_moyen,
       pieces_requises,
