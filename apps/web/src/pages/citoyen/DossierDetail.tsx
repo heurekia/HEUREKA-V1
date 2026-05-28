@@ -185,6 +185,8 @@ export function DossierDetail() {
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [deleting, setDeleting] = useState(false);
+  const [completude, setCompletude] = useState<{ complete: boolean; manquantes: { code: string; nom: string }[] } | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -199,6 +201,11 @@ export function DossierDetail() {
         setEvents([...e].reverse()); // chronological
         setMessages(m);
         setPieces(p);
+        if (d.status === "brouillon") {
+          api.get<{ complete: boolean; manquantes: { code: string; nom: string }[] }>(`/dossiers/${id}/completude`)
+            .then(setCompletude)
+            .catch(() => {});
+        }
       })
       .catch(() => navigate("/citoyen/mes-demandes"))
       .finally(() => setLoading(false));
@@ -211,9 +218,22 @@ export function DossierDetail() {
       const updated = await api.post<Dossier>(`/dossiers/${id}/soumettre`, {});
       setDossier(updated);
     } catch {
-      alert("Une erreur est survenue. Veuillez réessayer.");
+      alert("Ce dossier est incomplet. Veuillez ajouter toutes les pièces obligatoires avant de soumettre.");
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const supprimerBrouillon = async () => {
+    if (!id || !dossier) return;
+    if (!window.confirm("Supprimer définitivement ce brouillon ? Cette action est irréversible.")) return;
+    setDeleting(true);
+    try {
+      await api.delete(`/dossiers/${id}`);
+      navigate("/citoyen/mes-demandes");
+    } catch {
+      alert("Erreur lors de la suppression. Veuillez réessayer.");
+      setDeleting(false);
     }
   };
 
@@ -259,33 +279,60 @@ export function DossierDetail() {
 
         {/* Bandeau brouillon */}
         {dossier.status === "brouillon" && (
-          <div style={{ background: "#FFF7ED", border: "1.5px solid #FED7AA", borderRadius: 14, padding: "20px 24px", marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-            <div>
-              <div style={{ fontSize: 14, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>
-                📋 Dossier en cours de préparation
+          <div style={{ background: "#FFF7ED", border: "1.5px solid #FED7AA", borderRadius: 14, padding: "20px 24px", marginBottom: 16 }}>
+            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ fontSize: 14, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>
+                  📋 Dossier en cours de préparation
+                </div>
+                <div style={{ fontSize: 13, color: "#78350F", lineHeight: 1.6 }}>
+                  Ajoutez toutes vos pièces justificatives ci-dessous, puis soumettez votre dossier à la mairie pour démarrer l'instruction.
+                </div>
+                {completude && !completude.complete && (
+                  <div style={{ marginTop: 10, fontSize: 12, color: "#B45309" }}>
+                    <strong>Pièces manquantes :</strong>{" "}
+                    {completude.manquantes.map((p) => p.nom).join(", ")}
+                  </div>
+                )}
               </div>
-              <div style={{ fontSize: 13, color: "#78350F", lineHeight: 1.6 }}>
-                Ajoutez toutes vos pièces justificatives ci-dessous, puis soumettez votre dossier à la mairie pour démarrer l'instruction.
+              <div style={{ display: "flex", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+                <button
+                  onClick={() => void supprimerBrouillon()}
+                  disabled={deleting}
+                  style={{
+                    padding: "11px 18px",
+                    background: "white",
+                    color: "#DC2626",
+                    border: "1.5px solid #FECACA",
+                    borderRadius: 10,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: deleting ? "not-allowed" : "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {deleting ? "Suppression…" : "🗑 Supprimer"}
+                </button>
+                <button
+                  onClick={() => void soumettreALaMairie()}
+                  disabled={submitting || (completude !== null && !completude.complete)}
+                  title={completude && !completude.complete ? `${completude.manquantes.length} pièce(s) manquante(s)` : undefined}
+                  style={{
+                    padding: "11px 24px",
+                    background: (submitting || (completude !== null && !completude.complete)) ? "#C7D2FE" : "#4F46E5",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 10,
+                    fontSize: 14,
+                    fontWeight: 700,
+                    cursor: (submitting || (completude !== null && !completude.complete)) ? "not-allowed" : "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  {submitting ? "Envoi…" : "Soumettre à la mairie →"}
+                </button>
               </div>
             </div>
-            <button
-              onClick={() => void soumettreALaMairie()}
-              disabled={submitting}
-              style={{
-                padding: "11px 24px",
-                background: submitting ? "#9CA3AF" : "#4F46E5",
-                color: "white",
-                border: "none",
-                borderRadius: 10,
-                fontSize: 14,
-                fontWeight: 700,
-                cursor: submitting ? "not-allowed" : "pointer",
-                whiteSpace: "nowrap",
-                flexShrink: 0,
-              }}
-            >
-              {submitting ? "Envoi…" : "Soumettre à la mairie →"}
-            </button>
           </div>
         )}
 

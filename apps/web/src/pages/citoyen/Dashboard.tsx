@@ -47,6 +47,7 @@ export function CitoyenDashboard() {
   const { user } = useAuth();
   const [dossiers, setDossiers] = useState<Dossier[]>([]);
   const [loading, setLoading] = useState(true);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
 
   useEffect(() => {
     api.get<Dossier[]>("/dossiers")
@@ -54,6 +55,21 @@ export function CitoyenDashboard() {
       .catch(() => {})
       .finally(() => setLoading(false));
   }, []);
+
+  const supprimerBrouillon = async (e: React.MouseEvent, id: string) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.confirm("Supprimer définitivement ce brouillon ? Cette action est irréversible.")) return;
+    setDeletingId(id);
+    try {
+      await api.delete(`/dossiers/${id}`);
+      setDossiers((prev) => prev.filter((d) => d.id !== id));
+    } catch {
+      alert("Erreur lors de la suppression. Veuillez réessayer.");
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const active   = dossiers.filter((d) => !CLOSED.includes(d.status));
   const closed   = dossiers.filter((d) => CLOSED.includes(d.status));
@@ -198,6 +214,22 @@ export function CitoyenDashboard() {
                           : ` · Créé le ${fmtDate(d.created_at)}`}
                       </div>
                     </div>
+
+                    {/* Delete button (brouillon only) */}
+                    {d.status === "brouillon" && (
+                      <button
+                        onClick={(e) => void supprimerBrouillon(e, d.id)}
+                        disabled={deletingId === d.id}
+                        title="Supprimer ce brouillon"
+                        style={{
+                          padding: "5px 9px", background: "transparent", border: "1px solid #FECACA",
+                          borderRadius: 8, fontSize: 14, color: "#DC2626", cursor: "pointer",
+                          flexShrink: 0, lineHeight: 1,
+                        }}
+                      >
+                        {deletingId === d.id ? "…" : "🗑"}
+                      </button>
+                    )}
 
                     {/* Chevron */}
                     <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="#CBD5E1" strokeWidth={2.5} style={{ flexShrink: 0 }}>

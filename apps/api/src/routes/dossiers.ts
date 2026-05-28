@@ -266,12 +266,59 @@ dossiersRouter.post("/:id/soumettre", async (req: AuthRequest, res) => {
     if (dossier.status !== "brouillon") {
       return res.status(400).json({ error: "Le dossier a déjà été soumis" });
     }
+
+    // Enforce completeness — all required pieces must be uploaded
+    const meta = (dossier.metadata as Record<string, unknown>) ?? {};
+    const natures = Array.isArray(meta.natures) ? (meta.natures as string[]) : [];
+    const surface = parseFloat(dossier.surface_plancher ?? "0") || 0;
+    const ctx = buildPiecesContext(natures, surface);
+    const piecesRequises = getPiecesForType(dossier.type, ctx).filter((p) => p.requis);
+    const uploadedPieces = await db
+      .select()
+      .from(dossier_pieces_jointes)
+      .where(eq(dossier_pieces_jointes.dossier_id, dossier.id));
+    const uploadedCodes = new Set(uploadedPieces.map((p) => p.code_piece).filter(Boolean));
+    const manquantes = piecesRequises.filter((p) => !uploadedCodes.has(p.code));
+    if (manquantes.length > 0) {
+      return res.status(422).json({ error: "Dossier incomplet", manquantes });
+    }
+
     const [updated] = await db
       .update(dossiers)
       .set({ status: "soumis", date_depot: new Date(), updated_at: new Date() })
       .where(eq(dossiers.id, req.params.id as string))
       .returning();
     res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Complétude d'un dossier ──
+dossiersRouter.get("/:id/completude", async (req: AuthRequest, res) => {
+  try {
+    const [dossier] = await db
+      .select()
+      .from(dossiers)
+      .where(and(eq(dossiers.id, req.params.id as string), eq(dossiers.user_id, req.user!.id)))
+      .limit(1);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    const meta = (dossier.metadata as Record<string, unknown>) ?? {};
+    const natures = Array.isArray(meta.natures) ? (meta.natures as string[]) : [];
+    const surface = parseFloat(dossier.surface_plancher ?? "0") || 0;
+    const ctx = buildPiecesContext(natures, surface);
+    const piecesRequises = getPiecesForType(dossier.type, ctx).filter((p) => p.requis);
+
+    const uploadedPieces = await db
+      .select()
+      .from(dossier_pieces_jointes)
+      .where(eq(dossier_pieces_jointes.dossier_id, dossier.id));
+    const uploadedCodes = new Set(uploadedPieces.map((p) => p.code_piece).filter(Boolean));
+    const manquantes = piecesRequises.filter((p) => !uploadedCodes.has(p.code));
+
+    res.json({ complete: manquantes.length === 0, manquantes });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -426,6 +473,44 @@ dossiersRouter.post("/:id/pieces/upload", upload.single("file"), async (req: Aut
     }
     console.error(err);
     res.status(500).json({ error: "Erreur upload" });
+  }
+});
+
+// ── Suppression d'un brouillon ──
+dossiersRouter.delete("/:id", async (req: AuthRequest, res) => {
+  try {
+    const [dossier] = await db
+      .select()
+      .from(dossiers)
+      .where(and(eq(dossiers.id, req.params.id as string), eq(dossiers.user_id, req.user!.id)))
+      .limit(1);
+
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    if (dossier.status !== "brouillon") return res.status(403).json({ error: "Seuls les brouillons peuvent être supprimés" });
+
+    // Delete uploaded files from disk
+    const pieces = await db
+      .select()
+      .from(dossier_pieces_jointes)
+      .where(eq(dossier_pieces_jointes.dossier_id, dossier.id));
+
+    for (const piece of pieces) {
+      if (piece.url) {
+        const filename = piece.url.split("/").pop();
+        if (filename) {
+          const filePath = path.join(UPLOADS_DIR, filename);
+          try { fs.unlinkSync(filePath); } catch { /* already gone */ }
+        }
+      }
+    }
+
+    await db.delete(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.dossier_id, dossier.id));
+    await db.delete(dossiers).where(eq(dossiers.id, dossier.id));
+
+    res.status(204).end();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
