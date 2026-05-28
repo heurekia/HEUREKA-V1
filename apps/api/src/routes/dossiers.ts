@@ -67,6 +67,17 @@ export const dossiersRouter = Router();
 
 dossiersRouter.use(requireAuth);
 
+// Verify that a dossier exists AND belongs to the authenticated user.
+// Returns the dossier when owned, otherwise null (caller replies 404).
+async function getOwnedDossier(dossierId: string, userId: string) {
+  const [dossier] = await db
+    .select()
+    .from(dossiers)
+    .where(and(eq(dossiers.id, dossierId), eq(dossiers.user_id, userId)))
+    .limit(1);
+  return dossier ?? null;
+}
+
 // ── Classification de la procédure d'urbanisme ──
 // Moteur déterministe pour type/libellé/articles — Claude pour explication+alertes
 dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
@@ -374,6 +385,8 @@ dossiersRouter.post("/", async (req: AuthRequest, res) => {
 // ── Messages d'un dossier ──
 dossiersRouter.get("/:id/messages", async (req: AuthRequest, res) => {
   try {
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
     const messages = await db
       .select()
       .from(dossier_messages)
@@ -388,6 +401,8 @@ dossiersRouter.get("/:id/messages", async (req: AuthRequest, res) => {
 
 dossiersRouter.post("/:id/messages", async (req: AuthRequest, res) => {
   try {
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
     const content: string = req.body.content;
     if (!content) return res.status(400).json({ error: "Message requis" });
     const rows = await db
@@ -409,6 +424,8 @@ dossiersRouter.post("/:id/messages", async (req: AuthRequest, res) => {
 // ── Pièces jointes ──
 dossiersRouter.get("/:id/pieces", async (req: AuthRequest, res) => {
   try {
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
     const pieces = await db
       .select()
       .from(dossier_pieces_jointes)
@@ -517,6 +534,8 @@ dossiersRouter.delete("/:id", async (req: AuthRequest, res) => {
 // ── Événements d'instruction ──
 dossiersRouter.get("/:id/events", async (req: AuthRequest, res) => {
   try {
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
     const events = await db
       .select()
       .from(instruction_events)
