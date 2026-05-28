@@ -5,7 +5,7 @@ import { api } from "../../lib/api";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
-type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7;
+type Step = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8;
 type NatureId =
   | "maison_neuve"
   | "agrandissement"
@@ -67,6 +67,7 @@ const STEP_LABELS = [
   "Mon projet",
   "Détails",
   "Analyse",
+  "Compléments",
   "Mes infos",
   "Documents",
   "Dépôt",
@@ -302,6 +303,54 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
   },
 };
 
+// ─── Situational CERFA questions ─────────────────────────────────────────────
+
+const SITUATIONAL_QUESTIONS: Array<{
+  id: "isLotissement" | "isERP" | "hasDefrichement" | "isNatura2000" | "isClimateResilience";
+  emoji: string;
+  label: string;
+  desc: string;
+  forTypes: string[];
+  onlyIfConstruction?: boolean;
+}> = [
+  {
+    id: "isLotissement",
+    emoji: "🏘️",
+    label: "Terrain en lotissement",
+    desc: "Votre terrain est issu d'un lotissement avec règlement de lotissement",
+    forTypes: ["permis_de_construire"],
+  },
+  {
+    id: "isERP",
+    emoji: "🏪",
+    label: "Bâtiment ouvert au public",
+    desc: "Commerce, cabinet médical, salle de sport, crèche… (Établissement Recevant du Public)",
+    forTypes: ["permis_de_construire"],
+  },
+  {
+    id: "hasDefrichement",
+    emoji: "🌳",
+    label: "Défrichement à prévoir",
+    desc: "Abattage d'arbres ou suppression d'une zone boisée pour libérer le terrain",
+    forTypes: ["permis_de_construire"],
+  },
+  {
+    id: "isNatura2000",
+    emoji: "🌿",
+    label: "Zone Natura 2000",
+    desc: "Terrain situé dans ou à proximité immédiate d'un site Natura 2000",
+    forTypes: ["permis_de_construire", "declaration_prealable"],
+  },
+  {
+    id: "isClimateResilience",
+    emoji: "🌱",
+    label: "Loi Climat & Résilience 2021",
+    desc: "Construction neuve visée par l'article 101 de la loi n°2021-1104 du 22 août 2021",
+    forTypes: ["permis_de_construire", "declaration_prealable"],
+    onlyIfConstruction: true,
+  },
+];
+
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function NouvelleDemandeWizard() {
@@ -331,7 +380,14 @@ export function NouvelleDemandeWizard() {
   const [classifying, setClassifying] = useState(false);
   const [classification, setClassification] = useState<Classification | null>(null);
 
-  // Step 5 – Infos personnelles
+  // Step 5 – Cas particuliers (situational CERFA)
+  const [isLotissement, setIsLotissement] = useState(false);
+  const [isERP, setIsERP] = useState(false);
+  const [hasDefrichement, setHasDefrichement] = useState(false);
+  const [isNatura2000, setIsNatura2000] = useState(false);
+  const [isClimateResilience, setIsClimateResilience] = useState(false);
+
+  // Step 6 – Infos personnelles
   const [nom, setNom] = useState(user?.nom ?? "");
   const [prenom, setPrenom] = useState(user?.prenom ?? "");
   const [email, setEmail] = useState(user?.email ?? "");
@@ -415,6 +471,33 @@ export function NouvelleDemandeWizard() {
     }
   }, [natures, surface, parcel, empriseExistante, amenagementType, description]);
 
+  // ── Refresh pieces with situational flags then advance ───────────────────────
+  const refreshPiecesAndNext = useCallback(async () => {
+    const anySituational = isLotissement || isERP || hasDefrichement || isNatura2000 || isClimateResilience;
+    if (classification && anySituational) {
+      try {
+        const result = await api.post<{ pieces_requises: Array<{ nom: string; requis: boolean; aide: string }> }>("/dossiers/pieces", {
+          type: classification.type,
+          natures,
+          surface: surface > 0 ? surface : undefined,
+          servitudes: parcel?.servitudes,
+          amenagementType: amenagementType || undefined,
+          situational: {
+            isLotissement: isLotissement || undefined,
+            isERP: isERP || undefined,
+            hasDefrichement: hasDefrichement || undefined,
+            isNatura2000: isNatura2000 || undefined,
+            isClimateResilience: isClimateResilience || undefined,
+          },
+        });
+        setClassification((prev) => prev ? { ...prev, pieces_requises: result.pieces_requises } : null);
+      } catch {
+        // keep existing pieces on error
+      }
+    }
+    setStep((s) => (s + 1) as Step);
+  }, [classification, natures, surface, parcel, amenagementType, isLotissement, isERP, hasDefrichement, isNatura2000, isClimateResilience]);
+
   // ── Submit dossier ───────────────────────────────────────────────────────────
   const submitDossier = useCallback(async () => {
     if (!classification) return;
@@ -426,12 +509,24 @@ export function NouvelleDemandeWizard() {
         commune: parcel?.commune ?? "",
         description: description || undefined,
         surface_plancher: natures.some((n) => n !== "certificat") ? String(surface) : undefined,
+        metadata: {
+          natures,
+          zone: parcel?.zone,
+          parcelle: parcel?.parcelle,
+          situational: {
+            isLotissement: isLotissement || undefined,
+            isERP: isERP || undefined,
+            hasDefrichement: hasDefrichement || undefined,
+            isNatura2000: isNatura2000 || undefined,
+            isClimateResilience: isClimateResilience || undefined,
+          },
+        },
       });
       setSubmitted(result);
     } finally {
       setSubmitting(false);
     }
-  }, [classification, parcel, description, natures, surface]);
+  }, [classification, parcel, description, natures, surface, isLotissement, isERP, hasDefrichement, isNatura2000, isClimateResilience]);
 
   const next = () => setStep((s) => (s + 1) as Step);
   const prev = () => setStep((s) => (s - 1) as Step);
@@ -1173,8 +1268,118 @@ export function NouvelleDemandeWizard() {
             </div>
           )}
 
-          {/* ───── STEP 5 : Informations ───── */}
-          {step === 5 && (
+          {/* ───── STEP 5 : Compléments CERFA ───── */}
+          {step === 5 && classification && (
+            <div>
+              <div style={{ textAlign: "center", marginBottom: 28 }}>
+                <div style={{ fontSize: 52, marginBottom: 10 }}>🗂️</div>
+                <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
+                  Cas particuliers
+                </h2>
+                <p style={{ fontSize: 14, color: "#64748b", maxWidth: 460, margin: "0 auto" }}>
+                  Certaines situations nécessitent des pièces complémentaires. Cochez ce qui s'applique à votre projet.
+                </p>
+              </div>
+
+              {(() => {
+                const hasConstruction = natures.some((n) =>
+                  ["maison_neuve", "agrandissement", "petite_construction"].includes(n),
+                );
+                const applicable = SITUATIONAL_QUESTIONS.filter((q) => {
+                  if (!q.forTypes.includes(classification.type)) return false;
+                  if (q.onlyIfConstruction && !hasConstruction) return false;
+                  return true;
+                });
+
+                const situationalState: Record<string, boolean> = {
+                  isLotissement, isERP, hasDefrichement, isNatura2000, isClimateResilience,
+                };
+                const situationalSetters: Record<string, (v: boolean) => void> = {
+                  isLotissement: setIsLotissement,
+                  isERP: setIsERP,
+                  hasDefrichement: setHasDefrichement,
+                  isNatura2000: setIsNatura2000,
+                  isClimateResilience: setIsClimateResilience,
+                };
+
+                if (applicable.length === 0) {
+                  return (
+                    <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 14, padding: 28, marginBottom: 24, textAlign: "center" }}>
+                      <div style={{ fontSize: 36, marginBottom: 10 }}>✓</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "#15803D", marginBottom: 4 }}>Aucun cas particulier</div>
+                      <div style={{ fontSize: 13, color: "#166534", lineHeight: 1.5 }}>
+                        Votre projet ne nécessite pas de pièces complémentaires spécifiques. Vous pouvez continuer.
+                      </div>
+                    </div>
+                  );
+                }
+
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
+                    {applicable.map((q) => {
+                      const active = situationalState[q.id];
+                      return (
+                        <button
+                          key={q.id}
+                          onClick={() => situationalSetters[q.id]!(!active)}
+                          style={{
+                            display: "flex",
+                            alignItems: "center",
+                            gap: 16,
+                            padding: "16px 20px",
+                            border: `2px solid ${active ? "#4F46E5" : "#E2E8F0"}`,
+                            borderRadius: 14,
+                            background: active ? "#EEF2FF" : "white",
+                            textAlign: "left",
+                            cursor: "pointer",
+                            transition: "all 0.15s",
+                            width: "100%",
+                          }}
+                        >
+                          <span style={{ fontSize: 32, flexShrink: 0 }}>{q.emoji}</span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 14, fontWeight: 700, color: active ? "#4F46E5" : "#0F172A", marginBottom: 3 }}>
+                              {q.label}
+                            </div>
+                            <div style={{ fontSize: 12, color: active ? "#6366F1" : "#94a3b8", lineHeight: 1.4 }}>
+                              {q.desc}
+                            </div>
+                          </div>
+                          <div style={{
+                            width: 24, height: 24, borderRadius: "50%",
+                            border: `2px solid ${active ? "#4F46E5" : "#CBD5E1"}`,
+                            background: active ? "#4F46E5" : "white",
+                            display: "flex", alignItems: "center", justifyContent: "center",
+                            flexShrink: 0, transition: "all 0.15s",
+                          }}>
+                            {active && <span style={{ color: "white", fontSize: 11, fontWeight: 800 }}>✓</span>}
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                );
+              })()}
+
+              <div style={{ display: "flex", justifyContent: "space-between" }}>
+                <button
+                  onClick={prev}
+                  style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}
+                >
+                  ← Retour
+                </button>
+                <button
+                  onClick={() => void refreshPiecesAndNext()}
+                  style={{ padding: "11px 28px", background: "#4F46E5", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                >
+                  Continuer →
+                </button>
+              </div>
+            </div>
+          )}
+
+          {/* ───── STEP 6 : Informations ───── */}
+          {step === 6 && (
             <div>
               <div style={{ textAlign: "center", marginBottom: 28 }}>
                 <div style={{ fontSize: 52, marginBottom: 10 }}>👤</div>
@@ -1282,8 +1487,8 @@ export function NouvelleDemandeWizard() {
             </div>
           )}
 
-          {/* ───── STEP 6 : Documents ───── */}
-          {step === 6 && (
+          {/* ───── STEP 7 : Documents ───── */}
+          {step === 7 && (
             <div>
               <div style={{ textAlign: "center", marginBottom: 28 }}>
                 <div style={{ fontSize: 52, marginBottom: 10 }}>📁</div>
@@ -1430,8 +1635,8 @@ export function NouvelleDemandeWizard() {
             </div>
           )}
 
-          {/* ───── STEP 7 : Récapitulatif & Dépôt ───── */}
-          {step === 7 && (
+          {/* ───── STEP 8 : Récapitulatif & Dépôt ───── */}
+          {step === 8 && (
             <div>
               <div style={{ textAlign: "center", marginBottom: 28 }}>
                 <div style={{ fontSize: 52, marginBottom: 10 }}>🚀</div>

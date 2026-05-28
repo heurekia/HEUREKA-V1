@@ -7,6 +7,7 @@ import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
+import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
 
 function getAnthropicKey(): string {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
@@ -27,6 +28,9 @@ const NATURE_LABELS: Record<string, string> = {
   petite_construction: "Petite construction (garage, abri de jardin, pergola, carport…)",
   amenagement: "Aménagement de terrain",
   demolition: "Démolition",
+  changement_destination: "Changement de destination d'un bâtiment",
+  modification_aspect: "Modification de l'aspect extérieur",
+  division_terrain: "Division foncière / lotissement",
   certificat: "Demande de certificat d'urbanisme",
 };
 
@@ -116,6 +120,39 @@ Réponds UNIQUEMENT avec du JSON valide (aucun texte avant ou après) :
   }
 });
 
+// ── Pièces requises (déterministe) ──
+dossiersRouter.post("/pieces", async (req: AuthRequest, res) => {
+  try {
+    const {
+      type,
+      natures,
+      surface,
+      servitudes,
+      amenagementType,
+      situational,
+    } = req.body as {
+      type: string;
+      natures?: string[];
+      surface?: number;
+      servitudes?: Array<{ categorie?: string; libelle?: string }>;
+      amenagementType?: string;
+      situational?: {
+        isLotissement?: boolean;
+        isERP?: boolean;
+        hasDefrichement?: boolean;
+        isNatura2000?: boolean;
+        isClimateResilience?: boolean;
+      };
+    };
+    const ctx = buildPiecesContext(natures ?? [], surface ?? 0, servitudes, amenagementType, situational);
+    const pieces = getPiecesForType(type ?? "declaration_prealable", ctx);
+    res.json({ pieces_requises: pieces });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur calcul pièces" });
+  }
+});
+
 // ── Lister mes dossiers ──
 dossiersRouter.get("/", async (req: AuthRequest, res) => {
   try {
@@ -156,6 +193,7 @@ const createSchema = z.object({
   code_postal: z.string().optional(),
   description: z.string().optional(),
   surface_plancher: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
 });
 
 dossiersRouter.post("/", async (req: AuthRequest, res) => {
