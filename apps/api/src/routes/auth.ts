@@ -35,6 +35,11 @@ const registerLimiter = rateLimit({
 
 const IS_PROD = process.env.NODE_ENV === "production";
 
+const COOKIE_CLEAR_OPTIONS = {
+  path: "/",
+  ...(IS_PROD ? { domain: ".heurekia.com" } : {}),
+};
+
 const COOKIE_OPTIONS = {
   httpOnly: true,
   secure: IS_PROD,
@@ -134,7 +139,7 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
 
 authRouter.post("/logout", requireAuth, (req: AuthRequest, res) => {
   writeAudit(req.user!.id, req.user!.email, "logout", req);
-  res.clearCookie("token", { path: "/" });
+  res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
   res.json({ ok: true });
 });
 
@@ -192,7 +197,7 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     writeAudit(user.id, user.email, "account_deleted", req);
     await db.delete(users).where(eq(users.id, user.id));
 
-    res.clearCookie("token", { path: "/" });
+    res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
