@@ -52,6 +52,7 @@ function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): Par
 
 interface Classification {
   type: string;
+  subtype?: string | null;
   libelle: string;
   libelle_court?: string;
   articles?: string[];
@@ -59,6 +60,7 @@ interface Classification {
   delai_moyen: string;
   pieces_requises: Array<{ nom: string; requis: boolean; aide: string }>;
   alertes: string[];
+  architecte_requis?: boolean;
   confiance: "haute" | "moyenne" | "faible";
   modifiers?: string[];
 }
@@ -342,6 +344,8 @@ export function NouvelleDemandeWizard() {
   const [surfaceStr, setSurfaceStr] = useState<string>("");
   const [empriseExistante, setEmpriseExistante] = useState("");
   const [amenagementType, setAmenagementType] = useState("");
+  const [certificatType, setCertificatType] = useState<"a" | "b">("b");
+  const [hasVoirieCommune, setHasVoirieCommune] = useState<boolean | null>(null);
 
   // Step 4 – Classification
   const [classifying, setClassifying] = useState(false);
@@ -404,6 +408,8 @@ export function NouvelleDemandeWizard() {
         empriseExistante: empriseExistante || undefined,
         amenagementType: amenagementType || undefined,
         description: description || undefined,
+        certificatType: natures.includes("certificat") ? certificatType : undefined,
+        hasVoirieCommune: natures.includes("division_terrain") ? (hasVoirieCommune ?? false) : undefined,
       });
       setClassification(result);
     } catch {
@@ -437,7 +443,7 @@ export function NouvelleDemandeWizard() {
     } finally {
       setClassifying(false);
     }
-  }, [natures, surface, parcel, empriseExistante, amenagementType, description]);
+  }, [natures, surface, parcel, empriseExistante, amenagementType, description, certificatType, hasVoirieCommune]);
 
   // ── Submit dossier ───────────────────────────────────────────────────────────
   const submitDossier = useCallback(async () => {
@@ -1040,6 +1046,61 @@ export function NouvelleDemandeWizard() {
                   )}
                 </div>
 
+                {/* ── Sous-question CUa / CUb ── */}
+                {natures.includes("certificat") && (
+                  <div style={{ marginBottom: 24 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 10 }}>
+                      Type de certificat souhaité
+                    </label>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {([
+                        ["a", "📋 CUa — Informatif", "Connaître les règles du PLU applicables à la parcelle (1 mois)"],
+                        ["b", "🔍 CUb — Opérationnel", "Vérifier la faisabilité d'un projet précis sur la parcelle (2 mois)"],
+                      ] as ["a" | "b", string, string][]).map(([val, label, desc]) => (
+                        <button key={val} onClick={() => setCertificatType(val)}
+                          style={{
+                            flex: 1, padding: "14px 12px", border: `2px solid ${certificatType === val ? "#4F46E5" : "#E2E8F0"}`,
+                            borderRadius: 12, background: certificatType === val ? "#EEF2FF" : "white",
+                            textAlign: "left", cursor: "pointer", transition: "all 0.15s",
+                          }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: certificatType === val ? "#4F46E5" : "#0F172A", marginBottom: 4 }}>{label}</div>
+                          <div style={{ fontSize: 11, color: certificatType === val ? "#6366F1" : "#94a3b8", lineHeight: 1.4 }}>{desc}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Sous-question voirie commune (division terrain) ── */}
+                {natures.includes("division_terrain") && (
+                  <div style={{ marginBottom: 24 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 10 }}>
+                      La division créera-t-elle des voies ou réseaux communs ?
+                    </label>
+                    <p style={{ fontSize: 12, color: "#64748b", marginBottom: 10, marginTop: -4 }}>
+                      Voirie partagée, réseau eau/électricité commun, espace vert collectif…
+                    </p>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {([
+                        [true, "✓ Oui — Voirie ou réseaux communs", "→ Permis d'Aménager requis"],
+                        [false, "✕ Non — Division simple", "→ Déclaration Préalable suffit"],
+                      ] as [boolean, string, string][]).map(([val, label, sub]) => (
+                        <button key={String(val)} onClick={() => setHasVoirieCommune(val)}
+                          style={{
+                            flex: 1, padding: "14px 12px",
+                            border: `2px solid ${hasVoirieCommune === val ? (val ? "#4F46E5" : "#64748b") : "#E2E8F0"}`,
+                            borderRadius: 12,
+                            background: hasVoirieCommune === val ? (val ? "#EEF2FF" : "#F1F5F9") : "white",
+                            textAlign: "left", cursor: "pointer", transition: "all 0.15s",
+                          }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: hasVoirieCommune === val ? (val ? "#4F46E5" : "#374151") : "#0F172A", marginBottom: 4 }}>{label}</div>
+                          <div style={{ fontSize: 11, color: "#94a3b8" }}>{sub}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <button onClick={prev}
                     style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}>
@@ -1166,6 +1227,31 @@ export function NouvelleDemandeWizard() {
                       ))}
                     </div>
                   </div>
+
+                  {classification.architecte_requis && (
+                    <div
+                      style={{
+                        background: "#FEF2F2",
+                        border: "1.5px solid #FECACA",
+                        borderRadius: 12,
+                        padding: "14px 18px",
+                        marginBottom: 16,
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 12,
+                      }}
+                    >
+                      <span style={{ fontSize: 18, flexShrink: 0 }}>🔴</span>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#991B1B", marginBottom: 4 }}>
+                          Architecte obligatoire
+                        </div>
+                        <div style={{ fontSize: 13, color: "#7F1D1D", lineHeight: 1.5 }}>
+                          La surface plancher totale (existante + créée) dépasse 150 m². Le recours à un architecte est obligatoire pour déposer ce dossier (art. R431-2 CU).
+                        </div>
+                      </div>
+                    </div>
+                  )}
 
                   {classification.alertes.length > 0 && (
                     <div

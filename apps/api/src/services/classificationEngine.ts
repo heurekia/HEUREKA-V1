@@ -1,6 +1,8 @@
-// Moteur de classification déterministe basé sur le Code de l'urbanisme
+// Moteur de classification déterministe — Code de l'urbanisme
+// Références : R421-1, R421-9, R421-12, R421-13, R421-17, R421-19, R421-23,
+//              R421-27, R421-28, R431-2, L410-1
 
-export type PermitType =
+export type AuthType =
   | "declaration_prealable"
   | "permis_de_construire"
   | "permis_amenager"
@@ -8,260 +10,336 @@ export type PermitType =
   | "certificat_urbanisme"
   | "aucune_autorisation";
 
+export type AuthSubtype =
+  | "cu_a"          // CU informatif
+  | "cu_b"          // CU opérationnel
+  | "pcmi"          // PC maison individuelle
+  | "pc"            // PC standard (autres constructions)
+  | "division"      // DP déclaration de division (sans voirie)
+  | "pa_lotissement" // PA lotissement avec voirie
+  | "pd";           // PD seul (démolition sans reconstruction)
+
 export interface ClassificationInput {
   natures: string[];
-  surface?: number;
-  empriseExistante?: number;
-  zone?: string;
-  servitudes?: Array<{ categorie?: string; libelle?: string }>;
-  amenagementType?: string;
+  surface?: number;            // m² de surface plancher créée
+  empriseExistante?: number;   // m² existants (pour calcul total et seuil architecte)
+  zone?: string;               // code zone PLU ex. "UA", "UB", "A", "N"
+  hasABF?: boolean;
+  amenagementType?: string;    // "piscine" | "cloture" | "terrasse" | "autre"
+  certificatType?: "a" | "b"; // CUa informatif vs CUb opérationnel
+  hasVoirieCommune?: boolean;  // division terrain : voirie/réseaux communs → PA
 }
 
 export interface ClassificationResult {
-  type: PermitType;
+  type: AuthType;
+  subtype: AuthSubtype | null;
   libelle: string;
   libelle_court: string;
+  cerfa: string;
   articles: string[];
   delai_moyen: string;
+  architecte_requis: boolean;
   confidence: "deterministic" | "faible";
-  modifiers: string[];
 }
 
+// ── Références CERFA ─────────────────────────────────────────────────────────
+const CERFA = {
+  cu:   "13410*06",  // CUa et CUb
+  pcmi: "13406*16",  // PC maison individuelle
+  pc:   "13409*16",  // PC / PA / PD standard
+  dp:   "16702*02",  // DP maison individuelle
+  pd:   "13405*08",  // Permis de démolir
+} as const;
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
 function isZoneU(zone?: string): boolean {
-  if (!zone) return true;
-  const z = zone.toUpperCase();
-  return z.startsWith("U") || z === "AU" || z.startsWith("AU");
+  return zone ? /^u/i.test(zone.trim()) : false;
 }
 
-function hasABF(servitudes?: Array<{ categorie?: string; libelle?: string }>): boolean {
-  return (servitudes ?? []).some(
-    (s) => s.categorie?.toUpperCase().startsWith("AC") || s.libelle?.toLowerCase().includes("abf"),
-  );
+function build(
+  type: AuthType,
+  subtype: AuthSubtype | null,
+  libelle: string,
+  libelle_court: string,
+  cerfa: string,
+  articles: string[],
+  delai_moyen: string,
+  architecte_requis: boolean,
+  confidence: "deterministic" | "faible",
+): ClassificationResult {
+  return { type, subtype, libelle, libelle_court, cerfa, articles, delai_moyen, architecte_requis, confidence };
 }
 
+// ── Moteur ────────────────────────────────────────────────────────────────────
 export function classifyPermit(input: ClassificationInput): ClassificationResult {
-  const { natures, surface = 0, zone, servitudes, amenagementType } = input;
-  const abf = hasABF(servitudes);
-  const zoneU = isZoneU(zone);
-  const mods = abf ? ["ABF"] : [];
+  const {
+    natures,
+    surface = 0,
+    empriseExistante = 0,
+    zone,
+    hasABF = false,
+    amenagementType,
+    certificatType,
+    hasVoirieCommune = false,
+  } = input;
 
-  // ─ Certificat d'urbanisme (priorité absolue)
-  if (natures.includes("certificat")) {
-    return {
-      type: "certificat_urbanisme",
-      libelle: "Certificat d'urbanisme",
-      libelle_court: "CU",
-      articles: ["L410-1 CU"],
-      delai_moyen: "1 à 2 mois",
-      confidence: "deterministic",
-      modifiers: mods,
+  const inZoneU         = isZoneU(zone);
+  const surfaceTotale   = surface + empriseExistante;
+  const architecteReq   = surfaceTotale > 150;
+
+  const hasConstruction = natures.some((n) =>
+    ["maison_neuve", "agrandissement", "petite_construction"].includes(n),
+  );
+  const hasDemolition   = natures.includes("demolition");
+  const isMaisonNeuve   = natures.includes("maison_neuve");
+
+  // ── ABF delay helper ──────────────────────────────────────────────────────
+  function delay(base: string): string {
+    if (!hasABF) return base;
+    const map: Record<string, string> = {
+      "1 à 2 mois": "2 à 3 mois",
+      "2 à 3 mois": "3 à 4 mois",
+      "3 à 5 mois": "4 à 6 mois",
     };
+    return map[base] ?? base;
   }
 
-  // ─ Division foncière → DP de division (R421-23)
-  if (natures.includes("division_terrain")) {
-    return {
-      type: "declaration_prealable",
-      libelle: "Déclaration Préalable de division foncière",
-      libelle_court: "DP",
-      articles: ["R421-23 CU"],
-      delai_moyen: "1 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-      confidence: "deterministic",
-      modifiers: mods,
-    };
+  // ── 1. Certificat d'Urbanisme ─────────────────────────────────────────────
+  // L410-1 a) : CUa informatif — règles applicables à la parcelle (1 mois)
+  // L410-1 b) : CUb opérationnel — faisabilité d'un projet précis (2 mois)
+  if (natures.includes("certificat") && natures.length === 1) {
+    const isCUb = certificatType === "b" || certificatType === undefined; // défaut CUb si non précisé
+    return build(
+      "certificat_urbanisme",
+      isCUb ? "cu_b" : "cu_a",
+      isCUb ? "Certificat d'Urbanisme opérationnel (CUb)" : "Certificat d'Urbanisme informatif (CUa)",
+      isCUb ? "CUb" : "CUa",
+      CERFA.cu,
+      ["L410-1 CU"],
+      isCUb ? "2 mois" : "1 mois",
+      false,
+      "deterministic",
+    );
   }
 
-  // ─ Maison neuve → PC (R421-1)
-  if (natures.includes("maison_neuve")) {
-    return {
-      type: "permis_de_construire",
-      libelle: "Permis de Construire",
-      libelle_court: "PC",
-      articles: ["R421-1 CU"],
-      delai_moyen: "2 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-      confidence: "deterministic",
-      modifiers: mods,
-    };
+  // ── 2. Démolition seule ───────────────────────────────────────────────────
+  // R421-27 : zones protégées (ABF, secteur sauvegardé, AVAP/SPR)
+  // R421-28 : bâtiments soumis à PC (construction > seuils)
+  // Exception : si combinée avec une construction → PC valant démolition (voir §6)
+  if (hasDemolition && !hasConstruction) {
+    return build(
+      "permis_demolir",
+      "pd",
+      "Permis de Démolir",
+      "PD",
+      CERFA.pd,
+      hasABF ? ["R421-27 CU", "R421-28 CU"] : ["R421-28 CU"],
+      delay("2 à 3 mois"),
+      false,
+      "deterministic",
+    );
   }
 
-  // ─ Démolition seule (sans construction associée)
-  const isDemolOnly =
-    natures.includes("demolition") &&
-    !natures.some((n) => ["maison_neuve", "agrandissement", "petite_construction"].includes(n));
-
-  if (isDemolOnly) {
-    if (surface >= 20 || abf) {
-      return {
-        type: "permis_demolir",
-        libelle: "Permis de Démolir",
-        libelle_court: "PD",
-        articles: ["R421-28 CU"],
-        delai_moyen: "2 mois",
-        confidence: "deterministic",
-        modifiers: mods,
-      };
+  // ── 3. Division foncière ──────────────────────────────────────────────────
+  // R421-19 a) : PA si création de voirie ou espaces/réseaux communs
+  // Sinon DP (déclaration préalable de lotissement, R421-17 e)
+  if (natures.includes("division_terrain") && !hasConstruction) {
+    if (hasVoirieCommune) {
+      return build(
+        "permis_amenager",
+        "pa_lotissement",
+        "Permis d'Aménager",
+        "PA",
+        CERFA.pc,
+        ["R421-19 a) CU"],
+        delay("3 à 5 mois"),
+        false,
+        "deterministic",
+      );
     }
-    return {
-      type: "declaration_prealable",
-      libelle: "Déclaration Préalable",
-      libelle_court: "DP",
-      articles: ["R421-27 CU"],
-      delai_moyen: "1 mois",
-      confidence: "deterministic",
-      modifiers: mods,
-    };
+    return build(
+      "declaration_prealable",
+      "division",
+      "Déclaration Préalable — Division foncière",
+      "DP",
+      CERFA.dp,
+      ["R442-1 CU", "R421-17 e) CU"],
+      delay("1 à 2 mois"),
+      false,
+      "deterministic",
+    );
   }
 
-  // ─ Changement de destination (avec ou sans modification d'aspect)
-  // R421-17 : DP si changement de destination même avec travaux ≤ 20m²
-  // R421-14 : PC si travaux créent surface plancher ≥ 20m²
-  if (natures.includes("changement_destination")) {
-    if (surface >= 20) {
-      return {
-        type: "permis_de_construire",
-        libelle: "Permis de Construire",
-        libelle_court: "PC",
-        articles: ["R421-14 CU", "R421-17 CU"],
-        delai_moyen: "2 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-        confidence: "deterministic",
-        modifiers: mods,
-      };
-    }
-    return {
-      type: "declaration_prealable",
-      libelle: "Déclaration Préalable",
-      libelle_court: "DP",
-      articles: ["R421-17 c) et d) CU"],
-      delai_moyen: "1 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-      confidence: "deterministic",
-      modifiers: mods,
-    };
+  // ── 4. Maison neuve ───────────────────────────────────────────────────────
+  // R421-1 : PC obligatoire pour toute construction nouvelle
+  // Maison individuelle → PCMI (CERFA 13406*16)
+  // Architecte obligatoire si surface totale > 150 m² (R431-2 CU)
+  // PC valant démolition si demolition est aussi coché
+  if (isMaisonNeuve) {
+    const articles = ["R421-1 CU"];
+    if (hasDemolition) articles.push("R421-28 CU"); // PC vaut permis démolir
+    if (architecteReq) articles.push("R431-2 CU");
+    return build(
+      "permis_de_construire",
+      "pcmi",
+      architecteReq
+        ? "Permis de Construire (architecte obligatoire)"
+        : "Permis de Construire — Maison individuelle",
+      "PCMI",
+      CERFA.pcmi,
+      articles,
+      delay("2 à 3 mois"),
+      architecteReq,
+      "deterministic",
+    );
   }
 
-  // ─ Modification de l'aspect extérieur seule → DP (R421-17 d)
-  if (natures.includes("modification_aspect")) {
-    return {
-      type: "declaration_prealable",
-      libelle: "Déclaration Préalable",
-      libelle_court: "DP",
-      articles: ["R421-17 d) CU"],
-      delai_moyen: "1 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-      confidence: "deterministic",
-      modifiers: mods,
-    };
+  // ── 5. Changement de destination ─────────────────────────────────────────
+  // R421-17 b) : DP si sans modification des structures porteuses
+  // R431-24    : PC si modification des structures porteuses (non géré ici — complexité)
+  // Modification de façade seule ne bascule PAS vers PC.
+  if (
+    natures.includes("changement_destination") &&
+    !natures.some((n) => ["maison_neuve", "agrandissement"].includes(n))
+  ) {
+    return build(
+      "declaration_prealable",
+      null,
+      "Déclaration Préalable",
+      "DP",
+      CERFA.dp,
+      ["R421-17 b) CU"],
+      delay("1 à 2 mois"),
+      false,
+      "deterministic",
+    );
   }
 
-  // ─ Aménagement de terrain
-  if (natures.includes("amenagement")) {
+  // ── 6. Modification de l'aspect extérieur seule ───────────────────────────
+  // R421-17 a) : DP pour ravalement, toiture, fenêtres, menuiseries…
+  if (
+    natures.includes("modification_aspect") &&
+    !natures.some((n) => ["maison_neuve", "agrandissement", "petite_construction"].includes(n))
+  ) {
+    return build(
+      "declaration_prealable",
+      null,
+      "Déclaration Préalable",
+      "DP",
+      CERFA.dp,
+      ["R421-17 a) CU"],
+      delay("1 à 2 mois"),
+      false,
+      "deterministic",
+    );
+  }
+
+  // ── 7. Aménagement de terrain ─────────────────────────────────────────────
+  if (
+    natures.includes("amenagement") &&
+    !natures.some((n) => ["maison_neuve", "agrandissement", "petite_construction"].includes(n))
+  ) {
+    // Piscine : R421-17 d)
     if (amenagementType === "piscine") {
-      if (surface > 10) {
-        return {
-          type: "declaration_prealable",
-          libelle: "Déclaration Préalable",
-          libelle_court: "DP",
-          articles: ["R421-9 CU"],
-          delai_moyen: "1 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-          confidence: "deterministic",
-          modifiers: mods,
-        };
+      if (surface <= 10) {
+        return build("aucune_autorisation", null, "Aucune autorisation requise", "—", "", ["R421-9 CU"], "—", false, "deterministic");
       }
-      return {
-        type: "aucune_autorisation",
-        libelle: "Aucune autorisation requise",
-        libelle_court: "Aucune",
-        articles: ["R421-2 CU"],
-        delai_moyen: "—",
-        confidence: "deterministic",
-        modifiers: [],
-      };
+      // Piscine > 100 m² ou couverte → PC (R421-1)
+      if (surface > 100) {
+        return build(
+          "permis_de_construire",
+          "pc",
+          "Permis de Construire",
+          "PC",
+          CERFA.pc,
+          ["R421-1 CU"],
+          delay("2 à 3 mois"),
+          false,
+          "deterministic",
+        );
+      }
+      return build(
+        "declaration_prealable",
+        null,
+        "Déclaration Préalable",
+        "DP",
+        CERFA.dp,
+        ["R421-17 d) CU"],
+        delay("1 à 2 mois"),
+        false,
+        "deterministic",
+      );
     }
-    if (amenagementType === "cloture") {
-      return {
-        type: "declaration_prealable",
-        libelle: "Déclaration Préalable",
-        libelle_court: "DP",
-        articles: ["R421-12 CU"],
-        delai_moyen: "1 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-        confidence: "deterministic",
-        modifiers: mods,
-      };
-    }
-    if (surface >= 20 || abf) {
-      return {
-        type: "declaration_prealable",
-        libelle: "Déclaration Préalable",
-        libelle_court: "DP",
-        articles: ["R421-17 CU"],
-        delai_moyen: "1 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-        confidence: "deterministic",
-        modifiers: mods,
-      };
-    }
-    return {
-      type: "aucune_autorisation",
-      libelle: "Aucune autorisation requise (à confirmer avec la mairie)",
-      libelle_court: "Aucune",
-      articles: ["R421-2 CU"],
-      delai_moyen: "—",
-      confidence: "deterministic",
-      modifiers: [],
-    };
+    // Clôture, terrasse, allée → DP
+    return build(
+      "declaration_prealable",
+      null,
+      "Déclaration Préalable",
+      "DP",
+      CERFA.dp,
+      ["R421-17 c) CU"],
+      delay("1 à 2 mois"),
+      false,
+      "deterministic",
+    );
   }
 
-  // ─ Agrandissement / Petite construction
-  if (natures.includes("agrandissement") || natures.includes("petite_construction")) {
-    if (surface < 5 && !abf) {
-      return {
-        type: "aucune_autorisation",
-        libelle: "Aucune autorisation requise",
-        libelle_court: "Aucune",
-        articles: ["R421-2 CU"],
-        delai_moyen: "—",
-        confidence: "deterministic",
-        modifiers: [],
-      };
+  // ── 8. Agrandissement / petite construction ───────────────────────────────
+  if (natures.some((n) => ["agrandissement", "petite_construction"].includes(n))) {
+    // R421-9 : ≤ 5 m² et hauteur ≤ 12 m → aucune autorisation (sauf ABF)
+    if (surface <= 5 && !hasABF) {
+      return build("aucune_autorisation", null, "Aucune autorisation requise", "—", "", ["R421-9 CU"], "—", false, "deterministic");
     }
-    if (surface <= 20) {
-      return {
-        type: "declaration_prealable",
-        libelle: "Déclaration Préalable",
-        libelle_court: "DP",
-        articles: ["R421-13 CU"],
-        delai_moyen: "1 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-        confidence: "deterministic",
-        modifiers: mods,
-      };
+
+    // Zone U avec PLU : DP jusqu'à 40 m² (loi ALUR — R421-13 al.2)
+    // Hors zone U : DP jusqu'à 20 m²
+    const dpSeuil = inZoneU ? 40 : 20;
+
+    if (surface <= dpSeuil) {
+      const articles = inZoneU ? ["R421-13 al.2 CU"] : ["R421-12 a) CU"];
+      if (architecteReq) articles.push("R431-2 CU");
+      return build(
+        "declaration_prealable",
+        null,
+        "Déclaration Préalable",
+        "DP",
+        CERFA.dp,
+        articles,
+        delay("1 à 2 mois"),
+        architecteReq,
+        "deterministic",
+      );
     }
-    // > 20m²: DP jusqu'à 40m² en zone U avec PLU, sinon PC
-    if (zoneU && surface <= 40) {
-      return {
-        type: "declaration_prealable",
-        libelle: "Déclaration Préalable",
-        libelle_court: "DP",
-        articles: ["R421-13 CU"],
-        delai_moyen: "1 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-        confidence: "deterministic",
-        modifiers: mods,
-      };
-    }
-    return {
-      type: "permis_de_construire",
-      libelle: "Permis de Construire",
-      libelle_court: "PC",
-      articles: ["R421-14 CU"],
-      delai_moyen: "2 mois" + (abf ? " (+ 1 mois ABF)" : ""),
-      confidence: "deterministic",
-      modifiers: mods,
-    };
+
+    // Au-delà des seuils → PC
+    // Extension d'une maison individuelle → PCMI
+    // Autre bâtiment → PC standard
+    const articles = ["R421-1 CU", "R421-14 CU"];
+    if (hasDemolition) articles.push("R421-28 CU");
+    if (architecteReq) articles.push("R431-2 CU");
+    return build(
+      "permis_de_construire",
+      isMaisonNeuve ? "pcmi" : "pc",
+      architecteReq ? "Permis de Construire (architecte obligatoire)" : "Permis de Construire",
+      isMaisonNeuve ? "PCMI" : "PC",
+      isMaisonNeuve ? CERFA.pcmi : CERFA.pc,
+      articles,
+      delay("2 à 3 mois"),
+      architecteReq,
+      "deterministic",
+    );
   }
 
-  return {
-    type: "declaration_prealable",
-    libelle: "Déclaration Préalable",
-    libelle_court: "DP",
-    articles: [],
-    delai_moyen: "1 mois",
-    confidence: "faible",
-    modifiers: mods,
-  };
+  // ── Fallback ──────────────────────────────────────────────────────────────
+  return build(
+    "declaration_prealable",
+    null,
+    "Déclaration Préalable",
+    "DP",
+    CERFA.dp,
+    [],
+    delay("1 à 2 mois"),
+    false,
+    "faible",
+  );
 }

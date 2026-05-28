@@ -1,14 +1,14 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
-import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events, notifications } from "@heureka-v1/db";
+import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events } from "@heureka-v1/db";
 import { eq, desc, and } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
-import { classifyPermit, type ClassificationInput } from "../services/classificationEngine.js";
-import { getPiecesForType, buildPiecesContext } from "../data/piecesRequises.js";
+import { classifyPermit } from "../services/classificationEngine.js";
+import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
 
 function getAnthropicKey(): string {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
@@ -39,7 +39,8 @@ export const dossiersRouter = Router();
 
 dossiersRouter.use(requireAuth);
 
-// ── Classification déterministe + explication IA ──
+// ── Classification de la procédure d'urbanisme ──
+// Moteur déterministe pour type/libellé/articles — Claude pour explication+alertes
 dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
   try {
     const {
@@ -50,6 +51,8 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       empriseExistante,
       amenagementType,
       description,
+      certificatType,
+      hasVoirieCommune,
     } = req.body as {
       nature?: string;
       natures?: string[];
@@ -58,95 +61,153 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       empriseExistante?: string;
       amenagementType?: string;
       description?: string;
+      certificatType?: "a" | "b";
+      hasVoirieCommune?: boolean;
     };
 
     const naturesToUse: string[] = naturesArr ?? (nature ? [nature] : []);
 
-    // ── Étape 1 : classification déterministe (Code de l'urbanisme) ──
-    const classInput: ClassificationInput = {
+    const hasABF = (parcelData?.servitudes ?? []).some(
+      (s) => s.categorie?.toUpperCase().startsWith("AC") || s.libelle?.toLowerCase().includes("abf"),
+    );
+
+    // ── 1. Classification déterministe ────────────────────────────────────────
+    const det = classifyPermit({
       natures: naturesToUse,
       surface: surface ?? 0,
       empriseExistante: empriseExistante ? Number(empriseExistante) : undefined,
       zone: parcelData?.zone,
-      servitudes: parcelData?.servitudes,
+      hasABF,
       amenagementType,
-    };
-    const classification = classifyPermit(classInput);
+      certificatType,
+      hasVoirieCommune,
+    });
 
-    // ── Étape 2 : pièces officielles (arrêté du 13 février 2020) ──
+    // ── 2. Pièces requises (déterministe) ─────────────────────────────────────
     const piecesCtx = buildPiecesContext(
       naturesToUse,
       surface ?? 0,
       parcelData?.servitudes,
       amenagementType,
     );
-    const pieces = getPiecesForType(classification.type, piecesCtx);
+    const pieces_requises = getPiecesForType(det.type, piecesCtx);
 
-    // ── Étape 3 : explication citoyen + alertes (IA, best-effort) ──
+    // ── 3. Explication citoyenne + alertes via Claude ─────────────────────────
     let explication = "";
     let alertes: string[] = [];
 
-    try {
-      const client = new Anthropic({ apiKey: getAnthropicKey() });
+    if (det.type !== "aucune_autorisation") {
+      try {
+        const client = new Anthropic({ apiKey: getAnthropicKey() });
 
-      const contextLines = [
-        `Procédure déterminée : ${classification.libelle} (${classification.libelle_court})`,
-        classification.articles.length ? `Articles : ${classification.articles.join(", ")}` : null,
-        naturesToUse.length > 1
-          ? `Projets combinés : ${naturesToUse.map((n) => NATURE_LABELS[n] ?? n).join(", ")}`
-          : `Projet : ${NATURE_LABELS[naturesToUse[0] ?? ""] ?? naturesToUse[0] ?? "Non précisé"}`,
-        surface ? `Surface : ${surface} m²` : null,
-        amenagementType ? `Type d'aménagement : ${amenagementType}` : null,
-        description ? `Description : ${description}` : null,
-        parcelData?.zone ? `Zone PLU : ${parcelData.zone}` : null,
-        parcelData?.commune ? `Commune : ${parcelData.commune}` : null,
-        parcelData?.servitudes?.length
-          ? `Servitudes : ${parcelData.servitudes.map((s) => s.libelle ?? s.categorie).filter(Boolean).join(", ")}`
-          : null,
-        classification.modifiers.includes("ABF") ? "Zone ABF : oui (délai +1 mois)" : null,
-      ].filter(Boolean).join("\n");
+        const contextLines = [
+          naturesToUse.length > 1
+            ? `Projets combinés : ${naturesToUse.map((n) => NATURE_LABELS[n] ?? n).join(", ")}`
+            : `Projet : ${NATURE_LABELS[naturesToUse[0] ?? ""] ?? naturesToUse[0] ?? "Non précisé"}`,
+          surface ? `Surface plancher du projet : ${surface} m²` : null,
+          empriseExistante ? `Surface plancher existante : ${empriseExistante} m²` : null,
+          amenagementType ? `Type d'aménagement : ${amenagementType}` : null,
+          description ? `Description libre : ${description}` : null,
+          parcelData?.zone ? `Zone PLU : ${parcelData.zone}` : null,
+          parcelData?.commune ? `Commune : ${parcelData.commune}` : null,
+          hasABF ? "Zone ABF : oui" : null,
+          parcelData?.servitudes?.length
+            ? `Servitudes : ${parcelData.servitudes.map((s) => s.libelle ?? s.categorie).filter(Boolean).join(", ")}`
+            : null,
+          `Procédure requise (déjà déterminée) : ${det.libelle} (${det.articles.join(", ")})`,
+          det.architecte_requis ? "Architecte obligatoire : oui (surface totale > 150 m²)" : null,
+        ].filter(Boolean).join("\n");
 
-      const msg = await client.messages.create({
-        model: "claude-haiku-4-5-20251001",
-        max_tokens: 512,
-        system: `Tu es expert en droit de l'urbanisme français. La procédure a été déterminée de façon certaine par le moteur réglementaire. Rédige une explication simple pour un citoyen non-expert et liste les points d'attention spécifiques.
+        const msg = await client.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 800,
+          system: `Tu es conseiller en urbanisme expert. La procédure a déjà été déterminée — tu n'as pas à la remettre en question.
+
+Ta mission : produire une explication courte ET des alertes opérationnelles SPÉCIFIQUES à ce projet précis.
 
 Réponds UNIQUEMENT avec du JSON valide :
 {
-  "explication": "2 à 3 phrases simples pour un citoyen, expliquant pourquoi cette procédure s'applique",
-  "alertes": ["point d'attention si pertinent — tableau vide si aucun"]
-}`,
-        messages: [{ role: "user", content: contextLines }],
-      });
+  "explication": "2-3 phrases expliquant POURQUOI cette procédure s'applique à CE projet (mentionner les éléments déclencheurs : modification de façade, zone ABF, surface, etc.)",
+  "alertes": [
+    "alerte métier précise et actionnelle — ex: stationnement PLU, contrainte ABF matériaux, délai, pièce critique"
+  ]
+}
 
-      const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
-      const jsonMatch = text.match(/\{[\s\S]*\}/);
-      const aiResult = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
-      explication = typeof aiResult.explication === "string" ? aiResult.explication : "";
-      alertes = Array.isArray(aiResult.alertes) ? aiResult.alertes : [];
-    } catch {
-      // IA indisponible — explication de secours basée sur le résultat déterministe
-      explication = `Votre projet nécessite une ${classification.libelle}. Délai moyen : ${classification.delai_moyen}.`;
-      if (classification.modifiers.includes("ABF")) {
-        alertes = ["Votre terrain est en périmètre ABF : prévoyez un délai supplémentaire d'1 mois."];
+Règles strictes :
+- Ne jamais nommer la procédure dans l'explication (elle est déjà affichée)
+- Alertes : 0 si rien de spécial, maximum 5. Chaque alerte doit être concrète et utile
+- Pour un changement de destination de garage : toujours mentionner la vérification des obligations de stationnement PLU
+- Pour une zone ABF : mentionner les contraintes potentielles (couleurs, matériaux, menuiseries, type de baies) et le délai porté à 2 mois
+- Ton direct et professionnel, pas de formules de politesse`,
+          messages: [{ role: "user", content: contextLines }],
+        });
+
+        const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]) as { explication?: string; alertes?: string[] };
+          explication = parsed.explication ?? "";
+          alertes = parsed.alertes ?? [];
+        }
+      } catch {
+        // Claude failure is non-blocking — proceed with empty explanation
+        explication = `Votre projet nécessite une ${det.libelle}. Délai moyen : ${det.delai_moyen}.`;
+        if (hasABF) alertes = ["Votre terrain est en périmètre ABF : prévoyez un délai supplémentaire d'environ 1 mois."];
       }
+    } else {
+      explication = "Votre projet ne dépasse pas le seuil réglementaire qui impose une démarche administrative. Vous pouvez débuter les travaux sans autorisation préalable.";
     }
 
     res.json({
-      type: classification.type,
-      libelle: classification.libelle,
-      libelle_court: classification.libelle_court,
-      articles: classification.articles,
+      type: det.type,
+      subtype: det.subtype,
+      libelle: det.libelle,
+      libelle_court: det.libelle_court,
+      cerfa: det.cerfa,
+      architecte_requis: det.architecte_requis,
       explication,
-      delai_moyen: classification.delai_moyen,
-      pieces_requises: pieces,
+      delai_moyen: det.delai_moyen,
+      pieces_requises,
       alertes,
-      confiance: classification.confidence === "deterministic" ? "haute" : "faible",
-      modifiers: classification.modifiers,
+      confiance: det.confidence === "deterministic" ? "haute" : "moyenne",
+      articles: det.articles,
     });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur classification" });
+  }
+});
+
+// ── Pièces requises (déterministe) ──
+dossiersRouter.post("/pieces", async (req: AuthRequest, res) => {
+  try {
+    const {
+      type,
+      natures,
+      surface,
+      servitudes,
+      amenagementType,
+      situational,
+    } = req.body as {
+      type: string;
+      natures?: string[];
+      surface?: number;
+      servitudes?: Array<{ categorie?: string; libelle?: string }>;
+      amenagementType?: string;
+      situational?: {
+        isLotissement?: boolean;
+        isERP?: boolean;
+        hasDefrichement?: boolean;
+        isNatura2000?: boolean;
+        isClimateResilience?: boolean;
+      };
+    };
+    const ctx = buildPiecesContext(natures ?? [], surface ?? 0, servitudes, amenagementType, situational);
+    const pieces = getPiecesForType(type ?? "declaration_prealable", ctx);
+    res.json({ pieces_requises: pieces });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur calcul pièces" });
   }
 });
 
@@ -199,7 +260,7 @@ dossiersRouter.post("/", async (req: AuthRequest, res) => {
     const numero = `DOS-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
     const [dossier] = await db
       .insert(dossiers)
-      .values({ ...data, numero, user_id: req.user!.id, metadata: data.metadata ?? {} })
+      .values({ ...data, numero, user_id: req.user!.id })
       .returning();
     res.status(201).json(dossier);
   } catch (err) {
