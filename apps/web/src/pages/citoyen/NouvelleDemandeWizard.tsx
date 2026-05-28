@@ -240,19 +240,23 @@ interface Step3Config {
   descriptionLabel: string;
   descriptionPlaceholder: string;
   descriptionRequired: boolean;
+  quickValues: number[];
+  surfaceHint?: string;
 }
 
 const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
   maison_neuve: {
     title: "Votre maison",
     subtitle: "Précisez la surface et décrivez brièvement votre projet.",
-    surfaceLabel: "Surface plancher totale créée",
+    surfaceLabel: "Surface plancher créée",
     surfaceMax: 400,
     surfaceExistanteLabel: null,
     showAmenagementType: false,
     descriptionLabel: "Décrivez votre projet",
     descriptionPlaceholder: "Ex. : Maison de plain-pied, 4 pièces, garage intégré, bardage bois et enduit blanc…",
     descriptionRequired: false,
+    quickValues: [50, 80, 100, 120, 150, 200],
+    surfaceHint: "Surface de plancher créée = somme de tous les niveaux (hors combles non aménageables, garages, sous-sols non habitables)",
   },
   agrandissement: {
     title: "Votre agrandissement",
@@ -264,6 +268,8 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
     descriptionLabel: "Que souhaitez-vous agrandir ?",
     descriptionPlaceholder: "Ex. : Extension côté jardin pour créer une cuisine ouverte et une chambre en R+1…",
     descriptionRequired: false,
+    quickValues: [10, 20, 30, 40, 60, 80],
+    surfaceHint: "Surface de plancher ajoutée uniquement (hors surfaces existantes conservées)",
   },
   petite_construction: {
     title: "Votre construction",
@@ -275,6 +281,8 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
     descriptionLabel: "Décrivez la construction",
     descriptionPlaceholder: "Ex. : Abri de jardin en bois 4×3 m, toit monopente, pas de fondation béton…",
     descriptionRequired: false,
+    quickValues: [5, 10, 15, 20, 40],
+    surfaceHint: "Pour un garage, carport, pergola ou abri : surface au sol couverte",
   },
   amenagement: {
     title: "Votre aménagement",
@@ -286,6 +294,8 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
     descriptionLabel: "Décrivez l'aménagement",
     descriptionPlaceholder: "Ex. : Piscine 6×3 m avec local technique, entourée d'une terrasse dallée de 30 m²…",
     descriptionRequired: false,
+    quickValues: [10, 20, 30, 50, 80, 100],
+    surfaceHint: "Pour une piscine : surface du bassin (hors plages). Pour une terrasse : surface totale dallée ou construite.",
   },
   demolition: {
     title: "Votre démolition",
@@ -297,17 +307,21 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
     descriptionLabel: "Décrivez ce qui sera démoli",
     descriptionPlaceholder: "Ex. : Ancien garage en parpaing de 40 m² en bout de parcelle, le bâtiment principal reste intact…",
     descriptionRequired: false,
+    quickValues: [20, 40, 60, 100, 200],
+    surfaceHint: "Surface plancher des volumes à démolir (hors surfaces conservées)",
   },
   changement_destination: {
     title: "Changement de destination",
     subtitle: "Précisez la surface concernée et décrivez l'usage actuel et futur du bâtiment.",
-    surfaceLabel: "Surface plancher concernée",
+    surfaceLabel: "Surface plancher transformée",
     surfaceMax: 500,
     surfaceExistanteLabel: null,
     showAmenagementType: false,
     descriptionLabel: "Usage actuel → usage futur",
     descriptionPlaceholder: "Ex. : Ancien commerce de 80 m² au rez-de-chaussée transformé en appartement. Pas de travaux de structure prévus, uniquement aménagement intérieur…",
     descriptionRequired: false,
+    quickValues: [20, 40, 60, 80, 120],
+    surfaceHint: "Surface plancher dont la destination change (ex. : commerce → logement, garage → bureau)",
   },
   modification_aspect: {
     title: "Modification de l'aspect extérieur",
@@ -319,6 +333,7 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
     descriptionLabel: "Décrivez les modifications",
     descriptionPlaceholder: "Ex. : Ravalement de façade avec nouvelle couleur (blanc cassé), remplacement des fenêtres bois par du PVC anthracite, remplacement des tuiles canal par tuiles mécaniques…",
     descriptionRequired: false,
+    quickValues: [],
   },
   division_terrain: {
     title: "Division foncière",
@@ -330,6 +345,8 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
     descriptionLabel: "Décrivez la division envisagée",
     descriptionPlaceholder: "Ex. : Détachement d'un lot de 400 m² au fond du jardin pour y construire une maison. Le terrain total fait 1 200 m². Accès par la rue latérale…",
     descriptionRequired: false,
+    quickValues: [200, 400, 600, 800, 1000],
+    surfaceHint: "Surface cadastrale du lot détaché (terrain nu)",
   },
   certificat: {
     title: "Votre projet",
@@ -341,6 +358,7 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
     descriptionLabel: "Décrivez le projet envisagé",
     descriptionPlaceholder: "Ex. : Projet de construction d'une maison de 120 m² avec piscine sur terrain de 600 m². Besoin de vérifier la constructibilité et les servitudes avant de lancer le projet…",
     descriptionRequired: true,
+    quickValues: [],
   },
 };
 
@@ -1003,13 +1021,15 @@ export function NouvelleDemandeWizard() {
             const cfg: Step3Config = primaryNature ? STEP3_CONFIGS[primaryNature] : {
               title: "Votre projet",
               subtitle: "Précisez les surfaces concernées et décrivez l'ensemble des travaux envisagés.",
-              surfaceLabel: natures.some((n) => n !== "certificat") ? "Surface plancher totale concernée" : null,
+              surfaceLabel: natures.some((n) => n !== "certificat") ? "Surface plancher créée ou transformée" : null,
               surfaceMax: 400,
-              surfaceExistanteLabel: null,
+              surfaceExistanteLabel: "Surface plancher existante (facultatif)",
               showAmenagementType: false,
               descriptionLabel: "Décrivez l'ensemble de votre projet",
               descriptionPlaceholder: "Décrivez les différents travaux envisagés, les surfaces concernées, et leur enchaînement prévu…",
               descriptionRequired: false,
+              quickValues: [10, 20, 40, 80, 120, 200],
+              surfaceHint: "Surface de plancher créée ou dont la destination change — hors surfaces conservées à l'identique",
             };
             const surfaceRequired = cfg.surfaceLabel !== null;
             const canAnalyse =
@@ -1047,45 +1067,67 @@ export function NouvelleDemandeWizard() {
                 {/* Surface principale */}
                 {cfg.surfaceLabel && (
                   <div style={{ marginBottom: 22 }}>
-                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 12 }}>
-                      {cfg.surfaceLabel}
-                    </label>
-                    <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 10 }}>
-                      <input type="range" min={1} max={cfg.surfaceMax} value={surface > 0 ? surface : 1}
-                        onChange={(e) => {
-                          const v = Number(e.target.value);
-                          setSurface(v);
-                          setSurfaceStr(String(v));
-                        }}
-                        style={{ flex: 1, accentColor: "#4F46E5", height: 6, cursor: "pointer", opacity: surface === 0 ? 0.4 : 1 }} />
-                      <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                        <input
-                          type="number"
-                          min={1}
-                          max={9999}
-                          value={surfaceStr}
-                          placeholder="Ex : 19"
-                          onChange={(e) => {
-                            setSurfaceStr(e.target.value);
-                            const v = parseInt(e.target.value, 10);
-                            if (!isNaN(v) && v > 0) setSurface(v);
-                            else if (e.target.value === "") setSurface(0);
-                          }}
-                          onBlur={() => {
-                            if (surface > 0) setSurfaceStr(String(surface));
-                          }}
-                          style={{ width: 76, padding: "10px", border: `2px solid ${surface > 0 ? "#C7D2FE" : "#E2E8F0"}`, borderRadius: 10, fontSize: 20, fontWeight: 800, textAlign: "center", outline: "none", fontFamily: "inherit", color: surface > 0 ? "#4F46E5" : "#94a3b8" }}
-                        />
-                        <span style={{ fontSize: 16, color: "#64748b", fontWeight: 600 }}>m²</span>
-                      </div>
+                    <div style={{ marginBottom: 8 }}>
+                      <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>
+                        {cfg.surfaceLabel}
+                      </label>
+                      {cfg.surfaceHint && (
+                        <p style={{ fontSize: 12, color: "#64748b", margin: "4px 0 0", lineHeight: 1.4 }}>
+                          ℹ {cfg.surfaceHint}
+                        </p>
+                      )}
                     </div>
-                    {surface > 0 ? (
-                      <div style={{ fontSize: 13, color: "#64748b", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0" }}>
-                        💡 {surfaceHelper(surface)}
+
+                    {/* Quick-pick chips */}
+                    {cfg.quickValues.length > 0 && (
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                        {cfg.quickValues.map((v) => (
+                          <button
+                            key={v}
+                            type="button"
+                            onClick={() => { setSurface(v); setSurfaceStr(String(v)); }}
+                            style={{
+                              padding: "6px 16px",
+                              borderRadius: 20,
+                              border: `1.5px solid ${surface === v ? "#4F46E5" : "#E2E8F0"}`,
+                              background: surface === v ? "#EEF2FF" : "white",
+                              color: surface === v ? "#4F46E5" : "#374151",
+                              fontSize: 13,
+                              fontWeight: surface === v ? 700 : 500,
+                              cursor: "pointer",
+                              transition: "all 0.12s",
+                            }}
+                          >
+                            {v} m²
+                          </button>
+                        ))}
                       </div>
-                    ) : (
-                      <div style={{ fontSize: 13, color: "#94a3b8", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0" }}>
-                        ↑ Entrez la surface exacte en m²
+                    )}
+
+                    {/* Number input */}
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <input
+                        type="number"
+                        min={1}
+                        max={9999}
+                        value={surfaceStr}
+                        placeholder="Autre valeur…"
+                        onChange={(e) => {
+                          setSurfaceStr(e.target.value);
+                          const v = parseInt(e.target.value, 10);
+                          if (!isNaN(v) && v > 0) setSurface(v);
+                          else if (e.target.value === "") setSurface(0);
+                        }}
+                        onBlur={() => { if (surface > 0) setSurfaceStr(String(surface)); }}
+                        style={{ ...inputStyle, fontSize: 18, fontWeight: 700, color: surface > 0 ? "#4F46E5" : undefined, borderColor: surface > 0 ? "#C7D2FE" : "#E2E8F0" }}
+                        onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
+                      />
+                      <span style={{ fontSize: 18, color: "#64748b", fontWeight: 700, flexShrink: 0 }}>m²</span>
+                    </div>
+
+                    {surface > 0 && (
+                      <div style={{ fontSize: 13, color: "#64748b", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0", marginTop: 10 }}>
+                        💡 {surfaceHelper(surface)}
                       </div>
                     )}
                   </div>
@@ -1094,16 +1136,40 @@ export function NouvelleDemandeWizard() {
                 {/* Surface existante / conservée */}
                 {cfg.surfaceExistanteLabel && (
                   <div style={{ marginBottom: 20 }}>
-                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 4 }}>
                       {cfg.surfaceExistanteLabel}{" "}
                       <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
                     </label>
-                    <input type="number" value={empriseExistante}
-                      onChange={(e) => setEmpriseExistante(e.target.value)}
-                      placeholder="Ex : 80"
-                      style={inputStyle}
-                      onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
-                      onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")} />
+                    <p style={{ fontSize: 12, color: "#64748b", margin: "0 0 8px", lineHeight: 1.4 }}>
+                      ℹ Permet de calculer le total (existant + créé) et de vérifier le seuil d'obligation de recourir à un architecte (&gt; 150 m²)
+                    </p>
+                    <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                      <input type="number" value={empriseExistante}
+                        onChange={(e) => setEmpriseExistante(e.target.value)}
+                        placeholder="Ex : 80"
+                        style={{ ...inputStyle, fontSize: 16, fontWeight: 600 }}
+                        onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
+                        onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")} />
+                      <span style={{ fontSize: 18, color: "#64748b", fontWeight: 700, flexShrink: 0 }}>m²</span>
+                    </div>
+                    {/* Running total */}
+                    {surface > 0 && empriseExistante && Number(empriseExistante) > 0 && (
+                      <div style={{
+                        marginTop: 10,
+                        padding: "10px 16px",
+                        background: (surface + Number(empriseExistante)) > 150 ? "#FEF3C7" : "#F0FDF4",
+                        border: `1px solid ${(surface + Number(empriseExistante)) > 150 ? "#FDE68A" : "#86EFAC"}`,
+                        borderRadius: 10,
+                        fontSize: 13,
+                        color: (surface + Number(empriseExistante)) > 150 ? "#92400E" : "#15803D",
+                        fontWeight: 600,
+                      }}>
+                        {(surface + Number(empriseExistante)) > 150
+                          ? `⚠ Total : ${surface + Number(empriseExistante)} m² — architecte obligatoire (> 150 m²)`
+                          : `✓ Total : ${surface + Number(empriseExistante)} m²`
+                        }
+                      </div>
+                    )}
                   </div>
                 )}
 
