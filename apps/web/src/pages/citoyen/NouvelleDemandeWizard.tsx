@@ -1969,60 +1969,63 @@ export function NouvelleDemandeWizard() {
                 const pieces = classification?.pieces_requises ?? [];
                 const required = pieces.filter((p) => p.requis);
                 const missing = required.filter((p) => !uploadedPieces[p.code]).length;
+                const canSubmit = missing === 0 && !!dossierId && !submitting;
                 return (
                   <>
                     {missing > 0 ? (
-                      <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#92400E", lineHeight: 1.5 }}>
-                        ⚠ {missing} pièce{missing > 1 ? "s" : ""} obligatoire{missing > 1 ? "s" : ""} non déposée{missing > 1 ? "s" : ""}. Vous pouvez tout de même soumettre — la mairie vous les demandera si nécessaire.
+                      <div style={{ background: "#FEE2E2", border: "1px solid #FECACA", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#DC2626", lineHeight: 1.5, fontWeight: 500 }}>
+                        🚫 {missing} pièce{missing > 1 ? "s" : ""} obligatoire{missing > 1 ? "s" : ""} manquante{missing > 1 ? "s" : ""}. Retournez à l'étape précédente pour les déposer avant de soumettre.
                       </div>
                     ) : required.length > 0 ? (
                       <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#15803D", lineHeight: 1.5 }}>
                         ✓ Toutes les pièces obligatoires ont été déposées.
                       </div>
                     ) : null}
-                    <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 12, padding: "13px 18px", marginBottom: 24, fontSize: 13, color: "#15803D", lineHeight: 1.5 }}>
-                      ✓ Votre dossier sera transmis à la mairie de{" "}
-                      <strong>{parcel?.commune ?? "votre commune"}</strong>. Vous recevrez un
-                      accusé de réception et pourrez suivre l'avancement en temps réel.
+                    {missing === 0 && (
+                      <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 12, padding: "13px 18px", marginBottom: 24, fontSize: 13, color: "#15803D", lineHeight: 1.5 }}>
+                        ✓ Votre dossier sera transmis à la mairie de{" "}
+                        <strong>{parcel?.commune ?? "votre commune"}</strong>. Vous recevrez un
+                        accusé de réception et pourrez suivre l'avancement en temps réel.
+                      </div>
+                    )}
+
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <button
+                        onClick={prev}
+                        style={{
+                          padding: "10px 20px",
+                          background: "white",
+                          color: "#374151",
+                          border: "1px solid #E2E8F0",
+                          borderRadius: 10,
+                          fontSize: 13,
+                          cursor: "pointer",
+                        }}
+                      >
+                        ← Compléter les pièces
+                      </button>
+                      <button
+                        onClick={() => void soumettreALaMairie()}
+                        disabled={!canSubmit}
+                        style={{
+                          padding: "13px 36px",
+                          background: !canSubmit ? "#C7D2FE" : "#4F46E5",
+                          color: "white",
+                          border: "none",
+                          borderRadius: 10,
+                          fontSize: 15,
+                          fontWeight: 700,
+                          cursor: !canSubmit ? "not-allowed" : "pointer",
+                          transition: "background 0.2s",
+                          letterSpacing: "0.01em",
+                        }}
+                      >
+                        {submitting ? "Soumission…" : "🚀 Soumettre à la mairie"}
+                      </button>
                     </div>
                   </>
                 );
               })()}
-
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <button
-                  onClick={prev}
-                  style={{
-                    padding: "10px 20px",
-                    background: "white",
-                    color: "#374151",
-                    border: "1px solid #E2E8F0",
-                    borderRadius: 10,
-                    fontSize: 13,
-                    cursor: "pointer",
-                  }}
-                >
-                  ← Modifier
-                </button>
-                <button
-                  onClick={() => void soumettreALaMairie()}
-                  disabled={submitting || !dossierId}
-                  style={{
-                    padding: "13px 36px",
-                    background: submitting ? "#818CF8" : "#4F46E5",
-                    color: "white",
-                    border: "none",
-                    borderRadius: 10,
-                    fontSize: 15,
-                    fontWeight: 700,
-                    cursor: (submitting || !dossierId) ? "not-allowed" : "pointer",
-                    transition: "background 0.2s",
-                    letterSpacing: "0.01em",
-                  }}
-                >
-                  {submitting ? "Soumission…" : "🚀 Soumettre à la mairie"}
-                </button>
-              </div>
             </div>
           )}
         </div>
