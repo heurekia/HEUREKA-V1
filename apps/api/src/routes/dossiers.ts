@@ -8,6 +8,7 @@ import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
+import { classifyPermit } from "../services/classificationEngine.js";
 
 function getAnthropicKey(): string {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
@@ -38,7 +39,8 @@ export const dossiersRouter = Router();
 
 dossiersRouter.use(requireAuth);
 
-// ── Classification IA de la procédure d'urbanisme ──
+// ── Classification de la procédure d'urbanisme ──
+// Moteur déterministe pour type/libellé/articles — Claude pour explication+alertes
 dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
   try {
     const {
@@ -61,59 +63,97 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
 
     const naturesToUse: string[] = naturesArr ?? (nature ? [nature] : []);
 
-    const client = new Anthropic({ apiKey: getAnthropicKey() });
+    const hasABF = (parcelData?.servitudes ?? []).some(
+      (s) => s.categorie?.toUpperCase().startsWith("AC") || s.libelle?.toLowerCase().includes("abf"),
+    );
 
-    const contextLines = [
-      naturesToUse.length > 1
-        ? `Projets combinés : ${naturesToUse.map((n) => NATURE_LABELS[n] ?? n).join(", ")}`
-        : `Projet : ${NATURE_LABELS[naturesToUse[0] ?? ""] ?? naturesToUse[0] ?? "Non précisé"}`,
-      surface ? `Surface plancher du projet : ${surface} m²` : null,
-      empriseExistante ? `Surface plancher existante : ${empriseExistante} m²` : null,
-      amenagementType ? `Type d'aménagement : ${amenagementType}` : null,
-      description ? `Description du projet : ${description}` : null,
-      parcelData?.zone ? `Zone PLU : ${parcelData.zone}` : null,
-      parcelData?.commune ? `Commune : ${parcelData.commune}` : null,
-      parcelData?.servitudes?.length
-        ? `Servitudes : ${parcelData.servitudes.map((s) => s.libelle ?? s.categorie).filter(Boolean).join(", ")}`
-        : null,
-    ].filter(Boolean).join("\n");
-
-    const msg = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
-      max_tokens: 1024,
-      system: `Tu es expert en droit de l'urbanisme français (Code de l'urbanisme). Analyse le projet et détermine la procédure administrative requise.
-
-Règles principales :
-- < 5 m² surface plancher : pas d'autorisation (sauf zone protégée ou ABF)
-- 5 à 20 m² en zone U avec PLU : Déclaration Préalable
-- Extension > 20 m² en zone U : DP jusqu'à 40 m², Permis de Construire au-delà
-- Maison neuve : Permis de Construire (maison individuelle)
-- Permis d'Aménager : lotissements, terrains de camping, aires de stationnement > 50 places
-- Démolition > 20 m² ou en zone protégée : Permis de Démolir
-- Piscine > 10 m² ou profondeur > 1,80 m : Déclaration Préalable
-- Clôture : DP si PLU le prescrit ou en commune soumise au RNU
-- Zone ABF (servitude AC) : consultation ABF obligatoire, +1 mois sur délais
-- Certificat d'urbanisme : type a (informatif) ou b (opérationnel)
-
-Réponds UNIQUEMENT avec du JSON valide (aucun texte avant ou après) :
-{
-  "type": "declaration_prealable|permis_de_construire|permis_amenager|permis_demolir|certificat_urbanisme",
-  "libelle": "Nom court",
-  "explication": "2 à 3 phrases simples pour un citoyen",
-  "delai_moyen": "X à Y mois",
-  "pieces_requises": [
-    {"nom": "Nom du document", "requis": true, "aide": "Description courte"}
-  ],
-  "alertes": ["string si point important, sinon tableau vide"],
-  "confiance": "haute|moyenne|faible"
-}`,
-      messages: [{ role: "user", content: contextLines }],
+    // ── 1. Classification déterministe ────────────────────────────────────────
+    const det = classifyPermit({
+      natures: naturesToUse,
+      surface: surface ?? 0,
+      empriseExistante: empriseExistante ? Number(empriseExistante) : undefined,
+      zone: parcelData?.zone,
+      hasABF,
+      amenagementType,
     });
 
-    const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
-    const jsonMatch = text.match(/\{[\s\S]*\}/);
-    const result = jsonMatch ? JSON.parse(jsonMatch[0]) : {};
-    res.json(result);
+    // ── 2. Pièces requises (déterministe) ─────────────────────────────────────
+    const piecesCtx = buildPiecesContext(
+      naturesToUse,
+      surface ?? 0,
+      parcelData?.servitudes,
+      amenagementType,
+    );
+    const pieces_requises = getPiecesForType(det.type, piecesCtx);
+
+    // ── 3. Explication citoyenne + alertes via Claude ─────────────────────────
+    let explication = "";
+    let alertes: string[] = [];
+
+    if (det.type !== "aucune_autorisation") {
+      try {
+        const client = new Anthropic({ apiKey: getAnthropicKey() });
+
+        const contextLines = [
+          naturesToUse.length > 1
+            ? `Projets combinés : ${naturesToUse.map((n) => NATURE_LABELS[n] ?? n).join(", ")}`
+            : `Projet : ${NATURE_LABELS[naturesToUse[0] ?? ""] ?? naturesToUse[0] ?? "Non précisé"}`,
+          surface ? `Surface plancher du projet : ${surface} m²` : null,
+          empriseExistante ? `Surface plancher existante : ${empriseExistante} m²` : null,
+          amenagementType ? `Type d'aménagement : ${amenagementType}` : null,
+          description ? `Description libre : ${description}` : null,
+          parcelData?.zone ? `Zone PLU : ${parcelData.zone}` : null,
+          parcelData?.commune ? `Commune : ${parcelData.commune}` : null,
+          hasABF ? "Zone ABF : oui" : null,
+          parcelData?.servitudes?.length
+            ? `Servitudes : ${parcelData.servitudes.map((s) => s.libelle ?? s.categorie).filter(Boolean).join(", ")}`
+            : null,
+          `Procédure requise (déjà déterminée) : ${det.libelle} (${det.articles.join(", ")})`,
+        ].filter(Boolean).join("\n");
+
+        const msg = await client.messages.create({
+          model: "claude-haiku-4-5-20251001",
+          max_tokens: 512,
+          system: `Tu es conseiller en urbanisme. La procédure a déjà été déterminée par le système.
+Ta tâche : rédiger uniquement l'explication et les alertes pour un citoyen non juriste.
+
+Réponds UNIQUEMENT avec du JSON valide :
+{
+  "explication": "2-3 phrases simples expliquant pourquoi cette procédure s'applique à CE projet spécifique",
+  "alertes": ["alerte spécifique si pertinente (ABF, délai, contrainte particulière)", "…"]
+}
+
+Règles :
+- Ne jamais nommer la procédure dans l'explication (elle est déjà affichée)
+- Alertes seulement si réellement utile — tableau vide si rien de spécial
+- Maximum 3 alertes`,
+          messages: [{ role: "user", content: contextLines }],
+        });
+
+        const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
+        const jsonMatch = text.match(/\{[\s\S]*\}/);
+        if (jsonMatch) {
+          const parsed = JSON.parse(jsonMatch[0]) as { explication?: string; alertes?: string[] };
+          explication = parsed.explication ?? "";
+          alertes = parsed.alertes ?? [];
+        }
+      } catch {
+        // Claude failure is non-blocking — proceed with empty explanation
+      }
+    } else {
+      explication = "Votre projet ne dépasse pas le seuil réglementaire qui impose une démarche administrative. Vous pouvez débuter les travaux sans autorisation préalable.";
+    }
+
+    res.json({
+      type: det.type,
+      libelle: det.libelle,
+      explication,
+      delai_moyen: det.delai_moyen,
+      pieces_requises,
+      alertes,
+      confiance: det.confidence === "deterministic" ? "haute" : "moyenne",
+      articles: det.articles,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur classification" });
