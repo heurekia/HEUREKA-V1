@@ -373,7 +373,8 @@ export function NouvelleDemandeWizard() {
     setNatures((prev) => prev.includes(id) ? prev.filter((n) => n !== id) : [...prev, id]);
 
   // Step 3 – Précisions
-  const [surface, setSurface] = useState(20);
+  const [surface, setSurface] = useState(0);
+  const [surfaceStr, setSurfaceStr] = useState("");
   const [empriseExistante, setEmpriseExistante] = useState("");
   const [amenagementType, setAmenagementType] = useState("");
 
@@ -983,7 +984,9 @@ export function NouvelleDemandeWizard() {
               descriptionPlaceholder: "Décrivez les différents travaux envisagés, les surfaces concernées, et leur enchaînement prévu…",
               descriptionRequired: false,
             };
-            const canAnalyse = !cfg.descriptionRequired || description.trim().length > 0;
+            const canAnalyse =
+              (!cfg.surfaceLabel || surface > 0) &&
+              (!cfg.descriptionRequired || description.trim().length > 0);
             return (
               <div>
                 <div style={{ textAlign: "center", marginBottom: 28 }}>
@@ -1020,19 +1023,34 @@ export function NouvelleDemandeWizard() {
                       {cfg.surfaceLabel}
                     </label>
                     <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 10 }}>
-                      <input type="range" min={1} max={cfg.surfaceMax} value={surface}
-                        onChange={(e) => setSurface(Number(e.target.value))}
+                      <input type="range" min={1} max={cfg.surfaceMax} value={surface || 1}
+                        onChange={(e) => {
+                          const n = Number(e.target.value);
+                          setSurface(n);
+                          setSurfaceStr(String(n));
+                        }}
                         style={{ flex: 1, accentColor: "#4F46E5", height: 6, cursor: "pointer" }} />
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
-                        <input type="number" min={1} max={9999} value={surface}
-                          onChange={(e) => setSurface(Math.max(1, Number(e.target.value)))}
+                        <input
+                          type="number" min={1} max={9999}
+                          value={surfaceStr}
+                          onChange={(e) => {
+                            setSurfaceStr(e.target.value);
+                            const n = parseInt(e.target.value, 10);
+                            if (!isNaN(n) && n > 0) setSurface(n);
+                            else setSurface(0);
+                          }}
+                          onBlur={() => setSurfaceStr(surface > 0 ? String(surface) : "")}
+                          placeholder="0"
                           style={{ width: 76, padding: "10px", border: "2px solid #C7D2FE", borderRadius: 10, fontSize: 20, fontWeight: 800, textAlign: "center", outline: "none", fontFamily: "inherit", color: "#4F46E5" }} />
                         <span style={{ fontSize: 16, color: "#64748b", fontWeight: 600 }}>m²</span>
                       </div>
                     </div>
-                    <div style={{ fontSize: 13, color: "#64748b", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0" }}>
-                      💡 {surfaceHelper(surface)}
-                    </div>
+                    {surface > 0 && (
+                      <div style={{ fontSize: 13, color: "#64748b", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0" }}>
+                        💡 {surfaceHelper(surface)}
+                      </div>
+                    )}
                   </div>
                 )}
 
@@ -1116,6 +1134,44 @@ export function NouvelleDemandeWizard() {
                     On croise les règles d'urbanisme avec les caractéristiques de votre parcelle et
                     la nature de votre projet.
                   </p>
+                </div>
+              ) : classification?.type === "aucune_autorisation" ? (
+                <div>
+                  <div style={{ textAlign: "center", marginBottom: 28 }}>
+                    <div style={{ fontSize: 64, marginBottom: 12 }}>🎉</div>
+                    <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
+                      Aucune autorisation nécessaire
+                    </h2>
+                    <p style={{ fontSize: 14, color: "#64748b", maxWidth: 440, margin: "0 auto" }}>
+                      Votre projet ne dépasse pas les seuils réglementaires.
+                    </p>
+                  </div>
+                  <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 16, padding: 24, marginBottom: 24 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#15803D", marginBottom: 10 }}>✓ Pas de démarche à effectuer</div>
+                    {classification.explication && (
+                      <p style={{ fontSize: 14, color: "#166534", lineHeight: 1.7, margin: 0 }}>
+                        {classification.explication}
+                      </p>
+                    )}
+                  </div>
+                  {classification.alertes.length > 0 && (
+                    <div style={{ background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 12, padding: "14px 18px", marginBottom: 20 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 8 }}>⚠️ Points d'attention</div>
+                      {classification.alertes.map((a, i) => (
+                        <div key={i} style={{ fontSize: 13, color: "#78350F", marginBottom: 4, lineHeight: 1.5 }}>• {a}</div>
+                      ))}
+                    </div>
+                  )}
+                  <div style={{ display: "flex", justifyContent: "space-between" }}>
+                    <button onClick={() => { setClassification(null); setStep(3); }}
+                      style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}>
+                      ← Modifier
+                    </button>
+                    <button onClick={() => navigate("/citoyen")}
+                      style={{ padding: "11px 28px", background: "#15803D", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
+                      Retour à l'accueil
+                    </button>
+                  </div>
                 </div>
               ) : classification ? (
                 <div>
@@ -1280,7 +1336,7 @@ export function NouvelleDemandeWizard() {
           )}
 
           {/* ───── STEP 5 : Compléments CERFA ───── */}
-          {step === 5 && classification && (
+          {step === 5 && classification && classification.type !== "aucune_autorisation" && (
             <div>
               <div style={{ textAlign: "center", marginBottom: 28 }}>
                 <div style={{ fontSize: 52, marginBottom: 10 }}>🗂️</div>
