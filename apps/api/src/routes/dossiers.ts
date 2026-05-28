@@ -226,6 +226,30 @@ dossiersRouter.get("/", async (req: AuthRequest, res) => {
   }
 });
 
+// ── Soumettre un dossier à la mairie (brouillon → soumis) ──
+dossiersRouter.post("/:id/soumettre", async (req: AuthRequest, res) => {
+  try {
+    const [dossier] = await db
+      .select()
+      .from(dossiers)
+      .where(and(eq(dossiers.id, req.params.id as string), eq(dossiers.user_id, req.user!.id)))
+      .limit(1);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    if (dossier.status !== "brouillon") {
+      return res.status(400).json({ error: "Le dossier a déjà été soumis" });
+    }
+    const [updated] = await db
+      .update(dossiers)
+      .set({ status: "soumis", date_depot: new Date(), updated_at: new Date() })
+      .where(eq(dossiers.id, req.params.id as string))
+      .returning();
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── Détail d'un dossier ──
 dossiersRouter.get("/:id", async (req: AuthRequest, res) => {
   try {

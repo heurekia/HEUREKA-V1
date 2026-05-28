@@ -512,9 +512,9 @@ export function NouvelleDemandeWizard() {
         }}
       >
         <div style={{ maxWidth: 520, width: "100%", textAlign: "center" }}>
-          <div style={{ fontSize: 80, marginBottom: 20, lineHeight: 1 }}>🎉</div>
+          <div style={{ fontSize: 80, marginBottom: 20, lineHeight: 1 }}>📁</div>
           <h1 style={{ fontSize: 28, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
-            Dossier déposé !
+            Dossier enregistré !
           </h1>
           <p style={{ fontSize: 15, color: "#64748b", marginBottom: 16 }}>
             Votre numéro de dossier est :
@@ -541,22 +541,15 @@ export function NouvelleDemandeWizard() {
               {submitted.numero}
             </span>
           </div>
-          <p
-            style={{
-              fontSize: 14,
-              color: "#64748b",
-              marginBottom: 32,
-              lineHeight: 1.7,
-              maxWidth: 400,
-              margin: "0 auto 32px",
-            }}
-          >
-            La mairie a été notifiée. Suivez l'avancement de votre dossier depuis votre espace et
-            ajoutez-y vos pièces justificatives au fur et à mesure.
-          </p>
+          <div style={{ background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 12, padding: "14px 20px", marginBottom: 24, textAlign: "left" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 6 }}>⚠️ Dossier en brouillon — non transmis à la mairie</div>
+            <div style={{ fontSize: 13, color: "#78350F", lineHeight: 1.6 }}>
+              Ajoutez vos pièces justificatives depuis le détail du dossier, puis cliquez sur <strong>Soumettre à la mairie</strong> pour déclencher l'instruction.
+            </div>
+          </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
             <button
-              onClick={() => navigate("/citoyen/mes-demandes")}
+              onClick={() => navigate(`/citoyen/dossiers/${submitted.id}`)}
               style={{
                 padding: "11px 28px",
                 background: "#4F46E5",
@@ -568,7 +561,7 @@ export function NouvelleDemandeWizard() {
                 cursor: "pointer",
               }}
             >
-              Voir mes demandes
+              Compléter mon dossier →
             </button>
             <button
               onClick={() => navigate("/citoyen")}

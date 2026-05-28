@@ -184,6 +184,7 @@ export function DossierDetail() {
   const [loading, setLoading] = useState(true);
   const [newMessage, setNewMessage] = useState("");
   const [sending, setSending] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
     if (!id) return;
@@ -202,6 +203,19 @@ export function DossierDetail() {
       .catch(() => navigate("/citoyen/mes-demandes"))
       .finally(() => setLoading(false));
   }, [id, navigate]);
+
+  const soumettreALaMairie = async () => {
+    if (!id || !dossier) return;
+    setSubmitting(true);
+    try {
+      const updated = await api.post<Dossier>(`/dossiers/${id}/soumettre`, {});
+      setDossier(updated);
+    } catch {
+      alert("Une erreur est survenue. Veuillez réessayer.");
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const sendMessage = async () => {
     if (!newMessage.trim() || !id) return;
@@ -242,6 +256,38 @@ export function DossierDetail() {
         >
           <ArrowLeft size={14} /> Mes demandes
         </Link>
+
+        {/* Bandeau brouillon */}
+        {dossier.status === "brouillon" && (
+          <div style={{ background: "#FFF7ED", border: "1.5px solid #FED7AA", borderRadius: 14, padding: "20px 24px", marginBottom: 16, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
+            <div>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>
+                📋 Dossier en cours de préparation
+              </div>
+              <div style={{ fontSize: 13, color: "#78350F", lineHeight: 1.6 }}>
+                Ajoutez toutes vos pièces justificatives ci-dessous, puis soumettez votre dossier à la mairie pour démarrer l'instruction.
+              </div>
+            </div>
+            <button
+              onClick={() => void soumettreALaMairie()}
+              disabled={submitting}
+              style={{
+                padding: "11px 24px",
+                background: submitting ? "#9CA3AF" : "#4F46E5",
+                color: "white",
+                border: "none",
+                borderRadius: 10,
+                fontSize: 14,
+                fontWeight: 700,
+                cursor: submitting ? "not-allowed" : "pointer",
+                whiteSpace: "nowrap",
+                flexShrink: 0,
+              }}
+            >
+              {submitting ? "Envoi…" : "Soumettre à la mairie →"}
+            </button>
+          </div>
+        )}
 
         {/* Header */}
         <div style={{ background: "white", borderRadius: 16, border: "1px solid #E2E8F0", padding: 28, marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>

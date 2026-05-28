@@ -102,7 +102,7 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
       const pattern = `%${search}%`;
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
-        .where(sql`(${communeFilter}) AND (dossiers.numero ILIKE ${pattern} OR dossiers.adresse ILIKE ${pattern} OR dossiers.commune ILIKE ${pattern} OR users.prenom ILIKE ${pattern} OR users.nom ILIKE ${pattern} OR CONCAT(users.prenom, ' ', users.nom) ILIKE ${pattern})`)
+        .where(sql`(${communeFilter}) AND dossiers.status != 'brouillon' AND (dossiers.numero ILIKE ${pattern} OR dossiers.adresse ILIKE ${pattern} OR dossiers.commune ILIKE ${pattern} OR users.prenom ILIKE ${pattern} OR users.nom ILIKE ${pattern} OR CONCAT(users.prenom, ' ', users.nom) ILIKE ${pattern})`)
         .orderBy(desc(dossiers.created_at));
     } else if (status) {
       rows = await db.select(sel).from(dossiers)
@@ -112,7 +112,7 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
     } else {
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
-        .where(communeFilter)
+        .where(sql`(${communeFilter}) AND dossiers.status != 'brouillon'`)
         .orderBy(desc(dossiers.created_at));
     }
 
