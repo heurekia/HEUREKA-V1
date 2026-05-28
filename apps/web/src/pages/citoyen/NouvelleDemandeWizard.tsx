@@ -1274,10 +1274,10 @@ export function NouvelleDemandeWizard() {
               <div style={{ textAlign: "center", marginBottom: 28 }}>
                 <div style={{ fontSize: 52, marginBottom: 10 }}>🗂️</div>
                 <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
-                  Cas particuliers
+                  Quelques questions
                 </h2>
                 <p style={{ fontSize: 14, color: "#64748b", maxWidth: 460, margin: "0 auto" }}>
-                  Certaines situations nécessitent des pièces complémentaires. Cochez ce qui s'applique à votre projet.
+                  Ces situations peuvent nécessiter des documents supplémentaires dans votre dossier.
                 </p>
               </div>
 
@@ -1306,55 +1306,77 @@ export function NouvelleDemandeWizard() {
                   return (
                     <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 14, padding: 28, marginBottom: 24, textAlign: "center" }}>
                       <div style={{ fontSize: 36, marginBottom: 10 }}>✓</div>
-                      <div style={{ fontSize: 15, fontWeight: 700, color: "#15803D", marginBottom: 4 }}>Aucun cas particulier</div>
+                      <div style={{ fontSize: 15, fontWeight: 700, color: "#15803D", marginBottom: 4 }}>Aucune question complémentaire</div>
                       <div style={{ fontSize: 13, color: "#166534", lineHeight: 1.5 }}>
-                        Votre projet ne nécessite pas de pièces complémentaires spécifiques. Vous pouvez continuer.
+                        Votre projet ne nécessite pas de pièces complémentaires spécifiques.
                       </div>
                     </div>
                   );
                 }
 
                 return (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 24 }}>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
                     {applicable.map((q) => {
-                      const active = situationalState[q.id];
+                      const value = situationalState[q.id];
+                      const setter = situationalSetters[q.id]!;
                       return (
-                        <button
+                        <div
                           key={q.id}
-                          onClick={() => situationalSetters[q.id]!(!active)}
                           style={{
-                            display: "flex",
-                            alignItems: "center",
-                            gap: 16,
-                            padding: "16px 20px",
-                            border: `2px solid ${active ? "#4F46E5" : "#E2E8F0"}`,
+                            border: "1px solid #E2E8F0",
                             borderRadius: 14,
-                            background: active ? "#EEF2FF" : "white",
-                            textAlign: "left",
-                            cursor: "pointer",
-                            transition: "all 0.15s",
-                            width: "100%",
+                            padding: "16px 20px",
+                            background: "white",
                           }}
                         >
-                          <span style={{ fontSize: 32, flexShrink: 0 }}>{q.emoji}</span>
-                          <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: 14, fontWeight: 700, color: active ? "#4F46E5" : "#0F172A", marginBottom: 3 }}>
-                              {q.label}
-                            </div>
-                            <div style={{ fontSize: 12, color: active ? "#6366F1" : "#94a3b8", lineHeight: 1.4 }}>
-                              {q.desc}
+                          <div style={{ display: "flex", alignItems: "flex-start", gap: 14, marginBottom: 14 }}>
+                            <span style={{ fontSize: 28, flexShrink: 0, marginTop: 2 }}>{q.emoji}</span>
+                            <div>
+                              <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 3 }}>
+                                {q.label}
+                              </div>
+                              <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>
+                                {q.desc}
+                              </div>
                             </div>
                           </div>
-                          <div style={{
-                            width: 24, height: 24, borderRadius: "50%",
-                            border: `2px solid ${active ? "#4F46E5" : "#CBD5E1"}`,
-                            background: active ? "#4F46E5" : "white",
-                            display: "flex", alignItems: "center", justifyContent: "center",
-                            flexShrink: 0, transition: "all 0.15s",
-                          }}>
-                            {active && <span style={{ color: "white", fontSize: 11, fontWeight: 800 }}>✓</span>}
+                          <div style={{ display: "flex", gap: 10 }}>
+                            <button
+                              onClick={() => setter(true)}
+                              style={{
+                                flex: 1,
+                                padding: "10px 0",
+                                border: `2px solid ${value === true ? "#4F46E5" : "#E2E8F0"}`,
+                                borderRadius: 10,
+                                background: value === true ? "#4F46E5" : "white",
+                                color: value === true ? "white" : "#374151",
+                                fontSize: 14,
+                                fontWeight: 700,
+                                cursor: "pointer",
+                                transition: "all 0.15s",
+                              }}
+                            >
+                              ✓ Oui
+                            </button>
+                            <button
+                              onClick={() => setter(false)}
+                              style={{
+                                flex: 1,
+                                padding: "10px 0",
+                                border: `2px solid ${value === false ? "#64748b" : "#E2E8F0"}`,
+                                borderRadius: 10,
+                                background: value === false ? "#F1F5F9" : "white",
+                                color: value === false ? "#374151" : "#94a3b8",
+                                fontSize: 14,
+                                fontWeight: 700,
+                                cursor: "pointer",
+                                transition: "all 0.15s",
+                              }}
+                            >
+                              ✕ Non
+                            </button>
                           </div>
-                        </button>
+                        </div>
                       );
                     })}
                   </div>
