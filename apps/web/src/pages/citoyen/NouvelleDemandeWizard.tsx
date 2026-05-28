@@ -80,6 +80,7 @@ const STEP_LABELS = [
 
 const CERFA_DESTINATIONS = [
   { value: "habitation", label: "Habitation" },
+  { value: "garage", label: "Garage / stationnement" },
   { value: "hebergement_hotelier", label: "Hébergement hôtelier" },
   { value: "bureaux", label: "Bureaux" },
   { value: "commerce_services", label: "Commerce et activités de services" },
@@ -87,6 +88,7 @@ const CERFA_DESTINATIONS = [
   { value: "exploitation_agricole", label: "Exploitation agricole ou forestière" },
   { value: "entrepot", label: "Entrepôt" },
   { value: "service_public", label: "Service public ou d'intérêt collectif" },
+  { value: "autre", label: "Autre" },
 ];
 
 const NATURES: Array<{
