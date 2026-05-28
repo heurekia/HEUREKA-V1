@@ -38,7 +38,9 @@ const IS_PROD = process.env.NODE_ENV === "production";
 const COOKIE_OPTIONS = {
   httpOnly: true,
   secure: IS_PROD,
-  sameSite: "strict" as const,
+  sameSite: "lax" as const,
+  // Shared across www/app subdomains in production
+  ...(IS_PROD ? { domain: ".heurekia.com" } : {}),
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   path: "/",
 };
@@ -316,7 +318,7 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     if (!user) return res.status(500).json({ error: "Erreur serveur" });
 
     const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
-    res.cookie("token", jwtToken, { httpOnly: true, secure: process.env.NODE_ENV === "production", sameSite: "strict", maxAge: 7 * 24 * 60 * 60 * 1000, path: "/" });
+    res.cookie("token", jwtToken, COOKIE_OPTIONS);
     writeAudit(user.id, user.email, row.type === "activation" ? "account_activated" : "password_reset", req);
     res.json({ user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role } });
   } catch (err) {

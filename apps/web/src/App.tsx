@@ -1,108 +1,12 @@
-import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
-import { AuthProvider, useAuth } from "./hooks/useAuth";
-import { PublicLayout } from "./layouts/PublicLayout";
-import { CitoyenLayout } from "./layouts/CitoyenLayout";
-import { Accueil } from "./pages/public/Accueil";
-import { AnalyseParcellaire } from "./pages/public/AnalyseParcellaire";
-import { Login } from "./pages/public/Login";
-import { Register } from "./pages/public/Register";
-import { MentionsLegales } from "./pages/public/MentionsLegales";
-import { PolitiqueConfidentialite } from "./pages/public/PolitiqueConfidentialite";
-import { ActiverCompte } from "./pages/public/ActiverCompte";
-import { CitoyenDashboard } from "./pages/citoyen/Dashboard";
-import { MesDemandes } from "./pages/citoyen/MesDemandes";
-import { NouvelleDemandeWizard } from "./pages/citoyen/NouvelleDemandeWizard";
-import { DossierDetail } from "./pages/citoyen/DossierDetail";
-import { MessagerieCitoyen } from "./pages/citoyen/Messagerie";
-import { MesDocuments } from "./pages/citoyen/MesDocuments";
-import { CentreAide } from "./pages/citoyen/CentreAide";
-import { Profil } from "./pages/citoyen/Profil";
-import { MairieApp } from "./pages/mairie/MairieApp";
-import { MairieLogin } from "./pages/mairie/MairieLogin";
-import { SuperAdminApp } from "./pages/admin/SuperAdminApp";
-import { ServiceExterneApp } from "./pages/service/ServiceExterneApp";
-
-function ProtectedRoute({ children, roles, loginPath = "/login" }: { children: React.ReactNode; roles?: string[]; loginPath?: string }) {
-  const { user, loading } = useAuth();
-  if (loading) return <div className="flex items-center justify-center min-h-screen"><div className="animate-spin w-8 h-8 border-4 border-heureka-600 border-t-transparent rounded-full" /></div>;
-  if (!user) return <Navigate to={loginPath} replace />;
-  if (roles && !roles.includes(user.role)) return <Navigate to="/" replace />;
-  return <>{children}</>;
-}
-
-function PublicOnlyRoute({ children }: { children: React.ReactNode }) {
-  const { user, loading } = useAuth();
-  const location = useLocation();
-  if (loading) return <div className="flex items-center justify-center min-h-screen"><div className="animate-spin w-8 h-8 border-4 border-heureka-600 border-t-transparent rounded-full" /></div>;
-  if (user) {
-    const params = new URLSearchParams(location.search);
-    const next = params.get("next");
-    const fallback = user.role === "citoyen" ? "/citoyen" : user.role === "service_externe" ? "/service" : (user.role === "admin" && !user.commune) ? "/admin" : "/mairie";
-    return <Navigate to={next ?? fallback} replace />;
-  }
-  return <>{children}</>;
-}
+import { BrowserRouter } from "react-router-dom";
+import { AuthProvider } from "./hooks/useAuth";
+import { HostRouter } from "./router/HostRouter";
 
 export function App() {
   return (
     <BrowserRouter>
       <AuthProvider>
-        <Routes>
-          {/* Analyse parcellaire is full-screen — lives outside PublicLayout */}
-          <Route path="/analyse-parcellaire" element={<AnalyseParcellaire />} />
-
-          {/* Mairie login — full-screen, outside PublicLayout */}
-          <Route path="/mairie/login" element={<PublicOnlyRoute><MairieLogin /></PublicOnlyRoute>} />
-
-          <Route element={<PublicLayout />}>
-            <Route path="/" element={<Accueil />} />
-            <Route path="/login" element={<PublicOnlyRoute><Login /></PublicOnlyRoute>} />
-            <Route path="/register" element={<PublicOnlyRoute><Register /></PublicOnlyRoute>} />
-            <Route path="/mentions-legales" element={<MentionsLegales />} />
-            <Route path="/politique-confidentialite" element={<PolitiqueConfidentialite />} />
-            <Route path="/activer-compte" element={<ActiverCompte />} />
-          </Route>
-
-          <Route path="/citoyen" element={<ProtectedRoute roles={["citoyen"]}><CitoyenLayout /></ProtectedRoute>}>
-            <Route index element={<CitoyenDashboard />} />
-            <Route path="mes-demandes" element={<MesDemandes />} />
-            <Route path="mes-demandes/:id" element={<DossierDetail />} />
-            <Route path="nouvelle-demande" element={<NouvelleDemandeWizard />} />
-            <Route path="messagerie" element={<MessagerieCitoyen />} />
-            <Route path="mes-documents" element={<MesDocuments />} />
-            <Route path="centre-aide" element={<CentreAide />} />
-            <Route path="profil" element={<Profil />} />
-          </Route>
-
-          <Route
-            path="/admin/*"
-            element={
-              <ProtectedRoute roles={["admin"]} loginPath="/mairie/login">
-                <SuperAdminApp />
-              </ProtectedRoute>
-            }
-          />
-
-          <Route
-            path="/mairie/*"
-            element={
-              <ProtectedRoute roles={["mairie", "instructeur", "admin"]} loginPath="/mairie/login">
-                <MairieApp />
-              </ProtectedRoute>
-            }
-          />
-
-          <Route
-            path="/service/*"
-            element={
-              <ProtectedRoute roles={["service_externe"]} loginPath="/mairie/login">
-                <ServiceExterneApp />
-              </ProtectedRoute>
-            }
-          />
-
-          <Route path="*" element={<Navigate to="/" replace />} />
-        </Routes>
+        <HostRouter />
       </AuthProvider>
     </BrowserRouter>
   );
