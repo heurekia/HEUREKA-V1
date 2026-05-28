@@ -268,11 +268,7 @@ dossiersRouter.get("/", async (req: AuthRequest, res) => {
 // ── Soumettre un dossier à la mairie (brouillon → soumis) ──
 dossiersRouter.post("/:id/soumettre", async (req: AuthRequest, res) => {
   try {
-    const [dossier] = await db
-      .select()
-      .from(dossiers)
-      .where(and(eq(dossiers.id, req.params.id as string), eq(dossiers.user_id, req.user!.id)))
-      .limit(1);
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
     if (dossier.status !== "brouillon") {
       return res.status(400).json({ error: "Le dossier a déjà été soumis" });
@@ -309,11 +305,7 @@ dossiersRouter.post("/:id/soumettre", async (req: AuthRequest, res) => {
 // ── Complétude d'un dossier ──
 dossiersRouter.get("/:id/completude", async (req: AuthRequest, res) => {
   try {
-    const [dossier] = await db
-      .select()
-      .from(dossiers)
-      .where(and(eq(dossiers.id, req.params.id as string), eq(dossiers.user_id, req.user!.id)))
-      .limit(1);
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
 
     const meta = (dossier.metadata as Record<string, unknown>) ?? {};
@@ -339,11 +331,7 @@ dossiersRouter.get("/:id/completude", async (req: AuthRequest, res) => {
 // ── Détail d'un dossier ──
 dossiersRouter.get("/:id", async (req: AuthRequest, res) => {
   try {
-    const [dossier] = await db
-      .select()
-      .from(dossiers)
-      .where(and(eq(dossiers.id, req.params.id as string), eq(dossiers.user_id, req.user!.id)))
-      .limit(1);
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
     res.json(dossier);
   } catch (err) {
