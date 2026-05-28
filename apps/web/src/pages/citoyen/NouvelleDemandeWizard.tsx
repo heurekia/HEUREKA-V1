@@ -635,7 +635,7 @@ export function NouvelleDemandeWizard() {
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
             <button
-              onClick={() => navigate(`/citoyen/dossiers/${submitted.id}`)}
+              onClick={() => navigate(`/citoyen/mes-demandes/${submitted.id}`)}
               style={{
                 padding: "11px 28px",
                 background: "#4F46E5",

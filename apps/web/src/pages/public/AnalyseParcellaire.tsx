@@ -123,16 +123,17 @@ function floodLabel(v: string) {
 export function AnalyseParcellaire() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
-  const { user } = useAuth();
+  const { user, loading: authLoading } = useAuth();
   const [query, setQuery] = useState(searchParams.get("q") ?? "");
 
   const handleDeposer = () => {
     const wizardUrl = `/citoyen/nouvelle-demande${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`;
-    if (user?.role === "citoyen") {
+    if (!authLoading && user?.role === "citoyen") {
       navigate(wizardUrl);
-    } else {
-      navigate(`/register?next=${encodeURIComponent(wizardUrl)}`);
+    } else if (!authLoading) {
+      navigate(`/login?next=${encodeURIComponent(wizardUrl)}`);
     }
+    // If still loading, do nothing — button should be shown as loading
   };
   const [suggestions, setSuggestions] = useState<BanSuggestion[]>([]);
   const [showSuggestions, setShowSuggestions] = useState(false);
@@ -739,8 +740,12 @@ export function AnalyseParcellaire() {
                 )}
 
                 {/* CTA */}
-                <button onClick={handleDeposer} style={{ display: "block", width: "100%", background: "#4F46E5", color: "white", textAlign: "center", padding: "11px", borderRadius: 10, fontWeight: 700, fontSize: 14, border: "none", cursor: "pointer", marginTop: 4 }}>
-                  Déposer une demande d'urbanisme →
+                <button
+                  onClick={handleDeposer}
+                  disabled={authLoading}
+                  style={{ display: "block", width: "100%", background: authLoading ? "#818CF8" : "#4F46E5", color: "white", textAlign: "center", padding: "11px", borderRadius: 10, fontWeight: 700, fontSize: 14, border: "none", cursor: authLoading ? "not-allowed" : "pointer", marginTop: 4, opacity: authLoading ? 0.7 : 1 }}
+                >
+                  {authLoading ? "Chargement…" : "Déposer une demande d'urbanisme →"}
                 </button>
               </div>
             )}
