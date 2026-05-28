@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect } from "react";
+import { useState, useCallback, useEffect, useRef } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { api } from "../../lib/api";
@@ -376,6 +376,9 @@ export function NouvelleDemandeWizard() {
   const [search, setSearch] = useState(qParam);
   const [searching, setSearching] = useState(false);
   const [parcel, setParcel] = useState<ParcelInfo | null>(null);
+  const [banSuggestions, setBanSuggestions] = useState<{ label: string }[]>([]);
+  const [showBanSuggestions, setShowBanSuggestions] = useState(false);
+  const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   // Step 2 – Nature (multi-select)
   const [natures, setNatures] = useState<NatureId[]>([]);
@@ -430,17 +433,36 @@ export function NouvelleDemandeWizard() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentional: only on mount
 
+  // ── BAN autocomplete ─────────────────────────────────────────────────────────
+  const handleSearchChange = (val: string) => {
+    setSearch(val);
+    setShowBanSuggestions(true);
+    if (suggestTimer.current) clearTimeout(suggestTimer.current);
+    if (val.length < 3) { setBanSuggestions([]); return; }
+    suggestTimer.current = setTimeout(() => {
+      void fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(val)}&limit=5`)
+        .then((r) => r.json())
+        .then((data: { features?: Array<{ properties: { label: string } }> }) => {
+          setBanSuggestions((data.features ?? []).map((f) => ({ label: f.properties.label })));
+        })
+        .catch(() => setBanSuggestions([]));
+    }, 250);
+  };
+
   // ── Parcel lookup ────────────────────────────────────────────────────────────
-  const searchParcel = useCallback(async () => {
-    if (!search.trim()) return;
+  const searchParcel = useCallback(async (q?: string) => {
+    const query = (q ?? search).trim();
+    if (!query) return;
+    setBanSuggestions([]);
+    setShowBanSuggestions(false);
     setSearching(true);
     try {
       const result = await api.get<Record<string, unknown>>(
-        `/public/analyse?q=${encodeURIComponent(search.trim())}`,
+        `/public/analyse?q=${encodeURIComponent(query)}`,
       );
-      setParcel(mapAnalysis(result, search.trim()));
+      setParcel(mapAnalysis(result, query));
     } catch {
-      setParcel({ adresse: search.trim() });
+      setParcel({ adresse: query });
     } finally {
       setSearching(false);
     }
@@ -764,21 +786,49 @@ export function NouvelleDemandeWizard() {
                 </p>
               </div>
 
-              <div style={{ display: "flex", gap: 10, marginBottom: 16 }}>
-                <input
-                  value={search}
-                  onChange={(e) => setSearch(e.target.value)}
-                  onKeyDown={(e) => e.key === "Enter" && void searchParcel()}
-                  placeholder="Ex : 15 rue des Tilleuls, Tours  —  ou  37261000AB0050"
-                  style={{
-                    ...inputStyle,
-                    flex: 1,
-                    fontSize: 14,
-                    padding: "13px 16px",
-                  }}
-                  onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
-                  onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
-                />
+              <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "flex-start" }}>
+                <div style={{ flex: 1, position: "relative" }}>
+                  <input
+                    value={search}
+                    onChange={(e) => handleSearchChange(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") void searchParcel();
+                      if (e.key === "Escape") { setBanSuggestions([]); setShowBanSuggestions(false); }
+                    }}
+                    onFocus={(e) => { e.target.style.borderColor = "#4F46E5"; setShowBanSuggestions(true); }}
+                    onBlur={(e) => {
+                      e.target.style.borderColor = "#E2E8F0";
+                      setTimeout(() => setShowBanSuggestions(false), 150);
+                    }}
+                    placeholder="Ex : 15 rue des Tilleuls, Tours  —  ou  37261000AB0050"
+                    style={{ ...inputStyle, width: "100%", fontSize: 14, padding: "13px 16px", boxSizing: "border-box" }}
+                  />
+                  {showBanSuggestions && banSuggestions.length > 0 && (
+                    <div style={{
+                      position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 200,
+                      background: "white", border: "1px solid #E2E8F0", borderRadius: 10,
+                      boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden",
+                    }}>
+                      {banSuggestions.map((s, i) => (
+                        <button
+                          key={i}
+                          onMouseDown={(e) => { e.preventDefault(); setSearch(s.label); void searchParcel(s.label); }}
+                          style={{
+                            display: "flex", alignItems: "center", gap: 10, width: "100%",
+                            padding: "11px 14px", background: "white", border: "none",
+                            borderBottom: i < banSuggestions.length - 1 ? "1px solid #F1F5F9" : "none",
+                            cursor: "pointer", textAlign: "left", fontSize: 13, color: "#0F172A",
+                          }}
+                          onMouseEnter={(e) => (e.currentTarget.style.background = "#F8FAFC")}
+                          onMouseLeave={(e) => (e.currentTarget.style.background = "white")}
+                        >
+                          <span style={{ color: "#94a3b8", flexShrink: 0 }}>📍</span>
+                          {s.label}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </div>
                 <button
                   onClick={() => void searchParcel()}
                   disabled={!search.trim() || searching}
