@@ -52,13 +52,17 @@ function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): Par
 
 interface Classification {
   type: string;
+  subtype?: string | null;
   libelle: string;
-  cerfa?: string;
+  libelle_court?: string;
+  articles?: string[];
   explication: string;
   delai_moyen: string;
   pieces_requises: Array<{ nom: string; requis: boolean; aide: string }>;
   alertes: string[];
+  architecte_requis?: boolean;
   confiance: "haute" | "moyenne" | "faible";
+  modifiers?: string[];
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -72,6 +76,17 @@ const STEP_LABELS = [
   "Mes infos",
   "Documents",
   "Dépôt",
+];
+
+const CERFA_DESTINATIONS = [
+  { value: "habitation", label: "Habitation" },
+  { value: "hebergement_hotelier", label: "Hébergement hôtelier" },
+  { value: "bureaux", label: "Bureaux" },
+  { value: "commerce_services", label: "Commerce et activités de services" },
+  { value: "industrie", label: "Industrie" },
+  { value: "exploitation_agricole", label: "Exploitation agricole ou forestière" },
+  { value: "entrepot", label: "Entrepôt" },
+  { value: "service_public", label: "Service public ou d'intérêt collectif" },
 ];
 
 const NATURES: Array<{
@@ -304,54 +319,6 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
   },
 };
 
-// ─── Situational CERFA questions ─────────────────────────────────────────────
-
-const SITUATIONAL_QUESTIONS: Array<{
-  id: "isLotissement" | "isERP" | "hasDefrichement" | "isNatura2000" | "isClimateResilience";
-  emoji: string;
-  label: string;
-  desc: string;
-  forTypes: string[];
-  onlyIfConstruction?: boolean;
-}> = [
-  {
-    id: "isLotissement",
-    emoji: "🏘️",
-    label: "Terrain en lotissement",
-    desc: "Votre terrain est issu d'un lotissement avec règlement de lotissement",
-    forTypes: ["permis_de_construire"],
-  },
-  {
-    id: "isERP",
-    emoji: "🏪",
-    label: "Bâtiment ouvert au public",
-    desc: "Commerce, cabinet médical, salle de sport, crèche… (Établissement Recevant du Public)",
-    forTypes: ["permis_de_construire"],
-  },
-  {
-    id: "hasDefrichement",
-    emoji: "🌳",
-    label: "Défrichement à prévoir",
-    desc: "Abattage d'arbres ou suppression d'une zone boisée pour libérer le terrain",
-    forTypes: ["permis_de_construire"],
-  },
-  {
-    id: "isNatura2000",
-    emoji: "🌿",
-    label: "Zone Natura 2000",
-    desc: "Terrain situé dans ou à proximité immédiate d'un site Natura 2000",
-    forTypes: ["permis_de_construire", "declaration_prealable"],
-  },
-  {
-    id: "isClimateResilience",
-    emoji: "🌱",
-    label: "Loi Climat & Résilience 2021",
-    desc: "Construction neuve visée par l'article 101 de la loi n°2021-1104 du 22 août 2021",
-    forTypes: ["permis_de_construire", "declaration_prealable"],
-    onlyIfConstruction: true,
-  },
-];
-
 // ─── Main component ───────────────────────────────────────────────────────────
 
 export function NouvelleDemandeWizard() {
@@ -373,21 +340,24 @@ export function NouvelleDemandeWizard() {
     setNatures((prev) => prev.includes(id) ? prev.filter((n) => n !== id) : [...prev, id]);
 
   // Step 3 – Précisions
-  const [surface, setSurface] = useState(0);
-  const [surfaceStr, setSurfaceStr] = useState("");
+  const [surface, setSurface] = useState<number>(0);
+  const [surfaceStr, setSurfaceStr] = useState<string>("");
   const [empriseExistante, setEmpriseExistante] = useState("");
   const [amenagementType, setAmenagementType] = useState("");
+  const [certificatType, setCertificatType] = useState<"a" | "b">("b");
+  const [hasVoirieCommune, setHasVoirieCommune] = useState<boolean | null>(null);
 
   // Step 4 – Classification
   const [classifying, setClassifying] = useState(false);
   const [classification, setClassification] = useState<Classification | null>(null);
 
-  // Step 5 – Cas particuliers (situational CERFA)
-  const [isLotissement, setIsLotissement] = useState(false);
-  const [isERP, setIsERP] = useState(false);
-  const [hasDefrichement, setHasDefrichement] = useState(false);
-  const [isNatura2000, setIsNatura2000] = useState(false);
-  const [isClimateResilience, setIsClimateResilience] = useState(false);
+  // Step 5 – Compléments CERFA
+  const [qualiteDemandeur, setQualiteDemandeur] = useState("");
+  const [empriseSol, setEmpriseSol] = useState("");
+  const [hauteurProjet, setHauteurProjet] = useState("");
+  const [destinationActuelle, setDestinationActuelle] = useState("");
+  const [destinationFuture, setDestinationFuture] = useState("");
+  const [nbLogements, setNbLogements] = useState("");
 
   // Step 6 – Infos personnelles
   const [nom, setNom] = useState(user?.nom ?? "");
@@ -395,7 +365,7 @@ export function NouvelleDemandeWizard() {
   const [email, setEmail] = useState(user?.email ?? "");
   const [description, setDescription] = useState("");
 
-  // Step 7 – Résultat
+  // Step 8 – Résultat
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<{ id: string; numero: string } | null>(null);
 
@@ -433,11 +403,13 @@ export function NouvelleDemandeWizard() {
     try {
       const result = await api.post<Classification>("/dossiers/classify", {
         natures,
-        surface: natures.some((n) => n !== "certificat") ? surface : undefined,
+        surface: natures.some((n) => n !== "certificat") && surface > 0 ? surface : undefined,
         parcelData: parcel,
         empriseExistante: empriseExistante || undefined,
         amenagementType: amenagementType || undefined,
         description: description || undefined,
+        certificatType: natures.includes("certificat") ? certificatType : undefined,
+        hasVoirieCommune: natures.includes("division_terrain") ? (hasVoirieCommune ?? false) : undefined,
       });
       setClassification(result);
     } catch {
@@ -471,38 +443,11 @@ export function NouvelleDemandeWizard() {
     } finally {
       setClassifying(false);
     }
-  }, [natures, surface, parcel, empriseExistante, amenagementType, description]);
-
-  // ── Refresh pieces with situational flags then advance ───────────────────────
-  const refreshPiecesAndNext = useCallback(async () => {
-    const anySituational = isLotissement || isERP || hasDefrichement || isNatura2000 || isClimateResilience;
-    if (classification && anySituational) {
-      try {
-        const result = await api.post<{ pieces_requises: Array<{ nom: string; requis: boolean; aide: string }> }>("/dossiers/pieces", {
-          type: classification.type,
-          natures,
-          surface: surface > 0 ? surface : undefined,
-          servitudes: parcel?.servitudes,
-          amenagementType: amenagementType || undefined,
-          situational: {
-            isLotissement: isLotissement || undefined,
-            isERP: isERP || undefined,
-            hasDefrichement: hasDefrichement || undefined,
-            isNatura2000: isNatura2000 || undefined,
-            isClimateResilience: isClimateResilience || undefined,
-          },
-        });
-        setClassification((prev) => prev ? { ...prev, pieces_requises: result.pieces_requises } : null);
-      } catch {
-        // keep existing pieces on error
-      }
-    }
-    setStep((s) => (s + 1) as Step);
-  }, [classification, natures, surface, parcel, amenagementType, isLotissement, isERP, hasDefrichement, isNatura2000, isClimateResilience]);
+  }, [natures, surface, parcel, empriseExistante, amenagementType, description, certificatType, hasVoirieCommune]);
 
   // ── Submit dossier ───────────────────────────────────────────────────────────
   const submitDossier = useCallback(async () => {
-    if (!classification) return;
+    if (!classification || classification.type === "aucune_autorisation") return;
     setSubmitting(true);
     try {
       const result = await api.post<{ id: string; numero: string }>("/dossiers", {
@@ -510,17 +455,18 @@ export function NouvelleDemandeWizard() {
         adresse: parcel?.adresse ?? "",
         commune: parcel?.commune ?? "",
         description: description || undefined,
-        surface_plancher: natures.some((n) => n !== "certificat") ? String(surface) : undefined,
+        surface_plancher: natures.some((n) => n !== "certificat") && surface > 0 ? String(surface) : undefined,
         metadata: {
           natures,
           zone: parcel?.zone,
           parcelle: parcel?.parcelle,
-          situational: {
-            isLotissement: isLotissement || undefined,
-            isERP: isERP || undefined,
-            hasDefrichement: hasDefrichement || undefined,
-            isNatura2000: isNatura2000 || undefined,
-            isClimateResilience: isClimateResilience || undefined,
+          cerfa_data: {
+            qualiteDemandeur: qualiteDemandeur || undefined,
+            empriseSol: empriseSol || undefined,
+            hauteurProjet: hauteurProjet || undefined,
+            destinationActuelle: destinationActuelle || undefined,
+            destinationFuture: destinationFuture || undefined,
+            nbLogements: nbLogements || undefined,
           },
         },
       });
@@ -528,7 +474,7 @@ export function NouvelleDemandeWizard() {
     } finally {
       setSubmitting(false);
     }
-  }, [classification, parcel, description, natures, surface, isLotissement, isERP, hasDefrichement, isNatura2000, isClimateResilience]);
+  }, [classification, parcel, description, natures, surface, qualiteDemandeur, empriseSol, hauteurProjet, destinationActuelle, destinationFuture, nbLogements]);
 
   const next = () => setStep((s) => (s + 1) as Step);
   const prev = () => setStep((s) => (s - 1) as Step);
@@ -984,9 +930,10 @@ export function NouvelleDemandeWizard() {
               descriptionPlaceholder: "Décrivez les différents travaux envisagés, les surfaces concernées, et leur enchaînement prévu…",
               descriptionRequired: false,
             };
+            const surfaceRequired = cfg.surfaceLabel !== null;
             const canAnalyse =
-              (!cfg.surfaceLabel || surface > 0) &&
-              (!cfg.descriptionRequired || description.trim().length > 0);
+              (!cfg.descriptionRequired || description.trim().length > 0) &&
+              (!surfaceRequired || surface > 0);
             return (
               <div>
                 <div style={{ textAlign: "center", marginBottom: 28 }}>
@@ -1023,32 +970,41 @@ export function NouvelleDemandeWizard() {
                       {cfg.surfaceLabel}
                     </label>
                     <div style={{ display: "flex", alignItems: "center", gap: 18, marginBottom: 10 }}>
-                      <input type="range" min={1} max={cfg.surfaceMax} value={surface || 1}
+                      <input type="range" min={1} max={cfg.surfaceMax} value={surface > 0 ? surface : 1}
                         onChange={(e) => {
-                          const n = Number(e.target.value);
-                          setSurface(n);
-                          setSurfaceStr(String(n));
+                          const v = Number(e.target.value);
+                          setSurface(v);
+                          setSurfaceStr(String(v));
                         }}
-                        style={{ flex: 1, accentColor: "#4F46E5", height: 6, cursor: "pointer" }} />
+                        style={{ flex: 1, accentColor: "#4F46E5", height: 6, cursor: "pointer", opacity: surface === 0 ? 0.4 : 1 }} />
                       <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0 }}>
                         <input
-                          type="number" min={1} max={9999}
+                          type="number"
+                          min={1}
+                          max={9999}
                           value={surfaceStr}
+                          placeholder="Ex : 19"
                           onChange={(e) => {
                             setSurfaceStr(e.target.value);
-                            const n = parseInt(e.target.value, 10);
-                            if (!isNaN(n) && n > 0) setSurface(n);
-                            else setSurface(0);
+                            const v = parseInt(e.target.value, 10);
+                            if (!isNaN(v) && v > 0) setSurface(v);
+                            else if (e.target.value === "") setSurface(0);
                           }}
-                          onBlur={() => setSurfaceStr(surface > 0 ? String(surface) : "")}
-                          placeholder="0"
-                          style={{ width: 76, padding: "10px", border: "2px solid #C7D2FE", borderRadius: 10, fontSize: 20, fontWeight: 800, textAlign: "center", outline: "none", fontFamily: "inherit", color: "#4F46E5" }} />
+                          onBlur={() => {
+                            if (surface > 0) setSurfaceStr(String(surface));
+                          }}
+                          style={{ width: 76, padding: "10px", border: `2px solid ${surface > 0 ? "#C7D2FE" : "#E2E8F0"}`, borderRadius: 10, fontSize: 20, fontWeight: 800, textAlign: "center", outline: "none", fontFamily: "inherit", color: surface > 0 ? "#4F46E5" : "#94a3b8" }}
+                        />
                         <span style={{ fontSize: 16, color: "#64748b", fontWeight: 600 }}>m²</span>
                       </div>
                     </div>
-                    {surface > 0 && (
+                    {surface > 0 ? (
                       <div style={{ fontSize: 13, color: "#64748b", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0" }}>
                         💡 {surfaceHelper(surface)}
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 13, color: "#94a3b8", background: "#F8FAFC", borderRadius: 10, padding: "10px 16px", border: "1px solid #E2E8F0" }}>
+                        ↑ Entrez la surface exacte en m²
                       </div>
                     )}
                   </div>
@@ -1089,6 +1045,61 @@ export function NouvelleDemandeWizard() {
                     </p>
                   )}
                 </div>
+
+                {/* ── Sous-question CUa / CUb ── */}
+                {natures.includes("certificat") && (
+                  <div style={{ marginBottom: 24 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 10 }}>
+                      Type de certificat souhaité
+                    </label>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {([
+                        ["a", "📋 CUa — Informatif", "Connaître les règles du PLU applicables à la parcelle (1 mois)"],
+                        ["b", "🔍 CUb — Opérationnel", "Vérifier la faisabilité d'un projet précis sur la parcelle (2 mois)"],
+                      ] as ["a" | "b", string, string][]).map(([val, label, desc]) => (
+                        <button key={val} onClick={() => setCertificatType(val)}
+                          style={{
+                            flex: 1, padding: "14px 12px", border: `2px solid ${certificatType === val ? "#4F46E5" : "#E2E8F0"}`,
+                            borderRadius: 12, background: certificatType === val ? "#EEF2FF" : "white",
+                            textAlign: "left", cursor: "pointer", transition: "all 0.15s",
+                          }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: certificatType === val ? "#4F46E5" : "#0F172A", marginBottom: 4 }}>{label}</div>
+                          <div style={{ fontSize: 11, color: certificatType === val ? "#6366F1" : "#94a3b8", lineHeight: 1.4 }}>{desc}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Sous-question voirie commune (division terrain) ── */}
+                {natures.includes("division_terrain") && (
+                  <div style={{ marginBottom: 24 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 10 }}>
+                      La division créera-t-elle des voies ou réseaux communs ?
+                    </label>
+                    <p style={{ fontSize: 12, color: "#64748b", marginBottom: 10, marginTop: -4 }}>
+                      Voirie partagée, réseau eau/électricité commun, espace vert collectif…
+                    </p>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {([
+                        [true, "✓ Oui — Voirie ou réseaux communs", "→ Permis d'Aménager requis"],
+                        [false, "✕ Non — Division simple", "→ Déclaration Préalable suffit"],
+                      ] as [boolean, string, string][]).map(([val, label, sub]) => (
+                        <button key={String(val)} onClick={() => setHasVoirieCommune(val)}
+                          style={{
+                            flex: 1, padding: "14px 12px",
+                            border: `2px solid ${hasVoirieCommune === val ? (val ? "#4F46E5" : "#64748b") : "#E2E8F0"}`,
+                            borderRadius: 12,
+                            background: hasVoirieCommune === val ? (val ? "#EEF2FF" : "#F1F5F9") : "white",
+                            textAlign: "left", cursor: "pointer", transition: "all 0.15s",
+                          }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: hasVoirieCommune === val ? (val ? "#4F46E5" : "#374151") : "#0F172A", marginBottom: 4 }}>{label}</div>
+                          <div style={{ fontSize: 11, color: "#94a3b8" }}>{sub}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
 
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <button onClick={prev}
@@ -1135,44 +1146,6 @@ export function NouvelleDemandeWizard() {
                     la nature de votre projet.
                   </p>
                 </div>
-              ) : classification?.type === "aucune_autorisation" ? (
-                <div>
-                  <div style={{ textAlign: "center", marginBottom: 28 }}>
-                    <div style={{ fontSize: 64, marginBottom: 12 }}>🎉</div>
-                    <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
-                      Aucune autorisation nécessaire
-                    </h2>
-                    <p style={{ fontSize: 14, color: "#64748b", maxWidth: 440, margin: "0 auto" }}>
-                      Votre projet ne dépasse pas les seuils réglementaires.
-                    </p>
-                  </div>
-                  <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 16, padding: 24, marginBottom: 24 }}>
-                    <div style={{ fontSize: 13, fontWeight: 700, color: "#15803D", marginBottom: 10 }}>✓ Pas de démarche à effectuer</div>
-                    {classification.explication && (
-                      <p style={{ fontSize: 14, color: "#166534", lineHeight: 1.7, margin: 0 }}>
-                        {classification.explication}
-                      </p>
-                    )}
-                  </div>
-                  {classification.alertes.length > 0 && (
-                    <div style={{ background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 12, padding: "14px 18px", marginBottom: 20 }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 8 }}>⚠️ Points d'attention</div>
-                      {classification.alertes.map((a, i) => (
-                        <div key={i} style={{ fontSize: 13, color: "#78350F", marginBottom: 4, lineHeight: 1.5 }}>• {a}</div>
-                      ))}
-                    </div>
-                  )}
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <button onClick={() => { setClassification(null); setStep(3); }}
-                      style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}>
-                      ← Modifier
-                    </button>
-                    <button onClick={() => navigate("/citoyen")}
-                      style={{ padding: "11px 28px", background: "#15803D", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
-                      Retour à l'accueil
-                    </button>
-                  </div>
-                </div>
               ) : classification ? (
                 <div>
                   <div style={{ textAlign: "center", marginBottom: 24 }}>
@@ -1209,25 +1182,15 @@ export function NouvelleDemandeWizard() {
                     >
                       Procédure requise
                     </div>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 12, flexWrap: "wrap", marginBottom: 14 }}>
-                      <div style={{ fontSize: 26, fontWeight: 900, color: "#0F172A" }}>
-                        {classification.libelle}
-                      </div>
-                      {classification.cerfa && (
-                        <div style={{
-                          fontSize: 11,
-                          fontWeight: 700,
-                          color: "#6366F1",
-                          background: "white",
-                          border: "1px solid #C7D2FE",
-                          borderRadius: 6,
-                          padding: "3px 9px",
-                          letterSpacing: "0.03em",
-                          whiteSpace: "nowrap",
-                        }}>
-                          CERFA {classification.cerfa}
-                        </div>
-                      )}
+                    <div
+                      style={{
+                        fontSize: 26,
+                        fontWeight: 900,
+                        color: "#0F172A",
+                        marginBottom: 14,
+                      }}
+                    >
+                      {classification.libelle}
                     </div>
                     <p
                       style={{
@@ -1265,6 +1228,31 @@ export function NouvelleDemandeWizard() {
                     </div>
                   </div>
 
+                  {classification.architecte_requis && (
+                    <div
+                      style={{
+                        background: "#FEF2F2",
+                        border: "1.5px solid #FECACA",
+                        borderRadius: 12,
+                        padding: "14px 18px",
+                        marginBottom: 16,
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 12,
+                      }}
+                    >
+                      <span style={{ fontSize: 18, flexShrink: 0 }}>🔴</span>
+                      <div>
+                        <div style={{ fontSize: 13, fontWeight: 700, color: "#991B1B", marginBottom: 4 }}>
+                          Architecte obligatoire
+                        </div>
+                        <div style={{ fontSize: 13, color: "#7F1D1D", lineHeight: 1.5 }}>
+                          La surface plancher totale (existante + créée) dépasse 150 m². Le recours à un architecte est obligatoire pour déposer ce dossier (art. R431-2 CU).
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   {classification.alertes.length > 0 && (
                     <div
                       style={{
@@ -1296,171 +1284,218 @@ export function NouvelleDemandeWizard() {
                     </div>
                   )}
 
-                  <div style={{ display: "flex", justifyContent: "space-between" }}>
-                    <button
-                      onClick={() => {
-                        setClassification(null);
-                        setStep(3);
-                      }}
-                      style={{
-                        padding: "10px 20px",
-                        background: "white",
-                        color: "#374151",
-                        border: "1px solid #E2E8F0",
-                        borderRadius: 10,
-                        fontSize: 13,
-                        cursor: "pointer",
-                      }}
-                    >
-                      ← Modifier
-                    </button>
-                    <button
-                      onClick={next}
-                      style={{
-                        padding: "11px 28px",
-                        background: "#4F46E5",
-                        color: "white",
-                        border: "none",
-                        borderRadius: 10,
-                        fontSize: 14,
-                        fontWeight: 600,
-                        cursor: "pointer",
-                      }}
-                    >
-                      Continuer avec cette procédure →
-                    </button>
-                  </div>
+                  {classification.type === "aucune_autorisation" ? (
+                    <div>
+                      <div
+                        style={{
+                          background: "#F0FDF4",
+                          border: "1px solid #86EFAC",
+                          borderRadius: 12,
+                          padding: "16px 18px",
+                          marginBottom: 24,
+                          fontSize: 14,
+                          color: "#15803D",
+                          lineHeight: 1.6,
+                        }}
+                      >
+                        ✅ <strong>Aucune autorisation d'urbanisme n'est requise</strong> pour votre projet en l'état. Vous pouvez réaliser vos travaux sans démarche préalable. En cas de doute, rapprochez-vous de votre mairie pour confirmation.
+                      </div>
+                      <div style={{ display: "flex", justifyContent: "space-between" }}>
+                        <button
+                          onClick={() => { setClassification(null); setStep(3); }}
+                          style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}
+                        >
+                          ← Modifier mon projet
+                        </button>
+                        <button
+                          onClick={() => navigate("/citoyen")}
+                          style={{ padding: "11px 28px", background: "#15803D", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                        >
+                          Retour à l'accueil
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <div style={{ display: "flex", justifyContent: "space-between" }}>
+                      <button
+                        onClick={() => { setClassification(null); setStep(3); }}
+                        style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}
+                      >
+                        ← Modifier
+                      </button>
+                      <button
+                        onClick={next}
+                        style={{ padding: "11px 28px", background: "#4F46E5", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                      >
+                        Continuer avec cette procédure →
+                      </button>
+                    </div>
+                  )}
                 </div>
               ) : null}
             </div>
           )}
 
           {/* ───── STEP 5 : Compléments CERFA ───── */}
-          {step === 5 && classification && classification.type !== "aucune_autorisation" && (
+          {step === 5 && (
             <div>
               <div style={{ textAlign: "center", marginBottom: 28 }}>
-                <div style={{ fontSize: 52, marginBottom: 10 }}>🗂️</div>
+                <div style={{ fontSize: 52, marginBottom: 10 }}>📋</div>
                 <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
-                  Quelques questions
+                  Informations CERFA
                 </h2>
                 <p style={{ fontSize: 14, color: "#64748b", maxWidth: 460, margin: "0 auto" }}>
-                  Ces situations peuvent nécessiter des documents supplémentaires dans votre dossier.
+                  Ces informations serviront à préremplir votre formulaire officiel. Tous les champs sont facultatifs.
                 </p>
               </div>
 
-              {(() => {
-                const hasConstruction = natures.some((n) =>
-                  ["maison_neuve", "agrandissement", "petite_construction"].includes(n),
-                );
-                const applicable = SITUATIONAL_QUESTIONS.filter((q) => {
-                  if (!q.forTypes.includes(classification.type)) return false;
-                  if (q.onlyIfConstruction && !hasConstruction) return false;
-                  return true;
-                });
+              {/* Qualité du demandeur */}
+              <div style={{ marginBottom: 22 }}>
+                <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 10 }}>
+                  Vous êtes{" "}
+                  <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
+                </label>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
+                  {(["Propriétaire", "Mandataire du propriétaire", "Autre"] as const).map((q) => (
+                    <button
+                      key={q}
+                      onClick={() => setQualiteDemandeur(qualiteDemandeur === q ? "" : q)}
+                      style={{
+                        padding: "10px 16px",
+                        border: `2px solid ${qualiteDemandeur === q ? "#4F46E5" : "#E2E8F0"}`,
+                        borderRadius: 10,
+                        background: qualiteDemandeur === q ? "#EEF2FF" : "white",
+                        fontSize: 13,
+                        fontWeight: qualiteDemandeur === q ? 700 : 400,
+                        color: qualiteDemandeur === q ? "#4F46E5" : "#374151",
+                        cursor: "pointer",
+                        transition: "all 0.15s",
+                      }}
+                    >
+                      {q}
+                    </button>
+                  ))}
+                </div>
+              </div>
 
-                const situationalState: Record<string, boolean> = {
-                  isLotissement, isERP, hasDefrichement, isNatura2000, isClimateResilience,
-                };
-                const situationalSetters: Record<string, (v: boolean) => void> = {
-                  isLotissement: setIsLotissement,
-                  isERP: setIsERP,
-                  hasDefrichement: setHasDefrichement,
-                  isNatura2000: setIsNatura2000,
-                  isClimateResilience: setIsClimateResilience,
-                };
+              {/* Emprise au sol créée */}
+              {!natures.includes("certificat") && (
+                <div style={{ marginBottom: 20 }}>
+                  <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                    Emprise au sol créée{" "}
+                    <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif · m²</span>
+                  </label>
+                  <input
+                    type="number"
+                    value={empriseSol}
+                    onChange={(e) => setEmpriseSol(e.target.value)}
+                    placeholder="Ex : 25"
+                    style={inputStyle}
+                    onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
+                    onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
+                  />
+                  <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>
+                    Surface au sol de la construction projetée (projection verticale sur le terrain).
+                  </p>
+                </div>
+              )}
 
-                if (applicable.length === 0) {
-                  return (
-                    <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 14, padding: 28, marginBottom: 24, textAlign: "center" }}>
-                      <div style={{ fontSize: 36, marginBottom: 10 }}>✓</div>
-                      <div style={{ fontSize: 15, fontWeight: 700, color: "#15803D", marginBottom: 4 }}>Aucune question complémentaire</div>
-                      <div style={{ fontSize: 13, color: "#166534", lineHeight: 1.5 }}>
-                        Votre projet ne nécessite pas de pièces complémentaires spécifiques.
-                      </div>
-                    </div>
-                  );
-                }
-
-                return (
-                  <div style={{ display: "flex", flexDirection: "column", gap: 12, marginBottom: 24 }}>
-                    {applicable.map((q) => {
-                      const value = situationalState[q.id];
-                      const setter = situationalSetters[q.id]!;
-                      return (
-                        <div
-                          key={q.id}
-                          style={{
-                            border: "1px solid #E2E8F0",
-                            borderRadius: 14,
-                            padding: "16px 20px",
-                            background: "white",
-                          }}
-                        >
-                          <div style={{ display: "flex", alignItems: "flex-start", gap: 14, marginBottom: 14 }}>
-                            <span style={{ fontSize: 28, flexShrink: 0, marginTop: 2 }}>{q.emoji}</span>
-                            <div>
-                              <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 3 }}>
-                                {q.label}
-                              </div>
-                              <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>
-                                {q.desc}
-                              </div>
-                            </div>
-                          </div>
-                          <div style={{ display: "flex", gap: 10 }}>
-                            <button
-                              onClick={() => setter(true)}
-                              style={{
-                                flex: 1,
-                                padding: "10px 0",
-                                border: `2px solid ${value === true ? "#4F46E5" : "#E2E8F0"}`,
-                                borderRadius: 10,
-                                background: value === true ? "#4F46E5" : "white",
-                                color: value === true ? "white" : "#374151",
-                                fontSize: 14,
-                                fontWeight: 700,
-                                cursor: "pointer",
-                                transition: "all 0.15s",
-                              }}
-                            >
-                              ✓ Oui
-                            </button>
-                            <button
-                              onClick={() => setter(false)}
-                              style={{
-                                flex: 1,
-                                padding: "10px 0",
-                                border: `2px solid ${value === false ? "#64748b" : "#E2E8F0"}`,
-                                borderRadius: 10,
-                                background: value === false ? "#F1F5F9" : "white",
-                                color: value === false ? "#374151" : "#94a3b8",
-                                fontSize: 14,
-                                fontWeight: 700,
-                                cursor: "pointer",
-                                transition: "all 0.15s",
-                              }}
-                            >
-                              ✕ Non
-                            </button>
-                          </div>
-                        </div>
-                      );
-                    })}
+              {/* Changement de destination */}
+              {natures.includes("changement_destination") && (
+                <>
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                      Destination actuelle{" "}
+                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
+                    </label>
+                    <select
+                      value={destinationActuelle}
+                      onChange={(e) => setDestinationActuelle(e.target.value)}
+                      style={{ ...inputStyle, background: "white", cursor: "pointer" }}
+                    >
+                      <option value="">— Sélectionner —</option>
+                      {CERFA_DESTINATIONS.map((d) => (
+                        <option key={d.value} value={d.value}>{d.label}</option>
+                      ))}
+                    </select>
                   </div>
-                );
-              })()}
+                  <div style={{ marginBottom: 20 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                      Destination future{" "}
+                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
+                    </label>
+                    <select
+                      value={destinationFuture}
+                      onChange={(e) => setDestinationFuture(e.target.value)}
+                      style={{ ...inputStyle, background: "white", cursor: "pointer" }}
+                    >
+                      <option value="">— Sélectionner —</option>
+                      {CERFA_DESTINATIONS.map((d) => (
+                        <option key={d.value} value={d.value}>{d.label}</option>
+                      ))}
+                    </select>
+                  </div>
+                </>
+              )}
+
+              {/* PC uniquement : hauteur + nombre de logements */}
+              {classification?.type === "permis_de_construire" && (
+                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
+                  <div>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                      Hauteur maximale{" "}
+                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif · m</span>
+                    </label>
+                    <input
+                      type="number"
+                      value={hauteurProjet}
+                      onChange={(e) => setHauteurProjet(e.target.value)}
+                      placeholder="Ex : 6.5"
+                      step="0.1"
+                      style={inputStyle}
+                      onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
+                      onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
+                    />
+                  </div>
+                  <div>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
+                      Logements créés{" "}
+                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
+                    </label>
+                    <input
+                      type="number"
+                      value={nbLogements}
+                      onChange={(e) => setNbLogements(e.target.value)}
+                      placeholder="Ex : 1"
+                      min={0}
+                      style={inputStyle}
+                      onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
+                      onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
+                    />
+                  </div>
+                </div>
+              )}
+
+              <div
+                style={{
+                  background: "#EFF6FF",
+                  border: "1px solid #BFDBFE",
+                  borderRadius: 12,
+                  padding: "13px 18px",
+                  marginBottom: 24,
+                  fontSize: 13,
+                  color: "#1E40AF",
+                  lineHeight: 1.6,
+                }}
+              >
+                💡 Ces informations sont facultatives. Elles permettront de préremplir votre formulaire CERFA officiel lors du dépôt final.
+              </div>
 
               <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <button
-                  onClick={prev}
-                  style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}
-                >
+                <button onClick={prev} style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}>
                   ← Retour
                 </button>
-                <button
-                  onClick={() => void refreshPiecesAndNext()}
-                  style={{ padding: "11px 28px", background: "#4F46E5", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
-                >
+                <button onClick={next} style={{ padding: "11px 28px", background: "#4F46E5", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
                   Continuer →
                 </button>
               </div>
@@ -1752,16 +1787,10 @@ export function NouvelleDemandeWizard() {
                     label: "Type de projet",
                     value: natures.map((id) => NATURES.find((n) => n.id === id)?.label ?? id).join(", "),
                   },
-                  ...(natures.some((n) => n !== "certificat")
+                  ...(natures.some((n) => n !== "certificat") && surface > 0
                     ? [{ icon: "📐", label: "Surface plancher", value: `${surface} m²` }]
                     : []),
-                  {
-                    icon: "📋",
-                    label: "Procédure",
-                    value: classification
-                      ? `${classification.libelle}${classification.cerfa ? `  ·  CERFA ${classification.cerfa}` : ""}`
-                      : "—",
-                  },
+                  { icon: "📋", label: "Procédure", value: classification?.libelle ?? "—" },
                   { icon: "⏱", label: "Délai estimé", value: classification?.delai_moyen ?? "—" },
                   {
                     icon: "👤",

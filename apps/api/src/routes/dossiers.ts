@@ -1,14 +1,14 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
-import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events, notifications } from "@heureka-v1/db";
+import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events } from "@heureka-v1/db";
 import { eq, desc, and } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
-import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
 import { classifyPermit } from "../services/classificationEngine.js";
+import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
 
 function getAnthropicKey(): string {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
@@ -51,6 +51,8 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       empriseExistante,
       amenagementType,
       description,
+      certificatType,
+      hasVoirieCommune,
     } = req.body as {
       nature?: string;
       natures?: string[];
@@ -59,6 +61,8 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       empriseExistante?: string;
       amenagementType?: string;
       description?: string;
+      certificatType?: "a" | "b";
+      hasVoirieCommune?: boolean;
     };
 
     const naturesToUse: string[] = naturesArr ?? (nature ? [nature] : []);
@@ -75,6 +79,8 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       zone: parcelData?.zone,
       hasABF,
       amenagementType,
+      certificatType,
+      hasVoirieCommune,
     });
 
     // ── 2. Pièces requises (déterministe) ─────────────────────────────────────
@@ -109,6 +115,7 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
             ? `Servitudes : ${parcelData.servitudes.map((s) => s.libelle ?? s.categorie).filter(Boolean).join(", ")}`
             : null,
           `Procédure requise (déjà déterminée) : ${det.libelle} (${det.articles.join(", ")})`,
+          det.architecte_requis ? "Architecte obligatoire : oui (surface totale > 150 m²)" : null,
         ].filter(Boolean).join("\n");
 
         const msg = await client.messages.create({
@@ -144,6 +151,8 @@ Règles strictes :
         }
       } catch {
         // Claude failure is non-blocking — proceed with empty explanation
+        explication = `Votre projet nécessite une ${det.libelle}. Délai moyen : ${det.delai_moyen}.`;
+        if (hasABF) alertes = ["Votre terrain est en périmètre ABF : prévoyez un délai supplémentaire d'environ 1 mois."];
       }
     } else {
       explication = "Votre projet ne dépasse pas le seuil réglementaire qui impose une démarche administrative. Vous pouvez débuter les travaux sans autorisation préalable.";
@@ -151,8 +160,11 @@ Règles strictes :
 
     res.json({
       type: det.type,
+      subtype: det.subtype,
       libelle: det.libelle,
+      libelle_court: det.libelle_court,
       cerfa: det.cerfa,
+      architecte_requis: det.architecte_requis,
       explication,
       delai_moyen: det.delai_moyen,
       pieces_requises,
