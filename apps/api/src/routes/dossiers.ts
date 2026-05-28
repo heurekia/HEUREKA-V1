@@ -7,8 +7,36 @@ import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+import multer from "multer";
 import { classifyPermit } from "../services/classificationEngine.js";
 import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
+import { analyzePiece } from "../services/pieceAnalyzer.js";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
+
+const storage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
+  filename: (_req, file, cb) => {
+    const ext = path.extname(file.originalname);
+    cb(null, `${crypto.randomUUID()}${ext}`);
+  },
+});
+
+const upload = multer({
+  storage,
+  limits: { fileSize: 20 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = /pdf|jpe?g|png|gif|webp|tiff?/i;
+    if (allowed.test(path.extname(file.originalname)) || allowed.test(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Type de fichier non supporté (PDF, JPEG, PNG, GIF, WEBP, TIFF)"));
+    }
+  },
+});
 
 function getAnthropicKey(): string {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
@@ -343,6 +371,61 @@ dossiersRouter.get("/:id/pieces", async (req: AuthRequest, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Upload d'une pièce jointe avec analyse IA ──
+dossiersRouter.post("/:id/pieces/upload", upload.single("file"), async (req: AuthRequest, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "Fichier requis" });
+
+    // Verify dossier belongs to user
+    const [dossier] = await db
+      .select()
+      .from(dossiers)
+      .where(and(eq(dossiers.id, req.params.id as string), eq(dossiers.user_id, req.user!.id)))
+      .limit(1);
+    if (!dossier) {
+      fs.unlinkSync(req.file.path);
+      return res.status(404).json({ error: "Dossier non trouvé" });
+    }
+
+    const code_piece = (req.body as Record<string, string>).code_piece ?? "";
+    const nom_piece = (req.body as Record<string, string>).nom_piece ?? req.file.originalname;
+    const url = `/api/uploads/${req.file.filename}`;
+
+    const [piece] = await db
+      .insert(dossier_pieces_jointes)
+      .values({
+        dossier_id: req.params.id as string,
+        user_id: req.user!.id,
+        nom: nom_piece,
+        url,
+        type: req.file.mimetype,
+        taille: req.file.size,
+        code_piece: code_piece || null,
+      })
+      .returning();
+
+    // Non-blocking AI analysis — runs but doesn't fail the request
+    let analyse_ia = null;
+    try {
+      analyse_ia = await analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece);
+      await db
+        .update(dossier_pieces_jointes)
+        .set({ analyse_ia })
+        .where(eq(dossier_pieces_jointes.id, piece!.id));
+    } catch {
+      // AI failure is non-blocking
+    }
+
+    res.status(201).json({ ...piece, analyse_ia });
+  } catch (err) {
+    if (req.file?.path) {
+      try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+    }
+    console.error(err);
+    res.status(500).json({ error: "Erreur upload" });
   }
 });
 

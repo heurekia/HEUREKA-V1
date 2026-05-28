@@ -477,6 +477,10 @@ CREATE TABLE IF NOT EXISTS dossier_consultations (
 CREATE INDEX IF NOT EXISTS idx_dossier_consultations_dossier ON dossier_consultations(dossier_id);
 ALTER TABLE dossier_consultations ADD COLUMN IF NOT EXISTS external_service_id uuid REFERENCES external_services(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_dossier_consultations_service ON dossier_consultations(external_service_id);
+
+-- Upload de pièces justificatives avec analyse IA
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS code_piece text;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS analyse_ia jsonb;
 `;
 
 async function main() {

@@ -58,11 +58,34 @@ interface Classification {
   articles?: string[];
   explication: string;
   delai_moyen: string;
-  pieces_requises: Array<{ nom: string; requis: boolean; aide: string }>;
+  pieces_requises: Array<{ code: string; nom: string; requis: boolean; aide: string }>;
   alertes: string[];
   architecte_requis?: boolean;
   confiance: "haute" | "moyenne" | "faible";
   modifiers?: string[];
+}
+
+interface PieceAnalysis {
+  score: "conforme" | "acceptable" | "incomplet" | "non_conforme";
+  commentaire: string;
+  suggestions: string[];
+}
+
+interface UploadedPiece {
+  id: string;
+  nom: string;
+  url: string;
+  analyse: PieceAnalysis | null;
+}
+
+function getScoreConfig(score: string): { label: string; bg: string; color: string } | null {
+  switch (score) {
+    case "conforme":      return { label: "✓ Conforme",     bg: "#DCFCE7", color: "#15803D" };
+    case "acceptable":   return { label: "⚠ Acceptable",   bg: "#FEF9C3", color: "#854D0E" };
+    case "incomplet":    return { label: "⚠ Incomplet",    bg: "#FEF3C7", color: "#92400E" };
+    case "non_conforme": return { label: "✗ Non conforme", bg: "#FEE2E2", color: "#DC2626" };
+    default: return null;
+  }
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -371,6 +394,13 @@ export function NouvelleDemandeWizard() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState<{ id: string; numero: string } | null>(null);
 
+  // Step 7 – Upload tracking
+  const [dossierId, setDossierId] = useState<string | null>(null);
+  const [dossierNumero, setDossierNumero] = useState<string | null>(null);
+  const [uploadedPieces, setUploadedPieces] = useState<Record<string, UploadedPiece>>({});
+  const [uploadingCodes, setUploadingCodes] = useState<Set<string>>(new Set());
+  const [creatingDossier, setCreatingDossier] = useState(false);
+
   // ── Auto-search when wizard is opened with ?q= (from AnalyseParcellaire) ───
   useEffect(() => {
     if (!qParam) return;
@@ -424,16 +454,19 @@ export function NouvelleDemandeWizard() {
         delai_moyen: "1 à 2 mois",
         pieces_requises: [
           {
+            code: "DP1",
             nom: "Plan de situation du terrain",
             requis: true,
             aide: "Extrait de plan localisant le terrain dans la commune",
           },
           {
+            code: "DP2",
             nom: "Plan de masse des constructions",
             requis: true,
             aide: "Vue de dessus à l'échelle avec toutes les dimensions",
           },
           {
+            code: "DP4",
             nom: "Notice descriptive du projet",
             requis: true,
             aide: "Description du terrain, du projet et de son insertion dans l'environnement",
@@ -447,10 +480,11 @@ export function NouvelleDemandeWizard() {
     }
   }, [natures, surface, parcel, empriseExistante, amenagementType, description, certificatType, hasVoirieCommune]);
 
-  // ── Submit dossier ───────────────────────────────────────────────────────────
-  const submitDossier = useCallback(async () => {
+  // ── Create dossier brouillon then advance to step 7 ─────────────────────────
+  const createDossierAndNext = useCallback(async () => {
+    if (dossierId) { setStep((s) => (s + 1) as Step); return; }
     if (!classification || classification.type === "aucune_autorisation") return;
-    setSubmitting(true);
+    setCreatingDossier(true);
     try {
       const result = await api.post<{ id: string; numero: string }>("/dossiers", {
         type: classification.type,
@@ -472,11 +506,63 @@ export function NouvelleDemandeWizard() {
           },
         },
       });
-      setSubmitted(result);
+      setDossierId(result.id);
+      setDossierNumero(result.numero);
+      setStep((s) => (s + 1) as Step);
+    } catch {
+      alert("Erreur lors de la création du dossier. Vérifiez votre connexion et réessayez.");
+    } finally {
+      setCreatingDossier(false);
+    }
+  }, [dossierId, classification, parcel, description, natures, surface, qualiteDemandeur, empriseSol, hauteurProjet, destinationActuelle, destinationFuture, nbLogements]);
+
+  // ── Upload a piece and get AI analysis ───────────────────────────────────────
+  const uploadPiece = useCallback(async (codePiece: string, nomPiece: string, file: File) => {
+    if (!dossierId) return;
+    setUploadingCodes((prev) => new Set(prev).add(codePiece));
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      formData.append("code_piece", codePiece);
+      formData.append("nom_piece", nomPiece);
+      const res = await fetch(`/api/dossiers/${dossierId}/pieces/upload`, {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(err.error ?? `Erreur ${res.status}`);
+      }
+      const data = await res.json() as { id: string; nom: string; url: string; analyse_ia: PieceAnalysis | null };
+      setUploadedPieces((prev) => ({
+        ...prev,
+        [codePiece]: { id: data.id, nom: file.name, url: data.url, analyse: data.analyse_ia },
+      }));
+    } catch {
+      alert("Erreur lors du dépôt. Vérifiez le format du fichier et réessayez.");
+    } finally {
+      setUploadingCodes((prev) => {
+        const next = new Set(prev);
+        next.delete(codePiece);
+        return next;
+      });
+    }
+  }, [dossierId]);
+
+  // ── Submit (soumettre à la mairie) ────────────────────────────────────────────
+  const soumettreALaMairie = useCallback(async () => {
+    if (!dossierId || !dossierNumero) return;
+    setSubmitting(true);
+    try {
+      await api.post(`/dossiers/${dossierId}/soumettre`, {});
+      setSubmitted({ id: dossierId, numero: dossierNumero });
+    } catch {
+      alert("Erreur lors de la soumission. Réessayez.");
     } finally {
       setSubmitting(false);
     }
-  }, [classification, parcel, description, natures, surface, qualiteDemandeur, empriseSol, hauteurProjet, destinationActuelle, destinationFuture, nbLogements]);
+  }, [dossierId, dossierNumero]);
 
   const next = () => setStep((s) => (s + 1) as Step);
   const prev = () => setStep((s) => (s - 1) as Step);
@@ -512,9 +598,9 @@ export function NouvelleDemandeWizard() {
         }}
       >
         <div style={{ maxWidth: 520, width: "100%", textAlign: "center" }}>
-          <div style={{ fontSize: 80, marginBottom: 20, lineHeight: 1 }}>📁</div>
+          <div style={{ fontSize: 80, marginBottom: 20, lineHeight: 1 }}>🎉</div>
           <h1 style={{ fontSize: 28, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
-            Dossier enregistré !
+            Dossier soumis à la mairie !
           </h1>
           <p style={{ fontSize: 15, color: "#64748b", marginBottom: 16 }}>
             Votre numéro de dossier est :
@@ -541,10 +627,10 @@ export function NouvelleDemandeWizard() {
               {submitted.numero}
             </span>
           </div>
-          <div style={{ background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 12, padding: "14px 20px", marginBottom: 24, textAlign: "left" }}>
-            <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 6 }}>⚠️ Dossier en brouillon — non transmis à la mairie</div>
-            <div style={{ fontSize: 13, color: "#78350F", lineHeight: 1.6 }}>
-              Ajoutez vos pièces justificatives depuis le détail du dossier, puis cliquez sur <strong>Soumettre à la mairie</strong> pour déclencher l'instruction.
+          <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 12, padding: "14px 20px", marginBottom: 24, textAlign: "left" }}>
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#15803D", marginBottom: 6 }}>✓ Dossier transmis à la mairie</div>
+            <div style={{ fontSize: 13, color: "#166534", lineHeight: 1.6 }}>
+              Vous recevrez un accusé de réception et pourrez suivre l'avancement de votre dossier en temps réel depuis votre espace.
             </div>
           </div>
           <div style={{ display: "flex", gap: 12, justifyContent: "center" }}>
@@ -561,7 +647,7 @@ export function NouvelleDemandeWizard() {
                 cursor: "pointer",
               }}
             >
-              Compléter mon dossier →
+              Suivre mon dossier →
             </button>
             <button
               onClick={() => navigate("/citoyen")}
@@ -1585,8 +1671,8 @@ export function NouvelleDemandeWizard() {
                   ← Retour
                 </button>
                 <button
-                  onClick={next}
-                  disabled={!nom.trim() || !prenom.trim()}
+                  onClick={() => void createDossierAndNext()}
+                  disabled={!nom.trim() || !prenom.trim() || creatingDossier}
                   style={{
                     padding: "11px 28px",
                     background: "#4F46E5",
@@ -1595,164 +1681,201 @@ export function NouvelleDemandeWizard() {
                     borderRadius: 10,
                     fontSize: 14,
                     fontWeight: 600,
-                    cursor: !nom.trim() || !prenom.trim() ? "not-allowed" : "pointer",
-                    opacity: !nom.trim() || !prenom.trim() ? 0.4 : 1,
+                    cursor: (!nom.trim() || !prenom.trim() || creatingDossier) ? "not-allowed" : "pointer",
+                    opacity: (!nom.trim() || !prenom.trim() || creatingDossier) ? 0.5 : 1,
                     transition: "opacity 0.2s",
                   }}
                 >
-                  Continuer →
+                  {creatingDossier ? "Création…" : "Continuer →"}
                 </button>
               </div>
             </div>
           )}
 
-          {/* ───── STEP 7 : Documents ───── */}
-          {step === 7 && (
-            <div>
-              <div style={{ textAlign: "center", marginBottom: 28 }}>
-                <div style={{ fontSize: 52, marginBottom: 10 }}>📁</div>
-                <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
-                  Documents à préparer
-                </h2>
-                <p style={{ fontSize: 14, color: "#64748b", maxWidth: 460, margin: "0 auto" }}>
-                  Voici ce qu'il faudra joindre à votre dossier. Pas de panique — vous pourrez les
-                  ajouter depuis votre espace après le dépôt.
-                </p>
-              </div>
+          {/* ───── STEP 7 : Documents (upload actif + analyse IA) ───── */}
+          {step === 7 && (() => {
+            const pieces = classification?.pieces_requises ?? [];
+            const required = pieces.filter((p) => p.requis);
+            const uploadedRequired = required.filter((p) => uploadedPieces[p.code]).length;
+            return (
+              <div>
+                <div style={{ textAlign: "center", marginBottom: 20 }}>
+                  <div style={{ fontSize: 52, marginBottom: 10 }}>📁</div>
+                  <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
+                    Vos pièces justificatives
+                  </h2>
+                  <p style={{ fontSize: 14, color: "#64748b", maxWidth: 460, margin: "0 auto" }}>
+                    Déposez vos documents ci-dessous. L'IA analyse chaque pièce et vous guide instantanément.
+                  </p>
+                </div>
 
-              {classification?.pieces_requises && classification.pieces_requises.length > 0 ? (
-                <div
-                  style={{
-                    display: "flex",
-                    flexDirection: "column",
-                    gap: 8,
-                    marginBottom: 20,
-                  }}
-                >
-                  {classification.pieces_requises.map((piece, i) => (
-                    <div
-                      key={i}
-                      style={{
-                        display: "flex",
-                        alignItems: "flex-start",
-                        gap: 14,
-                        padding: "14px 18px",
-                        background: "#F8FAFC",
-                        borderRadius: 12,
-                        border: "1px solid #E2E8F0",
-                      }}
-                    >
-                      <span style={{ fontSize: 22, marginTop: 1, flexShrink: 0 }}>
-                        {piece.requis ? "📄" : "📋"}
-                      </span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
+                {required.length > 0 && (
+                  <div
+                    style={{
+                      background: uploadedRequired === required.length ? "#F0FDF4" : "#EFF6FF",
+                      border: `1px solid ${uploadedRequired === required.length ? "#86EFAC" : "#BFDBFE"}`,
+                      borderRadius: 10,
+                      padding: "10px 16px",
+                      marginBottom: 16,
+                      fontSize: 13,
+                      color: uploadedRequired === required.length ? "#15803D" : "#1E40AF",
+                      textAlign: "center",
+                      fontWeight: 600,
+                    }}
+                  >
+                    {uploadedRequired === required.length
+                      ? "✓ Toutes les pièces obligatoires ont été déposées !"
+                      : `${uploadedRequired} / ${required.length} pièces obligatoires déposées`}
+                  </div>
+                )}
+
+                {pieces.length > 0 ? (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+                    {pieces.map((piece) => {
+                      const uploaded = uploadedPieces[piece.code];
+                      const isUploading = uploadingCodes.has(piece.code);
+                      const scoreConf = uploaded?.analyse ? getScoreConfig(uploaded.analyse.score) : null;
+                      return (
                         <div
+                          key={piece.code}
                           style={{
                             display: "flex",
-                            alignItems: "center",
-                            gap: 8,
-                            marginBottom: 4,
-                            flexWrap: "wrap",
+                            alignItems: "flex-start",
+                            gap: 14,
+                            padding: "14px 18px",
+                            background: uploaded ? "#F0FDF4" : "#F8FAFC",
+                            borderRadius: 12,
+                            border: `1px solid ${uploaded ? "#86EFAC" : "#E2E8F0"}`,
+                            transition: "background 0.2s, border-color 0.2s",
                           }}
                         >
-                          <span
-                            style={{
-                              fontSize: 14,
-                              fontWeight: 700,
-                              color: "#0F172A",
-                            }}
-                          >
-                            {piece.nom}
+                          <span style={{ fontSize: 22, marginTop: 1, flexShrink: 0 }}>
+                            {uploaded ? "✅" : piece.requis ? "📄" : "📋"}
                           </span>
-                          <span
-                            style={{
-                              padding: "2px 9px",
-                              borderRadius: 20,
-                              fontSize: 11,
-                              fontWeight: 700,
-                              background: piece.requis ? "#DCFCE7" : "#F1F5F9",
-                              color: piece.requis ? "#15803D" : "#64748B",
-                              flexShrink: 0,
-                            }}
-                          >
-                            {piece.requis ? "Obligatoire" : "Facultatif"}
-                          </span>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            {/* Name + badges */}
+                            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                              <span style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>
+                                {piece.nom}
+                              </span>
+                              <span
+                                style={{
+                                  padding: "2px 9px",
+                                  borderRadius: 20,
+                                  fontSize: 11,
+                                  fontWeight: 700,
+                                  background: piece.requis ? "#DCFCE7" : "#F1F5F9",
+                                  color: piece.requis ? "#15803D" : "#64748B",
+                                  flexShrink: 0,
+                                }}
+                              >
+                                {piece.requis ? "Obligatoire" : "Facultatif"}
+                              </span>
+                              {scoreConf && (
+                                <span
+                                  style={{
+                                    padding: "2px 9px",
+                                    borderRadius: 20,
+                                    fontSize: 11,
+                                    fontWeight: 700,
+                                    background: scoreConf.bg,
+                                    color: scoreConf.color,
+                                    flexShrink: 0,
+                                  }}
+                                >
+                                  {scoreConf.label}
+                                </span>
+                              )}
+                            </div>
+
+                            {/* Aide text (shown only when not yet uploaded) */}
+                            {!uploaded && piece.aide && (
+                              <p style={{ fontSize: 12, color: "#94a3b8", margin: "0 0 10px 0", lineHeight: 1.4 }}>
+                                {piece.aide}
+                              </p>
+                            )}
+
+                            {/* Uploaded file info + AI commentary */}
+                            {uploaded && (
+                              <div style={{ fontSize: 12, color: "#16a34a", marginBottom: uploaded.analyse ? 4 : 0 }}>
+                                📎 {uploaded.nom}
+                              </div>
+                            )}
+                            {uploaded?.analyse?.commentaire && (
+                              <p style={{ fontSize: 12, color: "#374151", margin: "4px 0 0", lineHeight: 1.4, fontStyle: "italic" }}>
+                                {uploaded.analyse.commentaire}
+                              </p>
+                            )}
+                            {uploaded?.analyse?.suggestions && uploaded.analyse.suggestions.length > 0 && (
+                              <ul style={{ margin: "4px 0 0", paddingLeft: 16, fontSize: 12, color: "#64748b" }}>
+                                {uploaded.analyse.suggestions.map((s, i) => <li key={i}>{s}</li>)}
+                              </ul>
+                            )}
+
+                            {/* Upload / replace button */}
+                            <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
+                              {isUploading ? (
+                                <span style={{ fontSize: 12, color: "#4F46E5", fontStyle: "italic" }}>
+                                  ⏳ Analyse en cours…
+                                </span>
+                              ) : (
+                                <label
+                                  style={{
+                                    cursor: "pointer",
+                                    display: "inline-flex",
+                                    alignItems: "center",
+                                    gap: 6,
+                                    padding: uploaded ? "4px 12px" : "6px 16px",
+                                    background: uploaded ? "transparent" : "#EEF2FF",
+                                    color: uploaded ? "#64748b" : "#4F46E5",
+                                    borderRadius: 8,
+                                    fontSize: uploaded ? 11 : 12,
+                                    fontWeight: 600,
+                                    border: `1px solid ${uploaded ? "#E2E8F0" : "#C7D2FE"}`,
+                                  }}
+                                >
+                                  <input
+                                    type="file"
+                                    style={{ display: "none" }}
+                                    accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.tiff"
+                                    onChange={(e) => {
+                                      const file = e.target.files?.[0];
+                                      if (file) void uploadPiece(piece.code, piece.nom, file);
+                                      e.currentTarget.value = "";
+                                    }}
+                                  />
+                                  {uploaded ? "Remplacer" : "+ Déposer le document"}
+                                </label>
+                              )}
+                            </div>
+                          </div>
                         </div>
-                        {piece.aide && (
-                          <p style={{ fontSize: 12, color: "#94a3b8", margin: 0, lineHeight: 1.4 }}>
-                            {piece.aide}
-                          </p>
-                        )}
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              ) : (
-                <div
-                  style={{
-                    background: "#F8FAFC",
-                    borderRadius: 12,
-                    padding: 24,
-                    marginBottom: 20,
-                    textAlign: "center",
-                    color: "#64748b",
-                    fontSize: 14,
-                  }}
-                >
-                  La liste des pièces sera précisée par l'instructeur après dépôt.
-                </div>
-              )}
+                      );
+                    })}
+                  </div>
+                ) : (
+                  <div style={{ background: "#F8FAFC", borderRadius: 12, padding: 24, marginBottom: 20, textAlign: "center", color: "#64748b", fontSize: 14 }}>
+                    La liste des pièces sera précisée par l'instructeur après dépôt.
+                  </div>
+                )}
 
-              <div
-                style={{
-                  background: "#EFF6FF",
-                  border: "1px solid #BFDBFE",
-                  borderRadius: 12,
-                  padding: "13px 18px",
-                  marginBottom: 24,
-                  fontSize: 13,
-                  color: "#1E40AF",
-                  lineHeight: 1.6,
-                }}
-              >
-                💡 Vous n'avez pas besoin de tout préparer maintenant. Une fois votre dossier
-                déposé, vous pourrez ajouter les documents depuis votre espace personnel à tout
-                moment.
+                <div style={{ display: "flex", justifyContent: "space-between" }}>
+                  <button
+                    onClick={prev}
+                    style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}
+                  >
+                    ← Retour
+                  </button>
+                  <button
+                    onClick={next}
+                    style={{ padding: "11px 28px", background: "#4F46E5", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+                  >
+                    Récapitulatif →
+                  </button>
+                </div>
               </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <button
-                  onClick={prev}
-                  style={{
-                    padding: "10px 20px",
-                    background: "white",
-                    color: "#374151",
-                    border: "1px solid #E2E8F0",
-                    borderRadius: 10,
-                    fontSize: 13,
-                    cursor: "pointer",
-                  }}
-                >
-                  ← Retour
-                </button>
-                <button
-                  onClick={next}
-                  style={{
-                    padding: "11px 28px",
-                    background: "#4F46E5",
-                    color: "white",
-                    border: "none",
-                    borderRadius: 10,
-                    fontSize: 14,
-                    fontWeight: 600,
-                    cursor: "pointer",
-                  }}
-                >
-                  Voir le récapitulatif →
-                </button>
-              </div>
-            </div>
-          )}
+            );
+          })()}
 
           {/* ───── STEP 8 : Récapitulatif & Dépôt ───── */}
           {step === 8 && (
@@ -1842,22 +1965,29 @@ export function NouvelleDemandeWizard() {
                 )}
               </div>
 
-              <div
-                style={{
-                  background: "#F0FDF4",
-                  border: "1px solid #86EFAC",
-                  borderRadius: 12,
-                  padding: "13px 18px",
-                  marginBottom: 24,
-                  fontSize: 13,
-                  color: "#15803D",
-                  lineHeight: 1.5,
-                }}
-              >
-                ✓ Votre dossier sera transmis à la mairie de{" "}
-                <strong>{parcel?.commune ?? "votre commune"}</strong>. Vous recevrez un
-                accusé de réception et pourrez suivre l'avancement en temps réel.
-              </div>
+              {(() => {
+                const pieces = classification?.pieces_requises ?? [];
+                const required = pieces.filter((p) => p.requis);
+                const missing = required.filter((p) => !uploadedPieces[p.code]).length;
+                return (
+                  <>
+                    {missing > 0 ? (
+                      <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#92400E", lineHeight: 1.5 }}>
+                        ⚠ {missing} pièce{missing > 1 ? "s" : ""} obligatoire{missing > 1 ? "s" : ""} non déposée{missing > 1 ? "s" : ""}. Vous pouvez tout de même soumettre — la mairie vous les demandera si nécessaire.
+                      </div>
+                    ) : required.length > 0 ? (
+                      <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#15803D", lineHeight: 1.5 }}>
+                        ✓ Toutes les pièces obligatoires ont été déposées.
+                      </div>
+                    ) : null}
+                    <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 12, padding: "13px 18px", marginBottom: 24, fontSize: 13, color: "#15803D", lineHeight: 1.5 }}>
+                      ✓ Votre dossier sera transmis à la mairie de{" "}
+                      <strong>{parcel?.commune ?? "votre commune"}</strong>. Vous recevrez un
+                      accusé de réception et pourrez suivre l'avancement en temps réel.
+                    </div>
+                  </>
+                );
+              })()}
 
               <div style={{ display: "flex", justifyContent: "space-between" }}>
                 <button
@@ -1875,8 +2005,8 @@ export function NouvelleDemandeWizard() {
                   ← Modifier
                 </button>
                 <button
-                  onClick={() => void submitDossier()}
-                  disabled={submitting}
+                  onClick={() => void soumettreALaMairie()}
+                  disabled={submitting || !dossierId}
                   style={{
                     padding: "13px 36px",
                     background: submitting ? "#818CF8" : "#4F46E5",
@@ -1885,12 +2015,12 @@ export function NouvelleDemandeWizard() {
                     borderRadius: 10,
                     fontSize: 15,
                     fontWeight: 700,
-                    cursor: submitting ? "not-allowed" : "pointer",
+                    cursor: (submitting || !dossierId) ? "not-allowed" : "pointer",
                     transition: "background 0.2s",
                     letterSpacing: "0.01em",
                   }}
                 >
-                  {submitting ? "Dépôt en cours…" : "🚀 Déposer mon dossier"}
+                  {submitting ? "Soumission…" : "🚀 Soumettre à la mairie"}
                 </button>
               </div>
             </div>

@@ -69,6 +69,10 @@ app.get("/api/health", (_req, res) => {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const frontendDist = path.resolve(__dirname, "../../web/dist");
+const uploadsDir = path.resolve(__dirname, "../uploads");
+
+// Uploaded files — no-cache so the client always gets the latest version
+app.use("/api/uploads", express.static(uploadsDir, { maxAge: 0 }));
 
 // Hashed JS/CSS assets → cache 1 year
 app.use(express.static(frontendDist, {

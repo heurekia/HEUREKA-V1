@@ -285,7 +285,7 @@ export function buildPiecesContext(
 export function getPiecesForType(
   type: string,
   ctx: PiecesContext,
-): Array<{ nom: string; requis: boolean; aide: string }> {
+): Array<{ code: string; nom: string; requis: boolean; aide: string }> {
   let pieces: Piece[];
   switch (type) {
     case "declaration_prealable": pieces = PIECES_DP; break;
@@ -296,6 +296,7 @@ export function getPiecesForType(
   }
 
   return pieces.map((p) => ({
+    code: p.code,
     nom: p.nom,
     requis: typeof p.requis === "function" ? p.requis(ctx) : p.requis,
     aide: typeof p.aide === "function" ? p.aide(ctx) : p.aide,
