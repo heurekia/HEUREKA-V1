@@ -100,6 +100,13 @@ export interface RegDbRule {
   summary: string | null;
   conditions: string | null;
   validation_status: string;
+  cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: string }> | null;
+  applies_if?: string[] | null;
+  sub_theme?: string | null;
+  // Pertinence calculée vis-à-vis de la parcelle :
+  // general = toujours ; applicable = contexte parcelle confirmé ; conditional =
+  // dépend du projet ou contexte indéterminé ; excluded = contexte connu et non applicable.
+  relevance?: "general" | "applicable" | "conditional" | "excluded";
 }
 
 export interface InformationResult {
@@ -1008,11 +1015,42 @@ async function findDbZoneAndRules(zoneCode: string, communeNom?: string, codeIns
 
   return {
     zone: { id: foundZone.id, code: foundZone.zone_code, label: foundZone.zone_label, type: foundZone.zone_type },
-    rules,
+    rules: rules as unknown as RegDbRule[],
   };
 }
 
 // ── Main analysis orchestrator ────────────────────────────────────────────────
+
+// Tags d'applicabilité liés au CONTEXTE de la parcelle (évaluables ici).
+// Les autres tags (extension, surelevation, ravalement, cloture_*, annexe…)
+// dépendent du PROJET → "conditional".
+const PARCEL_CONTEXT_TAGS = new Set(["abf", "inondable", "unesco", "protege_l151_19"]);
+
+function computeRulesRelevance(result: ParcelAnalysis): RegDbRule[] {
+  const matched = new Set<string>();     // contexte CONFIRMÉ pour la parcelle
+  const determinable = new Set<string>(); // dimensions qu'on a pu évaluer
+
+  if (result.servitudes !== undefined) {
+    determinable.add("abf");
+    if ((result.servitudes ?? []).some((s) => (s.categorie ?? "").toUpperCase().startsWith("AC"))) matched.add("abf");
+  }
+  if (result.risks !== undefined) {
+    determinable.add("inondable");
+    const f = result.risks.flood_risk;
+    const zoneCode = result.plu_zone?.zone_code ?? result.db_zone?.code ?? "";
+    const hasPpri = (result.servitudes ?? []).some((s) => (s.categorie ?? "").toUpperCase().startsWith("PM"));
+    if (f === "fort" || f === "moyen" || f === "faible" || hasPpri || /i$/i.test(zoneCode)) matched.add("inondable");
+  }
+
+  return result.rules.map((r) => {
+    const tags = Array.isArray(r.applies_if) ? r.applies_if : [];
+    if (!tags.length) return { ...r, relevance: "general" as const };
+    const parcelCtx = tags.filter((t) => PARCEL_CONTEXT_TAGS.has(t));
+    if (parcelCtx.some((t) => matched.has(t))) return { ...r, relevance: "applicable" as const };
+    if (parcelCtx.length > 0 && parcelCtx.every((t) => determinable.has(t))) return { ...r, relevance: "excluded" as const };
+    return { ...r, relevance: "conditional" as const };
+  });
+}
 
 /**
  * Analyse a parcel by address string or cadastral reference.
@@ -1395,6 +1433,11 @@ export async function analyseParcel(
     } else {
       result.warnings.push(`Aucune règle enregistrée pour la zone ${zoneCodeForDb} dans la base HEUREKA.`);
     }
+  }
+
+  // Pertinence des règles vis-à-vis de la parcelle (applies_if ↔ contexte connu).
+  if (result.rules.length > 0) {
+    result.rules = computeRulesRelevance(result);
   }
 
   // Step 5b: When GPU zone unavailable, offer all zones for the commune from DB so the

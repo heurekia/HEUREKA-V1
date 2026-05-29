@@ -27,7 +27,7 @@ type ParcelAnalysis = {
   plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string; plu_etat?: string };
   risks?: { flood_risk: string; seismic_zone: string; clay_risk?: string; landslide_risk?: string; radon_level?: string };
   db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
-  rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" }> | null; sub_theme?: string | null; applies_if?: string[] | null }>;
+  rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" }> | null; sub_theme?: string | null; applies_if?: string[] | null; relevance?: "general" | "applicable" | "conditional" | "excluded" }>;
   buildability: {
     maxFootprintM2: number; remainingFootprintM2: number; maxHeightM: number | null;
     minSetbackFromRoadM: number | null; minSetbackFromBoundariesM: number | null;
@@ -730,26 +730,23 @@ export function AnalyseParcellaire() {
                 })()}
 
                 {/* Regulatory rules */}
-                {analysis.rules.length > 0 ? (
-                  <div style={{ border: "1px solid #E5E7EB", borderRadius: 10, overflow: "hidden" }}>
-                    <div style={{ padding: "10px 14px", borderBottom: "1px solid #F3F4F6", background: "#F9FAFB" }}>
-                      <p style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.06em", margin: 0 }}>
-                        Règles applicables ({analysis.rules.length})
-                      </p>
-                    </div>
-                    {analysis.rules.map((rule, i) => {
-                      const isQualitative = QUALITATIVE_TOPICS.has(rule.topic);
-                      const hasValue = rule.value_max != null || rule.value_min != null;
-                      // Qualitative rules (aspect : matériaux, couleurs, menuiseries, clôtures)
-                      // are textual — show the full wording in plain language, no truncation.
-                      const text = isQualitative ? (rule.rule_text || rule.summary || "") : (rule.summary ?? rule.rule_text.slice(0, 100));
-                      return (
-                      <div key={rule.id} style={{ padding: "10px 14px", borderBottom: i < analysis.rules.length - 1 ? "1px solid #F9FAFB" : "none", display: "flex", gap: 10, alignItems: "flex-start" }}>
+                {analysis.rules.length > 0 ? (() => {
+                  const visible = analysis.rules.filter(r => r.relevance !== "excluded");
+                  const applies = visible.filter(r => r.relevance !== "conditional");
+                  const cond = visible.filter(r => r.relevance === "conditional");
+                  const hidden = analysis.rules.length - visible.length;
+
+                  const card = (rule: typeof analysis.rules[number]) => {
+                    const isQualitative = QUALITATIVE_TOPICS.has(rule.topic);
+                    const hasValue = rule.value_max != null || rule.value_min != null;
+                    const text = isQualitative ? (rule.rule_text || rule.summary || "") : (rule.summary ?? rule.rule_text.slice(0, 100));
+                    const border = rule.relevance === "conditional" ? "#FCD34D" : "#86EFAC";
+                    return (
+                      <div key={rule.id} style={{ padding: "10px 14px", borderBottom: "1px solid #F9FAFB", borderLeft: `3px solid ${border}`, display: "flex", gap: 10, alignItems: "flex-start" }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <p style={{ fontSize: 12, fontWeight: 600, color: "#111827", margin: "0 0 2px" }}>
                             <span style={{ marginRight: 6 }}>{TOPIC_ICON[rule.topic] ?? "📋"}</span>
                             {rule.sub_theme ?? TOPIC_LABEL[rule.topic] ?? rule.topic}
-                            {rule.article_number != null && <span style={{ fontWeight: 400, color: "#9CA3AF" }}> · art. {rule.article_number}</span>}
                           </p>
                           <p style={{ fontSize: 11, color: "#6B7280", margin: 0, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{text}</p>
                           {rule.conditions && <p style={{ fontSize: 10, color: "#9CA3AF", margin: "2px 0 0" }}>↳ {rule.conditions}</p>}
@@ -782,10 +779,60 @@ export function AnalyseParcellaire() {
                           </div>
                         )}
                       </div>
-                      );
-                    })}
-                  </div>
-                ) : analysis && !loading && (
+                    );
+                  };
+
+                  // Regroupe par article (les règles arrivent déjà triées par n° d'article).
+                  const groupByArticle = (rs: typeof analysis.rules) => {
+                    const g: { article: number | null; rules: typeof analysis.rules }[] = [];
+                    for (const r of rs) {
+                      const last = g[g.length - 1];
+                      if (last && last.article === r.article_number) last.rules.push(r);
+                      else g.push({ article: r.article_number, rules: [r] });
+                    }
+                    return g;
+                  };
+                  const renderGroups = (rs: typeof analysis.rules) => groupByArticle(rs).map((grp, gi) => (
+                    <div key={gi}>
+                      {grp.article != null && (
+                        <div style={{ padding: "6px 14px", background: "#FAFAFA", fontSize: 10.5, fontWeight: 700, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                          Article {grp.article}
+                        </div>
+                      )}
+                      {grp.rules.map(card)}
+                    </div>
+                  ));
+
+                  return (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                      {applies.length > 0 && (
+                        <div style={{ border: "1px solid #D1FAE5", borderRadius: 10, overflow: "hidden" }}>
+                          <div style={{ padding: "10px 14px", borderBottom: "1px solid #ECFDF5", background: "#F0FDF4" }}>
+                            <p style={{ fontSize: 11, fontWeight: 700, color: "#15803D", textTransform: "uppercase", letterSpacing: "0.06em", margin: 0 }}>
+                              ✅ S'applique à votre parcelle ({applies.length})
+                            </p>
+                          </div>
+                          {renderGroups(applies)}
+                        </div>
+                      )}
+
+                      {cond.length > 0 && (
+                        <details style={{ border: "1px solid #FEF3C7", borderRadius: 10, overflow: "hidden" }}>
+                          <summary style={{ padding: "10px 14px", background: "#FFFBEB", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#92400E", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                            ⊕ Selon votre projet ou à vérifier ({cond.length})
+                          </summary>
+                          {renderGroups(cond)}
+                        </details>
+                      )}
+
+                      {hidden > 0 && (
+                        <p style={{ fontSize: 10.5, color: "#9CA3AF", margin: "0 2px", textAlign: "center" }}>
+                          {hidden} règle(s) non applicable(s) aux caractéristiques de ce terrain (masquées)
+                        </p>
+                      )}
+                    </div>
+                  );
+                })() : analysis && !loading && (
                   <div style={{ border: "1px dashed #E5E7EB", borderRadius: 10, padding: "16px", textAlign: "center", color: "#9CA3AF", fontSize: 12 }}>
                     Aucune règle enregistrée dans la base HEUREKIA pour cette zone.
                   </div>
