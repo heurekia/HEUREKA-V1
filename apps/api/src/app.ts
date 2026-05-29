@@ -49,6 +49,10 @@ app.use(cors({
   },
   credentials: true,
 }));
+// PLU ingestion uploads a base64-encoded PDF (~35 MB file ≈ 47 MB body). Allow a
+// higher limit on that single route only — parsed first so the 2 MB global parser
+// below skips it (body-parser won't re-parse an already-parsed request).
+app.use("/api/mairie/admin/ingest-plu-pdf", express.json({ limit: "60mb" }));
 app.use(express.json({ limit: "2mb" }));
 
 app.use("/api/public", publicRouter);
