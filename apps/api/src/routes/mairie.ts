@@ -32,6 +32,24 @@ async function splitPdfBase64(base64: string, maxPages = 90, overlap = 8): Promi
   return chunks;
 }
 
+// Découpe DÉTERMINISTE d'un article en segments : le « corps » (avant toute
+// sous-section numérotée) + un segment par en-tête numéroté (2.1, 11.1.4…).
+// Les décimales françaises utilisent la virgule (« 1,80 m »), donc « 11.1.4 »
+// est bien un numéro de section et pas une valeur.
+function splitArticleSegments(text: string): { label: string; body: string }[] {
+  const lines = text.split(/\r?\n/);
+  const headerRe = /^\s*(\d+\.\d+(?:\.\d+)*)\b/;
+  const segs: { label: string; body: string[] }[] = [{ label: "corps", body: [] }];
+  for (const line of lines) {
+    const m = line.match(headerRe);
+    if (m && m[1]) segs.push({ label: m[1], body: [line] });
+    else segs[segs.length - 1]!.body.push(line);
+  }
+  return segs
+    .map((s) => ({ label: s.label, body: s.body.join("\n").trim() }))
+    .filter((s) => s.body.length > 0);
+}
+
 // Parse un tableau JSON éventuellement TRONQUÉ (réponse LLM coupée à max_tokens).
 // Tente le parse complet ; sinon ferme l'array au dernier objet entier ("}") pour
 // récupérer les sous-règles complètes. Renvoie [] si rien d'exploitable.
@@ -1544,7 +1562,21 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
       const media = (["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image_media_type ?? "") ? image_media_type : "image/png") as "image/png" | "image/jpeg" | "image/webp" | "image/gif";
       userContent.push({ type: "image", source: { type: "base64", media_type: media, data: image_base64! } });
     }
-    userContent.push({ type: "text", text: `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}\n\n${text ?? "(Voir le tableau / croquis fourni en image.)"}` });
+    const prefix = `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}`;
+    let userText: string;
+    if (hasImage || !text) {
+      userText = `${prefix}\n\n${text ?? "(Voir le tableau / croquis fourni en image.)"}`;
+    } else {
+      const segs = splitArticleSegments(text);
+      if (segs.length > 1) {
+        // Découpage déterministe : EXACTEMENT une sous-règle par segment.
+        userText = `${prefix}\n\nLe texte est PRÉ-DÉCOUPÉ en ${segs.length} segment(s) : le « corps » de l'article + ses sous-sections numérotées. Renvoie EXACTEMENT ${segs.length} sous-règle(s), UNE PAR SEGMENT, dans cet ordre. Ne fusionne pas, ne re-découpe AUCUN segment (le corps reste une seule sous-règle même s'il contient une liste).\n\n`
+          + segs.map((s) => `===== SEGMENT « ${s.label} » =====\n${s.body}`).join("\n\n");
+      } else {
+        userText = `${prefix}\n\n${text}`;
+      }
+    }
+    userContent.push({ type: "text", text: userText });
 
     const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 60_000 });
     const msg = await client.messages.create({
@@ -1573,7 +1605,8 @@ DÉCOMPOSE l'article en SOUS-RÈGLES cohérentes (une par sous-section / thème)
 ]
 
 DÉCOUPAGE — RÈGLE IMPÉRATIVE :
-- Découpe UNIQUEMENT selon la NUMÉROTATION interne de l'article (ex: 11.1, 11.1.4, 11.2, 11.2.2). UNE sous-règle = UNE sous-section numérotée. "sub_theme" = son numéro + son intitulé.
+- Si le texte est PRÉ-DÉCOUPÉ en segments (marqués « ===== SEGMENT … ===== ») : produis EXACTEMENT une sous-règle par segment, dans l'ordre, sans en fusionner ni en re-découper aucun. Le segment « corps » devient UNE sous-règle (sub_theme = intitulé de l'article), même s'il contient une liste à puces.
+- Sinon, découpe UNIQUEMENT selon la NUMÉROTATION interne de l'article (ex: 11.1, 11.1.4, 11.2, 11.2.2). UNE sous-règle = UNE sous-section numérotée. "sub_theme" = son numéro + son intitulé.
 - Si l'article N'A PAS de sous-sections numérotées (ex: article 1 = simple liste d'occupations interdites, article 2 = liste de conditions) → renvoie UNE SEULE sous-règle pour tout l'article ; la liste complète va dans "rule_text". NE crée SURTOUT PAS une sous-règle par item/tiret de la liste.
 - EXCEPTION tableau (image) : chaque LIGNE du tableau (type → norme) est une sous-règle.
 - Plusieurs conditions/valeurs DANS une même sous-section (ou règle) → ajoute autant de "cases" à CETTE sous-règle. NE crée JAMAIS une nouvelle sous-règle juste parce qu'il y a une condition de plus.
