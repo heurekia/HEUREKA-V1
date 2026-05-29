@@ -41,7 +41,6 @@ const COMMUNE_NAME = get("--commune") ?? "Ballan-Miré";
 const INSEE_CODE   = get("--insee")   ?? "37018";
 const ZIP_CODE     = get("--zip")     ?? "37510";
 const PDF_PATH     = get("--pdf");
-const SEED_MODE    = has("--seed");
 const DRY_RUN      = has("--dry-run");
 
 // ── Types ──────────────────────────────────────────────────────────────────────
@@ -368,69 +367,17 @@ async function upsertZoneAndRules(
   console.log(` — ${zoneData.rules.length} règles [${validationStatus}]${visionNote}`);
 }
 
-// ── Ballan-Miré seed data (pre-validated) ────────────────────────────────────
-
-const BALLAN_MIRE_SEED: ZoneInput[] = [
-  { zone_code: "UA", zone_label: "Zone UA – Centre ancien", zone_type: "U", summary: "Cœur historique, bâti traditionnel dense en étoile autour de l'église.",
-    rules: [
-      { article_number: 6,  article_title: "Implantation / voies",   topic: "recul_voie",   rule_text: "Recul entre 0 et 1 m, ou alignement sur construction voisine, ou recul minimal de 6 m.", value_min: 0, value_max: 6, unit: "m", summary: "0-1m ou alignement ou ≥6m" },
-      { article_number: 7,  article_title: "Implantation / limites",  topic: "recul_limite",  rule_text: "En limite séparative ou H/2 avec minimum 3 m.", value_min: 3, unit: "m", conditions: "H/2 minimum 3m", summary: "En limite ou H/2 (min 3m)" },
-      { article_number: 9,  article_title: "Emprise au sol",          topic: "emprise_sol",   rule_text: "Emprise au sol non réglementée en zone UA.", not_regulated: true, summary: "Non réglementé" },
-      { article_number: 10, article_title: "Hauteur maximale",        topic: "hauteur",       rule_text: "6,5 m à l'égout ou à l'acrotère ; 9 m au faîtage.", value_max: 6.5, unit: "m", conditions: "Faîtage: 9m", summary: "6,5m égout / 9m faîtage" },
-      { article_number: 12, article_title: "Stationnement",           topic: "stationnement", rule_text: "2 places/logement ≥2P. 1 place/50m² activités. Commerces ≤100m² : 0 place.", summary: "2 places/logement (≥2P)" },
-      { article_number: 13, article_title: "Espaces libres",          topic: "espaces_verts", rule_text: "≥25% d'espaces libres en pleine terre. 1 arbre haute tige/100m².", value_min: 25, unit: "%", summary: "≥25% pleine terre" },
-    ]},
-  { zone_code: "UB", zone_label: "Zone UB – Extensions du centre", zone_type: "U", summary: "Extensions urbaines : collectifs R+3, mairie, ZAC des Prés, quartier gare. Quota social 20-30%.",
-    rules: [
-      { article_number: 6,  article_title: "Implantation / voies",   topic: "recul_voie",   rule_text: "Recul minimal de 6 m.", value_min: 6, unit: "m", summary: "≥6m" },
-      { article_number: 7,  article_title: "Implantation / limites",  topic: "recul_limite",  rule_text: "En limite séparative ou H/2 min 3 m. UBa : jamais en limite.", value_min: 3, unit: "m", conditions: "UBa: jamais en limite – H/2 min 3m", summary: "En limite ou H/2 (min 3m)" },
-      { article_number: 9,  article_title: "Emprise au sol",          topic: "emprise_sol",   rule_text: "Emprise au sol max 50%. UBai (inondable) : 10%.", value_max: 50, unit: "%", conditions: "UBai: 10%", summary: "≤50% (UBai: 10%)" },
-      { article_number: 10, article_title: "Hauteur maximale",        topic: "hauteur",       rule_text: "9 m à l'égout ; 14 m au faîtage (R+3).", value_max: 9, unit: "m", conditions: "Faîtage: 14m", summary: "9m égout / 14m faîtage" },
-      { article_number: 12, article_title: "Stationnement",           topic: "stationnement", rule_text: "2 places/logement. Quota social : 20% pour 5-20 logements, 30% au-delà.", summary: "2 places/logement, quota social 20-30%" },
-      { article_number: 13, article_title: "Espaces libres",          topic: "espaces_verts", rule_text: "≥35% d'espaces libres en pleine terre.", value_min: 35, unit: "%", summary: "≥35% pleine terre" },
-    ]},
-  { zone_code: "UC", zone_label: "Zone UC – Quartiers pavillonnaires", zone_type: "U", summary: "Zone majoritaire : lotissements, ZAC des Prés, hameaux de Miré et des Vallées.",
-    rules: [
-      { article_number: 6,  article_title: "Implantation / voies",   topic: "recul_voie",   rule_text: "Recul minimal de 3 m. RD751 : 45 m depuis l'axe.", value_min: 3, unit: "m", conditions: "RD751: 45m depuis axe", summary: "≥3m (RD751: 45m)" },
-      { article_number: 7,  article_title: "Implantation / limites",  topic: "recul_limite",  rule_text: "En limite séparative ou H/2 min 3 m.", value_min: 3, unit: "m", conditions: "H/2 minimum 3m", summary: "En limite ou H/2 (min 3m)" },
-      { article_number: 9,  article_title: "Emprise au sol",          topic: "emprise_sol",   rule_text: "Emprise au sol maximale de 50%.", value_max: 50, unit: "%", summary: "≤50%" },
-      { article_number: 10, article_title: "Hauteur maximale",        topic: "hauteur",       rule_text: "6,5 m à l'égout ; 9 m au faîtage (R+2).", value_max: 6.5, unit: "m", conditions: "Faîtage: 9m", summary: "6,5m égout / 9m faîtage" },
-      { article_number: 12, article_title: "Stationnement",           topic: "stationnement", rule_text: "2 places/logement. Quota social : 20% dès 5 logements.", summary: "2 places/logement, quota social 20%" },
-      { article_number: 13, article_title: "Espaces libres",          topic: "espaces_verts", rule_text: "≥40% d'espaces libres en pleine terre.", value_min: 40, unit: "%", summary: "≥40% pleine terre" },
-    ]},
-  { zone_code: "UD", zone_label: "Zone UD – Quartiers verdoyants", zone_type: "U", summary: "Habitat très peu dense. Terrain min 2 000 m². Limite séparative interdite.",
-    rules: [
-      { article_number: 5,  article_title: "Superficie minimale",     topic: "terrain_min",  rule_text: "Superficie minimale : 2 000 m².", value_min: 2000, unit: "m²", summary: "≥2 000m²" },
-      { article_number: 6,  article_title: "Implantation / voies",   topic: "recul_voie",   rule_text: "Recul minimal de 7 m.", value_min: 7, unit: "m", summary: "≥7m" },
-      { article_number: 7,  article_title: "Implantation / limites",  topic: "recul_limite",  rule_text: "Implantation en limite séparative interdite. H/2 min 3 m.", value_min: 3, unit: "m", conditions: "Jamais en limite – H/2 min 3m", summary: "Jamais en limite, H/2 (min 3m)" },
-      { article_number: 9,  article_title: "Emprise au sol",          topic: "emprise_sol",   rule_text: "Emprise au sol maximale de 20%.", value_max: 20, unit: "%", summary: "≤20%" },
-      { article_number: 10, article_title: "Hauteur maximale",        topic: "hauteur",       rule_text: "6,5 m à l'égout ; 8,5 m au faîtage.", value_max: 6.5, unit: "m", conditions: "Faîtage: 8.5m", summary: "6,5m égout / 8,5m faîtage" },
-      { article_number: 12, article_title: "Stationnement",           topic: "stationnement", rule_text: "2 places par logement de 2 pièces et plus.", summary: "2 places/logement" },
-      { article_number: 13, article_title: "Espaces libres",          topic: "espaces_verts", rule_text: "≥60% d'espaces libres en pleine terre.", value_min: 60, unit: "%", summary: "≥60% pleine terre" },
-    ]},
-  { zone_code: "A", zone_label: "Zone A – Agricole", zone_type: "A", summary: "Protection agronomique. Secteurs Ad, Ah, Ap.",
-    rules: [
-      { article_number: 9,  article_title: "Emprise au sol", topic: "emprise_sol", rule_text: "Libre pour exploitation agricole. Ah : +50% max 50 m². Ap : inconstructible.", not_regulated: false, conditions: "Ah: +50% max 50m²; Ap: inconstructible", summary: "Libre (Ah: +50% max 50m²)" },
-      { article_number: 10, article_title: "Hauteur",        topic: "hauteur",     rule_text: "4 m à l'égout pour les habitations. Agricole : libre. Ah annexes : 3 m max.", value_max: 4, unit: "m", conditions: "Habitation; agricole libre; Ah annexes 3m", summary: "4m égout (habitation)" },
-    ]},
-  { zone_code: "N", zone_label: "Zone N – Naturelle et forestière", zone_type: "N", summary: "Espaces naturels protégés. Secteurs Nh, Ng, Na, Nb, Nf.",
-    rules: [
-      { article_number: 9,  article_title: "Emprise au sol", topic: "emprise_sol", rule_text: "Inconstructible. Nh (+50% max 50 m²), Ng (20%), Na (5%), Nb (300 m²), Nf (50%).", not_regulated: false, conditions: "Nh: +50% max 50m²; Ng: 20%; Na: 5%", summary: "Inconstructible (secteurs tolérés)" },
-      { article_number: 10, article_title: "Hauteur",        topic: "hauteur",     rule_text: "Non réglementé sauf : Nh (existant/3 m annexes), Ng (5 m), Nb/Na/Nf (6 m).", not_regulated: false, conditions: "Nh 3m; Ng 5m; autres 6m", summary: "Libre (secteurs limités)" },
-    ]},
-  { zone_code: "NI", zone_label: "Zone NI – Inondable (vallée du Cher)", zone_type: "N", summary: "Soumis au PPRI. Sous-sols interdits.",
-    rules: [
-      { article_number: 9,  article_title: "Emprise au sol", topic: "emprise_sol", rule_text: "Extensions max 50 m² avec étage refuge. Sous-sols interdits.", value_max: 50, unit: "m²", conditions: "PPRI; étage refuge; sous-sols interdits", summary: "Extensions ≤50m² avec étage refuge" },
-      { article_number: 10, article_title: "Hauteur / plancher", topic: "hauteur", rule_text: "Plancher habitable surélevé d'au moins 0,50 m / sol naturel. Étage refuge obligatoire.", value_min: 0.5, unit: "m", conditions: "Surélévation +0.50m NGF; étage refuge PHEC", summary: "Plancher +0.50m NGF" },
-    ]},
-];
 
 // ── Main ───────────────────────────────────────────────────────────────────────
 
 async function main() {
   console.log(`\n🏙️  Ingestion PLU — ${COMMUNE_NAME} (INSEE ${INSEE_CODE})`);
-  const mode = SEED_MODE || !PDF_PATH ? "seed vérifié Ballan-Miré" : `extraction PDF → ${PDF_PATH}`;
-  console.log(`Mode : ${mode}${DRY_RUN ? "  [DRY RUN]" : ""}\n`);
+  // La réglementation provient EXCLUSIVEMENT de l'ingestion documentaire — aucune donnée en dur.
+  if (!PDF_PATH) {
+    console.error("✗ --pdf <chemin> requis : la réglementation est extraite du document PLU, il n'existe pas de jeu de règles codé en dur.");
+    process.exit(1);
+  }
+  console.log(`Mode : extraction PDF → ${PDF_PATH}${DRY_RUN ? "  [DRY RUN]" : ""}\n`);
 
   // Upsert commune
   let commune = (await db.select().from(communes).where(eq(communes.insee_code, INSEE_CODE)).limit(1))[0];
@@ -443,19 +390,7 @@ async function main() {
     console.log(`✓ Commune : ${commune.name}`);
   }
 
-  // ── Seed mode ──
-  if (SEED_MODE || !PDF_PATH) {
-    if (INSEE_CODE !== "37018") console.warn("⚠  Seed = règles Ballan-Miré uniquement. Pour une autre commune, utilisez --pdf.");
-    console.log(`\n${BALLAN_MIRE_SEED.length} zones à traiter…`);
-    for (const z of BALLAN_MIRE_SEED) {
-      if (!DRY_RUN && commune) await upsertZoneAndRules(commune.id, z, "valide");
-      else console.log(`  [DRY RUN] ${z.zone_code} — ${z.rules.length} règles`);
-    }
-    console.log(`\n✅ Seed terminé\n`);
-    return;
-  }
-
-  // ── PDF mode ──
+  // ── PDF mode (unique source : le document) ──
   if (!fs.existsSync(PDF_PATH)) {
     console.error(`✗ Fichier introuvable : ${PDF_PATH}`); process.exit(1);
   }
