@@ -1459,6 +1459,60 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules", async (req: AuthRequest
   }
 });
 
+// POST /mairie/reglementation/structure-article
+// « Agent » de structuration : l'instructeur colle le TEXTE d'un article ; Claude
+// (texte court, pas le PDF) renvoie les champs structurés pour pré-remplir le
+// formulaire. L'instructeur vérifie puis enregistre.
+mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const { text, zone_code, article_number } = req.body as { text?: string; zone_code?: string; article_number?: number | string };
+    if (!text || text.trim().length < 5) return res.status(400).json({ error: "Texte de l'article requis" });
+
+    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 30_000 });
+    const msg = await client.messages.create({
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: 1200,
+      system: `Tu es un expert en droit de l'urbanisme français. On te donne le TEXTE d'UN article de règlement PLU. Renvoie UNIQUEMENT un objet JSON (aucun autre texte) :
+{
+  "article_number": number|null,
+  "article_title": string,
+  "topic": "destinations|terrain_min|recul_voie|recul_limite|recul_batiments|emprise_sol|hauteur|aspect|stationnement|espaces_verts|cos|general",
+  "rule_text": string,
+  "value_min": number|null,
+  "value_max": number|null,
+  "value_exact": number|null,
+  "unit": "m|%|m²|places"|null,
+  "conditions": string|null,
+  "summary": string
+}
+- N'invente AUCUNE valeur (si incertain → null).
+- topic 'aspect' (art. 11) : matériaux, couleurs, toitures, menuiseries, clôtures dans rule_text.
+- Plusieurs valeurs selon sous-secteurs → principale dans value_max, variantes dans conditions.`,
+      messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}\n\n${text}` }],
+    });
+
+    const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
+    const parsed = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? "{}") as Record<string, unknown>;
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+    const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+    res.json({
+      article_number: num(parsed.article_number) ?? (article_number ? Number(article_number) : null),
+      article_title: str(parsed.article_title) ?? "",
+      topic: str(parsed.topic) ?? "general",
+      rule_text: str(parsed.rule_text) ?? text.trim(),
+      value_min: num(parsed.value_min),
+      value_max: num(parsed.value_max),
+      value_exact: num(parsed.value_exact),
+      unit: str(parsed.unit),
+      conditions: str(parsed.conditions),
+      summary: str(parsed.summary) ?? "",
+    });
+  } catch (err) {
+    console.error("[structure-article]", err);
+    res.status(500).json({ error: "Échec de l'analyse IA — réessayez ou saisissez manuellement." });
+  }
+});
+
 // POST /mairie/reglementation/zones — create a zone manually
 mairieRouter.post("/reglementation/zones", async (req: AuthRequest, res) => {
   try {

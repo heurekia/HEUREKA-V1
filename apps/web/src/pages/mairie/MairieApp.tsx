@@ -3702,6 +3702,23 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   const [newZone, setNewZone] = useState({ code: "", label: "", type: "U" });
   const [savingZone, setSavingZone] = useState(false);
   const [purging, setPurging] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+  const [analyzing, setAnalyzing] = useState(false);
+
+  const analyzeArticle = async (zoneCode: string) => {
+    if (pasteText.trim().length < 5) return;
+    setAnalyzing(true);
+    try {
+      const r = await api.post<Partial<RuleRow>>("/mairie/reglementation/structure-article", {
+        text: pasteText, zone_code: zoneCode, article_number: newRule.article_number ?? undefined,
+      });
+      setNewRule(f => ({ ...f, ...r }));
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Échec de l'analyse");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
 
   const purgeAll = async () => {
     if (!inseeCode) { alert("Code INSEE de la commune introuvable."); return; }
@@ -3774,6 +3791,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     } : null);
     setAddingZoneId(null);
     setNewRule({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
+    setPasteText("");
   };
 
   const addZone = async () => {
@@ -4086,6 +4104,20 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
               ) : (
                 <div style={{ background: "white", borderRadius: 12, border: "1px solid #C7D2FE", padding: "16px 18px" }}>
                   <div style={{ fontWeight: 600, fontSize: 13, color: "#374151", marginBottom: 12 }}>Nouvelle règle</div>
+
+                  {/* Coller le texte de l'article → structuration IA (texte court, pas le PDF) */}
+                  <div style={{ background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#6D28D9", marginBottom: 6 }}>✨ Coller le texte de l'article — l'IA remplit les champs</div>
+                    <textarea placeholder="Collez ici le texte de l'article du PLU…" style={{ width: "100%", minHeight: 60, borderRadius: 8, border: "1px solid #DDD6FE", padding: "8px 10px", fontSize: 12, resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                      value={pasteText}
+                      onChange={e => setPasteText(e.target.value)}
+                    />
+                    <button onClick={() => analyzeArticle(selectedZone.zone_code)} disabled={analyzing || pasteText.trim().length < 5}
+                      style={{ marginTop: 6, background: analyzing ? "#A78BFA" : "#7C3AED", color: "white", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: analyzing ? "wait" : "pointer" }}>
+                      {analyzing ? "Analyse…" : "Analyser et pré-remplir"}
+                    </button>
+                  </div>
+
                   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                     <select style={{ borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none", flex: 1 }}
                       value={newRule.topic ?? "recul_voie"}
@@ -4100,6 +4132,34 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                   <textarea placeholder="Texte de la règle…" style={{ width: "100%", minHeight: 72, borderRadius: 8, border: "1px solid #E2E8F0", padding: "8px 10px", fontSize: 13, resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
                     value={newRule.rule_text ?? ""}
                     onChange={e => setNewRule(f => ({ ...f, rule_text: e.target.value }))}
+                  />
+                  {/* Valeurs structurées */}
+                  <div style={{ display: "flex", gap: 8, marginTop: 6, flexWrap: "wrap" }}>
+                    <input type="number" placeholder="Min" style={{ width: 70, borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none" }}
+                      value={newRule.value_min ?? ""}
+                      onChange={e => setNewRule(f => ({ ...f, value_min: e.target.value === "" ? null : Number(e.target.value) }))}
+                    />
+                    <input type="number" placeholder="Max" style={{ width: 70, borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none" }}
+                      value={newRule.value_max ?? ""}
+                      onChange={e => setNewRule(f => ({ ...f, value_max: e.target.value === "" ? null : Number(e.target.value) }))}
+                    />
+                    <input type="number" placeholder="Exact" style={{ width: 70, borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none" }}
+                      value={newRule.value_exact ?? ""}
+                      onChange={e => setNewRule(f => ({ ...f, value_exact: e.target.value === "" ? null : Number(e.target.value) }))}
+                    />
+                    <select style={{ width: 90, borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none" }}
+                      value={newRule.unit ?? ""}
+                      onChange={e => setNewRule(f => ({ ...f, unit: e.target.value || null }))}>
+                      <option value="">unité</option>
+                      <option value="m">m</option>
+                      <option value="%">%</option>
+                      <option value="m²">m²</option>
+                      <option value="places">places</option>
+                    </select>
+                  </div>
+                  <input placeholder="Conditions / sous-secteurs (ex: UBai: 10%)" style={{ marginTop: 6, width: "100%", borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none", boxSizing: "border-box" }}
+                    value={newRule.conditions ?? ""}
+                    onChange={e => setNewRule(f => ({ ...f, conditions: e.target.value || null }))}
                   />
                   <input placeholder="Résumé (10 mots max)" style={{ marginTop: 6, width: "100%", borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none", boxSizing: "border-box" }}
                     value={newRule.summary ?? ""}
