@@ -31,6 +31,7 @@ export interface AddressResult {
   city: string;
   score: number;
   type: string;  // "housenumber" | "street" | "locality" | "municipality"
+  id?: string;   // BAN cle_interop (ex: "37261_4950_00013") — used for RNB + certification lookup
 }
 
 export interface ParcelResult {
@@ -124,6 +125,8 @@ export interface ParcelAnalysis {
   servitudes?: ServitudeResult[];
   informations?: InformationResult[];  // périmètres d'informations GPU (info-surf)
   scot?: string;                       // nom du SCoT couvrant la parcelle
+  address_certified?: boolean | null;  // adresse certifiée par la commune (BAL) ; null = inconnu
+  parcel_confidence?: "exact" | "approximate"; // exact = parcelle contenant le bâtiment (RNB) ; approximate = heuristique
 }
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
@@ -175,6 +178,7 @@ export async function geocodeAddress(address: string, citycode?: string): Promis
       features?: Array<{
         geometry: { coordinates: [number, number] };
         properties: {
+          id?: string;
           label: string; score: number; citycode: string;
           postcode: string; city: string; type: string;
         };
@@ -191,6 +195,7 @@ export async function geocodeAddress(address: string, citycode?: string): Promis
       city: f.properties.city,
       score: f.properties.score,
       type: f.properties.type ?? "housenumber",
+      id: f.properties.id,
     };
   } catch {
     return null;
@@ -226,44 +231,121 @@ function distanceKm(lat1: number, lng1: number, lat2: number, lng2: number): num
   return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
 }
 
-// ── Best-match parcel near a coordinate ──────────────────────────────────────
-// For map clicks: uses geom=<Point> which does actual point-in-polygon containment
-// (unlike the lon/lat query which returns nearest centroid regardless of geometry).
-// For address lookups: BAN places housenumber points on the road edge, so the
-// exact point may fall outside every parcel.  In that case we do a ~80 m bbox
-// search and pick the candidate whose centroid is closest to the query point.
-
-async function findBestParcelNearPoint(lat: number, lng: number, codeInsee: string): Promise<ParcelResult | null> {
-  type Feature = {
-    properties: { id: string; section: string; numero: string; contenance: number; nom_com: string; code_insee: string };
-    geometry: Geometry;
-  };
-  const buildId = (p: Feature["properties"]): string =>
-    p.id || `${p.code_insee}000${p.section}${String(p.numero).padStart(4, "0")}`;
-  const toParcel = (f: Feature): ParcelResult => ({
-    parcelle_id: buildId(f.properties),
-    section: f.properties.section,
-    numero: f.properties.numero,
-    surface_m2: f.properties.contenance,
-    commune: f.properties.nom_com,
-    code_insee: f.properties.code_insee,
+// ── Cadastre feature → ParcelResult ───────────────────────────────────────────
+type CadastreFeature = {
+  properties: { id: string; section: string; numero: string; contenance: number; nom_com: string; code_insee: string };
+  geometry: Geometry;
+};
+function cadastreToParcel(f: CadastreFeature): ParcelResult {
+  const p = f.properties;
+  return {
+    parcelle_id: p.id || `${p.code_insee}000${p.section}${String(p.numero).padStart(4, "0")}`,
+    section: p.section,
+    numero: p.numero,
+    surface_m2: p.contenance,
+    commune: p.nom_com,
+    code_insee: p.code_insee,
     geometry: f.geometry ?? null,
-  });
+  };
+}
 
-  // 1. Exact containment via geom=<Point> — returns the parcel that spatially contains
-  //    the point.  This is the correct query for map clicks.
+// ── Parcel that spatially CONTAINS a point (exact point-in-polygon) ───────────
+// Reliable only when the point is genuinely inside a parcel — e.g. a map click,
+// or a building interior point from the RNB. Returns null when the point falls
+// on the public domain (road) or outside any parcel.
+export async function findParcelContaining(lat: number, lng: number, codeInsee: string): Promise<ParcelResult | null> {
   try {
     const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
     const url = `https://apicarto.ign.fr/api/cadastre/parcelle?code_insee=${codeInsee}&geom=${encodeURIComponent(geom)}&_limit=1`;
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (r.ok) {
-      const data = await r.json() as { features?: Feature[] };
-      if (data.features?.[0]) return toParcel(data.features[0]);
-    }
-  } catch { /* fall through to bbox */ }
+    if (!r.ok) return null;
+    const data = await r.json() as { features?: CadastreFeature[] };
+    return data.features?.[0] ? cadastreToParcel(data.features[0]) : null;
+  } catch {
+    return null;
+  }
+}
 
-  // 2. Bbox ~80 m + pick closest centroid — handles BAN road-edge points that fall
-  //    between parcel boundaries.
+// ── Pick the coordinate nearest to a reference point ──────────────────────────
+// Pure helper (unit-tested). Input coordinates are GeoJSON [lng, lat].
+export function pickNearestCoord(
+  coords: Array<[number, number]>,
+  refLat: number,
+  refLng: number,
+): { lat: number; lng: number } | null {
+  let best: { lat: number; lng: number } | null = null;
+  let bestDist = Infinity;
+  for (const c of coords) {
+    const lng = c[0];
+    const lat = c[1];
+    if (typeof lat !== "number" || typeof lng !== "number") continue;
+    const d = distanceKm(refLat, refLng, lat, lng);
+    if (d < bestDist) { bestDist = d; best = { lat, lng }; }
+  }
+  return best;
+}
+
+// ── RNB: BAN address key → building interior point ────────────────────────────
+// The Référentiel National des Bâtiments links a BAN cle_interop to the
+// building(s) at that address; each building exposes a representative "point"
+// guaranteed to sit inside its footprint. Because that point is inside the
+// building (hence inside its cadastral parcel), feeding it to
+// findParcelContaining() yields the correct parcel — independently of how
+// imprecise (or "non certifiée") the BAN housenumber position is.
+//
+// RNB alpha API (https://rnb-api.beta.gouv.fr). The call degrades gracefully:
+// any error / unexpected shape returns null and the caller falls back to the
+// legacy heuristic, so there is never a regression.
+async function findBuildingInteriorPoint(banId: string, refLat: number, refLng: number): Promise<{ lat: number; lng: number } | null> {
+  try {
+    const url = `https://rnb-api.beta.gouv.fr/api/alpha/buildings/?cle_interop_ban=${encodeURIComponent(banId)}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const data = await r.json() as {
+      results?: Array<{ status?: string; point?: { coordinates?: [number, number] } }>;
+      features?: Array<{ geometry?: { coordinates?: [number, number] } }>;
+    };
+    // Support both DRF list (`results`) and GeoJSON (`features`) shapes.
+    const points: Array<[number, number]> = [];
+    for (const b of data.results ?? []) {
+      const c = b.point?.coordinates;
+      if (c && b.status !== "demolished" && b.status !== "demolie") points.push(c);
+    }
+    for (const f of data.features ?? []) {
+      const c = f.geometry?.coordinates;
+      if (c) points.push(c);
+    }
+    if (!points.length) return null;
+    // An address can host several buildings — keep the one nearest the BAN point.
+    return pickNearestCoord(points, refLat, refLng);
+  } catch {
+    return null;
+  }
+}
+
+// ── BAN certification status for an address ───────────────────────────────────
+// "Certifiée" = validated by the commune via its Base Adresse Locale (precise
+// position). Non-certified addresses carry a derived/interpolated position that
+// can be offset by several metres. Returns null when unknown/unreachable.
+async function fetchAddressCertification(banId: string): Promise<boolean | null> {
+  try {
+    const r = await fetch(`https://plateforme.adresse.data.gouv.fr/lookup/${encodeURIComponent(banId)}`, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return null;
+    const d = await r.json() as { certifie?: boolean };
+    return typeof d.certifie === "boolean" ? d.certifie : null;
+  } catch {
+    return null;
+  }
+}
+
+// ── Best-match parcel near a coordinate ──────────────────────────────────────
+// 1. Exact containment via geom=<Point> (correct for map clicks / interior points).
+// 2. Fallback for BAN road-edge points: ~80 m bbox, pick the closest centroid.
+async function findBestParcelNearPoint(lat: number, lng: number, codeInsee: string): Promise<ParcelResult | null> {
+  const contained = await findParcelContaining(lat, lng, codeInsee);
+  if (contained) return contained;
+
+  // Bbox ~80 m + closest centroid — handles BAN road-edge points between parcels.
   // At 47° latitude: 1° lat ≈ 111 km, 1° lng ≈ 76 km → 80 m ≈ 0.00072° / 0.00105°
   const DLAT = 0.00072;
   const DLNG = 0.00105;
@@ -275,14 +357,14 @@ async function findBestParcelNearPoint(lat: number, lng: number, codeInsee: stri
     const url = `https://apicarto.ign.fr/api/cadastre/parcelle?code_insee=${codeInsee}&geom=${encodeURIComponent(JSON.stringify(bboxGeom))}&_limit=20`;
     const r = await fetch(url, { signal: AbortSignal.timeout(10000) });
     if (!r.ok) return null;
-    const data = await r.json() as { features?: Feature[] };
+    const data = await r.json() as { features?: CadastreFeature[] };
     const features = data.features ?? [];
     if (!features.length) return null;
 
     let best: ParcelResult | null = null;
     let bestDist = Infinity;
     for (const f of features) {
-      const parcel = toParcel(f);
+      const parcel = cadastreToParcel(f);
       if (parcel.geometry?.type === "Polygon") {
         const coords = (parcel.geometry as Polygon).coordinates[0] ?? [];
         if (coords.length) {
@@ -972,6 +1054,7 @@ export async function analyseParcel(
         result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${code_insee}. Données non retenues.`);
       } else {
         result.parcel = parcel;
+        result.parcel_confidence = "exact"; // map click → point-in-polygon containment
         result.data_sources.push("IGN Cadastre");
         code_insee = parcel.code_insee;
       }
@@ -982,6 +1065,7 @@ export async function analyseParcel(
     const parcel = await findParcelByRef(normalizedRef);
     if (parcel) {
       result.parcel = parcel;
+      result.parcel_confidence = "exact"; // explicit cadastral reference → unambiguous
       result.data_sources.push("IGN Cadastre");
       code_insee = parcel.code_insee;
       // Get centroid from geometry if available
@@ -1056,19 +1140,60 @@ export async function analyseParcel(
       lng = addr.lng;
       code_insee = addr.citycode;
 
+      // Certification status — non-certified BAN positions are imprecise, which is
+      // why the parcel must be resolved via the building (below), not the raw point.
+      if (addr.id) {
+        const certified = await fetchAddressCertification(addr.id);
+        result.address_certified = certified;
+        if (certified === false) {
+          result.warnings.push(
+            "Adresse non certifiée par la commune : la position fournie par la BAN est approximative. " +
+            "La parcelle est confirmée via le bâtiment (RNB) lorsque c'est possible — sinon, vérifiez en cliquant sur la parcelle ou saisissez la référence cadastrale."
+          );
+        }
+      }
+
       // Step 2: Find parcel — only possible for housenumber geocodes.
-      // Street-level geocodes land on the road center, which has no cadastral parcel.
-      // findParcelWithRetry tries small offsets (~15 m) when the primary point misses,
-      // since BAN places housenumber coords on the road edge, not on the parcel itself.
+      // Reliable path: BAN address key → RNB building interior point → cadastre
+      // containment (exact, independent of the BAN point's imprecision).
+      // Fallback: legacy heuristic near the BAN point (flagged "approximate").
       if (addr.type === "housenumber" || addr.type === "interpolation") {
-        const parcel = code_insee ? await findBestParcelNearPoint(lat, lng, code_insee) : null;
+        let parcel: ParcelResult | null = null;
+        let confidence: "exact" | "approximate" = "approximate";
+
+        if (addr.id && code_insee) {
+          const bpt = await findBuildingInteriorPoint(addr.id, lat, lng);
+          if (bpt) {
+            const contained = await findParcelContaining(bpt.lat, bpt.lng, code_insee);
+            if (contained && contained.code_insee === code_insee) {
+              parcel = contained;
+              confidence = "exact";
+              // Snap the displayed point onto the building rather than the road edge.
+              lat = bpt.lat;
+              lng = bpt.lng;
+              result.data_sources.push("RNB (bâtiment)");
+            }
+          }
+        }
+
+        if (!parcel && code_insee) {
+          parcel = await findBestParcelNearPoint(lat, lng, code_insee);
+        }
+
         if (parcel) {
           if (parcel.code_insee !== addr.citycode) {
             result.warnings.push(`Parcelle trouvée dans ${parcel.commune} (${parcel.code_insee}) — commune différente de ${addr.city} (${addr.citycode}). Données cadastrales non retenues.`);
           } else {
             result.parcel = parcel;
+            result.parcel_confidence = confidence;
             result.data_sources.push("IGN Cadastre");
             code_insee = parcel.code_insee;
+            if (confidence === "approximate") {
+              result.warnings.push(
+                "Parcelle déterminée de façon approximative (le bâtiment n'a pas pu être relié à l'adresse). " +
+                "Vérifiez en cliquant sur la parcelle sur la carte, ou saisissez la référence cadastrale."
+              );
+            }
           }
         } else {
           result.warnings.push("Parcelle cadastrale non identifiée à cette adresse.");
