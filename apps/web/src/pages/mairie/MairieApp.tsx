@@ -4125,6 +4125,41 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                               value={(editForm.summary ?? rule.summary) ?? ""}
                               onChange={e => setEditForm(f => ({ ...f, summary: e.target.value || null }))}
                             />
+
+                            {/* Cas conditionnels / paramètres */}
+                            <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 10px" }}>
+                              <div style={{ fontSize: 11, fontWeight: 600, color: "#475569", marginBottom: 6 }}>Cas conditionnels / paramètres</div>
+                              {(editForm.cases ?? rule.cases ?? []).map((c, i) => (
+                                <div key={i} style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+                                  <input placeholder="Libellé (condition ou paramètre)" style={{ flex: 1, minWidth: 0, borderRadius: 6, border: "1px solid #E2E8F0", padding: "5px 8px", fontSize: 11.5, outline: "none" }}
+                                    value={c.condition}
+                                    onChange={e => setEditForm(f => ({ ...f, cases: (f.cases ?? rule.cases ?? []).map((x, j) => j === i ? { ...x, condition: e.target.value } : x) }))}
+                                  />
+                                  <input type="number" placeholder="val" style={{ width: 56, borderRadius: 6, border: "1px solid #E2E8F0", padding: "5px 6px", fontSize: 11.5, outline: "none" }}
+                                    value={c.value ?? ""}
+                                    onChange={e => setEditForm(f => ({ ...f, cases: (f.cases ?? rule.cases ?? []).map((x, j) => j === i ? { ...x, value: e.target.value === "" ? null : Number(e.target.value) } : x) }))}
+                                  />
+                                  <select style={{ width: 58, borderRadius: 6, border: "1px solid #E2E8F0", padding: "5px 4px", fontSize: 11.5, outline: "none" }}
+                                    value={c.unit ?? ""}
+                                    onChange={e => setEditForm(f => ({ ...f, cases: (f.cases ?? rule.cases ?? []).map((x, j) => j === i ? { ...x, unit: e.target.value || null } : x) }))}>
+                                    <option value="">—</option><option value="m">m</option><option value="cm">cm</option><option value="%">%</option><option value="m²">m²</option><option value="places">pl.</option>
+                                  </select>
+                                  <select title="Nature du cas" style={{ width: 84, borderRadius: 6, border: "1px solid #E2E8F0", padding: "5px 4px", fontSize: 11, outline: "none" }}
+                                    value={c.kind ?? "parametre"}
+                                    onChange={e => setEditForm(f => ({ ...f, cases: (f.cases ?? rule.cases ?? []).map((x, j) => j === i ? { ...x, kind: e.target.value as "condition" | "parametre" } : x) }))}>
+                                    <option value="parametre">paramètre</option>
+                                    <option value="condition">condition</option>
+                                  </select>
+                                  <button onClick={() => setEditForm(f => ({ ...f, cases: (f.cases ?? rule.cases ?? []).filter((_, j) => j !== i) }))}
+                                    style={{ border: "none", background: "transparent", color: "#EF4444", cursor: "pointer", fontSize: 14, padding: "0 4px" }}>✕</button>
+                                </div>
+                              ))}
+                              <button onClick={() => setEditForm(f => ({ ...f, cases: [...(f.cases ?? rule.cases ?? []), { condition: "", value: null, unit: (f.unit ?? rule.unit) ?? null, kind: "parametre" }] }))}
+                                style={{ border: "1px dashed #C7D2FE", background: "white", color: "#4F46E5", borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                                + Ajouter un cas
+                              </button>
+                            </div>
+
                             <div style={{ display: "flex", gap: 8 }}>
                               <button onClick={async () => { await patchRule(rule.id, { ...editForm, validation_status: "valide" }); setEditingId(null); setEditForm({}); }} disabled={saving}
                                 style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
