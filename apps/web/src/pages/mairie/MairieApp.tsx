@@ -3686,6 +3686,20 @@ const APPLIES_LABEL: Record<string, string> = {
   cloture_limite: "Clôture en limite", annexe: "Annexe", devanture_commerciale: "Devanture commerciale",
   equipement_public: "Équipement public",
 };
+
+// Renvois internes : repère les références à d'autres articles de la zone
+// (« UA-2 », « article 7 », « art. 10 ») présentes dans le texte d'une règle.
+function extractArticleRefs(rule: RuleRow, zoneArticles: Set<number>): number[] {
+  const text = `${rule.rule_text} ${rule.conditions ?? ""} ${rule.exceptions ?? ""}`;
+  const found = new Set<number>();
+  for (const m of text.matchAll(/\b[0-9]?[A-Z]{1,3}[a-z0-9]*-(\d{1,2})(?:\.\d+)?\b/g)) {
+    const n = Number(m[1]); if (zoneArticles.has(n) && n !== rule.article_number) found.add(n);
+  }
+  for (const m of text.matchAll(/\bart(?:icle)?\.?\s+(\d{1,2})\b/gi)) {
+    const n = Number(m[1]); if (zoneArticles.has(n) && n !== rule.article_number) found.add(n);
+  }
+  return [...found].sort((a, b) => a - b);
+}
 type ZoneRow = {
   id: string; zone_code: string; zone_label: string; zone_type: string; summary: string | null;
   rules: RuleRow[];
@@ -4084,6 +4098,8 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
               )}
 
               {(() => {
+                const zoneArticleNums = new Set(selectedZone.rules.map(r => r.article_number).filter((n): n is number => n != null));
+                const goToArticle = (n: number) => document.getElementById(`art-${selectedZone.id}-${n}`)?.scrollIntoView({ behavior: "smooth", block: "center" });
                 const groups: { article: number | null; rules: typeof selectedZone.rules }[] = [];
                 for (const r of selectedZone.rules) {
                   const last = groups[groups.length - 1];
@@ -4091,7 +4107,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                   else groups.push({ article: r.article_number, rules: [r] });
                 }
                 return groups.map(grp => (
-                  <div key={`g${grp.article ?? "na"}`} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                  <div key={`g${grp.article ?? "na"}`} id={grp.article != null ? `art-${selectedZone.id}-${grp.article}` : undefined} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                     {grp.article != null && (
                       <div style={{ padding: "4px 2px 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
                         <span style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>
@@ -4149,7 +4165,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                             )}
                             {(rule.cases?.length ?? 0) > 0 && (
                               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
-                                {rule.cases!.map((c, i) => {
+                                {rule.cases!.filter(c => c.value != null).map((c, i) => {
                                   const isCond = c.kind === "condition";
                                   return (
                                     <span key={i} style={{ background: isCond ? "#FFF7ED" : "#EEF2FF", color: isCond ? "#C2410C" : "#4338CA", borderRadius: 6, padding: "2px 8px", fontSize: 11 }}>
@@ -4166,6 +4182,14 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                                 ))}
                               </div>
                             )}
+                            {(() => { const refs = extractArticleRefs(rule, zoneArticleNums); return refs.length > 0 && (
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6, alignItems: "center" }}>
+                                <span style={{ fontSize: 10.5, color: "#9CA3AF" }}>Renvois :</span>
+                                {refs.map(n => (
+                                  <button key={n} onClick={() => goToArticle(n)} style={{ background: "#EEF2FF", color: "#4338CA", border: "1px solid #C7D2FE", borderRadius: 6, padding: "1px 8px", fontSize: 10.5, fontWeight: 600, cursor: "pointer" }}>→ Article {n}</button>
+                                ))}
+                              </div>
+                            ); })()}
                           </>
                         )}
 
@@ -4458,7 +4482,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                           {r.value_min != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, color: "#374151" }}>≥{r.value_min} {r.unit}</span>}
                           {r.value_max != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, color: "#374151" }}>≤{r.value_max} {r.unit}</span>}
                           {r.value_exact != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, color: "#374151" }}>{r.value_exact} {r.unit}</span>}
-                          {r.cases.map((c, ci) => { const isCond = c.kind === "condition"; return (
+                          {r.cases.filter(c => c.value != null).map((c, ci) => { const isCond = c.kind === "condition"; return (
                             <span key={`c${ci}`} style={{ background: isCond ? "#FFF7ED" : "#EEF2FF", color: isCond ? "#C2410C" : "#4338CA", borderRadius: 6, padding: "2px 8px", fontSize: 10.5 }}>{isCond ? "si " : ""}{c.condition} : <strong>{c.value ?? "—"}{c.unit ? ` ${c.unit}` : ""}</strong></span>
                           ); })}
                           {r.applies_if.map((t, ti) => (

@@ -1612,9 +1612,9 @@ AUTRES RÈGLES :
         cases: Array.isArray(r.cases)
           ? (r.cases as unknown[]).filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
               .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit), kind: c.kind === "condition" ? "condition" : "parametre" }))
-              // On ne garde QUE les cas porteurs d'une valeur (chiffre ou unité) :
-              // une énumération qualitative (interdictions, matériaux…) reste dans rule_text.
-              .filter((c) => c.condition && (c.value != null || c.unit != null))
+              // On ne garde QUE les cas porteurs d'une VALEUR chiffrée (pas de « — m » :
+              // une énumération qualitative ou un seuil sans nombre reste dans rule_text).
+              .filter((c) => c.condition && c.value != null)
           : [],
         applies_if: Array.isArray(r.applies_if)
           ? (r.applies_if as unknown[]).map(str).filter((t): t is string => !!t && APPLIES.has(t))

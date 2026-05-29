@@ -760,7 +760,7 @@ export function AnalyseParcellaire() {
                           )}
                           {(rule.cases?.length ?? 0) > 0 && (
                             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
-                              {rule.cases!.map((c, ci) => {
+                              {rule.cases!.filter(c => c.value != null).map((c, ci) => {
                                 const isCond = c.kind === "condition";
                                 return (
                                   <span key={ci} style={{ background: isCond ? "#FFF7ED" : "#EEF2FF", color: isCond ? "#C2410C" : "#4338CA", borderRadius: 6, padding: "2px 8px", fontSize: 10 }}>
