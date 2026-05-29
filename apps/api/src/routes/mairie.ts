@@ -608,8 +608,8 @@ mairieRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
       .from(dossiers)
       .where(
         commune
-          ? sql`commune ILIKE ${commune} AND adresse IS NOT NULL`
-          : sql`adresse IS NOT NULL`
+          ? sql`commune ILIKE ${commune} AND adresse IS NOT NULL AND status != 'brouillon'`
+          : sql`adresse IS NOT NULL AND status != 'brouillon'`
       )
       .orderBy(desc(dossiers.created_at))
       .limit(200);
