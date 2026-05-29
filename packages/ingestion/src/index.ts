@@ -6,6 +6,9 @@
  */
 import { runIngestion } from "./engine/pipeline.ts";
 import { loadSegments } from "./db/loader.ts";
+import { structureSegments } from "./structure/structurer.ts";
+import { anthropicLlm } from "./structure/anthropic-llm.ts";
+import { loadRules } from "./db/rules-loader.ts";
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -42,6 +45,18 @@ async function main() {
     for (const i of report.validation.issues) console.log(`   [${i.severity}] ${i.rule} — ${i.message}`);
   }
   if (files) console.log(`\n📄 ${files.json}\n   ${files.csv}\n   ${files.reportPath}`);
+
+  // --rules : structuration par article (agent Claude) → tables citoyennes
+  // (zones + zone_regulatory_rules, statut brouillon). Le LLM ne voit que le
+  // texte COURT des articles d'une zone, jamais le PDF entier.
+  if (flag("--rules")) {
+    console.log(`\n🤖 Structuration des règles par article (Claude)…`);
+    const zoneRules = await structureSegments(segments, anthropicLlm(), {
+      onZone: (zone, count) => console.log(`   ${zone} → ${count} règles`),
+    });
+    const res = await loadRules(insee, commune, zoneRules, { zipCode: arg("--zip") });
+    console.log(`✓ ${res.zones} zones · ${res.rules} règles écrites (brouillon) dans zone_regulatory_rules.`);
+  }
 
   // --load : pousse les segments + embeddings (voyage-3) dans pgvector.
   if (flag("--load")) {

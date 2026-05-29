@@ -230,6 +230,9 @@ importers:
 
   packages/ingestion:
     dependencies:
+      '@anthropic-ai/sdk':
+        specifier: ^0.97.0
+        version: 0.97.0(zod@3.25.76)
       '@heureka-v1/db':
         specifier: workspace:*
         version: link:../db

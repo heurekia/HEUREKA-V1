@@ -11,6 +11,7 @@
     "ingest": "tsx src/index.ts"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.97.0",
     "@heureka-v1/db": "workspace:*",
     "drizzle-orm": "^0.42.0",
     "tsx": "^4.19.4"
