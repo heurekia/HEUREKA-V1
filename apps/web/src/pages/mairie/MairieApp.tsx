@@ -4070,7 +4070,21 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                 </div>
               )}
 
-              {selectedZone.rules.map(rule => {
+              {(() => {
+                const groups: { article: number | null; rules: typeof selectedZone.rules }[] = [];
+                for (const r of selectedZone.rules) {
+                  const last = groups[groups.length - 1];
+                  if (last && last.article === r.article_number) last.rules.push(r);
+                  else groups.push({ article: r.article_number, rules: [r] });
+                }
+                return groups.map(grp => (
+                  <div key={`g${grp.article ?? "na"}`} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+                    {grp.article != null && (
+                      <div style={{ padding: "4px 2px 0", fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                        Article {grp.article}
+                      </div>
+                    )}
+                    {grp.rules.map(rule => {
                 const meta = TOPIC_META[rule.topic] ?? { label: rule.topic, icon: "📋" };
                 const isEditing = editingId === rule.id;
                 const statusColor = rule.validation_status === "valide" ? "#22C55E"
@@ -4127,6 +4141,12 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                         {/* Inline edit form */}
                         {isEditing && (
                           <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                            <input
+                              placeholder="Nom de la sous-règle (ex: Toitures, Clôtures sur rue…)"
+                              style={{ borderRadius: 8, border: "1px solid #C7D2FE", padding: "6px 10px", fontSize: 12, outline: "none" }}
+                              value={(editForm.sub_theme ?? rule.sub_theme) ?? ""}
+                              onChange={e => setEditForm(f => ({ ...f, sub_theme: e.target.value || null }))}
+                            />
                             <textarea
                               style={{ width: "100%", minHeight: 72, borderRadius: 8, border: "1px solid #C7D2FE", padding: "8px 10px", fontSize: 13, resize: "vertical", outline: "none", fontFamily: "inherit" }}
                               value={editForm.rule_text ?? rule.rule_text}
@@ -4234,7 +4254,10 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                     </div>
                   </div>
                 );
-              })}
+                    })}
+                  </div>
+                ));
+              })()}
 
               {/* Add rule button */}
               {addingZoneId !== selectedZone.id ? (
@@ -4277,6 +4300,10 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                       }}
                     />
                   </div>
+                  <input placeholder="Nom de la sous-règle (optionnel — ex: Toitures, Clôtures sur rue…)" style={{ width: "100%", borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none", marginBottom: 8, boxSizing: "border-box" }}
+                    value={newRule.sub_theme ?? ""}
+                    onChange={e => setNewRule(f => ({ ...f, sub_theme: e.target.value || null }))}
+                  />
                   <textarea placeholder="Texte de la règle…" style={{ width: "100%", minHeight: 72, borderRadius: 8, border: "1px solid #E2E8F0", padding: "8px 10px", fontSize: 13, resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
                     value={newRule.rule_text ?? ""}
                     onChange={e => setNewRule(f => ({ ...f, rule_text: e.target.value }))}
