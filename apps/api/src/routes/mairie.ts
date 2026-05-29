@@ -32,6 +32,27 @@ async function splitPdfBase64(base64: string, maxPages = 90, overlap = 8): Promi
   return chunks;
 }
 
+// Parse un tableau JSON éventuellement TRONQUÉ (réponse LLM coupée à max_tokens).
+// Tente le parse complet ; sinon ferme l'array au dernier objet entier ("}") pour
+// récupérer les sous-règles complètes. Renvoie [] si rien d'exploitable.
+function parseLooseArray(raw: string): unknown[] {
+  const start = raw.indexOf("[");
+  if (start < 0) return [];
+  const s = raw.slice(start);
+  try {
+    const v = JSON.parse(s);
+    if (Array.isArray(v)) return v;
+  } catch { /* try salvage */ }
+  const lastObj = s.lastIndexOf("}");
+  if (lastObj > 0) {
+    try {
+      const v = JSON.parse(s.slice(0, lastObj + 1) + "]");
+      if (Array.isArray(v)) return v;
+    } catch { /* give up */ }
+  }
+  return [];
+}
+
 function getAnthropicApiKey(): string {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
   const candidates = [
@@ -1513,10 +1534,10 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
     const { text, zone_code, article_number } = req.body as { text?: string; zone_code?: string; article_number?: number | string };
     if (!text || text.trim().length < 5) return res.status(400).json({ error: "Texte de l'article requis" });
 
-    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 30_000 });
+    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 60_000 });
     const msg = await client.messages.create({
       model: "claude-haiku-4-5-20251001",
-      max_tokens: 4000,
+      max_tokens: 8000,
       system: `Tu es un expert en droit de l'urbanisme français. On te donne le TEXTE d'UN article de règlement PLU — souvent long, avec des sous-sections (ex: 11.1.4 Façades, 11.1.5 Toiture, 11.1.8 Clôtures, 11.2.2 Éléments protégés…).
 
 DÉCOMPOSE l'article en SOUS-RÈGLES cohérentes (une par sous-section / thème). Renvoie UNIQUEMENT un tableau JSON, sans autre texte :
@@ -1538,7 +1559,7 @@ DÉCOMPOSE l'article en SOUS-RÈGLES cohérentes (une par sous-section / thème)
 
 RÈGLES :
 - Une SOUS-RÈGLE par sous-section/thème distinct. Un article SIMPLE → tableau d'UNE sous-règle.
-- "rule_text" : conserve le texte qualitatif (matériaux, teintes, prescriptions). Pour l'aspect (art. 11) c'est l'essentiel — NE le réduis PAS à un nombre.
+- "rule_text" : conserve le sens qualitatif (matériaux, teintes, prescriptions) — pour l'aspect (art. 11) c'est l'essentiel, ne le réduis PAS à un nombre. Mais reste SYNTHÉTIQUE sur les passages très longs (prescriptions clés, pas la prose redondante) afin de produire un JSON COMPLET et bien formé.
 - "applies_if" : tague une sous-règle qui ne s'applique qu'à un contexte ("Clôtures sur rue" → ["cloture_sur_rue"] ; "Éléments protégés L.151-19" → ["protege_l151_19"] ; "Périmètre UNESCO" → ["unesco"] ; surélévation → ["surelevation"]). [] sinon.
 - VALEUR PRINCIPALE (value_*) = LE seuil de la sous-règle dans une unité COHÉRENTE (%, m, m², places). Respecte min ("≥") vs max ("≤"). NE MÉLANGE JAMAIS valeur et unité. Mesures secondaires/d'autres unités → "cases". Si rien de chiffré → value_* null (fréquent pour l'aspect).
 - "cases" : DISSOCIE chaque valeur distincte. kind "condition" (alternatives exclusives) vs "parametre" (valeurs cumulatives).
@@ -1547,7 +1568,9 @@ RÈGLES :
     });
 
     const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
-    const arr = JSON.parse(raw.match(/\[[\s\S]*\]/)?.[0] ?? "[]") as unknown[];
+    // Parsing tolérant : si la réponse est tronquée (max_tokens), on récupère les
+    // sous-règles COMPLÈTES en fermant l'array au dernier objet entier.
+    const arr = parseLooseArray(raw);
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
     const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
     const APPLIES = new Set(["protege_l151_19", "unesco", "abf", "inondable", "extension", "surelevation", "ravalement", "demolition", "cloture_sur_rue", "cloture_limite", "annexe", "devanture_commerciale", "equipement_public"]);
