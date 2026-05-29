@@ -3939,7 +3939,17 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
           {addingZone ? (
             <div style={{ background: "#F8FAFC", borderRadius: 10, border: "1px solid #E2E8F0", padding: 12 }}>
               <input
-                value={newZone.code} onChange={e => setNewZone(z => ({ ...z, code: e.target.value.toUpperCase() }))}
+                value={newZone.code}
+                onChange={e => {
+                  const code = e.target.value.toUpperCase();
+                  // Type déduit automatiquement du code (surchargeable via le menu).
+                  const type = /^[0-9]*AU/.test(code) ? "AU"
+                    : code.startsWith("U") ? "U"
+                    : code.startsWith("A") ? "A"
+                    : code.startsWith("N") ? "N"
+                    : newZone.type;
+                  setNewZone(z => ({ ...z, code, type }));
+                }}
                 placeholder="Code (ex : Ni)"
                 style={{ width: "100%", padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12.5, outline: "none", marginBottom: 8, boxSizing: "border-box" as const }}
               />
@@ -3948,6 +3958,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                 placeholder="Libellé (ex : Zone Ni – Naturelle inondable)"
                 style={{ width: "100%", padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12.5, outline: "none", marginBottom: 8, boxSizing: "border-box" as const }}
               />
+              <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 4 }}>Type (déduit du code — modifiable)</div>
               <select value={newZone.type} onChange={e => setNewZone(z => ({ ...z, type: e.target.value }))}
                 style={{ width: "100%", padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12.5, outline: "none", marginBottom: 10, background: "white", boxSizing: "border-box" as const }}>
                 <option value="U">U — Urbaine</option>
