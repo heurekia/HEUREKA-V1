@@ -40,16 +40,16 @@ calibrationRouter.get("/zones/:id", async (req: AuthRequest, res) => {
 // ── Mettre à jour une règle ──
 calibrationRouter.patch("/rules/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
-    const { topic, rule_text, value_min, value_max, value_exact, unit, validation_status, article_number } = req.body as Record<string, unknown>;
+    const b = req.body as Record<string, unknown>;
     const updates: Record<string, unknown> = { updated_at: new Date() };
-    if (topic !== undefined) updates.topic = topic;
-    if (rule_text !== undefined) updates.rule_text = rule_text;
-    if (value_min !== undefined) updates.value_min = value_min;
-    if (value_max !== undefined) updates.value_max = value_max;
-    if (value_exact !== undefined) updates.value_exact = value_exact;
-    if (unit !== undefined) updates.unit = unit;
-    if (validation_status !== undefined) updates.validation_status = validation_status;
-    if (article_number !== undefined) updates.article_number = article_number;
+    // Numeric + classification fields
+    for (const f of ["topic", "rule_text", "value_min", "value_max", "value_exact", "unit", "validation_status", "article_number"] as const) {
+      if (b[f] !== undefined) updates[f] = b[f];
+    }
+    // Qualitative / textual fields (aspect extérieur : matériaux, couleurs, menuiseries, clôtures…)
+    for (const f of ["article_title", "conditions", "exceptions", "summary", "instructor_note"] as const) {
+      if (b[f] !== undefined) updates[f] = b[f];
+    }
     const [rule] = await db
       .update(zone_regulatory_rules)
       .set(updates)
@@ -57,6 +57,66 @@ calibrationRouter.patch("/rules/:id", requireRole("mairie", "instructeur", "admi
       .returning();
     if (!rule) return res.status(404).json({ error: "Règle non trouvée" });
     res.json(rule);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Ajouter une règle manuellement (instructeur) ──
+// Permet à un instructeur de compléter le règlement extrait par l'IA — notamment
+// les règles qualitatives (aspect : matériaux, couleurs, menuiseries, clôtures).
+calibrationRouter.post("/rules", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const b = req.body as Record<string, unknown>;
+    const zone_id = typeof b.zone_id === "string" ? b.zone_id : null;
+    const rule_text = typeof b.rule_text === "string" ? b.rule_text.trim() : "";
+    if (!zone_id) return res.status(400).json({ error: "zone_id requis" });
+    if (!rule_text) return res.status(400).json({ error: "rule_text requis" });
+
+    // Verify the zone exists before inserting (FK + clearer error than a 500)
+    const [zone] = await db.select({ id: zones.id }).from(zones).where(eq(zones.id, zone_id)).limit(1);
+    if (!zone) return res.status(404).json({ error: "Zone non trouvée" });
+
+    const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
+    const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
+
+    const [rule] = await db
+      .insert(zone_regulatory_rules)
+      .values({
+        zone_id,
+        topic: str(b.topic) ?? "general",
+        rule_text,
+        article_number: num(b.article_number),
+        article_title: str(b.article_title),
+        conditions: str(b.conditions),
+        exceptions: str(b.exceptions),
+        summary: str(b.summary),
+        value_min: num(b.value_min),
+        value_max: num(b.value_max),
+        value_exact: num(b.value_exact),
+        unit: str(b.unit),
+        instructor_note: str(b.instructor_note),
+        // Manually added by an instructor → trusted, marked validated by default
+        validation_status: str(b.validation_status) ?? "valide",
+      })
+      .returning();
+    res.status(201).json(rule);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Supprimer une règle ──
+calibrationRouter.delete("/rules/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const [deleted] = await db
+      .delete(zone_regulatory_rules)
+      .where(eq(zone_regulatory_rules.id, req.params.id as string))
+      .returning({ id: zone_regulatory_rules.id });
+    if (!deleted) return res.status(404).json({ error: "Règle non trouvée" });
+    res.status(204).end();
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

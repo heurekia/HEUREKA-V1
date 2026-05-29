@@ -51,7 +51,20 @@ type BanSuggestion = { label: string; lat: number; lng: number; citycode: string
 const TOPIC_LABEL: Record<string, string> = {
   recul_voie: "Recul voirie", recul_limite: "Recul limites", emprise_sol: "Emprise au sol",
   hauteur: "Hauteur max.", stationnement: "Stationnement", espaces_verts: "Espaces verts",
-  terrain_min: "Terrain minimum",
+  terrain_min: "Terrain minimum", recul_batiments: "Recul entre bâtiments",
+  destinations: "Destinations autorisées", aspect: "Aspect extérieur", general: "Disposition générale",
+};
+
+// Topics whose rule is textual/qualitative (no numeric value) — rendered in full,
+// in plain language, rather than as a numeric badge. "aspect" (article 11 du PLU)
+// couvre matériaux, couleurs, toitures, menuiseries/huisseries et clôtures.
+const QUALITATIVE_TOPICS = new Set(["aspect", "destinations", "general"]);
+
+// Short icon per topic to help the citizen scan the regulatory synthesis.
+const TOPIC_ICON: Record<string, string> = {
+  recul_voie: "📏", recul_limite: "📐", emprise_sol: "🏗️", hauteur: "📐",
+  stationnement: "🅿️", espaces_verts: "🌳", terrain_min: "📦",
+  recul_batiments: "↔️", destinations: "🏠", aspect: "🎨", general: "📋",
 };
 
 const ZONE_TYPE_COLOR: Record<string, { bg: string; text: string; border: string }> = {
@@ -715,14 +728,24 @@ export function AnalyseParcellaire() {
                         Règles applicables ({analysis.rules.length})
                       </p>
                     </div>
-                    {analysis.rules.map((rule, i) => (
+                    {analysis.rules.map((rule, i) => {
+                      const isQualitative = QUALITATIVE_TOPICS.has(rule.topic);
+                      const hasValue = rule.value_max != null || rule.value_min != null;
+                      // Qualitative rules (aspect : matériaux, couleurs, menuiseries, clôtures)
+                      // are textual — show the full wording in plain language, no truncation.
+                      const text = isQualitative ? (rule.rule_text || rule.summary || "") : (rule.summary ?? rule.rule_text.slice(0, 100));
+                      return (
                       <div key={rule.id} style={{ padding: "10px 14px", borderBottom: i < analysis.rules.length - 1 ? "1px solid #F9FAFB" : "none", display: "flex", gap: 10, alignItems: "flex-start" }}>
                         <div style={{ flex: 1, minWidth: 0 }}>
-                          <p style={{ fontSize: 12, fontWeight: 600, color: "#111827", margin: "0 0 2px" }}>{TOPIC_LABEL[rule.topic] ?? rule.topic}</p>
-                          <p style={{ fontSize: 11, color: "#6B7280", margin: 0 }}>{rule.summary ?? rule.rule_text.slice(0, 100)}</p>
+                          <p style={{ fontSize: 12, fontWeight: 600, color: "#111827", margin: "0 0 2px" }}>
+                            <span style={{ marginRight: 6 }}>{TOPIC_ICON[rule.topic] ?? "📋"}</span>
+                            {TOPIC_LABEL[rule.topic] ?? rule.topic}
+                            {rule.article_number != null && <span style={{ fontWeight: 400, color: "#9CA3AF" }}> · art. {rule.article_number}</span>}
+                          </p>
+                          <p style={{ fontSize: 11, color: "#6B7280", margin: 0, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{text}</p>
                           {rule.conditions && <p style={{ fontSize: 10, color: "#9CA3AF", margin: "2px 0 0" }}>↳ {rule.conditions}</p>}
                         </div>
-                        {(rule.value_max != null || rule.value_min != null) && (
+                        {hasValue && !isQualitative && (
                           <div style={{ flexShrink: 0, background: "#EEF2FF", borderRadius: 6, padding: "4px 8px", textAlign: "center" }}>
                             <p style={{ fontSize: 13, fontWeight: 700, color: "#4F46E5", margin: 0 }}>
                               {rule.value_max != null ? `≤${rule.value_max}` : `≥${rule.value_min}`}
@@ -731,7 +754,8 @@ export function AnalyseParcellaire() {
                           </div>
                         )}
                       </div>
-                    ))}
+                      );
+                    })}
                   </div>
                 ) : analysis && !loading && (
                   <div style={{ border: "1px dashed #E5E7EB", borderRadius: 10, padding: "16px", textAlign: "center", color: "#9CA3AF", fontSize: 12 }}>
