@@ -961,7 +961,9 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
   };
 
   try {
-    const client = new Anthropic({ apiKey: getAnthropicApiKey() });
+    // maxRetries : le SDK réessaie automatiquement (backoff exponentiel) sur
+    // 429 / 5xx / 529 — indispensable vu les appels PDF lourds et parallèles.
+    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 5 });
 
     // Upsert commune
     let commune = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
@@ -1029,7 +1031,7 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
     // Phase 2 — Règles par zone, toutes en parallèle.
     // Le PDF est mis en cache après la phase 1 ; les appels parallèles profitent
     // du cache et ne consomment qu'une fraction du quota (tokens mis en cache).
-    const extracted = await Promise.all(zoneDefs.map(async (zoneDef) => {
+    const extractZone = async (zoneDef: { code: string; label: string; type: string }) => {
       const ruleMsg = await client.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 4000,
@@ -1066,7 +1068,17 @@ Correspondance article → topic :
 
       send({ type: "zone_done", zone: zoneDef.code, rules: rules.length, vision: visionCount });
       return { zoneDef, rules, visionCount };
-    }));
+    };
+
+    // Concurrence bornée : traiter les zones par petits lots évite de saturer
+    // l'API IA (toutes les zones d'un coup provoque des 429/529/500).
+    const extracted: Array<{ zoneDef: { code: string; label: string; type: string }; rules: PluRuleInput[]; visionCount: number }> = [];
+    const CONCURRENCY = 3;
+    for (let i = 0; i < zoneDefs.length; i += CONCURRENCY) {
+      const batch = zoneDefs.slice(i, i + CONCURRENCY);
+      const batchResults = await Promise.all(batch.map(extractZone));
+      extracted.push(...batchResults);
+    }
 
     // ── Écriture atomique ──────────────────────────────────────────────────────
     // L'extraction (ci-dessus) est terminée et a réussi : on purge l'existant et
@@ -1128,7 +1140,13 @@ Correspondance article → topic :
 
   } catch (err) {
     console.error("[ingest-plu-pdf]", err);
-    send({ type: "error", message: err instanceof Error ? err.message : String(err) });
+    // Erreurs transitoires de l'API IA (surcharge / 5xx / quota) → message clair.
+    const status = (err as { status?: number })?.status;
+    const transient = status === 429 || status === 529 || (typeof status === "number" && status >= 500);
+    const message = transient
+      ? "Le service d'extraction IA est momentanément indisponible ou surchargé. Aucune donnée n'a été modifiée — réessayez dans quelques instants."
+      : (err instanceof Error ? err.message : String(err));
+    send({ type: "error", message });
   }
 
   res.end();
