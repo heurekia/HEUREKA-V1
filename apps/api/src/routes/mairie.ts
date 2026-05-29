@@ -1554,7 +1554,7 @@ Si une IMAGE est fournie : lis-la attentivement. Pour un TABLEAU (ex: stationnem
 DÉCOMPOSE l'article en SOUS-RÈGLES cohérentes (une par sous-section / thème). Renvoie UNIQUEMENT un tableau JSON, sans autre texte :
 [
   {
-    "sub_theme": string,            // ex: "Toitures", "Clôtures sur rue", "Façades", "Éléments protégés L.151-19"
+    "sub_theme": string,            // numéro + intitulé de la sous-section, ex: "11.1.5 Toiture", "11.2.2 Éléments protégés"
     "article_number": number|null,
     "article_title": string,
     "topic": "interdictions|conditions|desserte_voies|desserte_reseaux|terrain_min|recul_voie|recul_limite|recul_batiments|emprise_sol|hauteur|aspect|stationnement|espaces_verts|cos|general",
@@ -1568,8 +1568,13 @@ DÉCOMPOSE l'article en SOUS-RÈGLES cohérentes (une par sous-section / thème)
   }
 ]
 
-RÈGLES :
-- Une SOUS-RÈGLE par sous-section/thème distinct. Un article SIMPLE → tableau d'UNE sous-règle.
+DÉCOUPAGE — RÈGLE IMPÉRATIVE :
+- Découpe UNIQUEMENT selon la NUMÉROTATION interne de l'article (ex: 11.1, 11.1.4, 11.2, 11.2.2). UNE sous-règle = UNE sous-section numérotée. "sub_theme" = son numéro + son intitulé.
+- Si l'article N'A PAS de sous-sections numérotées (ex: article 1 = simple liste d'occupations interdites, article 2 = liste de conditions) → renvoie UNE SEULE sous-règle pour tout l'article ; la liste complète va dans "rule_text". NE crée SURTOUT PAS une sous-règle par item/tiret de la liste.
+- EXCEPTION tableau (image) : chaque LIGNE du tableau (type → norme) est une sous-règle.
+- Plusieurs conditions/valeurs DANS une même sous-section (ou règle) → ajoute autant de "cases" à CETTE sous-règle. NE crée JAMAIS une nouvelle sous-règle juste parce qu'il y a une condition de plus.
+
+AUTRES RÈGLES :
 - "rule_text" : conserve le sens qualitatif (matériaux, teintes, prescriptions) — pour l'aspect (art. 11) c'est l'essentiel, ne le réduis PAS à un nombre. Mais reste SYNTHÉTIQUE sur les passages très longs (prescriptions clés, pas la prose redondante) afin de produire un JSON COMPLET et bien formé.
 - "applies_if" : tague une sous-règle qui ne s'applique qu'à un contexte ("Clôtures sur rue" → ["cloture_sur_rue"] ; "Éléments protégés L.151-19" → ["protege_l151_19"] ; "Périmètre UNESCO" → ["unesco"] ; surélévation → ["surelevation"]). [] sinon.
 - VALEUR PRINCIPALE (value_*) = LE seuil de la sous-règle dans une unité COHÉRENTE (%, m, m², places). Respecte min ("≥") vs max ("≤"). NE MÉLANGE JAMAIS valeur et unité. Mesures secondaires/d'autres unités → "cases". Si rien de chiffré → value_* null (fréquent pour l'aspect).
