@@ -3677,18 +3677,41 @@ type ZoneRow = {
 type ReglData = { commune: { id: string; name: string; insee_code: string }; zones: ZoneRow[] };
 
 const TOPIC_META: Record<string, { label: string; icon: string }> = {
-  recul_voie:      { label: "Recul voirie",      icon: "🛣️" },
-  recul_limite:    { label: "Recul limites",      icon: "📐" },
-  recul_batiments: { label: "Entre bâtiments",    icon: "🏢" },
-  terrain_min:     { label: "Surface minimale",   icon: "📏" },
-  emprise_sol:     { label: "Emprise au sol",     icon: "🏠" },
-  hauteur:         { label: "Hauteur max.",       icon: "📏" },
-  stationnement:   { label: "Stationnement",      icon: "🅿️" },
-  espaces_verts:   { label: "Espaces verts",      icon: "🌳" },
-  aspect:          { label: "Aspect extérieur",   icon: "🎨" },
-  destinations:    { label: "Destinations",       icon: "🏗️" },
-  cos:             { label: "COS",                icon: "📊" },
-  general:         { label: "Général",            icon: "📋" },
+  interdictions:    { label: "Occupations interdites",     icon: "🚫" },
+  conditions:       { label: "Occupations sous conditions", icon: "⚠️" },
+  desserte_voies:   { label: "Voies et accès",             icon: "🚗" },
+  desserte_reseaux: { label: "Réseaux",                    icon: "🔌" },
+  terrain_min:      { label: "Caractéristiques terrains",  icon: "📏" },
+  recul_voie:       { label: "Implantation / voies",       icon: "🛣️" },
+  recul_limite:     { label: "Implantation / limites",     icon: "📐" },
+  recul_batiments:  { label: "Implantation entre bâtiments", icon: "🏢" },
+  emprise_sol:      { label: "Emprise au sol",             icon: "🏠" },
+  hauteur:          { label: "Hauteur max.",               icon: "📐" },
+  aspect:           { label: "Aspect extérieur",           icon: "🎨" },
+  stationnement:    { label: "Stationnement",              icon: "🅿️" },
+  espaces_verts:    { label: "Espaces libres / plantations", icon: "🌳" },
+  cos:              { label: "COS",                        icon: "📊" },
+  destinations:     { label: "Destinations",               icon: "🏗️" },
+  general:          { label: "Général",                    icon: "📋" },
+};
+
+// Structure nationale du règlement PLU (art. R.123-9) : 14 articles par zone.
+// Articles 5 et 14 abrogés par la loi ALUR (24 mars 2014) → "sans objet".
+const PLU_ARTICLES: Record<number, { title: string; topic: string; abroge?: boolean }> = {
+  1:  { title: "Occupations et utilisations du sol interdites", topic: "interdictions" },
+  2:  { title: "Occupations soumises à des conditions particulières", topic: "conditions" },
+  3:  { title: "Desserte par les voies — accès aux voies ouvertes au public", topic: "desserte_voies" },
+  4:  { title: "Desserte par les réseaux", topic: "desserte_reseaux" },
+  5:  { title: "Caractéristiques des terrains (sans objet — loi ALUR)", topic: "terrain_min", abroge: true },
+  6:  { title: "Implantation par rapport aux voies et emprises publiques", topic: "recul_voie" },
+  7:  { title: "Implantation par rapport aux limites séparatives", topic: "recul_limite" },
+  8:  { title: "Implantation des constructions les unes par rapport aux autres", topic: "recul_batiments" },
+  9:  { title: "Emprise au sol des constructions", topic: "emprise_sol" },
+  10: { title: "Hauteur maximale des constructions", topic: "hauteur" },
+  11: { title: "Aspect extérieur et aménagement des abords", topic: "aspect" },
+  12: { title: "Aires de stationnement", topic: "stationnement" },
+  13: { title: "Espaces libres et plantations", topic: "espaces_verts" },
+  14: { title: "Coefficient d'occupation des sols — COS (sans objet — loi ALUR)", topic: "cos", abroge: true },
 };
 
 const ZONE_TYPE_STYLE: Record<string, { bg: string; color: string; border: string; label: string }> = {
@@ -4156,7 +4179,12 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                     </select>
                     <input type="number" placeholder="Art. n°" style={{ width: 80, borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none" }}
                       value={newRule.article_number ?? ""}
-                      onChange={e => setNewRule(f => ({ ...f, article_number: e.target.value === "" ? null : Number(e.target.value) }))}
+                      onChange={e => {
+                        const n = e.target.value === "" ? null : Number(e.target.value);
+                        const def = n != null ? PLU_ARTICLES[n] : undefined;
+                        // Auto-remplit titre + thème depuis la grille R.123-9 (modifiable ensuite).
+                        setNewRule(f => ({ ...f, article_number: n, ...(def ? { topic: def.topic, article_title: def.title } : {}) }));
+                      }}
                     />
                   </div>
                   <textarea placeholder="Texte de la règle…" style={{ width: "100%", minHeight: 72, borderRadius: 8, border: "1px solid #E2E8F0", padding: "8px 10px", fontSize: 13, resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}

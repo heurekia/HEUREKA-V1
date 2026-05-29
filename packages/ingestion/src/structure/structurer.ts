@@ -10,8 +10,9 @@
 import type { Segment } from "../adapters/interface.ts";
 
 export const RULE_TOPICS = [
-  "destinations", "terrain_min", "recul_voie", "recul_limite", "recul_batiments",
-  "emprise_sol", "hauteur", "aspect", "stationnement", "espaces_verts", "cos", "general",
+  "interdictions", "conditions", "desserte_voies", "desserte_reseaux", "terrain_min",
+  "recul_voie", "recul_limite", "recul_batiments", "emprise_sol", "hauteur", "aspect",
+  "stationnement", "espaces_verts", "cos", "destinations", "general",
 ] as const;
 export type RuleTopic = (typeof RULE_TOPICS)[number];
 
@@ -45,7 +46,7 @@ Schéma de chaque règle :
 {
   "article_number": number|null,
   "article_title": string,
-  "topic": "destinations|terrain_min|recul_voie|recul_limite|recul_batiments|emprise_sol|hauteur|aspect|stationnement|espaces_verts|cos|general",
+  "topic": "interdictions|conditions|desserte_voies|desserte_reseaux|terrain_min|recul_voie|recul_limite|recul_batiments|emprise_sol|hauteur|aspect|stationnement|espaces_verts|cos|general",
   "rule_text": string,            // texte fidèle de la règle
   "value_min": number|null,
   "value_max": number|null,       // valeur principale si une seule
@@ -55,6 +56,8 @@ Schéma de chaque règle :
   "summary": string,              // ≤ 12 mots
   "instructor_note": string|null  // ex: valeur dans un schéma, renvoi à doc externe
 }
+
+Grille R.123-9 (n° article → topic) : 1→interdictions, 2→conditions, 3→desserte_voies, 4→desserte_reseaux, 5→terrain_min (sans objet ALUR), 6→recul_voie, 7→recul_limite, 8→recul_batiments, 9→emprise_sol, 10→hauteur, 11→aspect, 12→stationnement, 13→espaces_verts, 14→cos (sans objet ALUR).
 
 Règles :
 - Une règle par article présent. Si "non réglementé"/"sans objet" → garde-la avec value_* null.

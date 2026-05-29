@@ -1476,7 +1476,7 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
 {
   "article_number": number|null,
   "article_title": string,
-  "topic": "destinations|terrain_min|recul_voie|recul_limite|recul_batiments|emprise_sol|hauteur|aspect|stationnement|espaces_verts|cos|general",
+  "topic": "interdictions|conditions|desserte_voies|desserte_reseaux|terrain_min|recul_voie|recul_limite|recul_batiments|emprise_sol|hauteur|aspect|stationnement|espaces_verts|cos|general",
   "rule_text": string,
   "value_min": number|null,
   "value_max": number|null,
@@ -1485,9 +1485,17 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
   "conditions": string|null,
   "summary": string
 }
+
+Structure nationale du règlement PLU (art. R.123-9), n° d'article → topic :
+  1 → interdictions    | 2 → conditions       | 3 → desserte_voies | 4 → desserte_reseaux
+  5 → terrain_min (sans objet, loi ALUR)      | 6 → recul_voie     | 7 → recul_limite
+  8 → recul_batiments  | 9 → emprise_sol      | 10 → hauteur       | 11 → aspect
+  12 → stationnement   | 13 → espaces_verts   | 14 → cos (sans objet, loi ALUR)
+
 - N'invente AUCUNE valeur (si incertain → null).
 - topic 'aspect' (art. 11) : matériaux, couleurs, toitures, menuiseries, clôtures dans rule_text.
-- Plusieurs valeurs selon sous-secteurs → principale dans value_max, variantes dans conditions.`,
+- Plusieurs valeurs selon sous-secteurs → principale dans value_max, variantes dans conditions.
+- Articles 5 et 14 'sans objet' → garde la règle, value_* null, signale-le dans summary.`,
       messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}\n\n${text}` }],
     });
 
