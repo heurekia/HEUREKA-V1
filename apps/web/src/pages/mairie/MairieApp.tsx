@@ -3758,13 +3758,25 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   const [analyzing, setAnalyzing] = useState(false);
   const [extracted, setExtracted] = useState<ExtractedRule[]>([]);
   const [addingExtracted, setAddingExtracted] = useState(false);
+  const [pasteImage, setPasteImage] = useState<{ data: string; media: string; name: string } | null>(null);
+
+  const pickImage = (file: File) => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const res = String(reader.result);
+      const data = res.split(",")[1] ?? "";
+      setPasteImage({ data, media: file.type || "image/png", name: file.name });
+    };
+    reader.readAsDataURL(file);
+  };
 
   const analyzeArticle = async (zoneCode: string) => {
-    if (pasteText.trim().length < 5) return;
+    if (pasteText.trim().length < 5 && !pasteImage) return;
     setAnalyzing(true);
     try {
       const r = await api.post<{ rules: ExtractedRule[] }>("/mairie/reglementation/structure-article", {
         text: pasteText, zone_code: zoneCode, article_number: newRule.article_number ?? undefined,
+        image_base64: pasteImage?.data, image_media_type: pasteImage?.media,
       });
       setExtracted(r.rules ?? []);
     } catch (e) {
@@ -3779,7 +3791,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     setAddingExtracted(true);
     try {
       await api.post(`/mairie/reglementation/zones/${zoneId}/rules/bulk`, { rules: extracted });
-      setExtracted([]); setPasteText(""); setAddingZoneId(null);
+      setExtracted([]); setPasteText(""); setPasteImage(null); setAddingZoneId(null);
       load();
     } catch (e) {
       alert(e instanceof Error ? e.message : "Échec de l'ajout");
@@ -3861,6 +3873,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     setNewRule({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
     setPasteText("");
     setExtracted([]);
+    setPasteImage(null);
   };
 
   const addZone = async () => {
@@ -4271,13 +4284,27 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
 
                   {/* Coller le texte de l'article → structuration IA (texte court, pas le PDF) */}
                   <div style={{ background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: "#6D28D9", marginBottom: 6 }}>✨ Coller le texte de l'article — l'IA remplit les champs</div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#6D28D9", marginBottom: 6 }}>✨ Coller le texte — ou importer une image (tableau / croquis)</div>
                     <textarea placeholder="Collez ici le texte de l'article du PLU…" style={{ width: "100%", minHeight: 60, borderRadius: 8, border: "1px solid #DDD6FE", padding: "8px 10px", fontSize: 12, resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
                       value={pasteText}
                       onChange={e => setPasteText(e.target.value)}
                     />
-                    <button onClick={() => analyzeArticle(selectedZone.zone_code)} disabled={analyzing || pasteText.trim().length < 5}
-                      style={{ marginTop: 6, background: analyzing ? "#A78BFA" : "#7C3AED", color: "white", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: analyzing ? "wait" : "pointer" }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+                      <label style={{ fontSize: 11, color: "#6D28D9", cursor: "pointer", border: "1px solid #DDD6FE", borderRadius: 8, padding: "5px 10px", background: "white", fontWeight: 600 }}>
+                        📷 Image (tableau / croquis)
+                        <input type="file" accept="image/*" style={{ display: "none" }}
+                          onChange={e => { const f = e.target.files?.[0]; if (f) pickImage(f); e.target.value = ""; }}
+                        />
+                      </label>
+                      {pasteImage && (
+                        <span style={{ fontSize: 11, color: "#475569", display: "flex", alignItems: "center", gap: 4 }}>
+                          🖼 {pasteImage.name.length > 22 ? pasteImage.name.slice(0, 20) + "…" : pasteImage.name}
+                          <button onClick={() => setPasteImage(null)} style={{ border: "none", background: "transparent", color: "#EF4444", cursor: "pointer", fontSize: 13 }}>✕</button>
+                        </span>
+                      )}
+                    </div>
+                    <button onClick={() => analyzeArticle(selectedZone.zone_code)} disabled={analyzing || (pasteText.trim().length < 5 && !pasteImage)}
+                      style={{ marginTop: 8, background: analyzing ? "#A78BFA" : "#7C3AED", color: "white", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: analyzing ? "wait" : "pointer" }}>
                       {analyzing ? "Analyse…" : "Analyser (décompose l'article en sous-règles)"}
                     </button>
                   </div>

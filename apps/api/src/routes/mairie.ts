@@ -1531,14 +1531,25 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules/bulk", requireRole("mairi
 // formulaire. L'instructeur vérifie puis enregistre.
 mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
-    const { text, zone_code, article_number } = req.body as { text?: string; zone_code?: string; article_number?: number | string };
-    if (!text || text.trim().length < 5) return res.status(400).json({ error: "Texte de l'article requis" });
+    const { text, zone_code, article_number, image_base64, image_media_type } = req.body as { text?: string; zone_code?: string; article_number?: number | string; image_base64?: string; image_media_type?: string };
+    const hasImage = typeof image_base64 === "string" && image_base64.length > 0;
+    if ((!text || text.trim().length < 5) && !hasImage) return res.status(400).json({ error: "Texte de l'article ou image requis" });
+
+    // Image (tableau / croquis) → vision : Sonnet lit mieux les tableaux complexes.
+    const userContent: Anthropic.ContentBlockParam[] = [];
+    if (hasImage) {
+      const media = (["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image_media_type ?? "") ? image_media_type : "image/png") as "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+      userContent.push({ type: "image", source: { type: "base64", media_type: media, data: image_base64! } });
+    }
+    userContent.push({ type: "text", text: `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}\n\n${text ?? "(Voir le tableau / croquis fourni en image.)"}` });
 
     const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 60_000 });
     const msg = await client.messages.create({
-      model: "claude-haiku-4-5-20251001",
+      model: hasImage ? "claude-sonnet-4-6" : "claude-haiku-4-5-20251001",
       max_tokens: 8000,
-      system: `Tu es un expert en droit de l'urbanisme français. On te donne le TEXTE d'UN article de règlement PLU — souvent long, avec des sous-sections (ex: 11.1.4 Façades, 11.1.5 Toiture, 11.1.8 Clôtures, 11.2.2 Éléments protégés…).
+      system: `Tu es un expert en droit de l'urbanisme français. On te donne le TEXTE d'UN article de règlement PLU (souvent long, avec sous-sections) ET/OU une IMAGE (tableau ou croquis).
+
+Si une IMAGE est fournie : lis-la attentivement. Pour un TABLEAU (ex: stationnement art. 12 — colonne « Type »/« Destination » → colonne « Normes »), CHAQUE LIGNE devient une SOUS-RÈGLE (sub_theme = le type, ex: « Habitation », « Bureaux », « Commerce »). Les tranches/seuils d'une même ligne (ex: « 1 place/40 m² entre 300 et 1000 m² », « 1 place/30 m² au-delà de 1000 m² ») deviennent des "cases" (kind "parametre"). Pour un CROQUIS, décris la règle dans rule_text.
 
 DÉCOMPOSE l'article en SOUS-RÈGLES cohérentes (une par sous-section / thème). Renvoie UNIQUEMENT un tableau JSON, sans autre texte :
 [
@@ -1564,7 +1575,7 @@ RÈGLES :
 - VALEUR PRINCIPALE (value_*) = LE seuil de la sous-règle dans une unité COHÉRENTE (%, m, m², places). Respecte min ("≥") vs max ("≤"). NE MÉLANGE JAMAIS valeur et unité. Mesures secondaires/d'autres unités → "cases". Si rien de chiffré → value_* null (fréquent pour l'aspect).
 - "cases" : DISSOCIE chaque valeur distincte. kind "condition" (alternatives exclusives) vs "parametre" (valeurs cumulatives).
 - N'invente AUCUNE valeur. Articles 5 et 14 → "sans objet" (loi ALUR).`,
-      messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}\n\n${text}` }],
+      messages: [{ role: "user", content: userContent }],
     });
 
     const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
@@ -1599,7 +1610,7 @@ RÈGLES :
 
     // Repli : rien d'exploitable → une sous-règle brute avec le texte collé.
     if (rules.length === 0) {
-      rules.push({ sub_theme: null, article_number: article_number ? Number(article_number) : null, article_title: "", topic: "general", rule_text: text.trim(), value_min: null, value_max: null, value_exact: null, unit: null, conditions: null, summary: "", cases: [], applies_if: [] });
+      rules.push({ sub_theme: null, article_number: article_number ? Number(article_number) : null, article_title: "", topic: "general", rule_text: (text ?? "").trim() || "Voir le tableau / croquis fourni.", value_min: null, value_max: null, value_exact: null, unit: null, conditions: null, summary: "", cases: [], applies_if: [] });
     }
 
     res.json({ rules });
