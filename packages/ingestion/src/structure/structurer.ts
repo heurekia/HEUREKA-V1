@@ -36,6 +36,8 @@ export interface StructuredRule {
   summary: string;
   instructor_note: string | null;
   cases: RuleCase[];
+  sub_theme: string | null;
+  applies_if: string[];
 }
 
 export interface ZoneRules {
@@ -115,6 +117,8 @@ export function parseRules(raw: string): StructuredRule[] {
             .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit), kind: c.kind === "condition" ? "condition" as const : "parametre" as const }))
             .filter((c) => c.condition)
         : [],
+      sub_theme: str(r.sub_theme),
+      applies_if: Array.isArray(r.applies_if) ? (r.applies_if as unknown[]).map(str).filter((t): t is string => !!t) : [],
     }))
     .filter((r) => r.rule_text || r.article_title);
 }

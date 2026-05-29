@@ -18,6 +18,11 @@ export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
   // Cas conditionnels structurés : [{ condition, value, unit }]
   // ex: 10 m si voie à sens unique / 13 m si double sens.
   cases: jsonb("cases").default([]),
+  // Tags d'applicabilité (ex: ["protege_l151_19","unesco","cloture_sur_rue"]) —
+  // permettent de filtrer les (sous-)règles selon le contexte de la parcelle.
+  applies_if: jsonb("applies_if").default([]),
+  // Sous-thème pour les articles décomposés (ex: "Toitures", "Clôtures sur rue").
+  sub_theme: text("sub_theme"),
   instructor_note: text("instructor_note"),
   validation_status: text("validation_status").notNull().default("draft"),
   created_at: timestamp("created_at").notNull().defaultNow(),

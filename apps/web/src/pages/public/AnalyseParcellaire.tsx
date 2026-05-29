@@ -27,7 +27,7 @@ type ParcelAnalysis = {
   plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string; plu_etat?: string };
   risks?: { flood_risk: string; seismic_zone: string; clay_risk?: string; landslide_risk?: string; radon_level?: string };
   db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
-  rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" }> | null }>;
+  rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" }> | null; sub_theme?: string | null; applies_if?: string[] | null }>;
   buildability: {
     maxFootprintM2: number; remainingFootprintM2: number; maxHeightM: number | null;
     minSetbackFromRoadM: number | null; minSetbackFromBoundariesM: number | null;
@@ -59,6 +59,15 @@ const TOPIC_LABEL: Record<string, string> = {
 // in plain language, rather than as a numeric badge. "aspect" (article 11 du PLU)
 // couvre matériaux, couleurs, toitures, menuiseries/huisseries et clôtures.
 const QUALITATIVE_TOPICS = new Set(["aspect", "destinations", "general"]);
+
+// Libellés des tags d'applicabilité (affichage citoyen).
+const APPLIES_LABEL_PUB: Record<string, string> = {
+  protege_l151_19: "si élément protégé (L.151-19)", unesco: "si périmètre UNESCO", abf: "si périmètre ABF",
+  inondable: "si zone inondable", extension: "en cas d'extension", surelevation: "en cas de surélévation",
+  ravalement: "en cas de ravalement", demolition: "en cas de démolition", cloture_sur_rue: "clôture sur rue",
+  cloture_limite: "clôture en limite", annexe: "pour une annexe", devanture_commerciale: "devanture commerciale",
+  equipement_public: "équipement public",
+};
 
 // Short icon per topic to help the citizen scan the regulatory synthesis.
 const TOPIC_ICON: Record<string, string> = {
@@ -739,11 +748,18 @@ export function AnalyseParcellaire() {
                         <div style={{ flex: 1, minWidth: 0 }}>
                           <p style={{ fontSize: 12, fontWeight: 600, color: "#111827", margin: "0 0 2px" }}>
                             <span style={{ marginRight: 6 }}>{TOPIC_ICON[rule.topic] ?? "📋"}</span>
-                            {TOPIC_LABEL[rule.topic] ?? rule.topic}
+                            {rule.sub_theme ?? TOPIC_LABEL[rule.topic] ?? rule.topic}
                             {rule.article_number != null && <span style={{ fontWeight: 400, color: "#9CA3AF" }}> · art. {rule.article_number}</span>}
                           </p>
                           <p style={{ fontSize: 11, color: "#6B7280", margin: 0, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{text}</p>
                           {rule.conditions && <p style={{ fontSize: 10, color: "#9CA3AF", margin: "2px 0 0" }}>↳ {rule.conditions}</p>}
+                          {(rule.applies_if?.length ?? 0) > 0 && (
+                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
+                              {rule.applies_if!.map((t, ti) => (
+                                <span key={ti} style={{ background: "#FEF3C7", color: "#92400E", borderRadius: 6, padding: "2px 8px", fontSize: 10 }}>⊕ {APPLIES_LABEL_PUB[t] ?? t}</span>
+                              ))}
+                            </div>
+                          )}
                           {(rule.cases?.length ?? 0) > 0 && (
                             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
                               {rule.cases!.map((c, ci) => {

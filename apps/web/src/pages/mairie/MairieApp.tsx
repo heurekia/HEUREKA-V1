@@ -3669,6 +3669,22 @@ type RuleRow = {
   topic: string; rule_text: string; value_min: number | null; value_max: number | null;
   value_exact: number | null; unit: string | null; conditions: string | null; summary: string | null;
   instructor_note: string | null; validation_status: string; cases?: RuleCase[] | null;
+  applies_if?: string[] | null; sub_theme?: string | null;
+};
+// Sous-règle extraite par l'agent (avant enregistrement).
+type ExtractedRule = {
+  sub_theme: string | null; article_number: number | null; article_title: string;
+  topic: string; rule_text: string; value_min: number | null; value_max: number | null;
+  value_exact: number | null; unit: string | null; conditions: string | null; summary: string;
+  cases: RuleCase[]; applies_if: string[];
+};
+// Libellés lisibles des tags d'applicabilité.
+const APPLIES_LABEL: Record<string, string> = {
+  protege_l151_19: "Élément protégé L.151-19", unesco: "Périmètre UNESCO", abf: "Périmètre ABF",
+  inondable: "Zone inondable", extension: "Extension", surelevation: "Surélévation",
+  ravalement: "Ravalement", demolition: "Démolition", cloture_sur_rue: "Clôture sur rue",
+  cloture_limite: "Clôture en limite", annexe: "Annexe", devanture_commerciale: "Devanture commerciale",
+  equipement_public: "Équipement public",
 };
 type ZoneRow = {
   id: string; zone_code: string; zone_label: string; zone_type: string; summary: string | null;
@@ -3740,19 +3756,35 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   const [purging, setPurging] = useState(false);
   const [pasteText, setPasteText] = useState("");
   const [analyzing, setAnalyzing] = useState(false);
+  const [extracted, setExtracted] = useState<ExtractedRule[]>([]);
+  const [addingExtracted, setAddingExtracted] = useState(false);
 
   const analyzeArticle = async (zoneCode: string) => {
     if (pasteText.trim().length < 5) return;
     setAnalyzing(true);
     try {
-      const r = await api.post<Partial<RuleRow>>("/mairie/reglementation/structure-article", {
+      const r = await api.post<{ rules: ExtractedRule[] }>("/mairie/reglementation/structure-article", {
         text: pasteText, zone_code: zoneCode, article_number: newRule.article_number ?? undefined,
       });
-      setNewRule(f => ({ ...f, ...r }));
+      setExtracted(r.rules ?? []);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Échec de l'analyse");
     } finally {
       setAnalyzing(false);
+    }
+  };
+
+  const addExtracted = async (zoneId: string) => {
+    if (!extracted.length) return;
+    setAddingExtracted(true);
+    try {
+      await api.post(`/mairie/reglementation/zones/${zoneId}/rules/bulk`, { rules: extracted });
+      setExtracted([]); setPasteText(""); setAddingZoneId(null);
+      load();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Échec de l'ajout");
+    } finally {
+      setAddingExtracted(false);
     }
   };
 
@@ -3828,6 +3860,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     setAddingZoneId(null);
     setNewRule({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
     setPasteText("");
+    setExtracted([]);
   };
 
   const addZone = async () => {
@@ -4054,7 +4087,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                           <span style={{ fontSize: 11, fontWeight: 700, color: "#6B7280", textTransform: "uppercase", letterSpacing: "0.04em" }}>
-                            {rule.article_number ? `Art. ${rule.article_number} • ` : ""}{meta.label}
+                            {rule.article_number ? `Art. ${rule.article_number} • ` : ""}{meta.label}{rule.sub_theme ? ` — ${rule.sub_theme}` : ""}
                           </span>
                           {statusDot(rule.validation_status)}
                         </div>
@@ -4079,6 +4112,13 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                                     </span>
                                   );
                                 })}
+                              </div>
+                            )}
+                            {(rule.applies_if?.length ?? 0) > 0 && (
+                              <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                                {rule.applies_if!.map((t, i) => (
+                                  <span key={i} style={{ background: "#FEF3C7", color: "#92400E", borderRadius: 6, padding: "2px 8px", fontSize: 10.5 }}>⊕ {APPLIES_LABEL[t] ?? t}</span>
+                                ))}
                               </div>
                             )}
                           </>
@@ -4215,10 +4255,12 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                     />
                     <button onClick={() => analyzeArticle(selectedZone.zone_code)} disabled={analyzing || pasteText.trim().length < 5}
                       style={{ marginTop: 6, background: analyzing ? "#A78BFA" : "#7C3AED", color: "white", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: analyzing ? "wait" : "pointer" }}>
-                      {analyzing ? "Analyse…" : "Analyser et pré-remplir"}
+                      {analyzing ? "Analyse…" : "Analyser (décompose l'article en sous-règles)"}
                     </button>
                   </div>
 
+                  {extracted.length === 0 ? (
+                  <>
                   <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
                     <select style={{ borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none", flex: 1 }}
                       value={newRule.topic ?? "recul_voie"}
@@ -4317,6 +4359,48 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                       Annuler
                     </button>
                   </div>
+                  </>
+                  ) : (
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8 }}>{extracted.length} sous-règle(s) détectée(s) — vérifiez puis ajoutez</div>
+                    {extracted.map((r, i) => (
+                      <div key={i} style={{ border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 10px", marginBottom: 8, background: "white" }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
+                          <span style={{ fontSize: 11, fontWeight: 700, color: "#6B7280" }}>
+                            {r.article_number ? `Art. ${r.article_number} · ` : ""}{TOPIC_META[r.topic]?.label ?? r.topic}{r.sub_theme ? ` — ${r.sub_theme}` : ""}
+                          </span>
+                          <button onClick={() => setExtracted(es => es.filter((_, j) => j !== i))} title="Retirer" style={{ border: "none", background: "transparent", color: "#EF4444", cursor: "pointer", fontSize: 13, flexShrink: 0 }}>✕</button>
+                        </div>
+                        <p style={{ fontSize: 11.5, color: "#374151", margin: "4px 0 0", lineHeight: 1.45 }}>{r.summary || r.rule_text.slice(0, 180)}</p>
+                        <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
+                          {r.value_min != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, color: "#374151" }}>≥{r.value_min} {r.unit}</span>}
+                          {r.value_max != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, color: "#374151" }}>≤{r.value_max} {r.unit}</span>}
+                          {r.value_exact != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, color: "#374151" }}>{r.value_exact} {r.unit}</span>}
+                          {r.cases.map((c, ci) => { const isCond = c.kind === "condition"; return (
+                            <span key={`c${ci}`} style={{ background: isCond ? "#FFF7ED" : "#EEF2FF", color: isCond ? "#C2410C" : "#4338CA", borderRadius: 6, padding: "2px 8px", fontSize: 10.5 }}>{isCond ? "si " : ""}{c.condition} : <strong>{c.value ?? "—"}{c.unit ? ` ${c.unit}` : ""}</strong></span>
+                          ); })}
+                          {r.applies_if.map((t, ti) => (
+                            <span key={`a${ti}`} style={{ background: "#FEF3C7", color: "#92400E", borderRadius: 6, padding: "2px 8px", fontSize: 10.5 }}>⊕ {APPLIES_LABEL[t] ?? t}</span>
+                          ))}
+                        </div>
+                      </div>
+                    ))}
+                    <div style={{ display: "flex", gap: 8, marginTop: 6 }}>
+                      <button onClick={() => addExtracted(selectedZone.id)} disabled={addingExtracted || extracted.length === 0}
+                        style={{ background: addingExtracted ? "#818CF8" : "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: addingExtracted ? "wait" : "pointer" }}>
+                        {addingExtracted ? "Ajout…" : `Ajouter ${extracted.length} règle(s)`}
+                      </button>
+                      <button onClick={() => setExtracted([])}
+                        style={{ background: "#F1F5F9", color: "#374151", border: "none", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
+                        Recommencer
+                      </button>
+                      <button onClick={() => { setExtracted([]); setPasteText(""); setAddingZoneId(null); }}
+                        style={{ background: "transparent", color: "#94a3b8", border: "none", padding: "7px 8px", fontSize: 12, cursor: "pointer" }}>
+                        Annuler
+                      </button>
+                    </div>
+                  </div>
+                  )}
                 </div>
               )}
             </div>

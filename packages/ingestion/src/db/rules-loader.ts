@@ -66,6 +66,8 @@ export async function loadRules(
           value_exact: r.value_exact,
           unit: r.unit,
           cases: r.cases ?? [],
+          applies_if: r.applies_if ?? [],
+          sub_theme: r.sub_theme,
           instructor_note: r.instructor_note,
           validation_status: "brouillon",
         });

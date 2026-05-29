@@ -484,6 +484,9 @@ ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS analyse_ia jsonb;
 
 -- Cas conditionnels structurés sur une règle (ex: 10 m sens unique / 13 m double sens)
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS cases jsonb DEFAULT '[]'::jsonb;
+-- Décomposition d'articles complexes en sous-règles + applicabilité
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS applies_if jsonb DEFAULT '[]'::jsonb;
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS sub_theme text;
 
 -- ── Ingestion documentaire : segments + embeddings (pgvector) ──
 CREATE EXTENSION IF NOT EXISTS vector;
