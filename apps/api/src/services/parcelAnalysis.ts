@@ -99,6 +99,7 @@ export interface RegDbRule {
   unit: string | null;
   summary: string | null;
   conditions: string | null;
+  exceptions?: string | null;
   validation_status: string;
   cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: string }> | null;
   applies_if?: string[] | null;

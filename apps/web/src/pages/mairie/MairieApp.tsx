@@ -3667,7 +3667,7 @@ type RuleCase = { condition: string; value: number | null; unit: string | null; 
 type RuleRow = {
   id: string; zone_id: string; article_number: number | null; article_title: string | null;
   topic: string; rule_text: string; value_min: number | null; value_max: number | null;
-  value_exact: number | null; unit: string | null; conditions: string | null; summary: string | null;
+  value_exact: number | null; unit: string | null; conditions: string | null; exceptions?: string | null; summary: string | null;
   instructor_note: string | null; validation_status: string; cases?: RuleCase[] | null;
   applies_if?: string[] | null; sub_theme?: string | null;
 };
@@ -3675,7 +3675,7 @@ type RuleRow = {
 type ExtractedRule = {
   sub_theme: string | null; article_number: number | null; article_title: string;
   topic: string; rule_text: string; value_min: number | null; value_max: number | null;
-  value_exact: number | null; unit: string | null; conditions: string | null; summary: string;
+  value_exact: number | null; unit: string | null; conditions: string | null; exceptions: string | null; summary: string;
   cases: RuleCase[]; applies_if: string[];
 };
 // Libellés lisibles des tags d'applicabilité.
@@ -4121,6 +4121,11 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                         {!isEditing && (
                           <>
                             <p style={{ margin: "0 0 4px", fontSize: 13, color: "#111827", lineHeight: 1.5 }}>{rule.rule_text}</p>
+                            {rule.exceptions && (
+                              <p style={{ margin: "0 0 4px", fontSize: 12, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6, padding: "4px 8px", lineHeight: 1.45 }}>
+                                <strong>Sauf :</strong> {rule.exceptions}
+                              </p>
+                            )}
                             {(rule.value_min != null || rule.value_max != null || rule.value_exact != null) && (
                               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
                                 {rule.value_min != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#374151" }}>min {rule.value_min} {rule.unit}</span>}
@@ -4192,6 +4197,11 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                               placeholder="Conditions particulières…"
                               value={(editForm.conditions ?? rule.conditions) ?? ""}
                               onChange={e => setEditForm(f => ({ ...f, conditions: e.target.value || null }))}
+                            />
+                            <input style={{ borderRadius: 8, border: "1px solid #FDE68A", background: "#FFFBEB", padding: "6px 10px", fontSize: 12, outline: "none" }}
+                              placeholder="Exceptions / dérogations (sauf… / cf. autre article)…"
+                              value={(editForm.exceptions ?? rule.exceptions) ?? ""}
+                              onChange={e => setEditForm(f => ({ ...f, exceptions: e.target.value || null }))}
                             />
                             <input style={{ borderRadius: 8, border: "1px solid #E2E8F0", padding: "6px 10px", fontSize: 12, outline: "none" }}
                               placeholder="Résumé (10 mots max)…"
@@ -4363,6 +4373,10 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                     value={newRule.conditions ?? ""}
                     onChange={e => setNewRule(f => ({ ...f, conditions: e.target.value || null }))}
                   />
+                  <input placeholder="Exceptions / dérogations (ex: sauf sinistre grave ; cf. UA-2)" style={{ marginTop: 6, width: "100%", borderRadius: 8, border: "1px solid #FDE68A", background: "#FFFBEB", padding: "7px 10px", fontSize: 12, outline: "none", boxSizing: "border-box" }}
+                    value={newRule.exceptions ?? ""}
+                    onChange={e => setNewRule(f => ({ ...f, exceptions: e.target.value || null }))}
+                  />
                   <input placeholder="Résumé (10 mots max)" style={{ marginTop: 6, width: "100%", borderRadius: 8, border: "1px solid #E2E8F0", padding: "7px 10px", fontSize: 12, outline: "none", boxSizing: "border-box" }}
                     value={newRule.summary ?? ""}
                     onChange={e => setNewRule(f => ({ ...f, summary: e.target.value }))}
@@ -4426,6 +4440,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                           <button onClick={() => setExtracted(es => es.filter((_, j) => j !== i))} title="Retirer" style={{ border: "none", background: "transparent", color: "#EF4444", cursor: "pointer", fontSize: 13, flexShrink: 0 }}>✕</button>
                         </div>
                         <p style={{ fontSize: 11.5, color: "#374151", margin: "4px 0 0", lineHeight: 1.45 }}>{r.summary || r.rule_text.slice(0, 180)}</p>
+                        {r.exceptions && <p style={{ fontSize: 11, color: "#B45309", margin: "4px 0 0", lineHeight: 1.4 }}><strong>Sauf :</strong> {r.exceptions}</p>}
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
                           {r.value_min != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, color: "#374151" }}>≥{r.value_min} {r.unit}</span>}
                           {r.value_max != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, color: "#374151" }}>≤{r.value_max} {r.unit}</span>}

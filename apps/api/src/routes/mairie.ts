@@ -1407,7 +1407,7 @@ mairieRouter.delete("/reglementation", requireRole("mairie", "instructeur", "adm
 mairieRouter.patch("/reglementation/rules/:id", async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
-    const { rule_text, validation_status, value_min, value_max, value_exact, unit, conditions, summary, instructor_note, topic, article_number, article_title, cases, applies_if, sub_theme } = req.body as Record<string, unknown>;
+    const { rule_text, validation_status, value_min, value_max, value_exact, unit, conditions, exceptions, summary, instructor_note, topic, article_number, article_title, cases, applies_if, sub_theme } = req.body as Record<string, unknown>;
 
     const allowed = new Set(["valide", "brouillon", "rejete", "draft"]);
     if (validation_status !== undefined && !allowed.has(validation_status as string)) {
@@ -1422,6 +1422,7 @@ mairieRouter.patch("/reglementation/rules/:id", async (req: AuthRequest, res) =>
     if (value_exact !== undefined) patch.value_exact = value_exact === null ? null : Number(value_exact);
     if (unit !== undefined) patch.unit = unit;
     if (conditions !== undefined) patch.conditions = conditions;
+    if (exceptions !== undefined) patch.exceptions = exceptions;
     if (summary !== undefined) patch.summary = summary;
     if (instructor_note !== undefined) patch.instructor_note = instructor_note;
     if (topic !== undefined) patch.topic = topic;
@@ -1458,7 +1459,7 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules", async (req: AuthRequest
     const [zone] = await db.select({ id: zones.id }).from(zones).where(eq(zones.id, zone_id)).limit(1);
     if (!zone) return res.status(404).json({ error: "Zone non trouvée" });
 
-    const { article_number, article_title, topic, rule_text, value_min, value_max, value_exact, unit, conditions, summary, cases, applies_if, sub_theme } = req.body as Record<string, unknown>;
+    const { article_number, article_title, topic, rule_text, value_min, value_max, value_exact, unit, conditions, exceptions, summary, cases, applies_if, sub_theme } = req.body as Record<string, unknown>;
     if (!topic || !rule_text) return res.status(400).json({ error: "topic et rule_text requis" });
 
     const [created] = await db.insert(zone_regulatory_rules).values({
@@ -1472,6 +1473,7 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules", async (req: AuthRequest
       value_exact: value_exact != null ? Number(value_exact) : null,
       unit: (unit as string | undefined) ?? null,
       conditions: (conditions as string | undefined) ?? null,
+      exceptions: (exceptions as string | undefined) ?? null,
       summary: (summary as string | undefined) ?? null,
       cases: Array.isArray(cases) ? cases : [],
       applies_if: Array.isArray(applies_if) ? applies_if : [],
@@ -1509,6 +1511,7 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules/bulk", requireRole("mairi
         value_min: num(r.value_min), value_max: num(r.value_max), value_exact: num(r.value_exact),
         unit: str(r.unit),
         conditions: str(r.conditions),
+        exceptions: str(r.exceptions),
         summary: str(r.summary),
         cases: Array.isArray(r.cases) ? r.cases : [],
         applies_if: Array.isArray(r.applies_if) ? r.applies_if : [],
@@ -1562,6 +1565,7 @@ DÉCOMPOSE l'article en SOUS-RÈGLES cohérentes (une par sous-section / thème)
     "value_min": number|null, "value_max": number|null, "value_exact": number|null,
     "unit": "m|cm|%|m²|places"|null,
     "conditions": string|null,
+    "exceptions": string|null,      // dérogations « sauf… / à l'exception de… / hormis… » (texte court), renvoi d'article inclus
     "summary": string,              // ≤ 15 mots
     "cases": [ { "condition": string, "value": number|null, "unit": "m|cm|%|m²|places"|null, "kind": "condition|parametre" } ],
     "applies_if": [ ]               // tags d'applicabilité, parmi : protege_l151_19, unesco, abf, inondable, extension, surelevation, ravalement, demolition, cloture_sur_rue, cloture_limite, annexe, devanture_commerciale, equipement_public. [] si général.
@@ -1576,6 +1580,7 @@ DÉCOUPAGE — RÈGLE IMPÉRATIVE :
 
 AUTRES RÈGLES :
 - "rule_text" : conserve le sens qualitatif (matériaux, teintes, prescriptions) — pour l'aspect (art. 11) c'est l'essentiel, ne le réduis PAS à un nombre. Mais reste SYNTHÉTIQUE sur les passages très longs (prescriptions clés, pas la prose redondante) afin de produire un JSON COMPLET et bien formé.
+- "exceptions" : repère les DÉROGATIONS (« sauf… », « à l'exception de… », « hormis… », « sauf cas de… ») et liste-les dans ce champ (ex: « sauf ICPE visées à l'art. UA-2 ; démolition autorisée si sinistre grave ; abattage si état sanitaire le justifie »). null si aucune.
 - "applies_if" : tague une sous-règle qui ne s'applique qu'à un contexte ("Clôtures sur rue" → ["cloture_sur_rue"] ; "Éléments protégés L.151-19" → ["protege_l151_19"] ; "Périmètre UNESCO" → ["unesco"] ; surélévation → ["surelevation"]). [] sinon.
 - VALEUR PRINCIPALE (value_*) = LE seuil de la sous-règle dans une unité COHÉRENTE (%, m, m², places). Respecte min ("≥") vs max ("≤"). NE MÉLANGE JAMAIS valeur et unité. Mesures secondaires/d'autres unités → "cases". Si rien de chiffré → value_* null (fréquent pour l'aspect).
 - "cases" : à utiliser UNIQUEMENT pour des éléments porteurs d'une VALEUR chiffrée (ex: 1,80 m, 50 cm) ou d'une vraie ALTERNATIVE conditionnelle (ex: 10 m sens unique / 13 m double sens). kind "condition" (alternative exclusive) vs "parametre" (valeur cumulative).
@@ -1602,6 +1607,7 @@ AUTRES RÈGLES :
         value_min: num(r.value_min), value_max: num(r.value_max), value_exact: num(r.value_exact),
         unit: str(r.unit),
         conditions: str(r.conditions),
+        exceptions: str(r.exceptions),
         summary: str(r.summary) ?? "",
         cases: Array.isArray(r.cases)
           ? (r.cases as unknown[]).filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
@@ -1618,7 +1624,7 @@ AUTRES RÈGLES :
 
     // Repli : rien d'exploitable → une sous-règle brute avec le texte collé.
     if (rules.length === 0) {
-      rules.push({ sub_theme: null, article_number: article_number ? Number(article_number) : null, article_title: "", topic: "general", rule_text: (text ?? "").trim() || "Voir le tableau / croquis fourni.", value_min: null, value_max: null, value_exact: null, unit: null, conditions: null, summary: "", cases: [], applies_if: [] });
+      rules.push({ sub_theme: null, article_number: article_number ? Number(article_number) : null, article_title: "", topic: "general", rule_text: (text ?? "").trim() || "Voir le tableau / croquis fourni.", value_min: null, value_max: null, value_exact: null, unit: null, conditions: null, exceptions: null, summary: "", cases: [], applies_if: [] });
     }
 
     res.json({ rules });
