@@ -16,6 +16,12 @@ export const RULE_TOPICS = [
 ] as const;
 export type RuleTopic = (typeof RULE_TOPICS)[number];
 
+export interface RuleCase {
+  condition: string;
+  value: number | null;
+  unit: string | null;
+}
+
 export interface StructuredRule {
   article_number: number | null;
   article_title: string;
@@ -28,6 +34,7 @@ export interface StructuredRule {
   conditions: string | null;
   summary: string;
   instructor_note: string | null;
+  cases: RuleCase[];
 }
 
 export interface ZoneRules {
@@ -54,8 +61,10 @@ Schéma de chaque règle :
   "unit": "m|%|m²|places"|null,
   "conditions": string|null,      // variantes par sous-secteur, exceptions
   "summary": string,              // ≤ 12 mots
-  "instructor_note": string|null  // ex: valeur dans un schéma, renvoi à doc externe
+  "instructor_note": string|null, // ex: valeur dans un schéma, renvoi à doc externe
+  "cases": [ { "condition": string, "value": number|null, "unit": "m|%|m²|places"|null } ]
 }
+- "cases" : si la règle a PLUSIEURS valeurs selon une condition (ex: "10 m si voie à sens unique ; 13 m si double sens", ou selon secteur), liste chaque cas. Sinon [].
 
 Grille R.123-9 (n° article → topic) : 1→interdictions, 2→conditions, 3→desserte_voies, 4→desserte_reseaux, 5→terrain_min (sans objet ALUR), 6→recul_voie, 7→recul_limite, 8→recul_batiments, 9→emprise_sol, 10→hauteur, 11→aspect, 12→stationnement, 13→espaces_verts, 14→cos (sans objet ALUR).
 
@@ -98,6 +107,12 @@ export function parseRules(raw: string): StructuredRule[] {
       conditions: str(r.conditions),
       summary: str(r.summary) ?? "",
       instructor_note: str(r.instructor_note),
+      cases: Array.isArray(r.cases)
+        ? (r.cases as unknown[])
+            .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+            .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit) }))
+            .filter((c) => c.condition)
+        : [],
     }))
     .filter((r) => r.rule_text || r.article_title);
 }

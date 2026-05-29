@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, doublePrecision, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, doublePrecision, uuid, jsonb } from "drizzle-orm/pg-core";
 import { zones } from "./zones.js";
 
 export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
@@ -15,6 +15,9 @@ export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
   value_max: doublePrecision("value_max"),
   value_exact: doublePrecision("value_exact"),
   unit: text("unit"),
+  // Cas conditionnels structurés : [{ condition, value, unit }]
+  // ex: 10 m si voie à sens unique / 13 m si double sens.
+  cases: jsonb("cases").default([]),
   instructor_note: text("instructor_note"),
   validation_status: text("validation_status").notNull().default("draft"),
   created_at: timestamp("created_at").notNull().defaultNow(),

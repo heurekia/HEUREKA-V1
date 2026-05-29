@@ -1386,7 +1386,7 @@ mairieRouter.delete("/reglementation", requireRole("mairie", "instructeur", "adm
 mairieRouter.patch("/reglementation/rules/:id", async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
-    const { rule_text, validation_status, value_min, value_max, value_exact, unit, conditions, summary, instructor_note, topic, article_number, article_title } = req.body as Record<string, unknown>;
+    const { rule_text, validation_status, value_min, value_max, value_exact, unit, conditions, summary, instructor_note, topic, article_number, article_title, cases } = req.body as Record<string, unknown>;
 
     const allowed = new Set(["valide", "brouillon", "rejete", "draft"]);
     if (validation_status !== undefined && !allowed.has(validation_status as string)) {
@@ -1406,6 +1406,7 @@ mairieRouter.patch("/reglementation/rules/:id", async (req: AuthRequest, res) =>
     if (topic !== undefined) patch.topic = topic;
     if (article_number !== undefined) patch.article_number = article_number;
     if (article_title !== undefined) patch.article_title = article_title;
+    if (cases !== undefined) patch.cases = Array.isArray(cases) ? cases : [];
 
     await db.update(zone_regulatory_rules).set(patch).where(eq(zone_regulatory_rules.id, id));
     const [updated] = await db.select().from(zone_regulatory_rules).where(eq(zone_regulatory_rules.id, id)).limit(1);
@@ -1434,7 +1435,7 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules", async (req: AuthRequest
     const [zone] = await db.select({ id: zones.id }).from(zones).where(eq(zones.id, zone_id)).limit(1);
     if (!zone) return res.status(404).json({ error: "Zone non trouvée" });
 
-    const { article_number, article_title, topic, rule_text, value_min, value_max, value_exact, unit, conditions, summary } = req.body as Record<string, unknown>;
+    const { article_number, article_title, topic, rule_text, value_min, value_max, value_exact, unit, conditions, summary, cases } = req.body as Record<string, unknown>;
     if (!topic || !rule_text) return res.status(400).json({ error: "topic et rule_text requis" });
 
     const [created] = await db.insert(zone_regulatory_rules).values({
@@ -1449,6 +1450,7 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules", async (req: AuthRequest
       unit: (unit as string | undefined) ?? null,
       conditions: (conditions as string | undefined) ?? null,
       summary: (summary as string | undefined) ?? null,
+      cases: Array.isArray(cases) ? cases : [],
       validation_status: "brouillon",
     }).returning();
 
@@ -1483,8 +1485,12 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
   "value_exact": number|null,
   "unit": "m|%|m²|places"|null,
   "conditions": string|null,
-  "summary": string
+  "summary": string,
+  "cases": [ { "condition": string, "value": number|null, "unit": "m|%|m²|places"|null } ]
 }
+
+- "cases" : si la règle prévoit PLUSIEURS valeurs selon une condition (ex: "10 m pour voie à sens unique ; 13 m pour voie à double sens", ou un secteur), liste chaque cas {condition, value, unit}. Sinon [].
+  La valeur principale (la plus courante/élevée) va AUSSI dans value_max/value_exact pour l'affichage rapide.
 
 Structure nationale du règlement PLU (art. R.123-9), n° d'article → topic :
   1 → interdictions    | 2 → conditions       | 3 → desserte_voies | 4 → desserte_reseaux
@@ -1503,6 +1509,12 @@ Structure nationale du règlement PLU (art. R.123-9), n° d'article → topic :
     const parsed = JSON.parse(raw.match(/\{[\s\S]*\}/)?.[0] ?? "{}") as Record<string, unknown>;
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
     const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+    const cases = Array.isArray(parsed.cases)
+      ? (parsed.cases as unknown[])
+          .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+          .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit) }))
+          .filter((c) => c.condition)
+      : [];
     res.json({
       article_number: num(parsed.article_number) ?? (article_number ? Number(article_number) : null),
       article_title: str(parsed.article_title) ?? "",
@@ -1514,6 +1526,7 @@ Structure nationale du règlement PLU (art. R.123-9), n° d'article → topic :
       unit: str(parsed.unit),
       conditions: str(parsed.conditions),
       summary: str(parsed.summary) ?? "",
+      cases,
     });
   } catch (err) {
     console.error("[structure-article]", err);

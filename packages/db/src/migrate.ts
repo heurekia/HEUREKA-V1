@@ -482,6 +482,9 @@ CREATE INDEX IF NOT EXISTS idx_dossier_consultations_service ON dossier_consulta
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS code_piece text;
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS analyse_ia jsonb;
 
+-- Cas conditionnels structurés sur une règle (ex: 10 m sens unique / 13 m double sens)
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS cases jsonb DEFAULT '[]'::jsonb;
+
 -- ── Ingestion documentaire : segments + embeddings (pgvector) ──
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS document_segments (

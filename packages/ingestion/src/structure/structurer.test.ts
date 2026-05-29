@@ -16,6 +16,14 @@ describe("parseRules", () => {
     expect(rules[1]!.rule_text).toContain("tuiles");
   });
 
+  it("parse les cas conditionnels (dualité de valeurs)", () => {
+    const raw = `[{"article_number":3,"topic":"desserte_voies","rule_text":"10 m sens unique ; 13 m double sens","summary":"largeur voie",
+      "cases":[{"condition":"voie à sens unique","value":10,"unit":"m"},{"condition":"voie à double sens","value":13,"unit":"m"}]}]`;
+    const rules = parseRules(raw);
+    expect(rules[0]!.cases).toHaveLength(2);
+    expect(rules[0]!.cases[1]).toEqual({ condition: "voie à double sens", value: 13, unit: "m" });
+  });
+
   it("renvoie [] si pas de JSON exploitable", () => {
     expect(parseRules("désolé je ne sais pas")).toEqual([]);
     expect(parseRules("[oups")).toEqual([]);
