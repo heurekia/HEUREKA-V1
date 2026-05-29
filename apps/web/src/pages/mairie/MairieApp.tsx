@@ -3701,6 +3701,22 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   const [addingZone, setAddingZone] = useState(false);
   const [newZone, setNewZone] = useState({ code: "", label: "", type: "U" });
   const [savingZone, setSavingZone] = useState(false);
+  const [purging, setPurging] = useState(false);
+
+  const purgeAll = async () => {
+    if (!inseeCode) { alert("Code INSEE de la commune introuvable."); return; }
+    if (!confirm(`Vider toute la réglementation de ${commune} ? Cette action supprime toutes les zones et règles de cette commune.`)) return;
+    setPurging(true);
+    try {
+      await api.delete(`/mairie/reglementation?insee_code=${encodeURIComponent(inseeCode)}`);
+      setSelectedZoneId(null);
+      load();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Échec de la suppression");
+    } finally {
+      setPurging(false);
+    }
+  };
 
   const load = () => {
     setLoading(true);
@@ -3825,7 +3841,12 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
         <div style={{ padding: "20px 20px 16px", borderBottom: "1px solid #F1F5F9" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: "#000020" }}>Réglementation PLU</div>
-            <button onClick={() => setShowUpload(true)} title="Réimporter le PLU" style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>↑ Réimporter</button>
+            <div style={{ display: "flex", gap: 6 }}>
+              {(data?.zones.length ?? 0) > 0 && (
+                <button onClick={purgeAll} disabled={purging} title="Vider la réglementation de cette commune" style={{ border: "1px solid #FECACA", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#DC2626", cursor: purging ? "wait" : "pointer", fontWeight: 600 }}>{purging ? "Suppression…" : "🗑 Vider"}</button>
+              )}
+              <button onClick={() => setShowUpload(true)} title="Réimporter le PLU" style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>↑ Réimporter</button>
+            </div>
           </div>
           <div style={{ fontSize: 12, color: "#9CA3AF" }}>{commune}</div>
           {totalStats && (

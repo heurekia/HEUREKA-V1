@@ -976,15 +976,9 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
       await db.update(communes).set({ name: commune_name, zip_code: zip_code ?? commune.zip_code ?? "", updated_at: new Date() }).where(eq(communes.id, commune.id));
     }
 
-    // Purge existing zones (and their rules via CASCADE) before re-ingesting
-    send({ type: "phase", message: "Suppression des anciennes données…" });
-    const oldZones = await db.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, commune.id));
-    if (oldZones.length > 0) {
-      await db.delete(zone_regulatory_rules).where(
-        inArray(zone_regulatory_rules.zone_id, oldZones.map(z => z.id))
-      );
-      await db.delete(zones).where(eq(zones.commune_id, commune.id));
-    }
+    // NB : on ne purge PAS l'existant ici. L'extraction (longue) a lieu d'abord ;
+    // la purge + insertion se font en transaction à la fin, une fois l'extraction
+    // réussie — ainsi une interruption en cours d'extraction ne détruit rien.
 
     // cache_control marks the PDF for prompt caching so Anthropic reuses the
     // pre-processed tokens across all per-zone extraction calls (same request session).
@@ -1035,7 +1029,7 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
     // Phase 2 — Règles par zone, toutes en parallèle.
     // Le PDF est mis en cache après la phase 1 ; les appels parallèles profitent
     // du cache et ne consomment qu'une fraction du quota (tokens mis en cache).
-    const results = await Promise.all(zoneDefs.map(async (zoneDef) => {
+    const extracted = await Promise.all(zoneDefs.map(async (zoneDef) => {
       const ruleMsg = await client.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 4000,
@@ -1068,19 +1062,26 @@ Correspondance article → topic :
       const rules: PluRuleInput[] = ruleMsg.content
         .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
         .map(b => b.input as PluRuleInput);
+      const visionCount = rules.filter(r => r.needs_vision || r.needs_external_doc).length;
 
-      // Upsert zone
-      const [existingZone] = await db.select({ id: zones.id })
-        .from(zones)
-        .where(and(eq(zones.commune_id, commune.id), eq(zones.zone_code, zoneDef.code)))
-        .limit(1);
+      send({ type: "zone_done", zone: zoneDef.code, rules: rules.length, vision: visionCount });
+      return { zoneDef, rules, visionCount };
+    }));
 
-      let zoneId: string;
-      if (existingZone) {
-        zoneId = existingZone.id;
-        await db.update(zones).set({ zone_label: zoneDef.label, zone_type: zoneDef.type, updated_at: new Date() }).where(eq(zones.id, zoneId));
-      } else {
-        const [created] = await db.insert(zones).values({
+    // ── Écriture atomique ──────────────────────────────────────────────────────
+    // L'extraction (ci-dessus) est terminée et a réussi : on purge l'existant et
+    // on insère le nouveau jeu dans une seule transaction. Une interruption
+    // pendant l'extraction n'aura donc jamais détruit les données ; et si la
+    // transaction échoue, elle est annulée (pas d'état partiel).
+    send({ type: "phase", message: "Enregistrement…" });
+    await db.transaction(async (tx) => {
+      const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, commune.id));
+      if (oldZones.length > 0) {
+        await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map(z => z.id)));
+        await tx.delete(zones).where(eq(zones.commune_id, commune.id));
+      }
+      for (const { zoneDef, rules } of extracted) {
+        const [created] = await tx.insert(zones).values({
           commune_id: commune.id,
           zone_code: zoneDef.code,
           zone_label: zoneDef.label,
@@ -1089,49 +1090,31 @@ Correspondance article → topic :
           status: "active",
           is_active: true,
         }).returning();
-        zoneId = created!.id;
-      }
-
-      // Upsert rules
-      let visionCount = 0;
-      for (const rule of rules) {
-        const [existingRule] = await db.select({ id: zone_regulatory_rules.id })
-          .from(zone_regulatory_rules)
-          .where(and(eq(zone_regulatory_rules.zone_id, zoneId), eq(zone_regulatory_rules.topic, rule.topic)))
-          .limit(1);
-
-        if (rule.needs_vision || rule.needs_external_doc) visionCount++;
-
-        const payload = {
-          article_number: rule.article_number ?? null,
-          article_title: rule.article_title ?? (rule.article_number ? `Article ${rule.article_number}` : ""),
-          topic: rule.topic,
-          rule_text: rule.rule_text,
-          value_min: rule.value_min ?? null,
-          value_max: rule.value_max ?? null,
-          value_exact: rule.value_exact ?? null,
-          unit: rule.unit ?? null,
-          conditions: rule.conditions ?? null,
-          summary: rule.summary,
-          instructor_note: [
-            rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
-            rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
-          ].filter(Boolean).join(" | ") || null,
-          validation_status: "brouillon" as const,
-        };
-
-        if (existingRule) {
-          await db.update(zone_regulatory_rules).set({ ...payload, updated_at: new Date() }).where(eq(zone_regulatory_rules.id, existingRule.id));
-        } else {
-          await db.insert(zone_regulatory_rules).values({ zone_id: zoneId, ...payload });
+        const zoneId = created!.id;
+        for (const rule of rules) {
+          await tx.insert(zone_regulatory_rules).values({
+            zone_id: zoneId,
+            article_number: rule.article_number ?? null,
+            article_title: rule.article_title ?? (rule.article_number ? `Article ${rule.article_number}` : ""),
+            topic: rule.topic,
+            rule_text: rule.rule_text,
+            value_min: rule.value_min ?? null,
+            value_max: rule.value_max ?? null,
+            value_exact: rule.value_exact ?? null,
+            unit: rule.unit ?? null,
+            conditions: rule.conditions ?? null,
+            summary: rule.summary,
+            instructor_note: [
+              rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
+              rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
+            ].filter(Boolean).join(" | ") || null,
+            validation_status: "brouillon" as const,
+          });
         }
       }
+    });
 
-      const result = { zone: zoneDef.code, rules: rules.length, vision: visionCount };
-      send({ type: "zone_done", ...result });
-      return result;
-    }));
-
+    const results = extracted.map(e => ({ zone: e.zoneDef.code, rules: e.rules.length, vision: e.visionCount }));
     send({
       type: "done",
       ok: true,
@@ -1299,6 +1282,28 @@ mairieRouter.get("/admin/reglementation-status", requireRole("mairie", "instruct
       rules: Number(r.rule_count),
       zone_codes: r.zone_codes,
     })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// DELETE /mairie/reglementation?insee_code=37018
+// Purge toutes les zones + règles d'une commune (ex. retirer des données résiduelles
+// avant de réimporter le vrai PLU).
+mairieRouter.delete("/reglementation", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const inseeCode = (req.query.insee_code as string | undefined)?.trim();
+    if (!inseeCode) return res.status(400).json({ error: "insee_code requis" });
+    const [commune] = await db.select().from(communes).where(eq(communes.insee_code, inseeCode)).limit(1);
+    if (!commune) return res.status(404).json({ error: "Commune non trouvée" });
+
+    const oldZones = await db.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, commune.id));
+    if (oldZones.length > 0) {
+      await db.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map(z => z.id)));
+      await db.delete(zones).where(eq(zones.commune_id, commune.id));
+    }
+    res.json({ ok: true, commune: commune.name, insee_code: commune.insee_code, purged_zones: oldZones.length });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
