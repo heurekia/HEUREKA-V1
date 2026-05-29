@@ -4093,8 +4093,21 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                 return groups.map(grp => (
                   <div key={`g${grp.article ?? "na"}`} style={{ display: "flex", flexDirection: "column", gap: 10 }}>
                     {grp.article != null && (
-                      <div style={{ padding: "4px 2px 0", fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                        Article {grp.article}
+                      <div style={{ padding: "4px 2px 0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+                        <span style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                          Article {grp.article}{PLU_ARTICLES[grp.article] ? ` · ${PLU_ARTICLES[grp.article]!.title}` : ""}
+                        </span>
+                        <button
+                          onClick={() => {
+                            const a = grp.article!;
+                            const def = PLU_ARTICLES[a];
+                            setNewRule({ article_number: a, ...(def ? { topic: def.topic, article_title: def.title } : { topic: "general" }), rule_text: "", summary: "" });
+                            setPasteText(""); setExtracted([]); setPasteImage(null);
+                            setAddingZoneId(selectedZone.id);
+                          }}
+                          style={{ border: "1px solid #C7D2FE", background: "white", color: "#4F46E5", borderRadius: 7, padding: "2px 9px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                          + Sous-règle
+                        </button>
                       </div>
                     )}
                     {grp.rules.map(rule => {
