@@ -950,10 +950,14 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
   // SSE streaming so the client sees progress zone by zone
   res.setHeader("Content-Type", "text/event-stream");
   res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
   res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
 
   const send = (data: Record<string, unknown>) => {
     res.write(`data: ${JSON.stringify(data)}\n\n`);
+    // Force the chunk out immediately (defeats any residual buffering).
+    (res as unknown as { flush?: () => void }).flush?.();
   };
 
   try {

@@ -21,7 +21,15 @@ export const app = express();
 // Trust the first proxy (Railway, Render, etc.) so rate-limiters see the real client IP
 app.set("trust proxy", 1);
 
-app.use(compression());
+// Skip compression for Server-Sent Events — gzip buffering would hold the
+// stream and the client would receive nothing until the response ends.
+app.use(compression({
+  filter: (req, res) => {
+    const ct = res.getHeader("Content-Type");
+    if (typeof ct === "string" && ct.includes("text/event-stream")) return false;
+    return compression.filter(req, res);
+  },
+}));
 app.use(helmet({
   contentSecurityPolicy: {
     directives: {
