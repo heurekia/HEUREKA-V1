@@ -7,6 +7,30 @@ import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
+import { PDFDocument } from "pdf-lib";
+
+// Anthropic limite chaque requête à ~100 pages de PDF. Les gros règlements PLU
+// (200+ pages) sont découpés en tronçons ≤ maxPages, avec un léger chevauchement
+// pour ne pas couper en deux la section d'une zone à cheval sur deux tronçons.
+// Un PLU court (≤ 100 pages) reste en un seul tronçon (le PDF d'origine).
+async function splitPdfBase64(base64: string, maxPages = 90, overlap = 8): Promise<string[]> {
+  const src = await PDFDocument.load(Buffer.from(base64, "base64"), { ignoreEncryption: true });
+  const total = src.getPageCount();
+  if (total <= 100) return [base64];
+
+  const chunks: string[] = [];
+  const stride = Math.max(1, maxPages - overlap);
+  for (let start = 0; start < total; start += stride) {
+    const end = Math.min(start + maxPages, total);
+    const out = await PDFDocument.create();
+    const indices = Array.from({ length: end - start }, (_, i) => start + i);
+    const pages = await out.copyPages(src, indices);
+    pages.forEach(p => out.addPage(p));
+    chunks.push(await out.saveAsBase64());
+    if (end >= total) break;
+  }
+  return chunks;
+}
 
 function getAnthropicApiKey(): string {
   if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
@@ -982,44 +1006,52 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     // la purge + insertion se font en transaction à la fin, une fois l'extraction
     // réussie — ainsi une interruption en cours d'extraction ne détruit rien.
 
-    // cache_control marks the PDF for prompt caching so Anthropic reuses the
-    // pre-processed tokens across all per-zone extraction calls (same request session).
-    const pdfDoc = {
+    // Découpage du PDF (gère la limite ~100 pages/requête d'Anthropic).
+    send({ type: "phase", message: "Préparation du document…" });
+    const chunks = await splitPdfBase64(pdf_base64);
+
+    // cache_control marque chaque tronçon pour le prompt caching (réutilisé par
+    // les appels d'extraction portant sur le même tronçon).
+    const pdfDocFor = (b64: string) => ({
       type: "document" as const,
-      source: { type: "base64" as const, media_type: "application/pdf" as const, data: pdf_base64 },
+      source: { type: "base64" as const, media_type: "application/pdf" as const, data: b64 },
       cache_control: { type: "ephemeral" as const },
-    };
+    });
 
-    // Phase 1 — Zone discovery via sommaire
-    send({ type: "phase", message: "Détection des zones…" });
-    const zoneMsg = await client.messages.create({
-      model: "claude-sonnet-4-6",
-      max_tokens: 2000,
-      messages: [{
-        role: "user",
-        content: [
-          pdfDoc,
-          {
-            type: "text",
-            text: `Ce document est un règlement PLU français.
+    // Phase 1 — Détection des zones, tronçon par tronçon (chaque zone est rattachée
+    // au premier tronçon où sa section apparaît).
+    send({ type: "phase", message: chunks.length > 1 ? `Détection des zones (${chunks.length} parties)…` : "Détection des zones…" });
+    const zoneMap = new Map<string, { code: string; label: string; type: string; chunk: number }>();
+    for (let c = 0; c < chunks.length; c++) {
+      const zoneMsg = await client.messages.create({
+        model: "claude-sonnet-4-6",
+        max_tokens: 2000,
+        messages: [{
+          role: "user",
+          content: [
+            pdfDocFor(chunks[c]!),
+            {
+              type: "text",
+              text: `Cet extrait fait partie d'un règlement PLU français.
 
-ÉTAPE 1 — Lis d'abord le sommaire ou la table des matières (généralement en début de document).
-Le sommaire liste exhaustivement toutes les zones réglementées : c'est la source de référence.
-
-ÉTAPE 2 — Liste TOUTES les zones et sous-zones qui apparaissent dans le sommaire avec un titre de section dédié (UA, UB, UC, Ni, Nj, A, Ab, 1AU, 2AU, etc.).
-Inclure les sous-zones avec un règlement distinct (ex : zone Ni ≠ zone N si elle a sa propre section).
-Ne pas exclure une zone parce qu'elle semble petite ou restrictive.
+Liste TOUTES les zones et sous-zones qui possèdent, DANS CET EXTRAIT, une section réglementaire dédiée (titre de section + articles ; ex : UA, UB, UC, Ni, Nj, A, Ab, 1AU, 2AU…). Utilise le sommaire s'il est présent dans l'extrait.
+Inclure les sous-zones ayant un règlement distinct. Ne pas exclure une zone parce qu'elle semble petite.
+Si aucune section de zone n'apparaît dans cet extrait, répondre [].
 
 Répondre UNIQUEMENT avec un JSON array, sans autre texte :
 [{"code":"UA","label":"Zone UA – Centre ancien","type":"U"},…]
 Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
-          },
-        ],
-      }],
-    });
-
-    const zoneRaw = zoneMsg.content[0]?.type === "text" ? zoneMsg.content[0].text : "[]";
-    const zoneDefs = JSON.parse(zoneRaw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
+            },
+          ],
+        }],
+      });
+      const raw = zoneMsg.content[0]?.type === "text" ? zoneMsg.content[0].text : "[]";
+      const found = JSON.parse(raw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
+      for (const z of found) {
+        if (z.code && !zoneMap.has(z.code)) zoneMap.set(z.code, { ...z, chunk: c });
+      }
+    }
+    const zoneDefs = [...zoneMap.values()];
 
     if (zoneDefs.length === 0) {
       send({ type: "error", message: "Aucune zone détectée. Vérifiez que c'est bien un règlement PLU textuel." });
@@ -1028,10 +1060,8 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
 
     send({ type: "zones_found", zones: zoneDefs.map(z => ({ code: z.code, label: z.label, type: z.type })) });
 
-    // Phase 2 — Règles par zone, toutes en parallèle.
-    // Le PDF est mis en cache après la phase 1 ; les appels parallèles profitent
-    // du cache et ne consomment qu'une fraction du quota (tokens mis en cache).
-    const extractZone = async (zoneDef: { code: string; label: string; type: string }) => {
+    // Phase 2 — Règles par zone, extraites depuis le tronçon contenant la zone.
+    const extractZone = async (zoneDef: { code: string; label: string; type: string; chunk: number }) => {
       const ruleMsg = await client.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 4000,
@@ -1040,10 +1070,10 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
         messages: [{
           role: "user",
           content: [
-            pdfDoc,
+            pdfDocFor(chunks[zoneDef.chunk]!),
             {
               type: "text",
-              text: `Ce document est un règlement PLU français. Extrais les règles de la ZONE ${zoneDef.code} uniquement.
+              text: `Cet extrait fait partie d'un règlement PLU français. Extrais les règles de la ZONE ${zoneDef.code} uniquement.
 
 Pour CHAQUE article présent dans la section Zone ${zoneDef.code}, appelle save_rule une fois.
 Correspondance article → topic :
@@ -1072,7 +1102,7 @@ Correspondance article → topic :
 
     // Concurrence bornée : traiter les zones par petits lots évite de saturer
     // l'API IA (toutes les zones d'un coup provoque des 429/529/500).
-    const extracted: Array<{ zoneDef: { code: string; label: string; type: string }; rules: PluRuleInput[]; visionCount: number }> = [];
+    const extracted: Array<{ zoneDef: { code: string; label: string; type: string; chunk: number }; rules: PluRuleInput[]; visionCount: number }> = [];
     const CONCURRENCY = 3;
     for (let i = 0; i < zoneDefs.length; i += CONCURRENCY) {
       const batch = zoneDefs.slice(i, i + CONCURRENCY);
