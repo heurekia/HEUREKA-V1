@@ -1578,7 +1578,8 @@ AUTRES RÈGLES :
 - "rule_text" : conserve le sens qualitatif (matériaux, teintes, prescriptions) — pour l'aspect (art. 11) c'est l'essentiel, ne le réduis PAS à un nombre. Mais reste SYNTHÉTIQUE sur les passages très longs (prescriptions clés, pas la prose redondante) afin de produire un JSON COMPLET et bien formé.
 - "applies_if" : tague une sous-règle qui ne s'applique qu'à un contexte ("Clôtures sur rue" → ["cloture_sur_rue"] ; "Éléments protégés L.151-19" → ["protege_l151_19"] ; "Périmètre UNESCO" → ["unesco"] ; surélévation → ["surelevation"]). [] sinon.
 - VALEUR PRINCIPALE (value_*) = LE seuil de la sous-règle dans une unité COHÉRENTE (%, m, m², places). Respecte min ("≥") vs max ("≤"). NE MÉLANGE JAMAIS valeur et unité. Mesures secondaires/d'autres unités → "cases". Si rien de chiffré → value_* null (fréquent pour l'aspect).
-- "cases" : DISSOCIE chaque valeur distincte. kind "condition" (alternatives exclusives) vs "parametre" (valeurs cumulatives).
+- "cases" : à utiliser UNIQUEMENT pour des éléments porteurs d'une VALEUR chiffrée (ex: 1,80 m, 50 cm) ou d'une vraie ALTERNATIVE conditionnelle (ex: 10 m sens unique / 13 m double sens). kind "condition" (alternative exclusive) vs "parametre" (valeur cumulative).
+  NE crée PAS de cases pour une simple énumération QUALITATIVE sans valeur (liste d'occupations interdites, de matériaux autorisés…) : elle reste dans "rule_text". Un cas avec value=null et sans alternative réelle ne doit PAS exister.
 - N'invente AUCUNE valeur. Articles 5 et 14 → "sans objet" (loi ALUR).`,
       messages: [{ role: "user", content: userContent }],
     });
@@ -1605,7 +1606,9 @@ AUTRES RÈGLES :
         cases: Array.isArray(r.cases)
           ? (r.cases as unknown[]).filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
               .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit), kind: c.kind === "condition" ? "condition" : "parametre" }))
-              .filter((c) => c.condition)
+              // On ne garde QUE les cas porteurs d'une valeur (chiffre ou unité) :
+              // une énumération qualitative (interdictions, matériaux…) reste dans rule_text.
+              .filter((c) => c.condition && (c.value != null || c.unit != null))
           : [],
         applies_if: Array.isArray(r.applies_if)
           ? (r.applies_if as unknown[]).map(str).filter((t): t is string => !!t && APPLIES.has(t))
