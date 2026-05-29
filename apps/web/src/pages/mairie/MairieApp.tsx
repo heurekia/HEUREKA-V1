@@ -4328,7 +4328,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                     </div>
                     <button onClick={() => analyzeArticle(selectedZone.zone_code)} disabled={analyzing || (pasteText.trim().length < 5 && !pasteImage)}
                       style={{ marginTop: 8, background: analyzing ? "#A78BFA" : "#7C3AED", color: "white", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: analyzing ? "wait" : "pointer" }}>
-                      {analyzing ? "Analyse…" : "Analyser (décompose l'article en sous-règles)"}
+                      {analyzing ? "Analyse…" : "Analyser et structurer"}
                     </button>
                   </div>
 
@@ -4443,7 +4443,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                   </>
                   ) : (
                   <div>
-                    <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8 }}>{extracted.length} sous-règle(s) détectée(s) — vérifiez puis ajoutez</div>
+                    <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 8 }}>{extracted.length} règle(s) détectée(s) — vérifiez puis ajoutez</div>
                     {extracted.map((r, i) => (
                       <div key={i} style={{ border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 10px", marginBottom: 8, background: "white" }}>
                         <div style={{ display: "flex", justifyContent: "space-between", gap: 8, alignItems: "flex-start" }}>
