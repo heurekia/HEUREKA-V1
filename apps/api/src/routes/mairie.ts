@@ -1555,7 +1555,7 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
 
 Si une IMAGE est fournie : lis-la attentivement. Pour un TABLEAU (ex: stationnement art. 12 — colonne « Type »/« Destination » → colonne « Normes »), CHAQUE LIGNE devient une SOUS-RÈGLE (sub_theme = le type, ex: « Habitation », « Bureaux », « Commerce »). Les tranches/seuils d'une même ligne (ex: « 1 place/40 m² entre 300 et 1000 m² », « 1 place/30 m² au-delà de 1000 m² ») deviennent des "cases" (kind "parametre"). Pour un CROQUIS, décris la règle dans rule_text.
 
-DÉCOMPOSE l'article en SOUS-RÈGLES cohérentes (une par sous-section / thème). Renvoie UNIQUEMENT un tableau JSON, sans autre texte :
+Structure le contenu et renvoie UNIQUEMENT un tableau JSON, sans autre texte. Pour du TEXTE : le tableau contient UN SEUL objet (ne découpe PAS). Pour une IMAGE de tableau : un objet par ligne. Format de chaque objet :
 [
   {
     "sub_theme": string,            // numéro + intitulé de la sous-section, ex: "11.1.5 Toiture", "11.2.2 Éléments protégés"
@@ -1596,7 +1596,7 @@ AUTRES RÈGLES :
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
     const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
     const APPLIES = new Set(["protege_l151_19", "unesco", "abf", "inondable", "extension", "surelevation", "ravalement", "demolition", "cloture_sur_rue", "cloture_limite", "annexe", "devanture_commerciale", "equipement_public"]);
-    const rules = (Array.isArray(arr) ? arr : [])
+    let rules = (Array.isArray(arr) ? arr : [])
       .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
       .map((r) => ({
         sub_theme: str(r.sub_theme),
@@ -1621,6 +1621,25 @@ AUTRES RÈGLES :
           : [],
       }))
       .filter((r) => r.rule_text || r.summary);
+
+    // GARANTIE déterministe : pour du TEXTE, on force UNE seule règle (les
+    // sous-règles sont ajoutées manuellement). Si le modèle a quand même
+    // découpé, on fusionne : texte complet conservé + cas/exceptions/tags réunis.
+    if (!hasImage && text && rules.length > 1) {
+      rules = [{
+        sub_theme: rules.find((r) => r.sub_theme)?.sub_theme ?? null,
+        article_number: rules[0]!.article_number,
+        article_title: rules[0]!.article_title,
+        topic: rules[0]!.topic,
+        rule_text: text.trim(),
+        value_min: null, value_max: null, value_exact: null, unit: null,
+        conditions: rules.map((r) => r.conditions).filter(Boolean).join(" ; ") || null,
+        exceptions: rules.map((r) => r.exceptions).filter(Boolean).join(" ; ") || null,
+        summary: rules[0]!.summary,
+        cases: rules.flatMap((r) => r.cases),
+        applies_if: [...new Set(rules.flatMap((r) => r.applies_if))],
+      }];
+    }
 
     // Repli : rien d'exploitable → une sous-règle brute avec le texte collé.
     if (rules.length === 0) {
