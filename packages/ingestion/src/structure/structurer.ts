@@ -17,9 +17,10 @@ export const RULE_TOPICS = [
 export type RuleTopic = (typeof RULE_TOPICS)[number];
 
 export interface RuleCase {
-  condition: string;
+  condition: string; // libellé du cas / paramètre
   value: number | null;
   unit: string | null;
+  kind: "condition" | "parametre"; // alternative exclusive vs valeur de calcul cumulative
 }
 
 export interface StructuredRule {
@@ -62,14 +63,15 @@ Schéma de chaque règle :
   "conditions": string|null,      // variantes par sous-secteur, exceptions
   "summary": string,              // ≤ 12 mots
   "instructor_note": string|null, // ex: valeur dans un schéma, renvoi à doc externe
-  "cases": [ { "condition": string, "value": number|null, "unit": "m|%|m²|places"|null } ]
+  "cases": [ { "condition": string, "value": number|null, "unit": "m|cm|%|m²|places"|null, "kind": "condition|parametre" } ]
 }
-- "cases" : si la règle a PLUSIEURS valeurs selon une condition (ex: "10 m si voie à sens unique ; 13 m si double sens", ou selon secteur), liste chaque cas. Sinon [].
+- "cases" : DISSOCIE chaque valeur de calcul distincte en un cas séparé. "kind" = "condition" (alternatives exclusives : on en applique une, ex: 10 m sens unique / 13 m double sens) ou "parametre" (valeurs cumulatives qui s'appliquent toutes, ex: 15% pleine terre, 50 cm arbustes, 80 cm arbres, 1 arbre/4 places). Sinon [].
 
 Grille R.123-9 (n° article → topic) : 1→interdictions, 2→conditions, 3→desserte_voies, 4→desserte_reseaux, 5→terrain_min (sans objet ALUR), 6→recul_voie, 7→recul_limite, 8→recul_batiments, 9→emprise_sol, 10→hauteur, 11→aspect, 12→stationnement, 13→espaces_verts, 14→cos (sans objet ALUR).
 
 Règles :
 - Une règle par article présent. Si "non réglementé"/"sans objet" → garde-la avec value_* null.
+- VALEUR PRINCIPALE (value_min/max/exact + unit) = le seuil PRINCIPAL du thème, dans une unité COHÉRENTE (emprise_sol/espaces_verts/cos → %, hauteur/reculs → m, terrain_min → m², stationnement → places). Ne prends PAS "le plus grand nombre". Respecte min ("≥/minimum") vs max ("≤/maximum"). Ne mélange JAMAIS valeur et unité. Les mesures secondaires ou d'autres unités (épaisseurs en cm, ratios…) vont UNIQUEMENT dans "cases". Si rien de cohérent → value_* null.
 - topic 'aspect' (article 11) : capture matériaux, couleurs, toitures, menuiseries, clôtures dans rule_text.
 - N'invente AUCUNE valeur : si incertain, value_* = null.`;
 
@@ -110,7 +112,7 @@ export function parseRules(raw: string): StructuredRule[] {
       cases: Array.isArray(r.cases)
         ? (r.cases as unknown[])
             .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
-            .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit) }))
+            .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit), kind: c.kind === "condition" ? "condition" as const : "parametre" as const }))
             .filter((c) => c.condition)
         : [],
     }))

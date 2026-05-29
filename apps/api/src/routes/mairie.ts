@@ -1486,11 +1486,13 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
   "unit": "m|%|m²|places"|null,
   "conditions": string|null,
   "summary": string,
-  "cases": [ { "condition": string, "value": number|null, "unit": "m|%|m²|places"|null } ]
+  "cases": [ { "condition": string, "value": number|null, "unit": "m|cm|%|m²|places"|null, "kind": "condition|parametre" } ]
 }
 
-- "cases" : si la règle prévoit PLUSIEURS valeurs selon une condition (ex: "10 m pour voie à sens unique ; 13 m pour voie à double sens", ou un secteur), liste chaque cas {condition, value, unit}. Sinon [].
-  La valeur principale (la plus courante/élevée) va AUSSI dans value_max/value_exact pour l'affichage rapide.
+- "cases" : DISSOCIE chaque valeur de calcul distincte de l'article en UN cas séparé (jamais regroupées). "condition" = le libellé du cas, "value"+"unit" = sa valeur. "kind" :
+  • "condition" → alternatives MUTUELLEMENT EXCLUSIVES, on en applique UNE selon le contexte (ex: 10 m si voie à sens unique / 13 m si double sens).
+  • "parametre" → valeurs de calcul distinctes qui s'appliquent TOUTES en même temps (ex: 15% pleine terre, 50 cm terre arbustes, 80 cm terre arbres, 1 arbre/4 places).
+  L'unité peut être m, cm, %, m² ou places. Sinon [].
 
 Structure nationale du règlement PLU (art. R.123-9), n° d'article → topic :
   1 → interdictions    | 2 → conditions       | 3 → desserte_voies | 4 → desserte_reseaux
@@ -1498,9 +1500,18 @@ Structure nationale du règlement PLU (art. R.123-9), n° d'article → topic :
   8 → recul_batiments  | 9 → emprise_sol      | 10 → hauteur       | 11 → aspect
   12 → stationnement   | 13 → espaces_verts   | 14 → cos (sans objet, loi ALUR)
 
+CHOIX DE LA VALEUR PRINCIPALE (value_min / value_max / value_exact + unit) — RÈGLES STRICTES :
+- C'est LA valeur seuil PRINCIPALE du thème, dans une unité COHÉRENTE. Ne prends PAS "le plus grand nombre".
+  • emprise_sol / espaces_verts / cos → un POURCENTAGE (unit "%").
+  • hauteur / reculs → des MÈTRES (unit "m"). terrain_min → m². stationnement → places.
+- Respecte le SENS : "minimum / au moins / ≥" → value_min ; "maximum / au plus / ne peut excéder / ≤" → value_max ; valeur unique → value_exact.
+- NE MÉLANGE JAMAIS valeur et unité (ex: ne mets PAS 80 avec unité "%" si 80 est en cm).
+- Les mesures SECONDAIRES ou d'unités différentes (épaisseurs en cm, ratios, etc.) vont UNIQUEMENT dans "cases", JAMAIS dans value_min/max.
+- Si aucune valeur principale unique et cohérente ne se dégage → value_* = null, tout dans "cases".
+  Exemple (art. 13) : "Minimum 15% de pleine terre. Dalles : 50 cm (arbustes), 80 cm (arbres). 1 arbre/4 places."
+  → value_min=15, unit="%" ; cases=[{"Pleine terre",15,"%"},{"Terre arbustes en dalle",50,"cm"},{"Terre arbres en dalle",80,"cm"},{"Arbre haute tige / places stationnement",1,null}].
 - N'invente AUCUNE valeur (si incertain → null).
 - topic 'aspect' (art. 11) : matériaux, couleurs, toitures, menuiseries, clôtures dans rule_text.
-- Plusieurs valeurs selon sous-secteurs → principale dans value_max, variantes dans conditions.
 - Articles 5 et 14 'sans objet' → garde la règle, value_* null, signale-le dans summary.`,
       messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}\n\n${text}` }],
     });
@@ -1512,7 +1523,7 @@ Structure nationale du règlement PLU (art. R.123-9), n° d'article → topic :
     const cases = Array.isArray(parsed.cases)
       ? (parsed.cases as unknown[])
           .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
-          .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit) }))
+          .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit), kind: c.kind === "condition" ? "condition" : "parametre" }))
           .filter((c) => c.condition)
       : [];
     res.json({

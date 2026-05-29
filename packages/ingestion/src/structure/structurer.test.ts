@@ -18,10 +18,10 @@ describe("parseRules", () => {
 
   it("parse les cas conditionnels (dualité de valeurs)", () => {
     const raw = `[{"article_number":3,"topic":"desserte_voies","rule_text":"10 m sens unique ; 13 m double sens","summary":"largeur voie",
-      "cases":[{"condition":"voie à sens unique","value":10,"unit":"m"},{"condition":"voie à double sens","value":13,"unit":"m"}]}]`;
+      "cases":[{"condition":"voie à sens unique","value":10,"unit":"m","kind":"condition"},{"condition":"voie à double sens","value":13,"unit":"m","kind":"condition"}]}]`;
     const rules = parseRules(raw);
     expect(rules[0]!.cases).toHaveLength(2);
-    expect(rules[0]!.cases[1]).toEqual({ condition: "voie à double sens", value: 13, unit: "m" });
+    expect(rules[0]!.cases[1]).toEqual({ condition: "voie à double sens", value: 13, unit: "m", kind: "condition" });
   });
 
   it("renvoie [] si pas de JSON exploitable", () => {

@@ -3663,7 +3663,7 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
 
 // ── Réglementation screen ──────────────────────────────────────────────────────
 
-type RuleCase = { condition: string; value: number | null; unit: string | null };
+type RuleCase = { condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" };
 type RuleRow = {
   id: string; zone_id: string; article_number: number | null; article_title: string | null;
   topic: string; rule_text: string; value_min: number | null; value_max: number | null;
@@ -4071,11 +4071,14 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                             )}
                             {(rule.cases?.length ?? 0) > 0 && (
                               <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
-                                {rule.cases!.map((c, i) => (
-                                  <span key={i} style={{ background: "#EEF2FF", borderRadius: 6, padding: "2px 8px", fontSize: 11, color: "#4338CA" }}>
-                                    {c.condition} : <strong>{c.value ?? "—"} {c.unit ?? ""}</strong>
-                                  </span>
-                                ))}
+                                {rule.cases!.map((c, i) => {
+                                  const isCond = c.kind === "condition";
+                                  return (
+                                    <span key={i} style={{ background: isCond ? "#FFF7ED" : "#EEF2FF", color: isCond ? "#C2410C" : "#4338CA", borderRadius: 6, padding: "2px 8px", fontSize: 11 }}>
+                                      {isCond ? "si " : ""}{c.condition} : <strong>{c.value ?? "—"}{c.unit ? ` ${c.unit}` : ""}</strong>
+                                    </span>
+                                  );
+                                })}
                               </div>
                             )}
                           </>
@@ -4247,16 +4250,23 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                           value={c.value ?? ""}
                           onChange={e => setNewRule(f => ({ ...f, cases: (f.cases ?? []).map((x, j) => j === i ? { ...x, value: e.target.value === "" ? null : Number(e.target.value) } : x) }))}
                         />
-                        <select style={{ width: 64, borderRadius: 6, border: "1px solid #E2E8F0", padding: "5px 4px", fontSize: 11.5, outline: "none" }}
+                        <select style={{ width: 58, borderRadius: 6, border: "1px solid #E2E8F0", padding: "5px 4px", fontSize: 11.5, outline: "none" }}
                           value={c.unit ?? ""}
                           onChange={e => setNewRule(f => ({ ...f, cases: (f.cases ?? []).map((x, j) => j === i ? { ...x, unit: e.target.value || null } : x) }))}>
-                          <option value="">—</option><option value="m">m</option><option value="%">%</option><option value="m²">m²</option><option value="places">pl.</option>
+                          <option value="">—</option><option value="m">m</option><option value="cm">cm</option><option value="%">%</option><option value="m²">m²</option><option value="places">pl.</option>
+                        </select>
+                        <select title="Nature du cas" style={{ width: 84, borderRadius: 6, border: "1px solid #E2E8F0", padding: "5px 4px", fontSize: 11, outline: "none" }}
+                          value={c.kind ?? "parametre"}
+                          onChange={e => setNewRule(f => ({ ...f, cases: (f.cases ?? []).map((x, j) => j === i ? { ...x, kind: e.target.value as "condition" | "parametre" } : x) }))}>
+                          <option value="parametre">paramètre</option>
+                          <option value="condition">condition</option>
                         </select>
                         <button onClick={() => setNewRule(f => ({ ...f, cases: (f.cases ?? []).filter((_, j) => j !== i) }))}
                           style={{ border: "none", background: "transparent", color: "#EF4444", cursor: "pointer", fontSize: 14, padding: "0 4px" }}>✕</button>
                       </div>
                     ))}
-                    <button onClick={() => setNewRule(f => ({ ...f, cases: [...(f.cases ?? []), { condition: "", value: null, unit: f.unit ?? null }] }))}
+                    <div style={{ fontSize: 10, color: "#94a3b8", marginBottom: 6 }}>« condition » = alternative (on en applique une) · « paramètre » = valeur de calcul (toutes s'appliquent)</div>
+                    <button onClick={() => setNewRule(f => ({ ...f, cases: [...(f.cases ?? []), { condition: "", value: null, unit: f.unit ?? null, kind: "parametre" }] }))}
                       style={{ border: "1px dashed #C7D2FE", background: "white", color: "#4F46E5", borderRadius: 6, padding: "4px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
                       + Ajouter un cas
                     </button>

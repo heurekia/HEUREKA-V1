@@ -27,7 +27,7 @@ type ParcelAnalysis = {
   plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string; plu_etat?: string };
   risks?: { flood_risk: string; seismic_zone: string; clay_risk?: string; landslide_risk?: string; radon_level?: string };
   db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
-  rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null }> | null }>;
+  rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" }> | null }>;
   buildability: {
     maxFootprintM2: number; remainingFootprintM2: number; maxHeightM: number | null;
     minSetbackFromRoadM: number | null; minSetbackFromBoundariesM: number | null;
@@ -746,11 +746,14 @@ export function AnalyseParcellaire() {
                           {rule.conditions && <p style={{ fontSize: 10, color: "#9CA3AF", margin: "2px 0 0" }}>↳ {rule.conditions}</p>}
                           {(rule.cases?.length ?? 0) > 0 && (
                             <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
-                              {rule.cases!.map((c, ci) => (
-                                <span key={ci} style={{ background: "#EEF2FF", borderRadius: 6, padding: "2px 8px", fontSize: 10, color: "#4338CA" }}>
-                                  {c.condition} : <strong>{c.value ?? "—"}{c.unit ? ` ${c.unit}` : ""}</strong>
-                                </span>
-                              ))}
+                              {rule.cases!.map((c, ci) => {
+                                const isCond = c.kind === "condition";
+                                return (
+                                  <span key={ci} style={{ background: isCond ? "#FFF7ED" : "#EEF2FF", color: isCond ? "#C2410C" : "#4338CA", borderRadius: 6, padding: "2px 8px", fontSize: 10 }}>
+                                    {isCond ? "si " : ""}{c.condition} : <strong>{c.value ?? "—"}{c.unit ? ` ${c.unit}` : ""}</strong>
+                                  </span>
+                                );
+                              })}
                             </div>
                           )}
                         </div>
