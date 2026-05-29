@@ -25,3 +25,4 @@ export * from "./decisionEvents.js";
 export * from "./communeDocuments.js";
 export * from "./gpuCache.js";
 export * from "./dossierConsultations.js";
+export * from "./documentSegments.js";

@@ -5,13 +5,17 @@
  *     --insee 37261 --commune "Tours" --version "M1_20220627"
  */
 import { runIngestion } from "./engine/pipeline.ts";
+import { loadSegments } from "./db/loader.ts";
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
   return i >= 0 ? process.argv[i + 1] : undefined;
 }
+function flag(name: string): boolean {
+  return process.argv.includes(name);
+}
 
-function main() {
+async function main() {
   const file = arg("--file");
   const adapter = arg("--adapter") ?? "plu-reglement";
   const insee = arg("--insee");
@@ -27,7 +31,7 @@ function main() {
   }
 
   console.log(`\n📥 Ingestion — ${commune} (${insee}) · ${adapter} · ${file}`);
-  const { report, files } = runIngestion({ file, adapter, insee, commune, version, outDir });
+  const { segments, report, files } = runIngestion({ file, adapter, insee, commune, version, outDir });
 
   console.log(
     `\n✓ ${report.counts.zones} zones · ${report.counts.articles} articles · ` +
@@ -39,7 +43,17 @@ function main() {
   }
   if (files) console.log(`\n📄 ${files.json}\n   ${files.csv}\n   ${files.reportPath}`);
 
+  // --load : pousse les segments + embeddings (voyage-3) dans pgvector.
+  if (flag("--load")) {
+    console.log(`\n🔗 Chargement en base (pgvector)…`);
+    const { upserted } = await loadSegments(segments);
+    console.log(`✓ ${upserted} segments chargés dans document_segments.`);
+  }
+
   if (report.validation.errors > 0) process.exit(2);
 }
 
-main();
+main().catch((err) => {
+  console.error(err instanceof Error ? err.message : err);
+  process.exit(1);
+});

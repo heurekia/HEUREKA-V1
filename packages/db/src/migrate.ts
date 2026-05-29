@@ -481,6 +481,34 @@ CREATE INDEX IF NOT EXISTS idx_dossier_consultations_service ON dossier_consulta
 -- Upload de pièces justificatives avec analyse IA
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS code_piece text;
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS analyse_ia jsonb;
+
+-- ── Ingestion documentaire : segments + embeddings (pgvector) ──
+CREATE EXTENSION IF NOT EXISTS vector;
+CREATE TABLE IF NOT EXISTS document_segments (
+  id              text PRIMARY KEY,
+  insee           text NOT NULL,
+  commune_name    text,
+  doc_type        text NOT NULL,
+  doc_subtype     text,
+  doc_version     text,
+  doc_source_file text,
+  segment_code    text NOT NULL,
+  segment_type    text NOT NULL,
+  parent_code     text,
+  title           text,
+  raw_text        text NOT NULL,
+  embedding_text  text NOT NULL,
+  embedding       vector(1024),
+  metadata        jsonb DEFAULT '{}'::jsonb,
+  char_count      integer,
+  created_at      timestamp NOT NULL DEFAULT now(),
+  updated_at      timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_document_segments_insee ON document_segments(insee);
+CREATE INDEX IF NOT EXISTS idx_document_segments_doc_type ON document_segments(doc_type);
+CREATE INDEX IF NOT EXISTS idx_document_segments_parent ON document_segments(parent_code);
+-- Recherche de similarité cosinus (HNSW)
+CREATE INDEX IF NOT EXISTS idx_document_segments_embedding ON document_segments USING hnsw (embedding vector_cosine_ops);
 `;
 
 async function main() {

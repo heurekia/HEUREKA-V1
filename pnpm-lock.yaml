@@ -230,6 +230,12 @@ importers:
 
   packages/ingestion:
     dependencies:
+      '@heureka-v1/db':
+        specifier: workspace:*
+        version: link:../db
+      drizzle-orm:
+        specifier: ^0.42.0
+        version: 0.42.0(gel@2.2.0)(postgres@3.4.9)
       tsx:
         specifier: ^4.19.4
         version: 4.22.1

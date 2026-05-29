@@ -11,6 +11,8 @@
     "ingest": "tsx src/index.ts"
   },
   "dependencies": {
+    "@heureka-v1/db": "workspace:*",
+    "drizzle-orm": "^0.42.0",
     "tsx": "^4.19.4"
   },
   "devDependencies": {
