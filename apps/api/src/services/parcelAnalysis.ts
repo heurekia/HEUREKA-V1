@@ -1140,19 +1140,6 @@ export async function analyseParcel(
       lng = addr.lng;
       code_insee = addr.citycode;
 
-      // Certification status — non-certified BAN positions are imprecise, which is
-      // why the parcel must be resolved via the building (below), not the raw point.
-      if (addr.id) {
-        const certified = await fetchAddressCertification(addr.id);
-        result.address_certified = certified;
-        if (certified === false) {
-          result.warnings.push(
-            "Adresse non certifiée par la commune : la position fournie par la BAN est approximative. " +
-            "La parcelle est confirmée via le bâtiment (RNB) lorsque c'est possible — sinon, vérifiez en cliquant sur la parcelle ou saisissez la référence cadastrale."
-          );
-        }
-      }
-
       // Step 2: Find parcel — only possible for housenumber geocodes.
       // Reliable path: BAN address key → RNB building interior point → cadastre
       // containment (exact, independent of the BAN point's imprecision).
@@ -1162,7 +1149,20 @@ export async function analyseParcel(
         let confidence: "exact" | "approximate" = "approximate";
 
         if (addr.id && code_insee) {
-          const bpt = await findBuildingInteriorPoint(addr.id, lat, lng);
+          // RNB building snap + certification run in parallel — both depend only on
+          // the BAN key. Keeping the (informational) certification call off the
+          // sequential critical path avoids adding latency before the GPU/risk steps.
+          const [certified, bpt] = await Promise.all([
+            fetchAddressCertification(addr.id),
+            findBuildingInteriorPoint(addr.id, lat, lng),
+          ]);
+          result.address_certified = certified;
+          if (certified === false) {
+            result.warnings.push(
+              "Adresse non certifiée par la commune : la position fournie par la BAN est approximative. " +
+              "La parcelle est confirmée via le bâtiment (RNB) lorsque c'est possible — sinon, vérifiez en cliquant sur la parcelle ou saisissez la référence cadastrale."
+            );
+          }
           if (bpt) {
             const contained = await findParcelContaining(bpt.lat, bpt.lng, code_insee);
             if (contained && contained.code_insee === code_insee) {
