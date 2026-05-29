@@ -883,7 +883,9 @@ export async function getRisks(lat: number, lng: number, code_insee: string): Pr
 const GPU_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 // Increment GPU_CACHE_VERSION whenever the extraction logic changes significantly.
 // This busts all old cache entries (they become misses) without a DB migration.
-const GPU_CACHE_VERSION = 3;
+// v4: bust entries that may have been poisoned with an incomplete payload
+//     (zone present but prescriptions/commune empty after a transient GPU failure).
+const GPU_CACHE_VERSION = 4;
 
 function gpuCacheKey(parcelle_id: string | undefined, lat: number, lng: number): string {
   const base = parcelle_id ?? `${lat.toFixed(4)},${lng.toFixed(4)}`;
@@ -1272,9 +1274,18 @@ export async function analyseParcel(
 
         gpuPayload = { pluPartition, scotName, zone_urba: zone, municipality, prescriptions, informations, sup_surf: supSurf, sup_lin: supLin, generateurs };
 
-        // Write to current-version cache when GPU gave us useful data
-        if (zone || pluPartition) {
+        // Only cache a COMPLETE payload. A null municipality while a zone exists
+        // signals a transient GPU failure on the supplementary layers (commune,
+        // prescriptions, SUP) — caching that snapshot would poison future reads
+        // with empty data served as "fresh". In that case we still display what we
+        // have, but skip the write so the next request retries live.
+        const gpuComplete = municipality !== null;
+        if ((zone || pluPartition) && gpuComplete) {
           writeGpuCache(cacheKey, result.parcel?.parcelle_id, gpuPayload);
+        } else if (!gpuComplete) {
+          result.warnings.push(
+            "Certaines couches du Géoportail de l'Urbanisme (commune, prescriptions, servitudes) n'ont pas pu être chargées. Réessayez dans quelques instants pour une analyse complète."
+          );
         }
       } else if (cached) {
         // GPU down + stale cache (current or legacy version) → use stale with warning
