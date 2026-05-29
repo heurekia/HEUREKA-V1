@@ -1272,6 +1272,39 @@ mairieRouter.get("/reglementation", async (req: AuthRequest, res) => {
   }
 });
 
+// GET /mairie/admin/reglementation-status
+// Diagnostic (lecture seule) : pour chaque commune, INSEE + nb de zones/règles
+// + liste des codes de zone. Permet de voir à quelle commune des règles sont
+// réellement rattachées (utile pour repérer des données mal associées).
+mairieRouter.get("/admin/reglementation-status", requireRole("mairie", "instructeur", "admin"), async (_req: AuthRequest, res) => {
+  try {
+    const rows = await db
+      .select({
+        commune: communes.name,
+        insee_code: communes.insee_code,
+        zone_count: sql<number>`count(distinct ${zones.id})`,
+        rule_count: sql<number>`count(${zone_regulatory_rules.id})`,
+        zone_codes: sql<string>`coalesce(string_agg(distinct ${zones.zone_code}, ', '), '')`,
+      })
+      .from(communes)
+      .leftJoin(zones, eq(zones.commune_id, communes.id))
+      .leftJoin(zone_regulatory_rules, eq(zone_regulatory_rules.zone_id, zones.id))
+      .groupBy(communes.id, communes.name, communes.insee_code)
+      .orderBy(communes.insee_code);
+
+    res.json(rows.map(r => ({
+      commune: r.commune,
+      insee_code: r.insee_code,
+      zones: Number(r.zone_count),
+      rules: Number(r.rule_count),
+      zone_codes: r.zone_codes,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // PATCH /mairie/reglementation/rules/:id — validate, edit or reject a rule
 mairieRouter.patch("/reglementation/rules/:id", async (req: AuthRequest, res) => {
   try {
