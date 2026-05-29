@@ -1021,8 +1021,7 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     // Phase 1 — Détection des zones, tronçon par tronçon (chaque zone est rattachée
     // au premier tronçon où sa section apparaît).
     send({ type: "phase", message: chunks.length > 1 ? `Détection des zones (${chunks.length} parties)…` : "Détection des zones…" });
-    const zoneMap = new Map<string, { code: string; label: string; type: string; chunk: number }>();
-    for (let c = 0; c < chunks.length; c++) {
+    const detectChunk = async (c: number) => {
       const zoneMsg = await client.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 2000,
@@ -1047,8 +1046,17 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
       });
       const raw = zoneMsg.content[0]?.type === "text" ? zoneMsg.content[0].text : "[]";
       const found = JSON.parse(raw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
-      for (const z of found) {
-        if (z.code && !zoneMap.has(z.code)) zoneMap.set(z.code, { ...z, chunk: c });
+      send({ type: "phase", message: `Détection des zones — partie ${c + 1}/${chunks.length} analysée (${found.length} zones)` });
+      return found.map(z => ({ ...z, chunk: c }));
+    };
+
+    // Tronçons analysés en parallèle ; on conserve l'ordre pour rattacher chaque
+    // zone au PREMIER tronçon où elle apparaît.
+    const perChunk = await Promise.all(chunks.map((_, c) => detectChunk(c)));
+    const zoneMap = new Map<string, { code: string; label: string; type: string; chunk: number }>();
+    for (const list of perChunk) {
+      for (const z of list) {
+        if (z.code && !zoneMap.has(z.code)) zoneMap.set(z.code, z);
       }
     }
     const zoneDefs = [...zoneMap.values()];
