@@ -985,9 +985,9 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
   };
 
   try {
-    // maxRetries : le SDK réessaie automatiquement (backoff exponentiel) sur
-    // 429 / 5xx / 529 — indispensable vu les appels PDF lourds et parallèles.
-    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 5 });
+    // maxRetries : le SDK réessaie (backoff) sur 429 / 5xx / 529 ; timeout pour
+    // ne jamais pendre indéfiniment sur un tronçon PDF lourd.
+    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 120_000 });
 
     // Upsert commune
     let commune = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
@@ -1022,6 +1022,7 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     // au premier tronçon où sa section apparaît).
     send({ type: "phase", message: chunks.length > 1 ? `Détection des zones (${chunks.length} parties)…` : "Détection des zones…" });
     const detectChunk = async (c: number) => {
+     try {
       const zoneMsg = await client.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 2000,
@@ -1048,6 +1049,13 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
       const found = JSON.parse(raw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
       send({ type: "phase", message: `Détection des zones — partie ${c + 1}/${chunks.length} analysée (${found.length} zones)` });
       return found.map(z => ({ ...z, chunk: c }));
+     } catch (e) {
+      // Un tronçon en échec ne doit pas bloquer ni annuler tout l'import :
+      // on continue avec les zones des autres tronçons.
+      console.error(`[ingest-plu-pdf] détection tronçon ${c} échouée`, e);
+      send({ type: "phase", message: `Détection des zones — partie ${c + 1}/${chunks.length} ignorée (erreur temporaire)` });
+      return [] as Array<{ code: string; label: string; type: string; chunk: number }>;
+     }
     };
 
     // Tronçons analysés en parallèle ; on conserve l'ordre pour rattacher chaque
@@ -1070,6 +1078,7 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
 
     // Phase 2 — Règles par zone, extraites depuis le tronçon contenant la zone.
     const extractZone = async (zoneDef: { code: string; label: string; type: string; chunk: number }) => {
+     try {
       const ruleMsg = await client.messages.create({
         model: "claude-sonnet-4-6",
         max_tokens: 4000,
@@ -1106,6 +1115,13 @@ Correspondance article → topic :
 
       send({ type: "zone_done", zone: zoneDef.code, rules: rules.length, vision: visionCount });
       return { zoneDef, rules, visionCount };
+     } catch (e) {
+      // Une zone en échec ne fait pas planter tout l'import : on l'enregistre
+      // sans règle (l'instructeur pourra la compléter manuellement).
+      console.error(`[ingest-plu-pdf] extraction zone ${zoneDef.code} échouée`, e);
+      send({ type: "zone_done", zone: zoneDef.code, rules: 0, vision: 0, error: true });
+      return { zoneDef, rules: [] as PluRuleInput[], visionCount: 0 };
+     }
     };
 
     // Concurrence bornée : traiter les zones par petits lots évite de saturer
