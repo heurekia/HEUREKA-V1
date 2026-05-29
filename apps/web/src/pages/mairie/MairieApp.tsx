@@ -3444,7 +3444,7 @@ function DocumentsPanel({ commune }: { commune: string }) {
 type ZoneDef = { code: string; label: string; type: string };
 type ZoneProgress = { code: string; label: string; type: string; status: "pending" | "done"; rules?: number; vision?: number };
 
-function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel }: { commune: string; inseeCode?: string; onSuccess: () => void; loadError: string | null; onCancel?: () => void }) {
+function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, onManual }: { commune: string; inseeCode?: string; onSuccess: () => void; loadError: string | null; onCancel?: () => void; onManual?: () => void }) {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [communeInput, setCommuneInput] = useState(commune);
   const [inseeInput, setInseeInput] = useState(inseeCode ?? "");
@@ -3638,6 +3638,17 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel }: 
             >
               Analyser le PLU
             </button>
+            {onManual && (
+              <>
+                <div style={{ textAlign: "center", margin: "14px 0 10px", fontSize: 12, color: "#94a3b8" }}>— ou —</div>
+                <button onClick={onManual} style={{ width: "100%", background: "white", border: "1px solid #C7D2FE", borderRadius: 10, padding: "11px 20px", fontSize: 13, fontWeight: 600, color: "#4F46E5", cursor: "pointer" }}>
+                  ✏️ Créer / saisir les zones manuellement
+                </button>
+                <div style={{ marginTop: 8, fontSize: 11, color: "#94a3b8", textAlign: "center", lineHeight: 1.5 }}>
+                  Créez vos zones, puis collez le texte de chaque article : l'IA le structure et vous validez.
+                </div>
+              </>
+            )}
             {onCancel && (
               <button onClick={onCancel} style={{ width: "100%", marginTop: 10, background: "none", border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 20px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>
                 ← Retour à la réglementation
@@ -3698,6 +3709,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   const [addingZoneId, setAddingZoneId] = useState<string | null>(null);
   const [newRule, setNewRule] = useState<Partial<RuleRow>>({ topic: "recul_voie", article_number: null, rule_text: "", summary: "" });
   const [showUpload, setShowUpload] = useState(false);
+  const [manualMode, setManualMode] = useState(false);
   const [addingZone, setAddingZone] = useState(false);
   const [newZone, setNewZone] = useState({ code: "", label: "", type: "U" });
   const [savingZone, setSavingZone] = useState(false);
@@ -3837,8 +3849,15 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     </div>
   );
 
-  if (!data || data.zones.length === 0 || showUpload) return (
-    <PluUploadPanel commune={commune} inseeCode={inseeCode} onSuccess={() => { setShowUpload(false); load(); }} loadError={loadError} onCancel={data && data.zones.length > 0 ? () => setShowUpload(false) : undefined} />
+  if (!data || ((data.zones.length === 0 || showUpload) && !manualMode)) return (
+    <PluUploadPanel
+      commune={commune}
+      inseeCode={inseeCode}
+      onSuccess={() => { setShowUpload(false); load(); }}
+      loadError={loadError}
+      onCancel={data && data.zones.length > 0 ? () => setShowUpload(false) : undefined}
+      onManual={() => { setManualMode(true); setShowUpload(false); }}
+    />
   );
 
   const statusDot = (status: string) => {
@@ -3863,7 +3882,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
               {(data?.zones.length ?? 0) > 0 && (
                 <button onClick={purgeAll} disabled={purging} title="Vider la réglementation de cette commune" style={{ border: "1px solid #FECACA", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#DC2626", cursor: purging ? "wait" : "pointer", fontWeight: 600 }}>{purging ? "Suppression…" : "🗑 Vider"}</button>
               )}
-              <button onClick={() => setShowUpload(true)} title="Réimporter le PLU" style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>↑ Réimporter</button>
+              <button onClick={() => { setManualMode(false); setShowUpload(true); }} title="Importer un PLU (PDF)" style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>↑ Importer PDF</button>
             </div>
           </div>
           <div style={{ fontSize: 12, color: "#9CA3AF" }}>{commune}</div>
