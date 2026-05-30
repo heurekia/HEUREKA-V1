@@ -34,6 +34,7 @@ type ParcelAnalysis = {
     estimatedFloors: number | null; greenSpaceRatio: number | null;
     greenSpaceRequiredM2: number | null; confidence: number; resultSummary: string;
   } | null;
+  built_footprint_m2?: number;
   available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
   prescriptions?: Array<{ libelle: string; typepsc: string; txtpsc?: string }>;
   servitudes?: Servitude[];
@@ -506,8 +507,11 @@ export function AnalyseParcellaire() {
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {[
                         ["Emprise au sol max.", analysis.buildability.maxFootprintM2 > 0 ? `${Math.round(analysis.buildability.maxFootprintM2)} m²` : "—"],
-                        // « Emprise restante » n'est affichée que si le bâti existant est connu
-                        // (sinon elle vaudrait l'emprise max → redondant et trompeur).
+                        // Bâti existant mesuré (BD TOPO®) et emprise restante réelle — affichés
+                        // seulement si le bâti a pu être déterminé.
+                        ...(analysis.built_footprint_m2 != null
+                          ? [["Bâti existant", `${Math.round(analysis.built_footprint_m2)} m²`]]
+                          : []),
                         ...(analysis.buildability.remainingFootprintM2 != null
                           ? [["Emprise restante", `${Math.round(analysis.buildability.remainingFootprintM2)} m²`]]
                           : []),

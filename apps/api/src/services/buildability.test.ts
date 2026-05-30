@@ -18,7 +18,9 @@ describe("calculateBuildability", () => {
       calculationVariables: { ...noRules, maxFootprintRatio: 0.4 },
     });
     expect(r.maxFootprintM2).toBe(400);
-    expect(r.remainingFootprintM2).toBe(400);
+    // Sans bâti existant connu, la « surface restante » n'est pas calculée (null) :
+    // elle vaudrait l'emprise max, ce qui serait redondant et trompeur.
+    expect(r.remainingFootprintM2).toBeNull();
   });
 
   it("accepte un ratio exprimé en pourcentage (> 1) et le normalise", () => {
@@ -48,14 +50,15 @@ describe("calculateBuildability", () => {
     expect(r.remainingFootprintM2).toBe(0);
   });
 
-  it("réserve la part d'espaces verts sur l'emprise constructible", () => {
+  it("emprise au sol = règle d'emprise seule (non mélangée aux espaces verts)", () => {
     const r = calculateBuildability({
       parcelSurfaceM2: 1000,
       existingFootprintM2: 0,
       calculationVariables: { ...noRules, maxFootprintRatio: 0.9, greenSpaceRatio: 0.3 },
     });
-    // min(0.9*1000, 1000 - 0.3*1000) = min(900, 700) = 700
-    expect(r.maxFootprintM2).toBe(700);
+    // L'emprise max = strictement 0,9×1000. Les espaces verts sont une règle
+    // distincte, affichée à part — pas soustraite de l'emprise.
+    expect(r.maxFootprintM2).toBe(900);
     expect(r.greenSpaceRequiredM2).toBe(300);
   });
 

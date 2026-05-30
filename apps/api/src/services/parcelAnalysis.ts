@@ -19,6 +19,7 @@ import { db } from "../db.js";
 import { zones, zone_regulatory_rules, communes, gpu_parcel_cache } from "@heureka-v1/db";
 import { eq, and, ilike, sql } from "drizzle-orm";
 import { calculateBuildability, type BuildabilityInput } from "./buildability.js";
+import { computeBuiltFootprintM2 } from "./buildingFootprint.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -129,6 +130,7 @@ export interface ParcelAnalysis {
   db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
   rules: RegDbRule[];
   buildability: ReturnType<typeof calculateBuildability> | null;
+  built_footprint_m2?: number;   // emprise au sol déjà bâtie (BD TOPO®)
   data_sources: string[];
   warnings: string[];
   available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
@@ -1496,9 +1498,16 @@ export async function analyseParcel(
       if (rule.topic === "stationnement" && rule.rule_text) calcVars.parkingRules = rule.rule_text;
       if (rule.topic === "espaces_verts") calcVars.greenSpaceRatio = maxVal;
     }
+    // Emprise au sol déjà bâtie sur la parcelle (BD TOPO® bâtiments). null si
+    // indéterminable → la « surface restante » ne sera alors pas affichée.
+    const existingFootprintM2 = await computeBuiltFootprintM2(result.parcel.geometry);
+    if (existingFootprintM2 != null) {
+      result.built_footprint_m2 = existingFootprintM2;
+      result.data_sources.push("BD TOPO® (bâtiments)");
+    }
     result.buildability = calculateBuildability({
       parcelSurfaceM2: result.parcel.surface_m2,
-      existingFootprintM2: 0,
+      existingFootprintM2: existingFootprintM2 ?? 0,
       calculationVariables: calcVars,
     });
   }
