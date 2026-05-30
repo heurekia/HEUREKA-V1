@@ -27,7 +27,7 @@ type ParcelAnalysis = {
   plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string; plu_etat?: string };
   risks?: { flood_risk: string; seismic_zone: string; clay_risk?: string; landslide_risk?: string; radon_level?: string };
   db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
-  rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" }> | null; sub_theme?: string | null; applies_if?: string[] | null; relevance?: "general" | "applicable" | "conditional" | "excluded"; exceptions?: string | null }>;
+  rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; value_exact: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" }> | null; sub_theme?: string | null; applies_if?: string[] | null; relevance?: "general" | "applicable" | "conditional" | "excluded"; exceptions?: string | null }>;
   buildability: {
     maxFootprintM2: number; remainingFootprintM2: number; maxHeightM: number | null;
     minSetbackFromRoadM: number | null; minSetbackFromBoundariesM: number | null;
@@ -59,6 +59,18 @@ const TOPIC_LABEL: Record<string, string> = {
 // in plain language, rather than as a numeric badge. "aspect" (article 11 du PLU)
 // couvre matériaux, couleurs, toitures, menuiseries/huisseries et clôtures.
 const QUALITATIVE_TOPICS = new Set(["aspect", "destinations", "general"]);
+
+// Rubriques grand public (icône + libellé), regroupant les thèmes techniques.
+const RUBRIQUES: Array<{ key: string; icon: string; label: string; topics: string[] }> = [
+  { key: "construire", icon: "🏗️", label: "Ce que vous pouvez construire", topics: ["emprise_sol", "hauteur", "cos", "terrain_min"] },
+  { key: "implanter", icon: "📐", label: "Où implanter la construction", topics: ["recul_voie", "recul_limite", "recul_batiments"] },
+  { key: "aspect", icon: "🎨", label: "Aspect & matériaux", topics: ["aspect"] },
+  { key: "stationnement", icon: "🅿️", label: "Stationnement", topics: ["stationnement"] },
+  { key: "verts", icon: "🌳", label: "Espaces verts & plantations", topics: ["espaces_verts"] },
+  { key: "acces", icon: "🚗", label: "Accès & réseaux", topics: ["desserte_voies", "desserte_reseaux"] },
+  { key: "usages", icon: "🚦", label: "Usages autorisés ou interdits", topics: ["interdictions", "conditions", "destinations"] },
+  { key: "autres", icon: "📋", label: "Autres dispositions", topics: ["general"] },
+];
 
 // Libellés des tags d'applicabilité (affichage citoyen).
 const APPLIES_LABEL_PUB: Record<string, string> = {
@@ -165,6 +177,7 @@ export function AnalyseParcellaire() {
   const [clickMode, setClickMode] = useState(false);
   const [pluZones, setPluZones] = useState(true);
   const [baseLayer, setBaseLayer] = useState<BaseLayer>("ign-ortho");
+  const [rulesOpen, setRulesOpen] = useState(false);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -731,107 +744,69 @@ export function AnalyseParcellaire() {
 
                 {/* Regulatory rules */}
                 {analysis.rules.length > 0 ? (() => {
-                  const visible = analysis.rules.filter(r => r.relevance !== "excluded");
-                  const applies = visible.filter(r => r.relevance !== "conditional");
-                  const cond = visible.filter(r => r.relevance === "conditional");
-                  const hidden = analysis.rules.length - visible.length;
-
-                  const card = (rule: typeof analysis.rules[number]) => {
-                    const isQualitative = QUALITATIVE_TOPICS.has(rule.topic);
-                    const hasValue = rule.value_max != null || rule.value_min != null;
-                    const text = isQualitative ? (rule.rule_text || rule.summary || "") : (rule.summary ?? rule.rule_text.slice(0, 100));
-                    const border = rule.relevance === "conditional" ? "#FCD34D" : "#86EFAC";
+                  const applies = analysis.rules.filter(r => r.relevance !== "excluded" && r.relevance !== "conditional");
+                  const cond = analysis.rules.filter(r => r.relevance === "conditional");
+                  const topicRub = (t: string) => RUBRIQUES.find(r => r.topics.includes(t))?.key ?? "autres";
+                  const ruleLine = (rule: typeof analysis.rules[number]) => {
+                    const v = rule.value_exact != null ? `${rule.value_exact}` : rule.value_max != null ? `≤ ${rule.value_max}` : rule.value_min != null ? `≥ ${rule.value_min}` : null;
                     return (
-                      <div key={rule.id} style={{ padding: "10px 14px", borderBottom: "1px solid #F9FAFB", borderLeft: `3px solid ${border}`, display: "flex", gap: 10, alignItems: "flex-start" }}>
-                        <div style={{ flex: 1, minWidth: 0 }}>
-                          <p style={{ fontSize: 12, fontWeight: 600, color: "#111827", margin: "0 0 2px" }}>
-                            <span style={{ marginRight: 6 }}>{TOPIC_ICON[rule.topic] ?? "📋"}</span>
-                            {rule.sub_theme ?? TOPIC_LABEL[rule.topic] ?? rule.topic}
-                          </p>
-                          <p style={{ fontSize: 11, color: "#6B7280", margin: 0, lineHeight: 1.5, whiteSpace: "pre-wrap" }}>{text}</p>
-                          {rule.exceptions && <p style={{ fontSize: 10.5, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6, padding: "3px 7px", margin: "4px 0 0", lineHeight: 1.4 }}><strong>Sauf :</strong> {rule.exceptions}</p>}
-                          {rule.conditions && <p style={{ fontSize: 10, color: "#9CA3AF", margin: "2px 0 0" }}>↳ {rule.conditions}</p>}
-                          {(rule.applies_if?.length ?? 0) > 0 && (
-                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
-                              {rule.applies_if!.map((t, ti) => (
-                                <span key={ti} style={{ background: "#FEF3C7", color: "#92400E", borderRadius: 6, padding: "2px 8px", fontSize: 10 }}>⊕ {APPLIES_LABEL_PUB[t] ?? t}</span>
-                              ))}
-                            </div>
-                          )}
-                          {(rule.cases?.length ?? 0) > 0 && (
-                            <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 4 }}>
-                              {rule.cases!.filter(c => c.value != null).map((c, ci) => {
-                                const isCond = c.kind === "condition";
-                                return (
-                                  <span key={ci} style={{ background: isCond ? "#FFF7ED" : "#EEF2FF", color: isCond ? "#C2410C" : "#4338CA", borderRadius: 6, padding: "2px 8px", fontSize: 10 }}>
-                                    {isCond ? "si " : ""}{c.condition} : <strong>{c.value ?? "—"}{c.unit ? ` ${c.unit}` : ""}</strong>
-                                  </span>
-                                );
-                              })}
-                            </div>
-                          )}
-                        </div>
-                        {hasValue && !isQualitative && (
-                          <div style={{ flexShrink: 0, background: "#EEF2FF", borderRadius: 6, padding: "4px 8px", textAlign: "center" }}>
-                            <p style={{ fontSize: 13, fontWeight: 700, color: "#4F46E5", margin: 0 }}>
-                              {rule.value_max != null ? `≤${rule.value_max}` : `≥${rule.value_min}`}
-                            </p>
-                            <p style={{ fontSize: 10, color: "#818CF8", margin: 0 }}>{rule.unit ?? ""}</p>
-                          </div>
-                        )}
+                      <div key={rule.id} style={{ padding: "9px 0", borderTop: "1px solid #F3F4F6" }}>
+                        <div style={{ fontSize: 13, color: "#111827", lineHeight: 1.55 }}>{rule.summary || rule.rule_text}</div>
+                        {v && <div style={{ fontSize: 12.5, color: "#4F46E5", fontWeight: 700, marginTop: 3 }}>{v} {rule.unit ?? ""}</div>}
+                        {rule.exceptions && <div style={{ fontSize: 11.5, color: "#B45309", marginTop: 3 }}>Sauf : {rule.exceptions}</div>}
                       </div>
                     );
                   };
-
-                  // Regroupe par article (les règles arrivent déjà triées par n° d'article).
-                  const groupByArticle = (rs: typeof analysis.rules) => {
-                    const g: { article: number | null; rules: typeof analysis.rules }[] = [];
-                    for (const r of rs) {
-                      const last = g[g.length - 1];
-                      if (last && last.article === r.article_number) last.rules.push(r);
-                      else g.push({ article: r.article_number, rules: [r] });
-                    }
-                    return g;
-                  };
-                  const renderGroups = (rs: typeof analysis.rules) => groupByArticle(rs).map((grp, gi) => (
-                    <div key={gi}>
-                      {grp.article != null && (
-                        <div style={{ padding: "6px 14px", background: "#FAFAFA", fontSize: 10.5, fontWeight: 700, color: "#9CA3AF", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                          Article {grp.article}
-                        </div>
-                      )}
-                      {grp.rules.map(card)}
-                    </div>
-                  ));
-
+                  const rubs = RUBRIQUES.map(rub => ({ ...rub, rules: applies.filter(r => topicRub(r.topic) === rub.key) })).filter(rub => rub.rules.length > 0);
                   return (
-                    <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                      {applies.length > 0 && (
-                        <div style={{ border: "1px solid #D1FAE5", borderRadius: 10, overflow: "hidden" }}>
-                          <div style={{ padding: "10px 14px", borderBottom: "1px solid #ECFDF5", background: "#F0FDF4" }}>
-                            <p style={{ fontSize: 11, fontWeight: 700, color: "#15803D", textTransform: "uppercase", letterSpacing: "0.06em", margin: 0 }}>
-                              ✅ S'applique à votre parcelle ({applies.length})
-                            </p>
+                    <>
+                      <button onClick={() => setRulesOpen(true)}
+                        style={{ width: "100%", textAlign: "left", border: "1px solid #C7D2FE", borderRadius: 14, padding: "16px 18px", background: "linear-gradient(180deg,#F5F7FF,#EEF2FF)", cursor: "pointer", display: "flex", alignItems: "center", gap: 14, boxShadow: "0 2px 6px rgba(79,70,229,0.12)" }}>
+                        <span style={{ fontSize: 28, flexShrink: 0 }}>📖</span>
+                        <span style={{ flex: 1, minWidth: 0 }}>
+                          <span style={{ display: "block", fontSize: 15, fontWeight: 800, color: "#1E1B4B" }}>Que puis-je construire ici ?</span>
+                          <span style={{ display: "block", fontSize: 12.5, color: "#4F46E5", marginTop: 2 }}>Voir les {applies.length} règle{applies.length > 1 ? "s" : ""} d'urbanisme, en clair</span>
+                        </span>
+                        <span style={{ fontSize: 13, fontWeight: 700, color: "white", background: "#4F46E5", borderRadius: 999, padding: "8px 16px", flexShrink: 0 }}>Voir →</span>
+                      </button>
+
+                      {rulesOpen && (
+                        <div onClick={() => setRulesOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0, zIndex: 1000 }}>
+                          <div onClick={e => e.stopPropagation()} style={{ background: "white", borderTopLeftRadius: 18, borderTopRightRadius: 18, maxWidth: 560, width: "100%", maxHeight: "88vh", overflow: "auto", boxShadow: "0 -10px 50px rgba(0,0,0,0.3)" }}>
+                            <div style={{ padding: "16px 18px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: "white", zIndex: 1 }}>
+                              <div>
+                                <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>Règles d'urbanisme</div>
+                                <div style={{ fontSize: 12, color: "#6B7280" }}>{analysis.plu_zone?.zone_label ?? analysis.parcel?.commune ?? "Votre parcelle"}</div>
+                              </div>
+                              <button onClick={() => setRulesOpen(false)} style={{ border: "none", background: "#F1F5F9", borderRadius: 10, width: 34, height: 34, cursor: "pointer", fontSize: 16 }}>✕</button>
+                            </div>
+                            <div style={{ padding: "4px 14px 18px" }}>
+                              <p style={{ fontSize: 12, color: "#9CA3AF", padding: "8px 4px 2px", margin: 0 }}>Touchez une rubrique pour voir les règles.</p>
+                              {rubs.map(rub => (
+                                <details key={rub.key} style={{ borderTop: "1px solid #F3F4F6" }}>
+                                  <summary style={{ padding: "14px 4px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, listStyle: "none" }}>
+                                    <span style={{ fontSize: 24 }}>{rub.icon}</span>
+                                    <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: "#111827" }}>{rub.label}</span>
+                                    <span style={{ fontSize: 12, color: "#9CA3AF" }}>{rub.rules.length} ›</span>
+                                  </summary>
+                                  <div style={{ padding: "0 4px 12px 48px" }}>{rub.rules.map(ruleLine)}</div>
+                                </details>
+                              ))}
+                              {cond.length > 0 && (
+                                <details style={{ borderTop: "1px solid #F3F4F6" }}>
+                                  <summary style={{ padding: "14px 4px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, listStyle: "none" }}>
+                                    <span style={{ fontSize: 24 }}>📌</span>
+                                    <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: "#92400E" }}>Selon votre projet</span>
+                                    <span style={{ fontSize: 12, color: "#9CA3AF" }}>{cond.length} ›</span>
+                                  </summary>
+                                  <div style={{ padding: "0 4px 12px 48px" }}>{cond.map(ruleLine)}</div>
+                                </details>
+                              )}
+                            </div>
                           </div>
-                          {renderGroups(applies)}
                         </div>
                       )}
-
-                      {cond.length > 0 && (
-                        <details style={{ border: "1px solid #FEF3C7", borderRadius: 10, overflow: "hidden" }}>
-                          <summary style={{ padding: "10px 14px", background: "#FFFBEB", cursor: "pointer", fontSize: 11, fontWeight: 700, color: "#92400E", textTransform: "uppercase", letterSpacing: "0.05em" }}>
-                            ⊕ Selon votre projet ou à vérifier ({cond.length})
-                          </summary>
-                          {renderGroups(cond)}
-                        </details>
-                      )}
-
-                      {hidden > 0 && (
-                        <p style={{ fontSize: 10.5, color: "#9CA3AF", margin: "0 2px", textAlign: "center" }}>
-                          {hidden} règle(s) non applicable(s) aux caractéristiques de ce terrain (masquées)
-                        </p>
-                      )}
-                    </div>
+                    </>
                   );
                 })() : analysis && !loading && (
                   <div style={{ border: "1px dashed #E5E7EB", borderRadius: 10, padding: "16px", textAlign: "center", color: "#9CA3AF", fontSize: 12 }}>
