@@ -1578,7 +1578,10 @@ Structure le contenu et renvoie UNIQUEMENT un tableau JSON, sans autre texte. Po
     "exceptions": string|null,      // dérogations « sauf… / à l'exception de… / hormis… » (texte court), renvoi d'article inclus
     "summary": string,              // ≤ 15 mots
     "cases": [ { "condition": string, "value": number|null, "unit": "m|cm|%|m²|places"|null, "kind": "condition|parametre" } ],
-    "applies_if": [ ]               // tags d'applicabilité, parmi : protege_l151_19, unesco, abf, inondable, extension, surelevation, ravalement, demolition, cloture_sur_rue, cloture_limite, annexe, devanture_commerciale, equipement_public. [] si général.
+    "applies_if": [ ],              // tags d'applicabilité, parmi : protege_l151_19, unesco, abf, inondable, extension, surelevation, ravalement, demolition, cloture_sur_rue, cloture_limite, annexe, devanture_commerciale, equipement_public. [] si général.
+    "citizen_title": string,        // TITRE COURT citoyen (2–5 mots, sans jargon), ex: "Hauteur des maisons", "Clôtures sur la rue", "Places de parking"
+    "citizen_summary": string,      // UNE phrase simple, concrète, en « vous », avec la valeur clé. Ex: "Votre maison ne peut pas dépasser 10 mètres de haut." Pas de jargon, pas de n° d'article.
+    "citizen_relevant": boolean     // false pour les dispositions sans intérêt pour un particulier : articles « sans objet »/abrogés (loi ALUR : superficie minimale, COS), desserte par les réseaux, voiries internes. true par défaut.
   }
 ]
 
@@ -1594,7 +1597,8 @@ AUTRES RÈGLES :
 - VALEUR PRINCIPALE (value_*) = LE seuil de la sous-règle dans une unité COHÉRENTE (%, m, m², places). Respecte min ("≥") vs max ("≤"). NE MÉLANGE JAMAIS valeur et unité. Mesures secondaires/d'autres unités → "cases". Si rien de chiffré → value_* null (fréquent pour l'aspect).
 - "cases" : à utiliser UNIQUEMENT pour des éléments porteurs d'une VALEUR chiffrée (ex: 1,80 m, 50 cm) ou d'une vraie ALTERNATIVE conditionnelle (ex: 10 m sens unique / 13 m double sens). kind "condition" (alternative exclusive) vs "parametre" (valeur cumulative).
   NE crée PAS de cases pour une simple énumération QUALITATIVE sans valeur (liste d'occupations interdites, de matériaux autorisés…) : elle reste dans "rule_text". Un cas avec value=null et sans alternative réelle ne doit PAS exister.
-- N'invente AUCUNE valeur. Articles 5 et 14 → "sans objet" (loi ALUR).`,
+- N'invente AUCUNE valeur. Articles 5 et 14 → "sans objet" (loi ALUR) ET citizen_relevant=false.
+- VERSION CITOYEN ("citizen_title" + "citizen_summary") : OBLIGATOIRE, COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme. Phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol » → dis « la surface que votre maison occupe au sol ». Ne recopie PAS les exceptions juridiques dans citizen_summary (elles restent dans "exceptions").`,
       messages: [{ role: "user", content: userContent }],
     });
 
@@ -1628,6 +1632,9 @@ AUTRES RÈGLES :
         applies_if: Array.isArray(r.applies_if)
           ? (r.applies_if as unknown[]).map(str).filter((t): t is string => !!t && APPLIES.has(t))
           : [],
+        citizen_title: str(r.citizen_title),
+        citizen_summary: str(r.citizen_summary),
+        citizen_relevant: r.citizen_relevant !== false,
       }))
       .filter((r) => r.rule_text || r.summary);
 
@@ -1647,12 +1654,15 @@ AUTRES RÈGLES :
         summary: rules[0]!.summary,
         cases: rules.flatMap((r) => r.cases),
         applies_if: [...new Set(rules.flatMap((r) => r.applies_if))],
+        citizen_title: rules[0]!.citizen_title,
+        citizen_summary: rules[0]!.citizen_summary,
+        citizen_relevant: rules.some((r) => r.citizen_relevant),
       }];
     }
 
     // Repli : rien d'exploitable → une sous-règle brute avec le texte collé.
     if (rules.length === 0) {
-      rules.push({ sub_theme: null, article_number: article_number ? Number(article_number) : null, article_title: "", topic: "general", rule_text: (text ?? "").trim() || "Voir le tableau / croquis fourni.", value_min: null, value_max: null, value_exact: null, unit: null, conditions: null, exceptions: null, summary: "", cases: [], applies_if: [] });
+      rules.push({ sub_theme: null, article_number: article_number ? Number(article_number) : null, article_title: "", topic: "general", rule_text: (text ?? "").trim() || "Voir le tableau / croquis fourni.", value_min: null, value_max: null, value_exact: null, unit: null, conditions: null, exceptions: null, summary: "", cases: [], applies_if: [], citizen_title: null, citizen_summary: null, citizen_relevant: true });
     }
 
     res.json({ rules });

@@ -729,8 +729,14 @@ export function AnalyseParcellaire() {
                   // Vue citoyen : on masque les règles marquées non pertinentes pour un
                   // particulier (citizen_relevant === false) ainsi que les règles exclues.
                   const citizenVisible = analysis.rules.filter(r => r.citizen_relevant !== false);
-                  const applies = citizenVisible.filter(r => r.relevance !== "excluded" && r.relevance !== "conditional");
-                  const cond = citizenVisible.filter(r => r.relevance === "conditional");
+                  // Filet de sécurité : on masque les dispositions « sans objet » / abrogées
+                  // (art. 5 superficie min., art. 14 COS — loi ALUR), même si d'anciennes
+                  // données n'ont pas encore citizen_relevant=false. Aucun intérêt citoyen.
+                  const isVoid = (r: typeof analysis.rules[number]) =>
+                    /sans objet|abrog|\bcos\b|coefficient d'occupation/i.test(`${r.citizen_summary ?? ""} ${r.summary ?? ""} ${r.rule_text}`);
+                  const relevant = citizenVisible.filter(r => !isVoid(r));
+                  const applies = relevant.filter(r => r.relevance !== "excluded" && r.relevance !== "conditional");
+                  const cond = relevant.filter(r => r.relevance === "conditional");
                   const topicRub = (t: string) => RUBRIQUES.find(r => r.topics.includes(t))?.key ?? "autres";
                   const ruleLine = (rule: typeof analysis.rules[number]) => {
                     const v = rule.value_exact != null ? `${rule.value_exact}` : rule.value_max != null ? `≤ ${rule.value_max}` : rule.value_min != null ? `≥ ${rule.value_min}` : null;
@@ -742,7 +748,16 @@ export function AnalyseParcellaire() {
                         {titre && <div style={{ fontSize: 12.5, fontWeight: 700, color: "#1E1B4B", marginBottom: 2 }}>{titre}</div>}
                         <div style={{ fontSize: 13, color: "#111827", lineHeight: 1.55 }}>{phrase}</div>
                         {v && <div style={{ fontSize: 12.5, color: "#4F46E5", fontWeight: 700, marginTop: 3 }}>{v} {rule.unit ?? ""}</div>}
-                        {rule.exceptions && <div style={{ fontSize: 11.5, color: "#B45309", marginTop: 3 }}>Sauf : {rule.exceptions}</div>}
+                        {rule.exceptions && (
+                          // Le détail des dérogations est replié : il alourdit la lecture
+                          // pour un citoyen, qui peut le déployer s'il en a besoin.
+                          <details style={{ marginTop: 4 }}>
+                            <summary style={{ fontSize: 11.5, color: "#B45309", cursor: "pointer", fontWeight: 600, listStyle: "none" }}>
+                              Des exceptions existent ›
+                            </summary>
+                            <div style={{ fontSize: 11.5, color: "#92400E", marginTop: 3, lineHeight: 1.5 }}>{rule.exceptions}</div>
+                          </details>
+                        )}
                       </div>
                     );
                   };
