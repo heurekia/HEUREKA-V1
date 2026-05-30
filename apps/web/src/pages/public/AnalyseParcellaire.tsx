@@ -175,7 +175,6 @@ export function AnalyseParcellaire() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [clickMode, setClickMode] = useState(false);
-  const [pluZones, setPluZones] = useState(true);
   const [baseLayer, setBaseLayer] = useState<BaseLayer>("ign-ortho");
   const [rulesOpen, setRulesOpen] = useState(false);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -294,23 +293,6 @@ export function AnalyseParcellaire() {
             <path d="M12 22s-8-4.5-8-11.8A8 8 0 0112 2a8 8 0 018 8.2c0 7.3-8 11.8-8 11.8z" /><circle cx="12" cy="10" r="3" />
           </svg>
           {clickMode ? "Cliquer sur la carte…" : "Cliquer sur la carte"}
-        </button>
-
-        <button
-          onClick={() => setPluZones(v => !v)}
-          style={{
-            display: "flex", alignItems: "center", gap: 6,
-            padding: "5px 12px", borderRadius: 7, fontSize: 12, fontWeight: 600,
-            border: "1.5px solid", cursor: "pointer", transition: "all 0.12s",
-            borderColor: pluZones ? "#4F46E5" : "#E5E7EB",
-            background: pluZones ? "#EEF2FF" : "white",
-            color: pluZones ? "#4F46E5" : "#6B7280",
-          }}
-        >
-          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-            <polygon points="3 6 9 3 15 6 21 3 21 18 15 21 9 18 3 21" />
-          </svg>
-          Zones PLU
         </button>
 
         <div style={{ display: "flex", border: "1px solid #E5E7EB", borderRadius: 7, overflow: "hidden" }}>
@@ -771,8 +753,8 @@ export function AnalyseParcellaire() {
                       </button>
 
                       {rulesOpen && (
-                        <div onClick={() => setRulesOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.45)", display: "flex", alignItems: "flex-end", justifyContent: "center", padding: 0, zIndex: 1000 }}>
-                          <div onClick={e => e.stopPropagation()} style={{ background: "white", borderTopLeftRadius: 18, borderTopRightRadius: 18, maxWidth: 560, width: "100%", maxHeight: "88vh", overflow: "auto", boxShadow: "0 -10px 50px rgba(0,0,0,0.3)" }}>
+                        <div onClick={() => setRulesOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.35)", display: "flex", alignItems: "stretch", justifyContent: "flex-start", padding: 0, zIndex: 1100 }}>
+                          <div onClick={e => e.stopPropagation()} style={{ background: "white", width: "min(460px, 92vw)", height: "100vh", overflow: "auto", boxShadow: "8px 0 40px rgba(0,0,0,0.25)" }}>
                             <div style={{ padding: "16px 18px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: "white", zIndex: 1 }}>
                               <div>
                                 <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>Règles d'urbanisme</div>
@@ -848,7 +830,7 @@ export function AnalyseParcellaire() {
             height="100%"
             baseLayer={baseLayer}
             parcelLayer={true}
-            pluZoneLayer={pluZones}
+            pluZoneLayer={false}
             clickMode={clickMode}
             onMapClick={handleMapClick}
             highlightGeometry={parcelGeometry}
