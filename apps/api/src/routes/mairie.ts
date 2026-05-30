@@ -1407,7 +1407,7 @@ mairieRouter.delete("/reglementation", requireRole("mairie", "instructeur", "adm
 mairieRouter.patch("/reglementation/rules/:id", async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
-    const { rule_text, validation_status, value_min, value_max, value_exact, unit, conditions, exceptions, summary, instructor_note, topic, article_number, article_title, cases, applies_if, sub_theme } = req.body as Record<string, unknown>;
+    const { rule_text, validation_status, value_min, value_max, value_exact, unit, conditions, exceptions, summary, instructor_note, topic, article_number, article_title, cases, applies_if, sub_theme, citizen_title, citizen_summary, citizen_relevant } = req.body as Record<string, unknown>;
 
     const allowed = new Set(["valide", "brouillon", "rejete", "draft"]);
     if (validation_status !== undefined && !allowed.has(validation_status as string)) {
@@ -1431,6 +1431,9 @@ mairieRouter.patch("/reglementation/rules/:id", async (req: AuthRequest, res) =>
     if (cases !== undefined) patch.cases = Array.isArray(cases) ? cases : [];
     if (applies_if !== undefined) patch.applies_if = Array.isArray(applies_if) ? applies_if : [];
     if (sub_theme !== undefined) patch.sub_theme = sub_theme;
+    if (citizen_title !== undefined) patch.citizen_title = citizen_title;
+    if (citizen_summary !== undefined) patch.citizen_summary = citizen_summary;
+    if (citizen_relevant !== undefined) patch.citizen_relevant = citizen_relevant !== false;
 
     await db.update(zone_regulatory_rules).set(patch).where(eq(zone_regulatory_rules.id, id));
     const [updated] = await db.select().from(zone_regulatory_rules).where(eq(zone_regulatory_rules.id, id)).limit(1);
@@ -1459,7 +1462,7 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules", async (req: AuthRequest
     const [zone] = await db.select({ id: zones.id }).from(zones).where(eq(zones.id, zone_id)).limit(1);
     if (!zone) return res.status(404).json({ error: "Zone non trouvée" });
 
-    const { article_number, article_title, topic, rule_text, value_min, value_max, value_exact, unit, conditions, exceptions, summary, cases, applies_if, sub_theme } = req.body as Record<string, unknown>;
+    const { article_number, article_title, topic, rule_text, value_min, value_max, value_exact, unit, conditions, exceptions, summary, cases, applies_if, sub_theme, citizen_title, citizen_summary, citizen_relevant } = req.body as Record<string, unknown>;
     if (!topic || !rule_text) return res.status(400).json({ error: "topic et rule_text requis" });
 
     const [created] = await db.insert(zone_regulatory_rules).values({
@@ -1478,6 +1481,9 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules", async (req: AuthRequest
       cases: Array.isArray(cases) ? cases : [],
       applies_if: Array.isArray(applies_if) ? applies_if : [],
       sub_theme: (sub_theme as string | undefined) ?? null,
+      citizen_title: (citizen_title as string | undefined) ?? null,
+      citizen_summary: (citizen_summary as string | undefined) ?? null,
+      citizen_relevant: citizen_relevant !== false,
       validation_status: "brouillon",
     }).returning();
 
@@ -1516,6 +1522,9 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules/bulk", requireRole("mairi
         cases: Array.isArray(r.cases) ? r.cases : [],
         applies_if: Array.isArray(r.applies_if) ? r.applies_if : [],
         sub_theme: str(r.sub_theme),
+        citizen_title: str(r.citizen_title),
+        citizen_summary: str(r.citizen_summary),
+        citizen_relevant: r.citizen_relevant !== false,
         validation_status: "brouillon" as const,
       }));
     if (!values.length) return res.status(400).json({ error: "Aucune règle valide (topic + rule_text requis)" });
@@ -1650,6 +1659,98 @@ AUTRES RÈGLES :
   } catch (err) {
     console.error("[structure-article]", err);
     res.status(500).json({ error: "Échec de l'analyse IA — réessayez ou saisissez manuellement." });
+  }
+});
+
+// POST /mairie/reglementation/structure-zone
+// « Agent » de structuration ZONE : l'instructeur colle le règlement COMPLET d'une
+// zone (tous les articles, déjà résumés). Claude (Sonnet) renvoie une liste de
+// (sous-)règles découpées par sous-section, chacune pré-remplie ET dotée de sa
+// version « citoyen » (titre court + une phrase simple). L'instructeur valide.
+mairieRouter.post("/reglementation/structure-zone", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const { text, zone_code } = req.body as { text?: string; zone_code?: string };
+    if (!text || text.trim().length < 50) return res.status(400).json({ error: "Texte du règlement de zone requis (collez le règlement complet)." });
+
+    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 120_000 });
+    const msg = await client.messages.create({
+      model: "claude-sonnet-4-6",
+      max_tokens: 16000,
+      system: `Tu es un expert en droit de l'urbanisme français. On te donne le RÈGLEMENT COMPLET d'UNE zone de PLU (tous les articles 1 à 16, souvent déjà résumés, avec valeurs et seuils).
+
+Ta mission : découper ce règlement en (SOUS-)RÈGLES exploitables, et pour CHACUNE produire EN PLUS une version « citoyen » en langage courant (pour un particulier qui n'y connaît rien).
+
+DÉCOUPAGE — par SOUS-SECTION :
+- Crée UNE règle par sous-section thématique cohérente (chaque puce / paragraphe distinct d'un article). Ex. Article 11 « Aspect » → 4 règles : Bâtiments protégés ; Façades et vitrines ; Toitures ; Clôtures. Article 9 « Emprise au sol » → règle générale + dérogations + extensions.
+- Si un article ne contient qu'un seul thème, une seule règle suffit.
+- IGNORE complètement les articles « sans objet » / abrogés (loi ALUR : superficie minimale, COS) et les articles « non réglementé ». Ne crée AUCUNE règle pour eux.
+
+Renvoie UNIQUEMENT un tableau JSON, sans autre texte. Format de chaque objet :
+[
+  {
+    "sub_theme": string,            // numéro + intitulé, ex: "7.1 Dans les 15 premiers mètres", "11.4 Clôtures", "12.1 Stationnement automobile"
+    "article_number": number|null,  // n° d'article d'origine (1–16)
+    "article_title": string,        // intitulé de l'article, ex: "Implantation par rapport aux limites séparatives"
+    "topic": "interdictions|conditions|desserte_voies|desserte_reseaux|terrain_min|recul_voie|recul_limite|recul_batiments|emprise_sol|hauteur|aspect|stationnement|espaces_verts|cos|general",
+    "rule_text": string,            // texte réglementaire fidèle et synthétique de la sous-règle
+    "value_min": number|null, "value_max": number|null, "value_exact": number|null,
+    "unit": "m|cm|%|m²|places"|null,
+    "conditions": string|null,
+    "exceptions": string|null,      // dérogations « sauf… / à l'exception de… / hormis… »
+    "summary": string,              // résumé technique ≤ 15 mots (pour la mairie)
+    "cases": [ { "condition": string, "value": number|null, "unit": "m|cm|%|m²|places"|null, "kind": "condition|parametre" } ],
+    "applies_if": [ ],              // tags : protege_l151_19, unesco, abf, inondable, extension, surelevation, ravalement, demolition, cloture_sur_rue, cloture_limite, annexe, devanture_commerciale, equipement_public. [] si général.
+    "citizen_title": string,        // TITRE COURT citoyen (2–5 mots, sans jargon), ex: "Hauteur des maisons", "Clôtures sur la rue", "Places de parking"
+    "citizen_summary": string,      // UNE phrase simple, concrète, en « vous », avec la valeur clé. Ex: "Votre maison ne peut pas dépasser 10 mètres de haut." / "Un mur sur rue ne doit pas dépasser 1,80 m." Pas de jargon, pas de n° d'article.
+    "citizen_relevant": boolean     // false UNIQUEMENT pour les dispositions purement techniques/administratives sans intérêt pour un particulier (ex: desserte réseaux, voiries internes de lotissement). true par défaut.
+  }
+]
+
+RÈGLES DE STRUCTURATION :
+- VALEUR PRINCIPALE (value_*) = LE seuil de la sous-règle dans une unité COHÉRENTE. Respecte min ("≥","au moins") vs max ("≤","ne dépasse pas"). NE MÉLANGE JAMAIS valeur et unité.
+- "cases" : pour les seuils/alternatives chiffrés multiples d'une même sous-règle (ex: voirie 10 m sens unique / 13 m double sens → 2 cases ; stationnement commerces 0/40 m²/30 m² → cases). kind "condition" = alternative exclusive ; "parametre" = valeur cumulative. Pas de case sans valeur chiffrée.
+- "applies_if" : tag de contexte (clôtures sur rue → cloture_sur_rue ; éléments protégés → protege_l151_19 ; UNESCO → unesco ; zone inondable → inondable ; extension → extension ; surélévation → surelevation).
+- N'invente AUCUNE valeur. Reste fidèle au texte fourni.
+- La version « citoyen » doit être COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme : phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol », dis « la surface que votre maison occupe au sol ».`,
+      messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}.\n\n` : ""}${text}` }],
+    });
+
+    const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
+    const arr = parseLooseArray(raw);
+    const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
+    const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
+    const APPLIES = new Set(["protege_l151_19", "unesco", "abf", "inondable", "extension", "surelevation", "ravalement", "demolition", "cloture_sur_rue", "cloture_limite", "annexe", "devanture_commerciale", "equipement_public"]);
+    const rules = (Array.isArray(arr) ? arr : [])
+      .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
+      .map((r) => ({
+        sub_theme: str(r.sub_theme),
+        article_number: num(r.article_number),
+        article_title: str(r.article_title) ?? "",
+        topic: str(r.topic) ?? "general",
+        rule_text: str(r.rule_text) ?? "",
+        value_min: num(r.value_min), value_max: num(r.value_max), value_exact: num(r.value_exact),
+        unit: str(r.unit),
+        conditions: str(r.conditions),
+        exceptions: str(r.exceptions),
+        summary: str(r.summary) ?? "",
+        cases: Array.isArray(r.cases)
+          ? (r.cases as unknown[]).filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
+              .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit), kind: c.kind === "condition" ? "condition" : "parametre" }))
+              .filter((c) => c.condition && c.value != null)
+          : [],
+        applies_if: Array.isArray(r.applies_if)
+          ? (r.applies_if as unknown[]).map(str).filter((t): t is string => !!t && APPLIES.has(t))
+          : [],
+        citizen_title: str(r.citizen_title),
+        citizen_summary: str(r.citizen_summary),
+        citizen_relevant: r.citizen_relevant !== false,
+      }))
+      .filter((r) => r.rule_text || r.summary);
+
+    res.json({ rules });
+  } catch (err) {
+    console.error("[structure-zone]", err);
+    res.status(500).json({ error: "Échec de l'analyse IA de la zone — réessayez." });
   }
 });
 

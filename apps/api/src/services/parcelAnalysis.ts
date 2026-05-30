@@ -104,6 +104,10 @@ export interface RegDbRule {
   cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: string }> | null;
   applies_if?: string[] | null;
   sub_theme?: string | null;
+  // Version « citoyen » générée à l'ingestion (titre court + phrase simple).
+  citizen_title?: string | null;
+  citizen_summary?: string | null;
+  citizen_relevant?: boolean | null;
   // Pertinence calculée vis-à-vis de la parcelle :
   // general = toujours ; applicable = contexte parcelle confirmé ; conditional =
   // dépend du projet ou contexte indéterminé ; excluded = contexte connu et non applicable.

@@ -487,6 +487,10 @@ ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS cases jsonb DEFAULT '
 -- Décomposition d'articles complexes en sous-règles + applicabilité
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS applies_if jsonb DEFAULT '[]'::jsonb;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS sub_theme text;
+-- Version « citoyen » générée par l'IA à l'ingestion (titre + phrase simple + pertinence)
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_title text;
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_summary text;
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_relevant boolean NOT NULL DEFAULT true;
 
 -- ── Ingestion documentaire : segments + embeddings (pgvector) ──
 CREATE EXTENSION IF NOT EXISTS vector;

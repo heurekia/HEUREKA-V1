@@ -3670,6 +3670,7 @@ type RuleRow = {
   value_exact: number | null; unit: string | null; conditions: string | null; exceptions?: string | null; summary: string | null;
   instructor_note: string | null; validation_status: string; cases?: RuleCase[] | null;
   applies_if?: string[] | null; sub_theme?: string | null;
+  citizen_title?: string | null; citizen_summary?: string | null; citizen_relevant?: boolean | null;
 };
 // Sous-règle extraite par l'agent (avant enregistrement).
 type ExtractedRule = {
@@ -3677,6 +3678,7 @@ type ExtractedRule = {
   topic: string; rule_text: string; value_min: number | null; value_max: number | null;
   value_exact: number | null; unit: string | null; conditions: string | null; exceptions: string | null; summary: string;
   cases: RuleCase[]; applies_if: string[];
+  citizen_title?: string | null; citizen_summary?: string | null; citizen_relevant?: boolean;
 };
 // Libellés lisibles des tags d'applicabilité.
 const APPLIES_LABEL: Record<string, string> = {
@@ -3769,6 +3771,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   const [savingZone, setSavingZone] = useState(false);
   const [purging, setPurging] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  const [zoneMode, setZoneMode] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
   const [extracted, setExtracted] = useState<ExtractedRule[]>([]);
   const [addingExtracted, setAddingExtracted] = useState(false);
@@ -3791,6 +3794,21 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
       const r = await api.post<{ rules: ExtractedRule[] }>("/mairie/reglementation/structure-article", {
         text: pasteText, zone_code: zoneCode, article_number: newRule.article_number ?? undefined,
         image_base64: pasteImage?.data, image_media_type: pasteImage?.media,
+      });
+      setExtracted(r.rules ?? []);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Échec de l'analyse");
+    } finally {
+      setAnalyzing(false);
+    }
+  };
+
+  const analyzeZone = async (zoneCode: string) => {
+    if (pasteText.trim().length < 50) return;
+    setAnalyzing(true);
+    try {
+      const r = await api.post<{ rules: ExtractedRule[] }>("/mairie/reglementation/structure-zone", {
+        text: pasteText, zone_code: zoneCode,
       });
       setExtracted(r.rules ?? []);
     } catch (e) {
@@ -4246,6 +4264,29 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                               onChange={e => setEditForm(f => ({ ...f, summary: e.target.value || null }))}
                             />
 
+                            {/* Version « citoyen » : ce que verra le particulier dans l'analyse publique */}
+                            <div style={{ background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 8, padding: "8px 10px" }}>
+                              <div style={{ fontSize: 11, fontWeight: 700, color: "#047857", marginBottom: 6, display: "flex", alignItems: "center", gap: 6 }}>
+                                👤 Version citoyen
+                                <label style={{ marginLeft: "auto", fontWeight: 600, color: "#065F46", display: "flex", alignItems: "center", gap: 4 }}>
+                                  <input type="checkbox"
+                                    checked={(editForm.citizen_relevant ?? rule.citizen_relevant) !== false}
+                                    onChange={e => setEditForm(f => ({ ...f, citizen_relevant: e.target.checked }))} />
+                                  Visible par le citoyen
+                                </label>
+                              </div>
+                              <input style={{ width: "100%", boxSizing: "border-box", borderRadius: 6, border: "1px solid #A7F3D0", background: "white", padding: "5px 8px", fontSize: 12, fontWeight: 600, color: "#065F46", outline: "none", marginBottom: 5 }}
+                                placeholder="Titre court (ex: Hauteur des maisons)…"
+                                value={(editForm.citizen_title ?? rule.citizen_title) ?? ""}
+                                onChange={e => setEditForm(f => ({ ...f, citizen_title: e.target.value || null }))}
+                              />
+                              <textarea style={{ width: "100%", boxSizing: "border-box", borderRadius: 6, border: "1px solid #A7F3D0", background: "white", padding: "5px 8px", fontSize: 12, color: "#065F46", outline: "none", resize: "vertical", minHeight: 38, fontFamily: "inherit" }}
+                                placeholder="Une phrase simple, en « vous », avec la valeur clé…"
+                                value={(editForm.citizen_summary ?? rule.citizen_summary) ?? ""}
+                                onChange={e => setEditForm(f => ({ ...f, citizen_summary: e.target.value || null }))}
+                              />
+                            </div>
+
                             {/* Cas conditionnels / paramètres */}
                             <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 10px" }}>
                               <div style={{ fontSize: 11, fontWeight: 600, color: "#475569", marginBottom: 6 }}>Cas conditionnels / paramètres</div>
@@ -4329,30 +4370,53 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                 <div style={{ background: "white", borderRadius: 12, border: "1px solid #C7D2FE", padding: "16px 18px" }}>
                   <div style={{ fontWeight: 600, fontSize: 13, color: "#374151", marginBottom: 12 }}>Nouvelle règle</div>
 
-                  {/* Coller le texte de l'article → structuration IA (texte court, pas le PDF) */}
+                  {/* Coller le texte → structuration IA (texte court, pas le PDF) */}
                   <div style={{ background: "#F5F3FF", border: "1px solid #DDD6FE", borderRadius: 10, padding: "10px 12px", marginBottom: 12 }}>
-                    <div style={{ fontSize: 11, fontWeight: 600, color: "#6D28D9", marginBottom: 6 }}>✨ Coller le texte — ou importer une image (tableau / croquis)</div>
-                    <textarea placeholder="Collez ici le texte de l'article du PLU…" style={{ width: "100%", minHeight: 60, borderRadius: 8, border: "1px solid #DDD6FE", padding: "8px 10px", fontSize: 12, resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
+                    {/* Choix du mode : un article isolé vs le règlement complet de la zone */}
+                    <div style={{ display: "flex", gap: 6, marginBottom: 8 }}>
+                      <button onClick={() => { setZoneMode(false); setExtracted([]); }}
+                        style={{ flex: 1, fontSize: 11, fontWeight: 600, borderRadius: 8, padding: "6px 8px", cursor: "pointer",
+                          border: zoneMode ? "1px solid #DDD6FE" : "1.5px solid #7C3AED",
+                          background: zoneMode ? "white" : "#EDE9FE", color: zoneMode ? "#6B7280" : "#6D28D9" }}>
+                        Un article
+                      </button>
+                      <button onClick={() => { setZoneMode(true); setExtracted([]); setPasteImage(null); }}
+                        style={{ flex: 1, fontSize: 11, fontWeight: 600, borderRadius: 8, padding: "6px 8px", cursor: "pointer",
+                          border: zoneMode ? "1.5px solid #7C3AED" : "1px solid #DDD6FE",
+                          background: zoneMode ? "#EDE9FE" : "white", color: zoneMode ? "#6D28D9" : "#6B7280" }}>
+                        Règlement complet de la zone
+                      </button>
+                    </div>
+                    <div style={{ fontSize: 11, fontWeight: 600, color: "#6D28D9", marginBottom: 6 }}>
+                      {zoneMode
+                        ? "✨ Collez le règlement complet de la zone (tous les articles). L'IA crée une règle par sous-section + une version « citoyen » claire."
+                        : "✨ Coller le texte — ou importer une image (tableau / croquis)"}
+                    </div>
+                    <textarea placeholder={zoneMode ? "Collez ici le règlement complet de la zone (articles 1 à 16)…" : "Collez ici le texte de l'article du PLU…"}
+                      style={{ width: "100%", minHeight: zoneMode ? 120 : 60, borderRadius: 8, border: "1px solid #DDD6FE", padding: "8px 10px", fontSize: 12, resize: "vertical", outline: "none", fontFamily: "inherit", boxSizing: "border-box" }}
                       value={pasteText}
                       onChange={e => setPasteText(e.target.value)}
                     />
-                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
-                      <label style={{ fontSize: 11, color: "#6D28D9", cursor: "pointer", border: "1px solid #DDD6FE", borderRadius: 8, padding: "5px 10px", background: "white", fontWeight: 600 }}>
-                        📷 Image (tableau / croquis)
-                        <input type="file" accept="image/*" style={{ display: "none" }}
-                          onChange={e => { const f = e.target.files?.[0]; if (f) pickImage(f); e.target.value = ""; }}
-                        />
-                      </label>
-                      {pasteImage && (
-                        <span style={{ fontSize: 11, color: "#475569", display: "flex", alignItems: "center", gap: 4 }}>
-                          🖼 {pasteImage.name.length > 22 ? pasteImage.name.slice(0, 20) + "…" : pasteImage.name}
-                          <button onClick={() => setPasteImage(null)} style={{ border: "none", background: "transparent", color: "#EF4444", cursor: "pointer", fontSize: 13 }}>✕</button>
-                        </span>
-                      )}
-                    </div>
-                    <button onClick={() => analyzeArticle(selectedZone.zone_code)} disabled={analyzing || (pasteText.trim().length < 5 && !pasteImage)}
+                    {!zoneMode && (
+                      <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 6 }}>
+                        <label style={{ fontSize: 11, color: "#6D28D9", cursor: "pointer", border: "1px solid #DDD6FE", borderRadius: 8, padding: "5px 10px", background: "white", fontWeight: 600 }}>
+                          📷 Image (tableau / croquis)
+                          <input type="file" accept="image/*" style={{ display: "none" }}
+                            onChange={e => { const f = e.target.files?.[0]; if (f) pickImage(f); e.target.value = ""; }}
+                          />
+                        </label>
+                        {pasteImage && (
+                          <span style={{ fontSize: 11, color: "#475569", display: "flex", alignItems: "center", gap: 4 }}>
+                            🖼 {pasteImage.name.length > 22 ? pasteImage.name.slice(0, 20) + "…" : pasteImage.name}
+                            <button onClick={() => setPasteImage(null)} style={{ border: "none", background: "transparent", color: "#EF4444", cursor: "pointer", fontSize: 13 }}>✕</button>
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    <button onClick={() => zoneMode ? analyzeZone(selectedZone.zone_code) : analyzeArticle(selectedZone.zone_code)}
+                      disabled={analyzing || (zoneMode ? pasteText.trim().length < 50 : (pasteText.trim().length < 5 && !pasteImage))}
                       style={{ marginTop: 8, background: analyzing ? "#A78BFA" : "#7C3AED", color: "white", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: analyzing ? "wait" : "pointer" }}>
-                      {analyzing ? "Analyse…" : "Analyser et structurer"}
+                      {analyzing ? "Analyse…" : zoneMode ? "Analyser toute la zone" : "Analyser et structurer"}
                     </button>
                   </div>
 
@@ -4478,6 +4542,25 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                         </div>
                         <p style={{ fontSize: 11.5, color: "#374151", margin: "4px 0 0", lineHeight: 1.45 }}>{r.summary || r.rule_text.slice(0, 180)}</p>
                         {r.exceptions && <p style={{ fontSize: 11, color: "#B45309", margin: "4px 0 0", lineHeight: 1.4 }}><strong>Sauf :</strong> {r.exceptions}</p>}
+                        {/* Version « citoyen » générée par l'IA — éditable avant enregistrement */}
+                        {(r.citizen_title != null || r.citizen_summary != null) && (
+                          <div style={{ marginTop: 6, padding: "6px 8px", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 8 }}>
+                            <div style={{ fontSize: 9.5, fontWeight: 700, color: "#047857", textTransform: "uppercase", letterSpacing: 0.3, marginBottom: 4, display: "flex", alignItems: "center", gap: 5 }}>
+                              👤 Version citoyen
+                              <label style={{ marginLeft: "auto", fontWeight: 600, color: "#065F46", display: "flex", alignItems: "center", gap: 4, textTransform: "none", letterSpacing: 0 }}>
+                                <input type="checkbox" checked={r.citizen_relevant !== false}
+                                  onChange={e => setExtracted(es => es.map((x, j) => j === i ? { ...x, citizen_relevant: e.target.checked } : x))} />
+                                Visible
+                              </label>
+                            </div>
+                            <input value={r.citizen_title ?? ""} placeholder="Titre court (ex: Hauteur des maisons)"
+                              onChange={e => setExtracted(es => es.map((x, j) => j === i ? { ...x, citizen_title: e.target.value || null } : x))}
+                              style={{ width: "100%", boxSizing: "border-box", fontSize: 11.5, fontWeight: 600, color: "#065F46", border: "1px solid #A7F3D0", borderRadius: 6, padding: "4px 7px", outline: "none", background: "white", marginBottom: 4 }} />
+                            <textarea value={r.citizen_summary ?? ""} placeholder="Une phrase simple, en « vous », avec la valeur clé."
+                              onChange={e => setExtracted(es => es.map((x, j) => j === i ? { ...x, citizen_summary: e.target.value || null } : x))}
+                              style={{ width: "100%", boxSizing: "border-box", fontSize: 11.5, color: "#065F46", border: "1px solid #A7F3D0", borderRadius: 6, padding: "4px 7px", outline: "none", background: "white", resize: "vertical", minHeight: 34, fontFamily: "inherit" }} />
+                          </div>
+                        )}
                         <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginTop: 6 }}>
                           {r.value_min != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, color: "#374151" }}>≥{r.value_min} {r.unit}</span>}
                           {r.value_max != null && <span style={{ background: "#F1F5F9", borderRadius: 6, padding: "2px 8px", fontSize: 10.5, color: "#374151" }}>≤{r.value_max} {r.unit}</span>}

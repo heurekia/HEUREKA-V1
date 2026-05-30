@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, doublePrecision, uuid, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, doublePrecision, uuid, jsonb, boolean } from "drizzle-orm/pg-core";
 import { zones } from "./zones.js";
 
 export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
@@ -23,6 +23,12 @@ export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
   applies_if: jsonb("applies_if").default([]),
   // Sous-thème pour les articles décomposés (ex: "Toitures", "Clôtures sur rue").
   sub_theme: text("sub_theme"),
+  // Version « citoyen » générée à l'ingestion par l'IA : titre court + une phrase
+  // simple en langage courant. citizen_relevant = false pour les dispositions
+  // purement administratives/procédurales sans intérêt pour un particulier.
+  citizen_title: text("citizen_title"),
+  citizen_summary: text("citizen_summary"),
+  citizen_relevant: boolean("citizen_relevant").notNull().default(true),
   instructor_note: text("instructor_note"),
   validation_status: text("validation_status").notNull().default("draft"),
   created_at: timestamp("created_at").notNull().defaultNow(),

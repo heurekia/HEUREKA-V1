@@ -27,7 +27,7 @@ type ParcelAnalysis = {
   plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string; plu_etat?: string };
   risks?: { flood_risk: string; seismic_zone: string; clay_risk?: string; landslide_risk?: string; radon_level?: string };
   db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
-  rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; value_exact: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" }> | null; sub_theme?: string | null; applies_if?: string[] | null; relevance?: "general" | "applicable" | "conditional" | "excluded"; exceptions?: string | null }>;
+  rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; value_exact: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" }> | null; sub_theme?: string | null; applies_if?: string[] | null; relevance?: "general" | "applicable" | "conditional" | "excluded"; exceptions?: string | null; citizen_title?: string | null; citizen_summary?: string | null; citizen_relevant?: boolean | null }>;
   buildability: {
     maxFootprintM2: number; remainingFootprintM2: number; maxHeightM: number | null;
     minSetbackFromRoadM: number | null; minSetbackFromBoundariesM: number | null;
@@ -726,14 +726,21 @@ export function AnalyseParcellaire() {
 
                 {/* Regulatory rules */}
                 {analysis.rules.length > 0 ? (() => {
-                  const applies = analysis.rules.filter(r => r.relevance !== "excluded" && r.relevance !== "conditional");
-                  const cond = analysis.rules.filter(r => r.relevance === "conditional");
+                  // Vue citoyen : on masque les règles marquées non pertinentes pour un
+                  // particulier (citizen_relevant === false) ainsi que les règles exclues.
+                  const citizenVisible = analysis.rules.filter(r => r.citizen_relevant !== false);
+                  const applies = citizenVisible.filter(r => r.relevance !== "excluded" && r.relevance !== "conditional");
+                  const cond = citizenVisible.filter(r => r.relevance === "conditional");
                   const topicRub = (t: string) => RUBRIQUES.find(r => r.topics.includes(t))?.key ?? "autres";
                   const ruleLine = (rule: typeof analysis.rules[number]) => {
                     const v = rule.value_exact != null ? `${rule.value_exact}` : rule.value_max != null ? `≤ ${rule.value_max}` : rule.value_min != null ? `≥ ${rule.value_min}` : null;
+                    // Priorité au texte « citoyen » rédigé par l'IA ; repli sur le résumé technique.
+                    const titre = rule.citizen_title?.trim();
+                    const phrase = rule.citizen_summary?.trim() || rule.summary || rule.rule_text;
                     return (
                       <div key={rule.id} style={{ padding: "9px 0", borderTop: "1px solid #F3F4F6" }}>
-                        <div style={{ fontSize: 13, color: "#111827", lineHeight: 1.55 }}>{rule.summary || rule.rule_text}</div>
+                        {titre && <div style={{ fontSize: 12.5, fontWeight: 700, color: "#1E1B4B", marginBottom: 2 }}>{titre}</div>}
+                        <div style={{ fontSize: 13, color: "#111827", lineHeight: 1.55 }}>{phrase}</div>
                         {v && <div style={{ fontSize: 12.5, color: "#4F46E5", fontWeight: 700, marginTop: 3 }}>{v} {rule.unit ?? ""}</div>}
                         {rule.exceptions && <div style={{ fontSize: 11.5, color: "#B45309", marginTop: 3 }}>Sauf : {rule.exceptions}</div>}
                       </div>
