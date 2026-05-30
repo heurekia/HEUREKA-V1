@@ -1480,12 +1480,17 @@ export async function analyseParcel(
       greenSpaceRatio: null,
     };
     for (const rule of result.rules) {
-      if (rule.topic === "emprise_sol") calcVars.maxFootprintRatio = rule.value_exact ?? rule.value_max;
-      if (rule.topic === "hauteur") calcVars.maxHeightM = rule.value_exact ?? rule.value_max;
-      if (rule.topic === "recul_voie") calcVars.minSetbackFromRoadM = rule.value_exact ?? rule.value_min;
-      if (rule.topic === "recul_limite") calcVars.minSetbackFromBoundariesM = rule.value_exact ?? rule.value_min;
+      // Valeur du thème : value_exact/max/min, sinon repli sur le 1er cas chiffré
+      // (ex. hauteur « 9 m égout / 14 m faîtage » est rangée dans cases).
+      const caseVal = () => rule.cases?.find((c) => c.value != null)?.value ?? null;
+      const maxVal = rule.value_exact ?? rule.value_max ?? caseVal();
+      const minVal = rule.value_exact ?? rule.value_min ?? caseVal();
+      if (rule.topic === "emprise_sol") calcVars.maxFootprintRatio = maxVal;
+      if (rule.topic === "hauteur") calcVars.maxHeightM = maxVal;
+      if (rule.topic === "recul_voie") calcVars.minSetbackFromRoadM = minVal;
+      if (rule.topic === "recul_limite") calcVars.minSetbackFromBoundariesM = minVal;
       if (rule.topic === "stationnement" && rule.rule_text) calcVars.parkingRules = rule.rule_text;
-      if (rule.topic === "espaces_verts") calcVars.greenSpaceRatio = rule.value_exact ?? rule.value_max;
+      if (rule.topic === "espaces_verts") calcVars.greenSpaceRatio = maxVal;
     }
     result.buildability = calculateBuildability({
       parcelSurfaceM2: result.parcel.surface_m2,
