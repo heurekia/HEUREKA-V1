@@ -13,7 +13,7 @@ export interface BuildabilityInput {
 
 export interface BuildabilityOutput {
   maxFootprintM2: number;
-  remainingFootprintM2: number;
+  remainingFootprintM2: number | null;
   maxHeightM: number | null;
   minSetbackFromRoadM: number | null;
   minSetbackFromBoundariesM: number | null;
@@ -44,8 +44,10 @@ export function calculateBuildability(input: BuildabilityInput): BuildabilityOut
   maxPossiblePoints += 25;
   let maxFootprintM2: number;
   if (footprintRatio !== null) {
-    const greenRequiredM2 = greenRatio !== null ? greenRatio * parcelSurfaceM2 : 0;
-    maxFootprintM2 = Math.min(footprintRatio * parcelSurfaceM2, parcelSurfaceM2 - greenRequiredM2);
+    // L'emprise au sol max = STRICTEMENT la règle d'emprise (ex. 60 %). On ne la
+    // mélange pas avec la contrainte d'espaces verts (règle distincte, affichée à
+    // part) : sinon le chiffre ne correspond plus à aucune règle lisible.
+    maxFootprintM2 = footprintRatio * parcelSurfaceM2;
     assumptions.push(`Emprise au sol max : ${(footprintRatio * 100).toFixed(0)}% = ${maxFootprintM2.toFixed(0)} m²`);
     earnedPoints += 25;
   } else {
@@ -53,8 +55,15 @@ export function calculateBuildability(input: BuildabilityInput): BuildabilityOut
     assumptions.push("⚠️ Aucune règle d'emprise au sol trouvée - utilisation de la surface totale");
   }
 
-  const remainingFootprintM2 = Math.max(0, maxFootprintM2 - existingFootprintM2);
-  assumptions.push(`Surface restante constructible : ${remainingFootprintM2.toFixed(0)} m² (déjà ${existingFootprintM2.toFixed(0)} m² existant)`);
+  // « Restante » = emprise max moins le bâti DÉJÀ existant. On ne la renseigne que
+  // si l'on connaît réellement ce bâti — sinon elle vaudrait toujours l'emprise max
+  // (existant = 0), ce qui est trompeur. null = donnée non disponible (non affichée).
+  const remainingFootprintM2 = existingFootprintM2 > 0
+    ? Math.max(0, maxFootprintM2 - existingFootprintM2)
+    : null;
+  if (remainingFootprintM2 !== null) {
+    assumptions.push(`Surface restante constructible : ${remainingFootprintM2.toFixed(0)} m² (déjà ${existingFootprintM2.toFixed(0)} m² existant)`);
+  }
 
   // ── Hauteur ──
   maxPossiblePoints += 25;
@@ -117,8 +126,11 @@ export function calculateBuildability(input: BuildabilityInput): BuildabilityOut
   if (footprintRatio !== null) parts.push(`${(footprintRatio * 100).toFixed(0)}% d'emprise au sol`);
   if (maxHeightM !== null) parts.push(`${maxHeightM}m de hauteur`);
   if (minSetbackFromRoadM !== null) parts.push(`${minSetbackFromRoadM}m de recul voie`);
+  const surfacePart = footprintRatio !== null
+    ? ` Emprise au sol constructible : jusqu'à ${maxFootprintM2.toFixed(0)} m².`
+    : "";
   const resultSummary = parts.length > 0
-    ? `Parcelle constructible avec les règles suivantes : ${parts.join(", ")}. Surface restante : ${remainingFootprintM2.toFixed(0)} m².`
+    ? `Parcelle constructible avec les règles suivantes : ${parts.join(", ")}.${surfacePart}`
     : "Analyse non concluante - règles réglementaires insuffisantes pour déterminer la constructibilité.";
 
   return {

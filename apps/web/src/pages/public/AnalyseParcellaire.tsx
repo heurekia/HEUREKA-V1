@@ -29,7 +29,7 @@ type ParcelAnalysis = {
   db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
   rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; value_exact: number | null; unit: string | null; summary: string | null; article_number: number | null; conditions: string | null; cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: "condition" | "parametre" }> | null; sub_theme?: string | null; applies_if?: string[] | null; relevance?: "general" | "applicable" | "conditional" | "excluded"; exceptions?: string | null; citizen_title?: string | null; citizen_summary?: string | null; citizen_relevant?: boolean | null }>;
   buildability: {
-    maxFootprintM2: number; remainingFootprintM2: number; maxHeightM: number | null;
+    maxFootprintM2: number; remainingFootprintM2: number | null; maxHeightM: number | null;
     minSetbackFromRoadM: number | null; minSetbackFromBoundariesM: number | null;
     estimatedFloors: number | null; greenSpaceRatio: number | null;
     greenSpaceRequiredM2: number | null; confidence: number; resultSummary: string;
@@ -506,10 +506,14 @@ export function AnalyseParcellaire() {
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {[
                         ["Emprise au sol max.", analysis.buildability.maxFootprintM2 > 0 ? `${Math.round(analysis.buildability.maxFootprintM2)} m²` : "—"],
-                        ["Emprise restante", analysis.buildability.remainingFootprintM2 > 0 ? `${Math.round(analysis.buildability.remainingFootprintM2)} m²` : "—"],
+                        // « Emprise restante » n'est affichée que si le bâti existant est connu
+                        // (sinon elle vaudrait l'emprise max → redondant et trompeur).
+                        ...(analysis.buildability.remainingFootprintM2 != null
+                          ? [["Emprise restante", `${Math.round(analysis.buildability.remainingFootprintM2)} m²`]]
+                          : []),
                         ["Hauteur maximale", analysis.buildability.maxHeightM ? `${analysis.buildability.maxHeightM} m` : "—"],
                         ["Étages estimés", analysis.buildability.estimatedFloors ? `~${analysis.buildability.estimatedFloors}` : "—"],
-                        ["Espaces verts requis", analysis.buildability.greenSpaceRequiredM2 ? `${Math.round(analysis.buildability.greenSpaceRequiredM2)} m²` : "—"],
+                        ["Espaces verts à préserver", analysis.buildability.greenSpaceRequiredM2 ? `${Math.round(analysis.buildability.greenSpaceRequiredM2)} m²` : "—"],
                       ].map(([l, v]) => (
                         <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>
                           <span style={{ color: "#6B7280" }}>{l}</span>
