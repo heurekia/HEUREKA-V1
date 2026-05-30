@@ -3808,11 +3808,12 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     if (pasteText.trim().length < 50) return;
     // On découpe le pavé par ARTICLE puis on traite chaque article en une petite
     // requête : générer ~40 règles + version citoyen en un seul appel est trop long
-    // et finit en timeout. Article par article = requêtes courtes, fiables, avec
-    // progression visible. Le pré-résumé/version citoyen est conservé pour chacune.
+    // et finit en timeout. Article par article = requêtes courtes et fiables.
     const raw = pasteText.trim();
-    // Sépare sur les en-têtes « **Article N … **» / « Article N : … » / « Art. N ».
-    const re = /(?=(?:\*\*\s*)?(?:Préambule|Article|Art\.?)\s*\d*)/gi;
+    // On coupe UNIQUEMENT sur les en-têtes d'article en DÉBUT DE LIGNE
+    // (« **Article 7 : … », « Préambule … », « Article 14 »). Les renvois internes
+    // (« art. L.151-19 », « article 7 ») sont en milieu de phrase → pas de fausse coupe.
+    const re = /\n+(?=(?:\*+\s*)?(?:Préambule|Article)\b[^\n]{0,90}?\d)/g;
     let chunks = raw.split(re).map(s => s.trim()).filter(s => s.length > 15);
     // Repli : si le découpage n'a rien trouvé (format inattendu), on garde tout en un bloc.
     if (chunks.length === 0) chunks = [raw];
@@ -3820,29 +3821,40 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     setAnalyzing(true);
     setExtracted([]);
     setZoneProgress({ done: 0, total: chunks.length });
-    const all: ExtractedRule[] = [];
+    const results: (ExtractedRule[] | null)[] = new Array(chunks.length).fill(null);
+    let done = 0;
     let failures = 0;
+
+    // Traitement en parallèle par lots de 4 pour aller vite sans saturer l'API.
+    const BATCH = 4;
     try {
-      for (let i = 0; i < chunks.length; i++) {
-        try {
-          const r = await api.post<{ rules: ExtractedRule[] }>(
-            "/mairie/reglementation/structure-zone",
-            { text: chunks[i], zone_code: zoneCode },
-            { timeoutMs: 90_000 },
-          );
-          if (r.rules?.length) {
-            all.push(...r.rules);
-            setExtracted([...all]);
+      for (let start = 0; start < chunks.length; start += BATCH) {
+        const slice = chunks.slice(start, start + BATCH);
+        await Promise.all(slice.map(async (text, k) => {
+          const idx = start + k;
+          try {
+            const r = await api.post<{ rules: ExtractedRule[] }>(
+              "/mairie/reglementation/structure-zone",
+              { text, zone_code: zoneCode },
+              { timeoutMs: 90_000 },
+            );
+            results[idx] = r.rules ?? [];
+          } catch {
+            results[idx] = [];
+            failures++;
+          } finally {
+            done++;
+            setZoneProgress({ done, total: chunks.length });
           }
-        } catch {
-          failures++;
-        }
-        setZoneProgress({ done: i + 1, total: chunks.length });
+        }));
+        // Affiche au fil de l'eau, dans l'ordre des articles.
+        setExtracted(results.flatMap(x => x ?? []));
       }
+      const all = results.flatMap(x => x ?? []);
       if (all.length === 0) {
         alert("Aucune règle n'a pu être extraite. Vérifiez le texte collé ou réessayez.");
       } else if (failures > 0) {
-        alert(`${all.length} règle(s) extraite(s). ${failures} article(s) n'ont pas pu être analysés — vous pouvez relancer ou les saisir manuellement.`);
+        alert(`${all.length} règle(s) extraite(s). ${failures} bloc(s) n'ont pas pu être analysés — vous pouvez relancer ou les saisir manuellement.`);
       }
     } finally {
       setAnalyzing(false);
