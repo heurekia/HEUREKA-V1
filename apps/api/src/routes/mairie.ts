@@ -1672,13 +1672,13 @@ mairieRouter.post("/reglementation/structure-zone", requireRole("mairie", "instr
     const { text, zone_code } = req.body as { text?: string; zone_code?: string };
     if (!text || text.trim().length < 50) return res.status(400).json({ error: "Texte du règlement de zone requis (collez le règlement complet)." });
 
-    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 120_000 });
+    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 2, timeout: 80_000 });
     const msg = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 16000,
-      system: `Tu es un expert en droit de l'urbanisme français. On te donne le RÈGLEMENT COMPLET d'UNE zone de PLU (tous les articles 1 à 16, souvent déjà résumés, avec valeurs et seuils).
+      max_tokens: 6000,
+      system: `Tu es un expert en droit de l'urbanisme français. On te donne le texte d'UN article (ou d'un extrait) de règlement de PLU, souvent déjà résumé, avec valeurs et seuils.
 
-Ta mission : découper ce règlement en (SOUS-)RÈGLES exploitables, et pour CHACUNE produire EN PLUS une version « citoyen » en langage courant (pour un particulier qui n'y connaît rien).
+Ta mission : découper ce texte en (SOUS-)RÈGLES exploitables, et pour CHACUNE produire EN PLUS une version « citoyen » en langage courant (pour un particulier qui n'y connaît rien).
 
 DÉCOUPAGE — par SOUS-SECTION :
 - Crée UNE règle par sous-section thématique cohérente (chaque puce / paragraphe distinct d'un article). Ex. Article 11 « Aspect » → 4 règles : Bâtiments protégés ; Façades et vitrines ; Toitures ; Clôtures. Article 9 « Emprise au sol » → règle générale + dérogations + extensions.

@@ -3773,6 +3773,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   const [pasteText, setPasteText] = useState("");
   const [zoneMode, setZoneMode] = useState(false);
   const [analyzing, setAnalyzing] = useState(false);
+  const [zoneProgress, setZoneProgress] = useState<{ done: number; total: number } | null>(null);
   const [extracted, setExtracted] = useState<ExtractedRule[]>([]);
   const [addingExtracted, setAddingExtracted] = useState(false);
   const [pasteImage, setPasteImage] = useState<{ data: string; media: string; name: string } | null>(null);
@@ -3805,16 +3806,47 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
 
   const analyzeZone = async (zoneCode: string) => {
     if (pasteText.trim().length < 50) return;
+    // On découpe le pavé par ARTICLE puis on traite chaque article en une petite
+    // requête : générer ~40 règles + version citoyen en un seul appel est trop long
+    // et finit en timeout. Article par article = requêtes courtes, fiables, avec
+    // progression visible. Le pré-résumé/version citoyen est conservé pour chacune.
+    const raw = pasteText.trim();
+    // Sépare sur les en-têtes « **Article N … **» / « Article N : … » / « Art. N ».
+    const re = /(?=(?:\*\*\s*)?(?:Préambule|Article|Art\.?)\s*\d*)/gi;
+    let chunks = raw.split(re).map(s => s.trim()).filter(s => s.length > 15);
+    // Repli : si le découpage n'a rien trouvé (format inattendu), on garde tout en un bloc.
+    if (chunks.length === 0) chunks = [raw];
+
     setAnalyzing(true);
+    setExtracted([]);
+    setZoneProgress({ done: 0, total: chunks.length });
+    const all: ExtractedRule[] = [];
+    let failures = 0;
     try {
-      const r = await api.post<{ rules: ExtractedRule[] }>("/mairie/reglementation/structure-zone", {
-        text: pasteText, zone_code: zoneCode,
-      });
-      setExtracted(r.rules ?? []);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Échec de l'analyse");
+      for (let i = 0; i < chunks.length; i++) {
+        try {
+          const r = await api.post<{ rules: ExtractedRule[] }>(
+            "/mairie/reglementation/structure-zone",
+            { text: chunks[i], zone_code: zoneCode },
+            { timeoutMs: 90_000 },
+          );
+          if (r.rules?.length) {
+            all.push(...r.rules);
+            setExtracted([...all]);
+          }
+        } catch {
+          failures++;
+        }
+        setZoneProgress({ done: i + 1, total: chunks.length });
+      }
+      if (all.length === 0) {
+        alert("Aucune règle n'a pu être extraite. Vérifiez le texte collé ou réessayez.");
+      } else if (failures > 0) {
+        alert(`${all.length} règle(s) extraite(s). ${failures} article(s) n'ont pas pu être analysés — vous pouvez relancer ou les saisir manuellement.`);
+      }
     } finally {
       setAnalyzing(false);
+      setZoneProgress(null);
     }
   };
 
@@ -4389,7 +4421,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                     </div>
                     <div style={{ fontSize: 11, fontWeight: 600, color: "#6D28D9", marginBottom: 6 }}>
                       {zoneMode
-                        ? "✨ Collez le règlement complet de la zone (tous les articles). L'IA crée une règle par sous-section + une version « citoyen » claire."
+                        ? "✨ Collez le règlement complet de la zone (tous les articles). L'IA l'analyse article par article (une règle par sous-section + une version « citoyen » claire)."
                         : "✨ Coller le texte — ou importer une image (tableau / croquis)"}
                     </div>
                     <textarea placeholder={zoneMode ? "Collez ici le règlement complet de la zone (articles 1 à 16)…" : "Collez ici le texte de l'article du PLU…"}
@@ -4416,7 +4448,9 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                     <button onClick={() => zoneMode ? analyzeZone(selectedZone.zone_code) : analyzeArticle(selectedZone.zone_code)}
                       disabled={analyzing || (zoneMode ? pasteText.trim().length < 50 : (pasteText.trim().length < 5 && !pasteImage))}
                       style={{ marginTop: 8, background: analyzing ? "#A78BFA" : "#7C3AED", color: "white", border: "none", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, cursor: analyzing ? "wait" : "pointer" }}>
-                      {analyzing ? "Analyse…" : zoneMode ? "Analyser toute la zone" : "Analyser et structurer"}
+                      {analyzing
+                        ? (zoneProgress ? `Analyse… article ${zoneProgress.done}/${zoneProgress.total}` : "Analyse…")
+                        : zoneMode ? "Analyser toute la zone" : "Analyser et structurer"}
                     </button>
                   </div>
 
