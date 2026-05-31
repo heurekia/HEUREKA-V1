@@ -436,14 +436,10 @@ export function AnalyseParcellaire() {
                       )}
                     </div>
                   )}
-                  {/* Data sources */}
-                  {analysis.data_sources.length > 0 && (
-                    <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 4, marginTop: 8 }}>
-                      {analysis.data_sources.map(s => (
-                        <span key={s} style={{ fontSize: 10, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", borderRadius: 20, padding: "2px 8px" }}>{s}</span>
-                      ))}
-                    </div>
-                  )}
+                  {/* Sources techniques (BAN, IGN, GPU, BD TOPO…) volontairement
+                      masquées de la vue citoyen : elles restent dans la réponse
+                      API (`analysis.data_sources`) pour traçabilité et analyses
+                      côté serveur, mais polluent inutilement la lecture publique. */}
                 </div>
 
                 {/* Zone PLU */}

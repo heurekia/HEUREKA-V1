@@ -6337,9 +6337,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         Vue parcellaire
                       </div>
                       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" as const }}>
-                        {pa && pa.data_sources.map(s => (
-                          <span key={s} style={{ fontSize: 10, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", borderRadius: 5, padding: "2px 7px" }}>{s}</span>
-                        ))}
+                        {/* Sources techniques (data_sources) masquées de l'UI :
+                            elles restent dans la réponse API pour traçabilité et
+                            analyses internes mais ne sont plus affichées ici. */}
                         {/* Click-to-identify parcel button */}
                         <button
                           onClick={() => {
