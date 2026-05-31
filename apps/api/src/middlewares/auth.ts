@@ -22,26 +22,26 @@ export function generateToken(payload: { id: string; email: string; role: string
 }
 
 function extractToken(req: Request): string | null {
-  // Per-portal cookie: pick the one matching the portal currently requested so a
-  // citoyen session on www.heurekia.com and a mairie session on app.heurekia.com
-  // can coexist in the same browser without overwriting each other.
+  // Per-portal cookie: a citoyen session on www.heurekia.com and a mairie
+  // session on app.heurekia.com must coexist WITHOUT bleeding into each other.
   //
-  // Primary signal: `req.hostname` (from the Host header). Always present, works
-  // on a `GET /api/auth/me` at page refresh where the browser does NOT send
-  // `Origin` for same-origin GETs. Falling back to Origin only would log the
-  // user out on every refresh — that's the bug we're avoiding.
+  // Primary signal: `req.hostname` (from the Host header). Always present,
+  // works on a `GET /api/auth/me` at page refresh where the browser does NOT
+  // send `Origin` for same-origin GETs. Origin/Referer are only used as a
+  // redundancy in case `hostname` is somehow empty.
+  //
+  // IMPORTANT — there is NO cross-portal fallback : if the portal-specific
+  // cookie is missing, the user is simply not authenticated on this portal.
+  // Falling back to the other portal's cookie would expose a mairie session
+  // on the citoyen portal (and vice-versa), which would be a privilege leak.
   const host = (req.hostname ?? "").toLowerCase();
   const origin = ((req.headers.origin as string | undefined) ?? (req.headers.referer as string | undefined) ?? "").toLowerCase();
   const isApp = host.includes("app.heurekia.com") || origin.includes("app.heurekia.com");
   const portalCookie = isApp ? "token_app" : "token_www";
   const cookies = req.cookies as Record<string, string | undefined> | undefined;
   if (cookies?.[portalCookie]) return cookies[portalCookie] as string;
-  // Cross-portal fallback: if the portal cookie is missing (ambiguous host in
-  // dev, behind a proxy that rewrites Host, etc.) accept the other portal's
-  // cookie rather than dropping the session.
-  const otherCookie = isApp ? "token_www" : "token_app";
-  if (cookies?.[otherCookie]) return cookies[otherCookie] as string;
   // Legacy single-cookie fallback (sessions issued before the per-portal split).
+  // Harmless : the legacy cookie was set when only one portal existed.
   if (cookies?.token) return cookies.token;
   // Bearer header as fallback (API clients / CLI)
   const header = req.headers.authorization;
