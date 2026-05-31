@@ -52,9 +52,13 @@ const COOKIE_OPTIONS = {
 
 // Distinct cookie names per portal so a citoyen session on www.heurekia.com
 // and a mairie session on app.heurekia.com can coexist in the same browser.
+// Primary signal: `req.hostname` (Host header, always present). Origin/Referer
+// are not always sent — e.g. browser does NOT send Origin on same-origin GETs.
 export function cookieNameFor(req: AuthRequest): "token_app" | "token_www" {
-  const origin = (req.headers.origin as string | undefined) ?? (req.headers.referer as string | undefined) ?? "";
-  return origin.includes("app.heurekia.com") ? "token_app" : "token_www";
+  const host = (req.hostname ?? "").toLowerCase();
+  const origin = ((req.headers.origin as string | undefined) ?? (req.headers.referer as string | undefined) ?? "").toLowerCase();
+  const isApp = host.includes("app.heurekia.com") || origin.includes("app.heurekia.com");
+  return isApp ? "token_app" : "token_www";
 }
 
 function clientIp(req: AuthRequest): string {
