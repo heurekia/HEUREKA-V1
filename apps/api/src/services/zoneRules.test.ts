@@ -249,4 +249,42 @@ describe("pickMostSpecificRule", () => {
   it("returns null when no rule matches the topic", () => {
     expect(pickMostSpecificRule([r("hauteur", "x", 9)], "espaces_verts", ["UB"])).toBeNull();
   });
+
+  it("picks the rule whose RULE_TEXT mentions the deepest ancestor (generic title)", () => {
+    // Real-world Ballan-Miré case : the « 8 m UBa/UBb/UBc » rule was ingested
+    // with a generic citizen_title but its body explicitly names the secteurs.
+    const rules = [
+      {
+        topic: "hauteur", citizen_title: "Hauteur des constructions",
+        sub_theme: "10.1", rule_text: "Hauteur maximale : 12 m en zone UB.",
+        value_max: 12,
+      },
+      {
+        topic: "hauteur", citizen_title: "Hauteur des constructions",
+        sub_theme: "10.2",
+        rule_text: "Dans les secteurs UBa, UBb, UBc : la hauteur est de R+1 ou R+combles maximum, dans la limite de 8 m.",
+        value_max: 8,
+      },
+    ];
+    const pick = pickMostSpecificRule(rules, "hauteur", ["UBb", "UB"]);
+    expect(pick?.value_max).toBe(8);
+  });
+
+  it("isRuleSiblingOnly drops a rule whose rule_text mentions only siblings", () => {
+    const rule = {
+      citizen_title: "Hauteur des constructions",
+      sub_theme: "10.3",
+      rule_text: "Dans les secteurs UBai, UBd : la hauteur est limitée à 7 m.",
+    };
+    expect(isRuleSiblingOnly(rule, ["UBb", "UB"])).toBe(true);
+  });
+
+  it("isRuleSiblingOnly keeps a rule whose rule_text mentions UBb among siblings", () => {
+    const rule = {
+      citizen_title: "Hauteur",
+      sub_theme: null,
+      rule_text: "Dans les secteurs UBa, UBb, UBc : limite à 8 m.",
+    };
+    expect(isRuleSiblingOnly(rule, ["UBb", "UB"])).toBe(false);
+  });
 });

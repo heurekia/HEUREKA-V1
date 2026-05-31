@@ -174,21 +174,42 @@ export function applyParcelSecteurContext<R extends {
 // applies to a different sector and would pollute both the popup and the
 // constructibility computation.
 
+// Builds the haystack used to evaluate a rule's sector affinity. We include
+// every field where the ingestion may have placed the sector code : labels
+// (citizen_title, sub_theme), summaries (summary, citizen_summary) and the
+// raw rule text. Inspecting rule_text matters because the ingestion prompt
+// often produces a generic citizen_title (« Hauteur ») even when the rule
+// explicitly applies to sub-sectors (« Dans les secteurs UBa, UBb, UBc … »).
+function ruleSectorHaystack<R extends {
+  citizen_title?: string | null;
+  sub_theme?: string | null;
+  citizen_summary?: string | null;
+  summary?: string | null;
+  rule_text?: string | null;
+}>(rule: R): string {
+  return [rule.citizen_title, rule.sub_theme, rule.citizen_summary, rule.summary, rule.rule_text]
+    .filter((s): s is string => !!s)
+    .join(" ");
+}
+
 /**
- * Returns true when the rule's identifying labels (citizen_title + sub_theme)
- * mention exclusively sibling sectors — none of the parcel's ancestry codes
- * (deepest sector OR the parent zone) appear. Conservative on purpose : a
- * rule with no sector mention at all (purely generic) is kept ; so is a rule
- * mentioning both the parent and a sibling (e.g. « UB/UBd »).
+ * Returns true when the rule's text fields mention exclusively sibling
+ * sectors — none of the parcel's ancestry codes (deepest sector OR the
+ * parent zone) appear. Conservative on purpose : a rule with no sector
+ * mention at all (purely generic) is kept ; so is a rule mentioning both
+ * the parent and a sibling (e.g. « UB/UBd »).
  */
 export function isRuleSiblingOnly<R extends {
   citizen_title?: string | null;
   sub_theme?: string | null;
+  citizen_summary?: string | null;
+  summary?: string | null;
+  rule_text?: string | null;
 }>(rule: R, ancestryCodes: string[]): boolean {
   const parent = ancestryCodes[ancestryCodes.length - 1];
   if (!parent || parent.length < 2) return false;
 
-  const text = [rule.citizen_title, rule.sub_theme].filter(Boolean).join(" ");
+  const text = ruleSectorHaystack(rule);
   if (!text) return false;
 
   // Sub-sector tokens : Parent + lowercase suffix (UBa, UBai, …).
@@ -204,24 +225,29 @@ export function isRuleSiblingOnly<R extends {
   const parentRe = new RegExp(`\\b${parent}\\b(?![a-z])`);
   if (parentRe.test(text)) return false;
 
-  return true; // labels mention only sibling sectors → drop
+  return true; // every sector mention concerns a sibling → drop
 }
 
 /**
  * Picks the rule that applies most specifically to the parcel's own sector
  * among candidates sharing the same topic. The selection prefers a rule
- * whose citizen_title or sub_theme explicitly names the parcel's deepest
- * sector (e.g. « UBb »), then falls back to one mentioning the parent zone,
- * and finally to the first candidate.
+ * whose citizen_title, sub_theme, summary or rule_text explicitly names the
+ * parcel's deepest sector (e.g. « UBb »), then falls back to one mentioning
+ * the parent zone, and finally to the first candidate.
  *
- * Used to break ties when several sub-rules of the same topic survived the
- * inheritance merge — without this, the « last seen wins » loop in the
- * buildability computation could pick a sibling-leaning value.
+ * Scanning rule_text is critical : the LLM ingestion often produces a
+ * generic citizen_title (« Hauteur ») even when the rule body explicitly
+ * applies to specific sub-sectors (« Dans les secteurs UBa, UBb, UBc … »).
+ * Without rule_text inspection, the more permissive parent-zone rule wins
+ * silently — and the citizen sees the wrong limit.
  */
 export function pickMostSpecificRule<R extends {
   topic?: string | null;
   citizen_title?: string | null;
   sub_theme?: string | null;
+  citizen_summary?: string | null;
+  summary?: string | null;
+  rule_text?: string | null;
 }>(rules: R[], topic: string, ancestryCodes: string[]): R | null {
   const candidates = rules.filter((r) => r.topic === topic);
   if (candidates.length === 0) return null;
@@ -230,9 +256,7 @@ export function pickMostSpecificRule<R extends {
   // Walk ancestry deepest first ; the first rule mentioning that code wins.
   for (const code of ancestryCodes) {
     const re = new RegExp(`\\b${code}\\b(?![a-z])`);
-    const match = candidates.find((r) =>
-      re.test(r.citizen_title ?? "") || re.test(r.sub_theme ?? "")
-    );
+    const match = candidates.find((r) => re.test(ruleSectorHaystack(r)));
     if (match) return match;
   }
   return candidates[0]!;
