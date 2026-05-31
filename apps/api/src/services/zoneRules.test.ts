@@ -5,6 +5,8 @@ import {
   mergeRulesDeepestWins,
   stripSiblingSecteurMentions,
   applyParcelSecteurContext,
+  isRuleSiblingOnly,
+  pickMostSpecificRule,
 } from "./zoneRules.js";
 
 describe("deriveParentZoneCode", () => {
@@ -180,5 +182,71 @@ describe("applyParcelSecteurContext", () => {
     const rule = { citizen_summary: "La hauteur max est de 9 m.", citizen_title: "Hauteur" };
     const out = applyParcelSecteurContext(rule, ["UBb", "UB"]);
     expect(out).toEqual({ citizen_summary: "La hauteur max est de 9 m.", citizen_title: "Hauteur" });
+  });
+});
+
+describe("isRuleSiblingOnly", () => {
+  it("drops a rule whose title mentions only a sibling sector", () => {
+    const rule = { citizen_title: "Espaces verts obligatoires (UBa)", sub_theme: null };
+    expect(isRuleSiblingOnly(rule, ["UBb", "UB"])).toBe(true);
+  });
+
+  it("keeps a rule mentioning the parent zone explicitly (UB/UBd)", () => {
+    const rule = { citizen_title: "Espaces verts obligatoires (UB/UBd)", sub_theme: null };
+    expect(isRuleSiblingOnly(rule, ["UBb", "UB"])).toBe(false);
+  });
+
+  it("keeps a rule mentioning the parcel's own sector (UBb/UBc)", () => {
+    const rule = { citizen_title: "Espaces verts obligatoires (UBb/UBc)", sub_theme: null };
+    expect(isRuleSiblingOnly(rule, ["UBb", "UB"])).toBe(false);
+  });
+
+  it("keeps a fully generic rule (no sector mention)", () => {
+    const rule = { citizen_title: "Hauteur des constructions", sub_theme: "10.1" };
+    expect(isRuleSiblingOnly(rule, ["UBb", "UB"])).toBe(false);
+  });
+
+  it("inspects sub_theme as well as citizen_title", () => {
+    const rule = { citizen_title: null, sub_theme: "13.2 UBai uniquement" };
+    expect(isRuleSiblingOnly(rule, ["UBb", "UB"])).toBe(true);
+  });
+
+  it("does not act when parent is a single letter (safety)", () => {
+    const rule = { citizen_title: "Truc (Ap)", sub_theme: null };
+    expect(isRuleSiblingOnly(rule, ["A"])).toBe(false);
+  });
+});
+
+describe("pickMostSpecificRule", () => {
+  const r = (topic: string, citizen_title: string, value_min: number | null) =>
+    ({ topic, citizen_title, sub_theme: null, value_min });
+
+  it("returns the rule mentioning the deepest ancestor code", () => {
+    const rules = [
+      r("espaces_verts", "Espaces verts (UB/UBd)", 30),
+      r("espaces_verts", "Espaces verts (UBb/UBc)", 60),
+      r("hauteur", "Hauteur (UB)", 9),
+    ];
+    const pick = pickMostSpecificRule(rules, "espaces_verts", ["UBb", "UB"]);
+    expect(pick?.value_min).toBe(60);
+  });
+
+  it("falls back to the parent rule when no specific match exists", () => {
+    const rules = [r("espaces_verts", "Espaces verts (UB)", 30)];
+    const pick = pickMostSpecificRule(rules, "espaces_verts", ["UBb", "UB"]);
+    expect(pick?.value_min).toBe(30);
+  });
+
+  it("falls back to the first candidate when neither ancestry mentions match", () => {
+    const rules = [
+      r("espaces_verts", "Espaces verts généraux", 30),
+      r("espaces_verts", "Espaces verts complément", 50),
+    ];
+    const pick = pickMostSpecificRule(rules, "espaces_verts", ["UBb", "UB"]);
+    expect(pick?.value_min).toBe(30);
+  });
+
+  it("returns null when no rule matches the topic", () => {
+    expect(pickMostSpecificRule([r("hauteur", "x", 9)], "espaces_verts", ["UB"])).toBeNull();
   });
 });

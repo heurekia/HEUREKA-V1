@@ -165,6 +165,79 @@ export function applyParcelSecteurContext<R extends {
   return out;
 }
 
+// ── Sibling-only rule detection ──────────────────────────────────────────────
+//
+// PLU regulations often store one rule per sub-sector under the parent zone
+// (e.g. all three espaces_verts variants UBa/UBd/UBb/UBc live as separate
+// rules under the UB zone, distinguished only by their citizen_title or
+// sub_theme). For a parcel in UBb, the « (UBa) » rule must be DROPPED — it
+// applies to a different sector and would pollute both the popup and the
+// constructibility computation.
+
+/**
+ * Returns true when the rule's identifying labels (citizen_title + sub_theme)
+ * mention exclusively sibling sectors — none of the parcel's ancestry codes
+ * (deepest sector OR the parent zone) appear. Conservative on purpose : a
+ * rule with no sector mention at all (purely generic) is kept ; so is a rule
+ * mentioning both the parent and a sibling (e.g. « UB/UBd »).
+ */
+export function isRuleSiblingOnly<R extends {
+  citizen_title?: string | null;
+  sub_theme?: string | null;
+}>(rule: R, ancestryCodes: string[]): boolean {
+  const parent = ancestryCodes[ancestryCodes.length - 1];
+  if (!parent || parent.length < 2) return false;
+
+  const text = [rule.citizen_title, rule.sub_theme].filter(Boolean).join(" ");
+  if (!text) return false;
+
+  // Sub-sector tokens : Parent + lowercase suffix (UBa, UBai, …).
+  const subSectorRe = new RegExp(`\\b${parent}[a-z]+\\b`, "g");
+  const subMatches = text.match(subSectorRe) ?? [];
+  if (subMatches.length === 0) return false; // no sector mention → generic rule, keep
+
+  const hasAncestrySub = subMatches.some((m) => ancestryCodes.includes(m));
+  if (hasAncestrySub) return false; // mentions our sector or an ancestor — keep
+
+  // Bare parent code (« UB » without lowercase suffix) means the rule is
+  // generic for the whole parent zone — keep.
+  const parentRe = new RegExp(`\\b${parent}\\b(?![a-z])`);
+  if (parentRe.test(text)) return false;
+
+  return true; // labels mention only sibling sectors → drop
+}
+
+/**
+ * Picks the rule that applies most specifically to the parcel's own sector
+ * among candidates sharing the same topic. The selection prefers a rule
+ * whose citizen_title or sub_theme explicitly names the parcel's deepest
+ * sector (e.g. « UBb »), then falls back to one mentioning the parent zone,
+ * and finally to the first candidate.
+ *
+ * Used to break ties when several sub-rules of the same topic survived the
+ * inheritance merge — without this, the « last seen wins » loop in the
+ * buildability computation could pick a sibling-leaning value.
+ */
+export function pickMostSpecificRule<R extends {
+  topic?: string | null;
+  citizen_title?: string | null;
+  sub_theme?: string | null;
+}>(rules: R[], topic: string, ancestryCodes: string[]): R | null {
+  const candidates = rules.filter((r) => r.topic === topic);
+  if (candidates.length === 0) return null;
+  if (candidates.length === 1) return candidates[0]!;
+
+  // Walk ancestry deepest first ; the first rule mentioning that code wins.
+  for (const code of ancestryCodes) {
+    const re = new RegExp(`\\b${code}\\b(?![a-z])`);
+    const match = candidates.find((r) =>
+      re.test(r.citizen_title ?? "") || re.test(r.sub_theme ?? "")
+    );
+    if (match) return match;
+  }
+  return candidates[0]!;
+}
+
 export interface LoadedZoneRules {
   // The zone the parcel sits in (the deepest match found in DB)
   zone: { id: string; code: string; label: string | null; type: string | null } | null;
@@ -245,10 +318,16 @@ export async function loadZoneRulesWithInheritance(
   const merged = mergeRulesDeepestWins(rulesByDepth)
     .sort((a, b) => (a.article_number ?? 0) - (b.article_number ?? 0));
 
-  // 6. Scrub sibling-sector mentions from the merged rules so the citizen
-  //    popup only sees content relevant to the parcel's own sector ancestry.
+  // 6. Drop rules whose labels apply only to sibling sectors. These typically
+  //    come from the parent zone where every sector's variant is ingested as a
+  //    separate sub-rule ; keeping them would pollute both the popup and the
+  //    buildability calculation (each variant overwriting the previous one).
   const ancestryCodes = ordered.map((z) => z.zone_code);
-  const scrubbed = merged.map((r) => applyParcelSecteurContext(r, ancestryCodes));
+  const relevant = merged.filter((r) => !isRuleSiblingOnly(r, ancestryCodes));
+
+  // 7. Scrub sibling-sector mentions from the surviving rules so the citizen
+  //    popup only sees content relevant to the parcel's own sector ancestry.
+  const scrubbed = relevant.map((r) => applyParcelSecteurContext(r, ancestryCodes));
 
   const deepest = ordered[0]!;
   return {

@@ -20,7 +20,7 @@ import { zones, zone_regulatory_rules, communes, gpu_parcel_cache } from "@heure
 import { eq, and, ilike, sql } from "drizzle-orm";
 import { calculateBuildability, type BuildabilityInput } from "./buildability.js";
 import { computeBuiltFootprintM2 } from "./buildingFootprint.js";
-import { loadZoneRulesWithInheritance } from "./zoneRules.js";
+import { loadZoneRulesWithInheritance, pickMostSpecificRule } from "./zoneRules.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -1400,10 +1400,14 @@ export async function analyseParcel(
     ?? (isCadastralRef ? normalizedRef.slice(0, 2) : null);
   const communeForDb = result.parcel?.commune ?? result.address?.city;
 
+  // Captured outside the if-block so the buildability step downstream can use
+  // the ancestry chain to pick the most parcel-specific rule per topic.
+  let zoneAncestry: string[] = [];
   if (zoneCodeForDb) {
     const { zone, rules, matchedChain } = await findDbZoneAndRules(zoneCodeForDb, communeForDb, code_insee);
     result.db_zone = zone;
     result.rules = rules;
+    zoneAncestry = matchedChain;
     if (zone) {
       // If zone was manually overridden, reflect it as plu_zone so frontend renders correctly
       if (options?.zoneOverride && !result.plu_zone) {
@@ -1465,19 +1469,42 @@ export async function analyseParcel(
       parkingRules: null,
       greenSpaceRatio: null,
     };
-    for (const rule of result.rules) {
-      // Valeur du thème : value_exact/max/min, sinon repli sur le 1er cas chiffré
-      // (ex. hauteur « 9 m égout / 14 m faîtage » est rangée dans cases).
-      const caseVal = () => rule.cases?.find((c) => c.value != null)?.value ?? null;
-      const maxVal = rule.value_exact ?? rule.value_max ?? caseVal();
-      const minVal = rule.value_exact ?? rule.value_min ?? caseVal();
-      if (rule.topic === "emprise_sol") calcVars.maxFootprintRatio = maxVal;
-      if (rule.topic === "hauteur") calcVars.maxHeightM = maxVal;
-      if (rule.topic === "recul_voie") calcVars.minSetbackFromRoadM = minVal;
-      if (rule.topic === "recul_limite") calcVars.minSetbackFromBoundariesM = minVal;
-      if (rule.topic === "stationnement" && rule.rule_text) calcVars.parkingRules = rule.rule_text;
-      if (rule.topic === "espaces_verts") calcVars.greenSpaceRatio = maxVal;
+
+    // Many PLU zones expose several sub-rules for the same topic (e.g. one per
+    // sub-secteur). After the sibling filter, the surviving candidates are all
+    // applicable to the parcel ; we pick the MOST specific one (whose labels
+    // mention the parcel's deepest sector) instead of letting a naive « last
+    // wins » loop pick arbitrarily.
+    const matchedChain = zoneAncestry.length > 0 ? zoneAncestry : (result.db_zone ? [result.db_zone.code] : []);
+    if (result.plu_zone && !matchedChain.includes(result.plu_zone.zone_code)) {
+      matchedChain.unshift(result.plu_zone.zone_code);
     }
+
+    const valueFor = (rule: typeof result.rules[number], pick: "max" | "min") => {
+      // Fallback on the first numeric case when value_min/max/exact are absent
+      // (e.g. hauteur « 9 m égout / 14 m faîtage » stored in `cases`).
+      const caseVal = rule.cases?.find((c) => c.value != null)?.value ?? null;
+      return pick === "max"
+        ? rule.value_exact ?? rule.value_max ?? caseVal
+        : rule.value_exact ?? rule.value_min ?? caseVal;
+    };
+
+    // Maxima (« ne dépasse pas X ») → value_max ; Minima (« au moins X ») →
+    // value_min. Espaces verts est un MIN obligatoire — c'était le bug : on
+    // lisait value_max et le calcul restait null à chaque fois.
+    const topicSpec: Array<[string, "max" | "min", (v: number | null) => void]> = [
+      ["emprise_sol",   "max", (v) => { calcVars.maxFootprintRatio = v; }],
+      ["hauteur",       "max", (v) => { calcVars.maxHeightM = v; }],
+      ["recul_voie",    "min", (v) => { calcVars.minSetbackFromRoadM = v; }],
+      ["recul_limite",  "min", (v) => { calcVars.minSetbackFromBoundariesM = v; }],
+      ["espaces_verts", "min", (v) => { calcVars.greenSpaceRatio = v; }],
+    ];
+    for (const [topic, pick, assign] of topicSpec) {
+      const rule = pickMostSpecificRule(result.rules, topic, matchedChain);
+      if (rule) assign(valueFor(rule, pick));
+    }
+    const parkingRule = pickMostSpecificRule(result.rules, "stationnement", matchedChain);
+    if (parkingRule?.rule_text) calcVars.parkingRules = parkingRule.rule_text;
     // Emprise au sol déjà bâtie sur la parcelle (BD TOPO® bâtiments). null si
     // indéterminable → la « surface restante » ne sera alors pas affichée.
     const existingFootprintM2 = await computeBuiltFootprintM2(result.parcel.geometry);
