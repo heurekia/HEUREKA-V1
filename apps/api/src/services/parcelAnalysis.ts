@@ -20,6 +20,7 @@ import { zones, zone_regulatory_rules, communes, gpu_parcel_cache } from "@heure
 import { eq, and, ilike, sql } from "drizzle-orm";
 import { calculateBuildability, type BuildabilityInput } from "./buildability.js";
 import { computeBuiltFootprintM2 } from "./buildingFootprint.js";
+import { loadZoneRulesWithInheritance } from "./zoneRules.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -985,44 +986,16 @@ async function writeGpuCache(key: string, parcelle_id: string | undefined, paylo
 async function findDbZoneAndRules(zoneCode: string, communeNom?: string, codeInsee?: string): Promise<{
   zone: { id: string; code: string; label: string | null; type: string | null } | null;
   rules: RegDbRule[];
+  matchedChain: string[];
 }> {
-  // Try exact match first, then parent zone (e.g. "UBai" → try "UB" too)
-  let foundZone = null;
-  const attempts = [zoneCode, zoneCode.slice(0, -1), zoneCode.slice(0, -2)].filter(z => z.length >= 2);
-
-  // Resolve commune once — prefer INSEE code (exact) over name (fuzzy)
-  let communeId: string | null = null;
-  if (codeInsee) {
-    const [row] = await db.select({ id: communes.id }).from(communes).where(eq(communes.insee_code, codeInsee)).limit(1);
-    communeId = row?.id ?? null;
-  }
-  if (!communeId && communeNom) {
-    const [row] = await db.select({ id: communes.id }).from(communes).where(ilike(communes.name, `%${communeNom}%`)).limit(1);
-    communeId = row?.id ?? null;
-  }
-
-  for (const code of attempts) {
-    const where = communeId
-      ? and(eq(zones.zone_code, code), eq(zones.commune_id, communeId))
-      : eq(zones.zone_code, code);
-    const rows = await db.select().from(zones).where(where).limit(1);
-    if (rows[0]) { foundZone = rows[0]; break; }
-  }
-
-  if (!foundZone) return { zone: null, rules: [] };
-
-  const rules = await db
-    .select()
-    .from(zone_regulatory_rules)
-    .where(and(
-      eq(zone_regulatory_rules.zone_id, foundZone.id),
-      eq(zone_regulatory_rules.validation_status, "valide"),
-    ))
-    .orderBy(zone_regulatory_rules.article_number);
-
+  // Inheritance : a parcel in UBai inherits UBa + UB rules, with the deepest
+  // sector winning per (article, topic, sub_theme). Previously this used "first
+  // match wins" which silently dropped inherited rules.
+  const loaded = await loadZoneRulesWithInheritance(zoneCode, { communeNom, codeInsee });
   return {
-    zone: { id: foundZone.id, code: foundZone.zone_code, label: foundZone.zone_label, type: foundZone.zone_type },
-    rules: rules as unknown as RegDbRule[],
+    zone: loaded.zone,
+    rules: loaded.rules as unknown as RegDbRule[],
+    matchedChain: loaded.matchedChain,
   };
 }
 
@@ -1428,7 +1401,7 @@ export async function analyseParcel(
   const communeForDb = result.parcel?.commune ?? result.address?.city;
 
   if (zoneCodeForDb) {
-    const { zone, rules } = await findDbZoneAndRules(zoneCodeForDb, communeForDb, code_insee);
+    const { zone, rules, matchedChain } = await findDbZoneAndRules(zoneCodeForDb, communeForDb, code_insee);
     result.db_zone = zone;
     result.rules = rules;
     if (zone) {
@@ -1437,6 +1410,13 @@ export async function analyseParcel(
         result.plu_zone = { zone_code: zone.code, zone_label: zone.label ?? zone.code, zone_type: zone.type ?? "U" };
       }
       result.data_sources.push("Base réglementaire HEUREKA");
+      // When the parcel zone (e.g. UBai) was matched only through inherited
+      // ancestors (UB), surface it so the instructeur sees what was used.
+      if (matchedChain.length > 1) {
+        result.warnings.push(
+          `Règles héritées : ${matchedChain.join(" → ")} (les règles du secteur prévalent sur celles de la zone mère).`,
+        );
+      }
     } else {
       result.warnings.push(`Aucune règle enregistrée pour la zone ${zoneCodeForDb} dans la base HEUREKA.`);
     }

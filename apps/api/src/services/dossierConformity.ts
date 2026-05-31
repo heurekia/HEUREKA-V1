@@ -1,13 +1,11 @@
 import path from "path";
 import { fileURLToPath } from "url";
-import { eq, and } from "drizzle-orm";
+import { eq } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   dossiers,
   dossier_pieces_jointes,
-  zones,
   zone_regulatory_rules,
-  communes,
 } from "@heureka-v1/db";
 import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
 import {
@@ -17,6 +15,7 @@ import {
   type PieceContext,
   type RegulatoryRuleHint,
 } from "./pieceAnalyzer.js";
+import { loadZoneRulesWithInheritance } from "./zoneRules.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
@@ -160,35 +159,16 @@ function urlToDiskPath(url: string): string | null {
   return path.join(UPLOADS_DIR, filename);
 }
 
-// Charge la zone PLU + ses règles valides pour la commune du dossier.
+// Charge la zone PLU + ses règles valides, AVEC héritage des zones mères.
+// Pour une parcelle en UBai, on récupère les règles UBai + UBa + UB, la plus
+// spécifique gagnant par (article, topic, sub_theme).
 async function loadZoneRules(
   zoneCode: string | undefined,
   commune: string | undefined,
-): Promise<{ rules: Array<typeof zone_regulatory_rules.$inferSelect>; zoneFound: boolean }> {
-  if (!zoneCode) return { rules: [], zoneFound: false };
-  // Cherche la zone — essayer code exact puis parent (ex: "UBai" → "UB")
-  const attempts = [zoneCode, zoneCode.slice(0, -1), zoneCode.slice(0, -2)].filter((z) => z.length >= 2);
-  let zoneId: string | null = null;
-  for (const code of attempts) {
-    const rows = await db
-      .select({ id: zones.id })
-      .from(zones)
-      .leftJoin(communes, eq(zones.commune_id, communes.id))
-      .where(commune
-        ? and(eq(zones.zone_code, code), eq(communes.name, commune))
-        : eq(zones.zone_code, code))
-      .limit(1);
-    if (rows[0]) { zoneId = rows[0].id; break; }
-  }
-  if (!zoneId) return { rules: [], zoneFound: false };
-  const rules = await db
-    .select()
-    .from(zone_regulatory_rules)
-    .where(and(
-      eq(zone_regulatory_rules.zone_id, zoneId),
-      eq(zone_regulatory_rules.validation_status, "valide"),
-    ));
-  return { rules, zoneFound: true };
+): Promise<{ rules: Array<typeof zone_regulatory_rules.$inferSelect>; zoneFound: boolean; matchedChain: string[] }> {
+  if (!zoneCode) return { rules: [], zoneFound: false, matchedChain: [] };
+  const loaded = await loadZoneRulesWithInheritance(zoneCode, { communeNom: commune });
+  return { rules: loaded.rules, zoneFound: loaded.zone !== null, matchedChain: loaded.matchedChain };
 }
 
 // ── Calcul du score global ───────────────────────────────────────────────────
@@ -328,13 +308,15 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
     // 6. Zone PLU + règles
     const zoneCode = (meta.zone as string | undefined) ?? undefined;
     const commune = dossier.commune ?? undefined;
-    const { rules, zoneFound } = await loadZoneRules(zoneCode, commune);
+    const { rules, zoneFound, matchedChain } = await loadZoneRules(zoneCode, commune);
     if (zoneCode && !zoneFound) {
       warnings.push(`Aucune zone PLU ingérée pour "${zoneCode}" sur ${commune ?? "cette commune"}. Analyse réalisée sans règles PLU.`);
     } else if (!zoneCode) {
       warnings.push("Zone PLU non renseignée sur le dossier — analyse réalisée sans croisement PLU.");
     } else if (rules.length === 0) {
       warnings.push(`Zone "${zoneCode}" trouvée mais sans règles validées. Analyse réalisée sans croisement PLU.`);
+    } else if (matchedChain.length > 1) {
+      warnings.push(`Règles héritées : ${matchedChain.join(" → ")} (les règles du secteur prévalent sur celles de la zone mère).`);
     }
 
     // 7. Construit l'index des pièces attendues par code (pour récupérer l'aide)
