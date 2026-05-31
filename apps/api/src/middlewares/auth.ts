@@ -22,8 +22,15 @@ export function generateToken(payload: { id: string; email: string; role: string
 }
 
 function extractToken(req: Request): string | null {
-  // HttpOnly cookie takes precedence (browser clients)
-  if (req.cookies?.token) return req.cookies.token as string;
+  // Per-portal cookie: pick the one matching the calling origin so a citoyen
+  // session on www.heurekia.com and a mairie session on app.heurekia.com can
+  // coexist in the same browser without overwriting each other.
+  const origin = (req.headers.origin as string | undefined) ?? (req.headers.referer as string | undefined) ?? "";
+  const portalCookie = origin.includes("app.heurekia.com") ? "token_app" : "token_www";
+  const cookies = req.cookies as Record<string, string | undefined> | undefined;
+  if (cookies?.[portalCookie]) return cookies[portalCookie] as string;
+  // Legacy single-cookie fallback (sessions issued before the per-portal split).
+  if (cookies?.token) return cookies.token;
   // Bearer header as fallback (API clients / CLI)
   const header = req.headers.authorization;
   if (header?.startsWith("Bearer ")) return header.slice(7);

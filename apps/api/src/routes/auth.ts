@@ -50,6 +50,13 @@ const COOKIE_OPTIONS = {
   path: "/",
 };
 
+// Distinct cookie names per portal so a citoyen session on www.heurekia.com
+// and a mairie session on app.heurekia.com can coexist in the same browser.
+export function cookieNameFor(req: AuthRequest): "token_app" | "token_www" {
+  const origin = (req.headers.origin as string | undefined) ?? (req.headers.referer as string | undefined) ?? "";
+  return origin.includes("app.heurekia.com") ? "token_app" : "token_www";
+}
+
 function clientIp(req: AuthRequest): string {
   return (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "unknown";
 }
@@ -95,7 +102,8 @@ authRouter.post("/register", registerLimiter, async (req: AuthRequest, res) => {
       .returning();
     const user = rows[0]!;
     const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
-    res.cookie("token", token, COOKIE_OPTIONS);
+    res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
+    res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     writeAudit(user.id, user.email, "register", req);
     res.status(201).json({
       user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune, commune_insee: user.commune_insee },
@@ -126,7 +134,8 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
       return res.status(401).json({ error: "Email ou mot de passe incorrect" });
     }
     const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
-    res.cookie("token", token, COOKIE_OPTIONS);
+    res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
+    res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     writeAudit(user.id, user.email, "login", req);
     res.json({
       user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune, commune_insee: user.commune_insee },
@@ -139,6 +148,7 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
 
 authRouter.post("/logout", requireAuth, (req: AuthRequest, res) => {
   writeAudit(req.user!.id, req.user!.email, "logout", req);
+  res.clearCookie(cookieNameFor(req), COOKIE_CLEAR_OPTIONS);
   res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
   res.json({ ok: true });
 });
@@ -197,6 +207,7 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     writeAudit(user.id, user.email, "account_deleted", req);
     await db.delete(users).where(eq(users.id, user.id));
 
+    res.clearCookie(cookieNameFor(req), COOKIE_CLEAR_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     res.json({ ok: true });
   } catch (err) {
@@ -323,7 +334,8 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     if (!user) return res.status(500).json({ error: "Erreur serveur" });
 
     const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
-    res.cookie("token", jwtToken, COOKIE_OPTIONS);
+    res.cookie(cookieNameFor(req), jwtToken, COOKIE_OPTIONS);
+    res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     writeAudit(user.id, user.email, row.type === "activation" ? "account_activated" : "password_reset", req);
     res.json({ user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role } });
   } catch (err) {
