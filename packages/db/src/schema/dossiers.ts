@@ -41,6 +41,12 @@ export const dossiers = pgTable("dossiers", {
   date_limite_instruction: timestamp("date_limite_instruction"),
   date_delivrance: timestamp("date_delivrance"),
   is_tacite: boolean("is_tacite").notNull().default(false),
+  // Analyse de conformité du dossier (calculée à la soumission ou à la demande
+  // par la mairie). conformite_status : pending|running|done|failed. L'analyse
+  // détaillée (par pièce + synthèse réglementaire) est stockée en JSON.
+  conformite_analysis: jsonb("conformite_analysis"),
+  conformite_status: text("conformite_status"),
+  conformite_analyzed_at: timestamp("conformite_analyzed_at"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

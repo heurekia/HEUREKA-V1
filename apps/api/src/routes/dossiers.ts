@@ -13,6 +13,7 @@ import multer from "multer";
 import { classifyPermit } from "../services/classificationEngine.js";
 import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
 import { analyzePiece } from "../services/pieceAnalyzer.js";
+import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
@@ -292,9 +293,17 @@ dossiersRouter.post("/:id/soumettre", async (req: AuthRequest, res) => {
 
     const [updated] = await db
       .update(dossiers)
-      .set({ status: "soumis", date_depot: new Date(), updated_at: new Date() })
+      .set({
+        status: "soumis",
+        date_depot: new Date(),
+        conformite_status: "pending",
+        updated_at: new Date(),
+      })
       .where(eq(dossiers.id, req.params.id as string))
       .returning();
+    // Analyse de conformité automatique côté mairie — non bloquante. Échoue
+    // silencieusement : l'instructeur pourra toujours relancer manuellement.
+    runDossierConformityAnalysisBackground(req.params.id as string);
     res.json(updated);
   } catch (err) {
     console.error(err);

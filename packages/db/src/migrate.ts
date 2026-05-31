@@ -482,6 +482,12 @@ CREATE INDEX IF NOT EXISTS idx_dossier_consultations_service ON dossier_consulta
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS code_piece text;
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS analyse_ia jsonb;
 
+-- Analyse de conformité globale d'un dossier (croisement pièces ↔ PLU ↔ CERFA)
+-- Calculée à la soumission ou à la demande par la mairie.
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_analysis jsonb;
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_status text;
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_analyzed_at timestamp;
+
 -- Cas conditionnels structurés sur une règle (ex: 10 m sens unique / 13 m double sens)
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS cases jsonb DEFAULT '[]'::jsonb;
 -- Décomposition d'articles complexes en sous-règles + applicabilité
