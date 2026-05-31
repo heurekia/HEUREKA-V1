@@ -67,6 +67,92 @@ export function mergeRulesDeepestWins<R extends Pick<RuleRow, "article_number" |
   return Array.from(seen.values());
 }
 
+// ── Sibling sector text scrubbing ────────────────────────────────────────────
+//
+// PLUs commonly describe per-sector variants inside the parent-zone rule text :
+//   « Hauteur max : 9 m. Toutefois, en UBa : 12 m ; en UBai : 7 m. »
+//
+// For a parcel located in UBb (ancestry = [UBb, UB]), the mentions of UBa /
+// UBai are irrelevant — they pollute the citizen popup with rules about
+// neighbouring sectors. This helper strips sentences that mention ONLY sibling
+// sector codes, while keeping anything that also references the ancestry.
+
+/**
+ * Removes from `text` the sentences that mention exclusively sibling sectors
+ * (sub-sectors of the parent zone that are NOT in the parcel's ancestry).
+ * Returns the cleaned text, or the original if nothing was filtered.
+ *
+ * The parent code must be ≥ 2 chars to avoid false positives ("U[a-z]+" would
+ * eat ordinary French words). For single-letter parent zones (A, N) we don't
+ * filter — those rarely have lowercase-suffix siblings anyway.
+ */
+export function stripSiblingSecteurMentions(
+  text: string | null | undefined,
+  ancestryCodes: string[],
+): string | null {
+  if (!text) return null;
+  // The top-most ancestor is the parent zone (e.g. "UB" for ancestry [UBb, UB]).
+  const parent = ancestryCodes[ancestryCodes.length - 1];
+  if (!parent || parent.length < 2) return text;
+
+  // Match sector tokens of the form <Parent><lowercase suffix> (UBa, UBai, …).
+  const siblingRe = new RegExp(`\\b${parent}[a-z]+\\b`, "g");
+  // Match any ancestry code as a whole word — so a sentence that mentions
+  // the parent UB itself (no lowercase suffix) is recognised as ancestry.
+  const escaped = ancestryCodes.map((c) => c.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"));
+  const ancestryRe = new RegExp(`\\b(?:${escaped.join("|")})\\b`, "g");
+
+  // Split on sentence boundaries and discard separators ; we rejoin with ". "
+  // which avoids the double-dot artefact ("9m.. UBb: 10m") that occurred when
+  // we preserved the original separators around dropped segments.
+  const segments = text.split(/[.;\n]+\s*/).map((s) => s.trim()).filter(Boolean);
+  const kept = segments.filter((seg) => {
+    const sibMatches = (seg.match(siblingRe) ?? []).filter((m) => !ancestryCodes.includes(m));
+    if (sibMatches.length === 0) return true;     // no sibling mention → keep
+    const ancMatches = seg.match(ancestryRe) ?? [];
+    return ancMatches.length > 0;                  // mixed → keep, siblings-only → drop
+  });
+
+  if (kept.length === segments.length) return text;  // nothing changed
+  if (kept.length === 0) return null;
+  // Restore a trailing period if the original ended with one
+  const trailing = /[.;]\s*$/.test(text) ? "." : "";
+  return kept.join(". ") + trailing;
+}
+
+/**
+ * Applies the parcel sector context to a single rule by stripping sibling-
+ * sector mentions from every citizen-facing or condition-bearing text field.
+ * The technical `rule_text` is preserved as-is for instructor traceability.
+ */
+// Only overwrite the field if it was present on the input rule — keeps the
+// shape predictable for callers (no spurious nulls appearing on partial rules).
+function scrubField<T extends Record<string, unknown>>(
+  out: T, src: T, key: keyof T, codes: string[],
+): void {
+  if (!(key in src)) return;
+  (out as Record<string, unknown>)[key as string] = stripSiblingSecteurMentions(
+    (src[key] as string | null | undefined) ?? null,
+    codes,
+  );
+}
+
+export function applyParcelSecteurContext<R extends {
+  conditions?: string | null;
+  exceptions?: string | null;
+  citizen_summary?: string | null;
+  citizen_title?: string | null;
+  summary?: string | null;
+}>(rule: R, ancestryCodes: string[]): R {
+  const out: R = { ...rule };
+  scrubField(out, rule, "conditions", ancestryCodes);
+  scrubField(out, rule, "exceptions", ancestryCodes);
+  scrubField(out, rule, "citizen_summary", ancestryCodes);
+  scrubField(out, rule, "citizen_title", ancestryCodes);
+  scrubField(out, rule, "summary", ancestryCodes);
+  return out;
+}
+
 export interface LoadedZoneRules {
   // The zone the parcel sits in (the deepest match found in DB)
   zone: { id: string; code: string; label: string | null; type: string | null } | null;
@@ -147,10 +233,15 @@ export async function loadZoneRulesWithInheritance(
   const merged = mergeRulesDeepestWins(rulesByDepth)
     .sort((a, b) => (a.article_number ?? 0) - (b.article_number ?? 0));
 
+  // 6. Scrub sibling-sector mentions from the merged rules so the citizen
+  //    popup only sees content relevant to the parcel's own sector ancestry.
+  const ancestryCodes = ordered.map((z) => z.zone_code);
+  const scrubbed = merged.map((r) => applyParcelSecteurContext(r, ancestryCodes));
+
   const deepest = ordered[0]!;
   return {
     zone: { id: deepest.id, code: deepest.zone_code, label: deepest.zone_label, type: deepest.zone_type },
-    matchedChain: ordered.map((z) => z.zone_code),
-    rules: merged,
+    matchedChain: ancestryCodes,
+    rules: scrubbed,
   };
 }
