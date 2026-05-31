@@ -3754,6 +3754,91 @@ const ZONE_TYPE_STYLE: Record<string, { bg: string; color: string; border: strin
   N:  { bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0", label: "Naturelle" },
 };
 
+// Découpe le règlement collé en blocs analysables par l'IA.
+// Objectif : aucun bloc > MAX_CHARS (sinon l'appel Claude dépasse 120 s).
+//
+// Étape 1 — coupe sur les en-têtes d'article (« Article 7 », « Préambule »,
+// « ARTICLE U.A.1 », « **Article 11 -** »). Insensible à la casse, tolère
+// préfixes markdown, démarre en début de ligne OU en début de texte.
+//
+// Étape 2 — si un bloc reste trop long (PDF copié sans newlines, format
+// inattendu), on le sous-découpe par paragraphes (`\n\n`) en agrégant
+// jusqu'à MAX_CHARS. En tout dernier recours, coupe brute par taille pour
+// garantir qu'aucun bloc ne dépasse la limite.
+// 8000 chars = ~2000 tokens en entrée + une marge pour l'output structuré.
+// Un Article 11 (aspect extérieur) bien fourni fait 6-7k chars : on le garde
+// entier. Au-delà on sous-découpe par paragraphes pour rester < 60 s par appel.
+const MAX_CHARS_PER_CHUNK = 8000;
+
+export function splitZoneIntoChunks(raw: string): string[] {
+  const text = raw.trim();
+  if (!text) return [];
+
+  // Étape 1 : coupe par article (regex permissive)
+  // - début de ligne (\n) OU début du texte (^)
+  // - préfixes markdown optionnels (** ## ·)
+  // - "Article" / "ARTICLE" / "Préambule" / "PRÉAMBULE"
+  // - séparateur libre puis chiffre/lettre dans la même ligne (≤120 chars)
+  const HEADER = /(?:^|\n)(?:[*#·•\-—–]+\s*)?(?:article|préambule|preambule)\b[^\n]{0,120}/gi;
+  const headerMatches: number[] = [];
+  for (const m of text.matchAll(HEADER)) {
+    // L'index de la regex est celui du `\n` ou du début du texte ; on coupe
+    // après ce `\n` (ou à 0 si début de texte) pour démarrer l'en-tête au
+    // début du chunk.
+    const at = m.index ?? 0;
+    headerMatches.push(text[at] === "\n" ? at + 1 : at);
+  }
+
+  let chunks: string[] = [];
+  if (headerMatches.length > 0) {
+    // Insère un point de coupe en 0 si le premier en-tête n'est pas au début
+    if (headerMatches[0] !== 0) headerMatches.unshift(0);
+    for (let i = 0; i < headerMatches.length; i++) {
+      const start = headerMatches[i]!;
+      const end = headerMatches[i + 1] ?? text.length;
+      const piece = text.slice(start, end).trim();
+      if (piece.length > 15) chunks.push(piece);
+    }
+  } else {
+    chunks = [text];
+  }
+
+  // Étape 2 : si un bloc reste trop gros, sous-découpe par paragraphe
+  const final: string[] = [];
+  for (const chunk of chunks) {
+    if (chunk.length <= MAX_CHARS_PER_CHUNK) {
+      final.push(chunk);
+      continue;
+    }
+    // Découpe par double saut de ligne puis agrège en respectant MAX_CHARS
+    const paragraphs = chunk.split(/\n\s*\n/).map((p) => p.trim()).filter(Boolean);
+    let buf = "";
+    for (const p of paragraphs) {
+      if (buf && (buf.length + p.length + 2) > MAX_CHARS_PER_CHUNK) {
+        final.push(buf);
+        buf = "";
+      }
+      buf = buf ? `${buf}\n\n${p}` : p;
+    }
+    if (buf) final.push(buf);
+  }
+
+  // Étape 3 : coupe brute pour les blocs encore trop longs (texte sans
+  // paragraphes). Garantit qu'aucun chunk ne dépasse la limite.
+  const safe: string[] = [];
+  for (const chunk of final) {
+    if (chunk.length <= MAX_CHARS_PER_CHUNK) {
+      safe.push(chunk);
+      continue;
+    }
+    for (let i = 0; i < chunk.length; i += MAX_CHARS_PER_CHUNK) {
+      safe.push(chunk.slice(i, i + MAX_CHARS_PER_CHUNK));
+    }
+  }
+
+  return safe;
+}
+
 function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCode?: string }) {
   const [data, setData] = useState<ReglData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -3810,13 +3895,7 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     // requête : générer ~40 règles + version citoyen en un seul appel est trop long
     // et finit en timeout. Article par article = requêtes courtes et fiables.
     const raw = pasteText.trim();
-    // On coupe UNIQUEMENT sur les en-têtes d'article en DÉBUT DE LIGNE
-    // (« **Article 7 : … », « Préambule … », « Article 14 »). Les renvois internes
-    // (« art. L.151-19 », « article 7 ») sont en milieu de phrase → pas de fausse coupe.
-    const re = /\n+(?=(?:\*+\s*)?(?:Préambule|Article)\b[^\n]{0,90}?\d)/g;
-    let chunks = raw.split(re).map(s => s.trim()).filter(s => s.length > 15);
-    // Repli : si le découpage n'a rien trouvé (format inattendu), on garde tout en un bloc.
-    if (chunks.length === 0) chunks = [raw];
+    const chunks = splitZoneIntoChunks(raw);
 
     setAnalyzing(true);
     setExtracted([]);
