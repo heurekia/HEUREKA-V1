@@ -1734,7 +1734,11 @@ AUTRES RÈGLES :
 mairieRouter.post("/reglementation/structure-zone", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const { text, zone_code } = req.body as { text?: string; zone_code?: string };
-    if (!text || text.trim().length < 50) return res.status(400).json({ error: "Texte du règlement de zone requis (collez le règlement complet)." });
+    // Le seuil bas accepte les chunks courts légitimes (Préambule, article
+    // « sans objet ») produits par le découpage par article côté front.
+    if (!text || text.trim().length < 10) {
+      return res.status(400).json({ error: "Texte vide ou trop court — collez le règlement complet de la zone." });
+    }
 
     const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 2, timeout: 120_000 });
     const msg = await client.messages.create({
@@ -1783,7 +1787,8 @@ RÈGLES DE STRUCTURATION :
       messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}.\n\n` : ""}${text}` }],
     });
 
-    const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
+    const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "";
+    const stopReason = msg.stop_reason;
     const arr = parseLooseArray(raw);
     // Trace de débogage utile : Claude a parlé mais on n'extrait rien.
     // Pointe à coup sûr vers un nouveau format de sortie (wrapper inconnu,
@@ -1791,6 +1796,7 @@ RÈGLES DE STRUCTURATION :
     if (arr.length === 0 && raw.trim().length > 10) {
       console.warn("[structure-zone] parseLooseArray returned 0 elements from non-empty response", {
         zone_code,
+        stop_reason: stopReason,
         raw_length: raw.length,
         raw_head: raw.slice(0, 200),
         raw_tail: raw.slice(-200),
@@ -1826,10 +1832,27 @@ RÈGLES DE STRUCTURATION :
       }))
       .filter((r) => r.rule_text || r.summary);
 
-    res.json({ rules });
+    // Diagnostic explicite quand 0 règle : permet au front d'expliquer
+    // précisément le problème à l'instructeur (parsing ko, troncature, article
+    // « sans objet », règles dropées car rule_text/summary vides…).
+    let diagnostic: string | undefined;
+    if (rules.length === 0) {
+      if (raw.trim().length === 0) {
+        diagnostic = "Réponse IA vide.";
+      } else if (arr.length === 0) {
+        diagnostic = stopReason === "max_tokens"
+          ? "Réponse IA tronquée (max_tokens atteint) et non récupérable. Réessayez ou réduisez la taille du texte."
+          : "Réponse IA non parsable (format inattendu).";
+      } else {
+        diagnostic = `Aucune règle exploitable extraite (${arr.length} objet${arr.length > 1 ? "s" : ""} reçu${arr.length > 1 ? "s" : ""} sans rule_text ni summary). L'article est peut-être « sans objet » ou abrogé.`;
+      }
+    }
+
+    res.json({ rules, diagnostic });
   } catch (err) {
-    console.error("[structure-zone]", err);
-    res.status(500).json({ error: "Échec de l'analyse IA de la zone — réessayez." });
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[structure-zone]", msg);
+    res.status(500).json({ error: `Échec de l'analyse IA : ${msg}` });
   }
 });
 

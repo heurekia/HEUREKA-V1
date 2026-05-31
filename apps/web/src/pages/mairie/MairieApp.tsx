@@ -3822,8 +3822,9 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     setExtracted([]);
     setZoneProgress({ done: 0, total: chunks.length });
     const results: (ExtractedRule[] | null)[] = new Array(chunks.length).fill(null);
+    const diagnostics: string[] = [];   // raisons rapportées par l'API quand 0 règle
+    const errors: string[] = [];        // messages d'erreur HTTP/réseau
     let done = 0;
-    let failures = 0;
 
     // Traitement en parallèle par lots de 4 pour aller vite sans saturer l'API.
     const BATCH = 4;
@@ -3833,15 +3834,16 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
         await Promise.all(slice.map(async (text, k) => {
           const idx = start + k;
           try {
-            const r = await api.post<{ rules: ExtractedRule[] }>(
+            const r = await api.post<{ rules: ExtractedRule[]; diagnostic?: string }>(
               "/mairie/reglementation/structure-zone",
               { text, zone_code: zoneCode },
-              { timeoutMs: 90_000 },
+              { timeoutMs: 120_000 },
             );
             results[idx] = r.rules ?? [];
-          } catch {
+            if ((r.rules?.length ?? 0) === 0 && r.diagnostic) diagnostics.push(r.diagnostic);
+          } catch (e) {
             results[idx] = [];
-            failures++;
+            errors.push(e instanceof Error ? e.message : String(e));
           } finally {
             done++;
             setZoneProgress({ done, total: chunks.length });
@@ -3851,8 +3853,21 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
         setExtracted(results.flatMap(x => x ?? []));
       }
       const all = results.flatMap(x => x ?? []);
+      const failures = errors.length;
       if (all.length === 0) {
-        alert("Aucune règle n'a pu être extraite. Vérifiez le texte collé ou réessayez.");
+        // Diagnostic différencié : panne réseau vs réponse IA vide vs articles abrogés
+        if (failures === chunks.length) {
+          const sample = errors[0] ?? "erreur inconnue";
+          alert(`Toutes les requêtes (${failures}/${chunks.length}) ont échoué.\n\nMessage : ${sample}\n\nVérifiez le réseau ou réessayez dans un instant.`);
+        } else if (failures > 0) {
+          alert(`Aucune règle extraite. ${failures}/${chunks.length} requête(s) ont échoué et le reste n'a rien renvoyé.\n\nDernière erreur : ${errors[errors.length - 1]}`);
+        } else if (diagnostics.length > 0) {
+          // Affiche au plus 3 diagnostics distincts (sinon trop long)
+          const unique = [...new Set(diagnostics)].slice(0, 3);
+          alert(`Aucune règle extraite sur ${chunks.length} bloc(s) analysé(s).\n\n• ${unique.join("\n• ")}`);
+        } else {
+          alert("Aucune règle n'a pu être extraite. Vérifiez le texte collé ou réessayez.");
+        }
       } else if (failures > 0) {
         alert(`${all.length} règle(s) extraite(s). ${failures} bloc(s) n'ont pas pu être analysés — vous pouvez relancer ou les saisir manuellement.`);
       }
