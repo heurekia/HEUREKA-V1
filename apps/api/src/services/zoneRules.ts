@@ -86,6 +86,32 @@ export function mergeRulesDeepestWins<R extends Pick<RuleRow, "article_number" |
  * eat ordinary French words). For single-letter parent zones (A, N) we don't
  * filter — those rarely have lowercase-suffix siblings anyway.
  */
+// Decides whether a segment is a CLEAR declaration about a sibling sector
+// (and therefore safely droppable). Conservative on purpose : a segment that
+// only mentions a sibling but ALSO carries information not solely about that
+// sibling (e.g. « 9 m sauf UBa 12 m » where 9 m is the generic value) is
+// NOT considered sibling-only and is kept. This avoids omitting useful data.
+//
+// Drops only segments matching the « En <Sibling> : value » canonical form
+// (with common French lead-ins : Dans, Pour, Toutefois en, En secteur, …,
+// optional bullet prefix). The sibling code must appear AT THE START of the
+// segment ; mentions buried mid-sentence are never enough to drop.
+function isSiblingOnlyDeclaration(segment: string, parent: string, ancestryCodes: string[]): boolean {
+  const trimmed = segment.trim();
+  if (!trimmed) return false;
+  const pattern = new RegExp(
+    `^(?:[-•*]\\s*)?` +                                                   // optional bullet
+    `(?:toutefois,?\\s+|cependant,?\\s+|néanmoins,?\\s+)?` +              // optional concessive
+    `(?:en\\s+(?:secteur\\s+)?|dans\\s+(?:le\\s+)?(?:secteur\\s+)?|pour\\s+(?:le\\s+)?(?:secteur\\s+)?|secteur\\s+)?` +
+    `(${parent}[a-z]+)\\b\\s*[:,-]\\s*.+$`,                              // <sibling> : <rest>
+    "i",
+  );
+  const m = trimmed.match(pattern);
+  if (!m) return false;
+  const code = m[1];
+  return !!code && !ancestryCodes.includes(code);
+}
+
 export function stripSiblingSecteurMentions(
   text: string | null | undefined,
   ancestryCodes: string[],
@@ -95,25 +121,13 @@ export function stripSiblingSecteurMentions(
   const parent = ancestryCodes[ancestryCodes.length - 1];
   if (!parent || parent.length < 2) return text;
 
-  // Match sector tokens of the form <Parent><lowercase suffix> (UBa, UBai, …).
-  const siblingRe = new RegExp(`\\b${parent}[a-z]+\\b`, "g");
-  // Match any ancestry code as a whole word — so a sentence that mentions
-  // the parent UB itself (no lowercase suffix) is recognised as ancestry.
-  const escaped = ancestryCodes.map((c) => c.replace(/[-/\\^$*+?.()|[\]{}]/g, "\\$&"));
-  const ancestryRe = new RegExp(`\\b(?:${escaped.join("|")})\\b`, "g");
-
   // Split on sentence boundaries and discard separators ; we rejoin with ". "
   // which avoids the double-dot artefact ("9m.. UBb: 10m") that occurred when
   // we preserved the original separators around dropped segments.
   const segments = text.split(/[.;\n]+\s*/).map((s) => s.trim()).filter(Boolean);
-  const kept = segments.filter((seg) => {
-    const sibMatches = (seg.match(siblingRe) ?? []).filter((m) => !ancestryCodes.includes(m));
-    if (sibMatches.length === 0) return true;     // no sibling mention → keep
-    const ancMatches = seg.match(ancestryRe) ?? [];
-    return ancMatches.length > 0;                  // mixed → keep, siblings-only → drop
-  });
+  const kept = segments.filter((seg) => !isSiblingOnlyDeclaration(seg, parent, ancestryCodes));
 
-  if (kept.length === segments.length) return text;  // nothing changed
+  if (kept.length === segments.length) return text;  // nothing dropped
   if (kept.length === 0) return null;
   // Restore a trailing period if the original ended with one
   const trailing = /[.;]\s*$/.test(text) ? "." : "";
@@ -137,19 +151,17 @@ function scrubField<T extends Record<string, unknown>>(
   );
 }
 
+// Scrubbing is RESTRICTED to citizen-facing fields. The technical fields
+// (rule_text, summary, conditions, exceptions) keep the full original wording
+// so the instructeur sees the complete regulatory context — including any
+// sibling-sector mentions that might be useful for cross-checking.
 export function applyParcelSecteurContext<R extends {
-  conditions?: string | null;
-  exceptions?: string | null;
   citizen_summary?: string | null;
   citizen_title?: string | null;
-  summary?: string | null;
 }>(rule: R, ancestryCodes: string[]): R {
   const out: R = { ...rule };
-  scrubField(out, rule, "conditions", ancestryCodes);
-  scrubField(out, rule, "exceptions", ancestryCodes);
   scrubField(out, rule, "citizen_summary", ancestryCodes);
   scrubField(out, rule, "citizen_title", ancestryCodes);
-  scrubField(out, rule, "summary", ancestryCodes);
   return out;
 }
 

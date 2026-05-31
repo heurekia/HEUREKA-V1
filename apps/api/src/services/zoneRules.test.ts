@@ -87,29 +87,34 @@ describe("mergeRulesDeepestWins", () => {
 });
 
 describe("stripSiblingSecteurMentions", () => {
-  it("removes sentences that mention only sibling sectors", () => {
+  it("removes explicit « En <sibling> : value » declarations", () => {
     const text = "Hauteur max : 9 m. Toutefois, en UBa : 12 m ; en UBai : 7 m.";
     const cleaned = stripSiblingSecteurMentions(text, ["UBb", "UB"]);
     expect(cleaned).toBe("Hauteur max : 9 m.");
   });
 
+  it("keeps the generic value when a sibling appears inline (no info loss)", () => {
+    // « 9 m sauf UBa 12 m » → the 9 m applies to UBb, must NOT be dropped.
+    const text = "9 m sauf UBa 12 m.";
+    const cleaned = stripSiblingSecteurMentions(text, ["UBb", "UB"]);
+    expect(cleaned).toBe(text);
+  });
+
+  it("keeps a sentence mentioning a sibling mid-clause with real info", () => {
+    const text = "La règle UB s'applique, hormis UBa qui dispose d'une variante.";
+    const cleaned = stripSiblingSecteurMentions(text, ["UBb", "UB"]);
+    expect(cleaned).toBe(text);
+  });
+
   it("keeps sentences mentioning the parcel's own sector", () => {
-    const text = "En UBb la hauteur est de 12 m. En UBa elle est de 9 m.";
+    const text = "En UBb la hauteur est de 12 m. En UBa : 9 m.";
     const cleaned = stripSiblingSecteurMentions(text, ["UBb", "UB"]);
     expect(cleaned).toBe("En UBb la hauteur est de 12 m.");
   });
 
-  it("keeps sentences that mention a sibling AND an ancestor (mixed)", () => {
-    const text = "La règle UB s'applique, hormis UBa qui dispose d'une variante.";
-    const cleaned = stripSiblingSecteurMentions(text, ["UBb", "UB"]);
-    // No sub-sector match for "UB" alone (no lowercase suffix), so no drop.
-    expect(cleaned).toBe(text);
-  });
-
   it("returns the original text when nothing was filtered", () => {
     const text = "Hauteur maximale : 9 mètres.";
-    const cleaned = stripSiblingSecteurMentions(text, ["UBb", "UB"]);
-    expect(cleaned).toBe(text);
+    expect(stripSiblingSecteurMentions(text, ["UBb", "UB"])).toBe(text);
   });
 
   it("returns null for null / empty input", () => {
@@ -118,7 +123,8 @@ describe("stripSiblingSecteurMentions", () => {
   });
 
   it("does NOT filter when parent is a single letter (would over-match words)", () => {
-    const text = "Une construction en zone A est autorisée.";
+    const text = "Une construction en zone A est autorisée. En Ap : interdit.";
+    // parent "A" length < 2 → no scrubbing at all
     expect(stripSiblingSecteurMentions(text, ["A"])).toBe(text);
   });
 
@@ -128,33 +134,51 @@ describe("stripSiblingSecteurMentions", () => {
     expect(cleaned).toBe("En 1AU : 9 m. En 1AUh : 12 m.");
   });
 
-  it("strips even when all sentences are siblings (returns null)", () => {
+  it("drops all when every sentence is sibling-only (returns null)", () => {
     const text = "En UBa : 9 m. En UBai : 7 m.";
     expect(stripSiblingSecteurMentions(text, ["UBb", "UB"])).toBeNull();
+  });
+
+  it("recognises bullet-prefixed sibling declarations", () => {
+    const text = "- En UBa : 12 m\n- En UBb : 10 m\n- En UBai : 7 m";
+    const cleaned = stripSiblingSecteurMentions(text, ["UBb", "UB"]);
+    expect(cleaned).toBe("- En UBb : 10 m");
+  });
+
+  it("recognises « Dans le secteur X » lead-in", () => {
+    const text = "Dans le secteur UBa, la hauteur est de 12 m.";
+    expect(stripSiblingSecteurMentions(text, ["UBb", "UB"])).toBeNull();
+  });
+
+  it("does NOT drop a long descriptive sentence mentioning a sibling mid-text", () => {
+    const text = "La hauteur autorisée est de 9 m sur l'ensemble de la zone UB, exception faite des constructions en UBa où elle peut atteindre 12 m sous conditions.";
+    // Mid-text mention, not a leading declaration → conservative: keep
+    expect(stripSiblingSecteurMentions(text, ["UBb", "UB"])).toBe(text);
   });
 });
 
 describe("applyParcelSecteurContext", () => {
-  it("scrubs every citizen-facing text field on a rule", () => {
+  it("scrubs ONLY citizen-facing fields, never the technical ones", () => {
     const rule = {
       conditions: "UBa: 12m ; UBb: 10m",
       exceptions: "Sauf en UBai : 7m",
-      citizen_summary: "Votre maison doit faire 9 m. En UBa, 12 m.",
+      citizen_summary: "Votre maison doit faire 9 m. En UBa : 12 m.",
       citizen_title: "Hauteur",
-      summary: "9 m max. UBa: 12 m. UBb: 10 m.",
+      summary: "9 m max. En UBa : 12 m. En UBb : 10 m.",
     };
     const out = applyParcelSecteurContext(rule, ["UBb", "UB"]);
-    // Cases inline (no separator) : the segment kept includes the UBb mention.
-    expect(out.conditions).toBe("UBb: 10m");
-    expect(out.exceptions).toBeNull();
+    // Technical fields preserved intact for the instructeur
+    expect(out.conditions).toBe("UBa: 12m ; UBb: 10m");
+    expect(out.exceptions).toBe("Sauf en UBai : 7m");
+    expect(out.summary).toBe("9 m max. En UBa : 12 m. En UBb : 10 m.");
+    // Citizen fields cleaned
     expect(out.citizen_summary).toBe("Votre maison doit faire 9 m.");
-    expect(out.summary).toBe("9 m max. UBb: 10 m.");
     expect(out.citizen_title).toBe("Hauteur");
   });
 
-  it("returns the rule unchanged when ancestry has nothing to scrub", () => {
-    const rule = { citizen_summary: "La hauteur max est de 9 m.", summary: "9 m." };
-    const out = applyParcelSecteurContext(rule, ["UB"]);
-    expect(out).toEqual({ citizen_summary: "La hauteur max est de 9 m.", summary: "9 m." });
+  it("returns the rule unchanged when nothing matches the strict pattern", () => {
+    const rule = { citizen_summary: "La hauteur max est de 9 m.", citizen_title: "Hauteur" };
+    const out = applyParcelSecteurContext(rule, ["UBb", "UB"]);
+    expect(out).toEqual({ citizen_summary: "La hauteur max est de 9 m.", citizen_title: "Hauteur" });
   });
 });
