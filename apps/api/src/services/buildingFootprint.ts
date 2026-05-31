@@ -110,6 +110,11 @@ function bboxOf(geom: Geometry): [number, number, number, number] | null {
   return [minX, minY, maxX, maxY];
 }
 
+// Small bbox padding (~5 m at French latitudes) so a building whose footprint
+// extends just outside the parcel's bounding box still appears in the WFS
+// response. Doesn't affect the centroid-in-parcel filter applied afterwards.
+const BBOX_PAD_DEG = 5e-5;
+
 /**
  * Total footprint (m²) of buildings standing on `parcelGeom`, or null when the
  * footprint cannot be determined (no geometry, source unreachable…).
@@ -119,33 +124,41 @@ export async function computeBuiltFootprintM2(parcelGeom: Geometry | null): Prom
   const bbox = bboxOf(parcelGeom);
   if (!bbox) return null;
 
-  // IGN BD TOPO® buildings via WFS (GeoJSON, EPSG:4326). bbox order for WFS 2.0 in
-  // CRS84 is minLng,minLat,maxLng,maxLat.
+  // IGN BD TOPO® buildings via WFS. We use CRS:84 (not EPSG:4326) on purpose :
+  // EPSG:4326 in WFS 2.0.0 imposes lat,lng axis order on the BBOX *and* the
+  // returned coordinates, while many servers (data.geopf.fr included) hand
+  // back GeoJSON in lng,lat per the GeoJSON spec — the ambiguity used to make
+  // the point-in-polygon test fail silently. CRS:84 is unambiguously lng,lat
+  // both ways.
   const [minLng, minLat, maxLng, maxLat] = bbox;
   const params = new URLSearchParams({
     SERVICE: "WFS",
     VERSION: "2.0.0",
     REQUEST: "GetFeature",
     TYPENAMES: "BDTOPO_V3:batiment",
-    SRSNAME: "EPSG:4326",
+    SRSNAME: "CRS:84",
     OUTPUTFORMAT: "application/json",
     COUNT: "200",
-    BBOX: `${minLat},${minLng},${maxLat},${maxLng},EPSG:4326`,
+    BBOX: `${minLng - BBOX_PAD_DEG},${minLat - BBOX_PAD_DEG},${maxLng + BBOX_PAD_DEG},${maxLat + BBOX_PAD_DEG},CRS:84`,
   });
   const url = `https://data.geopf.fr/wfs/ows?${params.toString()}`;
 
   try {
     const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return null;
+    if (!r.ok) {
+      console.warn("[buildingFootprint] WFS HTTP error", { status: r.status, statusText: r.statusText });
+      return null;
+    }
     const data = await r.json() as { features?: Array<{ geometry?: Geometry }> };
     const features = data.features ?? [];
     if (!features.length) return 0; // bbox reachable but empty → no building on plot
 
     let footprint = 0;
     let counted = 0;
+    let geomSkipped = 0;
     for (const f of features) {
       const g = f.geometry;
-      if (!g || (g.type !== "Polygon" && g.type !== "MultiPolygon")) continue;
+      if (!g || (g.type !== "Polygon" && g.type !== "MultiPolygon")) { geomSkipped++; continue; }
       const c = geomCentroid(g);
       // Keep only buildings whose centroid sits on the parcel (excludes neighbours
       // caught by the bbox).
@@ -153,9 +166,18 @@ export async function computeBuiltFootprintM2(parcelGeom: Geometry | null): Prom
       footprint += polygonAreaM2(g);
       counted++;
     }
-    if (counted === 0) return 0; // buildings nearby but none on the parcel
+    if (counted === 0) {
+      // Diagnostic : WFS returned buildings nearby but none whose centroid is on
+      // the parcel. If this is wrong (parcel obviously built), the most likely
+      // cause is an axis-order mismatch — the log lets us spot it.
+      console.warn("[buildingFootprint] WFS returned features but none centroid-in-parcel", {
+        bbox, features_count: features.length, geom_skipped: geomSkipped,
+      });
+      return 0;
+    }
     return Math.round(footprint);
-  } catch {
+  } catch (err) {
+    console.warn("[buildingFootprint] WFS call failed", { error: err instanceof Error ? err.message : String(err) });
     return null;
   }
 }
