@@ -6,6 +6,7 @@ import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import { runDossierConformityAnalysis, runDossierConformityAnalysisBackground, type ConformiteReport } from "../services/dossierConformity.js";
+import { parseLooseArray } from "../services/jsonExtract.js";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import { PDFDocument } from "pdf-lib";
@@ -31,27 +32,6 @@ async function splitPdfBase64(base64: string, maxPages = 90, overlap = 8): Promi
     if (end >= total) break;
   }
   return chunks;
-}
-
-// Parse un tableau JSON éventuellement TRONQUÉ (réponse LLM coupée à max_tokens).
-// Tente le parse complet ; sinon ferme l'array au dernier objet entier ("}") pour
-// récupérer les sous-règles complètes. Renvoie [] si rien d'exploitable.
-function parseLooseArray(raw: string): unknown[] {
-  const start = raw.indexOf("[");
-  if (start < 0) return [];
-  const s = raw.slice(start);
-  try {
-    const v = JSON.parse(s);
-    if (Array.isArray(v)) return v;
-  } catch { /* try salvage */ }
-  const lastObj = s.lastIndexOf("}");
-  if (lastObj > 0) {
-    try {
-      const v = JSON.parse(s.slice(0, lastObj + 1) + "]");
-      if (Array.isArray(v)) return v;
-    } catch { /* give up */ }
-  }
-  return [];
 }
 
 function getAnthropicApiKey(): string {
@@ -1756,10 +1736,14 @@ mairieRouter.post("/reglementation/structure-zone", requireRole("mairie", "instr
     const { text, zone_code } = req.body as { text?: string; zone_code?: string };
     if (!text || text.trim().length < 50) return res.status(400).json({ error: "Texte du règlement de zone requis (collez le règlement complet)." });
 
-    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 2, timeout: 80_000 });
+    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 2, timeout: 120_000 });
     const msg = await client.messages.create({
       model: "claude-sonnet-4-6",
-      max_tokens: 6000,
+      // Un règlement complet (14 articles × plusieurs sous-règles citoyen+mairie)
+      // dépasse facilement 6 k tokens et provoquait des sorties tronquées. Avec
+      // 16 k on couvre les zones les plus chargées sans surcoût significatif
+      // (facturation au token réellement émis).
+      max_tokens: 16000,
       system: `Tu es un expert en droit de l'urbanisme français. On te donne le texte d'UN article (ou d'un extrait) de règlement de PLU, souvent déjà résumé, avec valeurs et seuils.
 
 Ta mission : découper ce texte en (SOUS-)RÈGLES exploitables, et pour CHACUNE produire EN PLUS une version « citoyen » en langage courant (pour un particulier qui n'y connaît rien).
@@ -1801,6 +1785,17 @@ RÈGLES DE STRUCTURATION :
 
     const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
     const arr = parseLooseArray(raw);
+    // Trace de débogage utile : Claude a parlé mais on n'extrait rien.
+    // Pointe à coup sûr vers un nouveau format de sortie (wrapper inconnu,
+    // fence non standard…) — le snippet permet d'adapter le parseur.
+    if (arr.length === 0 && raw.trim().length > 10) {
+      console.warn("[structure-zone] parseLooseArray returned 0 elements from non-empty response", {
+        zone_code,
+        raw_length: raw.length,
+        raw_head: raw.slice(0, 200),
+        raw_tail: raw.slice(-200),
+      });
+    }
     const num = (v: unknown) => (typeof v === "number" && Number.isFinite(v) ? v : null);
     const str = (v: unknown) => (typeof v === "string" && v.trim() ? v.trim() : null);
     const APPLIES = new Set(["protege_l151_19", "unesco", "abf", "inondable", "extension", "surelevation", "ravalement", "demolition", "cloture_sur_rue", "cloture_limite", "annexe", "devanture_commerciale", "equipement_public"]);
