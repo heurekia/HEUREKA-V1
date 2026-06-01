@@ -120,6 +120,11 @@ export function stripSiblingSecteurMentions(
   // The top-most ancestor is the parent zone (e.g. "UB" for ancestry [UBb, UB]).
   const parent = ancestryCodes[ancestryCodes.length - 1];
   if (!parent || parent.length < 2) return text;
+  // No sub-sector context → keep the original text intact. Sub-sector mentions
+  // are the citizen's only hint about which variant applies to them when the
+  // GPU layer only reports the parent zone code.
+  const deepest = ancestryCodes[0] ?? "";
+  if (deepest.length <= parent.length) return text;
 
   // Split on sentence boundaries and discard separators ; we rejoin with ". "
   // which avoids the double-dot artefact ("9m.. UBb: 10m") that occurred when
@@ -208,6 +213,13 @@ export function isRuleSiblingOnly<R extends {
 }>(rule: R, ancestryCodes: string[]): boolean {
   const parent = ancestryCodes[ancestryCodes.length - 1];
   if (!parent || parent.length < 2) return false;
+
+  // No sub-sector context (ancestry is just the parent zone) → keep every
+  // sub-rule, including those that describe variants per sub-secteur. They
+  // are precisely what helps the citizen identify which sub-secteur applies
+  // to them when the GPU layer only exposes the parent zone code.
+  const deepest = ancestryCodes[0] ?? "";
+  if (deepest.length <= parent.length) return false;
 
   const text = ruleSectorHaystack(rule);
   if (!text) return false;

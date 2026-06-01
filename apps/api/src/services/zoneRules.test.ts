@@ -287,4 +287,21 @@ describe("pickMostSpecificRule", () => {
     };
     expect(isRuleSiblingOnly(rule, ["UBb", "UB"])).toBe(false);
   });
+
+  it("isRuleSiblingOnly keeps EVERY sub-sector rule when no sub-sector is identified", () => {
+    // Real case Ballan-Miré : GPU returns just « UB » for the parcel, no sub-
+    // sector. We must not drop the sub-sector variant rules — they're the only
+    // way for the citizen to know which limit applies to their precise location.
+    const ruleUBa = { citizen_title: "Hauteur (UBa)", sub_theme: null, rule_text: "Dans le secteur UBa : 12 m." };
+    const ruleUBaUBbUBc = { citizen_title: "Hauteur", sub_theme: "10.4", rule_text: "Dans les secteurs UBa, UBb, UBc : 8 m." };
+    const ruleUBd = { citizen_title: "Hauteur (UBd)", sub_theme: null, rule_text: "Dans le secteur UBd : 7 m." };
+    expect(isRuleSiblingOnly(ruleUBa, ["UB"])).toBe(false);
+    expect(isRuleSiblingOnly(ruleUBaUBbUBc, ["UB"])).toBe(false);
+    expect(isRuleSiblingOnly(ruleUBd, ["UB"])).toBe(false);
+  });
+
+  it("stripSiblingSecteurMentions keeps everything when no sub-sector context", () => {
+    const text = "Hauteur : 12 m en UB. En UBa : 12 m. En UBb : 8 m.";
+    expect(stripSiblingSecteurMentions(text, ["UB"])).toBe(text);
+  });
 });
