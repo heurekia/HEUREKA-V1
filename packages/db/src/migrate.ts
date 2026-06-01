@@ -498,6 +498,11 @@ ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_title text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_summary text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_relevant boolean NOT NULL DEFAULT true;
 
+-- Synthèse textuelle des documents thématiques de commune (OAP, PPRI, …) sur
+-- laquelle l'outil d'instruction s'appuie quand un dossier tombe dans le
+-- périmètre concerné.
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS synthese text;
+
 -- ── Ingestion documentaire : segments + embeddings (pgvector) ──
 CREATE EXTENSION IF NOT EXISTS vector;
 CREATE TABLE IF NOT EXISTS document_segments (

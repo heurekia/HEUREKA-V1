@@ -2378,6 +2378,7 @@ mairieRouter.get("/documents", async (req: AuthRequest, res) => {
       name: commune_documents.name,
       original_filename: commune_documents.original_filename,
       file_size: commune_documents.file_size,
+      synthese: commune_documents.synthese,
       status: commune_documents.status,
       ingested_at: commune_documents.ingested_at,
       created_at: commune_documents.created_at,
@@ -2395,13 +2396,14 @@ mairieRouter.get("/documents", async (req: AuthRequest, res) => {
 
 mairieRouter.post("/documents", async (req: AuthRequest, res) => {
   try {
-    const { commune_name, type, name, original_filename, file_size, pdf_base64 } = req.body as {
+    const { commune_name, type, name, original_filename, file_size, pdf_base64, synthese } = req.body as {
       commune_name: string;
       type: string;
       name: string;
       original_filename: string;
       file_size?: number;
       pdf_base64?: string;
+      synthese?: string;
     };
 
     if (!commune_name || !type || !name || !original_filename) {
@@ -2419,6 +2421,7 @@ mairieRouter.post("/documents", async (req: AuthRequest, res) => {
       original_filename,
       file_size: file_size ?? null,
       pdf_content: pdf_base64 ?? null,
+      synthese: synthese?.trim() || null,
       status: "uploaded",
     }).returning({
       id: commune_documents.id,
@@ -2426,6 +2429,7 @@ mairieRouter.post("/documents", async (req: AuthRequest, res) => {
       name: commune_documents.name,
       original_filename: commune_documents.original_filename,
       file_size: commune_documents.file_size,
+      synthese: commune_documents.synthese,
       status: commune_documents.status,
       created_at: commune_documents.created_at,
     });
@@ -2437,10 +2441,68 @@ mairieRouter.post("/documents", async (req: AuthRequest, res) => {
   }
 });
 
+// Met à jour la synthèse (et éventuellement le nom) d'un document de commune.
+mairieRouter.patch("/documents/:id", async (req: AuthRequest, res) => {
+  try {
+    const { synthese, name } = req.body as { synthese?: string | null; name?: string };
+    const patch: { synthese?: string | null; name?: string; updated_at: Date } = { updated_at: new Date() };
+    if (synthese !== undefined) patch.synthese = synthese?.trim() || null;
+    if (name !== undefined && name.trim()) patch.name = name.trim();
+
+    const [doc] = await db.update(commune_documents)
+      .set(patch)
+      .where(eq(commune_documents.id, req.params.id as string))
+      .returning({
+        id: commune_documents.id,
+        type: commune_documents.type,
+        name: commune_documents.name,
+        synthese: commune_documents.synthese,
+      });
+    if (!doc) return res.status(404).json({ error: "Document introuvable" });
+    res.json(doc);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 mairieRouter.delete("/documents/:id", async (req: AuthRequest, res) => {
   try {
     await db.delete(commune_documents).where(eq(commune_documents.id, req.params.id as string));
     res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Documents thématiques de la commune du dossier, retournés avec leur synthèse
+// pour servir de support à l'instruction (l'outil les consulte avant d'analyser
+// la conformité d'une demande).
+mairieRouter.get("/dossiers/:id/commune-documents", async (req: AuthRequest, res) => {
+  try {
+    const [dossier] = await db.select({ commune: dossiers.commune })
+      .from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
+    if (!dossier?.commune) return res.json([]);
+
+    const [commune] = await db.select({ id: communes.id })
+      .from(communes).where(ilike(communes.name, dossier.commune)).limit(1);
+    if (!commune) return res.json([]);
+
+    const docs = await db.select({
+      id: commune_documents.id,
+      type: commune_documents.type,
+      name: commune_documents.name,
+      original_filename: commune_documents.original_filename,
+      file_size: commune_documents.file_size,
+      synthese: commune_documents.synthese,
+      status: commune_documents.status,
+      created_at: commune_documents.created_at,
+    })
+      .from(commune_documents)
+      .where(eq(commune_documents.commune_id, commune.id))
+      .orderBy(commune_documents.type, commune_documents.created_at);
+    res.json(docs);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

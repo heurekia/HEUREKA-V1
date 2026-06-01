@@ -3234,7 +3234,7 @@ const DOC_TYPES: { value: string; label: string; color: string }[] = [
 
 type CommuneDoc = {
   id: string; type: string; name: string; original_filename: string;
-  file_size: number | null; status: string; created_at: string;
+  file_size: number | null; synthese: string | null; status: string; created_at: string;
 };
 
 function DocumentsPanel({ commune }: { commune: string }) {
@@ -3242,8 +3242,11 @@ function DocumentsPanel({ commune }: { commune: string }) {
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [uploading, setUploading] = useState(false);
-  const [form, setForm] = useState({ type: "ppri", name: "", file: null as File | null });
+  const [form, setForm] = useState({ type: "ppri", name: "", synthese: "", file: null as File | null });
   const [dragOver, setDragOver] = useState(false);
+  const [editingSynthese, setEditingSynthese] = useState<string | null>(null);
+  const [syntheseDraft, setSyntheseDraft] = useState("");
+  const [savingSynthese, setSavingSynthese] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -3280,9 +3283,10 @@ function DocumentsPanel({ commune }: { commune: string }) {
         original_filename: form.file.name,
         file_size: form.file.size,
         pdf_base64: b64,
+        synthese: form.synthese.trim() || undefined,
       });
       setShowForm(false);
-      setForm({ type: "ppri", name: "", file: null });
+      setForm({ type: "ppri", name: "", synthese: "", file: null });
       load();
     } catch {
     } finally {
@@ -3372,8 +3376,22 @@ function DocumentsPanel({ commune }: { commune: string }) {
             )}
           </div>
 
+          {/* Synthèse */}
+          <div style={{ marginBottom: 16 }}>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 4 }}>
+              Synthèse <span style={{ color: "#94a3b8", fontWeight: 400 }}>— sur quoi l'outil doit s'appuyer pour instruire</span>
+            </label>
+            <textarea
+              value={form.synthese}
+              onChange={(e) => setForm((f) => ({ ...f, synthese: e.target.value }))}
+              rows={4}
+              placeholder="Résumé en quelques phrases : règles à appliquer, périmètre concerné, articles clés, points de vigilance pour l'instructeur…"
+              style={{ width: "100%", border: "1px solid #D1D5DB", borderRadius: 8, padding: "10px 12px", fontSize: 13, fontFamily: "inherit", boxSizing: "border-box", lineHeight: 1.5, resize: "vertical" }}
+            />
+          </div>
+
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button onClick={() => { setShowForm(false); setForm({ type: "ppri", name: "", file: null }); }}
+            <button onClick={() => { setShowForm(false); setForm({ type: "ppri", name: "", synthese: "", file: null }); }}
               style={{ border: "1px solid #E2E8F0", borderRadius: 8, background: "white", padding: "8px 16px", fontSize: 13, cursor: "pointer", color: "#374151" }}>
               Annuler
             </button>
@@ -3403,33 +3421,84 @@ function DocumentsPanel({ commune }: { commune: string }) {
                 <span style={{ fontSize: 12, color: "#94a3b8" }}>{group.items.length} document{group.items.length > 1 ? "s" : ""}</span>
               </div>
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
-                {group.items.map(doc => (
-                  <div key={doc.id} style={{
-                    display: "flex", alignItems: "center", gap: 12,
-                    background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px 16px",
-                  }}>
-                    <span style={{ fontSize: 20 }}>📄</span>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div>
-                      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
-                        {doc.original_filename}
-                        {doc.file_size && <span style={{ marginLeft: 8 }}>{fmt(doc.file_size)}</span>}
-                        <span style={{ marginLeft: 8 }}>· {new Date(doc.created_at).toLocaleDateString("fr-FR")}</span>
+                {group.items.map(doc => {
+                  const isEditing = editingSynthese === doc.id;
+                  const saveSynthese = async () => {
+                    setSavingSynthese(true);
+                    try {
+                      await api.patch(`/mairie/documents/${doc.id}`, { synthese: syntheseDraft });
+                      setDocs((arr) => arr.map((d) => d.id === doc.id ? { ...d, synthese: syntheseDraft.trim() || null } : d));
+                      setEditingSynthese(null);
+                    } catch { /* ignore */ } finally { setSavingSynthese(false); }
+                  };
+                  return (
+                    <div key={doc.id} style={{
+                      background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px 16px",
+                    }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                        <span style={{ fontSize: 20 }}>📄</span>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{doc.name}</div>
+                          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
+                            {doc.original_filename}
+                            {doc.file_size && <span style={{ marginLeft: 8 }}>{fmt(doc.file_size)}</span>}
+                            <span style={{ marginLeft: 8 }}>· {new Date(doc.created_at).toLocaleDateString("fr-FR")}</span>
+                          </div>
+                        </div>
+                        <span style={{
+                          fontSize: 11, fontWeight: 600,
+                          color: doc.status === "ingested" ? "#10B981" : "#94a3b8",
+                          background: doc.status === "ingested" ? "#D1FAE5" : "#F1F5F9",
+                          borderRadius: 6, padding: "2px 8px",
+                        }}>
+                          {doc.status === "ingested" ? "Ingéré" : "Importé"}
+                        </span>
+                        <button onClick={() => deleteDoc(doc.id)}
+                          style={{ border: "none", background: "none", color: "#94a3b8", cursor: "pointer", padding: 4, fontSize: 16, lineHeight: 1 }}
+                          title="Supprimer">✕</button>
+                      </div>
+
+                      {/* Synthèse — affichage / édition */}
+                      <div style={{ marginTop: 10, paddingTop: 10, borderTop: "1px dashed #E2E8F0" }}>
+                        {isEditing ? (
+                          <div>
+                            <textarea
+                              value={syntheseDraft}
+                              onChange={(e) => setSyntheseDraft(e.target.value)}
+                              rows={4}
+                              placeholder="Résumé en quelques phrases : règles à appliquer, périmètre concerné, articles clés…"
+                              style={{ width: "100%", border: "1px solid #D1D5DB", borderRadius: 6, padding: "8px 10px", fontSize: 12.5, fontFamily: "inherit", boxSizing: "border-box", lineHeight: 1.5, resize: "vertical" }}
+                            />
+                            <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 6 }}>
+                              <button onClick={() => setEditingSynthese(null)}
+                                style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", color: "#374151" }}>
+                                Annuler
+                              </button>
+                              <button onClick={() => void saveSynthese()} disabled={savingSynthese}
+                                style={{ border: "none", background: savingSynthese ? "#A5B4FC" : "#4F46E5", color: "white", borderRadius: 6, padding: "5px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                                {savingSynthese ? "Enregistrement…" : "Enregistrer la synthèse"}
+                              </button>
+                            </div>
+                          </div>
+                        ) : doc.synthese ? (
+                          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                            <span style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", letterSpacing: "0.06em", marginTop: 2 }}>SYNTHÈSE</span>
+                            <div style={{ flex: 1, fontSize: 12.5, color: "#374151", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>{doc.synthese}</div>
+                            <button onClick={() => { setEditingSynthese(doc.id); setSyntheseDraft(doc.synthese ?? ""); }}
+                              style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "3px 10px", fontSize: 11, cursor: "pointer", color: "#4F46E5", fontWeight: 600, flexShrink: 0 }}>
+                              Modifier
+                            </button>
+                          </div>
+                        ) : (
+                          <button onClick={() => { setEditingSynthese(doc.id); setSyntheseDraft(""); }}
+                            style={{ border: "1px dashed #C7D2FE", background: "#F8FAFC", borderRadius: 6, padding: "6px 12px", fontSize: 12, cursor: "pointer", color: "#4F46E5", fontWeight: 600, width: "100%", textAlign: "left" as const }}>
+                            + Ajouter une synthèse pour l'instruction
+                          </button>
+                        )}
                       </div>
                     </div>
-                    <span style={{
-                      fontSize: 11, fontWeight: 600,
-                      color: doc.status === "ingested" ? "#10B981" : "#94a3b8",
-                      background: doc.status === "ingested" ? "#D1FAE5" : "#F1F5F9",
-                      borderRadius: 6, padding: "2px 8px",
-                    }}>
-                      {doc.status === "ingested" ? "Ingéré" : "Importé"}
-                    </span>
-                    <button onClick={() => deleteDoc(doc.id)}
-                      style={{ border: "none", background: "none", color: "#94a3b8", cursor: "pointer", padding: 4, fontSize: 16, lineHeight: 1 }}
-                      title="Supprimer">✕</button>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             </div>
           ))}
@@ -5943,6 +6012,26 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       .finally(() => setDocumentsLoading(false));
   }, [activeTab, documents, dossier.id]);
 
+  // Documents thématiques de la commune (OAP, PPRI, …) avec leur synthèse.
+  // Chargés à l'ouverture de l'onglet Parcelle pour servir de support à l'instruction.
+  type CommuneDocLite = {
+    id: string;
+    type: string;
+    name: string;
+    original_filename: string;
+    file_size: number | null;
+    synthese: string | null;
+    status: string;
+    created_at: string;
+  };
+  const [communeDocs, setCommuneDocs] = useState<CommuneDocLite[] | null>(null);
+  useEffect(() => {
+    if (activeTab !== "Parcelle" || communeDocs !== null) return;
+    api.get<CommuneDocLite[]>(`/mairie/dossiers/${dossier.id}/commune-documents`)
+      .then(setCommuneDocs)
+      .catch(() => setCommuneDocs([]));
+  }, [activeTab, communeDocs, dossier.id]);
+
   const fetchConsultations = useCallback(() => {
     setConsultationsLoading(true);
     api.get<Consultation[]>(`/mairie/dossiers/${dossier.id}/consultations`)
@@ -6643,6 +6732,48 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       </div>
                     )}
                   </div>
+
+                  {/* Documents thématiques de la commune (OAP, PPRI, …) */}
+                  {communeDocs && communeDocs.length > 0 && (() => {
+                    const docTypeMeta: Record<string, { label: string; color: string; icon: string }> = {
+                      ppri: { label: "PPRI", color: "#EF4444", icon: "🌊" },
+                      oap:  { label: "OAP",  color: "#8B5CF6", icon: "📐" },
+                      peb:  { label: "PEB",  color: "#F59E0B", icon: "✈️" },
+                      pprt: { label: "PPRT", color: "#EC4899", icon: "⚠️" },
+                      plh:  { label: "PLH",  color: "#10B981", icon: "🏘️" },
+                      zac:  { label: "ZAC",  color: "#3B82F6", icon: "🏗️" },
+                      autre:{ label: "Autre",color: "#64748B", icon: "📄" },
+                    };
+                    return (
+                      <div style={CARD}>
+                        <SecTitle>Documents d'instruction applicables</SecTitle>
+                        <div style={{ fontSize: 11.5, color: "#64748b", marginBottom: 12, marginTop: -10, lineHeight: 1.5 }}>
+                          Documents thématiques de la commune (OAP, PPRI…) et leur synthèse — l'outil s'en sert pour instruire ce dossier.
+                        </div>
+                        <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                          {communeDocs.map((d) => {
+                            const meta = docTypeMeta[d.type] ?? docTypeMeta.autre!;
+                            return (
+                              <div key={d.id} style={{ padding: "10px 12px", border: "1px solid #E2E8F0", borderRadius: 9, background: "#FAFBFC" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: d.synthese ? 6 : 0 }}>
+                                  <span style={{ fontSize: 15 }}>{meta.icon}</span>
+                                  <span style={{ background: meta.color, color: "white", borderRadius: 5, padding: "1px 7px", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em" }}>{meta.label}</span>
+                                  <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{d.name}</span>
+                                </div>
+                                {d.synthese ? (
+                                  <div style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55, whiteSpace: "pre-wrap" as const, marginLeft: 23 }}>{d.synthese}</div>
+                                ) : (
+                                  <div style={{ fontSize: 11, color: "#94a3b8", fontStyle: "italic", marginLeft: 23 }}>
+                                    Aucune synthèse rédigée — Paramètres &gt; Documents pour en ajouter une.
+                                  </div>
+                                )}
+                              </div>
+                            );
+                          })}
+                        </div>
+                      </div>
+                    );
+                  })()}
 
                   {/* Résumé constructibilité */}
                   {pa?.buildability?.resultSummary && (
