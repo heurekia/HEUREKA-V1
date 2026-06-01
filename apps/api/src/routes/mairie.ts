@@ -873,12 +873,15 @@ mairieRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res)
 
     const communeName = dossier.commune ?? null;
 
-    // Look up commune INSEE code FIRST — needed to expand partial cadastral refs
+    // Look up commune INSEE code FIRST — needed to expand partial cadastral refs.
+    // We require an EXACT case-insensitive match: a substring ilike("%Tours%") would
+    // match "Joué-lès-Tours", "Saint-Pierre-des-Corps", etc. and silently send BAN
+    // queries to the wrong commune.
     let citycode: string | undefined;
     if (communeName) {
       const [communeRow] = await db.select({ insee_code: communes.insee_code })
         .from(communes)
-        .where(ilike(communes.name, `%${communeName}%`))
+        .where(ilike(communes.name, communeName))
         .limit(1);
       citycode = communeRow?.insee_code ?? undefined;
     }
