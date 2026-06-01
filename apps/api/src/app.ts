@@ -80,20 +80,21 @@ app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });
 });
 
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const frontendDist = path.resolve(__dirname, "../../web/dist");
+const uploadsDir = path.resolve(__dirname, "../uploads");
+
+// Uploaded files — no-cache so the client always gets the latest version.
+// IMPORTANT : enregistré AVANT le catch-all `/api` ci-dessous, sinon toute requête
+// vers /api/uploads/<fichier> tombe dans le 404 JSON.
+app.use("/api/uploads", express.static(uploadsDir, { maxAge: 0 }));
+
 // Unknown API routes must return a JSON 404 — not the SPA's index.html.
 // Otherwise a typo'd or removed endpoint silently serves HTML, which the
 // frontend then fails to parse as JSON (confusing "Unexpected token <" errors).
 app.use("/api", (_req, res) => {
   res.status(404).json({ error: "Route introuvable" });
 });
-
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const frontendDist = path.resolve(__dirname, "../../web/dist");
-const uploadsDir = path.resolve(__dirname, "../uploads");
-
-// Uploaded files — no-cache so the client always gets the latest version
-app.use("/api/uploads", express.static(uploadsDir, { maxAge: 0 }));
 
 // Hashed JS/CSS assets → cache 1 year
 app.use(express.static(frontendDist, {

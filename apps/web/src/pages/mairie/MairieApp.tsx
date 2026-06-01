@@ -6409,29 +6409,92 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       )}
                       {/* Servitudes d'utilité publique */}
                       {pa?.servitudes && pa.servitudes.length > 0 && pa.servitudes.map((s, i) => {
+                        // Familles SUP (R.151-43 du Code de l'Urbanisme)
                         const supLabels: Record<string, string> = {
-                          AC1: "MH – Périmètre ABF", AC2: "Sites classés/inscrits",
-                          EL: "Ligne HT", EL7: "Ligne HT 63-225kV", EL11: "Ligne HT >225kV",
-                          PM1: "PPRI – Zone submersible", PM2: "Voies ferrées/inondation",
-                          T1: "Voie ferrée", T7: "Route nationale",
-                          I4: "Réseau hertzien", PT: "Télécommunications",
+                          AC1: "Monuments Historiques — périmètre ABF",
+                          AC2: "Sites classés / inscrits",
+                          AC3: "Réserves naturelles",
+                          AC4: "Parcs nationaux",
+                          AS1: "Captage d'eau potable",
+                          EL3: "Halage / marchepied",
+                          EL7: "Ligne haute tension 63-225 kV",
+                          EL11: "Ligne haute tension > 225 kV",
+                          I1: "Canalisations d'hydrocarbures",
+                          I3: "Canalisations de gaz",
+                          I4: "Canalisations électriques",
+                          PM1: "PPRI — risque inondation",
+                          PM2: "PPRT — risque technologique",
+                          PM3: "Risque mouvement de terrain",
+                          PT1: "Télécommunications — protection",
+                          PT2: "Télécommunications — émission/réception",
+                          T1: "Voies ferrées",
+                          T4: "Aérodromes — servitudes aéronautiques",
+                          T5: "Servitudes aéronautiques de balisage",
+                          T7: "Routes nationales",
                         };
-                        const label = supLabels[s.categorie] ?? s.categorie;
+                        const fam = s.categorie?.replace(/[0-9]+$/, "") ?? "";
+                        const famLabel = ({ AC: "Patrimoine", AS: "Salubrité", EL: "Énergie", I: "Hydrocarbures/gaz", PM: "Risques", PT: "Télécom", T: "Transports" } as Record<string, string>)[fam] ?? "Servitude";
+                        const friendly = supLabels[s.categorie] ?? s.libelle ?? `SUP ${s.categorie}`;
                         const isABF = s.categorie?.startsWith("AC");
                         return (
-                          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: isABF ? "#FEF3C7" : "#F0F9FF", borderRadius: 9, border: `1px solid ${isABF ? "#FCD34D" : "#BAE6FD"}22` }}>
-                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>SUP {s.categorie}</span>
-                            <span style={{ fontSize: 11, fontWeight: 600, color: isABF ? "#92400E" : "#075985" }}>{s.libelle ?? label}</span>
+                          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 14px", background: isABF ? "#FFFBEB" : "#F0F9FF", borderRadius: 9, border: `1px solid ${isABF ? "#FDE68A" : "#BAE6FD"}` }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                              <span style={{ fontSize: 16, flexShrink: 0 }}>{isABF ? "⚜️" : "📜"}</span>
+                              <div style={{ minWidth: 0 }}>
+                                <div style={{ fontSize: 12.5, fontWeight: 700, color: isABF ? "#92400E" : "#0C4A6E", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{friendly}</div>
+                                <div style={{ fontSize: 11, color: isABF ? "#B45309" : "#0369A1", marginTop: 1 }}>{famLabel} · code {s.categorie}</div>
+                              </div>
+                            </div>
+                            {s.libelle && supLabels[s.categorie] && s.libelle !== supLabels[s.categorie] && (
+                              <span style={{ fontSize: 11, color: "#64748b", textAlign: "right" as const, maxWidth: "45%", flexShrink: 0 }}>{s.libelle}</span>
+                            )}
                           </div>
                         );
                       })}
                       {/* Prescriptions surfaciques PLU */}
-                      {pa?.prescriptions && pa.prescriptions.length > 0 && pa.prescriptions.map((p, i) => (
-                        <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: "#F0FDF4", borderRadius: 9, border: "1px solid #BBF7D022" }}>
-                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>{p.typepsc || "Prescription"}</span>
-                          <span style={{ fontSize: 11, fontWeight: 600, color: "#14532D", maxWidth: "55%", textAlign: "right" as const }}>{p.libelle}</span>
-                        </div>
-                      ))}
+                      {pa?.prescriptions && pa.prescriptions.length > 0 && pa.prescriptions.map((p, i) => {
+                        // typepsc — CNIG schema PLU (référentiel prescriptions surfaciques)
+                        const pscLabels: Record<string, { titre: string; cat: string; icon: string }> = {
+                          "01": { titre: "Espace Boisé Classé (EBC)", cat: "Protection végétale", icon: "🌳" },
+                          "02": { titre: "Élément paysager / patrimonial à protéger", cat: "Patrimoine", icon: "🏛️" },
+                          "03": { titre: "Terrain cultivé en zone urbaine", cat: "Agriculture", icon: "🌾" },
+                          "04": { titre: "Emplacement réservé", cat: "Équipement public", icon: "📍" },
+                          "05": { titre: "Plantations à réaliser ou à conserver", cat: "Aménagement paysager", icon: "🌱" },
+                          "06": { titre: "Voie / emprise réservée", cat: "Voirie", icon: "🛣️" },
+                          "07": { titre: "Continuités écologiques", cat: "Trame verte/bleue", icon: "🦋" },
+                          "08": { titre: "Bâtiment à conserver", cat: "Patrimoine bâti", icon: "🏠" },
+                          "09": { titre: "Périmètre à risque", cat: "Risques", icon: "⚠️" },
+                          "10": { titre: "Zone non aedificandi (inconstructible)", cat: "Constructibilité", icon: "🚫" },
+                          "11": { titre: "Zone d'Aménagement Concerté (ZAC)", cat: "Aménagement", icon: "🏗️" },
+                          "12": { titre: "Périmètre de constructibilité limitée", cat: "Constructibilité", icon: "⛔" },
+                          "13": { titre: "Périmètre d'attente de projet (PAPA)", cat: "Aménagement", icon: "⏳" },
+                          "14": { titre: "Mixité sociale", cat: "Logement", icon: "🏘️" },
+                          "15": { titre: "Mixité fonctionnelle", cat: "Mixité", icon: "🏢" },
+                          "16": { titre: "Diversité commerciale (linéaires)", cat: "Commerce", icon: "🛍️" },
+                          "17": { titre: "Performance énergétique", cat: "Environnement", icon: "🔋" },
+                          "18": { titre: "Orientation d'Aménagement et de Programmation (OAP)", cat: "OAP", icon: "📐" },
+                          "19": { titre: "Zone humide", cat: "Environnement", icon: "💧" },
+                          "30": { titre: "Hauteur — secteur de gabarit", cat: "Volumétrie", icon: "📏" },
+                          "39": { titre: "Hauteur maximale", cat: "Volumétrie", icon: "📐" },
+                          "40": { titre: "Stationnement — secteur de norme", cat: "Stationnement", icon: "🅿️" },
+                          "44": { titre: "Stationnement — exigences spécifiques", cat: "Stationnement", icon: "🅿️" },
+                        };
+                        const def = pscLabels[p.typepsc] ?? { titre: p.libelle || "Prescription PLU", cat: "Prescription", icon: "📋" };
+                        return (
+                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "#F0FDF4", borderRadius: 9, border: "1px solid #BBF7D0" }}>
+                            <span style={{ fontSize: 16, flexShrink: 0 }}>{def.icon}</span>
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 12.5, fontWeight: 700, color: "#14532D", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+                                {p.libelle || def.titre}
+                              </div>
+                              <div style={{ fontSize: 11, color: "#15803D", marginTop: 1 }}>
+                                {def.cat}{p.typepsc ? ` · type ${p.typepsc}` : ""}
+                                {p.libelle && def.titre !== p.libelle && def.titre !== "Prescription PLU" ? ` — ${def.titre}` : ""}
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      })}
                     </div>
                   </div>
 
@@ -6518,10 +6581,25 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           </span>
                         </div>
                       ))
-                    ) : (
-                      <div style={{ fontSize: 12.5, color: "#94a3b8", padding: "8px 0" }}>
-                        {pa ? "Aucune règle enregistrée pour cette zone." : "En attente de l'analyse…"}
-                      </div>
+                    ) : pa ? (() => {
+                      const zc = pa.plu_zone?.zone_code ?? pa.db_zone?.code;
+                      return (
+                        <div style={{ fontSize: 12.5, color: "#64748b", padding: "8px 0", lineHeight: 1.55 }}>
+                          <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
+                            <span style={{ fontSize: 16, flexShrink: 0 }}>ℹ️</span>
+                            <div>
+                              <div style={{ fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Règles non chargées</div>
+                              {zc ? (
+                                <>La zone <code style={{ background: "#F1F5F9", padding: "1px 5px", borderRadius: 4, fontSize: 11.5, color: "#4F46E5", fontWeight: 600 }}>{zc}</code> n'a pas encore de règles indexées dans la base. Le règlement PDF est référencé ci-dessous — relancer l'ingestion du PLU depuis l'écran Paramètres &gt; Documents pour extraire les articles.</>
+                              ) : (
+                                "La zone PLU n'a pas pu être déterminée. Sélectionnez-la manuellement ci-dessus pour charger les règles."
+                              )}
+                            </div>
+                          </div>
+                        </div>
+                      );
+                    })() : (
+                      <div style={{ fontSize: 12.5, color: "#94a3b8", padding: "8px 0" }}>En attente de l'analyse…</div>
                     )}
                     {pa?.plu_zone?.plu_nom && (
                       <div style={{ marginTop: 8, fontSize: 11, color: "#64748b", fontStyle: "italic" }}>

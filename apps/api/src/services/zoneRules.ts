@@ -307,10 +307,13 @@ export async function loadZoneRulesWithInheritance(
     communeId = row?.id ?? null;
   }
   if (!communeId && options.communeNom) {
+    // Match exact case-insensitive, sinon une commune comme "Tours" matcherait
+    // "Joué-lès-Tours" / "Saint-Pierre-des-Corps" et la recherche de zones
+    // retournerait des règles qui ne concernent pas cette commune.
     const [row] = await db
       .select({ id: communes.id })
       .from(communes)
-      .where(ilike(communes.name, `%${options.communeNom}%`))
+      .where(ilike(communes.name, options.communeNom))
       .limit(1);
     communeId = row?.id ?? null;
   }
