@@ -5815,7 +5815,17 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
     municipality?: { is_rnu: boolean; libelle?: string } | null;
     prescriptions?: Array<{ libelle: string; typepsc: string; txtpsc?: string }>;
-    servitudes?: Array<{ categorie: string; libelle?: string }>;
+    servitudes?: Array<{
+      categorie: string;
+      libelle?: string;
+      nomsup?: string;
+      dessup?: string;
+      ref_acte?: string;
+      urlacte?: string;
+      gestionnaire?: string;
+      datdecr?: string;
+      typeprotect?: string;
+    }>;
   };
   const [parcelAnalysis, setParcelAnalysis] = useState<ParcelAnalysis | null>(null);
   const [parcelLoading, setParcelLoading] = useState(false);
@@ -6432,21 +6442,41 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           T5: "Servitudes aéronautiques de balisage",
                           T7: "Routes nationales",
                         };
-                        const fam = s.categorie?.replace(/[0-9]+$/, "") ?? "";
-                        const famLabel = ({ AC: "Patrimoine", AS: "Salubrité", EL: "Énergie", I: "Hydrocarbures/gaz", PM: "Risques", PT: "Télécom", T: "Transports" } as Record<string, string>)[fam] ?? "Servitude";
                         const friendly = supLabels[s.categorie] ?? s.libelle ?? `SUP ${s.categorie}`;
                         const isABF = s.categorie?.startsWith("AC");
+                        const valueRows: Array<[string, string]> = [];
+                        if (s.nomsup) valueRows.push(["Élément protégé", s.nomsup]);
+                        if (s.typeprotect && s.typeprotect !== s.nomsup) valueRows.push(["Type de protection", s.typeprotect]);
+                        if (s.gestionnaire) valueRows.push(["Gestionnaire", s.gestionnaire]);
+                        if (s.datdecr) valueRows.push(["Acte de protection", s.datdecr]);
+                        if (s.ref_acte) valueRows.push(["Référence", s.ref_acte]);
                         return (
-                          <div key={i} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 14px", background: isABF ? "#FFFBEB" : "#F0F9FF", borderRadius: 9, border: `1px solid ${isABF ? "#FDE68A" : "#BAE6FD"}` }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10, minWidth: 0 }}>
+                          <div key={i} style={{ padding: "12px 14px", background: isABF ? "#FFFBEB" : "#F0F9FF", borderRadius: 9, border: `1px solid ${isABF ? "#FDE68A" : "#BAE6FD"}` }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: valueRows.length > 0 ? 8 : 0 }}>
                               <span style={{ fontSize: 16, flexShrink: 0 }}>{isABF ? "⚜️" : "📜"}</span>
-                              <div style={{ minWidth: 0 }}>
-                                <div style={{ fontSize: 12.5, fontWeight: 700, color: isABF ? "#92400E" : "#0C4A6E", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{friendly}</div>
-                                <div style={{ fontSize: 11, color: isABF ? "#B45309" : "#0369A1", marginTop: 1 }}>{famLabel} · code {s.categorie}</div>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 12.5, fontWeight: 700, color: isABF ? "#92400E" : "#0C4A6E" }}>{friendly}</div>
                               </div>
                             </div>
-                            {s.libelle && supLabels[s.categorie] && s.libelle !== supLabels[s.categorie] && (
-                              <span style={{ fontSize: 11, color: "#64748b", textAlign: "right" as const, maxWidth: "45%", flexShrink: 0 }}>{s.libelle}</span>
+                            {valueRows.length > 0 && (
+                              <div style={{ display: "flex", flexDirection: "column" as const, gap: 4, marginLeft: 26 }}>
+                                {valueRows.map(([label, value]) => (
+                                  <div key={label} style={{ display: "flex", gap: 8, fontSize: 11.5, lineHeight: 1.5 }}>
+                                    <span style={{ color: isABF ? "#B45309" : "#0369A1", flexShrink: 0, minWidth: 130 }}>{label}</span>
+                                    <span style={{ color: isABF ? "#7C2D12" : "#0F172A", fontWeight: 500 }}>{value}</span>
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                            {s.dessup && (
+                              <div style={{ marginLeft: 26, marginTop: 6, fontSize: 11.5, color: isABF ? "#7C2D12" : "#0F172A", lineHeight: 1.55, fontStyle: "italic" }}>
+                                {s.dessup}
+                              </div>
+                            )}
+                            {s.urlacte && (
+                              <a href={s.urlacte} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginLeft: 26, marginTop: 8, fontSize: 11, color: "#4F46E5", fontWeight: 600 }}>
+                                Voir l'acte officiel ↗
+                              </a>
                             )}
                           </div>
                         );
@@ -6454,44 +6484,50 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       {/* Prescriptions surfaciques PLU */}
                       {pa?.prescriptions && pa.prescriptions.length > 0 && pa.prescriptions.map((p, i) => {
                         // typepsc — CNIG schema PLU (référentiel prescriptions surfaciques)
-                        const pscLabels: Record<string, { titre: string; cat: string; icon: string }> = {
-                          "01": { titre: "Espace Boisé Classé (EBC)", cat: "Protection végétale", icon: "🌳" },
-                          "02": { titre: "Élément paysager / patrimonial à protéger", cat: "Patrimoine", icon: "🏛️" },
-                          "03": { titre: "Terrain cultivé en zone urbaine", cat: "Agriculture", icon: "🌾" },
-                          "04": { titre: "Emplacement réservé", cat: "Équipement public", icon: "📍" },
-                          "05": { titre: "Plantations à réaliser ou à conserver", cat: "Aménagement paysager", icon: "🌱" },
-                          "06": { titre: "Voie / emprise réservée", cat: "Voirie", icon: "🛣️" },
-                          "07": { titre: "Continuités écologiques", cat: "Trame verte/bleue", icon: "🦋" },
-                          "08": { titre: "Bâtiment à conserver", cat: "Patrimoine bâti", icon: "🏠" },
-                          "09": { titre: "Périmètre à risque", cat: "Risques", icon: "⚠️" },
-                          "10": { titre: "Zone non aedificandi (inconstructible)", cat: "Constructibilité", icon: "🚫" },
-                          "11": { titre: "Zone d'Aménagement Concerté (ZAC)", cat: "Aménagement", icon: "🏗️" },
-                          "12": { titre: "Périmètre de constructibilité limitée", cat: "Constructibilité", icon: "⛔" },
-                          "13": { titre: "Périmètre d'attente de projet (PAPA)", cat: "Aménagement", icon: "⏳" },
-                          "14": { titre: "Mixité sociale", cat: "Logement", icon: "🏘️" },
-                          "15": { titre: "Mixité fonctionnelle", cat: "Mixité", icon: "🏢" },
-                          "16": { titre: "Diversité commerciale (linéaires)", cat: "Commerce", icon: "🛍️" },
-                          "17": { titre: "Performance énergétique", cat: "Environnement", icon: "🔋" },
-                          "18": { titre: "Orientation d'Aménagement et de Programmation (OAP)", cat: "OAP", icon: "📐" },
-                          "19": { titre: "Zone humide", cat: "Environnement", icon: "💧" },
-                          "30": { titre: "Hauteur — secteur de gabarit", cat: "Volumétrie", icon: "📏" },
-                          "39": { titre: "Hauteur maximale", cat: "Volumétrie", icon: "📐" },
-                          "40": { titre: "Stationnement — secteur de norme", cat: "Stationnement", icon: "🅿️" },
-                          "44": { titre: "Stationnement — exigences spécifiques", cat: "Stationnement", icon: "🅿️" },
+                        const pscLabels: Record<string, { titre: string; icon: string }> = {
+                          "01": { titre: "Espace Boisé Classé (EBC)", icon: "🌳" },
+                          "02": { titre: "Élément paysager / patrimonial à protéger", icon: "🏛️" },
+                          "03": { titre: "Terrain cultivé en zone urbaine", icon: "🌾" },
+                          "04": { titre: "Emplacement réservé", icon: "📍" },
+                          "05": { titre: "Plantations à réaliser ou à conserver", icon: "🌱" },
+                          "06": { titre: "Voie / emprise réservée", icon: "🛣️" },
+                          "07": { titre: "Continuités écologiques", icon: "🦋" },
+                          "08": { titre: "Bâtiment à conserver", icon: "🏠" },
+                          "09": { titre: "Périmètre à risque", icon: "⚠️" },
+                          "10": { titre: "Zone non aedificandi (inconstructible)", icon: "🚫" },
+                          "11": { titre: "Zone d'Aménagement Concerté (ZAC)", icon: "🏗️" },
+                          "12": { titre: "Périmètre de constructibilité limitée", icon: "⛔" },
+                          "13": { titre: "Périmètre d'attente de projet (PAPA)", icon: "⏳" },
+                          "14": { titre: "Mixité sociale", icon: "🏘️" },
+                          "15": { titre: "Mixité fonctionnelle", icon: "🏢" },
+                          "16": { titre: "Diversité commerciale (linéaires)", icon: "🛍️" },
+                          "17": { titre: "Performance énergétique", icon: "🔋" },
+                          "18": { titre: "Orientation d'Aménagement et de Programmation (OAP)", icon: "📐" },
+                          "19": { titre: "Zone humide", icon: "💧" },
+                          "30": { titre: "Hauteur — secteur de gabarit", icon: "📏" },
+                          "39": { titre: "Hauteur maximale", icon: "📐" },
+                          "40": { titre: "Stationnement — secteur de norme", icon: "🅿️" },
+                          "44": { titre: "Stationnement — exigences spécifiques", icon: "🅿️" },
                         };
-                        const def = pscLabels[p.typepsc] ?? { titre: p.libelle || "Prescription PLU", cat: "Prescription", icon: "📋" };
+                        const def = pscLabels[p.typepsc] ?? { titre: "Prescription PLU", icon: "📋" };
+                        const title = p.libelle || def.titre;
                         return (
-                          <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 14px", background: "#F0FDF4", borderRadius: 9, border: "1px solid #BBF7D0" }}>
-                            <span style={{ fontSize: 16, flexShrink: 0 }}>{def.icon}</span>
-                            <div style={{ flex: 1, minWidth: 0 }}>
-                              <div style={{ fontSize: 12.5, fontWeight: 700, color: "#14532D", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
-                                {p.libelle || def.titre}
-                              </div>
-                              <div style={{ fontSize: 11, color: "#15803D", marginTop: 1 }}>
-                                {def.cat}{p.typepsc ? ` · type ${p.typepsc}` : ""}
-                                {p.libelle && def.titre !== p.libelle && def.titre !== "Prescription PLU" ? ` — ${def.titre}` : ""}
+                          <div key={i} style={{ padding: "12px 14px", background: "#F0FDF4", borderRadius: 9, border: "1px solid #BBF7D0" }}>
+                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: p.txtpsc ? 8 : 0 }}>
+                              <span style={{ fontSize: 16, flexShrink: 0 }}>{def.icon}</span>
+                              <div style={{ flex: 1, minWidth: 0 }}>
+                                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#14532D" }}>{title}</div>
                               </div>
                             </div>
+                            {p.txtpsc ? (
+                              <div style={{ marginLeft: 26, fontSize: 11.5, color: "#14532D", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>
+                                {p.txtpsc}
+                              </div>
+                            ) : (
+                              <div style={{ marginLeft: 26, fontSize: 11, color: "#15803D", fontStyle: "italic" }}>
+                                Texte réglementaire non publié dans le GPU — se référer au règlement de zone.
+                              </div>
+                            )}
                           </div>
                         );
                       })}
