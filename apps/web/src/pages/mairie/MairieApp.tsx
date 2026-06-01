@@ -5877,7 +5877,16 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string };
     risks?: { flood_risk: string; seismic_zone: string; clay_risk: string };
     db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
-    rules: Array<{ id: string; topic: string; rule_text: string; value_min: number | null; value_max: number | null; unit: string | null; summary: string | null; article_number: number | null }>;
+    rules: Array<{
+      id: string; topic: string; rule_text: string;
+      value_min: number | null; value_max: number | null; value_exact?: number | null;
+      unit: string | null; summary: string | null; article_number: number | null;
+      sub_theme?: string | null;
+      conditions?: string | null;
+      exceptions?: string | null;
+      cases?: Array<{ condition: string; value: number | null; unit: string | null; kind?: string }> | null;
+      relevance?: "general" | "applicable" | "conditional" | "excluded";
+    }>;
     buildability: { maxFootprintM2: number; remainingFootprintM2: number; maxHeightM: number | null; minSetbackFromRoadM: number | null; minSetbackFromBoundariesM: number | null; estimatedFloors: number | null; greenSpaceRatio: number | null; greenSpaceRequiredM2: number | null; confidence: number; resultSummary: string } | null;
     data_sources: string[];
     warnings: string[];
@@ -6697,16 +6706,101 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   {/* Synthèse PLU */}
                   <div style={CARD}>
                     <SecTitle>Synthèse PLU applicable</SecTitle>
-                    {pa?.rules && pa.rules.length > 0 ? (
-                      pa.rules.map(rule => (
-                        <div key={rule.id} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", fontSize: 12.5, paddingBottom: 8, marginBottom: 8, borderBottom: "1px solid #F8FAFC" }}>
-                          <span style={{ color: "#64748b" }}>{TOPIC_LABEL[rule.topic] ?? rule.topic}</span>
-                          <span style={{ color: "#0F172A", fontWeight: 600, textAlign: "right" as const, maxWidth: "55%" }}>
-                            {rule.summary ?? (rule.value_max != null ? `${rule.value_max}${rule.unit ?? ""}` : rule.rule_text.slice(0, 40))}
+                    {pa?.rules && pa.rules.length > 0 ? (() => {
+                      // Mêmes rubriques thématiques que la vue citoyen, mais on garde
+                      // ici la prose RÉELLE du règlement (rule_text), pas la
+                      // reformulation courte (citizen_summary).
+                      const RUBRIQUES: Array<{ key: string; icon: string; label: string; topics: string[] }> = [
+                        { key: "construire",   icon: "🏗️", label: "Constructibilité",       topics: ["emprise_sol", "hauteur", "cos", "terrain_min"] },
+                        { key: "implanter",    icon: "📐", label: "Implantation",            topics: ["recul_voie", "recul_limite", "recul_batiments"] },
+                        { key: "aspect",       icon: "🎨", label: "Aspect & matériaux",      topics: ["aspect"] },
+                        { key: "stationnement",icon: "🅿️", label: "Stationnement",           topics: ["stationnement"] },
+                        { key: "verts",        icon: "🌳", label: "Espaces verts",           topics: ["espaces_verts"] },
+                        { key: "acces",        icon: "🚗", label: "Accès & réseaux",         topics: ["desserte_voies", "desserte_reseaux"] },
+                        { key: "usages",       icon: "🚦", label: "Usages — interdits / conditionnels", topics: ["interdictions", "conditions", "destinations"] },
+                        { key: "autres",       icon: "📋", label: "Autres dispositions",     topics: ["general"] },
+                      ];
+                      const topicRub = (t: string) => RUBRIQUES.find(r => r.topics.includes(t))?.key ?? "autres";
+                      // On retire les règles marquées "excluded" (contexte parcelle qui ne
+                      // colle pas — ex. cloture_sur_rue sur une parcelle enclavée).
+                      const visible = pa.rules.filter(r => r.relevance !== "excluded");
+                      const rubs = RUBRIQUES
+                        .map(rub => ({ ...rub, rules: visible.filter(r => topicRub(r.topic) === rub.key) }))
+                        .filter(rub => rub.rules.length > 0);
+
+                      const valueChip = (rule: typeof pa.rules[number]) => {
+                        const v = rule.value_exact != null ? `${rule.value_exact}`
+                          : rule.value_max != null ? `≤ ${rule.value_max}`
+                          : rule.value_min != null ? `≥ ${rule.value_min}` : null;
+                        if (!v) return null;
+                        return (
+                          <span style={{ display: "inline-block", padding: "2px 8px", fontSize: 11.5, fontWeight: 700, color: "#4F46E5", background: "#EEF2FF", borderRadius: 6, border: "1px solid #C7D2FE" }}>
+                            {v} {rule.unit ?? ""}
                           </span>
+                        );
+                      };
+
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
+                          {rubs.map((rub, idx) => (
+                            <details key={rub.key} open={idx === 0} style={{ borderTop: idx > 0 ? "1px solid #F1F5F9" : "none" }}>
+                              <summary style={{ padding: "10px 4px", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, listStyle: "none" }}>
+                                <span style={{ fontSize: 18 }}>{rub.icon}</span>
+                                <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: "#0F172A" }}>{rub.label}</span>
+                                <span style={{ fontSize: 11, color: "#94a3b8", background: "#F1F5F9", borderRadius: 999, padding: "1px 8px", fontWeight: 600 }}>{rub.rules.length}</span>
+                              </summary>
+                              <div style={{ padding: "4px 4px 8px 28px", display: "flex", flexDirection: "column" as const, gap: 10 }}>
+                                {rub.rules.map(rule => {
+                                  const header = [
+                                    rule.article_number != null ? `Art. ${rule.article_number}` : null,
+                                    rule.sub_theme ?? null,
+                                  ].filter(Boolean).join(" · ");
+                                  const chip = valueChip(rule);
+                                  return (
+                                    <div key={rule.id} style={{ paddingTop: 6, borderTop: "1px dashed #E2E8F0" }}>
+                                      {(header || chip) && (
+                                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" as const }}>
+                                          {header && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#475569" }}>{header}</span>}
+                                          {chip}
+                                          {rule.relevance === "conditional" && (
+                                            <span style={{ fontSize: 10.5, fontWeight: 700, color: "#92400E", background: "#FEF3C7", borderRadius: 6, padding: "1px 7px", border: "1px solid #FDE68A" }}>Selon projet</span>
+                                          )}
+                                        </div>
+                                      )}
+                                      <div style={{ fontSize: 12.5, color: "#0F172A", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>
+                                        {rule.rule_text}
+                                      </div>
+                                      {rule.cases && rule.cases.length > 0 && (
+                                        <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 11.5, color: "#374151", lineHeight: 1.5 }}>
+                                          {rule.cases.map((c, i) => (
+                                            <li key={i}>
+                                              {c.condition}
+                                              {c.value != null && (
+                                                <span style={{ fontWeight: 700, color: "#4F46E5" }}> — {c.value}{c.unit ?? ""}</span>
+                                              )}
+                                            </li>
+                                          ))}
+                                        </ul>
+                                      )}
+                                      {rule.conditions && (
+                                        <div style={{ marginTop: 4, fontSize: 11.5, color: "#475569", fontStyle: "italic", lineHeight: 1.5 }}>
+                                          Conditions : {rule.conditions}
+                                        </div>
+                                      )}
+                                      {rule.exceptions && (
+                                        <div style={{ marginTop: 4, fontSize: 11.5, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6, padding: "6px 8px", lineHeight: 1.5 }}>
+                                          <span style={{ fontWeight: 700 }}>Exceptions :</span> {rule.exceptions}
+                                        </div>
+                                      )}
+                                    </div>
+                                  );
+                                })}
+                              </div>
+                            </details>
+                          ))}
                         </div>
-                      ))
-                    ) : pa ? (() => {
+                      );
+                    })() : pa ? (() => {
                       const zc = pa.plu_zone?.zone_code ?? pa.db_zone?.code;
                       return (
                         <div style={{ fontSize: 12.5, color: "#64748b", padding: "8px 0", lineHeight: 1.55 }}>
