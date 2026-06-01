@@ -1,4 +1,4 @@
-import { and, eq, ilike, inArray } from "drizzle-orm";
+import { and, eq, ilike, inArray, or } from "drizzle-orm";
 import { db } from "../db.js";
 import { zones, zone_regulatory_rules, communes } from "@heureka-v1/db";
 
@@ -303,24 +303,50 @@ export async function loadZoneRulesWithInheritance(
     communeId = row?.id ?? null;
   }
 
-  // 2. Look up every ancestor zone in one query
+  // 2. Look up every ancestor zone AND every sibling sub-zone under the same
+  //    parent. Sibling zones often host rules that apply to multiple secteurs
+  //    (a rule « Hauteur UBa/UBb/UBc 8 m » may be stored under UBa alone).
+  //    isRuleSiblingOnly filters them downstream so only the ones mentioning
+  //    our ancestry survive — but they MUST be loaded for that filter to see
+  //    them in the first place.
   const ancestry = walkZoneAncestry(zoneCode);
+  const parent = ancestry[ancestry.length - 1] ?? zoneCode;
+  // Prefix LIKE works because sub-sector codes are formed as Parent + lowercase
+  // suffix (UB → UBa, UBai, UBb, …). For very short parents (« A », « N »)
+  // skipping the prefix scan avoids over-fetching unrelated zones.
+  const useSiblingScan = parent.length >= 2;
   const where = communeId
-    ? and(inArray(zones.zone_code, ancestry), eq(zones.commune_id, communeId))
-    : inArray(zones.zone_code, ancestry);
+    ? and(
+        useSiblingScan
+          ? or(inArray(zones.zone_code, ancestry), ilike(zones.zone_code, `${parent}%`))
+          : inArray(zones.zone_code, ancestry),
+        eq(zones.commune_id, communeId),
+      )
+    : useSiblingScan
+      ? or(inArray(zones.zone_code, ancestry), ilike(zones.zone_code, `${parent}%`))
+      : inArray(zones.zone_code, ancestry);
   const foundZones = await db.select().from(zones).where(where);
 
   if (foundZones.length === 0) {
     return { zone: null, matchedChain: [], rules: [] };
   }
 
-  // 3. Re-order found zones by ancestry depth (deepest first)
+  // 3. Re-order found zones : ancestry first (deepest first), then siblings
+  //    alphabetically. The ordering matters for mergeRulesDeepestWins, which
+  //    keeps the first occurrence per (article, topic, sub_theme) — ancestry
+  //    rules thus win on collision, sibling-only rules are added only when
+  //    they bring new keys.
   const byCode = new Map(foundZones.map((z) => [z.zone_code, z]));
   const ordered: ZoneRow[] = [];
+  const seen = new Set<string>();
   for (const code of ancestry) {
     const z = byCode.get(code);
-    if (z) ordered.push(z);
+    if (z) { ordered.push(z); seen.add(code); }
   }
+  const siblings = foundZones
+    .filter((z) => !seen.has(z.zone_code))
+    .sort((a, b) => a.zone_code.localeCompare(b.zone_code));
+  ordered.push(...siblings);
 
   // 4. Load rules of every matched zone in one query, then group by zone
   const allRules = await db
@@ -342,18 +368,21 @@ export async function loadZoneRulesWithInheritance(
   const merged = mergeRulesDeepestWins(rulesByDepth)
     .sort((a, b) => (a.article_number ?? 0) - (b.article_number ?? 0));
 
-  // 6. Drop rules whose labels apply only to sibling sectors. These typically
-  //    come from the parent zone where every sector's variant is ingested as a
-  //    separate sub-rule ; keeping them would pollute both the popup and the
-  //    buildability calculation (each variant overwriting the previous one).
-  const ancestryCodes = ordered.map((z) => z.zone_code);
+  // 6. Drop rules whose labels apply only to sibling sectors. The ancestry
+  //    (NOT the sibling-extended list) is what defines what's « in scope »
+  //    for the parcel : a rule mentioning only UBd is dropped for a UBb
+  //    parcel, even if it was loaded from the UBd zone.
+  const ancestryCodes = ancestry.filter((c) => byCode.has(c));
   const relevant = merged.filter((r) => !isRuleSiblingOnly(r, ancestryCodes));
 
   // 7. Scrub sibling-sector mentions from the surviving rules so the citizen
   //    popup only sees content relevant to the parcel's own sector ancestry.
   const scrubbed = relevant.map((r) => applyParcelSecteurContext(r, ancestryCodes));
 
-  const deepest = ordered[0]!;
+  // Prefer the deepest matched ancestry zone as the returned `zone` ; fall
+  // back to the first available (which may be a sibling) so the response
+  // remains non-empty for the rare case where only sibling zones host rules.
+  const deepest = ordered.find((z) => ancestryCodes.includes(z.zone_code)) ?? ordered[0]!;
   return {
     zone: { id: deepest.id, code: deepest.zone_code, label: deepest.zone_label, type: deepest.zone_type },
     matchedChain: ancestryCodes,
