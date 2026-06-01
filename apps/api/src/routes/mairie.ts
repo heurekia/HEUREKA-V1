@@ -1663,10 +1663,14 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
     const prefix = `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}`;
     userContent.push({ type: "text", text: `${prefix}\n\n${text ?? "(Voir le tableau / croquis fourni en image.)"}` });
 
-    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 60_000 });
+    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 90_000 });
     const msg = await client.messages.create({
-      model: hasImage ? "claude-sonnet-4-6" : "claude-haiku-4-5-20251001",
-      max_tokens: 8000,
+      // Sonnet sur les deux flux : un article PLU qui se découpe en 5–7 sous-règles
+      // produit un JSON volumineux que Haiku tronque ou met trop longtemps à
+      // générer (au point de faire couper la connexion par la passerelle, d'où
+      // les « Load failed » côté Safari).
+      model: "claude-sonnet-4-6",
+      max_tokens: 6000,
       system: `Tu es un expert en droit de l'urbanisme français. On te donne le TEXTE d'UN article de règlement PLU (souvent long, avec sous-sections) ET/OU une IMAGE (tableau ou croquis).
 
 Si une IMAGE est fournie : lis-la attentivement. Pour un TABLEAU (ex: stationnement art. 12 — colonne « Type »/« Destination » → colonne « Normes »), CHAQUE LIGNE devient une SOUS-RÈGLE (sub_theme = le type, ex: « Habitation », « Bureaux », « Commerce »). Les tranches/seuils d'une même ligne (ex: « 1 place/40 m² entre 300 et 1000 m² », « 1 place/30 m² au-delà de 1000 m² ») deviennent des "cases" (kind "parametre"). Pour un CROQUIS, décris la règle dans rule_text.
