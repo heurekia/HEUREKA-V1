@@ -512,7 +512,6 @@ export function AnalyseParcellaire() {
                           ? [["Emprise restante", `${Math.round(analysis.buildability.remainingFootprintM2)} m²`]]
                           : []),
                         ["Hauteur maximale", analysis.buildability.maxHeightM ? `${analysis.buildability.maxHeightM} m` : "—"],
-                        ["Étages estimés", analysis.buildability.estimatedFloors ? `~${analysis.buildability.estimatedFloors}` : "—"],
                         ["Espaces verts à préserver", analysis.buildability.greenSpaceRequiredM2 ? `${Math.round(analysis.buildability.greenSpaceRequiredM2)} m²` : "—"],
                       ].map(([l, v]) => (
                         <div key={l} style={{ display: "flex", justifyContent: "space-between", fontSize: 12 }}>

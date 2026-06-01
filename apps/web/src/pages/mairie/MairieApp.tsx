@@ -6668,7 +6668,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         {[
                           ["Emprise restante", pa.buildability.remainingFootprintM2 > 0 ? `${Math.round(pa.buildability.remainingFootprintM2)} m²` : "0 m²"],
                           ["Hauteur max.", pa.buildability.maxHeightM ? `${pa.buildability.maxHeightM} m` : "—"],
-                          ["Étages estimés", pa.buildability.estimatedFloors ? `${pa.buildability.estimatedFloors} niveaux` : "—"],
                           ["Espaces verts requis", pa.buildability.greenSpaceRequiredM2 ? `${Math.round(pa.buildability.greenSpaceRequiredM2)} m²` : "—"],
                           ["Recul voirie min.", pa.buildability.minSetbackFromRoadM ? `${pa.buildability.minSetbackFromRoadM} m` : "—"],
                           ["Recul limites min.", pa.buildability.minSetbackFromBoundariesM ? `${pa.buildability.minSetbackFromBoundariesM} m` : "—"],
