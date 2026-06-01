@@ -208,7 +208,15 @@ export function CitoyenDashboard() {
                       </div>
                       <div style={{ fontSize: 12, color: "#94a3b8" }}>
                         {d.numero}
-                        {(d.commune ?? d.adresse) && ` · ${d.commune ?? d.adresse}`}
+                        {(() => {
+                          const adr = d.adresse?.trim();
+                          const com = d.commune?.trim();
+                          // Évite "11 rue X, Tours · Tours" si la commune est déjà dans l'adresse
+                          const full = adr && com && !adr.toLowerCase().includes(com.toLowerCase())
+                            ? `${adr}, ${com}`
+                            : (adr ?? com);
+                          return full ? ` · ${full}` : "";
+                        })()}
                         {d.date_depot
                           ? ` · Déposé le ${fmtDate(d.date_depot)}`
                           : ` · Créé le ${fmtDate(d.created_at)}`}

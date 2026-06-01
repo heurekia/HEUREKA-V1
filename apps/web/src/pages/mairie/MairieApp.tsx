@@ -5908,7 +5908,30 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [consultationsLoading, setConsultationsLoading] = useState(false);
   const [consultationsMissioning, setConsultationsMissioning] = useState(false);
   const [selectedConsultation, setSelectedConsultation] = useState<string | null>(null);
+
+  type PieceAnalyse = { score?: string; commentaire?: string; suggestions?: string[] };
+  type DossierPiece = {
+    id: string;
+    nom: string;
+    url: string;
+    type: string;
+    taille: number;
+    code_piece: string | null;
+    analyse_ia: PieceAnalyse | null;
+    uploaded_at: string;
+  };
+  const [documents, setDocuments] = useState<DossierPiece[] | null>(null);
+  const [documentsLoading, setDocumentsLoading] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<number>(0);
+
+  useEffect(() => {
+    if (activeTab !== "Documents" || documents !== null) return;
+    setDocumentsLoading(true);
+    api.get<DossierPiece[]>(`/mairie/dossiers/${dossier.id}/pieces`)
+      .then((data) => { setDocuments(data); setSelectedDoc(0); })
+      .catch(() => setDocuments([]))
+      .finally(() => setDocumentsLoading(false));
+  }, [activeTab, documents, dossier.id]);
 
   const fetchConsultations = useCallback(() => {
     setConsultationsLoading(true);
@@ -5951,38 +5974,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
   const typeLabel = TYPE_LABEL[dossier.type] ?? dossier.type;
   const instructeurName = dossier.instructeur ?? "Non assigné";
-
-  const DOCUMENTS_DATA = [
-    { name: "Formulaire CERFA 13406*08", ext: "PDF", size: "1.2 Mo", date: "12/05/2024", status: "Validé", ia: "Formulaire complet. Toutes les rubriques obligatoires sont renseignées." },
-    { name: "Plan de situation", ext: "PDF", size: "3.4 Mo", date: "12/05/2024", status: "Validé", ia: "Plan conforme. Echelle 1/25000 visible. Localisation précise du terrain identifiée." },
-    { name: "Plan de masse", ext: "PDF", size: "2.1 Mo", date: "12/05/2024", status: "Validé", ia: "Cote NGF présente. Emprise au sol calculable. Distances aux limites séparatives indiquées." },
-    { name: "Notice descriptive", ext: "PDF", size: "0.8 Mo", date: "12/05/2024", status: "Validé", ia: "Description des matériaux conforme aux prescriptions ABF. Surface plancher cohérente avec le CERFA." },
-    { name: "Photos du terrain", ext: "ZIP", size: "12.3 Mo", date: "12/05/2024", status: "Validé", ia: "8 photos identifiées. Vues panoramiques et détails du terrain présents." },
-    { name: "Pièce complémentaire 1", ext: "PDF", size: "0.5 Mo", date: "18/05/2024", status: "En attente", ia: "Analyse en attente de validation." },
-  ];
-
-  const TIMELINE_DATA = [
-    { date: "12/05/2024", event: "Dépôt du dossier", actor: dossier.petitionnaire + " (pétitionnaire)", icon: "📥", color: "#4F46E5" },
-    { date: "13/05/2024", event: "Accusé de réception envoyé", actor: "Système automatique", icon: "✉️", color: "#22C55E" },
-    { date: "15/05/2024", event: "Vérification de complétude", actor: instructeurName + " (instructeur)", icon: "🔍", color: "#22C55E" },
-    { date: "18/05/2024", event: "Demande de pièce complémentaire", actor: instructeurName + " (instructeur)", icon: "📎", color: "#F97316" },
-    { date: "20/05/2024", event: "Réception pièce complémentaire", actor: dossier.petitionnaire + " (pétitionnaire)", icon: "📄", color: "#22C55E" },
-    { date: "22/05/2024", event: "Dossier déclaré complet", actor: instructeurName + " (instructeur)", icon: "✅", color: "#22C55E" },
-    { date: "22/05/2024", event: "Envoi en consultation ABF", actor: instructeurName + " (instructeur)", icon: "👥", color: "#8B5CF6" },
-    { date: "30/05/2024", event: "Réception avis ABF – Favorable avec réserves", actor: "ABF – Direction Régionale", icon: "📋", color: "#F97316" },
-    { date: "02/06/2024", event: "Mise en instruction", actor: instructeurName + " (instructeur)", icon: "⚙️", color: "#3B82F6" },
-  ];
-
-  const IA_RULES = [
-    { rule: "Emprise au sol ≤ 40%", result: "Conforme", value: "32%", ok: true },
-    { rule: "Hauteur maximale ≤ 9m", result: "Conforme", value: "7,2m", ok: true },
-    { rule: "Recul par rapport à la voirie", result: "Point de vigilance", value: "3m (min. 4m requis)", ok: false },
-    { rule: "Espaces verts ≥ 30%", result: "Non vérifiable", value: "Données insuffisantes", ok: null },
-    { rule: "Stationnement (2 places min.)", result: "Conforme", value: "2 places indiquées", ok: true },
-    { rule: "Matériaux conformes PLU", result: "Conforme (ABF)", value: "Avis ABF favorable", ok: true },
-    { rule: "Zone constructible (UC)", result: "Conforme", value: "Zone UC confirmée", ok: true },
-    { rule: "Périmètre ABF (500m)", result: "Applicable", value: "Dans le périmètre", ok: null },
-  ];
 
   const CARD: React.CSSProperties = { background: "white", borderRadius: 14, border: "1px solid #E8EEF4", padding: 22, boxShadow: "0 1px 4px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)" };
   const SH: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 18 };
@@ -6250,38 +6241,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               </div>
             ) : null; })()}
-            {/* Alert banners */}
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-              <div style={{ background: "#FFF8F0", border: "1px solid #FDDCB5", borderRadius: 12, padding: "14px 18px", display: "flex", gap: 12, alignItems: "flex-start" }}>
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: "#FEF3C7", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
-                </div>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#B45309", marginBottom: 3 }}>Recul voirie insuffisant</div>
-                  <div style={{ fontSize: 12, color: "#92400E", lineHeight: 1.55 }}>Le projet présente un recul de 3m par rapport à la voirie (minimum requis : 4m selon art. UC 6 du PLU).</div>
-                </div>
-              </div>
-              <div style={{ background: "#EFF6FF", border: "1px solid #BFDBFE", borderRadius: 12, padding: "14px 18px", display: "flex", gap: 12, alignItems: "flex-start" }}>
-                <div style={{ width: 32, height: 32, borderRadius: 8, background: "#DBEAFE", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                  <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#2563EB" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
-                </div>
-                <div>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#1D4ED8", marginBottom: 3 }}>Périmètre ABF</div>
-                  <div style={{ fontSize: 12, color: "#1E40AF", lineHeight: 1.55 }}>Le terrain est situé dans le périmètre de protection des Monuments Historiques (500m). L'avis ABF est obligatoire.</div>
-                </div>
-              </div>
-            </div>
-            {/* IA banner */}
-            <div style={{ background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", border: "1px solid #C7D2FE", borderRadius: 14, padding: "16px 22px", display: "flex", alignItems: "center", gap: 18, boxShadow: "0 1px 4px rgba(79,70,229,0.08)" }}>
-              <div style={{ width: 44, height: 44, background: "linear-gradient(135deg,#4F46E5,#7C3AED)", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: "0 4px 10px rgba(79,70,229,0.3)" }}>
-                <svg width={22} height={22} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>
-              </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#3730A3" }}>Analyse IA disponible</div>
-                <div style={{ fontSize: 12, color: "#4338CA", marginTop: 3, lineHeight: 1.55 }}>L'IA a analysé 8 règles du PLU applicables à ce dossier. 1 point de vigilance identifié sur le recul voirie.</div>
-              </div>
-              <button onClick={() => setActiveTab("Conformité IA")} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 9, padding: "9px 16px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const, boxShadow: "0 2px 6px rgba(79,70,229,0.35)" }}>Voir l'analyse complète</button>
-            </div>
           </div>
         )}
 
@@ -6588,143 +6547,129 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
         {/* ── CONFORMITÉ IA ── */}
         {activeTab === "Conformité IA" && (
-          <div style={{ display: "grid", gridTemplateColumns: "1.3fr 1fr", gap: 16 }}>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
-              <div style={CARD}>
-                <div style={{ display: "flex", alignItems: "center", gap: 22 }}>
-                  <div style={{ position: "relative" as const, width: 110, height: 110, flexShrink: 0 }}>
-                    <svg width={110} height={110} viewBox="0 0 110 110">
-                      <circle cx="55" cy="55" r="44" fill="none" stroke="#EEF2FF" strokeWidth="13" />
-                      <circle cx="55" cy="55" r="44" fill="none" stroke="url(#iagrad)" strokeWidth="13" strokeDasharray="276.5" strokeDashoffset={276.5 * (1 - 0.78)} strokeLinecap="round" style={{ transform: "rotate(-90deg)", transformOrigin: "50% 50%" }} />
-                      <defs><linearGradient id="iagrad" x1="0%" y1="0%" x2="100%" y2="0%"><stop offset="0%" stopColor="#4F46E5" /><stop offset="100%" stopColor="#818CF8" /></linearGradient></defs>
-                    </svg>
-                    <div style={{ position: "absolute" as const, inset: 0, display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center" }}>
-                      <span style={{ fontSize: 22, fontWeight: 900, color: "#4F46E5", letterSpacing: "-1px" }}>78%</span>
-                      <span style={{ fontSize: 9, color: "#64748b", fontWeight: 700, letterSpacing: "0.06em" }}>CONFORME</span>
-                    </div>
-                  </div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 10 }}>Score de conformité PLU</div>
-                    <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const, marginBottom: 10 }}>
-                      <span style={{ background: "#F0FDF4", color: "#15803D", borderRadius: 8, padding: "4px 11px", fontSize: 12, fontWeight: 600, border: "1px solid #BBF7D0" }}>6 conformes</span>
-                      <span style={{ background: "#FFF7ED", color: "#C2410C", borderRadius: 8, padding: "4px 11px", fontSize: 12, fontWeight: 600, border: "1px solid #FED7AA" }}>1 vigilance</span>
-                      <span style={{ background: "#F8FAFC", color: "#475569", borderRadius: 8, padding: "4px 11px", fontSize: 12, fontWeight: 600, border: "1px solid #E2E8F0" }}>1 non vérifiable</span>
-                    </div>
-                    <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Analyse basée sur le PLU de {liveCommune ?? "la commune"} (version 2023) et les documents déposés.</div>
-                  </div>
-                </div>
+          <div style={CARD}>
+            <div style={{ textAlign: "center" as const, padding: "40px 20px", color: "#64748b" }}>
+              <div style={{ fontSize: 44, marginBottom: 12 }}>🔍</div>
+              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>
+                Analyse de conformité PLU à venir
               </div>
-              <div style={CARD}>
-                <SecTitle>Règles vérifiées</SecTitle>
-                <div style={{ display: "flex", flexDirection: "column" as const, gap: 2 }}>
-                  {IA_RULES.map((r, i) => (
-                    <div key={i} style={{ display: "grid", gridTemplateColumns: "1fr auto auto", gap: 12, alignItems: "center", padding: "9px 12px", background: i % 2 === 0 ? "#F8FAFC" : "white", borderRadius: 8 }}>
-                      <span style={{ fontSize: 13, color: "#374151" }}>{r.rule}</span>
-                      <span style={{ fontSize: 11, color: r.ok === true ? "#15803D" : r.ok === false ? "#C2410C" : "#475569", background: r.ok === true ? "#F0FDF4" : r.ok === false ? "#FFF7ED" : "#F8FAFC", borderRadius: 20, padding: "3px 9px", fontWeight: 700, whiteSpace: "nowrap" as const, border: `1px solid ${r.ok === true ? "#BBF7D0" : r.ok === false ? "#FED7AA" : "#E2E8F0"}` }}>{r.result}</span>
-                      <span style={{ fontSize: 12, color: "#64748b", textAlign: "right" as const, whiteSpace: "nowrap" as const }}>{r.value}</span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            </div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
-              <div style={{ ...CARD, background: "linear-gradient(135deg,#FFFBEB,#FFF7ED)", border: "1px solid #FDE68A" }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#B45309", marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ width: 24, height: 24, borderRadius: 6, background: "#FEF3C7", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#D97706" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><path d="M10.29 3.86L1.82 18a2 2 0 001.71 3h16.94a2 2 0 001.71-3L13.71 3.86a2 2 0 00-3.42 0z" /><line x1="12" y1="9" x2="12" y2="13" /><line x1="12" y1="17" x2="12.01" y2="17" /></svg>
-                  </div>
-                  Points de vigilance
-                </div>
-                <div style={{ padding: "14px", background: "white", borderRadius: 10, border: "1px solid #FDE68A", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 6 }}>Recul voirie insuffisant</div>
-                  <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Le projet présente un recul de 3m alors que l'article UC 6 du PLU impose un minimum de 4m. Une modification du projet ou une dérogation motivée est nécessaire.</div>
-                  <div style={{ marginTop: 10, display: "flex", gap: 8 }}>
-                    <button style={{ border: "1px solid #FED7AA", background: "#FFF7ED", borderRadius: 7, padding: "5px 11px", fontSize: 11.5, color: "#C2410C", cursor: "pointer", fontWeight: 600 }}>Demander modification</button>
-                    <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "5px 11px", fontSize: 11.5, color: "#374151", cursor: "pointer" }}>Voir article PLU</button>
-                  </div>
-                </div>
-              </div>
-              <div style={{ ...CARD, background: "#F8FAFC" }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#475569", marginBottom: 14, display: "flex", alignItems: "center", gap: 8 }}>
-                  <div style={{ width: 24, height: 24, borderRadius: 6, background: "#E2E8F0", display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="#475569" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><line x1="12" y1="8" x2="12" y2="12" /><line x1="12" y1="16" x2="12.01" y2="16" /></svg>
-                  </div>
-                  Non vérifiables
-                </div>
-                <div style={{ padding: "14px", background: "white", borderRadius: 10, border: "1px solid #E2E8F0" }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: "#374151", marginBottom: 6 }}>Espaces verts ≥ 30%</div>
-                  <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Les données disponibles ne permettent pas de calculer le ratio d'espaces verts. Une pièce complémentaire peut être demandée.</div>
-                </div>
-              </div>
-              <div style={CARD}>
-                <SecTitle>Recommandations IA</SecTitle>
-                {[
-                  "Demander la modification du plan de masse pour corriger le recul voirie avant instruction définitive.",
-                  "Vérifier l'avis ABF reçu : les prescriptions sur les matériaux doivent être intégrées dans l'arrêté.",
-                  "Confirmer le ratio d'espaces verts sur le plan de masse révisé.",
-                ].map((r, i) => (
-                  <div key={i} style={{ display: "flex", gap: 10, padding: "10px 12px", background: "#EEF2FF", borderRadius: 9, border: "1px solid #C7D2FE", marginBottom: i < 2 ? 8 : 0 }}>
-                    <span style={{ fontSize: 12, fontWeight: 800, color: "#4F46E5", flexShrink: 0, marginTop: 1, width: 16, textAlign: "center" as const }}>{i + 1}</span>
-                    <span style={{ fontSize: 12, color: "#3730A3", lineHeight: 1.55 }}>{r}</span>
-                  </div>
-                ))}
-              </div>
+              <p style={{ fontSize: 13, maxWidth: 520, margin: "0 auto", lineHeight: 1.55 }}>
+                Le moteur de vérification automatique des règles du PLU n'est pas encore branché sur ce dossier.
+                Une fois activée, l'analyse croisera les pièces déposées avec le règlement de la zone {liveCommune ? `de ${liveCommune}` : ""}.
+              </p>
             </div>
           </div>
         )}
 
         {/* ── DOCUMENTS ── */}
-        {activeTab === "Documents" && (
-          <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 260px", gap: 16 }}>
-            <div style={CARD}>
-              <SecTitle>Pièces du dossier</SecTitle>
-              <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
-                {DOCUMENTS_DATA.map((doc, i) => (
-                  <button key={i} onClick={() => setSelectedDoc(i)} style={{
-                    display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 11px", borderRadius: 9, border: selectedDoc === i ? "1.5px solid #C7D2FE" : "1.5px solid transparent", cursor: "pointer", textAlign: "left" as const,
-                    background: selectedDoc === i ? "#EEF2FF" : "transparent",
-                    transition: "background 0.1s",
-                  }}>
-                    <div style={{ width: 32, height: 32, borderRadius: 7, background: doc.ext === "ZIP" ? "#FFF7ED" : "#EEF2FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
-                      <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={doc.ext === "ZIP" ? "#F97316" : "#4F46E5"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+        {activeTab === "Documents" && (() => {
+          const docs = documents ?? [];
+          const sel = docs[selectedDoc] ?? null;
+          const fmtSize = (n: number) => n < 1024 ? `${n} o` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} Ko` : `${(n / (1024 * 1024)).toFixed(1)} Mo`;
+          const fmtUploaded = (iso: string) => {
+            const d = new Date(iso);
+            return isNaN(d.getTime()) ? "—" : d.toLocaleDateString("fr-FR");
+          };
+          const extOf = (type: string, nom: string) => {
+            const fromName = nom.split(".").pop();
+            if (fromName && fromName.length <= 5 && fromName !== nom) return fromName.toUpperCase();
+            if (type.includes("pdf")) return "PDF";
+            if (type.includes("zip")) return "ZIP";
+            if (type.includes("image")) return type.split("/")[1]?.toUpperCase() ?? "IMG";
+            return "FICHIER";
+          };
+          const scoreToStatus = (s?: string) => {
+            if (s === "conforme") return { label: "Conforme", bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0" };
+            if (s === "acceptable") return { label: "Acceptable", bg: "#FEF9C3", color: "#854D0E", border: "#FDE68A" };
+            if (s === "incomplet") return { label: "Incomplet", bg: "#FEF3C7", color: "#92400E", border: "#FDE68A" };
+            if (s === "non_conforme") return { label: "Non conforme", bg: "#FEE2E2", color: "#DC2626", border: "#FECACA" };
+            return { label: "Déposé", bg: "#EFF6FF", color: "#1D4ED8", border: "#BFDBFE" };
+          };
+
+          return (
+            <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 260px", gap: 16 }}>
+              <div style={CARD}>
+                <SecTitle>Pièces du dossier</SecTitle>
+                {documentsLoading ? (
+                  <div style={{ textAlign: "center" as const, padding: "20px 0", fontSize: 12, color: "#64748b" }}>Chargement…</div>
+                ) : docs.length === 0 ? (
+                  <div style={{ textAlign: "center" as const, padding: "24px 8px", fontSize: 12.5, color: "#64748b" }}>
+                    <div style={{ fontSize: 28, marginBottom: 8 }}>📁</div>
+                    Aucune pièce déposée.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
+                    {docs.map((doc, i) => {
+                      const ext = extOf(doc.type, doc.nom);
+                      const status = scoreToStatus(doc.analyse_ia?.score);
+                      return (
+                        <button key={doc.id} onClick={() => setSelectedDoc(i)} style={{
+                          display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 11px", borderRadius: 9, border: selectedDoc === i ? "1.5px solid #C7D2FE" : "1.5px solid transparent", cursor: "pointer", textAlign: "left" as const,
+                          background: selectedDoc === i ? "#EEF2FF" : "transparent",
+                          transition: "background 0.1s",
+                        }}>
+                          <div style={{ width: 32, height: 32, borderRadius: 7, background: ext === "ZIP" ? "#FFF7ED" : "#EEF2FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                            <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={ext === "ZIP" ? "#F97316" : "#4F46E5"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
+                          </div>
+                          <div style={{ flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 12.5, fontWeight: 600, color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{doc.nom}</div>
+                            <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{ext} · {fmtSize(doc.taille)} · {fmtUploaded(doc.uploaded_at)}</div>
+                            <span style={{ fontSize: 10.5, fontWeight: 700, color: status.color, background: status.bg, borderRadius: 5, padding: "1px 6px", display: "inline-block", marginTop: 4, border: `1px solid ${status.border}` }}>{status.label}</span>
+                          </div>
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+              <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
+                <SecTitle>{`Aperçu : ${sel?.nom ?? "—"}`}</SecTitle>
+                <div style={{ flex: 1, background: "#F8FAFC", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 14, minHeight: 340, border: "1px solid #EAECF0" }}>
+                  {sel ? (
+                    <>
+                      <div style={{ width: 64, height: 80, background: "white", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", border: "1px solid #E2E8F0" }}>
+                        <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+                      </div>
+                      <div style={{ textAlign: "center" as const }}>
+                        <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>{sel.nom}</div>
+                        <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>{extOf(sel.type, sel.nom)} · {fmtSize(sel.taille)}</div>
+                      </div>
+                      <div style={{ display: "flex", gap: 8 }}>
+                        <a href={sel.url} target="_blank" rel="noopener noreferrer" style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 9, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.3)", textDecoration: "none" }}>Ouvrir</a>
+                        <a href={sel.url} download style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "9px 18px", fontSize: 13, cursor: "pointer", color: "#374151", fontWeight: 500, textDecoration: "none" }}>Télécharger</a>
+                      </div>
+                    </>
+                  ) : (
+                    <div style={{ fontSize: 13, color: "#94a3b8" }}>Sélectionnez une pièce à gauche</div>
+                  )}
+                </div>
+              </div>
+              <div style={CARD}>
+                <SecTitle>Analyse IA</SecTitle>
+                {sel?.analyse_ia?.commentaire ? (
+                  <>
+                    <div style={{ padding: "14px", background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", borderRadius: 11, border: "1px solid #C7D2FE", marginBottom: 14 }}>
+                      <div style={{ fontSize: 10, fontWeight: 800, color: "#4F46E5", marginBottom: 7, letterSpacing: "0.07em" }}>RÉSULTAT</div>
+                      <div style={{ fontSize: 12, color: "#3730A3", lineHeight: 1.6 }}>{sel.analyse_ia.commentaire}</div>
                     </div>
-                    <div style={{ flex: 1, minWidth: 0 }}>
-                      <div style={{ fontSize: 12.5, fontWeight: 600, color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{doc.name}</div>
-                      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{doc.ext} · {doc.size} · {doc.date}</div>
-                      <span style={{ fontSize: 10.5, fontWeight: 700, color: doc.status === "Validé" ? "#15803D" : "#C2410C", background: doc.status === "Validé" ? "#F0FDF4" : "#FFF7ED", borderRadius: 5, padding: "1px 6px", display: "inline-block", marginTop: 4, border: `1px solid ${doc.status === "Validé" ? "#BBF7D0" : "#FED7AA"}` }}>{doc.status}</span>
-                    </div>
-                  </button>
-                ))}
-              </div>
-              <button style={{ marginTop: 12, width: "100%", border: "2px dashed #E2E8F0", background: "transparent", borderRadius: 9, padding: "10px 0", fontSize: 12, color: "#64748b", cursor: "pointer", fontWeight: 500 }}>+ Ajouter une pièce</button>
-            </div>
-            <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
-              <SecTitle>{`Aperçu : ${DOCUMENTS_DATA[selectedDoc]?.name ?? ""}`}</SecTitle>
-              <div style={{ flex: 1, background: "#F8FAFC", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 14, minHeight: 340, border: "1px solid #EAECF0" }}>
-                <div style={{ width: 64, height: 80, background: "white", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", border: "1px solid #E2E8F0" }}>
-                  <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-                </div>
-                <div style={{ textAlign: "center" as const }}>
-                  <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>{DOCUMENTS_DATA[selectedDoc]?.name}</div>
-                  <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>{DOCUMENTS_DATA[selectedDoc]?.ext} · {DOCUMENTS_DATA[selectedDoc]?.size}</div>
-                </div>
-                <div style={{ display: "flex", gap: 8 }}>
-                  <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 9, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.3)" }}>Ouvrir</button>
-                  <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "9px 18px", fontSize: 13, cursor: "pointer", color: "#374151", fontWeight: 500 }}>Télécharger</button>
-                </div>
+                    {sel.analyse_ia.suggestions && sel.analyse_ia.suggestions.length > 0 && (
+                      <>
+                        <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Suggestions</div>
+                        <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>
+                          {sel.analyse_ia.suggestions.map((s, i) => <li key={i}>{s}</li>)}
+                        </ul>
+                      </>
+                    )}
+                  </>
+                ) : (
+                  <div style={{ fontSize: 12, color: "#94a3b8", lineHeight: 1.6 }}>
+                    {sel ? "Pas d'analyse IA disponible pour cette pièce." : "Sélectionnez une pièce pour voir son analyse."}
+                  </div>
+                )}
               </div>
             </div>
-            <div style={CARD}>
-              <SecTitle>Analyse IA</SecTitle>
-              <div style={{ padding: "14px", background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", borderRadius: 11, border: "1px solid #C7D2FE", marginBottom: 14 }}>
-                <div style={{ fontSize: 10, fontWeight: 800, color: "#4F46E5", marginBottom: 7, letterSpacing: "0.07em" }}>RÉSULTAT</div>
-                <div style={{ fontSize: 12, color: "#3730A3", lineHeight: 1.6 }}>{DOCUMENTS_DATA[selectedDoc]?.ia}</div>
-              </div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Cohérence avec le dossier</div>
-              <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6 }}>Les informations de cette pièce sont cohérentes avec les autres documents déposés.</div>
-            </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ── CONSULTATIONS ── */}
         {activeTab === "Consultations" && (() => {
@@ -6841,29 +6786,22 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, alignItems: "flex-start" }}>
             <div style={CARD}>
               <SecTitle>Historique complet</SecTitle>
-              {TIMELINE_DATA.map((t, i) => (
-                <div key={i} style={{ display: "flex", gap: 16, paddingBottom: i < TIMELINE_DATA.length - 1 ? 22 : 0 }}>
-                  <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", width: 36 }}>
-                    <div style={{ width: 36, height: 36, borderRadius: "50%", background: t.color + "18", border: `2px solid ${t.color}55`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 15 }}>{t.icon}</div>
-                    {i < TIMELINE_DATA.length - 1 && <div style={{ width: 2, flex: 1, background: "linear-gradient(to bottom,#E2E8F0,#F8FAFC)", marginTop: 8 }} />}
-                  </div>
-                  <div style={{ paddingBottom: 4, flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{t.event}</div>
-                    <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{t.actor}</div>
-                    <div style={{ fontSize: 11, color: "#CBD5E1", marginTop: 3, fontWeight: 500 }}>{t.date}</div>
-                  </div>
-                </div>
-              ))}
+              <div style={{ textAlign: "center" as const, padding: "32px 16px", color: "#64748b" }}>
+                <div style={{ fontSize: 36, marginBottom: 10 }}>🕒</div>
+                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Aucun événement enregistré</div>
+                <p style={{ fontSize: 12.5, maxWidth: 380, margin: "0 auto", lineHeight: 1.55 }}>
+                  Les étapes clés du dossier (dépôt, complétude, consultations, décision…) apparaîtront ici au fur et à mesure de l'instruction.
+                </p>
+              </div>
             </div>
             <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
               <div style={CARD}>
                 <SecTitle>Étapes clés</SecTitle>
                 {[
-                  { label: "Dépôt", date: dossier.date_depot ? fmtDate(dossier.date_depot) : "—", done: true },
-                  { label: "Complétude", date: "22/05/2024", done: true },
+                  { label: "Dépôt", date: dossier.date_depot ? fmtDate(dossier.date_depot) : "—", done: !!dossier.date_depot },
                   { label: "Fin d'instruction", date: dossier.echeance, done: false },
-                ].map((e, i) => (
-                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: i < 2 ? "1px solid #F1F5F9" : "none" }}>
+                ].map((e, i, arr) => (
+                  <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "9px 0", borderBottom: i < arr.length - 1 ? "1px solid #F1F5F9" : "none" }}>
                     <span style={{ fontSize: 13, color: "#374151", fontWeight: 600 }}>{e.label}</span>
                     <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
                       <span style={{ fontSize: 12, color: "#64748b" }}>{e.date}</span>
@@ -6873,25 +6811,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 ))}
               </div>
               <div style={CARD}>
-                <SecTitle>Temps forts</SecTitle>
-                <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                  <div style={{ background: "#FFF8F0", borderRadius: 10, padding: "12px 14px", border: "1px solid #FDDCB5" }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700, color: "#B45309" }}>Avis ABF avec réserves</div>
-                    <div style={{ fontSize: 11.5, color: "#92400E", marginTop: 4, lineHeight: 1.5 }}>30/05/2024 – Prescriptions émises concernant les matériaux.</div>
-                  </div>
-                  <div style={{ background: "#EFF6FF", borderRadius: 10, padding: "12px 14px", border: "1px solid #BFDBFE" }}>
-                    <div style={{ fontSize: 12.5, fontWeight: 700, color: "#1D4ED8" }}>Dossier mis en instruction</div>
-                    <div style={{ fontSize: 11.5, color: "#1E40AF", marginTop: 4, lineHeight: 1.5 }}>02/06/2024 – Assigné à {instructeurName}.</div>
-                  </div>
-                </div>
-              </div>
-              <div style={CARD}>
                 <SecTitle>Délais réglementaires</SecTitle>
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                  {[["Délai légal", "2 mois (PC maison individuelle)"], ["Date limite", dossier.echeance], daysLeft !== null ? ["Temps restant", `J-${Math.max(0, daysLeft)}`] : null].filter(Boolean).map((row, i) => row && (
-                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "6px 0", borderBottom: i < 1 ? "1px solid #F1F5F9" : "none" }}>
+                  {[["Date limite", dossier.echeance], daysLeft !== null ? ["Temps restant", `J-${Math.max(0, daysLeft)}`] : null].filter(Boolean).map((row, i) => row && (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: 12.5, padding: "6px 0", borderBottom: i < 0 ? "1px solid #F1F5F9" : "none" }}>
                       <span style={{ color: "#64748b" }}>{row[0]}</span>
-                      <span style={{ fontWeight: 700, color: i === 2 ? (daysLeft !== null && daysLeft < 14 ? "#DC2626" : "#15803D") : "#0F172A" }}>{row[1]}</span>
+                      <span style={{ fontWeight: 700, color: i === 1 ? (daysLeft !== null && daysLeft < 14 ? "#DC2626" : "#15803D") : "#0F172A" }}>{row[1]}</span>
                     </div>
                   ))}
                 </div>

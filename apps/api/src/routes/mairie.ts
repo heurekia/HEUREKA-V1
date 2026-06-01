@@ -57,14 +57,60 @@ mairieRouter.use(requireRole("mairie", "instructeur", "admin"));
 
 // Délais réglementaires d'instruction (Code de l'Urbanisme)
 // Calculés à partir de la date de complétude, ou de dépôt si non renseignée.
-const DELAI_INSTRUCTION_MOIS: Record<string, number> = {
-  permis_de_construire: 2,    // R.423-23 — droit commun
-  declaration_prealable: 1,   // R.423-24
-  permis_amenager: 3,         // R.423-25
-  permis_demolir: 2,          // R.423-26
-  permis_lotir: 3,            // R.423-25 (assimilé PA)
-  certificat_urbanisme: 2,    // R.410-9 — CUb opérationnel
+//
+// Sources :
+//   R.423-23 1° — DP : 1 mois
+//   R.423-23 2° — PC maison individuelle / annexes / démolir : 2 mois
+//   R.423-23 3° — PC autre (collectif, ERP, etc.) / PA / lotissement : 3 mois
+//   R.410-9    — CUa informatif : 1 mois  /  CUb opérationnel : 2 mois
+// Extensions principales (R.423-24 et s.) :
+//   +1 mois si consultation ABF (Architecte des Bâtiments de France)
+//   +1 mois si site classé / inscrit
+//   +2 mois si commission spécifique (CDPENAF, etc.)
+const DELAI_INSTRUCTION_MOIS_DEFAUT: Record<string, number> = {
+  permis_de_construire: 3,    // R.423-23 3° par défaut, ramené à 2 pour maison individuelle
+  declaration_prealable: 1,
+  permis_amenager: 3,
+  permis_demolir: 2,
+  permis_lotir: 3,
+  certificat_urbanisme: 2,    // CUb par défaut, ramené à 1 pour CUa
 };
+
+type DeadlineMetadata = {
+  natures?: string[];
+  certificatType?: "a" | "b";
+};
+type DeadlineServitude = { categorie?: string; libelle?: string };
+
+export function computeDelaiMois(
+  type: string,
+  metadata: DeadlineMetadata | null | undefined,
+  servitudes: DeadlineServitude[] | null | undefined,
+): number {
+  let mois = DELAI_INSTRUCTION_MOIS_DEFAUT[type] ?? 2;
+  const natures = metadata?.natures ?? [];
+
+  // PC maison individuelle (R.423-23 2°) — uniquement projets résidentiels MI
+  if (type === "permis_de_construire") {
+    const isMaisonIndividuelle = natures.some((n) =>
+      ["maison_neuve", "agrandissement", "petite_construction"].includes(n),
+    ) && !natures.some((n) => ["division_terrain"].includes(n));
+    if (isMaisonIndividuelle) mois = 2;
+  }
+
+  // CU informatif (R.410-9 al.1) — 1 mois
+  if (type === "certificat_urbanisme" && metadata?.certificatType === "a") {
+    mois = 1;
+  }
+
+  // Extension +1 mois si ABF (servitudes AC1, AC2, etc.)
+  const hasABF = (servitudes ?? []).some(
+    (s) => s.categorie?.toUpperCase().startsWith("AC") || s.libelle?.toLowerCase().includes("abf"),
+  );
+  if (hasABF) mois += 1;
+
+  return mois;
+}
 
 // ── Dashboard stats ──
 mairieRouter.get("/dashboard", async (req: AuthRequest, res) => {
@@ -333,7 +379,9 @@ mairieRouter.patch("/dossiers/:id/status", async (req: AuthRequest, res) => {
     if (!before.date_limite_instruction) {
       const startDate = (before.date_completude ?? patch.date_depot ?? before.date_depot);
       if (startDate) {
-        const months = DELAI_INSTRUCTION_MOIS[before.type] ?? 2;
+        const meta = before.metadata as DeadlineMetadata | null;
+        const servitudes = (meta as { servitudes?: DeadlineServitude[] } | null)?.servitudes ?? null;
+        const months = computeDelaiMois(before.type, meta, servitudes);
         const deadline = new Date(startDate);
         deadline.setMonth(deadline.getMonth() + months);
         patch.date_limite_instruction = deadline;
@@ -959,13 +1007,15 @@ mairieRouter.patch("/dossiers/:id/adresse", requireAuth, async (req: AuthRequest
 mairieRouter.post("/admin/compute-deadlines", async (_req: AuthRequest, res) => {
   try {
     const toUpdate = await db
-      .select({ id: dossiers.id, type: dossiers.type, date_depot: dossiers.date_depot, date_completude: dossiers.date_completude })
+      .select({ id: dossiers.id, type: dossiers.type, date_depot: dossiers.date_depot, date_completude: dossiers.date_completude, metadata: dossiers.metadata })
       .from(dossiers)
       .where(sql`date_depot IS NOT NULL AND date_limite_instruction IS NULL`);
 
     let updated = 0;
     for (const d of toUpdate) {
-      const months = DELAI_INSTRUCTION_MOIS[d.type] ?? 2;
+      const meta = d.metadata as DeadlineMetadata | null;
+      const servitudes = (meta as { servitudes?: DeadlineServitude[] } | null)?.servitudes ?? null;
+      const months = computeDelaiMois(d.type, meta, servitudes);
       const startDate = new Date((d.date_completude ?? d.date_depot)!);
       const deadline = new Date(startDate);
       deadline.setMonth(deadline.getMonth() + months);
@@ -977,7 +1027,7 @@ mairieRouter.post("/admin/compute-deadlines", async (_req: AuthRequest, res) => 
 
     res.json({
       ok: true, updated,
-      rules: Object.entries(DELAI_INSTRUCTION_MOIS).map(([type, mois]) => ({ type, delai_mois: mois })),
+      rules_defaut: Object.entries(DELAI_INSTRUCTION_MOIS_DEFAUT).map(([type, mois]) => ({ type, delai_mois_defaut: mois })),
     });
   } catch (err) {
     console.error("[compute-deadlines]", err);

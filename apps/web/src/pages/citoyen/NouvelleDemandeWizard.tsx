@@ -560,14 +560,18 @@ export function NouvelleDemandeWizard() {
   }, [dossierId, classification, parcel, description, natures, surface, qualiteDemandeur, empriseSol, hauteurProjet, destinationActuelle, destinationFuture, nbLogements]);
 
   // ── Upload a piece and get AI analysis ───────────────────────────────────────
-  const uploadPiece = useCallback(async (codePiece: string, nomPiece: string, file: File) => {
+  // `rubricLabel` = libellé de la catégorie (ex. "Plan de situation" ou "Annexe")
+  // Le nom stocké en base devient "<catégorie> - <nom du fichier>" pour que la mairie
+  // voit à la fois la rubrique et le fichier d'origine du pétitionnaire.
+  const uploadPiece = useCallback(async (codePiece: string, rubricLabel: string, file: File) => {
     if (!dossierId) return;
     setUploadingCodes((prev) => new Set(prev).add(codePiece));
     try {
+      const combinedName = `${rubricLabel} - ${file.name}`;
       const formData = new FormData();
       formData.append("file", file);
       formData.append("code_piece", codePiece);
-      formData.append("nom_piece", nomPiece);
+      formData.append("nom_piece", combinedName);
       const res = await fetch(`/api/dossiers/${dossierId}/pieces/upload`, {
         method: "POST",
         credentials: "include",
@@ -2091,7 +2095,7 @@ export function NouvelleDemandeWizard() {
                           onChange={(e) => {
                             const files = Array.from(e.target.files ?? []);
                             for (const file of files) {
-                              void uploadPiece(ANNEXE_KEY, file.name, file);
+                              void uploadPiece(ANNEXE_KEY, "Annexe", file);
                             }
                             e.currentTarget.value = "";
                           }}

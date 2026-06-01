@@ -38,8 +38,9 @@ interface Message {
 
 interface Piece {
   id: string;
-  nom_fichier: string;
-  type_piece?: string;
+  nom: string;
+  code_piece: string | null;
+  url: string;
   uploaded_at: string;
 }
 
@@ -427,15 +428,15 @@ export function DossierDetail() {
               ) : (
                 <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                   {pieces.map((p) => (
-                    <div key={p.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #E2E8F0" }}>
+                    <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #E2E8F0", textDecoration: "none" }}>
                       <span style={{ fontSize: 18 }}>📄</span>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {p.nom_fichier}
+                          {p.nom}
                         </div>
                         <div style={{ fontSize: 11, color: "#94a3b8" }}>{formatDate(p.uploaded_at)}</div>
                       </div>
-                    </div>
+                    </a>
                   ))}
                 </div>
               )}
