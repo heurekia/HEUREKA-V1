@@ -416,9 +416,12 @@ export function NouvelleDemandeWizard() {
   const [submitted, setSubmitted] = useState<{ id: string; numero: string } | null>(null);
 
   // Step 7 – Upload tracking
+  // Plusieurs fichiers possibles par rubrique → tableau par code_piece.
+  // Les annexes libres sont stockées sous la clé spéciale ANNEXE_KEY.
+  const ANNEXE_KEY = "ANNEXE";
   const [dossierId, setDossierId] = useState<string | null>(null);
   const [dossierNumero, setDossierNumero] = useState<string | null>(null);
-  const [uploadedPieces, setUploadedPieces] = useState<Record<string, UploadedPiece>>({});
+  const [uploadedPieces, setUploadedPieces] = useState<Record<string, UploadedPiece[]>>({});
   const [uploadingCodes, setUploadingCodes] = useState<Set<string>>(new Set());
   const [creatingDossier, setCreatingDossier] = useState(false);
 
@@ -575,18 +578,47 @@ export function NouvelleDemandeWizard() {
         throw new Error(err.error ?? `Erreur ${res.status}`);
       }
       const data = await res.json() as { id: string; nom: string; url: string; analyse_ia: PieceAnalysis | null };
-      setUploadedPieces((prev) => ({
-        ...prev,
-        [codePiece]: { id: data.id, nom: file.name, url: data.url, analyse: data.analyse_ia },
-      }));
-    } catch {
-      alert("Erreur lors du dépôt. Vérifiez le format du fichier et réessayez.");
+      setUploadedPieces((prev) => {
+        const current = prev[codePiece] ?? [];
+        return {
+          ...prev,
+          [codePiece]: [...current, { id: data.id, nom: file.name, url: data.url, analyse: data.analyse_ia }],
+        };
+      });
+    } catch (e) {
+      const msg = e instanceof Error && e.message ? e.message : "Erreur inconnue";
+      alert(`Erreur lors du dépôt : ${msg}`);
     } finally {
       setUploadingCodes((prev) => {
         const next = new Set(prev);
         next.delete(codePiece);
         return next;
       });
+    }
+  }, [dossierId]);
+
+  // ── Delete a previously uploaded piece ─────────────────────────────────────
+  const deletePiece = useCallback(async (codePiece: string, pieceId: string) => {
+    if (!dossierId) return;
+    try {
+      const res = await fetch(`/api/dossiers/${dossierId}/pieces/${pieceId}`, {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok && res.status !== 204) {
+        const err = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(err.error ?? `Erreur ${res.status}`);
+      }
+      setUploadedPieces((prev) => {
+        const remaining = (prev[codePiece] ?? []).filter((p) => p.id !== pieceId);
+        const next = { ...prev };
+        if (remaining.length === 0) delete next[codePiece];
+        else next[codePiece] = remaining;
+        return next;
+      });
+    } catch (e) {
+      const msg = e instanceof Error && e.message ? e.message : "Erreur inconnue";
+      alert(`Suppression impossible : ${msg}`);
     }
   }, [dossierId]);
 
@@ -1812,7 +1844,53 @@ export function NouvelleDemandeWizard() {
           {step === 7 && (() => {
             const pieces = classification?.pieces_requises ?? [];
             const required = pieces.filter((p) => p.requis);
-            const uploadedRequired = required.filter((p) => uploadedPieces[p.code]).length;
+            const uploadedRequired = required.filter((p) => (uploadedPieces[p.code]?.length ?? 0) > 0).length;
+            const annexes = uploadedPieces[ANNEXE_KEY] ?? [];
+            const annexesUploading = uploadingCodes.has(ANNEXE_KEY);
+
+            const renderFile = (codePiece: string, file: UploadedPiece) => {
+              const scoreConf = file.analyse ? getScoreConfig(file.analyse.score) : null;
+              return (
+                <div
+                  key={file.id}
+                  style={{
+                    padding: "10px 12px",
+                    background: "white",
+                    borderRadius: 8,
+                    border: "1px solid #E2E8F0",
+                    marginTop: 6,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 13, color: "#16a34a", fontWeight: 600, flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                      📎 {file.nom}
+                    </span>
+                    {scoreConf && (
+                      <span style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: scoreConf.bg, color: scoreConf.color, flexShrink: 0 }}>
+                        {scoreConf.label}
+                      </span>
+                    )}
+                    <button
+                      onClick={() => void deletePiece(codePiece, file.id)}
+                      style={{ padding: "3px 10px", background: "white", color: "#DC2626", border: "1px solid #FECACA", borderRadius: 8, fontSize: 11, fontWeight: 600, cursor: "pointer", flexShrink: 0 }}
+                    >
+                      Retirer
+                    </button>
+                  </div>
+                  {file.analyse?.commentaire && (
+                    <p style={{ fontSize: 12, color: "#374151", margin: "6px 0 0", lineHeight: 1.4, fontStyle: "italic" }}>
+                      {file.analyse.commentaire}
+                    </p>
+                  )}
+                  {file.analyse?.suggestions && file.analyse.suggestions.length > 0 && (
+                    <ul style={{ margin: "4px 0 0", paddingLeft: 16, fontSize: 12, color: "#64748b" }}>
+                      {file.analyse.suggestions.map((s, i) => <li key={i}>{s}</li>)}
+                    </ul>
+                  )}
+                </div>
+              );
+            };
+
             return (
               <div>
                 <div style={{ textAlign: "center", marginBottom: 20 }}>
@@ -1821,7 +1899,7 @@ export function NouvelleDemandeWizard() {
                     Vos pièces justificatives
                   </h2>
                   <p style={{ fontSize: 14, color: "#64748b", maxWidth: 460, margin: "0 auto" }}>
-                    Déposez vos documents ci-dessous. L'IA analyse chaque pièce et vous guide instantanément.
+                    Déposez vos documents ci-dessous — vous pouvez en ajouter plusieurs par rubrique. L'IA analyse chaque pièce et vous guide instantanément.
                   </p>
                 </div>
 
@@ -1848,9 +1926,9 @@ export function NouvelleDemandeWizard() {
                 {pieces.length > 0 ? (
                   <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
                     {pieces.map((piece) => {
-                      const uploaded = uploadedPieces[piece.code];
+                      const files = uploadedPieces[piece.code] ?? [];
+                      const hasFiles = files.length > 0;
                       const isUploading = uploadingCodes.has(piece.code);
-                      const scoreConf = uploaded?.analyse ? getScoreConfig(uploaded.analyse.score) : null;
                       return (
                         <div
                           key={piece.code}
@@ -1859,14 +1937,14 @@ export function NouvelleDemandeWizard() {
                             alignItems: "flex-start",
                             gap: 14,
                             padding: "14px 18px",
-                            background: uploaded ? "#F0FDF4" : "#F8FAFC",
+                            background: hasFiles ? "#F0FDF4" : "#F8FAFC",
                             borderRadius: 12,
-                            border: `1px solid ${uploaded ? "#86EFAC" : "#E2E8F0"}`,
+                            border: `1px solid ${hasFiles ? "#86EFAC" : "#E2E8F0"}`,
                             transition: "background 0.2s, border-color 0.2s",
                           }}
                         >
                           <span style={{ fontSize: 22, marginTop: 1, flexShrink: 0 }}>
-                            {uploaded ? "✅" : piece.requis ? "📄" : "📋"}
+                            {hasFiles ? "✅" : piece.requis ? "📄" : "📋"}
                           </span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             {/* Name + badges */}
@@ -1887,48 +1965,24 @@ export function NouvelleDemandeWizard() {
                               >
                                 {piece.requis ? "Obligatoire" : "Facultatif"}
                               </span>
-                              {scoreConf && (
-                                <span
-                                  style={{
-                                    padding: "2px 9px",
-                                    borderRadius: 20,
-                                    fontSize: 11,
-                                    fontWeight: 700,
-                                    background: scoreConf.bg,
-                                    color: scoreConf.color,
-                                    flexShrink: 0,
-                                  }}
-                                >
-                                  {scoreConf.label}
+                              {hasFiles && (
+                                <span style={{ padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: "#EEF2FF", color: "#4F46E5", flexShrink: 0 }}>
+                                  {files.length} fichier{files.length > 1 ? "s" : ""}
                                 </span>
                               )}
                             </div>
 
-                            {/* Aide text (shown only when not yet uploaded) */}
-                            {!uploaded && piece.aide && (
+                            {/* Aide text (shown only when no file yet) */}
+                            {!hasFiles && piece.aide && (
                               <p style={{ fontSize: 12, color: "#94a3b8", margin: "0 0 10px 0", lineHeight: 1.4 }}>
                                 {piece.aide}
                               </p>
                             )}
 
-                            {/* Uploaded file info + AI commentary */}
-                            {uploaded && (
-                              <div style={{ fontSize: 12, color: "#16a34a", marginBottom: uploaded.analyse ? 4 : 0 }}>
-                                📎 {uploaded.nom}
-                              </div>
-                            )}
-                            {uploaded?.analyse?.commentaire && (
-                              <p style={{ fontSize: 12, color: "#374151", margin: "4px 0 0", lineHeight: 1.4, fontStyle: "italic" }}>
-                                {uploaded.analyse.commentaire}
-                              </p>
-                            )}
-                            {uploaded?.analyse?.suggestions && uploaded.analyse.suggestions.length > 0 && (
-                              <ul style={{ margin: "4px 0 0", paddingLeft: 16, fontSize: 12, color: "#64748b" }}>
-                                {uploaded.analyse.suggestions.map((s, i) => <li key={i}>{s}</li>)}
-                              </ul>
-                            )}
+                            {/* Liste des fichiers déjà déposés pour cette rubrique */}
+                            {files.map((f) => renderFile(piece.code, f))}
 
-                            {/* Upload / replace button */}
+                            {/* Upload / add another button */}
                             <div style={{ marginTop: 8, display: "flex", gap: 8, alignItems: "center" }}>
                               {isUploading ? (
                                 <span style={{ fontSize: 12, color: "#4F46E5", fontStyle: "italic" }}>
@@ -1941,26 +1995,29 @@ export function NouvelleDemandeWizard() {
                                     display: "inline-flex",
                                     alignItems: "center",
                                     gap: 6,
-                                    padding: uploaded ? "4px 12px" : "6px 16px",
-                                    background: uploaded ? "transparent" : "#EEF2FF",
-                                    color: uploaded ? "#64748b" : "#4F46E5",
+                                    padding: "6px 14px",
+                                    background: "#EEF2FF",
+                                    color: "#4F46E5",
                                     borderRadius: 8,
-                                    fontSize: uploaded ? 11 : 12,
+                                    fontSize: 12,
                                     fontWeight: 600,
-                                    border: `1px solid ${uploaded ? "#E2E8F0" : "#C7D2FE"}`,
+                                    border: "1px solid #C7D2FE",
                                   }}
                                 >
                                   <input
                                     type="file"
+                                    multiple
                                     style={{ display: "none" }}
                                     accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.tiff"
                                     onChange={(e) => {
-                                      const file = e.target.files?.[0];
-                                      if (file) void uploadPiece(piece.code, piece.nom, file);
+                                      const files = Array.from(e.target.files ?? []);
+                                      for (const file of files) {
+                                        void uploadPiece(piece.code, piece.nom, file);
+                                      }
                                       e.currentTarget.value = "";
                                     }}
                                   />
-                                  {uploaded ? "Remplacer" : "+ Déposer le document"}
+                                  {hasFiles ? "+ Ajouter un autre document" : "+ Déposer le document"}
                                 </label>
                               )}
                             </div>
@@ -1974,6 +2031,76 @@ export function NouvelleDemandeWizard() {
                     La liste des pièces sera précisée par l'instructeur après dépôt.
                   </div>
                 )}
+
+                {/* ── Annexes libres ─────────────────────────────────────── */}
+                <div
+                  style={{
+                    padding: "14px 18px",
+                    background: annexes.length > 0 ? "#FFFBEB" : "#F8FAFC",
+                    borderRadius: 12,
+                    border: `1px solid ${annexes.length > 0 ? "#FCD34D" : "#E2E8F0"}`,
+                    marginBottom: 20,
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 22 }}>📎</span>
+                    <span style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>
+                      Annexes complémentaires
+                    </span>
+                    <span style={{ padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: "#F1F5F9", color: "#64748B" }}>
+                      Facultatif
+                    </span>
+                    {annexes.length > 0 && (
+                      <span style={{ padding: "2px 9px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: "#FEF3C7", color: "#92400E" }}>
+                        {annexes.length} fichier{annexes.length > 1 ? "s" : ""}
+                      </span>
+                    )}
+                  </div>
+                  <p style={{ fontSize: 12, color: "#94a3b8", margin: "0 0 8px 0", lineHeight: 1.4 }}>
+                    Photos, courriers, attestations, devis ou tout autre document utile à l'instruction.
+                  </p>
+
+                  {annexes.map((f) => renderFile(ANNEXE_KEY, f))}
+
+                  <div style={{ marginTop: 8 }}>
+                    {annexesUploading ? (
+                      <span style={{ fontSize: 12, color: "#4F46E5", fontStyle: "italic" }}>
+                        ⏳ Analyse en cours…
+                      </span>
+                    ) : (
+                      <label
+                        style={{
+                          cursor: "pointer",
+                          display: "inline-flex",
+                          alignItems: "center",
+                          gap: 6,
+                          padding: "6px 14px",
+                          background: "#EEF2FF",
+                          color: "#4F46E5",
+                          borderRadius: 8,
+                          fontSize: 12,
+                          fontWeight: 600,
+                          border: "1px solid #C7D2FE",
+                        }}
+                      >
+                        <input
+                          type="file"
+                          multiple
+                          style={{ display: "none" }}
+                          accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.tiff"
+                          onChange={(e) => {
+                            const files = Array.from(e.target.files ?? []);
+                            for (const file of files) {
+                              void uploadPiece(ANNEXE_KEY, file.name, file);
+                            }
+                            e.currentTarget.value = "";
+                          }}
+                        />
+                        {annexes.length > 0 ? "+ Ajouter une autre annexe" : "+ Ajouter une annexe"}
+                      </label>
+                    )}
+                  </div>
+                </div>
 
                 <div style={{ display: "flex", justifyContent: "space-between" }}>
                   <button
@@ -2084,7 +2211,7 @@ export function NouvelleDemandeWizard() {
               {(() => {
                 const pieces = classification?.pieces_requises ?? [];
                 const required = pieces.filter((p) => p.requis);
-                const missing = required.filter((p) => !uploadedPieces[p.code]).length;
+                const missing = required.filter((p) => (uploadedPieces[p.code]?.length ?? 0) === 0).length;
                 const canSubmit = missing === 0 && !!dossierId && !submitting;
                 return (
                   <>

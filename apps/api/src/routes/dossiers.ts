@@ -18,6 +18,9 @@ import { runDossierConformityAnalysisBackground } from "../services/dossierConfo
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
 
+// Multer requires the destination to exist before write — create it once at boot.
+fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
   filename: (_req, file, cb) => {
@@ -436,7 +439,18 @@ dossiersRouter.get("/:id/pieces", async (req: AuthRequest, res) => {
 });
 
 // ── Upload d'une pièce jointe avec analyse IA ──
-dossiersRouter.post("/:id/pieces/upload", upload.single("file"), async (req: AuthRequest, res) => {
+// Wrap multer so multer/filter errors come back as JSON instead of HTML.
+function uploadSingle(req: AuthRequest, res: import("express").Response, next: import("express").NextFunction) {
+  upload.single("file")(req, res, (err) => {
+    if (err) {
+      const message = err instanceof Error ? err.message : "Fichier invalide";
+      return res.status(400).json({ error: message });
+    }
+    next();
+  });
+}
+
+dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "Fichier requis" });
 
@@ -487,6 +501,40 @@ dossiersRouter.post("/:id/pieces/upload", upload.single("file"), async (req: Aut
     }
     console.error(err);
     res.status(500).json({ error: "Erreur upload" });
+  }
+});
+
+// ── Suppression d'une pièce jointe ──
+dossiersRouter.delete("/:id/pieces/:pieceId", async (req: AuthRequest, res) => {
+  try {
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    if (dossier.status !== "brouillon") {
+      return res.status(403).json({ error: "Les pièces ne peuvent être modifiées qu'au stade brouillon" });
+    }
+
+    const [piece] = await db
+      .select()
+      .from(dossier_pieces_jointes)
+      .where(and(
+        eq(dossier_pieces_jointes.id, req.params.pieceId as string),
+        eq(dossier_pieces_jointes.dossier_id, dossier.id),
+      ))
+      .limit(1);
+    if (!piece) return res.status(404).json({ error: "Pièce non trouvée" });
+
+    if (piece.url) {
+      const filename = piece.url.split("/").pop();
+      if (filename) {
+        try { fs.unlinkSync(path.join(UPLOADS_DIR, filename)); } catch { /* already gone */ }
+      }
+    }
+    await db.delete(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.id, piece.id));
+
+    res.status(204).end();
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
