@@ -1671,19 +1671,19 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
 
 Si une IMAGE est fournie : lis-la attentivement. Pour un TABLEAU (ex: stationnement art. 12 — colonne « Type »/« Destination » → colonne « Normes »), CHAQUE LIGNE devient une SOUS-RÈGLE (sub_theme = le type, ex: « Habitation », « Bureaux », « Commerce »). Les tranches/seuils d'une même ligne (ex: « 1 place/40 m² entre 300 et 1000 m² », « 1 place/30 m² au-delà de 1000 m² ») deviennent des "cases" (kind "parametre"). Pour un CROQUIS, décris la règle dans rule_text.
 
-Structure le contenu et renvoie UNIQUEMENT un tableau JSON, sans autre texte. Pour du TEXTE : le tableau contient UN SEUL objet (ne découpe PAS). Pour une IMAGE de tableau : un objet par ligne. Format de chaque objet :
+Structure le contenu et renvoie UNIQUEMENT un tableau JSON, sans autre texte. Format de chaque objet :
 [
   {
-    "sub_theme": string,            // numéro + intitulé de la sous-section, ex: "11.1.5 Toiture", "11.2.2 Éléments protégés"
+    "sub_theme": string,            // numéro + intitulé de la sous-section, ex: "10.1 Calcul de la hauteur", "10.2 Tolérances", "10.3 Hauteurs relatives — prospect H ≤ L", "10.4 Secteurs UMr / UMs", "10.5 Secteur UMz"
     "article_number": number|null,
     "article_title": string,
     "topic": "interdictions|conditions|desserte_voies|desserte_reseaux|terrain_min|recul_voie|recul_limite|recul_batiments|emprise_sol|hauteur|aspect|stationnement|espaces_verts|cos|general",
-    "rule_text": string,            // TEXTE QUALITATIF FIDÈLE de la sous-règle (la prose EST la règle ; ne pas sur-résumer)
+    "rule_text": string,            // TEXTE QUALITATIF FIDÈLE de CETTE sous-règle (la prose EST la règle ; ne pas sur-résumer)
     "value_min": number|null, "value_max": number|null, "value_exact": number|null,
     "unit": "m|cm|%|m²|places"|null,
     "conditions": string|null,
-    "exceptions": string|null,      // dérogations « sauf… / à l'exception de… / hormis… » (texte court), renvoi d'article inclus
-    "summary": string,              // ≤ 15 mots
+    "exceptions": string|null,      // dérogations « sauf… / à l'exception de… / hormis… » PROPRES à cette sous-règle
+    "summary": string,              // ≤ 15 mots, décrit CETTE sous-règle (pas l'article entier)
     "cases": [ { "condition": string, "value": number|null, "unit": "m|cm|%|m²|places"|null, "kind": "condition|parametre" } ],
     "applies_if": [ ],              // tags d'applicabilité, parmi : protege_l151_19, unesco, abf, inondable, extension, surelevation, ravalement, demolition, cloture_sur_rue, cloture_limite, annexe, devanture_commerciale, equipement_public. [] si général.
     "citizen_title": string,        // TITRE COURT citoyen (2–5 mots, sans jargon), ex: "Hauteur des maisons", "Clôtures sur la rue", "Places de parking"
@@ -1693,19 +1693,20 @@ Structure le contenu et renvoie UNIQUEMENT un tableau JSON, sans autre texte. Po
 ]
 
 DÉCOUPAGE — RÈGLE IMPÉRATIVE :
-- Par défaut (TEXTE) : renvoie EXACTEMENT UN objet — UNE seule règle qui structure le texte fourni. NE découpe PAS en plusieurs (les sous-règles sont ajoutées séparément par l'instructeur). Tout le texte va dans "rule_text".
-- EXCEPTION tableau (IMAGE) : chaque LIGNE du tableau (type → norme) devient un objet (une règle).
-- Plusieurs conditions/valeurs dans le texte → autant de "cases" dans la MÊME règle. JAMAIS une nouvelle règle pour une condition de plus.
+- UN OBJET PAR SOUS-RÈGLE DISTINCTE de l'article. Un article qui couvre plusieurs thèmes (méthode de calcul, tolérances, règle du prospect, plafonds par secteur, retournement d'angle…) doit produire AUTANT d'objets que de sous-règles autoportantes. Ne fusionne PAS « tolérance », « prospect », « hauteur max en UMr/UMs » et « retournement d'angle UMz » en une règle unique : ce sont des régimes différents avec des valeurs différentes et des applicabilités différentes.
+- Quand l'article fournit une sous-section numérotée (10.1, 10.2, …) ou un paragraphe clairement étiqueté (« Calcul : … », « Tolérance : … », « Hauteurs relatives : … », « En secteurs UMr et UMs : … », « Secteur UMz : … », « Retour sur voie adjacente : … »), CHAQUE bloc devient UN objet avec un sub_theme explicite.
+- À l'inverse, NE découpe PAS une énumération à l'intérieur d'une même sous-règle : plusieurs valeurs conditionnelles d'une MÊME règle (ex: « 10 m sens unique / 13 m double sens ») = autant de "cases" dans la MÊME règle, JAMAIS une nouvelle règle.
+- TABLEAU (image) : chaque LIGNE du tableau (type → norme) = un objet (comme avant).
 
 AUTRES RÈGLES :
-- "rule_text" : conserve le sens qualitatif (matériaux, teintes, prescriptions) — pour l'aspect (art. 11) c'est l'essentiel, ne le réduis PAS à un nombre. Mais reste SYNTHÉTIQUE sur les passages très longs (prescriptions clés, pas la prose redondante) afin de produire un JSON COMPLET et bien formé.
-- "exceptions" : repère les DÉROGATIONS (« sauf… », « à l'exception de… », « hormis… », « sauf cas de… ») et liste-les dans ce champ (ex: « sauf ICPE visées à l'art. UA-2 ; démolition autorisée si sinistre grave ; abattage si état sanitaire le justifie »). null si aucune.
-- "applies_if" : tague une sous-règle qui ne s'applique qu'à un contexte ("Clôtures sur rue" → ["cloture_sur_rue"] ; "Éléments protégés L.151-19" → ["protege_l151_19"] ; "Périmètre UNESCO" → ["unesco"] ; surélévation → ["surelevation"]). [] sinon.
-- VALEUR PRINCIPALE (value_*) = LE seuil de la sous-règle dans une unité COHÉRENTE (%, m, m², places). Respecte min ("≥") vs max ("≤"). NE MÉLANGE JAMAIS valeur et unité. Mesures secondaires/d'autres unités → "cases". Si rien de chiffré → value_* null (fréquent pour l'aspect).
-- "cases" : à utiliser UNIQUEMENT pour des éléments porteurs d'une VALEUR chiffrée (ex: 1,80 m, 50 cm) ou d'une vraie ALTERNATIVE conditionnelle (ex: 10 m sens unique / 13 m double sens). kind "condition" (alternative exclusive) vs "parametre" (valeur cumulative).
-  NE crée PAS de cases pour une simple énumération QUALITATIVE sans valeur (liste d'occupations interdites, de matériaux autorisés…) : elle reste dans "rule_text". Un cas avec value=null et sans alternative réelle ne doit PAS exister.
+- "rule_text" : conserve le sens qualitatif (matériaux, teintes, prescriptions) — pour l'aspect (art. 11) c'est l'essentiel, ne le réduis PAS à un nombre. Reste SYNTHÉTIQUE sur les passages très longs.
+- "exceptions" : repère les DÉROGATIONS de CETTE sous-règle (« sauf… », « à l'exception de… », « hormis… »). null si aucune.
+- "applies_if" : tague une sous-règle qui ne s'applique qu'à un contexte spécifique. Pour des règles propres à un SECTEUR (UMr, UMs, UMz), précise-le dans sub_theme plutôt que dans applies_if (qui sert aux contextes parcellaires).
+- VALEUR PRINCIPALE (value_*) = LE seuil de CETTE sous-règle. Respecte min ("≥") vs max ("≤"). NE MÉLANGE JAMAIS valeur et unité. Si rien de chiffré → value_* null.
+- "cases" : à utiliser UNIQUEMENT pour des éléments porteurs d'une VALEUR chiffrée ou d'une vraie ALTERNATIVE conditionnelle au sein d'une MÊME sous-règle.
+  NE crée PAS de cases pour une simple énumération QUALITATIVE sans valeur (liste d'occupations interdites, de matériaux…) : elle reste dans "rule_text".
 - N'invente AUCUNE valeur. Articles 5 et 14 → "sans objet" (loi ALUR) ET citizen_relevant=false.
-- VERSION CITOYEN ("citizen_title" + "citizen_summary") : OBLIGATOIRE, COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme. Phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol » → dis « la surface que votre maison occupe au sol ». Ne recopie PAS les exceptions juridiques dans citizen_summary (elles restent dans "exceptions").`,
+- VERSION CITOYEN ("citizen_title" + "citizen_summary") : OBLIGATOIRE par sous-règle, COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme. Phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol » → dis « la surface que votre maison occupe au sol ». Ne recopie PAS les exceptions juridiques dans citizen_summary (elles restent dans "exceptions").`,
       messages: [{ role: "user", content: userContent }],
     });
 
@@ -1744,28 +1745,6 @@ AUTRES RÈGLES :
         citizen_relevant: r.citizen_relevant !== false,
       }))
       .filter((r) => r.rule_text || r.summary);
-
-    // GARANTIE déterministe : pour du TEXTE, on force UNE seule règle (les
-    // sous-règles sont ajoutées manuellement). Si le modèle a quand même
-    // découpé, on fusionne : texte complet conservé + cas/exceptions/tags réunis.
-    if (!hasImage && text && rules.length > 1) {
-      rules = [{
-        sub_theme: rules.find((r) => r.sub_theme)?.sub_theme ?? null,
-        article_number: rules[0]!.article_number,
-        article_title: rules[0]!.article_title,
-        topic: rules[0]!.topic,
-        rule_text: text.trim(),
-        value_min: null, value_max: null, value_exact: null, unit: null,
-        conditions: rules.map((r) => r.conditions).filter(Boolean).join(" ; ") || null,
-        exceptions: rules.map((r) => r.exceptions).filter(Boolean).join(" ; ") || null,
-        summary: rules[0]!.summary,
-        cases: rules.flatMap((r) => r.cases),
-        applies_if: [...new Set(rules.flatMap((r) => r.applies_if))],
-        citizen_title: rules[0]!.citizen_title,
-        citizen_summary: rules[0]!.citizen_summary,
-        citizen_relevant: rules.some((r) => r.citizen_relevant),
-      }];
-    }
 
     // Repli : rien d'exploitable → une sous-règle brute avec le texte collé.
     if (rules.length === 0) {
