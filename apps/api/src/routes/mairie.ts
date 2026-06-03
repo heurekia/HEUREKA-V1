@@ -7,9 +7,15 @@ import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import { runDossierConformityAnalysis, runDossierConformityAnalysisBackground, type ConformiteReport } from "../services/dossierConformity.js";
 import { parseLooseArray } from "../services/jsonExtract.js";
+import { extractPiece, expectedTypeFromCode } from "../services/pieceExtractor.js";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
 import { PDFDocument } from "pdf-lib";
+
+const __dirname_mairie = path.dirname(fileURLToPath(import.meta.url));
+const UPLOADS_DIR_MAIRIE = path.resolve(__dirname_mairie, "../../uploads");
 
 // Anthropic limite chaque requête à ~100 pages de PDF. Les gros règlements PLU
 // (200+ pages) sont découpés en tronçons ≤ maxPages, avec un léger chevauchement
@@ -297,6 +303,47 @@ mairieRouter.get("/dossiers/:id/pieces", async (req: AuthRequest, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Re-extraction d'une pièce (mairie) ──
+// Utile quand l'extraction a échoué au dépôt ou quand on a amélioré le prompt.
+// Renvoie l'extraction mise à jour ; ne touche pas à analyse_ia.
+mairieRouter.post("/dossiers/:id/pieces/:pieceId/extract", async (req: AuthRequest, res) => {
+  try {
+    const [piece] = await db
+      .select()
+      .from(dossier_pieces_jointes)
+      .where(and(
+        eq(dossier_pieces_jointes.id, req.params.pieceId as string),
+        eq(dossier_pieces_jointes.dossier_id, req.params.id as string),
+      ))
+      .limit(1);
+    if (!piece) return res.status(404).json({ error: "Pièce non trouvée" });
+
+    const filename = piece.url.split("/").pop();
+    if (!filename) return res.status(404).json({ error: "Fichier non localisable" });
+    const filePath = path.join(UPLOADS_DIR_MAIRIE, filename);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Fichier non trouvé sur le disque" });
+
+    const extraction = await extractPiece(filePath, piece.type, {
+      expected_type: expectedTypeFromCode(piece.code_piece),
+      nom_piece: piece.nom,
+      code_piece: piece.code_piece ?? "",
+    });
+    if (!extraction) {
+      return res.status(422).json({ error: "Extraction impossible (format non supporté ou fichier trop volumineux)" });
+    }
+
+    await db
+      .update(dossier_pieces_jointes)
+      .set({ extraction_ia: extraction })
+      .where(eq(dossier_pieces_jointes.id, piece.id));
+
+    res.json(extraction);
+  } catch (err) {
+    console.error("[pieces/extract]", err);
+    res.status(500).json({ error: "Erreur serveur lors de l'extraction" });
   }
 });
 

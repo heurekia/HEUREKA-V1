@@ -16,6 +16,16 @@ import {
   type RegulatoryRuleHint,
 } from "./pieceAnalyzer.js";
 import { loadZoneRulesWithInheritance } from "./zoneRules.js";
+import {
+  computeRuleVerdicts,
+  type RuleVerdictsReport,
+  type VerdictRuleInput,
+  type VerdictPieceInput,
+  type VerdictDocumentCommuneInput,
+} from "./ruleVerdicts.js";
+import { ilike } from "drizzle-orm";
+import { communes, commune_documents } from "@heureka-v1/db";
+import type { PieceExtraction } from "./pieceExtractor.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
@@ -107,6 +117,10 @@ export interface ConformiteReport {
   pieces_analyses: ConformitePieceReport[];
   alertes_reglementaires: string[];  // ex: zone ABF, Natura 2000…
   synthese: string;                  // 2-3 phrases factuelles
+  // Verdicts règle-par-règle issus du croisement extractions × règles PLU ×
+  // synthèses commune. null si l'analyse fine n'a pas pu être exécutée
+  // (ex : aucune règle PLU disponible).
+  rule_verdicts: RuleVerdictsReport | null;
   model: string;
   duration_ms: number;
   analyzed_at: string;
@@ -396,6 +410,88 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
       0,
     );
 
+    // 9bis. Verdicts règle-par-règle (croisement extractions × règles PLU × synthèses commune).
+    // Filet : on n'exécute que s'il y a au moins une règle ET au moins une pièce.
+    let ruleVerdicts: RuleVerdictsReport | null = null;
+    try {
+      if (rules.length > 0 && piecesDeposees.length > 0) {
+        // Pré-filtre des règles : on écarte celles marquées "non pertinent citoyen"
+        // ET les règles "general" sans valeur (pas exploitables côté verdict typé).
+        const targetRules: VerdictRuleInput[] = rules
+          .filter((r) => r.validation_status === "valide")
+          .filter((r) => {
+            const hasValue = r.value_exact != null || r.value_min != null || r.value_max != null;
+            if (hasValue) return true;
+            // règles qualitatives gardées : aspect, interdictions, conditions
+            return ["aspect", "interdictions", "conditions", "destinations"].includes(r.topic ?? "");
+          })
+          .slice(0, 40) // borne pour le prompt
+          .map((r) => ({
+            id: r.id,
+            topic: r.topic ?? "general",
+            article_number: r.article_number,
+            sub_theme: r.sub_theme ?? null,
+            rule_text: r.rule_text,
+            summary: r.summary,
+            value_min: r.value_min,
+            value_max: r.value_max,
+            value_exact: r.value_exact,
+            unit: r.unit,
+            cases: (r.cases ?? null) as VerdictRuleInput["cases"],
+            applies_if: (r.applies_if ?? null) as string[] | null,
+            exceptions: r.exceptions ?? null,
+          }));
+
+        const verdictPieces: VerdictPieceInput[] = piecesDeposees.map((p) => ({
+          id: p.id,
+          nom: p.nom,
+          code_piece: p.code_piece,
+          extraction: (p.extraction_ia as PieceExtraction | null) ?? null,
+        }));
+
+        // Synthèses des documents commune (OAP, PPRI…) pour la commune du dossier
+        let documentsCommune: VerdictDocumentCommuneInput[] = [];
+        if (commune) {
+          const [comm] = await db
+            .select({ id: communes.id })
+            .from(communes)
+            .where(ilike(communes.name, commune))
+            .limit(1);
+          if (comm) {
+            const docs = await db
+              .select({
+                id: commune_documents.id,
+                name: commune_documents.name,
+                type: commune_documents.type,
+                synthese: commune_documents.synthese,
+              })
+              .from(commune_documents)
+              .where(eq(commune_documents.commune_id, comm.id));
+            documentsCommune = docs;
+          }
+        }
+
+        ruleVerdicts = await computeRuleVerdicts({
+          rules: targetRules,
+          pieces: verdictPieces,
+          documentsCommune,
+          context: {
+            zone_code: zoneCode ?? null,
+            commune: commune ?? null,
+            natures,
+            surface_plancher: surface || null,
+          },
+        });
+      } else if (rules.length === 0) {
+        warnings.push("Verdicts règle-par-règle non générés : aucune règle PLU indexée pour cette zone.");
+      } else {
+        warnings.push("Verdicts règle-par-règle non générés : aucune pièce déposée.");
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      warnings.push(`Verdicts règle-par-règle échoués : ${msg.slice(0, 200)}`);
+    }
+
     // 10. Alertes réglementaires contextuelles
     const alertes: string[] = [];
     if (piecesCtx.hasABF) alertes.push("Périmètre ABF : avis Architecte des Bâtiments de France obligatoire (délai porté à 2 mois).");
@@ -415,6 +511,7 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
       pieces_analyses: piecesAnalyses,
       alertes_reglementaires: alertes,
       synthese,
+      rule_verdicts: ruleVerdicts,
       model: MODEL_ID,
       duration_ms: Date.now() - startedAt,
       analyzed_at: new Date().toISOString(),

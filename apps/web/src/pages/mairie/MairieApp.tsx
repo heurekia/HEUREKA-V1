@@ -5998,6 +5998,22 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [selectedConsultation, setSelectedConsultation] = useState<string | null>(null);
 
   type PieceAnalyse = { score?: string; commentaire?: string; suggestions?: string[] };
+  type PieceExtractionLite = {
+    piece_type?: string;
+    confidence_type?: number;
+    quality?: string;
+    echelle?: string | null;
+    nord_visible?: boolean | null;
+    cerfa?: Record<string, unknown> | null;
+    plan_masse?: Record<string, unknown> | null;
+    plan_coupe?: Record<string, unknown> | null;
+    plan_facade?: Record<string, unknown> | null;
+    notice?: Record<string, unknown> | null;
+    photo?: Record<string, unknown> | null;
+    missing_elements?: string[];
+    citations?: string[];
+    notes?: string | null;
+  };
   type DossierPiece = {
     id: string;
     nom: string;
@@ -6006,11 +6022,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     taille: number;
     code_piece: string | null;
     analyse_ia: PieceAnalyse | null;
+    extraction_ia: PieceExtractionLite | null;
     uploaded_at: string;
   };
   const [documents, setDocuments] = useState<DossierPiece[] | null>(null);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<number>(0);
+  const [extractingPieceId, setExtractingPieceId] = useState<string | null>(null);
 
   useEffect(() => {
     if (activeTab !== "Documents" || documents !== null) return;
@@ -6020,6 +6038,74 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       .catch(() => setDocuments([]))
       .finally(() => setDocumentsLoading(false));
   }, [activeTab, documents, dossier.id]);
+
+  const reExtractPiece = useCallback(async (pieceId: string) => {
+    setExtractingPieceId(pieceId);
+    try {
+      const ext = await api.post<PieceExtractionLite>(`/mairie/dossiers/${dossier.id}/pieces/${pieceId}/extract`, {});
+      setDocuments((arr) => arr ? arr.map((d) => d.id === pieceId ? { ...d, extraction_ia: ext } : d) : arr);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Échec de l'extraction";
+      alert(msg);
+    } finally {
+      setExtractingPieceId(null);
+    }
+  }, [dossier.id]);
+
+  // ── Conformité IA (rapport + lancement) ──
+  type ConformiteReport = {
+    schema_version: number;
+    score_global: string;
+    score_pct: number;
+    pieces_attendues: number;
+    pieces_deposees: number;
+    pieces_manquantes: Array<{ code: string; nom: string }>;
+    pieces_analyses: Array<{ piece_id: string; nom: string; code_piece: string | null; score: string; commentaire: string }>;
+    alertes_reglementaires: string[];
+    synthese: string;
+    rule_verdicts: {
+      verdicts: Array<{
+        rule_id: string;
+        topic: string;
+        article: string | null;
+        sub_theme: string | null;
+        rule_text_short: string;
+        verdict: "conforme" | "non_conforme" | "non_verifiable" | "applicable_conditionnel" | "non_applicable";
+        raison: string;
+        manquant: string | null;
+        valeur_observee: { value: number; unit: string | null } | null;
+        valeur_attendue: { min?: number | null; max?: number | null; exact?: number | null; unit?: string | null } | null;
+        sources: Array<{ piece_id: string; piece_nom: string; citation: string }>;
+      }>;
+      counts: Record<string, number>;
+      warnings: string[];
+    } | null;
+    warnings: string[];
+    analyzed_at: string;
+  };
+  const [conformite, setConformite] = useState<{ status: string; report: ConformiteReport | null; analyzed_at: string | null } | null>(null);
+  const [conformiteLaunching, setConformiteLaunching] = useState(false);
+
+  useEffect(() => {
+    if (activeTab !== "Conformité IA" || conformite !== null) return;
+    api.get<{ status: string; report: ConformiteReport | null; analyzed_at: string | null }>(`/mairie/dossiers/${dossier.id}/conformite`)
+      .then(setConformite)
+      .catch(() => setConformite({ status: "absent", report: null, analyzed_at: null }));
+  }, [activeTab, conformite, dossier.id]);
+
+  const launchConformite = useCallback(async () => {
+    setConformiteLaunching(true);
+    try {
+      await api.post(`/mairie/dossiers/${dossier.id}/conformite/analyse`, { async: false }, { timeoutMs: 240_000 });
+      const fresh = await api.get<{ status: string; report: ConformiteReport | null; analyzed_at: string | null }>(`/mairie/dossiers/${dossier.id}/conformite`);
+      setConformite(fresh);
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Échec du lancement";
+      alert(msg);
+    } finally {
+      setConformiteLaunching(false);
+    }
+  }, [dossier.id]);
 
   // Documents thématiques de la commune (OAP, PPRI, …) avec leur synthèse.
   // Chargés à l'ouverture de l'onglet Parcelle pour servir de support à l'instruction.
@@ -6884,20 +6970,168 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         })()}
 
         {/* ── CONFORMITÉ IA ── */}
-        {activeTab === "Conformité IA" && (
-          <div style={CARD}>
-            <div style={{ textAlign: "center" as const, padding: "40px 20px", color: "#64748b" }}>
-              <div style={{ fontSize: 44, marginBottom: 12 }}>🔍</div>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>
-                Analyse de conformité PLU à venir
+        {activeTab === "Conformité IA" && (() => {
+          const report = conformite?.report ?? null;
+          const status = conformite?.status ?? "absent";
+          const verdicts = report?.rule_verdicts?.verdicts ?? [];
+          const counts = report?.rule_verdicts?.counts ?? null;
+          const verdictMeta: Record<string, { label: string; color: string; bg: string; border: string; icon: string }> = {
+            conforme: { label: "Conforme", color: "#15803D", bg: "#F0FDF4", border: "#BBF7D0", icon: "✅" },
+            non_conforme: { label: "Non conforme", color: "#DC2626", bg: "#FEE2E2", border: "#FECACA", icon: "❌" },
+            non_verifiable: { label: "Non vérifiable", color: "#475569", bg: "#F8FAFC", border: "#E2E8F0", icon: "❓" },
+            applicable_conditionnel: { label: "Selon projet", color: "#92400E", bg: "#FEF3C7", border: "#FDE68A", icon: "📌" },
+            non_applicable: { label: "Non applicable", color: "#64748B", bg: "#F1F5F9", border: "#E2E8F0", icon: "—" },
+          };
+          const launchButton = (
+            <button
+              onClick={() => void launchConformite()}
+              disabled={conformiteLaunching || status === "running"}
+              style={{
+                padding: "9px 18px",
+                background: conformiteLaunching || status === "running" ? "#C7D2FE" : "linear-gradient(135deg,#4F46E5,#6366F1)",
+                color: "white", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 600,
+                cursor: conformiteLaunching || status === "running" ? "default" : "pointer",
+                boxShadow: "0 2px 6px rgba(79,70,229,0.3)",
+              }}>
+              {conformiteLaunching ? "Analyse en cours…" : report ? "Relancer l'analyse" : "Lancer l'analyse"}
+            </button>
+          );
+
+          if (!report) {
+            return (
+              <div style={CARD}>
+                <div style={{ textAlign: "center" as const, padding: "32px 20px", color: "#64748b" }}>
+                  <div style={{ fontSize: 44, marginBottom: 12 }}>🔍</div>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>
+                    Conformité IA non encore lancée
+                  </div>
+                  <p style={{ fontSize: 13, maxWidth: 520, margin: "0 auto 16px", lineHeight: 1.55 }}>
+                    L'analyse croise les <strong>extractions des pièces déposées</strong> avec les <strong>règles PLU</strong> de la zone
+                    {liveCommune ? ` (${liveCommune})` : ""} et les <strong>synthèses des documents commune</strong> (OAP, PPRI…).
+                    Elle peut prendre 1 à 3 minutes selon le nombre de pièces.
+                  </p>
+                  {launchButton}
+                </div>
               </div>
-              <p style={{ fontSize: 13, maxWidth: 520, margin: "0 auto", lineHeight: 1.55 }}>
-                Le moteur de vérification automatique des règles du PLU n'est pas encore branché sur ce dossier.
-                Une fois activée, l'analyse croisera les pièces déposées avec le règlement de la zone {liveCommune ? `de ${liveCommune}` : ""}.
-              </p>
+            );
+          }
+
+          return (
+            <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+              {/* Header — synthèse + bouton */}
+              <div style={CARD}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14, marginBottom: 12 }}>
+                  <div>
+                    <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Synthèse</div>
+                    <div style={{ fontSize: 12.5, color: "#374151", lineHeight: 1.55, maxWidth: 760 }}>{report.synthese}</div>
+                    {report.analyzed_at && (
+                      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
+                        Analyse du {new Date(report.analyzed_at).toLocaleString("fr-FR")}
+                      </div>
+                    )}
+                  </div>
+                  {launchButton}
+                </div>
+                {counts && (
+                  <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const, marginTop: 8 }}>
+                    {(["conforme", "non_conforme", "non_verifiable", "applicable_conditionnel", "non_applicable"] as const).map((k) => {
+                      const meta = verdictMeta[k]!;
+                      const n = counts[k] ?? 0;
+                      if (n === 0) return null;
+                      return (
+                        <span key={k} style={{ background: meta.bg, color: meta.color, border: `1px solid ${meta.border}`, borderRadius: 8, padding: "4px 11px", fontSize: 12, fontWeight: 600 }}>
+                          {meta.icon} {n} {meta.label.toLowerCase()}
+                        </span>
+                      );
+                    })}
+                  </div>
+                )}
+                {report.warnings.length > 0 && (
+                  <div style={{ marginTop: 10, fontSize: 11.5, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, padding: "8px 12px", lineHeight: 1.5 }}>
+                    <strong>Avertissements :</strong> {report.warnings.join(" · ")}
+                  </div>
+                )}
+              </div>
+
+              {/* Verdicts par règle */}
+              <div style={CARD}>
+                <SecTitle>Verdicts règle par règle</SecTitle>
+                {verdicts.length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: "#64748b", padding: "8px 0" }}>
+                    Aucun verdict produit — soit aucune règle PLU n'est indexée pour cette zone, soit aucune pièce n'a encore d'extraction structurée.
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                    {verdicts.map((v) => {
+                      const meta = verdictMeta[v.verdict] ?? verdictMeta.non_verifiable!;
+                      const observed = v.valeur_observee ? `${v.valeur_observee.value}${v.valeur_observee.unit ?? ""}` : null;
+                      const expected = v.valeur_attendue ? [
+                        v.valeur_attendue.exact != null ? `= ${v.valeur_attendue.exact}` : null,
+                        v.valeur_attendue.min != null ? `≥ ${v.valeur_attendue.min}` : null,
+                        v.valeur_attendue.max != null ? `≤ ${v.valeur_attendue.max}` : null,
+                      ].filter(Boolean).join(", ") + (v.valeur_attendue.unit ?? "") : null;
+                      return (
+                        <div key={v.rule_id} style={{ padding: "12px 14px", border: `1px solid ${meta.border}`, background: meta.bg, borderRadius: 9 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" as const }}>
+                            <span style={{ fontSize: 16 }}>{meta.icon}</span>
+                            <span style={{ fontSize: 11.5, fontWeight: 700, color: meta.color, background: "white", border: `1px solid ${meta.border}`, borderRadius: 6, padding: "1px 8px" }}>
+                              {meta.label}
+                            </span>
+                            {v.article && <span style={{ fontSize: 11.5, fontWeight: 600, color: "#475569" }}>{v.article}</span>}
+                            {v.sub_theme && <span style={{ fontSize: 11.5, color: "#64748b" }}>· {v.sub_theme}</span>}
+                          </div>
+                          <div style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>
+                            {v.rule_text_short}
+                          </div>
+                          <div style={{ fontSize: 12, color: meta.color, lineHeight: 1.55 }}>
+                            {v.raison}
+                          </div>
+                          {(observed || expected) && (
+                            <div style={{ marginTop: 6, display: "flex", gap: 14, fontSize: 11.5, color: "#374151", flexWrap: "wrap" as const }}>
+                              {observed && (
+                                <span><span style={{ color: "#94a3b8" }}>Observé :</span> <strong>{observed}</strong></span>
+                              )}
+                              {expected && (
+                                <span><span style={{ color: "#94a3b8" }}>Attendu :</span> <strong>{expected}</strong></span>
+                              )}
+                            </div>
+                          )}
+                          {v.manquant && (
+                            <div style={{ marginTop: 6, fontSize: 11.5, color: "#475569", fontStyle: "italic" }}>
+                              Manquant pour trancher : {v.manquant}
+                            </div>
+                          )}
+                          {v.sources.length > 0 && (
+                            <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${meta.border}` }}>
+                              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", letterSpacing: "0.04em", marginBottom: 4 }}>SOURCES</div>
+                              {v.sources.map((s, i) => (
+                                <div key={i} style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55 }}>
+                                  📎 <strong>{s.piece_nom}</strong> — « {s.citation} »
+                                </div>
+                              ))}
+                            </div>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+              </div>
+
+              {/* Pièces manquantes */}
+              {report.pieces_manquantes.length > 0 && (
+                <div style={CARD}>
+                  <SecTitle>Pièces manquantes</SecTitle>
+                  <ul style={{ margin: 0, paddingLeft: 18, fontSize: 12.5, color: "#374151", lineHeight: 1.6 }}>
+                    {report.pieces_manquantes.map((p) => (
+                      <li key={p.code}><strong>{p.code}</strong> — {p.nom}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
             </div>
-          </div>
-        )}
+          );
+        })()}
 
         {/* ── DOCUMENTS ── */}
         {activeTab === "Documents" && (() => {
@@ -7004,6 +7238,59 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     {sel ? "Pas d'analyse IA disponible pour cette pièce." : "Sélectionnez une pièce pour voir son analyse."}
                   </div>
                 )}
+
+                {/* Extraction structurée */}
+                {sel && (() => {
+                  const e = sel.extraction_ia;
+                  const isExtracting = extractingPieceId === sel.id;
+                  return (
+                    <div style={{ marginTop: 16, paddingTop: 14, borderTop: "1px solid #E2E8F0" }}>
+                      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                        <div style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>Extraction structurée</div>
+                        <button onClick={() => void reExtractPiece(sel.id)} disabled={isExtracting}
+                          style={{ border: "1px solid #C7D2FE", background: isExtracting ? "#EEF2FF" : "white", color: "#4F46E5", borderRadius: 7, padding: "3px 10px", fontSize: 11, cursor: isExtracting ? "default" : "pointer", fontWeight: 600 }}>
+                          {isExtracting ? "Extraction…" : e ? "Ré-extraire" : "Lancer l'extraction"}
+                        </button>
+                      </div>
+                      {e ? (
+                        <div style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55 }}>
+                          <div style={{ marginBottom: 4 }}>
+                            <span style={{ color: "#94a3b8" }}>Type :</span> <strong>{e.piece_type ?? "—"}</strong>
+                            {typeof e.confidence_type === "number" && (
+                              <span style={{ marginLeft: 6, fontSize: 10.5, color: e.confidence_type >= 0.7 ? "#15803D" : "#92400E" }}>
+                                ({Math.round(e.confidence_type * 100)}%)
+                              </span>
+                            )}
+                            {e.echelle && <span style={{ marginLeft: 8 }}><span style={{ color: "#94a3b8" }}>Échelle :</span> <strong>{e.echelle}</strong></span>}
+                          </div>
+                          {e.citations && e.citations.length > 0 && (
+                            <div style={{ marginTop: 6 }}>
+                              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", letterSpacing: "0.04em", marginBottom: 3 }}>CITATIONS</div>
+                              <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, color: "#374151", lineHeight: 1.5 }}>
+                                {e.citations.slice(0, 6).map((c, i) => <li key={i}>{c}</li>)}
+                              </ul>
+                            </div>
+                          )}
+                          {e.missing_elements && e.missing_elements.length > 0 && (
+                            <div style={{ marginTop: 6, padding: "6px 9px", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6 }}>
+                              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#92400E", letterSpacing: "0.04em", marginBottom: 3 }}>ÉLÉMENTS ABSENTS</div>
+                              <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, color: "#92400E", lineHeight: 1.5 }}>
+                                {e.missing_elements.map((m, i) => <li key={i}>{m}</li>)}
+                              </ul>
+                            </div>
+                          )}
+                          {e.notes && (
+                            <div style={{ marginTop: 6, fontSize: 11, color: "#64748b", fontStyle: "italic" }}>{e.notes}</div>
+                          )}
+                        </div>
+                      ) : (
+                        <div style={{ fontSize: 11.5, color: "#94a3b8", lineHeight: 1.5 }}>
+                          Pas d'extraction disponible. Lance l'extraction pour récupérer les valeurs cotées (recul, hauteur, surfaces…).
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
               </div>
             </div>
           );
