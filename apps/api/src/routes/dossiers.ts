@@ -13,6 +13,7 @@ import multer from "multer";
 import { classifyPermit } from "../services/classificationEngine.js";
 import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
 import { analyzePiece } from "../services/pieceAnalyzer.js";
+import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../services/pieceExtractor.js";
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -482,19 +483,27 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       })
       .returning();
 
-    // Non-blocking AI analysis — runs but doesn't fail the request
-    let analyse_ia = null;
-    try {
-      analyse_ia = await analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece);
+    // Deux passes IA en parallèle, non-bloquantes :
+    //   1) analyse qualitative (score conforme/acceptable/incomplet/non_conforme)
+    //   2) extraction structurée (dimensions, surfaces, NGF…) qui alimentera
+    //      ensuite le moteur de conformité au moment de l'instruction.
+    const expected = expectedTypeFromCode(code_piece);
+    const [analyse_ia, extraction_ia] = await Promise.all([
+      analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece).catch(() => null),
+      extractPiece(req.file.path, req.file.mimetype, {
+        expected_type: expected,
+        nom_piece,
+        code_piece,
+      }).catch(() => null as PieceExtraction | null),
+    ]);
+    if (analyse_ia || extraction_ia) {
       await db
         .update(dossier_pieces_jointes)
-        .set({ analyse_ia })
+        .set({ analyse_ia: analyse_ia ?? null, extraction_ia: extraction_ia ?? null })
         .where(eq(dossier_pieces_jointes.id, piece!.id));
-    } catch {
-      // AI failure is non-blocking
     }
 
-    res.status(201).json({ ...piece, analyse_ia });
+    res.status(201).json({ ...piece, analyse_ia, extraction_ia });
   } catch (err) {
     if (req.file?.path) {
       try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }

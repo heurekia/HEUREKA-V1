@@ -481,6 +481,9 @@ CREATE INDEX IF NOT EXISTS idx_dossier_consultations_service ON dossier_consulta
 -- Upload de pièces justificatives avec analyse IA
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS code_piece text;
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS analyse_ia jsonb;
+-- Extraction structurée (dimensions, surfaces, hauteurs NGF…) — sert au
+-- moteur de conformité PLU.
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS extraction_ia jsonb;
 
 -- Analyse de conformité globale d'un dossier (croisement pièces ↔ PLU ↔ CERFA)
 -- Calculée à la soumission ou à la demande par la mairie.
