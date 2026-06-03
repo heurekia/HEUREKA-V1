@@ -7196,23 +7196,48 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               </div>
               <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
                 <SecTitle>{`Aperçu : ${sel?.nom ?? "—"}`}</SecTitle>
-                <div style={{ flex: 1, background: "#F8FAFC", borderRadius: 11, display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 14, minHeight: 340, border: "1px solid #EAECF0" }}>
-                  {sel ? (
-                    <>
-                      <div style={{ width: 64, height: 80, background: "white", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", border: "1px solid #E2E8F0" }}>
-                        <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
-                      </div>
-                      <div style={{ textAlign: "center" as const }}>
-                        <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>{sel.nom}</div>
-                        <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>{extOf(sel.type, sel.nom)} · {fmtSize(sel.taille)}</div>
-                      </div>
-                      <div style={{ display: "flex", gap: 8 }}>
-                        <a href={sel.url} target="_blank" rel="noopener noreferrer" style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 9, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.3)", textDecoration: "none" }}>Ouvrir</a>
-                        <a href={sel.url} download style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "9px 18px", fontSize: 13, cursor: "pointer", color: "#374151", fontWeight: 500, textDecoration: "none" }}>Télécharger</a>
-                      </div>
-                    </>
-                  ) : (
-                    <div style={{ fontSize: 13, color: "#94a3b8" }}>Sélectionnez une pièce à gauche</div>
+                <div style={{ flex: 1, background: "#F8FAFC", borderRadius: 11, minHeight: 340, border: "1px solid #EAECF0", overflow: "hidden", position: "relative" as const, display: "flex", flexDirection: "column" as const }}>
+                  {sel ? (() => {
+                    const t = (sel.type ?? "").toLowerCase();
+                    const isImage = t.startsWith("image/");
+                    const isPdf = t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf");
+                    return (
+                      <>
+                        <div style={{ flex: 1, minHeight: 340, background: "#0F172A0A", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          {isImage ? (
+                            <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: 520, objectFit: "contain", display: "block" }} />
+                          ) : isPdf ? (
+                            <iframe
+                              src={sel.url}
+                              title={sel.nom}
+                              style={{ width: "100%", height: 560, border: "none", background: "white" }}
+                            />
+                          ) : (
+                            <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 12, padding: 32, textAlign: "center" as const }}>
+                              <div style={{ width: 64, height: 80, background: "white", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", border: "1px solid #E2E8F0" }}>
+                                <svg width={28} height={28} viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+                              </div>
+                              <div>
+                                <div style={{ fontSize: 13, color: "#64748b" }}>Aperçu indisponible pour ce format</div>
+                                <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>{extOf(sel.type, sel.nom)} · {fmtSize(sel.taille)}</div>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                        {/* Barre d'actions */}
+                        <div style={{ padding: "10px 14px", borderTop: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
+                          <div style={{ fontSize: 11.5, color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, flex: 1, minWidth: 0 }}>
+                            {extOf(sel.type, sel.nom)} · {fmtSize(sel.taille)} · déposé le {fmtUploaded(sel.uploaded_at)}
+                          </div>
+                          <a href={sel.url} target="_blank" rel="noopener noreferrer" style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.3)", textDecoration: "none", flexShrink: 0 }}>Ouvrir en plein écran ↗</a>
+                          <a href={sel.url} download style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "#374151", fontWeight: 500, textDecoration: "none", flexShrink: 0 }}>Télécharger</a>
+                        </div>
+                      </>
+                    );
+                  })() : (
+                    <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: "#94a3b8" }}>
+                      Sélectionnez une pièce à gauche
+                    </div>
                   )}
                 </div>
               </div>
