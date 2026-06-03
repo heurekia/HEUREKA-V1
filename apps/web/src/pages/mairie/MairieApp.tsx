@@ -6023,6 +6023,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     code_piece: string | null;
     analyse_ia: PieceAnalyse | null;
     extraction_ia: PieceExtractionLite | null;
+    instructeur_status: "valide" | "rejete" | "complement_demande" | null;
+    instructeur_note: string | null;
+    instructeur_status_at: string | null;
     uploaded_at: string;
   };
   const [documents, setDocuments] = useState<DossierPiece[] | null>(null);
@@ -6049,6 +6052,26 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       alert(msg);
     } finally {
       setExtractingPieceId(null);
+    }
+  }, [dossier.id]);
+
+  // ── Annotation instructeur (statut + note libre) ──
+  const [annotatingPieceId, setAnnotatingPieceId] = useState<string | null>(null);
+  const [annotationDrafts, setAnnotationDrafts] = useState<Record<string, string>>({});
+  const setAnnotationDraft = useCallback((pieceId: string, value: string) => {
+    setAnnotationDrafts((prev) => ({ ...prev, [pieceId]: value }));
+  }, []);
+  const sendAnnotation = useCallback(async (pieceId: string, body: { status?: "valide" | "rejete" | "complement_demande" | null; note?: string | null }) => {
+    setAnnotatingPieceId(pieceId);
+    try {
+      const updated = await api.patch<DossierPiece>(`/mairie/dossiers/${dossier.id}/pieces/${pieceId}/annotation`, body);
+      setDocuments((arr) => arr ? arr.map((d) => d.id === pieceId ? { ...d, ...updated } : d) : arr);
+      setAnnotationDrafts((prev) => { const next = { ...prev }; delete next[pieceId]; return next; });
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : "Échec de l'enregistrement";
+      alert(msg);
+    } finally {
+      setAnnotatingPieceId(null);
     }
   }, [dossier.id]);
 
@@ -7174,19 +7197,38 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     {docs.map((doc, i) => {
                       const ext = extOf(doc.type, doc.nom);
                       const status = scoreToStatus(doc.analyse_ia?.score);
+                      const instMeta: Record<string, { label: string; bg: string; color: string; border: string }> = {
+                        valide: { label: "Validé", bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0" },
+                        rejete: { label: "Rejeté", bg: "#FEE2E2", color: "#DC2626", border: "#FECACA" },
+                        complement_demande: { label: "Complément", bg: "#FEF3C7", color: "#92400E", border: "#FDE68A" },
+                      };
+                      const inst = doc.instructeur_status ? instMeta[doc.instructeur_status] : null;
+                      const hasNote = !!(doc.instructeur_note && doc.instructeur_note.trim());
                       return (
                         <button key={doc.id} onClick={() => setSelectedDoc(i)} style={{
                           display: "flex", alignItems: "flex-start", gap: 10, padding: "10px 11px", borderRadius: 9, border: selectedDoc === i ? "1.5px solid #C7D2FE" : "1.5px solid transparent", cursor: "pointer", textAlign: "left" as const,
                           background: selectedDoc === i ? "#EEF2FF" : "transparent",
                           transition: "background 0.1s",
+                          position: "relative" as const,
                         }}>
+                          {inst && (
+                            <span title={inst.label} style={{ position: "absolute" as const, top: 8, right: 8, width: 8, height: 8, borderRadius: "50%", background: inst.color }} />
+                          )}
                           <div style={{ width: 32, height: 32, borderRadius: 7, background: ext === "ZIP" ? "#FFF7ED" : "#EEF2FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
                             <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke={ext === "ZIP" ? "#F97316" : "#4F46E5"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
                           </div>
                           <div style={{ flex: 1, minWidth: 0 }}>
-                            <div style={{ fontSize: 12.5, fontWeight: 600, color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{doc.nom}</div>
+                            <div style={{ fontSize: 12.5, fontWeight: 600, color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, textDecoration: doc.instructeur_status === "rejete" ? "line-through" : "none" }}>{doc.nom}</div>
                             <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>{ext} · {fmtSize(doc.taille)} · {fmtUploaded(doc.uploaded_at)}</div>
-                            <span style={{ fontSize: 10.5, fontWeight: 700, color: status.color, background: status.bg, borderRadius: 5, padding: "1px 6px", display: "inline-block", marginTop: 4, border: `1px solid ${status.border}` }}>{status.label}</span>
+                            <div style={{ display: "flex", gap: 4, flexWrap: "wrap" as const, marginTop: 4 }}>
+                              <span style={{ fontSize: 10.5, fontWeight: 700, color: status.color, background: status.bg, borderRadius: 5, padding: "1px 6px", border: `1px solid ${status.border}` }}>{status.label}</span>
+                              {inst && (
+                                <span style={{ fontSize: 10.5, fontWeight: 700, color: inst.color, background: inst.bg, borderRadius: 5, padding: "1px 6px", border: `1px solid ${inst.border}` }}>{inst.label}</span>
+                              )}
+                              {hasNote && (
+                                <span title="Annotation présente" style={{ fontSize: 10.5, color: "#4F46E5" }}>📝</span>
+                              )}
+                            </div>
                           </div>
                         </button>
                       );
@@ -7242,6 +7284,78 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               </div>
               <div style={CARD}>
+                {/* Annotation de l'instructeur — toujours en haut du panneau de droite */}
+                {sel && (() => {
+                  const draftKey = sel.id;
+                  const currentNote = annotationDrafts[draftKey] !== undefined
+                    ? annotationDrafts[draftKey]!
+                    : (sel.instructeur_note ?? "");
+                  const noteDirty = annotationDrafts[draftKey] !== undefined && (annotationDrafts[draftKey] ?? "") !== (sel.instructeur_note ?? "");
+                  const isSaving = annotatingPieceId === sel.id;
+                  const STATUS_BUTTONS: Array<{ key: "valide" | "rejete" | "complement_demande"; label: string; bg: string; color: string; icon: string }> = [
+                    { key: "valide",             label: "Valider",      bg: "#F0FDF4", color: "#15803D", icon: "✓" },
+                    { key: "complement_demande", label: "Complément",   bg: "#FEF3C7", color: "#92400E", icon: "✎" },
+                    { key: "rejete",             label: "Rejeter",      bg: "#FEE2E2", color: "#DC2626", icon: "✕" },
+                  ];
+                  return (
+                    <div style={{ marginBottom: 16, paddingBottom: 14, borderBottom: "1px solid #E2E8F0" }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 8 }}>Annotation instructeur</div>
+                      <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" as const }}>
+                        {STATUS_BUTTONS.map((b) => {
+                          const active = sel.instructeur_status === b.key;
+                          return (
+                            <button key={b.key}
+                              onClick={() => void sendAnnotation(sel.id, { status: active ? null : b.key })}
+                              disabled={isSaving}
+                              title={active ? `Annuler le statut "${b.label}"` : `Marquer comme ${b.label.toLowerCase()}`}
+                              style={{
+                                flex: 1,
+                                padding: "6px 8px",
+                                borderRadius: 7,
+                                border: `1px solid ${active ? b.color : "#E2E8F0"}`,
+                                background: active ? b.bg : "white",
+                                color: active ? b.color : "#475569",
+                                fontSize: 11.5,
+                                fontWeight: 600,
+                                cursor: isSaving ? "default" : "pointer",
+                                display: "flex",
+                                alignItems: "center",
+                                justifyContent: "center",
+                                gap: 4,
+                              }}>
+                              <span>{b.icon}</span> {b.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      {sel.instructeur_status_at && (
+                        <div style={{ fontSize: 10.5, color: "#94a3b8", marginBottom: 8 }}>
+                          Statut posé le {new Date(sel.instructeur_status_at).toLocaleString("fr-FR")}
+                        </div>
+                      )}
+                      <textarea
+                        value={currentNote}
+                        onChange={(e) => setAnnotationDraft(draftKey, e.target.value)}
+                        rows={3}
+                        placeholder="Annotation libre — précisions, motif de rejet, demande de complément…"
+                        style={{ width: "100%", border: "1px solid #D1D5DB", borderRadius: 7, padding: "7px 9px", fontSize: 12, fontFamily: "inherit", boxSizing: "border-box" as const, lineHeight: 1.5, resize: "vertical" as const }}
+                      />
+                      <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 6 }}>
+                        {noteDirty && (
+                          <button onClick={() => setAnnotationDrafts((p) => { const n = { ...p }; delete n[draftKey]; return n; })}
+                            style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 12px", fontSize: 11.5, cursor: "pointer", color: "#374151" }}>
+                            Annuler
+                          </button>
+                        )}
+                        <button onClick={() => void sendAnnotation(sel.id, { note: currentNote.trim() ? currentNote : null })}
+                          disabled={!noteDirty || isSaving}
+                          style={{ border: "none", background: !noteDirty || isSaving ? "#C7D2FE" : "#4F46E5", color: "white", borderRadius: 6, padding: "4px 14px", fontSize: 11.5, fontWeight: 600, cursor: !noteDirty || isSaving ? "default" : "pointer" }}>
+                          {isSaving ? "Enregistrement…" : "Enregistrer la note"}
+                        </button>
+                      </div>
+                    </div>
+                  );
+                })()}
                 <SecTitle>Analyse IA</SecTitle>
                 {sel?.analyse_ia?.commentaire ? (
                   <>

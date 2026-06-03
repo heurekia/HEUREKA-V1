@@ -484,6 +484,11 @@ ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS analyse_ia jsonb;
 -- Extraction structurée (dimensions, surfaces, hauteurs NGF…) — sert au
 -- moteur de conformité PLU.
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS extraction_ia jsonb;
+-- Décision de l'instructeur : valide | rejete | complement_demande | null
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS instructeur_status text;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS instructeur_note text;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS instructeur_status_at timestamp;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS instructeur_status_by uuid;
 
 -- Analyse de conformité globale d'un dossier (croisement pièces ↔ PLU ↔ CERFA)
 -- Calculée à la soumission ou à la demande par la mairie.

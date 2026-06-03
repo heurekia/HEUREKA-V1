@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations, external_services, service_communes } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations, external_services, service_communes, instruction_events } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike, inArray } from "drizzle-orm";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
@@ -302,6 +302,90 @@ mairieRouter.get("/dossiers/:id/pieces", async (req: AuthRequest, res) => {
     res.json(pieces);
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Annotation d'une pièce par l'instructeur ──
+// Permet de poser un statut (valide | rejete | complement_demande | null) et
+// une note libre. Chaque transition génère un instruction_event pour le suivi
+// de la procédure.
+mairieRouter.patch("/dossiers/:id/pieces/:pieceId/annotation", async (req: AuthRequest, res) => {
+  try {
+    const body = (req.body ?? {}) as { status?: string | null; note?: string | null };
+    const VALID_STATUSES = new Set(["valide", "rejete", "complement_demande", null]);
+    const rawStatus = body.status === undefined ? undefined : (body.status === "" ? null : body.status);
+    const rawNote = body.note === undefined ? undefined : (body.note === null ? null : String(body.note));
+    if (rawStatus !== undefined && !VALID_STATUSES.has(rawStatus as string | null)) {
+      return res.status(400).json({ error: "Statut invalide" });
+    }
+
+    const [piece] = await db
+      .select()
+      .from(dossier_pieces_jointes)
+      .where(and(
+        eq(dossier_pieces_jointes.id, req.params.pieceId as string),
+        eq(dossier_pieces_jointes.dossier_id, req.params.id as string),
+      ))
+      .limit(1);
+    if (!piece) return res.status(404).json({ error: "Pièce non trouvée" });
+
+    const statusChanged = rawStatus !== undefined && rawStatus !== piece.instructeur_status;
+    const noteChanged = rawNote !== undefined && (rawNote ?? null) !== (piece.instructeur_note ?? null);
+    if (!statusChanged && !noteChanged) {
+      return res.json(piece);
+    }
+
+    const patch: Record<string, unknown> = {};
+    if (rawStatus !== undefined) {
+      patch.instructeur_status = rawStatus;
+      patch.instructeur_status_at = new Date();
+      patch.instructeur_status_by = req.user?.id ?? null;
+    }
+    if (rawNote !== undefined) {
+      patch.instructeur_note = rawNote && rawNote.trim() ? rawNote.trim() : null;
+    }
+
+    const [updated] = await db
+      .update(dossier_pieces_jointes)
+      .set(patch)
+      .where(eq(dossier_pieces_jointes.id, piece.id))
+      .returning();
+
+    // Trace dans la chronologie d'instruction.
+    if (statusChanged && updated) {
+      const TYPE_MAP: Record<string, string> = {
+        valide: "piece_validee",
+        rejete: "piece_rejetee",
+        complement_demande: "piece_complement_demande",
+      };
+      const evType = rawStatus == null ? "piece_statut_efface" : (TYPE_MAP[rawStatus as string] ?? "piece_statut_modifie");
+      const DESC_MAP: Record<string, string> = {
+        valide: `Pièce validée : ${updated.nom}`,
+        rejete: `Pièce rejetée : ${updated.nom}`,
+        complement_demande: `Complément demandé pour : ${updated.nom}`,
+      };
+      const description = rawStatus == null
+        ? `Statut effacé pour : ${updated.nom}`
+        : (DESC_MAP[rawStatus as string] ?? `Pièce mise à jour : ${updated.nom}`);
+      await db.insert(instruction_events).values({
+        dossier_id: piece.dossier_id,
+        type: evType,
+        user_id: req.user?.id ?? null,
+        description,
+        metadata: {
+          piece_id: piece.id,
+          code_piece: piece.code_piece ?? null,
+          previous_status: piece.instructeur_status ?? null,
+          new_status: rawStatus ?? null,
+          note: rawNote ?? piece.instructeur_note ?? null,
+        },
+      });
+    }
+
+    res.json(updated);
+  } catch (err) {
+    console.error("[pieces/annotation]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

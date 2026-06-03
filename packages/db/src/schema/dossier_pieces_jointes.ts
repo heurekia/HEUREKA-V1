@@ -16,5 +16,11 @@ export const dossier_pieces_jointes = pgTable("dossier_pieces_jointes", {
   // (dimensions, surfaces, hauteurs NGF…). Sert d'entrée au moteur de
   // conformité (croisement avec les règles PLU).
   extraction_ia: jsonb("extraction_ia"),
+  // Décision de l'instructeur : null = pas encore examiné ; "valide" /
+  // "rejete" / "complement_demande" = statut explicitement posé.
+  instructeur_status: text("instructeur_status"),
+  instructeur_note: text("instructeur_note"),
+  instructeur_status_at: timestamp("instructeur_status_at"),
+  instructeur_status_by: uuid("instructeur_status_by"),
   uploaded_at: timestamp("uploaded_at").notNull().defaultNow(),
 });
