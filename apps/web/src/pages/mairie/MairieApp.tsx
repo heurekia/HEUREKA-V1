@@ -6075,6 +6075,24 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     }
   }, [dossier.id]);
 
+  // ── Chronologie : instruction events ──
+  type InstructionEvent = {
+    id: string;
+    type: string;
+    description: string | null;
+    metadata: Record<string, unknown> | null;
+    created_at: string;
+    actor_name: string | null;
+    actor_role: string | null;
+  };
+  const [events, setEvents] = useState<InstructionEvent[] | null>(null);
+  useEffect(() => {
+    if (activeTab !== "Chronologie" || events !== null) return;
+    api.get<InstructionEvent[]>(`/mairie/dossiers/${dossier.id}/events`)
+      .then(setEvents)
+      .catch(() => setEvents([]));
+  }, [activeTab, events, dossier.id]);
+
   // ── Conformité IA (rapport + lancement) ──
   type ConformiteReport = {
     schema_version: number;
@@ -7546,18 +7564,73 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         })()}
 
         {/* ── CHRONOLOGIE ── */}
-        {activeTab === "Chronologie" && (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, alignItems: "flex-start" }}>
-            <div style={CARD}>
-              <SecTitle>Historique complet</SecTitle>
-              <div style={{ textAlign: "center" as const, padding: "32px 16px", color: "#64748b" }}>
-                <div style={{ fontSize: 36, marginBottom: 10 }}>🕒</div>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Aucun événement enregistré</div>
-                <p style={{ fontSize: 12.5, maxWidth: 380, margin: "0 auto", lineHeight: 1.55 }}>
-                  Les étapes clés du dossier (dépôt, complétude, consultations, décision…) apparaîtront ici au fur et à mesure de l'instruction.
-                </p>
+        {activeTab === "Chronologie" && (() => {
+          const evts = events ?? [];
+          const loading = events === null;
+          const eventMeta: Record<string, { icon: string; color: string }> = {
+            dossier_soumis:                  { icon: "📥", color: "#4F46E5" },
+            dossier_complet:                 { icon: "✅", color: "#22C55E" },
+            dossier_incomplet:               { icon: "⚠️", color: "#F97316" },
+            instruction_demarree:            { icon: "🔍", color: "#3B82F6" },
+            decision_prise:                  { icon: "📌", color: "#22C55E" },
+            message_instructeur:             { icon: "💬", color: "#8B5CF6" },
+            document_demande:                { icon: "📄", color: "#F97316" },
+            piece_validee:                   { icon: "✓",  color: "#15803D" },
+            piece_rejetee:                   { icon: "✕",  color: "#DC2626" },
+            piece_complement_demande:        { icon: "✎",  color: "#92400E" },
+            piece_statut_efface:             { icon: "↺",  color: "#64748B" },
+            consultation_envoyee:            { icon: "📤", color: "#8B5CF6" },
+            consultation_avis_recu:          { icon: "📥", color: "#22C55E" },
+          };
+          const labelOf = (t: string) => t.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+          return (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, alignItems: "flex-start" }}>
+              <div style={CARD}>
+                <SecTitle>Historique complet</SecTitle>
+                {loading ? (
+                  <div style={{ textAlign: "center" as const, padding: "24px 0", fontSize: 13, color: "#64748b" }}>Chargement…</div>
+                ) : evts.length === 0 ? (
+                  <div style={{ textAlign: "center" as const, padding: "32px 16px", color: "#64748b" }}>
+                    <div style={{ fontSize: 36, marginBottom: 10 }}>🕒</div>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Aucun événement enregistré</div>
+                    <p style={{ fontSize: 12.5, maxWidth: 380, margin: "0 auto", lineHeight: 1.55 }}>
+                      Les étapes clés du dossier (dépôt, complétude, consultations, validation de pièces, décision…) apparaîtront ici au fur et à mesure de l'instruction.
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    {evts.map((ev, i) => {
+                      const meta = eventMeta[ev.type] ?? { icon: "•", color: "#64748B" };
+                      const date = new Date(ev.created_at);
+                      const ts = isNaN(date.getTime()) ? "—" : date.toLocaleString("fr-FR", { day: "numeric", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" });
+                      const actor = ev.actor_name ? `${ev.actor_name}${ev.actor_role ? ` (${ev.actor_role})` : ""}` : "Système";
+                      const note = ev.metadata && typeof ev.metadata === "object" && typeof (ev.metadata as Record<string, unknown>).note === "string"
+                        ? ((ev.metadata as Record<string, unknown>).note as string)
+                        : null;
+                      return (
+                        <div key={ev.id} style={{ display: "flex", gap: 14, paddingBottom: i < evts.length - 1 ? 18 : 0 }}>
+                          <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", width: 32 }}>
+                            <div style={{ width: 32, height: 32, borderRadius: "50%", background: meta.color + "18", border: `2px solid ${meta.color}55`, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, fontSize: 13, color: meta.color, fontWeight: 700 }}>{meta.icon}</div>
+                            {i < evts.length - 1 && <div style={{ width: 2, flex: 1, background: "linear-gradient(to bottom,#E2E8F0,#F8FAFC)", marginTop: 6 }} />}
+                          </div>
+                          <div style={{ paddingBottom: 4, flex: 1, minWidth: 0 }}>
+                            <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>
+                              {ev.description ?? labelOf(ev.type)}
+                            </div>
+                            <div style={{ fontSize: 12, color: "#64748b", marginTop: 2 }}>{actor}</div>
+                            {note && (
+                              <div style={{ marginTop: 6, padding: "6px 10px", background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 12, color: "#374151", lineHeight: 1.5, fontStyle: "italic" }}>
+                                « {note} »
+                              </div>
+                            )}
+                            <div style={{ fontSize: 11, color: "#CBD5E1", marginTop: 4, fontWeight: 500 }}>{ts}</div>
+                          </div>
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            </div>
             <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
               <div style={CARD}>
                 <SecTitle>Étapes clés</SecTitle>
@@ -7587,7 +7660,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               </div>
             </div>
           </div>
-        )}
+          );
+        })()}
 
         {/* ── DÉCISION ── */}
         {activeTab === "Décision" && (

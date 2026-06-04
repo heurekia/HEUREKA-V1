@@ -291,6 +291,40 @@ mairieRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
   }
 });
 
+// ── Chronologie : événements d'instruction d'un dossier (mairie) ──
+// Renvoie les instruction_events enrichis du nom de l'acteur quand
+// l'utilisateur existe encore dans la base.
+mairieRouter.get("/dossiers/:id/events", async (req: AuthRequest, res) => {
+  try {
+    const events = await db
+      .select()
+      .from(instruction_events)
+      .where(eq(instruction_events.dossier_id, req.params.id as string))
+      .orderBy(desc(instruction_events.created_at));
+
+    const userIds = Array.from(new Set(events.map((e) => e.user_id).filter((u): u is string => !!u)));
+    const userMap = new Map<string, { nom: string | null; prenom: string | null; role: string | null }>();
+    if (userIds.length > 0) {
+      const rows = await db
+        .select({ id: users.id, nom: users.nom, prenom: users.prenom, role: users.role })
+        .from(users)
+        .where(inArray(users.id, userIds));
+      for (const r of rows) {
+        userMap.set(r.id, { nom: r.nom, prenom: r.prenom, role: r.role });
+      }
+    }
+
+    res.json(events.map((e) => {
+      const u = e.user_id ? userMap.get(e.user_id) : undefined;
+      const actor = u ? [u.prenom, u.nom].filter(Boolean).join(" ").trim() : null;
+      return { ...e, actor_name: actor || null, actor_role: u?.role ?? null };
+    }));
+  } catch (err) {
+    console.error("[events]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── Pièces déposées d'un dossier (vue mairie) ──
 mairieRouter.get("/dossiers/:id/pieces", async (req: AuthRequest, res) => {
   try {
