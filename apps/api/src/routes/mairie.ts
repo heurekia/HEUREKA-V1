@@ -62,60 +62,33 @@ mairieRouter.use(requireAuth);
 mairieRouter.use(requireRole("mairie", "instructeur", "admin"));
 
 // Délais réglementaires d'instruction (Code de l'Urbanisme)
-// Calculés à partir de la date de complétude, ou de dépôt si non renseignée.
-//
-// Sources :
-//   R.423-23 1° — DP : 1 mois
-//   R.423-23 2° — PC maison individuelle / annexes / démolir : 2 mois
-//   R.423-23 3° — PC autre (collectif, ERP, etc.) / PA / lotissement : 3 mois
-//   R.410-9    — CUa informatif : 1 mois  /  CUb opérationnel : 2 mois
-// Extensions principales (R.423-24 et s.) :
-//   +1 mois si consultation ABF (Architecte des Bâtiments de France)
-//   +1 mois si site classé / inscrit
-//   +2 mois si commission spécifique (CDPENAF, etc.)
+// Implémentation détaillée et auditable : voir services/instructionDelays.ts.
+// Le tableau ci-dessous reste pour le retour "rules_defaut" de l'admin.
 const DELAI_INSTRUCTION_MOIS_DEFAUT: Record<string, number> = {
-  permis_de_construire: 3,    // R.423-23 3° par défaut, ramené à 2 pour maison individuelle
+  permis_de_construire: 3,
   declaration_prealable: 1,
   permis_amenager: 3,
   permis_demolir: 2,
   permis_lotir: 3,
-  certificat_urbanisme: 2,    // CUb par défaut, ramené à 1 pour CUa
+  certificat_urbanisme: 2,
 };
 
-type DeadlineMetadata = {
-  natures?: string[];
-  certificatType?: "a" | "b";
-};
-type DeadlineServitude = { categorie?: string; libelle?: string };
+import {
+  computeInstructionDelay,
+  applyMonthsToDate,
+  type DeadlineMetadata,
+  type DeadlineServitude,
+  type DeadlineBreakdownItem,
+} from "../services/instructionDelays.js";
 
+// Façade legacy (call sites internes encore présents). Préférer computeInstructionDelay
+// pour récupérer le breakdown auditable.
 export function computeDelaiMois(
   type: string,
   metadata: DeadlineMetadata | null | undefined,
   servitudes: DeadlineServitude[] | null | undefined,
 ): number {
-  let mois = DELAI_INSTRUCTION_MOIS_DEFAUT[type] ?? 2;
-  const natures = metadata?.natures ?? [];
-
-  // PC maison individuelle (R.423-23 2°) — uniquement projets résidentiels MI
-  if (type === "permis_de_construire") {
-    const isMaisonIndividuelle = natures.some((n) =>
-      ["maison_neuve", "agrandissement", "petite_construction"].includes(n),
-    ) && !natures.some((n) => ["division_terrain"].includes(n));
-    if (isMaisonIndividuelle) mois = 2;
-  }
-
-  // CU informatif (R.410-9 al.1) — 1 mois
-  if (type === "certificat_urbanisme" && metadata?.certificatType === "a") {
-    mois = 1;
-  }
-
-  // Extension +1 mois si ABF (servitudes AC1, AC2, etc.)
-  const hasABF = (servitudes ?? []).some(
-    (s) => s.categorie?.toUpperCase().startsWith("AC") || s.libelle?.toLowerCase().includes("abf"),
-  );
-  if (hasABF) mois += 1;
-
-  return mois;
+  return computeInstructionDelay(type, metadata, servitudes).total_mois;
 }
 
 // ── Dashboard stats ──
@@ -540,16 +513,28 @@ mairieRouter.patch("/dossiers/:id/status", async (req: AuthRequest, res) => {
       patch.date_depot = new Date();
     }
 
-    // Auto-calcul de l'échéance si elle n'est pas encore renseignée
+    // Auto-calcul de l'échéance si elle n'est pas encore renseignée.
+    // Le code de l'urbanisme fait courir le délai à partir de la date de réception
+    // d'un dossier complet : on prend date_completude si elle est posée, sinon
+    // date_depot par défaut (équivaut à un dossier réputé complet au dépôt).
     if (!before.date_limite_instruction) {
       const startDate = (before.date_completude ?? patch.date_depot ?? before.date_depot);
       if (startDate) {
-        const meta = before.metadata as DeadlineMetadata | null;
+        const meta = (before.metadata as DeadlineMetadata | null) ?? null;
         const servitudes = (meta as { servitudes?: DeadlineServitude[] } | null)?.servitudes ?? null;
-        const months = computeDelaiMois(before.type, meta, servitudes);
-        const deadline = new Date(startDate);
-        deadline.setMonth(deadline.getMonth() + months);
-        patch.date_limite_instruction = deadline;
+        const calc = computeInstructionDelay(before.type, meta, servitudes);
+        patch.date_limite_instruction = applyMonthsToDate(new Date(startDate), calc.total_mois);
+        // Trace auditable dans metadata.delai pour affichage UI.
+        patch.metadata = {
+          ...((before.metadata as Record<string, unknown>) ?? {}),
+          delai: {
+            total_mois: calc.total_mois,
+            breakdown: calc.breakdown,
+            base_date: new Date(startDate).toISOString(),
+            base_date_source: before.date_completude ? "completude" : "depot",
+            computed_at: new Date().toISOString(),
+          },
+        };
       }
     }
 
@@ -557,6 +542,70 @@ mairieRouter.patch("/dossiers/:id/status", async (req: AuthRequest, res) => {
     res.json(updated);
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Recalcul ou réécriture de la date d'échéance d'UN dossier ──
+// PATCH /mairie/dossiers/:id/deadline
+// Corps :
+//   { date_completude?: "YYYY-MM-DD" | null }   → met à jour la date de
+//      complétude. L'échéance est recalculée automatiquement à partir d'elle.
+//   { date_limite_instruction?: "YYYY-MM-DD" }  → override manuel (rare,
+//      utilisé pour des prolongations notifiées au pétitionnaire).
+//   { recompute: true }                         → recalcule à partir des
+//      règles légales en cours, en repartant de date_completude ?? date_depot.
+mairieRouter.patch("/dossiers/:id/deadline", async (req: AuthRequest, res) => {
+  try {
+    const body = (req.body ?? {}) as {
+      date_completude?: string | null;
+      date_limite_instruction?: string | null;
+      recompute?: boolean;
+    };
+
+    const [before] = await db
+      .select()
+      .from(dossiers)
+      .where(eq(dossiers.id, req.params.id as string))
+      .limit(1);
+    if (!before) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    const patch: Record<string, unknown> = { updated_at: new Date() };
+
+    // 1. Mise à jour éventuelle de date_completude
+    if (body.date_completude !== undefined) {
+      patch.date_completude = body.date_completude ? new Date(body.date_completude) : null;
+    }
+    const effectiveCompletude = (body.date_completude !== undefined ? patch.date_completude : before.date_completude) as Date | null;
+
+    // 2. Override manuel de la deadline (priorité absolue)
+    if (body.date_limite_instruction !== undefined) {
+      patch.date_limite_instruction = body.date_limite_instruction ? new Date(body.date_limite_instruction) : null;
+    } else if (body.recompute || body.date_completude !== undefined) {
+      // 3. Recalcul automatique
+      const startDate = effectiveCompletude ?? before.date_depot;
+      if (startDate) {
+        const meta = (before.metadata as DeadlineMetadata | null) ?? null;
+        const servitudes = (meta as { servitudes?: DeadlineServitude[] } | null)?.servitudes ?? null;
+        const calc = computeInstructionDelay(before.type, meta, servitudes);
+        patch.date_limite_instruction = applyMonthsToDate(new Date(startDate), calc.total_mois);
+        patch.metadata = {
+          ...((before.metadata as Record<string, unknown>) ?? {}),
+          delai: {
+            total_mois: calc.total_mois,
+            breakdown: calc.breakdown,
+            base_date: new Date(startDate).toISOString(),
+            base_date_source: effectiveCompletude ? "completude" : "depot",
+            computed_at: new Date().toISOString(),
+          },
+        };
+      }
+    }
+
+    const [updated] = await db.update(dossiers).set(patch).where(eq(dossiers.id, before.id)).returning();
+    res.json(updated);
+  } catch (err) {
+    console.error("[deadline]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
@@ -1165,33 +1214,52 @@ mairieRouter.patch("/dossiers/:id/adresse", requireAuth, async (req: AuthRequest
   }
 });
 
-// ── Calcul des dates d'échéance théoriques (admin) ──────────────────────────
+// ── Calcul / recalcul des dates d'échéance théoriques (admin) ───────────────
 // POST /mairie/admin/compute-deadlines
-// Remplit date_limite_instruction pour tous les dossiers qui ont une date_depot
-// mais pas encore de délai. Idempotent — ne touche pas les dossiers déjà datés.
-mairieRouter.post("/admin/compute-deadlines", async (_req: AuthRequest, res) => {
+// - Body { force: true } → recalcule toutes les échéances (même celles déjà
+//   posées) à partir des règles légales actuelles. Utile quand on a corrigé
+//   le moteur (ex. PC autre que MI passé de 2 à 3 mois).
+// - Sans body / force=false → ne traite que les dossiers sans échéance posée.
+mairieRouter.post("/admin/compute-deadlines", async (req: AuthRequest, res) => {
   try {
-    const toUpdate = await db
+    const force = (req.body as { force?: boolean } | undefined)?.force === true;
+    const baseQuery = db
       .select({ id: dossiers.id, type: dossiers.type, date_depot: dossiers.date_depot, date_completude: dossiers.date_completude, metadata: dossiers.metadata })
-      .from(dossiers)
-      .where(sql`date_depot IS NOT NULL AND date_limite_instruction IS NULL`);
+      .from(dossiers);
+    const toUpdate = await (force
+      ? baseQuery.where(sql`date_depot IS NOT NULL`)
+      : baseQuery.where(sql`date_depot IS NOT NULL AND date_limite_instruction IS NULL`));
 
     let updated = 0;
+    const breakdown_samples: Array<{ id: string; type: string; total_mois: number; breakdown: DeadlineBreakdownItem[] }> = [];
     for (const d of toUpdate) {
-      const meta = d.metadata as DeadlineMetadata | null;
+      const meta = (d.metadata as DeadlineMetadata | null) ?? null;
       const servitudes = (meta as { servitudes?: DeadlineServitude[] } | null)?.servitudes ?? null;
-      const months = computeDelaiMois(d.type, meta, servitudes);
+      const calc = computeInstructionDelay(d.type, meta, servitudes);
       const startDate = new Date((d.date_completude ?? d.date_depot)!);
-      const deadline = new Date(startDate);
-      deadline.setMonth(deadline.getMonth() + months);
+      const deadline = applyMonthsToDate(startDate, calc.total_mois);
+      const nextMeta = {
+        ...((d.metadata as Record<string, unknown>) ?? {}),
+        delai: {
+          total_mois: calc.total_mois,
+          breakdown: calc.breakdown,
+          base_date: startDate.toISOString(),
+          base_date_source: d.date_completude ? "completude" : "depot",
+          computed_at: new Date().toISOString(),
+        },
+      };
       await db.update(dossiers)
-        .set({ date_limite_instruction: deadline, updated_at: new Date() })
+        .set({ date_limite_instruction: deadline, metadata: nextMeta, updated_at: new Date() })
         .where(eq(dossiers.id, d.id));
       updated++;
+      if (breakdown_samples.length < 5) {
+        breakdown_samples.push({ id: d.id, type: d.type, total_mois: calc.total_mois, breakdown: calc.breakdown });
+      }
     }
 
     res.json({
-      ok: true, updated,
+      ok: true, updated, force,
+      breakdown_samples,
       rules_defaut: Object.entries(DELAI_INSTRUCTION_MOIS_DEFAUT).map(([type, mois]) => ({ type, delai_mois_defaut: mois })),
     });
   } catch (err) {

@@ -5335,9 +5335,19 @@ function InfosPersoScreen() {
   );
 }
 
+type DelaiBreakdown = {
+  total_mois: number;
+  base_date?: string;
+  base_date_source?: "completude" | "depot";
+  computed_at?: string;
+  breakdown: Array<{ label: string; mois: number; article: string }>;
+};
+
 type DossierInfo = {
   id: string; numero: string; type: string; petitionnaire: string; adresse: string;
   status: string; echeance: string; date_depot?: string;
+  date_completude?: string;
+  delai?: DelaiBreakdown | null;
   description?: string; parcelle?: string; surface_plancher?: string;
   commune?: string; code_postal?: string; instructeur?: string;
   lat?: number; lng?: number;
@@ -5909,6 +5919,35 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [parcelLoading, setParcelLoading] = useState(false);
   const [parcelError, setParcelError] = useState<string | null>(null);
   const [showAddressEditor, setShowAddressEditor] = useState(false);
+  // ── Délai d'instruction (popover sur le chip Échéance) ──
+  const [showDelaiPopover, setShowDelaiPopover] = useState(false);
+  const [completudeDraft, setCompletudeDraft] = useState<string | null>(null);
+  const [delaiSaving, setDelaiSaving] = useState(false);
+  const saveCompletude = useCallback(async () => {
+    setDelaiSaving(true);
+    try {
+      await api.patch(`/mairie/dossiers/${dossier.id}/deadline`, { date_completude: completudeDraft || null });
+      // Force le rechargement du dossier au prochain mount — ici on signale juste à l'utilisateur.
+      alert("Date de complétude enregistrée. Le délai a été recalculé. Rechargez la page pour voir la nouvelle échéance.");
+      setShowDelaiPopover(false);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Échec de l'enregistrement");
+    } finally {
+      setDelaiSaving(false);
+    }
+  }, [dossier.id, completudeDraft]);
+  const recomputeDeadline = useCallback(async () => {
+    setDelaiSaving(true);
+    try {
+      await api.patch(`/mairie/dossiers/${dossier.id}/deadline`, { recompute: true });
+      alert("Délai recalculé. Rechargez la page pour voir la nouvelle échéance.");
+      setShowDelaiPopover(false);
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Échec du recalcul");
+    } finally {
+      setDelaiSaving(false);
+    }
+  }, [dossier.id]);
   const [addressOverride, setAddressOverride] = useState<string | null>(null);
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [addrQuery, setAddrQuery] = useState("");
@@ -6292,7 +6331,11 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>Déposé le</div>
               <div style={{ fontSize: 13, fontWeight: 600, color: "#1E293B" }}>{dossier.date_depot ? fmtDate(dossier.date_depot) : "—"}</div>
             </div>
-            <div style={{ background: "#F8FAFC", border: "1px solid #E8EEF4", borderRadius: 10, padding: "8px 14px", textAlign: "center" as const, minWidth: 110 }}>
+            <div
+              style={{ background: "#F8FAFC", border: "1px solid #E8EEF4", borderRadius: 10, padding: "8px 14px", textAlign: "center" as const, minWidth: 110, cursor: dossier.delai ? "pointer" : "default", position: "relative" as const }}
+              onClick={() => dossier.delai && setShowDelaiPopover((v) => !v)}
+              title={dossier.delai ? "Voir le détail légal du délai" : undefined}
+            >
               <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>Échéance</div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center" }}>
                 <span style={{ fontSize: 13, fontWeight: 600, color: "#1E293B" }}>{dossier.echeance}</span>
@@ -6302,6 +6345,59 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   </span>
                 )}
               </div>
+              {dossier.delai && (
+                <div style={{ fontSize: 10, color: "#64748b", marginTop: 2, fontWeight: 500 }}>
+                  {dossier.delai.total_mois} mois · cliquer pour détail
+                </div>
+              )}
+              {showDelaiPopover && dossier.delai && (
+                <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute" as const, top: "calc(100% + 6px)", right: 0, width: 360, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 8px 28px rgba(0,0,0,0.12)", padding: 16, zIndex: 50, textAlign: "left" as const }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Délai légal d'instruction</div>
+                    <button onClick={() => setShowDelaiPopover(false)} style={{ border: "none", background: "transparent", fontSize: 16, cursor: "pointer", color: "#94a3b8", padding: 0 }}>✕</button>
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "#64748b", marginBottom: 10, lineHeight: 1.5 }}>
+                    Calculé à partir du {dossier.delai.base_date ? new Date(dossier.delai.base_date).toLocaleDateString("fr-FR") : "—"}
+                    {dossier.delai.base_date_source && (
+                      <span> ({dossier.delai.base_date_source === "completude" ? "date de complétude" : "date de dépôt"})</span>
+                    )}
+                  </div>
+                  <div style={{ borderTop: "1px solid #F1F5F9", marginBottom: 6 }} />
+                  {dossier.delai.breakdown.map((b, i) => (
+                    <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "5px 0", borderBottom: i < dossier.delai!.breakdown.length - 1 ? "1px dashed #F1F5F9" : "none" }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 12.5, color: "#0F172A", fontWeight: 500 }}>{b.label}</div>
+                        <div style={{ fontSize: 10.5, color: "#94a3b8" }}>{b.article}</div>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#4F46E5", flexShrink: 0, marginLeft: 8 }}>
+                        {b.mois > 0 ? `+${b.mois}` : b.mois} mois
+                      </div>
+                    </div>
+                  ))}
+                  <div style={{ borderTop: "1px solid #F1F5F9", marginTop: 8, paddingTop: 8, display: "flex", justifyContent: "space-between" }}>
+                    <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A" }}>Total</span>
+                    <span style={{ fontSize: 13, fontWeight: 800, color: "#4F46E5" }}>{dossier.delai.total_mois} mois</span>
+                  </div>
+                  <div style={{ marginTop: 12, paddingTop: 10, borderTop: "1px solid #F1F5F9", display: "flex", flexDirection: "column" as const, gap: 6 }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.04em" }}>DATE DE COMPLÉTUDE</div>
+                    <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <input type="date" defaultValue={dossier.date_completude ? dossier.date_completude.slice(0, 10) : ""}
+                        onChange={(e) => setCompletudeDraft(e.target.value)}
+                        style={{ flex: 1, border: "1px solid #D1D5DB", borderRadius: 6, padding: "5px 8px", fontSize: 12, fontFamily: "inherit" }} />
+                      <button onClick={() => void saveCompletude()}
+                        disabled={delaiSaving}
+                        style={{ border: "none", background: delaiSaving ? "#C7D2FE" : "#4F46E5", color: "white", borderRadius: 6, padding: "5px 12px", fontSize: 11.5, fontWeight: 600, cursor: delaiSaving ? "default" : "pointer" }}>
+                        Enregistrer
+                      </button>
+                    </div>
+                    <button onClick={() => void recomputeDeadline()}
+                      disabled={delaiSaving}
+                      style={{ border: "1px solid #C7D2FE", background: "#EEF2FF", color: "#4F46E5", borderRadius: 6, padding: "5px 12px", fontSize: 11.5, fontWeight: 600, cursor: delaiSaving ? "default" : "pointer", marginTop: 4 }}>
+                      Recalculer le délai
+                    </button>
+                  </div>
+                </div>
+              )}
             </div>
             <div style={{ background: "#F8FAFC", border: "1px solid #E8EEF4", borderRadius: 10, padding: "8px 14px", textAlign: "center" as const, minWidth: 120 }}>
               <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>Instructeur</div>
@@ -7947,6 +8043,7 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
       adresse: string | null; commune: string | null; code_postal: string | null;
       description: string | null; parcelle: string | null; surface_plancher: string | null;
       date_limite_instruction: string | null; date_depot: string | null;
+      date_completude: string | null;
       metadata: Record<string, unknown> | null;
       demandeur: { prenom?: string; nom?: string } | null;
       instructeur: { prenom?: string; nom?: string } | null;
@@ -7965,6 +8062,8 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
           status: data.status,
           echeance: fmtDate(data.date_limite_instruction),
           date_depot: data.date_depot ?? undefined,
+          date_completude: data.date_completude ?? undefined,
+          delai: (meta["delai"] as DelaiBreakdown | undefined) ?? null,
           description: data.description ?? undefined,
           parcelle: data.parcelle ?? undefined,
           surface_plancher: data.surface_plancher ?? undefined,
