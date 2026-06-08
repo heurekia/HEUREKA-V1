@@ -2115,7 +2115,7 @@ function SignatairesPanel({ commune }: { commune: string }) {
   );
 }
 
-function ParametresScreen({ commune = "Ballan-Miré", isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
+function ParametresScreen({ commune = "", isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
   const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
   const [searchParams] = useSearchParams();
@@ -8085,12 +8085,43 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
 
 const COMMUNE_STORAGE_KEY = (userId?: string) => `heureka_commune_${userId ?? "anon"}`;
 
+function NoCommuneAssignedScreen({ prenom }: { prenom: string }) {
+  const { logout } = useAuth();
+  return (
+    <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <div style={{ width: "100%", maxWidth: 480, background: "white", borderRadius: 16, border: "1px solid #E2E8F0", padding: 40, boxShadow: "0 4px 20px rgba(0,0,0,0.06)", textAlign: "center" }}>
+        <div style={{ width: 56, height: 56, borderRadius: 14, background: "linear-gradient(135deg, #EEF2FF, #E0E7FF)", display: "flex", alignItems: "center", justifyContent: "center", margin: "0 auto 20px" }}>
+          <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" />
+          </svg>
+        </div>
+        <h1 style={{ margin: "0 0 12px", fontSize: 20, fontWeight: 700, color: "#0F172A" }}>
+          Bienvenue{prenom ? `, ${prenom}` : ""}
+        </h1>
+        <p style={{ margin: "0 0 8px", fontSize: 14, color: "#475569", lineHeight: 1.6 }}>
+          Votre compte Heurekia est bien activé.
+        </p>
+        <p style={{ margin: "0 0 28px", fontSize: 14, color: "#475569", lineHeight: 1.6 }}>
+          L'accès à votre espace sera disponible dès qu'un administrateur vous aura rattaché à une commune. Cette étape ne prend généralement que quelques instants — n'hésitez pas à contacter votre référent si l'attente se prolonge.
+        </p>
+        <button
+          onClick={() => { logout(); }}
+          style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "10px 20px", fontSize: 13, fontWeight: 600, color: "#475569", cursor: "pointer" }}
+        >
+          Se déconnecter
+        </button>
+      </div>
+    </div>
+  );
+}
+
 export function MairieApp() {
   const { user } = useAuth();
   const isAdmin = user?.role === "admin";
   const canManageUsers = user?.role === "admin" || user?.role === "mairie";
   const [commune, setCommuteRaw] = useState(user?.commune ?? "");
   const [userCommunes, setUserCommunes] = useState<string[]>([]);
+  const [communesLoaded, setCommunesLoaded] = useState(false);
   const [showNouveauDossier, setShowNouveauDossier] = useState(false);
   const [messageBadge, setMessageBadge] = useState(0);
   const [signaturesBadge, setSignaturesBadge] = useState(0);
@@ -8124,7 +8155,8 @@ export function MairieApp() {
           return names[0] ?? prev;
         });
       })
-      .catch(() => {});
+      .catch(() => {})
+      .finally(() => setCommunesLoaded(true));
   }, [user?.id]);
 
   // Load commune list from DB to get correct INSEE codes
@@ -8189,6 +8221,10 @@ export function MairieApp() {
   const navigateDossiers = (filter: string) => {
     routerNavigate(`/mairie/dossiers?filter=${encodeURIComponent(filter)}`);
   };
+
+  if (communesLoaded && userCommunes.length === 0) {
+    return <NoCommuneAssignedScreen prenom={user?.prenom ?? ""} />;
+  }
 
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex" }}>
