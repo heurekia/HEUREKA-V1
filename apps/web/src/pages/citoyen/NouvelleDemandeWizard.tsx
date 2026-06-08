@@ -539,6 +539,7 @@ export function NouvelleDemandeWizard() {
           natures,
           zone: parcel?.zone,
           parcelle: parcel?.parcelle,
+          servitudes: parcel?.servitudes ?? [],
           cerfa_data: {
             qualiteDemandeur: qualiteDemandeur || undefined,
             empriseSol: empriseSol || undefined,
