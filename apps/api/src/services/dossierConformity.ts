@@ -1,6 +1,6 @@
 import path from "path";
 import { fileURLToPath } from "url";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   dossiers,
@@ -24,6 +24,7 @@ import {
   type VerdictDocumentCommuneInput,
 } from "./ruleVerdicts.js";
 import { ilike } from "drizzle-orm";
+// `and`, `eq` déjà importés en haut.
 import { communes, commune_documents } from "@heureka-v1/db";
 import type { PieceExtraction } from "./pieceExtractor.js";
 
@@ -458,6 +459,9 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
             .where(ilike(communes.name, commune))
             .limit(1);
           if (comm) {
+            // Gate juridique : ne lire QUE les synthèses validées par un humain.
+            // Une synthèse "brouillon" ou "rejete" ne doit jamais alimenter un
+            // verdict d'instruction.
             const docs = await db
               .select({
                 id: commune_documents.id,
@@ -466,7 +470,10 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
                 synthese: commune_documents.synthese,
               })
               .from(commune_documents)
-              .where(eq(commune_documents.commune_id, comm.id));
+              .where(and(
+                eq(commune_documents.commune_id, comm.id),
+                eq(commune_documents.validation_status, "valide"),
+              ));
             documentsCommune = docs;
           }
         }

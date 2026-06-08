@@ -538,6 +538,17 @@ CREATE INDEX IF NOT EXISTS idx_document_segments_doc_type ON document_segments(d
 CREATE INDEX IF NOT EXISTS idx_document_segments_parent ON document_segments(parent_code);
 -- Recherche de similarité cosinus (HNSW)
 CREATE INDEX IF NOT EXISTS idx_document_segments_embedding ON document_segments USING hnsw (embedding vector_cosine_ops);
+
+-- ── Validation des synthèses commune (audit juridique) ──
+-- Une synthèse est un texte libre rédigé/modifié par un humain ; tant qu'elle
+-- n'est pas validée, elle ne doit JAMAIS alimenter un verdict d'instruction.
+-- Convention de valeurs alignée avec zone_regulatory_rules : valide | brouillon | rejete.
+-- Default brouillon = safe-by-default : les synthèses existantes sont marquées
+-- non-validées et l'instructeur doit les passer en revue avant qu'elles
+-- ré-entrent dans la boucle d'instruction (fuite documentée).
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS validation_status text NOT NULL DEFAULT 'brouillon';
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS validated_by uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS validated_at timestamp;
 `;
 
 async function main() {

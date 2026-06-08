@@ -2596,6 +2596,9 @@ mairieRouter.get("/documents", async (req: AuthRequest, res) => {
       file_size: commune_documents.file_size,
       synthese: commune_documents.synthese,
       status: commune_documents.status,
+      validation_status: commune_documents.validation_status,
+      validated_by: commune_documents.validated_by,
+      validated_at: commune_documents.validated_at,
       ingested_at: commune_documents.ingested_at,
       created_at: commune_documents.created_at,
     })
@@ -2657,13 +2660,53 @@ mairieRouter.post("/documents", async (req: AuthRequest, res) => {
   }
 });
 
-// Met à jour la synthèse (et éventuellement le nom) d'un document de commune.
+// Met à jour la synthèse, le nom, ou le statut de validation d'un document.
+//
+// Règles importantes (gate juridique) :
+//  - Toute modification de la synthèse remet le statut à "brouillon" : un
+//    édit non explicitement re-validé ne doit pas continuer d'alimenter
+//    l'instruction.
+//  - Passer à "valide" exige un utilisateur authentifié (validated_by) et
+//    horodate la décision (validated_at) — c'est l'amorce de l'audit trail.
 mairieRouter.patch("/documents/:id", async (req: AuthRequest, res) => {
   try {
-    const { synthese, name } = req.body as { synthese?: string | null; name?: string };
-    const patch: { synthese?: string | null; name?: string; updated_at: Date } = { updated_at: new Date() };
-    if (synthese !== undefined) patch.synthese = synthese?.trim() || null;
+    const { synthese, name, validation_status } = req.body as {
+      synthese?: string | null;
+      name?: string;
+      validation_status?: "valide" | "brouillon" | "rejete";
+    };
+    const patch: {
+      synthese?: string | null;
+      name?: string;
+      validation_status?: string;
+      validated_by?: string | null;
+      validated_at?: Date | null;
+      updated_at: Date;
+    } = { updated_at: new Date() };
+
+    const sytheseChanged = synthese !== undefined;
+    if (sytheseChanged) patch.synthese = synthese?.trim() || null;
     if (name !== undefined && name.trim()) patch.name = name.trim();
+
+    if (validation_status) {
+      if (!["valide", "brouillon", "rejete"].includes(validation_status)) {
+        return res.status(400).json({ error: "validation_status invalide" });
+      }
+      patch.validation_status = validation_status;
+      if (validation_status === "valide") {
+        if (!req.user?.id) return res.status(401).json({ error: "Authentification requise pour valider" });
+        patch.validated_by = req.user.id;
+        patch.validated_at = new Date();
+      } else {
+        patch.validated_by = null;
+        patch.validated_at = null;
+      }
+    } else if (sytheseChanged) {
+      // Édit de synthèse sans validation explicite → bascule auto en brouillon.
+      patch.validation_status = "brouillon";
+      patch.validated_by = null;
+      patch.validated_at = null;
+    }
 
     const [doc] = await db.update(commune_documents)
       .set(patch)
@@ -2673,6 +2716,9 @@ mairieRouter.patch("/documents/:id", async (req: AuthRequest, res) => {
         type: commune_documents.type,
         name: commune_documents.name,
         synthese: commune_documents.synthese,
+        validation_status: commune_documents.validation_status,
+        validated_by: commune_documents.validated_by,
+        validated_at: commune_documents.validated_at,
       });
     if (!doc) return res.status(404).json({ error: "Document introuvable" });
     res.json(doc);
@@ -2713,6 +2759,8 @@ mairieRouter.get("/dossiers/:id/commune-documents", async (req: AuthRequest, res
       file_size: commune_documents.file_size,
       synthese: commune_documents.synthese,
       status: commune_documents.status,
+      validation_status: commune_documents.validation_status,
+      validated_at: commune_documents.validated_at,
       created_at: commune_documents.created_at,
     })
       .from(commune_documents)
