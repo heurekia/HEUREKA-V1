@@ -7,6 +7,7 @@ import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
+import { logAudit } from "../services/audit.js";
 
 export const superAdminRouter = Router();
 
@@ -362,6 +363,7 @@ superAdminRouter.post("/users", async (req, res) => {
       token,
     }).catch((err) => console.error("[mailer] invitation:", err));
 
+    await logAudit(req, "admin_user_created", { email });
     res.status(201).json({ ...newUser, invited: true });
   } catch (err) {
     console.error(err);
@@ -397,6 +399,7 @@ superAdminRouter.post("/users/:id/resend-invitation", async (req, res) => {
       token,
     }).catch((err) => console.error("[mailer] resend-invitation:", err));
 
+    await logAudit(req, "admin_invitation_resent", { email: user.email });
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -424,6 +427,7 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
       .returning();
 
     if (!updated) return res.status(404).json({ error: "Utilisateur introuvable" });
+    await logAudit(req, "admin_user_updated", { email: updated.email });
     res.json(updated);
   } catch (err) {
     console.error(err);
@@ -470,6 +474,7 @@ superAdminRouter.put("/users/:id/communes", async (req, res) => {
 superAdminRouter.delete("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
+    const [target] = await db.select({ email: users.email }).from(users).where(eq(users.id, id)).limit(1);
     await db.transaction(async (tx) => {
       // Nullify instructeur_id on dossiers assigned to this user (no cascade in schema)
       await tx.update(dossiers).set({ instructeur_id: null }).where(eq(dossiers.instructeur_id, id));
@@ -478,6 +483,7 @@ superAdminRouter.delete("/users/:id", async (req, res) => {
       // Delete the user — cascades through user_id FKs (dossiers, notifications, etc.)
       await tx.delete(users).where(eq(users.id, id));
     });
+    await logAudit(req, "admin_user_deleted", { email: target?.email ?? null });
     res.json({ success: true });
   } catch (err) {
     console.error(err);
@@ -524,6 +530,7 @@ superAdminRouter.post("/roles", async (req, res) => {
       })
       .returning();
 
+    await logAudit(req, "admin_role_created");
     res.status(201).json(newRole);
   } catch (err) {
     console.error(err);
@@ -559,6 +566,7 @@ superAdminRouter.patch("/roles/:id", async (req, res) => {
       .where(eq(role_permissions.id, id))
       .returning();
 
+    await logAudit(req, "admin_role_updated");
     res.json(updated);
   } catch (err) {
     console.error(err);
@@ -578,6 +586,7 @@ superAdminRouter.delete("/roles/:id", async (req, res) => {
     }
 
     await db.delete(role_permissions).where(eq(role_permissions.id, id));
+    await logAudit(req, "admin_role_deleted");
     res.json({ success: true });
   } catch (err) {
     console.error(err);
