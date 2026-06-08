@@ -3247,6 +3247,7 @@ function DocumentsPanel({ commune }: { commune: string }) {
   const [editingSynthese, setEditingSynthese] = useState<string | null>(null);
   const [syntheseDraft, setSyntheseDraft] = useState("");
   const [savingSynthese, setSavingSynthese] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
 
   const load = () => {
     setLoading(true);
@@ -3266,6 +3267,7 @@ function DocumentsPanel({ commune }: { commune: string }) {
   const upload = async () => {
     if (!form.file || !form.name.trim()) return;
     setUploading(true);
+    setUploadError(null);
     try {
       const b64 = await new Promise<string>((resolve, reject) => {
         const reader = new FileReader();
@@ -3288,7 +3290,11 @@ function DocumentsPanel({ commune }: { commune: string }) {
       setShowForm(false);
       setForm({ type: "ppri", name: "", synthese: "", file: null });
       load();
-    } catch {
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Erreur d'enregistrement";
+      setUploadError(/payload|too large|413/i.test(msg)
+        ? "Fichier trop volumineux pour être enregistré. La limite est de 60 Mo."
+        : msg);
     } finally {
       setUploading(false);
     }
@@ -3390,8 +3396,14 @@ function DocumentsPanel({ commune }: { commune: string }) {
             />
           </div>
 
+          {uploadError && (
+            <div style={{ background: "#FEF2F2", border: "1px solid #FCA5A5", color: "#B91C1C", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 12 }}>
+              {uploadError}
+            </div>
+          )}
+
           <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
-            <button onClick={() => { setShowForm(false); setForm({ type: "ppri", name: "", synthese: "", file: null }); }}
+            <button onClick={() => { setShowForm(false); setForm({ type: "ppri", name: "", synthese: "", file: null }); setUploadError(null); }}
               style={{ border: "1px solid #E2E8F0", borderRadius: 8, background: "white", padding: "8px 16px", fontSize: 13, cursor: "pointer", color: "#374151" }}>
               Annuler
             </button>

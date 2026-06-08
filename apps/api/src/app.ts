@@ -61,6 +61,8 @@ app.use(cors({
 // higher limit on that single route only — parsed first so the 2 MB global parser
 // below skips it (body-parser won't re-parse an already-parsed request).
 app.use("/api/mairie/admin/ingest-plu-pdf", express.json({ limit: "60mb" }));
+// Référentiel documentaire commune (OAP, PPRI, PEB…) : PDFs envoyés en base64.
+app.use("/api/mairie/documents", express.json({ limit: "60mb" }));
 // Analyse d'article avec image (tableau/croquis) en base64.
 app.use("/api/mairie/reglementation/structure-article", express.json({ limit: "15mb" }));
 app.use(express.json({ limit: "2mb" }));
