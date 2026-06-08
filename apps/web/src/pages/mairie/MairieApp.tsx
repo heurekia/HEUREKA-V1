@@ -4122,7 +4122,10 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     const param = inseeCode
       ? `insee_code=${encodeURIComponent(inseeCode)}`
       : `commune_name=${encodeURIComponent(commune)}`;
-    api.get<ReglData>(`/mairie/reglementation?${param}`)
+    // Écran d'administration des règles : on doit voir les brouillons et
+    // rejetées pour pouvoir les valider. Tous les autres callers (carte,
+    // dashboards) reçoivent par défaut uniquement les règles validées.
+    api.get<ReglData>(`/mairie/reglementation?${param}&include_drafts=true`)
       .then(d => {
         setData(d);
         if (d.zones[0] && !selectedZoneId) setSelectedZoneId(d.zones[0].id);

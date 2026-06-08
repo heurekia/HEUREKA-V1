@@ -1648,11 +1648,18 @@ mairieRouter.get("/notifications", async (req: AuthRequest, res) => {
 // ── Réglementation ────────────────────────────────────────────────────────────
 
 // GET /mairie/reglementation?insee_code=37018 (or legacy ?commune_name=Ballan-Miré)
-// Returns zones with their rules and per-zone validation stats.
+//
+// Renvoie les zones et leurs règles. Filtre safe-by-default : seules les règles
+// `validation_status = 'valide'` sont incluses. Tout caller qui doit voir les
+// brouillons / rejetées (= UI de validation) doit passer `?include_drafts=true`
+// explicitement. Les consommateurs « lecture » (carte, dashboards, futurs
+// services) reçoivent ainsi par défaut un référentiel utilisable, sans risque
+// de mélange visuel avec du contenu non validé.
 mairieRouter.get("/reglementation", async (req: AuthRequest, res) => {
   try {
     const communeName = (req.query.commune_name as string | undefined)?.trim();
     const inseeCode = (req.query.insee_code as string | undefined)?.trim();
+    const includeDrafts = req.query.include_drafts === "true";
     if (!communeName && !inseeCode) return res.status(400).json({ error: "commune_name ou insee_code requis" });
 
     const [commune] = await db.select().from(communes)
@@ -1667,16 +1674,20 @@ mairieRouter.get("/reglementation", async (req: AuthRequest, res) => {
       .orderBy(zones.display_order);
 
     const result = await Promise.all(zoneRows.map(async zone => {
-      const rules = await db.select().from(zone_regulatory_rules)
+      const allRules = await db.select().from(zone_regulatory_rules)
         .where(eq(zone_regulatory_rules.zone_id, zone.id))
         .orderBy(zone_regulatory_rules.article_number);
 
       const stats = {
-        total: rules.length,
-        valide: rules.filter(r => r.validation_status === "valide").length,
-        brouillon: rules.filter(r => r.validation_status === "brouillon" || r.validation_status === "draft").length,
-        rejete: rules.filter(r => r.validation_status === "rejete").length,
+        total: allRules.length,
+        valide: allRules.filter(r => r.validation_status === "valide").length,
+        brouillon: allRules.filter(r => r.validation_status === "brouillon" || r.validation_status === "draft").length,
+        rejete: allRules.filter(r => r.validation_status === "rejete").length,
       };
+
+      const rules = includeDrafts
+        ? allRules
+        : allRules.filter(r => r.validation_status === "valide");
 
       return { ...zone, rules, stats };
     }));
