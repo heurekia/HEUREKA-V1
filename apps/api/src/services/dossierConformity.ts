@@ -494,7 +494,7 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
 
     // 10. Alertes réglementaires contextuelles
     const alertes: string[] = [];
-    if (piecesCtx.hasABF) alertes.push("Périmètre ABF : avis Architecte des Bâtiments de France obligatoire (délai porté à 2 mois).");
+    if (piecesCtx.hasABF) alertes.push("Périmètre ABF : avis Architecte des Bâtiments de France obligatoire (+1 mois sur le délai d'instruction, R.423-24 b)).");
     if (piecesCtx.isNatura2000) alertes.push("Site Natura 2000 : évaluation d'incidence requise.");
     if (piecesCtx.isERP) alertes.push("ERP : dossiers accessibilité et sécurité incendie exigés.");
     if (piecesCtx.isClimateResilience) alertes.push("Loi Climat & Résilience (R.171-35) : attestation obligatoire.");

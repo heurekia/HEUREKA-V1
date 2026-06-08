@@ -15,6 +15,7 @@ import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js"
 import { analyzePiece } from "../services/pieceAnalyzer.js";
 import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../services/pieceExtractor.js";
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
+import { computeInstructionDelay } from "../services/instructionDelays.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
@@ -140,6 +141,16 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
     let explication = "";
     let alertes: string[] = [];
 
+    // Délai légal pré-calculé pour CE dossier (base + extensions). On le
+    // fournit à Claude pour qu'il n'invente PAS de durée — il doit reprendre
+    // exactement les composantes qu'on lui donne.
+    const delaiCalc = computeInstructionDelay(
+      det.type,
+      { natures: naturesToUse, certificatType },
+      parcelData?.servitudes ?? null,
+    );
+    const delaiText = `${delaiCalc.total_mois} mois (${delaiCalc.breakdown.map((b) => `${b.label} ${b.mois > 0 ? "+" : ""}${b.mois}`).join(", ")})`;
+
     if (det.type !== "aucune_autorisation") {
       try {
         const client = new Anthropic({ apiKey: getAnthropicKey() });
@@ -159,6 +170,7 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
             ? `Servitudes : ${parcelData.servitudes.map((s) => s.libelle ?? s.categorie).filter(Boolean).join(", ")}`
             : null,
           `Procédure requise (déjà déterminée) : ${det.libelle} (${det.articles.join(", ")})`,
+          `Délai légal d'instruction (déjà calculé) : ${delaiText}`,
           det.architecte_requis ? "Architecte obligatoire : oui (surface totale > 150 m²)" : null,
         ].filter(Boolean).join("\n");
 
@@ -181,7 +193,8 @@ Règles strictes :
 - Ne jamais nommer la procédure dans l'explication (elle est déjà affichée)
 - Alertes : 0 si rien de spécial, maximum 5. Chaque alerte doit être concrète et utile
 - Pour un changement de destination de garage : toujours mentionner la vérification des obligations de stationnement PLU
-- Pour une zone ABF : mentionner les contraintes potentielles (couleurs, matériaux, menuiseries, type de baies) et le délai porté à 2 mois
+- Pour une zone ABF : mentionner les contraintes potentielles (couleurs, matériaux, menuiseries, type de baies) ET le délai supplémentaire (+1 mois au titre de R.423-24 b)). NE JAMAIS écrire "porté à 2 mois" — la procédure peut être 2, 3 ou 4 mois selon le type ; ne donne PAS de durée totale inventée.
+- Quand tu dois mentionner le délai d'instruction (ABF, dérogation, évaluation environnementale…), reprends EXACTEMENT les composantes fournies dans "Délai légal d'instruction (déjà calculé)" ci-dessus, sans inventer d'autre chiffre.
 - Ton direct et professionnel, pas de formules de politesse`,
           messages: [{ role: "user", content: contextLines }],
         });
@@ -210,7 +223,10 @@ Règles strictes :
       cerfa: det.cerfa,
       architecte_requis: det.architecte_requis,
       explication,
-      delai_moyen: det.delai_moyen,
+      // On préfère le délai calculé légalement (base + extensions) à la
+      // fourchette générique "delai_moyen" du moteur déterministe.
+      delai_moyen: delaiCalc.total_mois > 0 ? `${delaiCalc.total_mois} mois` : det.delai_moyen,
+      delai_breakdown: delaiCalc.breakdown,
       pieces_requises,
       alertes,
       confiance: det.confidence === "deterministic" ? "haute" : "moyenne",

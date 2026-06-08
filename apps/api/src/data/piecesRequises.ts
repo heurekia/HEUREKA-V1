@@ -80,7 +80,7 @@ const PIECES_DP: Piece[] = [
     code: "DP8",
     nom: "Consultation ABF — Architecte des Bâtiments de France",
     requis: (ctx) => ctx.hasABF,
-    aide: "Votre terrain est en périmètre ABF. La mairie saisit l'ABF automatiquement — vous n'avez rien à joindre. L'ABF peut imposer couleurs, matériaux, menuiseries, divisions de vitrages et type de baies. Délai d'instruction porté à 2 mois minimum.",
+    aide: "Votre terrain est en périmètre ABF. La mairie saisit l'ABF automatiquement — vous n'avez rien à joindre. L'ABF peut imposer couleurs, matériaux, menuiseries, divisions de vitrages et type de baies. Délai d'instruction prolongé de 1 mois (R.423-24 b du Code de l'Urbanisme).",
   },
   // ── Pièces recommandées ABF ──
   {
