@@ -30,7 +30,11 @@ export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
   citizen_summary: text("citizen_summary"),
   citizen_relevant: boolean("citizen_relevant").notNull().default(true),
   instructor_note: text("instructor_note"),
-  validation_status: text("validation_status").notNull().default("draft"),
+  // Convention applicative : "valide" | "brouillon" | "rejete". Une règle
+  // n'est consommée par le moteur d'instruction que si statut = "valide".
+  // Default "brouillon" → safe-by-default : tout insert qui oublierait de
+  // poser le statut atterrit en non-validé, jamais en production.
+  validation_status: text("validation_status").notNull().default("brouillon"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

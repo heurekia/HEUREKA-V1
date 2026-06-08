@@ -539,6 +539,16 @@ CREATE INDEX IF NOT EXISTS idx_document_segments_parent ON document_segments(par
 -- Recherche de similarité cosinus (HNSW)
 CREATE INDEX IF NOT EXISTS idx_document_segments_embedding ON document_segments USING hnsw (embedding vector_cosine_ops);
 
+-- ── Normalisation validation_status sur zone_regulatory_rules ──
+-- Le schéma historique posait DEFAULT 'draft' alors que tout le code applicatif
+-- raisonne en français ('valide' | 'brouillon' | 'rejete'). Conséquence : tout
+-- insert qui aurait omis le champ atterrissait en 'draft' → invisible des
+-- filtres applicatifs (trou silencieux). On normalise les lignes existantes
+-- et on aligne le défaut sur la convention applicative.
+UPDATE zone_regulatory_rules SET validation_status = 'brouillon'
+  WHERE validation_status NOT IN ('valide', 'brouillon', 'rejete');
+ALTER TABLE zone_regulatory_rules ALTER COLUMN validation_status SET DEFAULT 'brouillon';
+
 -- ── Validation des synthèses commune (audit juridique) ──
 -- Une synthèse est un texte libre rédigé/modifié par un humain ; tant qu'elle
 -- n'est pas validée, elle ne doit JAMAIS alimenter un verdict d'instruction.

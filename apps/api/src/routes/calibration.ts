@@ -9,6 +9,18 @@ export const calibrationRouter = Router();
 
 calibrationRouter.use(requireAuth);
 
+// Convention applicative : aucun autre statut n'est consommé par le moteur
+// d'instruction. Toute valeur en dehors de cet ensemble est rejetée en 400
+// pour éviter qu'un caller ne plante silencieusement une règle dans un
+// statut invisible des filtres.
+const VALID_STATUSES = new Set(["valide", "brouillon", "rejete"]);
+function normalizeStatus(v: unknown): string | null | undefined {
+  if (v === undefined) return undefined; // pas fourni → on n'écrit pas
+  if (typeof v !== "string") return null; // signal d'erreur traité par le caller
+  const s = v.trim();
+  return VALID_STATUSES.has(s) ? s : null;
+}
+
 // ── Lister les zones ──
 calibrationRouter.get("/zones", async (_req: AuthRequest, res) => {
   try {
@@ -43,9 +55,16 @@ calibrationRouter.patch("/rules/:id", requireRole("mairie", "instructeur", "admi
     const b = req.body as Record<string, unknown>;
     const updates: Record<string, unknown> = { updated_at: new Date() };
     // Numeric + classification fields
-    for (const f of ["topic", "rule_text", "value_min", "value_max", "value_exact", "unit", "validation_status", "article_number"] as const) {
+    for (const f of ["topic", "rule_text", "value_min", "value_max", "value_exact", "unit", "article_number"] as const) {
       if (b[f] !== undefined) updates[f] = b[f];
     }
+    // validation_status est traité à part : on rejette les valeurs hors
+    // convention pour ne pas créer de règle invisible des filtres.
+    const status = normalizeStatus(b.validation_status);
+    if (status === null) {
+      return res.status(400).json({ error: "validation_status invalide (attendu : valide | brouillon | rejete)" });
+    }
+    if (status !== undefined) updates.validation_status = status;
     // Qualitative / textual fields (aspect extérieur : matériaux, couleurs, menuiseries, clôtures…)
     for (const f of ["article_title", "conditions", "exceptions", "summary", "instructor_note"] as const) {
       if (b[f] !== undefined) updates[f] = b[f];
@@ -81,6 +100,14 @@ calibrationRouter.post("/rules", requireRole("mairie", "instructeur", "admin"), 
     const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
     const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
 
+    // Saisie manuelle par un instructeur authentifié → marquée "valide" par
+    // défaut (l'acte de poster vaut validation). On valide quand même la valeur
+    // si fournie explicitement, pour rejeter toute chaîne hors convention.
+    const status = normalizeStatus(b.validation_status);
+    if (status === null) {
+      return res.status(400).json({ error: "validation_status invalide (attendu : valide | brouillon | rejete)" });
+    }
+
     const [rule] = await db
       .insert(zone_regulatory_rules)
       .values({
@@ -97,8 +124,7 @@ calibrationRouter.post("/rules", requireRole("mairie", "instructeur", "admin"), 
         value_exact: num(b.value_exact),
         unit: str(b.unit),
         instructor_note: str(b.instructor_note),
-        // Manually added by an instructor → trusted, marked validated by default
-        validation_status: str(b.validation_status) ?? "valide",
+        validation_status: status ?? "valide",
       })
       .returning();
     res.status(201).json(rule);
