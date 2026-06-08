@@ -824,10 +824,20 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
     const page = Math.max(1, Number(req.query.page ?? 1));
     const limit = 50;
     const offset = (page - 1) * limit;
-    const action = req.query.action as string | undefined;
-    const since = req.query.since as string | undefined;
+    const action = typeof req.query.action === "string" && req.query.action.length > 0
+      ? req.query.action
+      : undefined;
+    const sinceRaw = typeof req.query.since === "string" && req.query.since.length > 0
+      ? req.query.since
+      : undefined;
+    const sinceDate = sinceRaw ? new Date(sinceRaw) : undefined;
 
-    const where = sql`${action ? sql`action = ${action}` : sql`1=1`} AND ${since ? sql`audit_logs.created_at >= ${new Date(since)}` : sql`1=1`}`;
+    const conditions = [];
+    if (action) conditions.push(eq(audit_logs.action, action));
+    if (sinceDate && !Number.isNaN(sinceDate.getTime())) {
+      conditions.push(gte(audit_logs.created_at, sinceDate));
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     const [rows, [total]] = await Promise.all([
       db.select({
@@ -852,7 +862,7 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
 
     res.json({ rows, total: Number(total?.count ?? 0), page, limit });
   } catch (err) {
-    console.error(err);
+    console.error("[audit-logs] query failed:", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
