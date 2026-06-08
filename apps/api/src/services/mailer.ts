@@ -7,7 +7,7 @@ function getResend(): Resend {
   return _resend;
 }
 
-const FROM = process.env.SMTP_FROM ?? "Heurekia <notifications@heurekia.com>";
+const FROM = process.env.SMTP_FROM ?? "Heurekia <notifications@mail.heurekia.com>";
 const BASE_URL = process.env.FRONTEND_URL ?? "https://heurekia.com";
 
 function formatCommuneList(names: string[]): { html: string; text: string } {
