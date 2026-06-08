@@ -8,6 +8,7 @@ import { analyseParcel } from "../services/parcelAnalysis.js";
 import { runDossierConformityAnalysis, runDossierConformityAnalysisBackground, type ConformiteReport } from "../services/dossierConformity.js";
 import { parseLooseArray } from "../services/jsonExtract.js";
 import { extractPiece, expectedTypeFromCode } from "../services/pieceExtractor.js";
+import { callClaude, anthropicClient } from "../services/aiUsage.js";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import path from "path";
@@ -38,22 +39,6 @@ async function splitPdfBase64(base64: string, maxPages = 90, overlap = 8): Promi
     if (end >= total) break;
   }
   return chunks;
-}
-
-function getAnthropicApiKey(): string {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  const candidates = [
-    process.env.CLAUDE_SESSION_INGRESS_TOKEN_FILE,
-    "/home/claude/.claude/remote/.session_ingress_token",
-  ];
-  for (const p of candidates) {
-    if (!p) continue;
-    try {
-      const token = fs.readFileSync(p, "utf8").trim();
-      if (token) return token;
-    } catch { /* try next */ }
-  }
-  throw new Error("ANTHROPIC_API_KEY non configurée");
 }
 
 export const mairieRouter = Router();
@@ -421,7 +406,7 @@ mairieRouter.post("/dossiers/:id/pieces/:pieceId/extract", async (req: AuthReque
       expected_type: expectedTypeFromCode(piece.code_piece),
       nom_piece: piece.nom,
       code_piece: piece.code_piece ?? "",
-    });
+    }, { dossierId: req.params.id as string, userId: req.user?.id ?? null });
     if (!extraction) {
       return res.status(422).json({ error: "Extraction impossible (format non supporté ou fichier trop volumineux)" });
     }
@@ -1348,7 +1333,7 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
   try {
     // maxRetries : le SDK réessaie (backoff) sur 429 / 5xx / 529 ; timeout pour
     // ne jamais pendre indéfiniment sur un tronçon PDF lourd.
-    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 120_000 });
+    const client = anthropicClient({ maxRetries: 3, timeout: 120_000 });
 
     // Upsert commune
     let commune = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
@@ -1384,16 +1369,18 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     send({ type: "phase", message: chunks.length > 1 ? `Détection des zones (${chunks.length} parties)…` : "Détection des zones…" });
     const detectChunk = async (c: number) => {
      try {
-      const zoneMsg = await client.messages.create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 2000,
-        messages: [{
-          role: "user",
-          content: [
-            pdfDocFor(chunks[c]!),
-            {
-              type: "text",
-              text: `Cet extrait fait partie d'un règlement PLU français.
+      const zoneMsg = await callClaude(
+        { purpose: "plu_zone_detect", userId: req.user?.id ?? null },
+        {
+          model: "claude-sonnet-4-6",
+          max_tokens: 2000,
+          messages: [{
+            role: "user",
+            content: [
+              pdfDocFor(chunks[c]!),
+              {
+                type: "text",
+                text: `Cet extrait fait partie d'un règlement PLU français.
 
 Liste TOUTES les zones et sous-zones qui possèdent, DANS CET EXTRAIT, une section réglementaire dédiée (titre de section + articles ; ex : UA, UB, UC, Ni, Nj, A, Ab, 1AU, 2AU…). Utilise le sommaire s'il est présent dans l'extrait.
 Inclure les sous-zones ayant un règlement distinct. Ne pas exclure une zone parce qu'elle semble petite.
@@ -1402,10 +1389,12 @@ Si aucune section de zone n'apparaît dans cet extrait, répondre [].
 Répondre UNIQUEMENT avec un JSON array, sans autre texte :
 [{"code":"UA","label":"Zone UA – Centre ancien","type":"U"},…]
 Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
-            },
-          ],
-        }],
-      });
+              },
+            ],
+          }],
+        },
+        client,
+      );
       const raw = zoneMsg.content[0]?.type === "text" ? zoneMsg.content[0].text : "[]";
       const found = JSON.parse(raw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
       send({ type: "phase", message: `Détection des zones — partie ${c + 1}/${chunks.length} analysée (${found.length} zones)` });
@@ -1440,18 +1429,20 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
     // Phase 2 — Règles par zone, extraites depuis le tronçon contenant la zone.
     const extractZone = async (zoneDef: { code: string; label: string; type: string; chunk: number }) => {
      try {
-      const ruleMsg = await client.messages.create({
-        model: "claude-sonnet-4-6",
-        max_tokens: 4000,
-        tools: [PLU_SAVE_RULE_TOOL],
-        tool_choice: { type: "any" },
-        messages: [{
-          role: "user",
-          content: [
-            pdfDocFor(chunks[zoneDef.chunk]!),
-            {
-              type: "text",
-              text: `Cet extrait fait partie d'un règlement PLU français. Extrais les règles de la ZONE ${zoneDef.code} uniquement.
+      const ruleMsg = await callClaude(
+        { purpose: "plu_rule_extract", userId: req.user?.id ?? null },
+        {
+          model: "claude-sonnet-4-6",
+          max_tokens: 4000,
+          tools: [PLU_SAVE_RULE_TOOL],
+          tool_choice: { type: "any" },
+          messages: [{
+            role: "user",
+            content: [
+              pdfDocFor(chunks[zoneDef.chunk]!),
+              {
+                type: "text",
+                text: `Cet extrait fait partie d'un règlement PLU français. Extrais les règles de la ZONE ${zoneDef.code} uniquement.
 
 Pour CHAQUE article présent dans la section Zone ${zoneDef.code}, appelle save_rule une fois.
 Correspondance article → topic :
@@ -1464,10 +1455,12 @@ Correspondance article → topic :
 - Si la valeur numérique est dans un schéma graphique du document → needs_vision = true.
 - Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact du document cité.
 - N'invente aucune valeur. Si incertain, omets value_min/max/exact.`,
-            },
-          ],
-        }],
-      });
+              },
+            ],
+          }],
+        },
+        client,
+      );
 
       const rules: PluRuleInput[] = ruleMsg.content
         .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
@@ -1896,8 +1889,10 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
     const prefix = `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}`;
     userContent.push({ type: "text", text: `${prefix}\n\n${text ?? "(Voir le tableau / croquis fourni en image.)"}` });
 
-    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 90_000 });
-    const msg = await client.messages.create({
+    const client = anthropicClient({ maxRetries: 3, timeout: 90_000 });
+    const msg = await callClaude(
+      { purpose: "plu_article_structure", userId: req.user?.id ?? null },
+      {
       // Sonnet sur les deux flux : un article PLU qui se découpe en 5–7 sous-règles
       // produit un JSON volumineux que Haiku tronque ou met trop longtemps à
       // générer (au point de faire couper la connexion par la passerelle, d'où
@@ -1945,7 +1940,9 @@ AUTRES RÈGLES :
 - N'invente AUCUNE valeur. Articles 5 et 14 → "sans objet" (loi ALUR) ET citizen_relevant=false.
 - VERSION CITOYEN ("citizen_title" + "citizen_summary") : OBLIGATOIRE par sous-règle, COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme. Phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol » → dis « la surface que votre maison occupe au sol ». Ne recopie PAS les exceptions juridiques dans citizen_summary (elles restent dans "exceptions").`,
       messages: [{ role: "user", content: userContent }],
-    });
+      },
+      client,
+    );
 
     const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
     // Parsing tolérant : si la réponse est tronquée (max_tokens), on récupère les
@@ -2009,8 +2006,10 @@ mairieRouter.post("/reglementation/structure-zone", requireRole("mairie", "instr
       return res.status(400).json({ error: "Texte vide ou trop court — collez le règlement complet de la zone." });
     }
 
-    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 2, timeout: 120_000 });
-    const msg = await client.messages.create({
+    const client = anthropicClient({ maxRetries: 2, timeout: 120_000 });
+    const msg = await callClaude(
+      { purpose: "plu_zone_structure", userId: req.user?.id ?? null },
+      {
       model: "claude-sonnet-4-6",
       // Un règlement complet (14 articles × plusieurs sous-règles citoyen+mairie)
       // dépasse facilement 6 k tokens et provoquait des sorties tronquées. Avec
@@ -2054,7 +2053,9 @@ RÈGLES DE STRUCTURATION :
 - N'invente AUCUNE valeur. Reste fidèle au texte fourni.
 - La version « citoyen » doit être COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme : phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol », dis « la surface que votre maison occupe au sol ».`,
       messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}.\n\n` : ""}${text}` }],
-    });
+      },
+      client,
+    );
 
     const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "";
     const stopReason = msg.stop_reason;

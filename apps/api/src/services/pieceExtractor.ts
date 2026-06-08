@@ -1,6 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import { extractFirstJson } from "./pieceAnalyzer.js";
+import { anthropicClient, callClaude } from "./aiUsage.js";
 
 /**
  * Extraction structurée d'une pièce du dossier d'urbanisme.
@@ -109,19 +109,6 @@ function isAllowedImage(mime: string): boolean {
 }
 function isPdf(mime: string): boolean {
   return mime === PDF_TYPE;
-}
-
-function getAnthropicKey(): string {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  const candidates = [
-    process.env.CLAUDE_SESSION_INGRESS_TOKEN_FILE,
-    "/home/claude/.claude/remote/.session_ingress_token",
-  ];
-  for (const p of candidates) {
-    if (!p) continue;
-    try { return fs.readFileSync(p, "utf8").trim(); } catch { /* try next */ }
-  }
-  throw new Error("ANTHROPIC_API_KEY non configurée");
 }
 
 const SYSTEM_PROMPT = `Tu es expert en instruction de dossiers d'urbanisme (Code de l'Urbanisme, CERFA, conventions de représentation des plans).
@@ -321,6 +308,7 @@ export async function extractPiece(
   filePath: string,
   mimeType: string,
   ctx?: PieceExtractContext,
+  trace?: { dossierId?: string | null; userId?: string | null },
 ): Promise<PieceExtraction | null> {
   if (!isAllowedImage(mimeType) && !isPdf(mimeType)) return null;
 
@@ -342,20 +330,24 @@ export async function extractPiece(
     hint,
   ].filter(Boolean).join("\n");
 
-  const client = new Anthropic({ apiKey: getAnthropicKey(), maxRetries: 2, timeout: 90_000 });
-  const msg = await client.messages.create({
-    // Sonnet 4.6 : meilleure vision pour les plans cotés et les CERFA scannés.
-    model: "claude-sonnet-4-6",
-    max_tokens: 2500,
-    system: SYSTEM_PROMPT,
-    messages: [{
-      role: "user",
-      content: [
-        documentBlock,
-        { type: "text", text: meta || "Extrais les valeurs visibles sur cette pièce." },
-      ],
-    }],
-  });
+  const client = anthropicClient({ maxRetries: 2, timeout: 90_000 });
+  const msg = await callClaude(
+    { purpose: "piece_extract", dossierId: trace?.dossierId, userId: trace?.userId },
+    {
+      // Sonnet 4.6 : meilleure vision pour les plans cotés et les CERFA scannés.
+      model: "claude-sonnet-4-6",
+      max_tokens: 2500,
+      system: SYSTEM_PROMPT,
+      messages: [{
+        role: "user",
+        content: [
+          documentBlock,
+          { type: "text", text: meta || "Extrais les valeurs visibles sur cette pièce." },
+        ],
+      }],
+    },
+    client,
+  );
 
   const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
   return parseExtraction(text);

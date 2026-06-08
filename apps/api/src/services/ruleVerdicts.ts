@@ -1,7 +1,6 @@
-import Anthropic from "@anthropic-ai/sdk";
-import fs from "fs";
 import { extractFirstJson } from "./pieceAnalyzer.js";
 import type { PieceExtraction } from "./pieceExtractor.js";
+import { anthropicClient, callClaude } from "./aiUsage.js";
 
 /**
  * Moteur de verdict par règle PLU.
@@ -101,19 +100,6 @@ export interface VerdictContextInput {
   commune: string | null;
   natures: string[];
   surface_plancher: number | null;
-}
-
-function getAnthropicKey(): string {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  const candidates = [
-    process.env.CLAUDE_SESSION_INGRESS_TOKEN_FILE,
-    "/home/claude/.claude/remote/.session_ingress_token",
-  ];
-  for (const p of candidates) {
-    if (!p) continue;
-    try { return fs.readFileSync(p, "utf8").trim(); } catch { /* try next */ }
-  }
-  throw new Error("ANTHROPIC_API_KEY non configurée");
 }
 
 const SYSTEM_PROMPT = `Tu es expert en instruction de dossiers d'urbanisme (Code de l'Urbanisme, PLU).
@@ -298,6 +284,7 @@ export async function computeRuleVerdicts(args: {
   pieces: VerdictPieceInput[];
   documentsCommune: VerdictDocumentCommuneInput[];
   context: VerdictContextInput;
+  trace?: { dossierId?: string | null; userId?: string | null };
 }): Promise<RuleVerdictsReport> {
   const startedAt = Date.now();
   const warnings: string[] = [];
@@ -345,13 +332,17 @@ ${formatCommuneDocsForPrompt(args.documentsCommune)}
 Rends UN verdict par règle ci-dessus. Cite uniquement des extraits qui figurent dans le bloc "citations" de la pièce concernée. À défaut, verdict "non_verifiable" + précise "manquant".`;
 
   const model = "claude-sonnet-4-6";
-  const client = new Anthropic({ apiKey: getAnthropicKey(), maxRetries: 2, timeout: 120_000 });
-  const msg = await client.messages.create({
-    model,
-    max_tokens: 8000,
-    system: SYSTEM_PROMPT,
-    messages: [{ role: "user", content: [{ type: "text", text: userText }] }],
-  });
+  const client = anthropicClient({ maxRetries: 2, timeout: 120_000 });
+  const msg = await callClaude(
+    { purpose: "rule_verdicts", dossierId: args.trace?.dossierId, userId: args.trace?.userId },
+    {
+      model,
+      max_tokens: 8000,
+      system: SYSTEM_PROMPT,
+      messages: [{ role: "user", content: [{ type: "text", text: userText }] }],
+    },
+    client,
+  );
 
   const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
   const parsed = extractFirstJson(raw) as Record<string, unknown> | null;

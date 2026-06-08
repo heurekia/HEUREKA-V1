@@ -359,6 +359,7 @@ const navItems = [
   { path: "/admin/roles", icon: "🔑", label: "Rôles" },
   { path: "/admin/utilisateurs", icon: "👥", label: "Utilisateurs" },
   { path: "/admin/services", icon: "🔗", label: "Services annexes" },
+  { path: "/admin/couts-ia", icon: "💶", label: "Coûts IA" },
   { path: "/admin/audit", icon: "🔒", label: "Audit sécurité" },
   { path: "/admin/configuration", icon: "⚙", label: "Configuration" },
 ];
@@ -3198,6 +3199,332 @@ function AuditLogs() {
   );
 }
 
+// ─── Coûts IA ────────────────────────────────────────────────────────────────
+interface AiCostSummary {
+  period: string;
+  totals: {
+    events: number;
+    cost_eur: number;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_tokens: number;
+    cache_creation_tokens: number;
+  };
+  by_purpose: { purpose: string; events: number; cost_eur: number }[];
+  by_model: { model: string; events: number; cost_eur: number }[];
+}
+
+interface AiCostByDossier {
+  dossier_id: string;
+  numero: string | null;
+  type: string | null;
+  commune: string | null;
+  status: string | null;
+  events: number;
+  cost_eur: number;
+  last_event_at: string;
+}
+
+const PURPOSE_LABELS: Record<string, string> = {
+  piece_analyze: "Analyse de pièce",
+  piece_extract: "Extraction de pièce",
+  rule_verdicts: "Verdicts règle PLU",
+  procedure_explain: "Explication procédure",
+  plu_zone_detect: "Détection zones PLU",
+  plu_rule_extract: "Extraction règles PLU",
+  plu_article_structure: "Structuration article PLU",
+  plu_zone_structure: "Structuration zone PLU",
+};
+
+function fmtEur(v: number): string {
+  if (v < 0.01) return `${(v * 100).toFixed(2)} c€`;
+  return `${v.toFixed(v < 1 ? 3 : 2)} €`;
+}
+
+function CoutsIA() {
+  const navigate = useNavigate();
+  const [period, setPeriod] = useState<"7d" | "30d" | "all">("30d");
+  const [summary, setSummary] = useState<AiCostSummary | null>(null);
+  const [byDossier, setByDossier] = useState<AiCostByDossier[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      api.get<AiCostSummary>(`/admin/ai-cost/summary?period=${period}`),
+      api.get<AiCostByDossier[]>(`/admin/ai-cost/by-dossier?period=${period}&limit=50`),
+    ])
+      .then(([s, d]) => { setSummary(s); setByDossier(d); })
+      .catch(() => setError("Impossible de charger les coûts IA"))
+      .finally(() => setLoading(false));
+  }, [period]);
+
+  return (
+    <PageShell>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+        <div>
+          <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Coûts IA</h1>
+          <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>
+            Suivi du coût des appels Claude par dossier et par usage métier.
+          </p>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          {(["7d", "30d", "all"] as const).map((p) => (
+            <button
+              key={p}
+              onClick={() => setPeriod(p)}
+              style={{
+                padding: "8px 14px", borderRadius: 8, border: `1px solid ${period === p ? C.accent : C.border}`,
+                background: period === p ? C.accent : "white",
+                color: period === p ? "white" : C.text,
+                fontSize: 13, fontWeight: 600, cursor: "pointer",
+              }}
+            >{p === "7d" ? "7 jours" : p === "30d" ? "30 jours" : "Tout"}</button>
+          ))}
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ background: C.redBg, border: `1px solid ${C.red}`, color: C.red, borderRadius: 10, padding: "12px 16px", marginBottom: 24, fontSize: 14 }}>{error}</div>
+      )}
+
+      {loading ? (
+        <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>
+      ) : summary && byDossier && (
+        <>
+          {/* Totaux */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
+            <StatCard label="Coût total" value={fmtEur(summary.totals.cost_eur)} icon="💶" color={C.accent} bg={C.accentLight} />
+            <StatCard label="Appels IA" value={summary.totals.events.toLocaleString("fr-FR")} icon="🤖" color={C.blue} bg={C.blueBg} />
+            <StatCard label="Tokens entrée" value={summary.totals.input_tokens.toLocaleString("fr-FR")} icon="📥" color={C.purple} bg={C.purpleBg} />
+            <StatCard label="Tokens sortie" value={summary.totals.output_tokens.toLocaleString("fr-FR")} icon="📤" color={C.green} bg={C.greenBg} />
+          </div>
+
+          {/* Répartition par usage */}
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+            <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 14, color: C.text }}>
+                Par usage métier
+              </div>
+              {summary.by_purpose.length === 0 ? (
+                <div style={{ padding: 24, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Aucun appel enregistré.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <tbody>
+                    {[...summary.by_purpose].sort((a, b) => b.cost_eur - a.cost_eur).map((p) => (
+                      <tr key={p.purpose} style={{ borderTop: `1px solid ${C.border}` }}>
+                        <td style={{ padding: "10px 20px", color: C.text }}>{PURPOSE_LABELS[p.purpose] ?? p.purpose}</td>
+                        <td style={{ padding: "10px 20px", color: C.textMuted, textAlign: "right" }}>{p.events.toLocaleString("fr-FR")} appels</td>
+                        <td style={{ padding: "10px 20px", color: C.text, fontWeight: 600, textAlign: "right" }}>{fmtEur(p.cost_eur)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+
+            <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+              <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 14, color: C.text }}>
+                Par modèle
+              </div>
+              {summary.by_model.length === 0 ? (
+                <div style={{ padding: 24, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Aucun appel enregistré.</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                  <tbody>
+                    {[...summary.by_model].sort((a, b) => b.cost_eur - a.cost_eur).map((m) => (
+                      <tr key={m.model} style={{ borderTop: `1px solid ${C.border}` }}>
+                        <td style={{ padding: "10px 20px", color: C.text, fontFamily: "monospace", fontSize: 12 }}>{m.model}</td>
+                        <td style={{ padding: "10px 20px", color: C.textMuted, textAlign: "right" }}>{m.events.toLocaleString("fr-FR")}</td>
+                        <td style={{ padding: "10px 20px", color: C.text, fontWeight: 600, textAlign: "right" }}>{fmtEur(m.cost_eur)}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          </div>
+
+          {/* Top dossiers */}
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 14, color: C.text, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>Dossiers les plus coûteux</span>
+              <span style={{ color: C.textMuted, fontSize: 12, fontWeight: 400 }}>{byDossier.length} dossier(s)</span>
+            </div>
+            {byDossier.length === 0 ? (
+              <div style={{ padding: 40, textAlign: "center", color: C.textMuted }}>Aucun coût IA imputable à un dossier sur cette période.</div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                    <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>N° de dossier</th>
+                    <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Type</th>
+                    <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Commune</th>
+                    <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Appels</th>
+                    <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Coût</th>
+                    <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Dernier appel</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byDossier.map((d) => (
+                    <tr
+                      key={d.dossier_id}
+                      style={{ borderTop: `1px solid ${C.border}`, cursor: "pointer" }}
+                      onClick={() => navigate(`/admin/couts-ia/${d.dossier_id}`)}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = C.bg)}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <td style={{ padding: "10px 20px", color: C.text, fontWeight: 600 }}>{d.numero ?? <span style={{ color: C.textLight }}>supprimé</span>}</td>
+                      <td style={{ padding: "10px 20px", color: C.textMuted }}>{d.type ?? "—"}</td>
+                      <td style={{ padding: "10px 20px", color: C.textMuted }}>{d.commune ?? "—"}</td>
+                      <td style={{ padding: "10px 20px", color: C.textMuted, textAlign: "right" }}>{d.events}</td>
+                      <td style={{ padding: "10px 20px", color: C.text, fontWeight: 700, textAlign: "right" }}>{fmtEur(d.cost_eur)}</td>
+                      <td style={{ padding: "10px 20px", color: C.textMuted, fontSize: 12 }}>{new Date(d.last_event_at).toLocaleString("fr-FR")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </>
+      )}
+    </PageShell>
+  );
+}
+
+interface AiCostDossierDetail {
+  by_purpose: { purpose: string; model: string; events: number; cost_eur: number; input_tokens: number; output_tokens: number }[];
+  events: Array<{
+    id: string;
+    purpose: string;
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation_input_tokens: number;
+    cost_eur: number;
+    duration_ms: number | null;
+    created_at: string;
+  }>;
+}
+
+function CoutsIADossier() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [detail, setDetail] = useState<AiCostDossierDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!id) return;
+    api.get<AiCostDossierDetail>(`/admin/ai-cost/dossier/${id}`)
+      .then(setDetail)
+      .catch(() => setError("Impossible de charger le détail."))
+      .finally(() => setLoading(false));
+  }, [id]);
+
+  const total = detail?.by_purpose.reduce((s, p) => s + p.cost_eur, 0) ?? 0;
+
+  return (
+    <PageShell>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+
+      <button
+        onClick={() => navigate("/admin/couts-ia")}
+        style={{ background: "transparent", border: "none", color: C.accent, fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0, marginBottom: 12 }}
+      >← Retour</button>
+      <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 800, color: C.text }}>
+        Détail des coûts IA
+      </h1>
+      <p style={{ margin: "0 0 24px", color: C.textMuted, fontSize: 13, fontFamily: "monospace" }}>Dossier {id}</p>
+
+      {error && (
+        <div style={{ background: C.redBg, border: `1px solid ${C.red}`, color: C.red, borderRadius: 10, padding: "12px 16px", marginBottom: 24, fontSize: 14 }}>{error}</div>
+      )}
+
+      {loading ? (
+        <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>
+      ) : detail && (
+        <>
+          <div style={{ background: C.accentLight, border: `1px solid ${C.accent}`, borderRadius: 12, padding: "16px 20px", marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ color: C.text, fontWeight: 600, fontSize: 14 }}>Coût IA total du dossier</div>
+            <div style={{ color: C.accent, fontWeight: 800, fontSize: 24 }}>{fmtEur(total)}</div>
+          </div>
+
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 24 }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 14, color: C.text }}>
+              Répartition par usage
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                  <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Usage</th>
+                  <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Modèle</th>
+                  <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Appels</th>
+                  <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>In</th>
+                  <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Out</th>
+                  <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Coût</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...detail.by_purpose].sort((a, b) => b.cost_eur - a.cost_eur).map((p, i) => (
+                  <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "10px 20px", color: C.text }}>{PURPOSE_LABELS[p.purpose] ?? p.purpose}</td>
+                    <td style={{ padding: "10px 20px", color: C.textMuted, fontFamily: "monospace", fontSize: 12 }}>{p.model}</td>
+                    <td style={{ padding: "10px 20px", color: C.textMuted, textAlign: "right" }}>{p.events}</td>
+                    <td style={{ padding: "10px 20px", color: C.textMuted, textAlign: "right" }}>{p.input_tokens.toLocaleString("fr-FR")}</td>
+                    <td style={{ padding: "10px 20px", color: C.textMuted, textAlign: "right" }}>{p.output_tokens.toLocaleString("fr-FR")}</td>
+                    <td style={{ padding: "10px 20px", color: C.text, fontWeight: 700, textAlign: "right" }}>{fmtEur(p.cost_eur)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 14, color: C.text }}>
+              Journal des appels ({detail.events.length})
+            </div>
+            <div style={{ maxHeight: 480, overflowY: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead style={{ position: "sticky", top: 0, background: C.bg }}>
+                  <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                    <th style={{ padding: "8px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted }}>Date</th>
+                    <th style={{ padding: "8px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted }}>Usage</th>
+                    <th style={{ padding: "8px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted }}>Modèle</th>
+                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>In</th>
+                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Out</th>
+                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Cache R/W</th>
+                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Durée</th>
+                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Coût</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.events.map((e) => (
+                    <tr key={e.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "8px 16px", color: C.textMuted }}>{new Date(e.created_at).toLocaleString("fr-FR")}</td>
+                      <td style={{ padding: "8px 16px", color: C.text }}>{PURPOSE_LABELS[e.purpose] ?? e.purpose}</td>
+                      <td style={{ padding: "8px 16px", color: C.textMuted, fontFamily: "monospace" }}>{e.model}</td>
+                      <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.input_tokens.toLocaleString("fr-FR")}</td>
+                      <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.output_tokens.toLocaleString("fr-FR")}</td>
+                      <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.cache_read_input_tokens}/{e.cache_creation_input_tokens}</td>
+                      <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.duration_ms ? `${(e.duration_ms / 1000).toFixed(1)}s` : "—"}</td>
+                      <td style={{ padding: "8px 16px", color: C.text, fontWeight: 700, textAlign: "right" }}>{fmtEur(e.cost_eur)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </PageShell>
+  );
+}
+
 // ─── App Root ─────────────────────────────────────────────────────────────────
 export function SuperAdminApp() {
   return (
@@ -3217,6 +3544,8 @@ export function SuperAdminApp() {
           <Route path="/utilisateurs" element={<Utilisateurs />} />
           <Route path="/roles" element={<Roles />} />
           <Route path="/services" element={<ServicesAnnexes />} />
+          <Route path="/couts-ia" element={<CoutsIA />} />
+          <Route path="/couts-ia/:id" element={<CoutsIADossier />} />
           <Route path="/audit" element={<AuditLogs />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="*" element={<Navigate to="/admin" replace />} />

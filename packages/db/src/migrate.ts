@@ -538,6 +538,25 @@ CREATE INDEX IF NOT EXISTS idx_document_segments_doc_type ON document_segments(d
 CREATE INDEX IF NOT EXISTS idx_document_segments_parent ON document_segments(parent_code);
 -- Recherche de similarité cosinus (HNSW)
 CREATE INDEX IF NOT EXISTS idx_document_segments_embedding ON document_segments USING hnsw (embedding vector_cosine_ops);
+
+-- ── Suivi des coûts IA (un événement par appel LLM facturable) ──
+CREATE TABLE IF NOT EXISTS ai_usage_events (
+  id                          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id                  uuid REFERENCES dossiers(id) ON DELETE SET NULL,
+  user_id                     uuid REFERENCES users(id) ON DELETE SET NULL,
+  purpose                     text NOT NULL,
+  model                       text NOT NULL,
+  input_tokens                integer NOT NULL DEFAULT 0,
+  output_tokens               integer NOT NULL DEFAULT 0,
+  cache_read_input_tokens     integer NOT NULL DEFAULT 0,
+  cache_creation_input_tokens integer NOT NULL DEFAULT 0,
+  cost_eur                    double precision NOT NULL DEFAULT 0,
+  duration_ms                 integer,
+  created_at                  timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_events_dossier ON ai_usage_events(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_events_created_at ON ai_usage_events(created_at);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_events_purpose ON ai_usage_events(purpose);
 `;
 
 async function main() {

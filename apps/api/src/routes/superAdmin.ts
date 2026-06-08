@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, ai_usage_events } from "@heureka-v1/db";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, inArray } from "drizzle-orm";
 import crypto from "crypto";
@@ -946,6 +946,142 @@ superAdminRouter.delete("/legal-mentions/:id", async (req, res) => {
   try {
     await db.delete(legal_mentions).where(eq(legal_mentions.id, req.params.id));
     res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Coûts IA ────────────────────────────────────────────────────────────────
+// Filtre temporel : ?period=7d|30d|all (défaut 30d).
+function aiUsagePeriodCutoff(req: { query: { period?: string } }): Date | null {
+  const p = String(req.query.period ?? "30d");
+  if (p === "all") return null;
+  const days = p === "7d" ? 7 : 30;
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d;
+}
+
+// Vue d'ensemble : total cumulé + répartition par usage / par modèle.
+superAdminRouter.get("/ai-cost/summary", async (req, res) => {
+  try {
+    const cutoff = aiUsagePeriodCutoff(req);
+    const cond = cutoff ? gte(ai_usage_events.created_at, cutoff) : undefined;
+    const [[totals], byPurpose, byModel] = await Promise.all([
+      db.select({
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+        input_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.input_tokens}), 0)`,
+        output_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.output_tokens}), 0)`,
+        cache_read_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.cache_read_input_tokens}), 0)`,
+        cache_creation_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.cache_creation_input_tokens}), 0)`,
+      }).from(ai_usage_events).where(cond as never),
+      db.select({
+        purpose: ai_usage_events.purpose,
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+      }).from(ai_usage_events).where(cond as never).groupBy(ai_usage_events.purpose),
+      db.select({
+        model: ai_usage_events.model,
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+      }).from(ai_usage_events).where(cond as never).groupBy(ai_usage_events.model),
+    ]);
+
+    res.json({
+      period: String(req.query.period ?? "30d"),
+      totals: {
+        events: Number(totals?.events ?? 0),
+        cost_eur: Number(totals?.cost_eur ?? 0),
+        input_tokens: Number(totals?.input_tokens ?? 0),
+        output_tokens: Number(totals?.output_tokens ?? 0),
+        cache_read_tokens: Number(totals?.cache_read_tokens ?? 0),
+        cache_creation_tokens: Number(totals?.cache_creation_tokens ?? 0),
+      },
+      by_purpose: byPurpose.map((r) => ({ purpose: r.purpose, events: Number(r.events), cost_eur: Number(r.cost_eur) })),
+      by_model: byModel.map((r) => ({ model: r.model, events: Number(r.events), cost_eur: Number(r.cost_eur) })),
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Top des dossiers par coût IA (avec n° de dossier et commune pour identifier).
+superAdminRouter.get("/ai-cost/by-dossier", async (req, res) => {
+  try {
+    const cutoff = aiUsagePeriodCutoff(req);
+    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const conds = [isNotNull(ai_usage_events.dossier_id)];
+    if (cutoff) conds.push(gte(ai_usage_events.created_at, cutoff));
+
+    const rows = await db
+      .select({
+        dossier_id: ai_usage_events.dossier_id,
+        numero: dossiers.numero,
+        type: dossiers.type,
+        commune: dossiers.commune,
+        status: dossiers.status,
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+        last_event_at: sql<Date>`MAX(${ai_usage_events.created_at})`,
+      })
+      .from(ai_usage_events)
+      .leftJoin(dossiers, eq(ai_usage_events.dossier_id, dossiers.id))
+      .where(and(...conds))
+      .groupBy(ai_usage_events.dossier_id, dossiers.numero, dossiers.type, dossiers.commune, dossiers.status)
+      .orderBy(desc(sql`SUM(${ai_usage_events.cost_eur})`))
+      .limit(limit);
+
+    res.json(rows.map((r) => ({
+      dossier_id: r.dossier_id,
+      numero: r.numero,
+      type: r.type,
+      commune: r.commune,
+      status: r.status,
+      events: Number(r.events),
+      cost_eur: Number(r.cost_eur),
+      last_event_at: r.last_event_at,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Détail d'un dossier : tous ses événements IA, regroupés par usage.
+superAdminRouter.get("/ai-cost/dossier/:id", async (req, res) => {
+  try {
+    const dossierId = req.params.id;
+    const [byPurpose, events] = await Promise.all([
+      db.select({
+        purpose: ai_usage_events.purpose,
+        model: ai_usage_events.model,
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+        input_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.input_tokens}), 0)`,
+        output_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.output_tokens}), 0)`,
+      }).from(ai_usage_events)
+        .where(eq(ai_usage_events.dossier_id, dossierId))
+        .groupBy(ai_usage_events.purpose, ai_usage_events.model),
+      db.select().from(ai_usage_events)
+        .where(eq(ai_usage_events.dossier_id, dossierId))
+        .orderBy(desc(ai_usage_events.created_at))
+        .limit(200),
+    ]);
+
+    res.json({
+      by_purpose: byPurpose.map((r) => ({
+        purpose: r.purpose,
+        model: r.model,
+        events: Number(r.events),
+        cost_eur: Number(r.cost_eur),
+        input_tokens: Number(r.input_tokens),
+        output_tokens: Number(r.output_tokens),
+      })),
+      events,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

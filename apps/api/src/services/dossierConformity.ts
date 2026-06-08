@@ -368,7 +368,7 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
         };
       } else {
         try {
-          const analysis = await analyzePiece(diskPath, p.type, p.nom, code, ctx);
+          const analysis = await analyzePiece(diskPath, p.type, p.nom, code, ctx, { dossierId });
           result = {
             piece_id: p.id,
             code_piece: p.code_piece,
@@ -481,6 +481,7 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
             natures,
             surface_plancher: surface || null,
           },
+          trace: { dossierId },
         });
       } else if (rules.length === 0) {
         warnings.push("Verdicts règle-par-règle non générés : aucune règle PLU indexée pour cette zone.");

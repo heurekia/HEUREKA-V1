@@ -5,8 +5,8 @@ import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events 
 import { eq, desc, and } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
-import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
+import { callClaude } from "../services/aiUsage.js";
 import path from "path";
 import { fileURLToPath } from "url";
 import multer from "multer";
@@ -43,19 +43,6 @@ const upload = multer({
     }
   },
 });
-
-function getAnthropicKey(): string {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  const candidates = [
-    process.env.CLAUDE_SESSION_INGRESS_TOKEN_FILE,
-    "/home/claude/.claude/remote/.session_ingress_token",
-  ];
-  for (const p of candidates) {
-    if (!p) continue;
-    try { return fs.readFileSync(p, "utf8").trim(); } catch { /* try next */ }
-  }
-  throw new Error("ANTHROPIC_API_KEY non configurée");
-}
 
 const NATURE_LABELS: Record<string, string> = {
   maison_neuve: "Construction d'une maison neuve",
@@ -153,8 +140,6 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
 
     if (det.type !== "aucune_autorisation") {
       try {
-        const client = new Anthropic({ apiKey: getAnthropicKey() });
-
         const contextLines = [
           naturesToUse.length > 1
             ? `Projets combinés : ${naturesToUse.map((n) => NATURE_LABELS[n] ?? n).join(", ")}`
@@ -174,10 +159,12 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
           det.architecte_requis ? "Architecte obligatoire : oui (surface totale > 150 m²)" : null,
         ].filter(Boolean).join("\n");
 
-        const msg = await client.messages.create({
-          model: "claude-haiku-4-5-20251001",
-          max_tokens: 800,
-          system: `Tu es conseiller en urbanisme expert. La procédure a déjà été déterminée — tu n'as pas à la remettre en question.
+        const msg = await callClaude(
+          { purpose: "procedure_explain", userId: req.user?.id ?? null },
+          {
+            model: "claude-haiku-4-5-20251001",
+            max_tokens: 800,
+            system: `Tu es conseiller en urbanisme expert. La procédure a déjà été déterminée — tu n'as pas à la remettre en question.
 
 Ta mission : produire une explication courte ET des alertes opérationnelles SPÉCIFIQUES à ce projet précis.
 
@@ -196,8 +183,9 @@ Règles strictes :
 - Pour une zone ABF : mentionner les contraintes potentielles (couleurs, matériaux, menuiseries, type de baies) ET le délai supplémentaire (+1 mois au titre de R.423-24 b)). NE JAMAIS écrire "porté à 2 mois" — la procédure peut être 2, 3 ou 4 mois selon le type ; ne donne PAS de durée totale inventée.
 - Quand tu dois mentionner le délai d'instruction (ABF, dérogation, évaluation environnementale…), reprends EXACTEMENT les composantes fournies dans "Délai légal d'instruction (déjà calculé)" ci-dessus, sans inventer d'autre chiffre.
 - Ton direct et professionnel, pas de formules de politesse`,
-          messages: [{ role: "user", content: contextLines }],
-        });
+            messages: [{ role: "user", content: contextLines }],
+          },
+        );
 
         const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
         const jsonMatch = text.match(/\{[\s\S]*\}/);
@@ -504,13 +492,14 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
     //   2) extraction structurée (dimensions, surfaces, NGF…) qui alimentera
     //      ensuite le moteur de conformité au moment de l'instruction.
     const expected = expectedTypeFromCode(code_piece);
+    const trace = { dossierId: req.params.id as string, userId: req.user!.id };
     const [analyse_ia, extraction_ia] = await Promise.all([
-      analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece).catch(() => null),
+      analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece, undefined, trace).catch(() => null),
       extractPiece(req.file.path, req.file.mimetype, {
         expected_type: expected,
         nom_piece,
         code_piece,
-      }).catch(() => null as PieceExtraction | null),
+      }, trace).catch(() => null as PieceExtraction | null),
     ]);
     if (analyse_ia || extraction_ia) {
       await db

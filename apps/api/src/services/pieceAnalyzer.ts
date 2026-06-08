@@ -1,5 +1,5 @@
-import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
+import { callClaude } from "./aiUsage.js";
 
 // ── Scores normalisés ────────────────────────────────────────────────────────
 // 4 niveaux explicites — utilisés à la fois pour la pièce et pour le dossier.
@@ -64,19 +64,6 @@ function isAllowedImage(mime: string): boolean {
 
 function isPdf(mime: string): boolean {
   return mime === PDF_TYPE;
-}
-
-function getAnthropicKey(): string {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  const candidates = [
-    process.env.CLAUDE_SESSION_INGRESS_TOKEN_FILE,
-    "/home/claude/.claude/remote/.session_ingress_token",
-  ];
-  for (const p of candidates) {
-    if (!p) continue;
-    try { return fs.readFileSync(p, "utf8").trim(); } catch { /* try next */ }
-  }
-  throw new Error("ANTHROPIC_API_KEY non configurée");
 }
 
 // Réponses LLM : on extrait le PREMIER bloc JSON valide. Les "{" en début de
@@ -237,6 +224,7 @@ export async function analyzePiece(
   nomPiece: string,
   codePiece: string,
   ctx?: PieceContext,
+  trace?: { dossierId?: string | null; userId?: string | null },
 ): Promise<PieceAnalysis> {
   const isImg = isAllowedImage(mimeType);
   const isPdfFile = isPdf(mimeType);
@@ -279,20 +267,22 @@ export async function analyzePiece(
     contextText,
   ].filter(Boolean).join("\n\n");
 
-  const client = new Anthropic({ apiKey: getAnthropicKey() });
   const documentBlock = isPdfFile
     ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: base64 } }
     : { type: "image" as const, source: { type: "base64" as const, media_type: mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: base64 } };
 
-  const msg = await client.messages.create({
-    model: "claude-haiku-4-5-20251001",
-    max_tokens: useRegulatory ? 1500 : 500,
-    system,
-    messages: [{
-      role: "user",
-      content: [documentBlock, { type: "text", text: userText }],
-    }],
-  });
+  const msg = await callClaude(
+    { purpose: "piece_analyze", dossierId: trace?.dossierId, userId: trace?.userId },
+    {
+      model: "claude-haiku-4-5-20251001",
+      max_tokens: useRegulatory ? 1500 : 500,
+      system,
+      messages: [{
+        role: "user",
+        content: [documentBlock, { type: "text", text: userText }],
+      }],
+    },
+  );
 
   const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
   const parsed = parsePieceAnalysis(text);
