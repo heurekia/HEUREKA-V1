@@ -14,7 +14,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { PDFDocument } from "pdf-lib";
-import { refreshPluZones, pluEtagFor, PLU_CACHE_TTL_MS } from "../services/pluZones.js";
+import { refreshPluZones, pluEtagFor, filterZonesByInsee, PLU_CACHE_TTL_MS, type PluZonesGeoJson } from "../services/pluZones.js";
 
 const __dirname_mairie = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR_MAIRIE = path.resolve(__dirname_mairie, "../../uploads");
@@ -2561,11 +2561,19 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
     }
     if (!inseeCode) return res.status(404).json({ error: "Commune non trouvée" });
 
+    // `?refresh=1` force un re-fetch (utile après changement du PLU ou bug fix
+    // côté pipeline d'extraction — sans attendre l'expiration du cache de 7 j).
+    const forceRefresh = req.query.refresh === "1" || req.query.refresh === "true";
+
     // Charge le cache DB (survit aux redémarrages serveur)
     communeRow = (await db.select({ id: communes.id, plu_zones_geojson: communes.plu_zones_geojson, plu_zones_cached_at: communes.plu_zones_cached_at })
       .from(communes).where(eq(communes.insee_code, inseeCode)).limit(1))[0];
 
     const sendCached = (zones: unknown, cachedAt: Date | null, hitKind: "DB-HIT" | "STALE") => {
+      // Re-filtre par INSEE à la lecture : ça nettoie les anciens caches qui
+      // contiennent encore les zones limitrophes des communes voisines (avant
+      // le fix du filtre). Pas de coût si déjà filtré.
+      const cleaned = filterZonesByInsee(zones as PluZonesGeoJson, inseeCode!);
       const etag = pluEtagFor(inseeCode!, cachedAt);
       if (etag) res.setHeader("ETag", etag);
       res.setHeader("Cache-Control", PLU_CACHE_CONTROL);
@@ -2573,17 +2581,17 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
       if (etag && req.headers["if-none-match"] === etag) {
         return res.status(304).end();
       }
-      return res.json(zones);
+      return res.json(cleaned);
     };
 
-    if (communeRow?.plu_zones_geojson && communeRow.plu_zones_cached_at) {
+    if (!forceRefresh && communeRow?.plu_zones_geojson && communeRow.plu_zones_cached_at) {
       const ageMs = Date.now() - communeRow.plu_zones_cached_at.getTime();
       if (ageMs < PLU_CACHE_TTL_MS) {
         return sendCached(communeRow.plu_zones_geojson, communeRow.plu_zones_cached_at, "DB-HIT");
       }
     }
 
-    // Cache expiré ou inexistant → fetch upstream
+    // Cache expiré, inexistant, ou refresh forcé → fetch upstream
     const result = await refreshPluZones(inseeCode);
     if (!result.ok) {
       if (communeRow?.plu_zones_geojson) {
