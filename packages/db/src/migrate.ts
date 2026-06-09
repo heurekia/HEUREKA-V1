@@ -594,7 +594,7 @@ ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS validated_at timestamp;
 `;
 
 async function main() {
-  const client = postgres(connectionString, { max: 1 });
+  const client = postgres(connectionString, { max: 1, onnotice: () => {} });
   try {
     console.log("Running migrations...");
     await client.unsafe(SQL);
