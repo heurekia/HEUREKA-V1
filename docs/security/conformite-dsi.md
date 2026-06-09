@@ -58,11 +58,13 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 **Exigences :**
 - [x] Suppression de compte (droit à l'effacement, art. 17) — `DELETE /api/auth/me` avec confirmation mot de passe + effacement physique des fichiers sur disque (`auth.ts`)
 - [x] Export des données personnelles (droit d'accès art. 15 + portabilité art. 20) — `GET /api/auth/me/export` : profil + dossiers + pièces + messages + consentement IA + journal des appels IA + journal d'audit (`auth.ts` + `Profil.tsx`)
-- [x] Contact DPD (Délégué à la Protection des Données) — affiché sur la page Profil
-- [ ] Mentions légales + politique de confidentialité (pages publiques)
-- [ ] Bannière de consentement cookie (si cookies analytiques)
+- [x] Contact DPD (Délégué à la Protection des Données) — affiché sur la page Profil et dans les mentions légales
+- [x] Mentions légales (`MentionsLegales.tsx`) — éditeur, responsable de traitement, hébergement, recours à l'IA Anthropic, cookies, signalement de vulnérabilité, accessibilité, litiges
+- [x] Politique de confidentialité (`PolitiqueConfidentialite.tsx`) — finalités & bases légales, section dédiée à l'analyse IA (sous-traitant Anthropic, données transmises, rétention 30j, art. 22), tableau des sous-traitants, durées de conservation, droits, transferts hors UE encadrés par SCC
+- [x] Liens RGPD visibles depuis tous les espaces (footer public + sidebar citoyen + sidebar mairie)
+- [x] Cookies strictement nécessaires uniquement → pas de bandeau de consentement requis (art. 82 LIL)
 
-**État :** 🟢 Droits techniques conformes — pages publiques restent à produire.
+**État :** 🟢 Conforme.
 
 ### 7 bis. RGPD — Analyse IA des pièces (Anthropic / Claude)
 **Source :** RGPD art. 5, 13, 22, 28, 30, 32 + IA Act

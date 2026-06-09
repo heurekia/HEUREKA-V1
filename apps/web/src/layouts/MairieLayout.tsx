@@ -80,6 +80,11 @@ export function MairieLayout() {
               <LogOut className="w-4 h-4" />
             </button>
           </div>
+          {/* Liens RGPD — toujours accessibles depuis l'espace connecté (CNIL recommandation) */}
+          <div className="mt-3 pt-3 border-t border-white/5 flex flex-col gap-1 text-[10px] text-white/40">
+            <Link to="/mentions-legales" className="hover:text-white/80 transition-colors">Mentions légales</Link>
+            <Link to="/politique-confidentialite" className="hover:text-white/80 transition-colors">Politique de confidentialité</Link>
+          </div>
         </div>
       </aside>
       <div className="flex-1 flex flex-col min-w-0">

@@ -2424,9 +2424,10 @@ function Conformite() {
         },
         {
           titre: "Mentions légales & politique de confidentialité",
-          description: "Page publique listant le responsable de traitement, la finalité, les sous-traitants (Anthropic), la durée de conservation, les droits des personnes et le contact DPD.",
+          description: "Pages publiques /mentions-legales et /politique-confidentialite : responsable de traitement (collectivité), sous-traitants détaillés (Railway, Anthropic, Resend) avec localisation des données, section dédiée à l'analyse IA (sous-traitant, données transmises, rétention 30j, décision humaine art. 22), droits des personnes avec pointeurs vers les actions de l'espace Profil, transferts hors UE encadrés par SCC. Liens visibles depuis les footers public et connecté.",
           reference: "RGPD art. 13-14",
-          statut: "doc",
+          statut: "actif",
+          code_ref: "MentionsLegales.tsx + PolitiqueConfidentialite.tsx",
         },
         {
           titre: "Registre des traitements (art. 30)",
