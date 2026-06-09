@@ -1069,6 +1069,87 @@ superAdminRouter.get("/ai-cost/by-dossier", async (req, res) => {
   }
 });
 
+// Top des communes par coût IA, toutes finalités confondues (PLU, structuration,
+// dossiers déposés sur cette commune…).
+superAdminRouter.get("/ai-cost/by-commune", async (req, res) => {
+  try {
+    const cutoff = aiUsagePeriodCutoff(req);
+    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const conds = [isNotNull(ai_usage_events.commune_id)];
+    if (cutoff) conds.push(gte(ai_usage_events.created_at, cutoff));
+
+    const rows = await db
+      .select({
+        commune_id: ai_usage_events.commune_id,
+        commune_name: communes.name,
+        insee_code: communes.insee_code,
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+        last_event_at: sql<Date>`MAX(${ai_usage_events.created_at})`,
+      })
+      .from(ai_usage_events)
+      .leftJoin(communes, eq(ai_usage_events.commune_id, communes.id))
+      .where(and(...conds))
+      .groupBy(ai_usage_events.commune_id, communes.name, communes.insee_code)
+      .orderBy(desc(sql`SUM(${ai_usage_events.cost_eur})`))
+      .limit(limit);
+
+    res.json(rows.map((r) => ({
+      commune_id: r.commune_id,
+      commune_name: r.commune_name,
+      insee_code: r.insee_code,
+      events: Number(r.events),
+      cost_eur: Number(r.cost_eur),
+      last_event_at: r.last_event_at,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Détail d'une commune : répartition par usage et journal des 200 derniers
+// appels imputés à cette commune.
+superAdminRouter.get("/ai-cost/commune/:id", async (req, res) => {
+  try {
+    const communeId = req.params.id;
+    const [comm, byPurpose, events] = await Promise.all([
+      db.select({ id: communes.id, name: communes.name, insee_code: communes.insee_code })
+        .from(communes).where(eq(communes.id, communeId)).limit(1),
+      db.select({
+        purpose: ai_usage_events.purpose,
+        model: ai_usage_events.model,
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+        input_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.input_tokens}), 0)`,
+        output_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.output_tokens}), 0)`,
+      }).from(ai_usage_events)
+        .where(eq(ai_usage_events.commune_id, communeId))
+        .groupBy(ai_usage_events.purpose, ai_usage_events.model),
+      db.select().from(ai_usage_events)
+        .where(eq(ai_usage_events.commune_id, communeId))
+        .orderBy(desc(ai_usage_events.created_at))
+        .limit(200),
+    ]);
+
+    res.json({
+      commune: comm[0] ?? null,
+      by_purpose: byPurpose.map((r) => ({
+        purpose: r.purpose,
+        model: r.model,
+        events: Number(r.events),
+        cost_eur: Number(r.cost_eur),
+        input_tokens: Number(r.input_tokens),
+        output_tokens: Number(r.output_tokens),
+      })),
+      events,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // Détail d'un dossier : tous ses événements IA, regroupés par usage.
 superAdminRouter.get("/ai-cost/dossier/:id", async (req, res) => {
   try {

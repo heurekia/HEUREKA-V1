@@ -284,7 +284,7 @@ export async function computeRuleVerdicts(args: {
   pieces: VerdictPieceInput[];
   documentsCommune: VerdictDocumentCommuneInput[];
   context: VerdictContextInput;
-  trace?: { dossierId?: string | null; userId?: string | null };
+  trace?: { dossierId?: string | null; communeId?: string | null; userId?: string | null };
 }): Promise<RuleVerdictsReport> {
   const startedAt = Date.now();
   const warnings: string[] = [];
@@ -334,7 +334,7 @@ Rends UN verdict par règle ci-dessus. Cite uniquement des extraits qui figurent
   const model = "claude-sonnet-4-6";
   const client = anthropicClient({ maxRetries: 2, timeout: 120_000 });
   const msg = await callClaude(
-    { purpose: "rule_verdicts", dossierId: args.trace?.dossierId, userId: args.trace?.userId },
+    { purpose: "rule_verdicts", dossierId: args.trace?.dossierId, communeId: args.trace?.communeId, userId: args.trace?.userId },
     {
       model,
       max_tokens: 8000,

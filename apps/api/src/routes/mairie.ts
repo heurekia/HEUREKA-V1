@@ -43,6 +43,19 @@ async function splitPdfBase64(base64: string, maxPages = 90, overlap = 8): Promi
 
 export const mairieRouter = Router();
 
+// Résout l'UUID de commune à partir de l'INSEE du user connecté (cache LRU
+// simple : la map ne grossit jamais au-delà du nombre de communes actives).
+const _communeIdByInsee = new Map<string, string | null>();
+async function resolveCommuneIdFromUser(req: AuthRequest): Promise<string | null> {
+  const insee = req.user?.commune_insee;
+  if (!insee) return null;
+  if (_communeIdByInsee.has(insee)) return _communeIdByInsee.get(insee) ?? null;
+  const [row] = await db.select({ id: communes.id }).from(communes).where(eq(communes.insee_code, insee)).limit(1);
+  const id = row?.id ?? null;
+  _communeIdByInsee.set(insee, id);
+  return id;
+}
+
 mairieRouter.use(requireAuth);
 mairieRouter.use(requireRole("mairie", "instructeur", "admin"));
 
@@ -402,11 +415,12 @@ mairieRouter.post("/dossiers/:id/pieces/:pieceId/extract", async (req: AuthReque
     const filePath = path.join(UPLOADS_DIR_MAIRIE, filename);
     if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Fichier non trouvé sur le disque" });
 
+    const communeIdForPiece = await resolveCommuneIdFromUser(req);
     const extraction = await extractPiece(filePath, piece.type, {
       expected_type: expectedTypeFromCode(piece.code_piece),
       nom_piece: piece.nom,
       code_piece: piece.code_piece ?? "",
-    }, { dossierId: req.params.id as string, userId: req.user?.id ?? null });
+    }, { dossierId: req.params.id as string, userId: req.user?.id ?? null, communeId: communeIdForPiece });
     if (!extraction) {
       return res.status(422).json({ error: "Extraction impossible (format non supporté ou fichier trop volumineux)" });
     }
@@ -1370,7 +1384,7 @@ mairieRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     const detectChunk = async (c: number) => {
      try {
       const zoneMsg = await callClaude(
-        { purpose: "plu_zone_detect", userId: req.user?.id ?? null },
+        { purpose: "plu_zone_detect", userId: req.user?.id ?? null, communeId: commune.id },
         {
           model: "claude-sonnet-4-6",
           max_tokens: 2000,
@@ -1430,7 +1444,7 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
     const extractZone = async (zoneDef: { code: string; label: string; type: string; chunk: number }) => {
      try {
       const ruleMsg = await callClaude(
-        { purpose: "plu_rule_extract", userId: req.user?.id ?? null },
+        { purpose: "plu_rule_extract", userId: req.user?.id ?? null, communeId: commune.id },
         {
           model: "claude-sonnet-4-6",
           max_tokens: 4000,
@@ -1890,8 +1904,9 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
     userContent.push({ type: "text", text: `${prefix}\n\n${text ?? "(Voir le tableau / croquis fourni en image.)"}` });
 
     const client = anthropicClient({ maxRetries: 3, timeout: 90_000 });
+    const communeId = await resolveCommuneIdFromUser(req);
     const msg = await callClaude(
-      { purpose: "plu_article_structure", userId: req.user?.id ?? null },
+      { purpose: "plu_article_structure", userId: req.user?.id ?? null, communeId },
       {
       // Sonnet sur les deux flux : un article PLU qui se découpe en 5–7 sous-règles
       // produit un JSON volumineux que Haiku tronque ou met trop longtemps à
@@ -2007,8 +2022,9 @@ mairieRouter.post("/reglementation/structure-zone", requireRole("mairie", "instr
     }
 
     const client = anthropicClient({ maxRetries: 2, timeout: 120_000 });
+    const communeId = await resolveCommuneIdFromUser(req);
     const msg = await callClaude(
-      { purpose: "plu_zone_structure", userId: req.user?.id ?? null },
+      { purpose: "plu_zone_structure", userId: req.user?.id ?? null, communeId },
       {
       model: "claude-sonnet-4-6",
       // Un règlement complet (14 articles × plusieurs sous-règles citoyen+mairie)

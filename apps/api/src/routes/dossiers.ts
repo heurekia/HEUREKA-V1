@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
 import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events } from "@heureka-v1/db";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, ilike } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
 import fs from "fs";
@@ -492,7 +492,15 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
     //   2) extraction structurée (dimensions, surfaces, NGF…) qui alimentera
     //      ensuite le moteur de conformité au moment de l'instruction.
     const expected = expectedTypeFromCode(code_piece);
-    const trace = { dossierId: req.params.id as string, userId: req.user!.id };
+    // Imputation par commune : recherche tolérante sur le nom (les dossiers
+    // n'ont qu'un commune textuel, pas d'FK directe).
+    let communeIdForTrace: string | null = null;
+    if (dossier.commune) {
+      const { communes } = await import("@heureka-v1/db");
+      const [c] = await db.select({ id: communes.id }).from(communes).where(ilike(communes.name, dossier.commune)).limit(1);
+      communeIdForTrace = c?.id ?? null;
+    }
+    const trace = { dossierId: req.params.id as string, userId: req.user!.id, communeId: communeIdForTrace };
     const [analyse_ia, extraction_ia] = await Promise.all([
       analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece, undefined, trace).catch(() => null),
       extractPiece(req.file.path, req.file.mimetype, {

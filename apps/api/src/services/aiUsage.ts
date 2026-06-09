@@ -73,6 +73,7 @@ export function anthropicClient(opts?: { maxRetries?: number; timeout?: number }
 export interface CallClaudeContext {
   purpose: string;
   dossierId?: string | null;
+  communeId?: string | null;
   userId?: string | null;
 }
 
@@ -104,6 +105,7 @@ export async function callClaude(
 
   void db.insert(ai_usage_events).values({
     dossier_id: ctx.dossierId ?? null,
+    commune_id: ctx.communeId ?? null,
     user_id: ctx.userId ?? null,
     purpose: ctx.purpose,
     model: request.model,

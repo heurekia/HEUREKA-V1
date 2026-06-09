@@ -554,7 +554,9 @@ CREATE TABLE IF NOT EXISTS ai_usage_events (
   duration_ms                 integer,
   created_at                  timestamp NOT NULL DEFAULT now()
 );
+ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS commune_id uuid REFERENCES communes(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_dossier ON ai_usage_events(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_events_commune ON ai_usage_events(commune_id);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_created_at ON ai_usage_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_purpose ON ai_usage_events(purpose);
 `;

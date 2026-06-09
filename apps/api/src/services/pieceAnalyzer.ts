@@ -224,7 +224,7 @@ export async function analyzePiece(
   nomPiece: string,
   codePiece: string,
   ctx?: PieceContext,
-  trace?: { dossierId?: string | null; userId?: string | null },
+  trace?: { dossierId?: string | null; communeId?: string | null; userId?: string | null },
 ): Promise<PieceAnalysis> {
   const isImg = isAllowedImage(mimeType);
   const isPdfFile = isPdf(mimeType);
@@ -272,7 +272,7 @@ export async function analyzePiece(
     : { type: "image" as const, source: { type: "base64" as const, media_type: mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: base64 } };
 
   const msg = await callClaude(
-    { purpose: "piece_analyze", dossierId: trace?.dossierId, userId: trace?.userId },
+    { purpose: "piece_analyze", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId },
     {
       model: "claude-haiku-4-5-20251001",
       max_tokens: useRegulatory ? 1500 : 500,
