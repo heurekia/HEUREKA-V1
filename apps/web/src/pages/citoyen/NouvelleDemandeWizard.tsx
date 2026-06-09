@@ -424,6 +424,12 @@ export function NouvelleDemandeWizard() {
   const [uploadedPieces, setUploadedPieces] = useState<Record<string, UploadedPiece[]>>({});
   const [uploadingCodes, setUploadingCodes] = useState<Set<string>>(new Set());
   const [creatingDossier, setCreatingDossier] = useState(false);
+  // RGPD — consentement explicite à l'analyse IA des pièces (art. 13 + 22).
+  // true par défaut (le service est conçu autour de l'analyse), mais le
+  // citoyen peut décocher → ses pièces sont alors transmises à l'instructeur
+  // SANS aucun appel LLM.
+  const [aiConsent, setAiConsent] = useState<boolean>(true);
+  const [showAiDetails, setShowAiDetails] = useState<boolean>(false);
 
   // ── Auto-search when wizard is opened with ?q= (from AnalyseParcellaire) ───
   useEffect(() => {
@@ -573,6 +579,9 @@ export function NouvelleDemandeWizard() {
       formData.append("file", file);
       formData.append("code_piece", codePiece);
       formData.append("nom_piece", combinedName);
+      // RGPD : transmis à chaque upload pour traçabilité de la dernière
+      // décision exprimée par le citoyen.
+      formData.append("ai_consent", aiConsent ? "true" : "false");
       const res = await fetch(`/api/dossiers/${dossierId}/pieces/upload`, {
         method: "POST",
         credentials: "include",
@@ -600,7 +609,7 @@ export function NouvelleDemandeWizard() {
         return next;
       });
     }
-  }, [dossierId]);
+  }, [dossierId, aiConsent]);
 
   // ── Delete a previously uploaded piece ─────────────────────────────────────
   const deletePiece = useCallback(async (codePiece: string, pieceId: string) => {
@@ -1904,8 +1913,79 @@ export function NouvelleDemandeWizard() {
                     Vos pièces justificatives
                   </h2>
                   <p style={{ fontSize: 14, color: "#64748b", maxWidth: 460, margin: "0 auto" }}>
-                    Déposez vos documents ci-dessous — vous pouvez en ajouter plusieurs par rubrique. L'IA analyse chaque pièce et vous guide instantanément.
+                    Déposez vos documents ci-dessous — vous pouvez en ajouter plusieurs par rubrique.
+                    {aiConsent
+                      ? " L'IA analyse chaque pièce et vous guide instantanément."
+                      : " Vos pièces seront vérifiées manuellement par l'instructeur."}
                   </p>
+                </div>
+
+                {/* ── RGPD : Information & consentement IA (art. 13 + 22 RGPD) ── */}
+                <div
+                  style={{
+                    background: aiConsent ? "#F0F9FF" : "#FFFBEB",
+                    border: `1px solid ${aiConsent ? "#BAE6FD" : "#FCD34D"}`,
+                    borderRadius: 12,
+                    padding: "12px 16px",
+                    marginBottom: 16,
+                    fontSize: 13,
+                    color: "#0F172A",
+                  }}
+                >
+                  <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+                    <div style={{ fontSize: 18, lineHeight: 1, marginTop: 1 }}>{aiConsent ? "🤖" : "👤"}</div>
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontWeight: 700, marginBottom: 4 }}>
+                        Analyse automatisée par intelligence artificielle
+                      </div>
+                      <div style={{ color: "#475569", lineHeight: 1.5 }}>
+                        Pour vous aider à déposer un dossier complet du premier coup, nous
+                        soumettons chaque pièce à une analyse automatique opérée par{" "}
+                        <strong>Anthropic (modèle Claude)</strong>, sous contrat de
+                        sous-traitance RGPD. Le nom de fichier d'origine et les
+                        identifiants directs sont retirés avant transmission. <strong>Une décision finale est toujours prise par un instructeur humain.</strong>
+                        {" "}
+                        <button
+                          type="button"
+                          onClick={() => setShowAiDetails((v) => !v)}
+                          style={{
+                            background: "none", border: "none", padding: 0,
+                            color: "#4F46E5", cursor: "pointer", fontSize: 13,
+                            textDecoration: "underline", fontWeight: 600,
+                          }}
+                        >
+                          {showAiDetails ? "Masquer le détail" : "En savoir plus"}
+                        </button>
+                      </div>
+
+                      {showAiDetails && (
+                        <ul style={{ margin: "10px 0 0 0", paddingLeft: 18, color: "#475569", lineHeight: 1.6, fontSize: 12.5 }}>
+                          <li><strong>Finalité :</strong> vérification automatisée de complétude / lisibilité des pièces et détection précoce de non-conformités PLU.</li>
+                          <li><strong>Base légale :</strong> exécution d'une mission de service public (art. 6.1.e RGPD).</li>
+                          <li><strong>Données envoyées :</strong> contenu du fichier + zone PLU + nature des travaux. <em>Aucune donnée d'identité (nom, email, adresse postale, numéro de parcelle complet) n'est transmise à l'IA.</em></li>
+                          <li><strong>Sous-traitant :</strong> Anthropic, sous DPA + clauses contractuelles types (SCC). Rétention serveur : 30 jours maximum (zéro-rétention en option).</li>
+                          <li><strong>Vos droits :</strong> opposition (case ci-dessous), accès, rectification, effacement, portabilité — via la page « Profil » ou le DPD de votre mairie.</li>
+                          <li><strong>Décision automatisée :</strong> aucune ; l'IA produit un avis indicatif, la décision est rendue par un instructeur humain (art. 22 RGPD).</li>
+                          <li><strong>Trace :</strong> chaque appel IA est journalisé (empreinte SHA-256 du fichier, sans dupliquer le contenu) pour audit.</li>
+                        </ul>
+                      )}
+
+                      <label style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 10, cursor: "pointer", fontSize: 13, fontWeight: 600, color: "#0F172A" }}>
+                        <input
+                          type="checkbox"
+                          checked={aiConsent}
+                          onChange={(e) => setAiConsent(e.target.checked)}
+                          style={{ width: 16, height: 16, cursor: "pointer", accentColor: "#4F46E5" }}
+                        />
+                        J'accepte l'analyse automatisée de mes pièces (recommandé)
+                      </label>
+                      {!aiConsent && (
+                        <div style={{ marginTop: 8, padding: "8px 12px", background: "#FEF3C7", borderRadius: 8, color: "#92400E", fontSize: 12.5, lineHeight: 1.5 }}>
+                          ⓘ Vous avez refusé l'analyse IA. Vos pièces seront uniquement vérifiées par un instructeur humain. Le délai d'instruction peut être légèrement allongé.
+                        </div>
+                      )}
+                    </div>
+                  </div>
                 </div>
 
                 {required.length > 0 && (
@@ -2285,9 +2365,11 @@ export function NouvelleDemandeWizard() {
             fontSize: 12,
             color: "#CBD5E1",
             marginTop: 20,
+            lineHeight: 1.5,
           }}
         >
-          🔒 Vos données sont confidentielles et ne sont transmises qu'à votre mairie.
+          🔒 Données chiffrées en transit (HTTPS) et hébergées en UE. Traitement
+          conforme RGPD — voir les mentions légales et la politique de confidentialité.
         </p>
       </div>
     </div>

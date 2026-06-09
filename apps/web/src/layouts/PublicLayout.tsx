@@ -97,7 +97,6 @@ export function PublicLayout() {
             <div className="flex items-center gap-4 text-xs text-gray-500">
               <Link to="/mentions-legales" className="hover:text-gray-900">Mentions légales</Link>
               <Link to="/politique-confidentialite" className="hover:text-gray-900">Politique de confidentialité</Link>
-              <Link to="/conditions-utilisation" className="hover:text-gray-900">Conditions d'utilisation</Link>
             </div>
           </div>
         </div>

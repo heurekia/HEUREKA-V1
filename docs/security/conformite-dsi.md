@@ -54,15 +54,46 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 **Reste :** Mettre à jour l'email contact quand l'adresse définitive est connue.
 
 ### 7. RGPD — Droits des usagers
-**Source :** Annexe Technique n°2 §4.10  
+**Source :** Annexe Technique n°2 §4.10
 **Exigences :**
-- [ ] Suppression de compte (droit à l'effacement)
-- [ ] Export des données personnelles (droit à la portabilité)
-- [ ] Mentions légales + politique de confidentialité
-- [ ] Contact DPD (Délégué à la Protection des Données)
-- [ ] Bannière de consentement cookie (si cookies analytiques)
+- [x] Suppression de compte (droit à l'effacement, art. 17) — `DELETE /api/auth/me` avec confirmation mot de passe + effacement physique des fichiers sur disque (`auth.ts`)
+- [x] Export des données personnelles (droit d'accès art. 15 + portabilité art. 20) — `GET /api/auth/me/export` : profil + dossiers + pièces + messages + consentement IA + journal des appels IA + journal d'audit (`auth.ts` + `Profil.tsx`)
+- [x] Contact DPD (Délégué à la Protection des Données) — affiché sur la page Profil et dans les mentions légales
+- [x] Mentions légales (`MentionsLegales.tsx`) — éditeur, responsable de traitement, hébergement, recours à l'IA Anthropic, cookies, signalement de vulnérabilité, accessibilité, litiges
+- [x] Politique de confidentialité (`PolitiqueConfidentialite.tsx`) — finalités & bases légales, section dédiée à l'analyse IA (sous-traitant Anthropic, données transmises, rétention 30j, art. 22), tableau des sous-traitants, durées de conservation, droits, transferts hors UE encadrés par SCC
+- [x] Liens RGPD visibles depuis tous les espaces (footer public + sidebar citoyen + sidebar mairie)
+- [x] Cookies strictement nécessaires uniquement → pas de bandeau de consentement requis (art. 82 LIL)
 
-**État :** ⚠️ Non conforme.
+**État :** 🟢 Conforme.
+
+### 7 bis. RGPD — Analyse IA des pièces (Anthropic / Claude)
+**Source :** RGPD art. 5, 13, 22, 28, 30, 32 + IA Act
+**Exigences techniques mises en place :**
+- ✅ **Consentement explicite** du citoyen avec opt-out (bandeau d'information à l'étape « pièces » du wizard de dépôt, art. 13 + 22). Voir `NouvelleDemandeWizard.tsx` step 7.
+- ✅ **Minimisation** des données envoyées au LLM : retrait du nom de fichier d'origine (qui contient souvent l'identité du pétitionnaire), masquage des 4 derniers caractères du numéro de parcelle. Aucun nom/prénom/email/adresse personnelle transmis. Voir `sanitizePieceName` et `maskParcelle` dans `pieceAnalyzer.ts`.
+- ✅ **Traçabilité par empreinte SHA-256** : chaque appel IA est journalisé dans `ai_usage_events.file_hash` sans dupliquer le contenu personnel.
+- ✅ **Trace par pièce** : `dossier_pieces_jointes.ai_processed` indique si l'IA a été appelée sur la pièce.
+- ✅ **Trace au niveau du dossier** : `dossiers.ai_consent` + `ai_consent_at` enregistrent la décision du pétitionnaire.
+- ✅ **Décision humaine systématique** : l'IA produit un avis indicatif, jamais une décision automatisée (art. 22 RGPD).
+
+**Exigences documentaires :**
+- [ ] Signature du DPA Anthropic + SCC + activation du Zero Data Retention — voir [`dpa-anthropic-checklist.md`](./dpa-anthropic-checklist.md)
+- [x] Mentions légales / politique de confidentialité publiques mentionnant Anthropic — `MentionsLegales.tsx` + `PolitiqueConfidentialite.tsx`
+- [x] Modèle de fiche de registre des traitements (art. 30) prêt à recopier — voir [`registre-traitements.md`](./registre-traitements.md)
+- [x] AIPD (art. 35) — voir [`aipd.md`](./aipd.md)
+- [x] Bascule technique vers AWS Bedrock UE implémentée — activable via `AI_PROVIDER=bedrock`
+
+**État :** 🟢 Technique conforme — DPA Anthropic à signer pour finaliser.
+
+### 7 ter. Rétention et purges automatiques
+**Source :** CCSC Art. 4.14 + RGPD art. 5.1.e
+**État :** ✅ Cron applicatif (`jobs/scheduler.ts`) avec `node-cron` :
+- Quotidien 02h00 — purge `audit_logs` > 12 mois (paramétrable `AUDIT_LOG_RETENTION_MONTHS`).
+- Quotidien 02h30 — purge des dossiers `brouillon` inactifs > 180 jours + fichiers physiques associés (paramétrable `DRAFT_DOSSIER_RETENTION_DAYS`).
+
+### 7 quater. Hébergement de l'inférence IA en UE
+**Source :** RGPD art. 44
+**État :** ✅ Bascule disponible via `AI_PROVIDER=bedrock` (région `AWS_REGION`, défaut `eu-central-1` / Francfort). Les modèles canoniques Anthropic sont traduits en inference profiles `eu.anthropic.*` (mapping `BEDROCK_MODEL_MAP` dans `aiUsage.ts`). Aucun changement de code applicatif n'est requis pour basculer.
 
 ### 8. Sauvegardes 3-2-1 documentées
 **Source :** CCSC Art. 11.6  

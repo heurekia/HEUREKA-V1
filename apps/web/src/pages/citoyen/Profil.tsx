@@ -122,36 +122,53 @@ export function Profil() {
       {/* RGPD */}
       <Card className="border-gray-200/80 mb-6">
         <CardContent className="p-8">
-          <h2 className="text-base font-semibold text-[#000020] mb-1">Mes données personnelles</h2>
+          <h2 className="text-base font-semibold text-[#000020] mb-1">Mes données personnelles (RGPD)</h2>
           <p className="text-sm text-gray-500 mb-6">
-            Conformément au RGPD, vous pouvez télécharger l'ensemble de vos données ou supprimer définitivement votre compte.
+            Vous disposez de plusieurs droits sur vos données personnelles. Vous pouvez les exercer librement depuis cette page.
           </p>
 
-          <div className="flex flex-col sm:flex-row gap-3">
-            <Button
-              variant="secondary"
-              className="gap-2"
-              onClick={handleExport}
-              disabled={exporting}
-            >
-              <Download className="w-4 h-4" />
-              {exporting ? "Préparation…" : "Télécharger mes données"}
-            </Button>
-            <Button
-              variant="ghost"
-              className="gap-2 text-red-600 hover:bg-red-50 hover:text-red-700"
-              onClick={() => { setShowDeleteModal(true); setDeletePassword(""); setDeleteError(""); }}
-            >
-              <Trash2 className="w-4 h-4" />
-              Supprimer mon compte
-            </Button>
+          {/* Droit d'accès / portabilité */}
+          <div className="rounded-lg border border-gray-200 p-4 mb-3">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-sm text-[#000020] mb-1">Télécharger toutes mes données</div>
+                <div className="text-xs text-gray-500 leading-relaxed mb-3">
+                  Export JSON conforme aux articles 15 (droit d'accès) et 20 (portabilité) du RGPD. Inclut votre profil, vos dossiers, vos pièces, vos messages, le consentement à l'analyse IA, le journal des appels IA effectués sur vos dossiers (avec empreinte SHA-256) et votre historique d'authentification.
+                </div>
+                <Button variant="secondary" className="gap-2" onClick={handleExport} disabled={exporting}>
+                  <Download className="w-4 h-4" />
+                  {exporting ? "Préparation…" : "Télécharger (JSON)"}
+                </Button>
+              </div>
+            </div>
           </div>
 
-          <p className="text-xs text-gray-400 mt-4">
-            Pour toute question sur vos données, contactez notre Délégué à la Protection des Données :{" "}
+          {/* Droit à l'effacement */}
+          <div className="rounded-lg border border-red-100 bg-red-50/30 p-4">
+            <div className="flex items-start justify-between gap-4 flex-wrap">
+              <div className="flex-1 min-w-0">
+                <div className="font-semibold text-sm text-[#000020] mb-1">Supprimer mon compte</div>
+                <div className="text-xs text-gray-500 leading-relaxed mb-3">
+                  Article 17 RGPD (droit à l'effacement). Supprime irréversiblement votre profil, vos dossiers et tous les fichiers déposés (sur disque et en base). Le journal d'authentification est conservé de manière anonymisée pendant 12 mois pour des raisons de sécurité (CCSC Art. 4.14).
+                </div>
+                <Button
+                  variant="ghost"
+                  className="gap-2 text-red-600 hover:bg-red-50 hover:text-red-700"
+                  onClick={() => { setShowDeleteModal(true); setDeletePassword(""); setDeleteError(""); }}
+                >
+                  <Trash2 className="w-4 h-4" />
+                  Supprimer définitivement mon compte
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <p className="text-xs text-gray-400 mt-4 leading-relaxed">
+            Autres droits (rectification, opposition à l'analyse IA, limitation) : modifiez vos informations ci-dessus, ou contactez le Délégué à la Protection des Données :{" "}
             <a href="mailto:dpd@heureka-urba.fr" className="underline hover:text-gray-600">
               dpd@heureka-urba.fr
             </a>
+            . Pour les questions liées à votre dossier d'urbanisme, contactez le DPD de votre mairie.
           </p>
         </CardContent>
       </Card>

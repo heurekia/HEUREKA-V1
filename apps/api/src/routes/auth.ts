@@ -3,12 +3,22 @@ import bcrypt from "bcryptjs";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db.js";
-import { users, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens } from "@heureka-v1/db";
-import { eq, and, gt, isNull } from "drizzle-orm";
+import { users, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens, ai_usage_events, audit_logs } from "@heureka-v1/db";
+import { eq, and, gt, isNull, inArray } from "drizzle-orm";
 import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import { sendPasswordResetEmail } from "../services/mailer.js";
 import { logAudit } from "../services/audit.js";
 import crypto from "crypto";
+import fs from "fs";
+import path from "path";
+import { fileURLToPath } from "url";
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+// Même résolution que dans routes/dossiers.ts : les fichiers déposés par les
+// citoyens vivent sous apps/api/uploads. On en a besoin pour respecter le
+// droit à l'effacement (RGPD art. 17) en supprimant les fichiers physiques
+// quand un compte est supprimé.
+const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
 
 export const authRouter = Router();
 
@@ -151,17 +161,28 @@ authRouter.post("/logout", requireAuth, async (req: AuthRequest, res) => {
 authRouter.get("/me/export", requireAuth, async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
-    const [[user], userDossiers, messages, pieces, notifs] = await Promise.all([
+    const [[user], userDossiers, messages, pieces, notifs, userAuditLogs] = await Promise.all([
       db.select().from(users).where(eq(users.id, userId)).limit(1),
       db.select().from(dossiers).where(eq(dossiers.user_id, userId)),
       db.select().from(dossier_messages).where(eq(dossier_messages.from_user_id, userId)),
       db.select().from(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.user_id, userId)),
       db.select().from(notifications).where(eq(notifications.user_id, userId)),
+      db.select().from(audit_logs).where(eq(audit_logs.user_id, userId)),
     ]);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
 
+    // Événements IA imputables au pétitionnaire : tous les appels LLM
+    // effectués au titre de ses dossiers. Permet au citoyen de constater
+    // précisément quels fichiers ont été soumis à l'IA (file_hash) et à
+    // quel coût (cost_eur). Droit d'accès RGPD art. 15.
+    const dossierIds = userDossiers.map((d) => d.id);
+    const aiEvents = dossierIds.length > 0
+      ? await db.select().from(ai_usage_events).where(inArray(ai_usage_events.dossier_id, dossierIds))
+      : [];
+
     const payload = {
       export_date: new Date().toISOString(),
+      export_note: "Export complet de vos données conformément au droit d'accès RGPD (art. 15) et au droit à la portabilité (art. 20). Contactez le DPD pour toute question.",
       profil: {
         id: user.id,
         email: user.email,
@@ -172,10 +193,41 @@ authRouter.get("/me/export", requireAuth, async (req: AuthRequest, res) => {
         telephone: user.telephone,
         created_at: user.created_at,
       },
-      dossiers: userDossiers,
+      // RGPD : exposition explicite du consentement à l'analyse IA + son
+      // horodatage, pour chaque dossier. Le citoyen voit s'il a accepté ou
+      // refusé l'analyse automatisée.
+      dossiers: userDossiers.map((d) => ({
+        ...d,
+        ai_consent_explicite: d.ai_consent,
+        ai_consent_date: d.ai_consent_at,
+      })),
       messages,
-      documents: pieces,
+      documents: pieces.map((p) => ({
+        ...p,
+        ia_analyse_effectuee: p.ai_processed,
+      })),
       notifications: notifs,
+      // RGPD : journal complet des appels IA effectués sur vos dossiers.
+      // L'empreinte SHA-256 du fichier permet d'auditer précisément ce qui
+      // a été soumis, sans dupliquer le contenu du fichier.
+      evenements_ia: aiEvents.map((e) => ({
+        date: e.created_at,
+        dossier_id: e.dossier_id,
+        finalite: e.purpose,
+        modele: e.model,
+        empreinte_fichier_sha256: e.file_hash,
+        cout_eur: e.cost_eur,
+        tokens_entree: e.input_tokens,
+        tokens_sortie: e.output_tokens,
+      })),
+      // RGPD : journal d'audit lié à votre compte (connexions, modifications,
+      // exports). Adresse IP partiellement conservée pour la sécurité.
+      journal_audit: userAuditLogs.map((l) => ({
+        date: l.created_at,
+        action: l.action,
+        ip: l.ip,
+        user_agent: l.user_agent,
+      })),
     };
 
     res.setHeader("Content-Disposition", `attachment; filename="mes-donnees-heureka-${new Date().toISOString().slice(0, 10)}.json"`);
@@ -199,12 +251,39 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: "Mot de passe incorrect" });
 
+    // RGPD art. 17 (droit à l'effacement) : le simple DELETE en DB laisse les
+    // fichiers physiques (PDF, plans, photos) sur disque → fuite de données.
+    // On les supprime AVANT le DELETE en base. Best-effort : si un fichier est
+    // déjà absent, on continue (l'objectif est zéro orphelin résiduel).
+    const userPieces = await db
+      .select({ url: dossier_pieces_jointes.url })
+      .from(dossier_pieces_jointes)
+      .where(eq(dossier_pieces_jointes.user_id, user.id));
+    let filesDeleted = 0;
+    let filesFailed = 0;
+    for (const p of userPieces) {
+      const filename = p.url?.split("/").pop();
+      if (!filename) continue;
+      try {
+        fs.unlinkSync(path.join(UPLOADS_DIR, filename));
+        filesDeleted++;
+      } catch (err) {
+        // ENOENT = déjà supprimé, on l'ignore ; tout autre code est tracé.
+        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
+          console.warn(`[rgpd] échec suppression ${filename}:`, err);
+          filesFailed++;
+        }
+      }
+    }
+
     await writeAudit(user.id, user.email, "account_deleted", req);
+    // La cascade DB supprime dossiers → pieces → messages → notifications.
+    // audit_logs.user_id est ON DELETE SET NULL (préservé pour la sécurité).
     await db.delete(users).where(eq(users.id, user.id));
 
     res.clearCookie(cookieNameFor(req), COOKIE_CLEAR_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
-    res.json({ ok: true });
+    res.json({ ok: true, files_deleted: filesDeleted, files_failed: filesFailed });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

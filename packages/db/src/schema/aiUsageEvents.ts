@@ -23,5 +23,9 @@ export const ai_usage_events = pgTable("ai_usage_events", {
   cache_creation_input_tokens: integer("cache_creation_input_tokens").notNull().default(0),
   cost_eur: doublePrecision("cost_eur").notNull().default(0),
   duration_ms: integer("duration_ms"),
+  // RGPD : SHA-256 du fichier soumis à l'IA (NULL pour les appels sans
+  // contenu utilisateur). Permet l'audit "tel fichier a-t-il été envoyé ?"
+  // sans dupliquer le contenu personnel.
+  file_hash: text("file_hash"),
   created_at: timestamp("created_at").notNull().defaultNow(),
 });

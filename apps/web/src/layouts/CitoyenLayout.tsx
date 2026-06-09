@@ -74,6 +74,11 @@ export function CitoyenLayout() {
               <LogOut className="w-3.5 h-3.5" />
             </button>
           </div>
+          {/* Liens RGPD — toujours accessibles depuis l'espace connecté (CNIL recommandation) */}
+          <div className="mt-3 pt-3 border-t border-white/5 flex flex-col gap-1 text-[10px] text-white/40">
+            <Link to="/mentions-legales" className="hover:text-white/80 transition-colors">Mentions légales</Link>
+            <Link to="/politique-confidentialite" className="hover:text-white/80 transition-colors">Politique de confidentialité</Link>
+          </div>
         </div>
       </aside>
       <main className="flex-1 overflow-auto">

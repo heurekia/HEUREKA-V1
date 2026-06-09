@@ -1,6 +1,13 @@
 import fs from "fs";
-import { extractFirstJson } from "./pieceAnalyzer.js";
+import crypto from "crypto";
+import { extractFirstJson, sanitizePieceName } from "./pieceAnalyzer.js";
 import { anthropicClient, callClaude } from "./aiUsage.js";
+
+function sha256File(filePath: string): string {
+  const hash = crypto.createHash("sha256");
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest("hex");
+}
 
 /**
  * Extraction structurée d'une pièce du dossier d'urbanisme.
@@ -317,6 +324,7 @@ export async function extractPiece(
   if (stat.size > MAX_INLINE_BYTES) return null;
 
   const base64 = fs.readFileSync(filePath).toString("base64");
+  const fileHash = sha256File(filePath);
   const isPdfFile = isPdf(mimeType);
 
   const documentBlock = isPdfFile
@@ -324,15 +332,18 @@ export async function extractPiece(
     : { type: "image" as const, source: { type: "base64" as const, media_type: mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: base64 } };
 
   const hint = ctx?.expected_type ? `Hint code pièce : type attendu = ${ctx.expected_type} (à valider visuellement).` : "";
+  // RGPD : minimisation — on n'envoie que la rubrique métier, pas le nom de
+  // fichier d'origine (qui contient souvent l'identité du pétitionnaire).
+  const safeName = ctx?.nom_piece ? sanitizePieceName(ctx.nom_piece) : null;
   const meta = [
-    ctx?.nom_piece ? `Nom de la pièce : ${ctx.nom_piece}` : null,
+    safeName ? `Nom de la pièce : ${safeName}` : null,
     ctx?.code_piece ? `Code pièce : ${ctx.code_piece}` : null,
     hint,
   ].filter(Boolean).join("\n");
 
   const client = anthropicClient({ maxRetries: 2, timeout: 90_000 });
   const msg = await callClaude(
-    { purpose: "piece_extract", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId },
+    { purpose: "piece_extract", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId, fileHash },
     {
       // Sonnet 4.6 : meilleure vision pour les plans cotés et les CERFA scannés.
       model: "claude-sonnet-4-6",

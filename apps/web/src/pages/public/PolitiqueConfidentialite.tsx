@@ -2,15 +2,17 @@ export function PolitiqueConfidentialite() {
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-12">
       <h1 className="text-3xl font-bold text-[#000020] mb-2">Politique de confidentialité</h1>
-      <p className="text-sm text-gray-400 mb-10">Dernière mise à jour : mai 2026</p>
+      <p className="text-sm text-gray-400 mb-10">Dernière mise à jour : juin 2026</p>
 
       <section className="mb-8">
         <h2 className="text-lg font-semibold text-[#000020] mb-3">1. Responsable du traitement</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
-          HEUREKIA SAS, [adresse], est responsable du traitement de vos données personnelles collectées via la plateforme HEUREKIA.
+          Le responsable du traitement de vos données personnelles est <strong>la collectivité destinataire de votre
+          dossier d'urbanisme</strong> (commune ou EPCI). HEUREKIA SAS intervient en qualité de sous-traitant au sens
+          de l'article 28 du RGPD.
         </p>
         <p className="text-sm text-gray-600 mt-2">
-          Délégué à la Protection des Données (DPD) :{" "}
+          Contact technique HEUREKIA / DPD plateforme :{" "}
           <a href="mailto:dpd@heurekia-urba.fr" className="text-heureka-500 hover:underline">dpd@heurekia-urba.fr</a>
         </p>
       </section>
@@ -18,9 +20,14 @@ export function PolitiqueConfidentialite() {
       <section className="mb-8">
         <h2 className="text-lg font-semibold text-[#000020] mb-3">2. Données collectées</h2>
         <div className="text-sm text-gray-600 leading-relaxed space-y-2">
-          <p><strong>Données de compte :</strong> nom, prénom, adresse e-mail, numéro de téléphone, commune.</p>
-          <p><strong>Données de dossier :</strong> adresse du projet, description des travaux, surface, documents joints, correspondances avec la mairie.</p>
-          <p><strong>Données techniques :</strong> adresse IP, user-agent, horodatages de connexion (conservés 12 mois à des fins de traçabilité de sécurité).</p>
+          <p><strong>Données de compte :</strong> nom, prénom, adresse e-mail, numéro de téléphone, commune,
+            mot de passe (haché par bcrypt — jamais stocké en clair).</p>
+          <p><strong>Données de dossier :</strong> adresse du projet, parcelle cadastrale, description des travaux,
+            surface, documents joints (plans, CERFA, photos, notice), correspondances avec la mairie.</p>
+          <p><strong>Données générées par l'analyse IA :</strong> score qualitatif et extraction structurée
+            (dimensions, surfaces, hauteurs NGF…), empreinte SHA-256 de chaque fichier soumis à l'IA.</p>
+          <p><strong>Données techniques :</strong> adresse IP, user-agent, horodatages de connexion
+            (conservés 12 mois à des fins de traçabilité de sécurité — exigence CCSC Art. 4.14).</p>
         </div>
       </section>
 
@@ -40,6 +47,10 @@ export function PolitiqueConfidentialite() {
                 <td className="py-2">Mission d'intérêt public (art. 6-1-e RGPD)</td>
               </tr>
               <tr>
+                <td className="py-2 pr-4">Analyse automatisée des pièces déposées (vérification de complétude et de conformité PLU indicative)</td>
+                <td className="py-2">Mission d'intérêt public + consentement explicite révocable du pétitionnaire (art. 6-1-a et 6-1-e)</td>
+              </tr>
+              <tr>
                 <td className="py-2 pr-4">Authentification et sécurité du compte</td>
                 <td className="py-2">Exécution du contrat (art. 6-1-b)</td>
               </tr>
@@ -57,49 +68,126 @@ export function PolitiqueConfidentialite() {
       </section>
 
       <section className="mb-8">
-        <h2 className="text-lg font-semibold text-[#000020] mb-3">4. Durée de conservation</h2>
-        <div className="text-sm text-gray-600 leading-relaxed space-y-2">
-          <p><strong>Données de compte :</strong> durée de vie du compte + 3 ans après la dernière connexion.</p>
-          <p><strong>Dossiers :</strong> 10 ans à compter de la décision (obligations légales en matière d'urbanisme).</p>
-          <p><strong>Logs de connexion :</strong> 12 mois.</p>
+        <h2 className="text-lg font-semibold text-[#000020] mb-3">4. Analyse automatisée par intelligence artificielle</h2>
+        <p className="text-sm text-gray-600 leading-relaxed mb-3">
+          Au moment du dépôt d'une pièce justificative, le contenu du fichier est transmis à un modèle d'IA opéré
+          par <strong>Anthropic, PBC</strong> (548 Market St PMB 90375, San Francisco, CA 94104, États-Unis) afin
+          d'évaluer sa lisibilité, sa complétude et de détecter d'éventuelles non-conformités PLU manifestes.
+        </p>
+        <ul className="text-sm text-gray-600 space-y-2 list-disc list-inside mb-3">
+          <li><strong>Sous-traitant :</strong> Anthropic, PBC, lié par un Data Processing Agreement (DPA) et
+            les clauses contractuelles types (SCC) de la Commission Européenne pour le transfert hors UE.</li>
+          <li><strong>Rétention chez le sous-traitant :</strong> jusqu'à 30 jours sur les serveurs Anthropic
+            à des fins anti-abus. Option « Zero Data Retention » activable contractuellement.</li>
+          <li><strong>Aucun réentraînement :</strong> Anthropic ne ré-entraîne pas ses modèles sur les données
+            transmises par API, conformément à ses conditions commerciales.</li>
+          <li><strong>Données transmises au modèle :</strong> contenu du fichier + zone PLU + nature des
+            travaux + commune. <strong>Aucune donnée d'identification directe</strong> (nom, prénom, e-mail,
+            adresse postale, numéro de parcelle complet) n'est transmise au modèle — le nom de fichier
+            d'origine est remplacé par la rubrique métier et le numéro de parcelle est tronqué.</li>
+          <li><strong>Traçabilité :</strong> chaque appel est journalisé avec l'empreinte SHA-256 du fichier,
+            le modèle utilisé et le coût, sans dupliquer le contenu du fichier.</li>
+          <li><strong>Décision finale humaine (art. 22 RGPD) :</strong> aucune décision juridique n'est rendue
+            par l'IA ; un instructeur humain examine chaque dossier et chaque pièce.</li>
+          <li><strong>Droit d'opposition :</strong> vous pouvez refuser l'analyse IA à tout moment lors du
+            dépôt via la case dédiée — vos pièces sont alors transmises sans aucun appel au modèle.</li>
+        </ul>
+      </section>
+
+      <section className="mb-8">
+        <h2 className="text-lg font-semibold text-[#000020] mb-3">5. Sous-traitants</h2>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm text-gray-600 border-collapse">
+            <thead>
+              <tr className="border-b border-gray-200">
+                <th className="text-left py-2 pr-4 font-medium text-gray-700">Sous-traitant</th>
+                <th className="text-left py-2 pr-4 font-medium text-gray-700">Rôle</th>
+                <th className="text-left py-2 font-medium text-gray-700">Localisation des données</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-gray-100">
+              <tr>
+                <td className="py-2 pr-4">Railway Corporation (USA)</td>
+                <td className="py-2 pr-4">Hébergement applicatif et base de données</td>
+                <td className="py-2">UE — eu-west-1 (Irlande)</td>
+              </tr>
+              <tr>
+                <td className="py-2 pr-4">Anthropic, PBC (USA)</td>
+                <td className="py-2 pr-4">Analyse automatisée des pièces (modèle Claude)</td>
+                <td className="py-2">USA — sous DPA + SCC</td>
+              </tr>
+              <tr>
+                <td className="py-2 pr-4">Resend (USA)</td>
+                <td className="py-2 pr-4">Envoi d'e-mails transactionnels (activation, notifications)</td>
+                <td className="py-2">UE / USA</td>
+              </tr>
+            </tbody>
+          </table>
         </div>
       </section>
 
       <section className="mb-8">
-        <h2 className="text-lg font-semibold text-[#000020] mb-3">5. Vos droits</h2>
+        <h2 className="text-lg font-semibold text-[#000020] mb-3">6. Durée de conservation</h2>
+        <div className="text-sm text-gray-600 leading-relaxed space-y-2">
+          <p><strong>Données de compte :</strong> durée de vie du compte + 3 ans après la dernière connexion.</p>
+          <p><strong>Dossiers d'urbanisme :</strong> 10 ans à compter de la décision (obligations légales en matière d'urbanisme).</p>
+          <p><strong>Logs de connexion (audit_logs) :</strong> 12 mois (purge automatique).</p>
+          <p><strong>Journal des appels IA (ai_usage_events) :</strong> conservé pour la durée du dossier, à des fins d'auditabilité.</p>
+          <p><strong>Inputs côté Anthropic :</strong> 30 jours maximum (logs anti-abus du sous-traitant), supprimables sur option contractuelle.</p>
+        </div>
+      </section>
+
+      <section className="mb-8">
+        <h2 className="text-lg font-semibold text-[#000020] mb-3">7. Vos droits</h2>
         <p className="text-sm text-gray-600 mb-3 leading-relaxed">
-          Conformément au RGPD, vous disposez des droits suivants sur vos données :
+          Conformément aux articles 15 à 22 du RGPD, vous disposez des droits suivants sur vos données :
         </p>
         <ul className="text-sm text-gray-600 space-y-1 list-disc list-inside">
-          <li><strong>Droit d'accès</strong> — consulter vos données (section "Mon profil")</li>
-          <li><strong>Droit de rectification</strong> — corriger vos informations (section "Mon profil")</li>
-          <li><strong>Droit à l'effacement</strong> — supprimer votre compte (section "Mon profil" → "Supprimer mon compte")</li>
-          <li><strong>Droit à la portabilité</strong> — exporter vos données en JSON (section "Mon profil" → "Télécharger mes données")</li>
-          <li><strong>Droit d'opposition</strong> — s'opposer à un traitement</li>
-          <li><strong>Droit à la limitation</strong> — demander la suspension d'un traitement</li>
+          <li><strong>Droit d'accès</strong> — consulter et télécharger l'intégralité de vos données
+            (espace « Mon profil » → « Télécharger mes données » — export JSON enrichi avec journal IA).</li>
+          <li><strong>Droit de rectification</strong> — corriger vos informations (espace « Mon profil »).</li>
+          <li><strong>Droit à l'effacement</strong> — supprimer définitivement votre compte, vos dossiers et
+            l'ensemble des fichiers déposés (espace « Mon profil » → « Supprimer mon compte »).</li>
+          <li><strong>Droit à la portabilité</strong> — récupérer vos données dans un format structuré
+            (export JSON).</li>
+          <li><strong>Droit d'opposition au traitement automatisé</strong> — refuser l'analyse IA des pièces
+            au moment du dépôt (case à cocher dédiée).</li>
+          <li><strong>Droit à la limitation</strong> — demander la suspension d'un traitement.</li>
+          <li><strong>Droit à une intervention humaine</strong> (art. 22) — vous pouvez à tout moment demander
+            à un instructeur humain de réexaminer un avis indicatif rendu par l'IA.</li>
         </ul>
         <p className="text-sm text-gray-600 mt-3">
-          Pour exercer ces droits ou pour toute question, contactez le DPD :{" "}
-          <a href="mailto:dpd@heurekia-urba.fr" className="text-heureka-500 hover:underline">dpd@heurekia-urba.fr</a>.
-          En cas de réclamation non résolue, vous pouvez saisir la <strong>CNIL</strong> ({" "}
+          Pour exercer ces droits, contactez en priorité le DPD de la commune destinataire de votre dossier,
+          ou à défaut <a href="mailto:dpd@heurekia-urba.fr" className="text-heureka-500 hover:underline">dpd@heurekia-urba.fr</a>.
+          En cas de réclamation non résolue, vous pouvez saisir la <strong>CNIL</strong> (
           <a href="https://www.cnil.fr" target="_blank" rel="noopener noreferrer" className="text-heureka-500 hover:underline">www.cnil.fr</a>).
         </p>
       </section>
 
       <section className="mb-8">
-        <h2 className="text-lg font-semibold text-[#000020] mb-3">6. Sécurité</h2>
+        <h2 className="text-lg font-semibold text-[#000020] mb-3">8. Sécurité</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
-          Vos données sont protégées par chiffrement HTTPS (TLS), stockage des mots de passe par hachage bcrypt,
-          cookies de session sécurisés (HttpOnly, Secure, SameSite=Strict) et des en-têtes HTTP de sécurité (CSP, HSTS).
-          Les accès sont journalisés et contrôlés.
+          Vos données sont protégées par chiffrement HTTPS (TLS) en transit, hachage bcrypt des mots de passe,
+          cookies de session sécurisés (HttpOnly, Secure, SameSite=Strict), en-têtes HTTP de sécurité
+          (CSP stricte, HSTS, X-Frame-Options, X-Content-Type-Options) et requêtes SQL paramétrées (Drizzle ORM).
+          Tous les accès sont journalisés. Le détail des mesures techniques figure dans la documentation de
+          conformité accessible aux administrateurs de la plateforme.
         </p>
       </section>
 
       <section>
-        <h2 className="text-lg font-semibold text-[#000020] mb-3">7. Transferts hors UE</h2>
+        <h2 className="text-lg font-semibold text-[#000020] mb-3">9. Transferts hors Union Européenne</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
-          Vos données sont hébergées au sein de l'Union Européenne. Aucun transfert vers des pays tiers n'est effectué
-          sans garanties appropriées conformément au RGPD.
+          Le contenu des pièces déposées peut être transmis à Anthropic, PBC (États-Unis) dans le cadre de
+          l'analyse automatisée décrite à la section 4. Ce transfert est encadré par les <strong>clauses
+          contractuelles types</strong> (SCC) adoptées par la Commission Européenne (décision 2021/914) et un
+          Data Processing Agreement signé avec le sous-traitant. Le pétitionnaire dispose d'un droit
+          d'opposition activable lors du dépôt.
+        </p>
+        <p className="text-sm text-gray-600 mt-2">
+          Les bases de données et les fichiers eux-mêmes restent hébergés dans l'Union Européenne.
+          Une bascule vers une infrastructure d'inférence IA en région UE (AWS Bedrock Francfort) est en cours
+          d'évaluation pour supprimer ce transfert.
         </p>
       </section>
     </div>

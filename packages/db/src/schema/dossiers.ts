@@ -47,6 +47,10 @@ export const dossiers = pgTable("dossiers", {
   conformite_analysis: jsonb("conformite_analysis"),
   conformite_status: text("conformite_status"),
   conformite_analyzed_at: timestamp("conformite_analyzed_at"),
+  // RGPD : consentement explicite du citoyen à l'analyse IA de ses pièces.
+  // NULL = non demandé (dossiers antérieurs). true/false = choix explicite.
+  ai_consent: boolean("ai_consent"),
+  ai_consent_at: timestamp("ai_consent_at"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

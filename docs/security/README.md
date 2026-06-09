@@ -8,6 +8,9 @@ Ce dossier documente l'architecture de sécurité, les exigences de conformité 
 |----------|---------|
 | [architecture.md](./architecture.md) | Mécanismes de sécurité actuellement en place |
 | [conformite-dsi.md](./conformite-dsi.md) | Analyse des exigences DSI Tours Métropole / Ville de Tours |
+| [aipd.md](./aipd.md) | Analyse d'Impact relative à la Protection des Données — RGPD art. 35 |
+| [registre-traitements.md](./registre-traitements.md) | Fiches de registre des traitements pré-remplies — RGPD art. 30 |
+| [dpa-anthropic-checklist.md](./dpa-anthropic-checklist.md) | Checklist opérationnelle de la sous-traitance LLM Anthropic |
 | [todo.md](./todo.md) | Chantiers de sécurité par priorité |
 
 ## Périmètre

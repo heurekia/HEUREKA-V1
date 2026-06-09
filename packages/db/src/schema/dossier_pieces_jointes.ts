@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, uuid, jsonb } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, uuid, jsonb, boolean } from "drizzle-orm/pg-core";
 import { dossiers } from "./dossiers.js";
 import { users } from "./users.js";
 
@@ -22,5 +22,8 @@ export const dossier_pieces_jointes = pgTable("dossier_pieces_jointes", {
   instructeur_note: text("instructeur_note"),
   instructeur_status_at: timestamp("instructeur_status_at"),
   instructeur_status_by: uuid("instructeur_status_by"),
+  // RGPD : trace par pièce de l'exécution effective d'une analyse IA.
+  // false = le citoyen a refusé OU le format n'est pas analysable.
+  ai_processed: boolean("ai_processed").notNull().default(false),
   uploaded_at: timestamp("uploaded_at").notNull().defaultNow(),
 });

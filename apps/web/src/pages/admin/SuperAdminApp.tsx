@@ -361,6 +361,7 @@ const navItems = [
   { path: "/admin/services", icon: "🔗", label: "Services annexes" },
   { path: "/admin/couts-ia", icon: "💶", label: "Coûts IA" },
   { path: "/admin/audit", icon: "🔒", label: "Audit sécurité" },
+  { path: "/admin/conformite", icon: "🛡", label: "Conformité RGPD" },
   { path: "/admin/configuration", icon: "⚙", label: "Configuration" },
 ];
 
@@ -2276,6 +2277,362 @@ const DOSSIER_TYPE_OPTIONS = [
   { value: "CU", label: "CU — Certificat d'urbanisme" },
 ];
 
+// ─── Conformité RGPD ────────────────────────────────────────────────────────
+// Page récapitulative à destination des admins, DSI et DPD. Liste les
+// mesures techniques et organisationnelles en place pour garantir la
+// conformité RGPD et l'IA Act sur l'analyse automatisée des pièces.
+// Source de vérité : docs/security/conformite-dsi.md (référencé pour traçage).
+function Conformite() {
+  type MesureStatut = "actif" | "doc" | "a_faire";
+  interface Mesure {
+    titre: string;
+    description: string;
+    reference: string;     // article RGPD / CCSC / source réglementaire
+    statut: MesureStatut;
+    code_ref?: string;     // fichier code qui implémente la mesure
+  }
+  interface Section {
+    icone: string;
+    titre: string;
+    sous_titre: string;
+    couleur: string;
+    bg: string;
+    mesures: Mesure[];
+  }
+
+  const sections: Section[] = [
+    {
+      icone: "🤖",
+      titre: "Analyse IA des pièces déposées",
+      sous_titre: "Encadrement du recours à un LLM tiers (Anthropic) sur le contenu des dossiers",
+      couleur: "#4F46E5",
+      bg: "#EEF2FF",
+      mesures: [
+        {
+          titre: "Consentement explicite du citoyen (opt-out)",
+          description: "Bandeau d'information détaillé affiché à l'étape « pièces » du dépôt. Le citoyen peut refuser l'analyse IA à tout moment via une case à cocher — ses pièces sont alors transmises à l'instructeur sans aucun appel LLM.",
+          reference: "RGPD art. 13 + art. 22",
+          statut: "actif",
+          code_ref: "NouvelleDemandeWizard.tsx · step 7",
+        },
+        {
+          titre: "Minimisation des données envoyées au LLM",
+          description: "Le nom de fichier d'origine du citoyen (souvent « permis-Jean-Dupont.pdf ») est retiré et remplacé par la rubrique métier (« Plan de masse »). Le numéro de parcelle complet est tronqué à la section cadastrale. Aucun nom, prénom, email, téléphone ou adresse postale n'est passé au modèle.",
+          reference: "RGPD art. 5.1.c (minimisation)",
+          statut: "actif",
+          code_ref: "pieceAnalyzer.ts · sanitizePieceName + maskParcelle",
+        },
+        {
+          titre: "Trace par empreinte (hash SHA-256)",
+          description: "Chaque appel IA est journalisé dans ai_usage_events avec l'empreinte SHA-256 du fichier envoyé. Permet de prouver / réfuter qu'un fichier précis a été soumis, sans dupliquer le contenu personnel en base d'audit.",
+          reference: "RGPD art. 30 + 32",
+          statut: "actif",
+          code_ref: "aiUsage.ts · file_hash",
+        },
+        {
+          titre: "Trace par pièce (ai_processed)",
+          description: "La table dossier_pieces_jointes porte un booléen ai_processed indiquant si l'IA a effectivement été appelée sur la pièce. Permet de reconstituer le périmètre du traitement automatisé pièce par pièce.",
+          reference: "RGPD art. 30",
+          statut: "actif",
+          code_ref: "schema/dossier_pieces_jointes.ts",
+        },
+        {
+          titre: "Trace au niveau du dossier (ai_consent)",
+          description: "Colonne ai_consent + ai_consent_at sur la table dossiers : enregistre la dernière décision explicite du pétitionnaire avec horodatage. Préservé même si le dossier est par la suite consulté en lecture seule.",
+          reference: "RGPD art. 7.1 (preuve du consentement)",
+          statut: "actif",
+          code_ref: "schema/dossiers.ts",
+        },
+        {
+          titre: "Décision humaine systématique",
+          description: "L'IA produit un avis qualitatif (conforme / acceptable / incomplet / non_conforme) et une extraction structurée. Aucune décision n'est rendue automatiquement : un instructeur humain valide chaque pièce et chaque dossier. Le bandeau citoyen l'indique explicitement.",
+          reference: "RGPD art. 22 (décision automatisée)",
+          statut: "actif",
+          code_ref: "pieceAnalyzer.ts · prompts + MairieApp",
+        },
+      ],
+    },
+    {
+      icone: "🔐",
+      titre: "Sécurité technique",
+      sous_titre: "Confidentialité, intégrité et disponibilité",
+      couleur: "#059669",
+      bg: "#ECFDF5",
+      mesures: [
+        {
+          titre: "Chiffrement en transit (HTTPS forcé)",
+          description: "HTTPS imposé par l'hébergeur en production, HSTS activé (max-age=15552000) via Helmet.",
+          reference: "PGSSI § Transport",
+          statut: "actif",
+          code_ref: "app.ts · helmet",
+        },
+        {
+          titre: "Headers de sécurité HTTP",
+          description: "Helmet configuré avec CSP stricte, X-Frame-Options DENY, X-Content-Type-Options nosniff, Referrer-Policy no-referrer.",
+          reference: "CCSC Art. 11.3",
+          statut: "actif",
+          code_ref: "app.ts",
+        },
+        {
+          titre: "Authentification JWT en cookie HttpOnly",
+          description: "Token signé HS256, stocké en cookie HttpOnly / Secure / SameSite=Strict (pas en localStorage). Mots de passe hashés bcrypt (coût 10).",
+          reference: "PGSSI § 2.3",
+          statut: "actif",
+          code_ref: "auth.ts",
+        },
+        {
+          titre: "Requêtes SQL paramétrées",
+          description: "Toutes les requêtes passent par Drizzle ORM : impossibilité d'injection SQL. Validation Zod sur tous les endpoints POST/PATCH.",
+          reference: "OWASP A03",
+          statut: "actif",
+          code_ref: "Drizzle ORM",
+        },
+        {
+          titre: "Journal d'audit des authentifications",
+          description: "Table audit_logs : login, login_failed, logout, register, avec IP et user-agent. Rétention 12 mois (index dédié pour la purge).",
+          reference: "Annexe Technique n°2 §4.14",
+          statut: "actif",
+          code_ref: "schema/auditLogs.ts",
+        },
+        {
+          titre: "Fichier security.txt",
+          description: "Disponible à /.well-known/security.txt — point de contact pour signalement de vulnérabilité.",
+          reference: "CCSC Art. 11.3",
+          statut: "actif",
+        },
+      ],
+    },
+    {
+      icone: "📋",
+      titre: "Conformité documentaire RGPD",
+      sous_titre: "Information, droits des personnes et registre",
+      couleur: "#D97706",
+      bg: "#FFFBEB",
+      mesures: [
+        {
+          titre: "Information du pétitionnaire (art. 13)",
+          description: "Bandeau d'information détaillé affiché au moment du dépôt : finalité, base légale, sous-traitant, données envoyées, droits, durée de conservation, absence de décision automatisée.",
+          reference: "RGPD art. 13",
+          statut: "actif",
+          code_ref: "NouvelleDemandeWizard.tsx · step 7",
+        },
+        {
+          titre: "DPA avec Anthropic (sous-traitant LLM)",
+          description: "Checklist opérationnelle prête à exécuter (docs/security/dpa-anthropic-checklist.md) : DPA + SCC 2021/914 module 2 + Zero Data Retention + TIA + procédure d'incident. Reste l'acte de signature à la mise en production.",
+          reference: "RGPD art. 28 + 44-46",
+          statut: "doc",
+          code_ref: "docs/security/dpa-anthropic-checklist.md",
+        },
+        {
+          titre: "Mentions légales & politique de confidentialité",
+          description: "Pages publiques /mentions-legales et /politique-confidentialite : responsable de traitement (collectivité), sous-traitants détaillés (Railway, Anthropic, Resend) avec localisation des données, section dédiée à l'analyse IA (sous-traitant, données transmises, rétention 30j, décision humaine art. 22), droits des personnes avec pointeurs vers les actions de l'espace Profil, transferts hors UE encadrés par SCC. Liens visibles depuis les footers public et connecté.",
+          reference: "RGPD art. 13-14",
+          statut: "actif",
+          code_ref: "MentionsLegales.tsx + PolitiqueConfidentialite.tsx",
+        },
+        {
+          titre: "Registre des traitements (art. 30)",
+          description: "4 fiches pré-remplies prêtes à recopier dans le registre de la collectivité (docs/security/registre-traitements.md) : instruction des autorisations, analyse IA, gestion des comptes, journaux de sécurité. Sections marquées [À COMPLÉTER] pour les éléments propres à chaque collectivité.",
+          reference: "RGPD art. 30",
+          statut: "actif",
+          code_ref: "docs/security/registre-traitements.md",
+        },
+        {
+          titre: "AIPD — Analyse d'Impact (art. 35)",
+          description: "AIPD rédigée et structurée selon la méthodologie CNIL (docs/security/aipd.md) : description du traitement, nécessité et proportionnalité, évaluation des risques (confidentialité, intégrité, disponibilité, biais IA), plan d'action. Section avis DPD à compléter par la collectivité avant mise en production. Revue annuelle prévue.",
+          reference: "RGPD art. 35",
+          statut: "actif",
+          code_ref: "docs/security/aipd.md",
+        },
+        {
+          titre: "Droits des personnes — accès, portabilité, effacement",
+          description: "Page « Profil » du citoyen exposant : export JSON complet (profil + dossiers + pièces + messages + consentement IA + journal des appels IA avec empreinte SHA-256 + journal d'audit), suppression de compte avec confirmation par mot de passe et effacement physique des fichiers sur disque (RGPD art. 17). Contact DPD affiché.",
+          reference: "RGPD art. 15, 17, 20",
+          statut: "actif",
+          code_ref: "auth.ts · /me/export + DELETE /me, Profil.tsx",
+        },
+      ],
+    },
+    {
+      icone: "🇪🇺",
+      titre: "Hébergement & localisation",
+      sous_titre: "Souveraineté et transferts internationaux",
+      couleur: "#7C3AED",
+      bg: "#F5F3FF",
+      mesures: [
+        {
+          titre: "Hébergement applicatif en UE",
+          description: "Plateforme déployée sur infrastructure cloud en région UE. À vérifier au moment de la mise en production avec la DSI Tours Métropole.",
+          reference: "Annexe Technique n°2 §4.12",
+          statut: "doc",
+        },
+        {
+          titre: "LLM Anthropic via région UE (Bedrock Francfort) — opt-in",
+          description: "Bascule disponible via la variable d'environnement AI_PROVIDER=bedrock (région AWS_REGION par défaut eu-central-1 / Francfort). Utilise les inference profiles cross-region eu.anthropic.* qui restent dans l'UE. Mapping centralisé dans aiUsage.ts : le code applicatif reste sur les noms canoniques. Activable au déploiement sans changement de code.",
+          reference: "RGPD art. 44",
+          statut: "actif",
+          code_ref: "aiUsage.ts · BEDROCK_MODEL_MAP",
+        },
+        {
+          titre: "Purge automatique des logs d'audit (12 mois)",
+          description: "Cron quotidien à 02h00 : supprime les entrées audit_logs antérieures à 12 mois. Durée paramétrable via AUDIT_LOG_RETENTION_MONTHS.",
+          reference: "CCSC §4.14 + RGPD art. 5.1.e",
+          statut: "actif",
+          code_ref: "jobs/scheduler.ts",
+        },
+        {
+          titre: "Purge automatique des brouillons abandonnés (180 jours)",
+          description: "Cron quotidien à 02h30 : supprime les dossiers en statut brouillon non touchés depuis 180 jours, ainsi que les fichiers physiques associés. Durée paramétrable via DRAFT_DOSSIER_RETENTION_DAYS.",
+          reference: "RGPD art. 5.1.e (minimisation)",
+          statut: "actif",
+          code_ref: "jobs/scheduler.ts",
+        },
+      ],
+    },
+  ];
+
+  const statusConf: Record<MesureStatut, { label: string; bg: string; color: string }> = {
+    actif:    { label: "✓ Actif",         bg: "#DCFCE7", color: "#15803D" },
+    doc:      { label: "📄 Documentaire", bg: "#FEF3C7", color: "#92400E" },
+    a_faire:  { label: "⏳ À planifier",   bg: "#FEE2E2", color: "#B91C1C" },
+  };
+
+  const total = sections.reduce((acc, s) => acc + s.mesures.length, 0);
+  const actifs = sections.reduce((acc, s) => acc + s.mesures.filter((m) => m.statut === "actif").length, 0);
+
+  return (
+    <PageShell>
+      <div style={{ marginBottom: 24 }}>
+        <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Conformité RGPD & sécurité</h1>
+        <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>
+          Mesures techniques et organisationnelles en place pour garantir la conformité du traitement des données personnelles, et en particulier de l'analyse IA des pièces déposées.
+        </p>
+      </div>
+
+      {/* Bandeau synthèse */}
+      <div style={{
+        background: "linear-gradient(135deg, #4F46E5 0%, #7C3AED 100%)",
+        borderRadius: 14,
+        padding: "20px 24px",
+        marginBottom: 24,
+        color: "white",
+        display: "flex",
+        alignItems: "center",
+        gap: 20,
+      }}>
+        <div style={{ fontSize: 36 }}>🛡</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 20, fontWeight: 800, marginBottom: 4 }}>
+            {actifs} mesures actives sur {total}
+          </div>
+          <div style={{ fontSize: 13, opacity: 0.9, lineHeight: 1.5 }}>
+            HEUREKIA met en œuvre une approche « privacy by design » : minimisation des données envoyées à l'IA, consentement explicite du citoyen, décision finale humaine systématique, traçabilité par empreinte SHA-256 et journal d'audit.
+          </div>
+        </div>
+      </div>
+
+      {/* Note pédagogique pour les agents et la DSI */}
+      <div style={{
+        background: "#F8FAFC",
+        border: `1px dashed ${C.border}`,
+        borderRadius: 12,
+        padding: "16px 20px",
+        marginBottom: 24,
+        fontSize: 13,
+        color: "#475569",
+        lineHeight: 1.6,
+      }}>
+        <div style={{ fontWeight: 700, color: C.text, marginBottom: 6 }}>ℹ️ À destination de la DSI, du DPD et des agents</div>
+        Cette page récapitule l'ensemble des mesures de conformité actuellement en place dans la plateforme. Elle est destinée à être communiquée à la DSI Tours Métropole, au Délégué à la Protection des Données et aux instructeurs sur demande. Pour le détail réglementaire complet, voir le document <code style={{ background: "#E2E8F0", padding: "1px 6px", borderRadius: 4, fontSize: 12 }}>docs/security/conformite-dsi.md</code> du dépôt.
+      </div>
+
+      {/* Sections */}
+      <div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
+        {sections.map((section) => (
+          <div
+            key={section.titre}
+            style={{
+              background: C.white,
+              borderRadius: 14,
+              border: `1px solid ${C.border}`,
+              overflow: "hidden",
+            }}
+          >
+            <div style={{
+              background: section.bg,
+              padding: "16px 20px",
+              display: "flex",
+              alignItems: "center",
+              gap: 14,
+              borderBottom: `1px solid ${C.border}`,
+            }}>
+              <div style={{
+                width: 44,
+                height: 44,
+                borderRadius: 12,
+                background: "white",
+                display: "flex",
+                alignItems: "center",
+                justifyContent: "center",
+                fontSize: 22,
+                flexShrink: 0,
+              }}>{section.icone}</div>
+              <div>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 800, color: section.couleur }}>{section.titre}</h3>
+                <p style={{ margin: "2px 0 0", fontSize: 12.5, color: C.textMuted }}>{section.sous_titre}</p>
+              </div>
+            </div>
+
+            <div style={{ padding: "8px 0" }}>
+              {section.mesures.map((m, idx) => {
+                const st = statusConf[m.statut];
+                return (
+                  <div
+                    key={m.titre}
+                    style={{
+                      padding: "14px 20px",
+                      borderBottom: idx < section.mesures.length - 1 ? `1px solid ${C.bg}` : "none",
+                    }}
+                  >
+                    <div style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 6, flexWrap: "wrap" }}>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ fontSize: 14, fontWeight: 700, color: C.text, marginBottom: 2 }}>
+                          {m.titre}
+                        </div>
+                        <div style={{ fontSize: 11.5, color: C.textMuted }}>
+                          {m.reference}
+                          {m.code_ref && <span style={{ color: "#94A3B8" }}> · <code style={{ background: C.bg, padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>{m.code_ref}</code></span>}
+                        </div>
+                      </div>
+                      <span style={{
+                        padding: "3px 10px",
+                        borderRadius: 999,
+                        fontSize: 11,
+                        fontWeight: 700,
+                        background: st.bg,
+                        color: st.color,
+                        flexShrink: 0,
+                        whiteSpace: "nowrap",
+                      }}>{st.label}</span>
+                    </div>
+                    <p style={{ margin: 0, fontSize: 13, color: "#475569", lineHeight: 1.55 }}>
+                      {m.description}
+                    </p>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div style={{ marginTop: 24, padding: "14px 20px", background: C.bg, borderRadius: 10, fontSize: 12, color: C.textMuted, lineHeight: 1.6 }}>
+        Légende — <strong style={{ color: "#15803D" }}>Actif</strong> : mesure implémentée dans le code et opérationnelle. <strong style={{ color: "#92400E" }}>Documentaire</strong> : mesure organisationnelle (contrat, document, procédure) à formaliser avant mise en production officielle. <strong style={{ color: "#B91C1C" }}>À planifier</strong> : chantier identifié, non encore engagé.
+      </div>
+    </PageShell>
+  );
+}
+
 function Configuration() {
   const [articles, setArticles] = useState<LegalMentionRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -3995,6 +4352,7 @@ export function SuperAdminApp() {
           <Route path="/couts-ia/commune/:id" element={<CoutsIACommune />} />
           <Route path="/couts-ia/:id" element={<CoutsIADossier />} />
           <Route path="/audit" element={<AuditLogs />} />
+          <Route path="/conformite" element={<Conformite />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="*" element={<Navigate to="/admin" replace />} />
         </Routes>
