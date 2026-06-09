@@ -3,10 +3,11 @@ import bcrypt from "bcryptjs";
 import { rateLimit } from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db.js";
-import { users, audit_logs, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens } from "@heureka-v1/db";
+import { users, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens } from "@heureka-v1/db";
 import { eq, and, gt, isNull } from "drizzle-orm";
 import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import { sendPasswordResetEmail } from "../services/mailer.js";
+import { logAudit } from "../services/audit.js";
 import crypto from "crypto";
 
 export const authRouter = Router();
@@ -61,18 +62,8 @@ export function cookieNameFor(req: AuthRequest): "token_app" | "token_www" {
   return isApp ? "token_app" : "token_www";
 }
 
-function clientIp(req: AuthRequest): string {
-  return (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "unknown";
-}
-
 function writeAudit(userId: string | null, email: string, action: string, req: AuthRequest) {
-  db.insert(audit_logs).values({
-    user_id: userId ?? undefined,
-    email,
-    action,
-    ip: clientIp(req),
-    user_agent: req.headers["user-agent"] ?? null,
-  }).catch(() => {});
+  return logAudit(req, action, { userId, email });
 }
 
 const registerSchema = z.object({
@@ -108,7 +99,7 @@ authRouter.post("/register", registerLimiter, async (req: AuthRequest, res) => {
     const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
     res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
-    writeAudit(user.id, user.email, "register", req);
+    await writeAudit(user.id, user.email, "register", req);
     res.status(201).json({
       user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune, commune_insee: user.commune_insee },
     });
@@ -129,18 +120,18 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
     }
     const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
     if (!user) {
-      writeAudit(null, email, "login_failed", req);
+      await writeAudit(null, email, "login_failed", req);
       return res.status(401).json({ error: "Email ou mot de passe incorrect" });
     }
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) {
-      writeAudit(null, email, "login_failed", req);
+      await writeAudit(null, email, "login_failed", req);
       return res.status(401).json({ error: "Email ou mot de passe incorrect" });
     }
     const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
     res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
-    writeAudit(user.id, user.email, "login", req);
+    await writeAudit(user.id, user.email, "login", req);
     res.json({
       user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune, commune_insee: user.commune_insee },
     });
@@ -150,8 +141,8 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
   }
 });
 
-authRouter.post("/logout", requireAuth, (req: AuthRequest, res) => {
-  writeAudit(req.user!.id, req.user!.email, "logout", req);
+authRouter.post("/logout", requireAuth, async (req: AuthRequest, res) => {
+  await writeAudit(req.user!.id, req.user!.email, "logout", req);
   res.clearCookie(cookieNameFor(req), COOKIE_CLEAR_OPTIONS);
   res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
   res.json({ ok: true });
@@ -189,7 +180,7 @@ authRouter.get("/me/export", requireAuth, async (req: AuthRequest, res) => {
 
     res.setHeader("Content-Disposition", `attachment; filename="mes-donnees-heureka-${new Date().toISOString().slice(0, 10)}.json"`);
     res.setHeader("Content-Type", "application/json");
-    writeAudit(userId, user.email, "data_export", req);
+    await writeAudit(userId, user.email, "data_export", req);
     res.json(payload);
   } catch (err) {
     console.error(err);
@@ -208,7 +199,7 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: "Mot de passe incorrect" });
 
-    writeAudit(user.id, user.email, "account_deleted", req);
+    await writeAudit(user.id, user.email, "account_deleted", req);
     await db.delete(users).where(eq(users.id, user.id));
 
     res.clearCookie(cookieNameFor(req), COOKIE_CLEAR_OPTIONS);
@@ -229,7 +220,7 @@ authRouter.patch("/me", requireAuth, async (req: AuthRequest, res) => {
     if (telephone !== undefined) update.telephone = telephone?.trim() || null;
     const [updated] = await db.update(users).set(update).where(eq(users.id, req.user!.id)).returning();
     if (!updated) return res.status(404).json({ error: "Utilisateur non trouvé" });
-    writeAudit(req.user!.id, req.user!.email, "profile_update", req);
+    await writeAudit(req.user!.id, req.user!.email, "profile_update", req);
     res.json({ id: updated.id, email: updated.email, prenom: updated.prenom, nom: updated.nom, role: updated.role, commune: updated.commune, commune_insee: updated.commune_insee, telephone: updated.telephone, avatar_url: updated.avatar_url });
   } catch (err) {
     console.error(err);
@@ -248,7 +239,7 @@ authRouter.patch("/me/password", requireAuth, async (req: AuthRequest, res) => {
     if (!valid) return res.status(401).json({ error: "Mot de passe actuel incorrect" });
     const password_hash = await bcrypt.hash(new_password, 10);
     await db.update(users).set({ password_hash, updated_at: new Date() }).where(eq(users.id, user.id));
-    writeAudit(user.id, user.email, "password_change", req);
+    await writeAudit(user.id, user.email, "password_change", req);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -340,7 +331,7 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
     res.cookie(cookieNameFor(req), jwtToken, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
-    writeAudit(user.id, user.email, row.type === "activation" ? "account_activated" : "password_reset", req);
+    await writeAudit(user.id, user.email, row.type === "activation" ? "account_activated" : "password_reset", req);
     res.json({ user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role } });
   } catch (err) {
     console.error(err);

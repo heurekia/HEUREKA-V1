@@ -3061,8 +3061,19 @@ const ACTION_STYLES: Record<string, { label: string; color: string; bg: string }
   login_failed:   { label: "Échec connexion",  color: "#DC2626", bg: "#FEE2E2" },
   logout:         { label: "Déconnexion",      color: "#6B7280", bg: "#F3F4F6" },
   register:       { label: "Inscription",      color: "#4F46E5", bg: "#EEF2FF" },
-  data_export:    { label: "Export données",   color: "#0284C7", bg: "#E0F2FE" },
-  account_deleted:{ label: "Compte supprimé",  color: "#B45309", bg: "#FEF3C7" },
+  data_export:    { label: "Export données",      color: "#0284C7", bg: "#E0F2FE" },
+  account_deleted:{ label: "Compte supprimé",     color: "#B45309", bg: "#FEF3C7" },
+  account_activated:{ label: "Compte activé",      color: "#16A34A", bg: "#DCFCE7" },
+  password_change:{ label: "MdP modifié",          color: "#0284C7", bg: "#E0F2FE" },
+  password_reset: { label: "MdP réinitialisé",     color: "#0284C7", bg: "#E0F2FE" },
+  profile_update: { label: "Profil modifié",       color: "#6B7280", bg: "#F3F4F6" },
+  admin_user_created:   { label: "Agent créé",        color: "#4F46E5", bg: "#EEF2FF" },
+  admin_user_updated:   { label: "Agent modifié",     color: "#7C3AED", bg: "#F3E8FF" },
+  admin_user_deleted:   { label: "Agent supprimé",    color: "#B45309", bg: "#FEF3C7" },
+  admin_invitation_resent: { label: "Invitation renvoyée", color: "#0284C7", bg: "#E0F2FE" },
+  admin_role_created:   { label: "Rôle créé",         color: "#4F46E5", bg: "#EEF2FF" },
+  admin_role_updated:   { label: "Rôle modifié",      color: "#7C3AED", bg: "#F3E8FF" },
+  admin_role_deleted:   { label: "Rôle supprimé",     color: "#B45309", bg: "#FEF3C7" },
 };
 
 const SINCE_OPTIONS = [
