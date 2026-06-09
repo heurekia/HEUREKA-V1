@@ -23,6 +23,9 @@ importers:
       '@heureka-v1/db':
         specifier: workspace:*
         version: link:../../packages/db
+      '@heureka-v1/ingestion':
+        specifier: workspace:*
+        version: link:../../packages/ingestion
       '@heureka-v1/shared':
         specifier: workspace:*
         version: link:../../packages/shared
@@ -242,6 +245,9 @@ importers:
       tsx:
         specifier: ^4.19.4
         version: 4.22.1
+      zod:
+        specifier: ^3.24.4
+        version: 3.25.76
     devDependencies:
       '@types/node':
         specifier: ^22.15.3

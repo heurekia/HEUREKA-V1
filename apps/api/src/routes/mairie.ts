@@ -2215,6 +2215,44 @@ RÈGLES DE STRUCTURATION :
 });
 
 // POST /mairie/reglementation/zones — create a zone manually
+// POST /mairie/reglementation/import-canonical
+//
+// Ingestion directe d'un règlement PLU au format canonique (HEUREKA Canonical
+// PLU v1) — voir packages/ingestion/src/canonical/schema.ts. Aucun appel LLM,
+// aucun coût Anthropic, aucune hallucination possible : la DB reflète
+// strictement ce qu'on importe. Les règles sont marquées "brouillon" et
+// doivent être validées une à une comme pour le pipeline IA.
+//
+// L'opération PURGE les zones + règles existantes de la commune avant
+// réinsertion (transaction). C'est volontaire pour rejouer l'import sans
+// laisser de résidus, mais ça veut dire qu'il faut soit exporter d'abord, soit
+// confirmer côté UI.
+mairieRouter.post(
+  "/reglementation/import-canonical",
+  requireRole("mairie", "instructeur", "admin"),
+  async (req: AuthRequest, res) => {
+    try {
+      const { parseCanonical, importCanonical } = await import("@heureka-v1/ingestion/canonical");
+      const parsed = parseCanonical(req.body);
+      if (!parsed.ok) {
+        return res.status(400).json({
+          error: "Format canonique invalide",
+          schema_errors: parsed.errors,
+        });
+      }
+      const result = await importCanonical(parsed.data!);
+      res.json({
+        ok: true,
+        ...result,
+        warnings: parsed.warnings ?? [],
+      });
+    } catch (err) {
+      console.error("[import-canonical]", err);
+      res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+    }
+  },
+);
+
 mairieRouter.post("/reglementation/zones", async (req: AuthRequest, res) => {
   try {
     const { insee_code, commune_name, zone_code, zone_label, zone_type } = req.body as {
