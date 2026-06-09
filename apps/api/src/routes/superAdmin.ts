@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, ai_usage_events } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, ai_usage_events, ai_alert_config } from "@heureka-v1/db";
+import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, inArray } from "drizzle-orm";
 import crypto from "crypto";
@@ -1039,6 +1040,86 @@ superAdminRouter.get("/ai-cost/live", async (_req, res) => {
       last_5min_cost_eur: Number(last5m?.cost_eur ?? 0),
       last_event_at: today?.last_event_at ?? null,
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Alertes Slack sur les coûts IA ────────────────────────────────────────
+// Récupère la config (la ligne singleton, créée par la migration).
+superAdminRouter.get("/ai-cost/alerts", async (_req, res) => {
+  try {
+    const [row] = await db.select().from(ai_alert_config).where(eq(ai_alert_config.id, 1)).limit(1);
+    res.json(row ?? {
+      slack_webhook_url: null,
+      per_call_threshold_eur: null,
+      daily_threshold_eur: null,
+      daily_last_notified_at: null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Met à jour les seuils + le webhook. Les valeurs null désactivent l'alerte.
+superAdminRouter.put("/ai-cost/alerts", async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as {
+      slack_webhook_url?: string | null;
+      per_call_threshold_eur?: number | null;
+      daily_threshold_eur?: number | null;
+    };
+
+    const webhook = body.slack_webhook_url?.trim() || null;
+    if (webhook && !/^https:\/\/hooks\.slack\.com\//.test(webhook)) {
+      return res.status(400).json({ error: "Le webhook doit pointer vers hooks.slack.com (https)." });
+    }
+    const perCall = body.per_call_threshold_eur;
+    const daily = body.daily_threshold_eur;
+    const nonNegNum = (v: unknown): number | null => {
+      if (v === null || v === undefined) return null;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) return null;
+      return n;
+    };
+
+    await db.insert(ai_alert_config).values({
+      id: 1,
+      slack_webhook_url: webhook,
+      per_call_threshold_eur: nonNegNum(perCall),
+      daily_threshold_eur: nonNegNum(daily),
+      updated_at: new Date(),
+    }).onConflictDoUpdate({
+      target: ai_alert_config.id,
+      set: {
+        slack_webhook_url: webhook,
+        per_call_threshold_eur: nonNegNum(perCall),
+        daily_threshold_eur: nonNegNum(daily),
+        updated_at: new Date(),
+      },
+    });
+    invalidateAiAlertConfigCache();
+
+    const [row] = await db.select().from(ai_alert_config).where(eq(ai_alert_config.id, 1)).limit(1);
+    res.json(row);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Envoie un message de test au webhook configuré.
+superAdminRouter.post("/ai-cost/alerts/test", async (_req, res) => {
+  try {
+    const [cfg] = await db.select().from(ai_alert_config).where(eq(ai_alert_config.id, 1)).limit(1);
+    if (!cfg?.slack_webhook_url) {
+      return res.status(400).json({ error: "Aucun webhook Slack configuré." });
+    }
+    const ok = await sendTestNotification(cfg.slack_webhook_url);
+    if (!ok) return res.status(502).json({ error: "Slack a rejeté le message — vérifier le webhook." });
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

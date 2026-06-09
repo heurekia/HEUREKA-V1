@@ -559,6 +559,17 @@ CREATE INDEX IF NOT EXISTS idx_ai_usage_events_dossier ON ai_usage_events(dossie
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_commune ON ai_usage_events(commune_id);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_created_at ON ai_usage_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_purpose ON ai_usage_events(purpose);
+
+-- ── Configuration alertes Slack sur les coûts IA (singleton id=1) ──
+CREATE TABLE IF NOT EXISTS ai_alert_config (
+  id                      integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  slack_webhook_url       text,
+  per_call_threshold_eur  double precision,
+  daily_threshold_eur     double precision,
+  daily_last_notified_at  timestamp,
+  updated_at              timestamp NOT NULL DEFAULT now()
+);
+INSERT INTO ai_alert_config (id) VALUES (1) ON CONFLICT DO NOTHING;
 `;
 
 async function main() {

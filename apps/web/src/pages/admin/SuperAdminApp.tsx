@@ -3347,6 +3347,163 @@ function fmtEur(v: number): string {
   return `${v.toFixed(v < 1 ? 3 : 2)} €`;
 }
 
+interface AiAlertConfig {
+  slack_webhook_url: string | null;
+  per_call_threshold_eur: number | null;
+  daily_threshold_eur: number | null;
+  daily_last_notified_at: string | null;
+}
+
+function AlertsCard() {
+  const [cfg, setCfg] = useState<AiAlertConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [toast, setToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+
+  // Champs édités localement (string pour gérer "" = désactivé).
+  const [webhook, setWebhook] = useState("");
+  const [perCall, setPerCall] = useState("");
+  const [daily, setDaily] = useState("");
+
+  useEffect(() => {
+    api.get<AiAlertConfig>("/admin/ai-cost/alerts")
+      .then((c) => {
+        setCfg(c);
+        setWebhook(c.slack_webhook_url ?? "");
+        setPerCall(c.per_call_threshold_eur != null ? String(c.per_call_threshold_eur) : "");
+        setDaily(c.daily_threshold_eur != null ? String(c.daily_threshold_eur) : "");
+      })
+      .catch(() => setToast({ kind: "err", msg: "Impossible de charger la config." }))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const parsed = await api.put<AiAlertConfig>("/admin/ai-cost/alerts", {
+        slack_webhook_url: webhook.trim() || null,
+        per_call_threshold_eur: perCall.trim() === "" ? null : Number(perCall),
+        daily_threshold_eur: daily.trim() === "" ? null : Number(daily),
+      });
+      setCfg(parsed);
+      setToast({ kind: "ok", msg: "Configuration enregistrée." });
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const test = async () => {
+    setTesting(true);
+    try {
+      await api.post("/admin/ai-cost/alerts/test");
+      setToast({ kind: "ok", msg: "Message envoyé sur Slack." });
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 24 }}>
+      <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Alertes Slack</div>
+          <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>Ping Slack dès qu'un seuil est franchi. Laisser vide pour désactiver un seuil.</div>
+        </div>
+        {cfg?.daily_last_notified_at && (
+          <div style={{ fontSize: 11, color: C.textMuted }}>Dernier ping : {new Date(cfg.daily_last_notified_at).toLocaleString("fr-FR")}</div>
+        )}
+      </div>
+
+      {loading ? (
+        <div style={{ padding: 30, textAlign: "center" }}><Spinner size={18} /></div>
+      ) : (
+        <div style={{ padding: 20, display: "grid", gridTemplateColumns: "1fr", gap: 14 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 4 }}>Webhook Slack</label>
+            <input
+              type="text"
+              value={webhook}
+              onChange={(e) => setWebhook(e.target.value)}
+              placeholder="https://hooks.slack.com/services/T0…/B0…/…"
+              style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "monospace", boxSizing: "border-box" }}
+            />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 4 }}>Seuil par appel (€)</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={perCall}
+                onChange={(e) => setPerCall(e.target.value)}
+                placeholder="ex: 0,20"
+                style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, boxSizing: "border-box" }}
+              />
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>Ping immédiat si UN seul appel dépasse ce montant.</div>
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 4 }}>Seuil journalier cumulé (€)</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={daily}
+                onChange={(e) => setDaily(e.target.value)}
+                placeholder="ex: 5"
+                style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, boxSizing: "border-box" }}
+              />
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>Un seul ping par jour quand le cumul dépasse ce seuil.</div>
+            </div>
+          </div>
+
+          {toast && (
+            <div style={{
+              padding: "8px 12px", borderRadius: 8, fontSize: 13,
+              background: toast.kind === "ok" ? C.greenBg : C.redBg,
+              border: `1px solid ${toast.kind === "ok" ? C.green : C.red}`,
+              color: toast.kind === "ok" ? C.green : C.red,
+            }}>{toast.msg}</div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button onClick={test} disabled={testing || !webhook.trim() || webhook !== (cfg?.slack_webhook_url ?? "")}
+              title={webhook !== (cfg?.slack_webhook_url ?? "") ? "Enregistre d'abord le webhook avant de tester." : "Envoie un message de test sur Slack."}
+              style={{
+                padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
+                background: "white", color: C.text, fontSize: 13, fontWeight: 600,
+                cursor: testing || !webhook.trim() || webhook !== (cfg?.slack_webhook_url ?? "") ? "default" : "pointer",
+                opacity: testing || !webhook.trim() || webhook !== (cfg?.slack_webhook_url ?? "") ? 0.6 : 1,
+              }}>
+              {testing ? "Envoi…" : "Envoyer un test"}
+            </button>
+            <button onClick={save} disabled={saving}
+              style={{
+                padding: "8px 16px", borderRadius: 8, border: "none",
+                background: C.accent, color: "white", fontSize: 13, fontWeight: 600,
+                cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1,
+              }}>
+              {saving ? "Enregistrement…" : "Enregistrer"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CoutsIA() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState<"7d" | "30d" | "all">("30d");
@@ -3403,6 +3560,9 @@ function CoutsIA() {
         <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>
       ) : summary && byDossier && byCommune && (
         <>
+          {/* Alertes Slack */}
+          <AlertsCard />
+
           {/* Totaux */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
             <StatCard label="Coût total" value={fmtEur(summary.totals.cost_eur)} icon="💶" color={C.accent} bg={C.accentLight} />

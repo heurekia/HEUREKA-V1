@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import { db } from "../db.js";
 import { ai_usage_events } from "@heureka-v1/db";
+import { maybeNotify } from "./aiAlerts.js";
 
 // ── Tarifs Anthropic (USD par million de tokens) ────────────────────────────
 // Mis à jour à partir des prix publics. Si un modèle inconnu est utilisé, on
@@ -147,6 +148,15 @@ export async function callClaude(
     cache_creation_input_tokens: cacheCreate,
     cost_eur: cost,
     duration_ms: durationMs,
+  }).then(() => {
+    // Alertes Slack en arrière-plan (non bloquant).
+    void maybeNotify({
+      purpose: ctx.purpose,
+      model: request.model,
+      cost_eur: cost,
+      dossier_id: ctx.dossierId ?? null,
+      commune_id: ctx.communeId ?? null,
+    });
   }).catch((err) => {
     // Bien visible : on a payé l'appel mais on a perdu la trace. Cas typique :
     // migration `ai_usage_events` non appliquée ou colonne manquante.
