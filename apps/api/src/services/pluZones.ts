@@ -39,17 +39,6 @@ export function filterZonesByInsee(zones: PluZonesGeoJson, inseeCode: string): P
   return { ...zones, features: filtered };
 }
 
-// Probe une partition GPU : renvoie le nombre de features (-1 si l'appel a échoué).
-async function probePartition(partition: string): Promise<number> {
-  const r = await fetchWithRetry(
-    `https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(partition)}&_limit=1`,
-    { signal: AbortSignal.timeout(8000) }
-  );
-  if (!r) return -1;
-  const j = (await r.json()) as { features?: unknown[] };
-  return j.features?.length ?? 0;
-}
-
 // Fait l'appel complet GPU + persiste en DB. Aucun side-effect HTTP.
 // L'appelant gère les fallbacks (cache DB stale, codes d'erreur).
 export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult> {
@@ -82,20 +71,34 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   // de "vraiment pas de PLU pour cette commune" (404 stable).
   let upstreamFailed = false;
   let partition: string | undefined;
+  const tried: string[] = []; // pour logs diagnostiques
 
-  // A) Fast-path : PLU communal "<INSEE>_PLU". Confirme la présence de features.
+  // Probe une partition AVEC le polygone commune. On veut une partition qui
+  // contient au moins une zone INTERSECTANT notre commune, pas juste une
+  // partition qui existe globalement (ex: une PLUi voisine qui aurait été
+  // mal référencée).
+  const probeForCommune = async (part: string): Promise<number> => {
+    tried.push(part);
+    const r = await fetchWithRetry(
+      `https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(part)}&_limit=1&geom=${encodeURIComponent(communeGeom)}`,
+      { signal: AbortSignal.timeout(8000) }
+    );
+    if (!r) return -1;
+    const j = (await r.json()) as { features?: unknown[] };
+    return j.features?.length ?? 0;
+  };
+
+  // A) Fast-path : PLU communal "<INSEE>_PLU".
   {
     const cand = `${inseeCode}_PLU`;
-    const n = await probePartition(cand);
+    const n = await probeForCommune(cand);
     if (n > 0) partition = cand;
     else if (n < 0) upstreamFailed = true;
   }
 
   // B) Endpoint /document : liste autoritative des documents d'urbanisme couvrant
   // le centroïde. Pour les communes en PLUi (ex: Tours, Métropole), c'est ici
-  // qu'on récupère la bonne partition. Les communes ont souvent plusieurs
-  // documents historiques (PLU communal abrogé + PLUi en vigueur + PSMV…),
-  // donc on filtre intelligemment au lieu de prendre le premier venu.
+  // qu'on récupère la bonne partition.
   if (!partition) {
     const r = await fetchWithRetry(
       `https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(ptGeom)}`,
@@ -105,30 +108,32 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
       type Doc = { properties: { partition?: string; etat?: string; gpu_status?: string; du_type?: string } };
       const docs = ((await r.json()) as { features?: Doc[] }).features ?? [];
 
-      // Priorise les types de documents qui définissent un zonage urbanistique.
-      // Exclut PSMV (secteur sauvegardé) qui n'a pas de zones zone-urba.
-      const DU_PRIORITY = ["PLUI", "PLUIH", "PLU", "POS", "CC"];
-      const isInForce = (d: Doc) =>
-        d.properties.etat === "approuve"
-        || d.properties.etat === "opposable"
-        || d.properties.gpu_status === "document_opposable";
+      // Tri par préférence — mais on ne filtre PAS : si du_type est absent ou
+      // d'une casse inattendue, on essaie quand même. C'était la cause des
+      // 404 sur "bon nombre de villes".
+      const DU_PRIORITY = ["PLUI", "PLUIH", "PLU", "POS", "CC", "PSMV"];
+      const duRank = (s?: string) => {
+        const i = DU_PRIORITY.indexOf((s ?? "").toUpperCase());
+        return i < 0 ? 99 : i;
+      };
+      const isInForce = (d: Doc) => {
+        const e = (d.properties.etat ?? "").toLowerCase();
+        const g = (d.properties.gpu_status ?? "").toLowerCase();
+        return e === "approuve" || e === "opposable" || g.includes("opposable");
+      };
 
       const candidates = docs
-        .filter(d => !!d.properties.partition && DU_PRIORITY.includes(d.properties.du_type ?? ""))
+        .filter(d => !!d.properties.partition)
         .sort((a, b) => {
-          // En vigueur d'abord
           if (isInForce(a) !== isInForce(b)) return isInForce(a) ? -1 : 1;
-          // Puis par priorité de type (PLUi > PLU > POS > CC)
-          const pa = DU_PRIORITY.indexOf(a.properties.du_type ?? "");
-          const pb = DU_PRIORITY.indexOf(b.properties.du_type ?? "");
-          return pa - pb;
+          return duRank(a.properties.du_type) - duRank(b.properties.du_type);
         });
 
-      // Probe chaque candidat dans l'ordre jusqu'à en trouver un qui a des zones.
-      // Évite le piège des partitions historiques abrogées.
+      // Probe chaque candidat avec le filtre géo de la commune → garantit que
+      // la partition choisie contient bien des zones DANS notre commune.
       for (const cand of candidates) {
         const part = cand.properties.partition!;
-        const n = await probePartition(part);
+        const n = await probeForCommune(part);
         if (n > 0) { partition = part; break; }
         if (n < 0) upstreamFailed = true;
       }
@@ -146,12 +151,21 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
       const epcis = (await epciR.json()) as Array<{ code?: string }>;
       for (const epci of epcis) {
         if (!epci.code || partition) continue;
-        const cand = `${epci.code}_PLUI`;
-        const n = await probePartition(cand);
-        if (n > 0) { partition = cand; break; }
-        if (n < 0) upstreamFailed = true;
+        for (const suffix of ["_PLUI", "_PLU"]) {
+          const cand = `${epci.code}${suffix}`;
+          const n = await probeForCommune(cand);
+          if (n > 0) { partition = cand; break; }
+          if (n < 0) upstreamFailed = true;
+        }
+        if (partition) break;
       }
     } else upstreamFailed = true;
+  }
+
+  if (!partition) {
+    console.warn(`[plu-zones] INSEE=${inseeCode} : aucune partition trouvée. Sondes tentées : ${tried.join(", ") || "(none)"}. upstreamFailed=${upstreamFailed}`);
+  } else {
+    console.log(`[plu-zones] INSEE=${inseeCode} → partition=${partition} (après ${tried.length} sonde(s))`);
   }
 
   if (!partition) {

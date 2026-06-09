@@ -694,14 +694,35 @@ mairieRouter.get("/my-communes", async (req: AuthRequest, res) => {
 });
 
 // ── Liste des communes (noms seuls pour le sélecteur) ──
-mairieRouter.get("/communes", async (_req: AuthRequest, res) => {
+// Filtré par utilisateur sauf pour les admins : un user mairie/instructeur ne
+// doit voir QUE les communes auxquelles il a accès (sinon le sélecteur de la
+// Carte montrait toute la France et permettait de "sélectionner" une commune
+// hors de ses droits → refresh = retour sur sa commune principale par défaut).
+mairieRouter.get("/communes", async (req: AuthRequest, res) => {
   try {
-    const rows = await db.select({ name: communes.name }).from(communes).orderBy(communes.name);
-    const names = rows.map(r => r.name);
-    if (names.length) return res.json(names);
-    // Fallback: read from dossiers if communes table is empty
-    const fallback = await db.selectDistinct({ commune: dossiers.commune }).from(dossiers).where(sql`commune IS NOT NULL`).orderBy(dossiers.commune);
-    res.json(fallback.map(r => r.commune).filter(Boolean));
+    const userId = req.user!.id;
+    const role = req.user!.role;
+
+    if (role === "admin") {
+      const rows = await db.select({ name: communes.name }).from(communes).orderBy(communes.name);
+      const names = rows.map(r => r.name);
+      if (names.length) return res.json(names);
+      const fallback = await db.selectDistinct({ commune: dossiers.commune }).from(dossiers).where(sql`commune IS NOT NULL`).orderBy(dossiers.commune);
+      return res.json(fallback.map(r => r.commune).filter(Boolean));
+    }
+
+    // Mairie / instructeur : restreindre aux communes liées via user_communes,
+    // sinon fallback sur la commune principale du user.
+    const linked = await db
+      .select({ name: communes.name })
+      .from(user_communes)
+      .innerJoin(communes, eq(user_communes.commune_id, communes.id))
+      .where(eq(user_communes.user_id, userId))
+      .orderBy(communes.name);
+    if (linked.length > 0) return res.json(linked.map(r => r.name));
+
+    const [user] = await db.select({ commune: users.commune }).from(users).where(eq(users.id, userId)).limit(1);
+    res.json(user?.commune ? [user.commune] : []);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
