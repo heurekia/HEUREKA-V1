@@ -560,7 +560,7 @@ CREATE INDEX IF NOT EXISTS idx_ai_usage_events_purpose ON ai_usage_events(purpos
 `;
 
 async function main() {
-  const client = postgres(connectionString, { max: 1 });
+  const client = postgres(connectionString, { max: 1, onnotice: () => {} });
   try {
     console.log("Running migrations...");
     await client.unsafe(SQL);
