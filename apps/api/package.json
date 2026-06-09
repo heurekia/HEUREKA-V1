@@ -6,7 +6,6 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "tsx src/index.ts",
-    "seed": "tsx src/scripts/seed.ts",
     "ingest-plu": "tsx src/scripts/ingest-plu.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",

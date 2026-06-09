@@ -5,8 +5,6 @@
     "dev": "pnpm -r --parallel dev",
     "build": "pnpm -r --if-present run build",
     "typecheck": "pnpm -r --if-present run typecheck",
-    "seed": "pnpm -F @heureka-v1/api run seed",
-    "setup": "pnpm install && pnpm seed",
     "start": "pnpm -F @heureka-v1/api run start"
   },
   "devDependencies": {
