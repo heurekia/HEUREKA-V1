@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, ai_usage_events } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, ai_usage_events, ai_alert_config } from "@heureka-v1/db";
+import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, inArray } from "drizzle-orm";
 import crypto from "crypto";
@@ -972,6 +973,159 @@ superAdminRouter.delete("/legal-mentions/:id", async (req, res) => {
 });
 
 // ─── Coûts IA ────────────────────────────────────────────────────────────────
+
+// Diagnostic : la table ai_usage_events existe-t-elle, et a-t-elle toutes les
+// colonnes attendues ? Utile quand la page « Coûts IA » reste à zéro alors que
+// la console Anthropic facture — typiquement migration non appliquée.
+superAdminRouter.get("/ai-cost/healthcheck", async (_req, res) => {
+  try {
+    const rows = await db.execute<{ column_name: string }>(
+      sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'ai_usage_events'`,
+    );
+    const cols = (rows as unknown as { column_name: string }[]).map((r) => r.column_name);
+    const required = [
+      "id", "dossier_id", "commune_id", "user_id", "purpose", "model",
+      "input_tokens", "output_tokens", "cache_read_input_tokens",
+      "cache_creation_input_tokens", "cost_eur", "duration_ms", "created_at",
+    ];
+    const missing = required.filter((c) => !cols.includes(c));
+    let totalEvents = 0;
+    let lastEventAt: Date | null = null;
+    if (cols.length > 0 && missing.length === 0) {
+      const [row] = await db
+        .select({ events: count(), last_event_at: sql<Date>`MAX(${ai_usage_events.created_at})` })
+        .from(ai_usage_events);
+      totalEvents = Number(row?.events ?? 0);
+      lastEventAt = row?.last_event_at ?? null;
+    }
+    res.json({
+      table_exists: cols.length > 0,
+      columns_present: cols.sort(),
+      missing_columns: missing,
+      total_events: totalEvents,
+      last_event_at: lastEventAt,
+      ok: cols.length > 0 && missing.length === 0,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// Indicateur temps réel : compteur du jour + activité des 5 dernières minutes.
+// Le frontend (sidebar admin) le poll toutes les 30 s pour afficher un pouls
+// dès qu'un appel IA est passé.
+superAdminRouter.get("/ai-cost/live", async (_req, res) => {
+  try {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+
+    const [[today], [last5m]] = await Promise.all([
+      db.select({
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+        last_event_at: sql<Date>`MAX(${ai_usage_events.created_at})`,
+      }).from(ai_usage_events).where(gte(ai_usage_events.created_at, todayStart)),
+      db.select({
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+      }).from(ai_usage_events).where(gte(ai_usage_events.created_at, fiveMinAgo)),
+    ]);
+
+    res.json({
+      today_events: Number(today?.events ?? 0),
+      today_cost_eur: Number(today?.cost_eur ?? 0),
+      last_5min_events: Number(last5m?.events ?? 0),
+      last_5min_cost_eur: Number(last5m?.cost_eur ?? 0),
+      last_event_at: today?.last_event_at ?? null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Alertes Slack sur les coûts IA ────────────────────────────────────────
+// Récupère la config (la ligne singleton, créée par la migration).
+superAdminRouter.get("/ai-cost/alerts", async (_req, res) => {
+  try {
+    const [row] = await db.select().from(ai_alert_config).where(eq(ai_alert_config.id, 1)).limit(1);
+    res.json(row ?? {
+      slack_webhook_url: null,
+      per_call_threshold_eur: null,
+      daily_threshold_eur: null,
+      daily_last_notified_at: null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Met à jour les seuils + le webhook. Les valeurs null désactivent l'alerte.
+superAdminRouter.put("/ai-cost/alerts", async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as {
+      slack_webhook_url?: string | null;
+      per_call_threshold_eur?: number | null;
+      daily_threshold_eur?: number | null;
+    };
+
+    const webhook = body.slack_webhook_url?.trim() || null;
+    if (webhook && !/^https:\/\/hooks\.slack\.com\//.test(webhook)) {
+      return res.status(400).json({ error: "Le webhook doit pointer vers hooks.slack.com (https)." });
+    }
+    const perCall = body.per_call_threshold_eur;
+    const daily = body.daily_threshold_eur;
+    const nonNegNum = (v: unknown): number | null => {
+      if (v === null || v === undefined) return null;
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) return null;
+      return n;
+    };
+
+    await db.insert(ai_alert_config).values({
+      id: 1,
+      slack_webhook_url: webhook,
+      per_call_threshold_eur: nonNegNum(perCall),
+      daily_threshold_eur: nonNegNum(daily),
+      updated_at: new Date(),
+    }).onConflictDoUpdate({
+      target: ai_alert_config.id,
+      set: {
+        slack_webhook_url: webhook,
+        per_call_threshold_eur: nonNegNum(perCall),
+        daily_threshold_eur: nonNegNum(daily),
+        updated_at: new Date(),
+      },
+    });
+    invalidateAiAlertConfigCache();
+
+    const [row] = await db.select().from(ai_alert_config).where(eq(ai_alert_config.id, 1)).limit(1);
+    res.json(row);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Envoie un message de test au webhook configuré.
+superAdminRouter.post("/ai-cost/alerts/test", async (_req, res) => {
+  try {
+    const [cfg] = await db.select().from(ai_alert_config).where(eq(ai_alert_config.id, 1)).limit(1);
+    if (!cfg?.slack_webhook_url) {
+      return res.status(400).json({ error: "Aucun webhook Slack configuré." });
+    }
+    const ok = await sendTestNotification(cfg.slack_webhook_url);
+    if (!ok) return res.status(502).json({ error: "Slack a rejeté le message — vérifier le webhook." });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // Filtre temporel : ?period=7d|30d|all (défaut 30d).
 function aiUsagePeriodCutoff(req: { query: { period?: string } }): Date | null {
   const p = String(req.query.period ?? "30d");
@@ -1063,6 +1217,87 @@ superAdminRouter.get("/ai-cost/by-dossier", async (req, res) => {
       cost_eur: Number(r.cost_eur),
       last_event_at: r.last_event_at,
     })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Top des communes par coût IA, toutes finalités confondues (PLU, structuration,
+// dossiers déposés sur cette commune…).
+superAdminRouter.get("/ai-cost/by-commune", async (req, res) => {
+  try {
+    const cutoff = aiUsagePeriodCutoff(req);
+    const limit = Math.min(Number(req.query.limit ?? 50), 200);
+    const conds = [isNotNull(ai_usage_events.commune_id)];
+    if (cutoff) conds.push(gte(ai_usage_events.created_at, cutoff));
+
+    const rows = await db
+      .select({
+        commune_id: ai_usage_events.commune_id,
+        commune_name: communes.name,
+        insee_code: communes.insee_code,
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+        last_event_at: sql<Date>`MAX(${ai_usage_events.created_at})`,
+      })
+      .from(ai_usage_events)
+      .leftJoin(communes, eq(ai_usage_events.commune_id, communes.id))
+      .where(and(...conds))
+      .groupBy(ai_usage_events.commune_id, communes.name, communes.insee_code)
+      .orderBy(desc(sql`SUM(${ai_usage_events.cost_eur})`))
+      .limit(limit);
+
+    res.json(rows.map((r) => ({
+      commune_id: r.commune_id,
+      commune_name: r.commune_name,
+      insee_code: r.insee_code,
+      events: Number(r.events),
+      cost_eur: Number(r.cost_eur),
+      last_event_at: r.last_event_at,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Détail d'une commune : répartition par usage et journal des 200 derniers
+// appels imputés à cette commune.
+superAdminRouter.get("/ai-cost/commune/:id", async (req, res) => {
+  try {
+    const communeId = req.params.id;
+    const [comm, byPurpose, events] = await Promise.all([
+      db.select({ id: communes.id, name: communes.name, insee_code: communes.insee_code })
+        .from(communes).where(eq(communes.id, communeId)).limit(1),
+      db.select({
+        purpose: ai_usage_events.purpose,
+        model: ai_usage_events.model,
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+        input_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.input_tokens}), 0)`,
+        output_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.output_tokens}), 0)`,
+      }).from(ai_usage_events)
+        .where(eq(ai_usage_events.commune_id, communeId))
+        .groupBy(ai_usage_events.purpose, ai_usage_events.model),
+      db.select().from(ai_usage_events)
+        .where(eq(ai_usage_events.commune_id, communeId))
+        .orderBy(desc(ai_usage_events.created_at))
+        .limit(200),
+    ]);
+
+    res.json({
+      commune: comm[0] ?? null,
+      by_purpose: byPurpose.map((r) => ({
+        purpose: r.purpose,
+        model: r.model,
+        events: Number(r.events),
+        cost_eur: Number(r.cost_eur),
+        input_tokens: Number(r.input_tokens),
+        output_tokens: Number(r.output_tokens),
+      })),
+      events,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

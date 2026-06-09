@@ -4,11 +4,17 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./canonical": "./src/canonical/index.ts",
+    "./rag": "./src/rag/index.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "ingest": "tsx src/index.ts"
+    "ingest": "tsx src/index.ts",
+    "eval:ingestion": "tsx src/eval/cli.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.0",

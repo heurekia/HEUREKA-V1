@@ -2,6 +2,7 @@ import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import { db } from "../db.js";
 import { ai_usage_events } from "@heureka-v1/db";
+import { maybeNotify } from "./aiAlerts.js";
 
 // ── Tarifs Anthropic (USD par million de tokens) ────────────────────────────
 // Mis à jour à partir des prix publics. Si un modèle inconnu est utilisé, on
@@ -68,11 +69,44 @@ export function anthropicClient(opts?: { maxRetries?: number; timeout?: number }
   return _client;
 }
 
+// ── Probe de démarrage ──────────────────────────────────────────────────────
+// Vérifie au boot que la table `ai_usage_events` existe ET porte les colonnes
+// attendues (commune_id, en particulier). Loggue UN message clair plutôt que
+// de laisser le serveur insérer dans le vide pendant des semaines.
+const REQUIRED_COLUMNS = [
+  "id", "dossier_id", "commune_id", "user_id", "purpose", "model",
+  "input_tokens", "output_tokens", "cache_read_input_tokens",
+  "cache_creation_input_tokens", "cost_eur", "duration_ms", "created_at",
+] as const;
+
+export async function probeAiUsageTable(): Promise<void> {
+  try {
+    const { sql } = await import("drizzle-orm");
+    const rows = await db.execute<{ column_name: string }>(
+      sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'ai_usage_events'`,
+    );
+    const cols = new Set((rows as unknown as { column_name: string }[]).map((r) => r.column_name));
+    if (cols.size === 0) {
+      console.error("[aiUsage] ⚠️  Table ai_usage_events INTROUVABLE — relance la migration : pnpm --filter @heureka-v1/db migrate");
+      return;
+    }
+    const missing = REQUIRED_COLUMNS.filter((c) => !cols.has(c));
+    if (missing.length > 0) {
+      console.error(`[aiUsage] ⚠️  Colonnes manquantes sur ai_usage_events: ${missing.join(", ")} — relance la migration.`);
+      return;
+    }
+    console.log("[aiUsage] ✅ Table ai_usage_events OK, suivi des coûts actif.");
+  } catch (err) {
+    console.error("[aiUsage] probe échoué:", err instanceof Error ? err.message : err);
+  }
+}
+
 // ── Wrapper de tracking ─────────────────────────────────────────────────────
 
 export interface CallClaudeContext {
   purpose: string;
   dossierId?: string | null;
+  communeId?: string | null;
   userId?: string | null;
 }
 
@@ -104,6 +138,7 @@ export async function callClaude(
 
   void db.insert(ai_usage_events).values({
     dossier_id: ctx.dossierId ?? null,
+    commune_id: ctx.communeId ?? null,
     user_id: ctx.userId ?? null,
     purpose: ctx.purpose,
     model: request.model,
@@ -113,9 +148,77 @@ export async function callClaude(
     cache_creation_input_tokens: cacheCreate,
     cost_eur: cost,
     duration_ms: durationMs,
+  }).then(() => {
+    // Alertes Slack en arrière-plan (non bloquant).
+    void maybeNotify({
+      purpose: ctx.purpose,
+      model: request.model,
+      cost_eur: cost,
+      dossier_id: ctx.dossierId ?? null,
+      commune_id: ctx.communeId ?? null,
+    });
   }).catch((err) => {
-    console.error("[aiUsage] insert failed:", err);
+    // Bien visible : on a payé l'appel mais on a perdu la trace. Cas typique :
+    // migration `ai_usage_events` non appliquée ou colonne manquante.
+    console.error(
+      `[aiUsage] ⚠️  INSERT ÉCHOUÉ — événement payant non tracé (purpose=${ctx.purpose}, model=${request.model}, cost=${cost}€). Vérifier la migration ai_usage_events.`,
+      err instanceof Error ? err.message : err,
+    );
   });
 
   return msg;
+}
+
+/**
+ * Variante streaming : tracking idempotent à partir du `finalMessage` d'un
+ * stream Anthropic. Utilisée par les routes SSE (structure-article,
+ * structure-zone) qui doivent forwarder les deltas vers le client en
+ * heartbeats pour éviter les 502 passerelle — voir mairie.ts.
+ *
+ * Appel best-effort comme `callClaude` : une erreur d'écriture en DB ne
+ * fait pas échouer la requête métier.
+ */
+export function trackClaudeStreamUsage(
+  ctx: CallClaudeContext,
+  finalMessage: Anthropic.Message,
+  startedAt: number,
+): void {
+  const durationMs = Date.now() - startedAt;
+  const usage = finalMessage.usage ?? { input_tokens: 0, output_tokens: 0 };
+  const cacheRead = (usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0;
+  const cacheCreate = (usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0;
+  const model = finalMessage.model;
+  const cost = computeCostEur(model, {
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheCreate,
+  });
+
+  void db.insert(ai_usage_events).values({
+    dossier_id: ctx.dossierId ?? null,
+    commune_id: ctx.communeId ?? null,
+    user_id: ctx.userId ?? null,
+    purpose: ctx.purpose,
+    model,
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheCreate,
+    cost_eur: cost,
+    duration_ms: durationMs,
+  }).then(() => {
+    void maybeNotify({
+      purpose: ctx.purpose,
+      model,
+      cost_eur: cost,
+      dossier_id: ctx.dossierId ?? null,
+      commune_id: ctx.communeId ?? null,
+    });
+  }).catch((err) => {
+    console.error(
+      `[aiUsage] ⚠️  INSERT ÉCHOUÉ (stream) — événement payant non tracé (purpose=${ctx.purpose}, model=${model}, cost=${cost}€).`,
+      err instanceof Error ? err.message : err,
+    );
+  });
 }

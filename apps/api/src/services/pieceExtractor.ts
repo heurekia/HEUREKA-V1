@@ -308,7 +308,7 @@ export async function extractPiece(
   filePath: string,
   mimeType: string,
   ctx?: PieceExtractContext,
-  trace?: { dossierId?: string | null; userId?: string | null },
+  trace?: { dossierId?: string | null; communeId?: string | null; userId?: string | null },
 ): Promise<PieceExtraction | null> {
   if (!isAllowedImage(mimeType) && !isPdf(mimeType)) return null;
 
@@ -332,7 +332,7 @@ export async function extractPiece(
 
   const client = anthropicClient({ maxRetries: 2, timeout: 90_000 });
   const msg = await callClaude(
-    { purpose: "piece_extract", dossierId: trace?.dossierId, userId: trace?.userId },
+    { purpose: "piece_extract", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId },
     {
       // Sonnet 4.6 : meilleure vision pour les plans cotés et les CERFA scannés.
       model: "claude-sonnet-4-6",

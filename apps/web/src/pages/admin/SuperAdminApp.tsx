@@ -364,6 +364,89 @@ const navItems = [
   { path: "/admin/configuration", icon: "⚙", label: "Configuration" },
 ];
 
+// ─── Indicateur temps réel d'activité IA ─────────────────────────────────────
+// Pill cliquable en pied de sidebar : montre le coût IA cumulé du jour et
+// pulse quand un appel a eu lieu dans les 5 dernières minutes. Auto-refresh
+// toutes les 30 s. Pour pouvoir surveiller la conso d'un coup d'œil.
+interface AiLive {
+  today_events: number;
+  today_cost_eur: number;
+  last_5min_events: number;
+  last_5min_cost_eur: number;
+  last_event_at: string | null;
+}
+
+function AiLiveWidget() {
+  const navigate = useNavigate();
+  const [data, setData] = useState<AiLive | null>(null);
+  const [prevEventAt, setPrevEventAt] = useState<string | null>(null);
+  const [pulse, setPulse] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchOnce = () => {
+      api.get<AiLive>("/admin/ai-cost/live")
+        .then((d) => {
+          if (cancelled) return;
+          setData(d);
+          if (d.last_event_at && d.last_event_at !== prevEventAt) {
+            setPulse(true);
+            setTimeout(() => !cancelled && setPulse(false), 1500);
+            setPrevEventAt(d.last_event_at);
+          }
+        })
+        .catch(() => { /* silencieux : ne pas polluer la sidebar */ });
+    };
+    fetchOnce();
+    const t = setInterval(fetchOnce, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [prevEventAt]);
+
+  if (!data) return null;
+  const recentlyActive = data.last_5min_events > 0;
+  const cost = data.today_cost_eur;
+  const fmt = cost < 0.01 ? `${(cost * 100).toFixed(2)} c€` : `${cost.toFixed(cost < 1 ? 3 : 2)} €`;
+
+  return (
+    <div style={{ padding: "0 12px 12px" }}>
+      <style>{`
+        @keyframes aiPulse { 0%{box-shadow:0 0 0 0 rgba(16,185,129,0.6)} 70%{box-shadow:0 0 0 8px rgba(16,185,129,0)} 100%{box-shadow:0 0 0 0 rgba(16,185,129,0)} }
+      `}</style>
+      <button
+        onClick={() => navigate("/admin/couts-ia")}
+        title={data.last_event_at ? `Dernier appel : ${new Date(data.last_event_at).toLocaleString("fr-FR")}` : "Aucun appel IA aujourd'hui"}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", gap: 10,
+          padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(255,255,255,0.04)", cursor: "pointer", color: "#CBD5E1",
+          textAlign: "left", fontSize: 12,
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.04)"; }}
+      >
+        <div style={{
+          width: 8, height: 8, borderRadius: "50%",
+          background: recentlyActive ? "#10B981" : "#475569",
+          flexShrink: 0,
+          animation: pulse ? "aiPulse 1.5s ease-out" : "none",
+        }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: "white", fontSize: 13, fontWeight: 700, lineHeight: 1.1 }}>
+            {fmt}
+            <span style={{ color: "#64748B", fontWeight: 400, marginLeft: 6, fontSize: 11 }}>
+              aujourd'hui
+            </span>
+          </div>
+          <div style={{ color: "#64748B", fontSize: 10.5, marginTop: 2 }}>
+            {data.today_events} appel{data.today_events > 1 ? "s" : ""}
+            {recentlyActive && <span style={{ color: "#10B981", marginLeft: 6 }}>● {data.last_5min_events} dans les 5 min</span>}
+          </div>
+        </div>
+      </button>
+    </div>
+  );
+}
+
 function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -439,6 +522,9 @@ function Sidebar() {
           );
         })}
       </nav>
+
+      {/* Live AI activity widget */}
+      <AiLiveWidget />
 
       {/* Logout */}
       <div style={{ padding: "12px 12px 20px" }}>
@@ -3236,6 +3322,15 @@ interface AiCostByDossier {
   last_event_at: string;
 }
 
+interface AiCostByCommune {
+  commune_id: string;
+  commune_name: string | null;
+  insee_code: string | null;
+  events: number;
+  cost_eur: number;
+  last_event_at: string;
+}
+
 const PURPOSE_LABELS: Record<string, string> = {
   piece_analyze: "Analyse de pièce",
   piece_extract: "Extraction de pièce",
@@ -3252,11 +3347,169 @@ function fmtEur(v: number): string {
   return `${v.toFixed(v < 1 ? 3 : 2)} €`;
 }
 
+interface AiAlertConfig {
+  slack_webhook_url: string | null;
+  per_call_threshold_eur: number | null;
+  daily_threshold_eur: number | null;
+  daily_last_notified_at: string | null;
+}
+
+function AlertsCard() {
+  const [cfg, setCfg] = useState<AiAlertConfig | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [toast, setToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+
+  // Champs édités localement (string pour gérer "" = désactivé).
+  const [webhook, setWebhook] = useState("");
+  const [perCall, setPerCall] = useState("");
+  const [daily, setDaily] = useState("");
+
+  useEffect(() => {
+    api.get<AiAlertConfig>("/admin/ai-cost/alerts")
+      .then((c) => {
+        setCfg(c);
+        setWebhook(c.slack_webhook_url ?? "");
+        setPerCall(c.per_call_threshold_eur != null ? String(c.per_call_threshold_eur) : "");
+        setDaily(c.daily_threshold_eur != null ? String(c.daily_threshold_eur) : "");
+      })
+      .catch(() => setToast({ kind: "err", msg: "Impossible de charger la config." }))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const save = async () => {
+    setSaving(true);
+    try {
+      const parsed = await api.put<AiAlertConfig>("/admin/ai-cost/alerts", {
+        slack_webhook_url: webhook.trim() || null,
+        per_call_threshold_eur: perCall.trim() === "" ? null : Number(perCall),
+        daily_threshold_eur: daily.trim() === "" ? null : Number(daily),
+      });
+      setCfg(parsed);
+      setToast({ kind: "ok", msg: "Configuration enregistrée." });
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const test = async () => {
+    setTesting(true);
+    try {
+      await api.post("/admin/ai-cost/alerts/test");
+      setToast({ kind: "ok", msg: "Message envoyé sur Slack." });
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 24 }}>
+      <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Alertes Slack</div>
+          <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>Ping Slack dès qu'un seuil est franchi. Laisser vide pour désactiver un seuil.</div>
+        </div>
+        {cfg?.daily_last_notified_at && (
+          <div style={{ fontSize: 11, color: C.textMuted }}>Dernier ping : {new Date(cfg.daily_last_notified_at).toLocaleString("fr-FR")}</div>
+        )}
+      </div>
+
+      {loading ? (
+        <div style={{ padding: 30, textAlign: "center" }}><Spinner size={18} /></div>
+      ) : (
+        <div style={{ padding: 20, display: "grid", gridTemplateColumns: "1fr", gap: 14 }}>
+          <div>
+            <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 4 }}>Webhook Slack</label>
+            <input
+              type="text"
+              value={webhook}
+              onChange={(e) => setWebhook(e.target.value)}
+              placeholder="https://hooks.slack.com/services/T0…/B0…/…"
+              style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "monospace", boxSizing: "border-box" }}
+            />
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 4 }}>Seuil par appel (€)</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={perCall}
+                onChange={(e) => setPerCall(e.target.value)}
+                placeholder="ex: 0,20"
+                style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, boxSizing: "border-box" }}
+              />
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>Ping immédiat si UN seul appel dépasse ce montant.</div>
+            </div>
+            <div>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.text, marginBottom: 4 }}>Seuil journalier cumulé (€)</label>
+              <input
+                type="number"
+                step="0.01"
+                min="0"
+                value={daily}
+                onChange={(e) => setDaily(e.target.value)}
+                placeholder="ex: 5"
+                style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, boxSizing: "border-box" }}
+              />
+              <div style={{ fontSize: 11, color: C.textMuted, marginTop: 4 }}>Un seul ping par jour quand le cumul dépasse ce seuil.</div>
+            </div>
+          </div>
+
+          {toast && (
+            <div style={{
+              padding: "8px 12px", borderRadius: 8, fontSize: 13,
+              background: toast.kind === "ok" ? C.greenBg : C.redBg,
+              border: `1px solid ${toast.kind === "ok" ? C.green : C.red}`,
+              color: toast.kind === "ok" ? C.green : C.red,
+            }}>{toast.msg}</div>
+          )}
+
+          <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+            <button onClick={test} disabled={testing || !webhook.trim() || webhook !== (cfg?.slack_webhook_url ?? "")}
+              title={webhook !== (cfg?.slack_webhook_url ?? "") ? "Enregistre d'abord le webhook avant de tester." : "Envoie un message de test sur Slack."}
+              style={{
+                padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`,
+                background: "white", color: C.text, fontSize: 13, fontWeight: 600,
+                cursor: testing || !webhook.trim() || webhook !== (cfg?.slack_webhook_url ?? "") ? "default" : "pointer",
+                opacity: testing || !webhook.trim() || webhook !== (cfg?.slack_webhook_url ?? "") ? 0.6 : 1,
+              }}>
+              {testing ? "Envoi…" : "Envoyer un test"}
+            </button>
+            <button onClick={save} disabled={saving}
+              style={{
+                padding: "8px 16px", borderRadius: 8, border: "none",
+                background: C.accent, color: "white", fontSize: 13, fontWeight: 600,
+                cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1,
+              }}>
+              {saving ? "Enregistrement…" : "Enregistrer"}
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function CoutsIA() {
   const navigate = useNavigate();
   const [period, setPeriod] = useState<"7d" | "30d" | "all">("30d");
   const [summary, setSummary] = useState<AiCostSummary | null>(null);
   const [byDossier, setByDossier] = useState<AiCostByDossier[] | null>(null);
+  const [byCommune, setByCommune] = useState<AiCostByCommune[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
@@ -3265,8 +3518,9 @@ function CoutsIA() {
     Promise.all([
       api.get<AiCostSummary>(`/admin/ai-cost/summary?period=${period}`),
       api.get<AiCostByDossier[]>(`/admin/ai-cost/by-dossier?period=${period}&limit=50`),
+      api.get<AiCostByCommune[]>(`/admin/ai-cost/by-commune?period=${period}&limit=50`),
     ])
-      .then(([s, d]) => { setSummary(s); setByDossier(d); })
+      .then(([s, d, c]) => { setSummary(s); setByDossier(d); setByCommune(c); })
       .catch(() => setError("Impossible de charger les coûts IA"))
       .finally(() => setLoading(false));
   }, [period]);
@@ -3304,8 +3558,11 @@ function CoutsIA() {
 
       {loading ? (
         <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>
-      ) : summary && byDossier && (
+      ) : summary && byDossier && byCommune && (
         <>
+          {/* Alertes Slack */}
+          <AlertsCard />
+
           {/* Totaux */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
             <StatCard label="Coût total" value={fmtEur(summary.totals.cost_eur)} icon="💶" color={C.accent} bg={C.accentLight} />
@@ -3357,6 +3614,46 @@ function CoutsIA() {
                 </table>
               )}
             </div>
+          </div>
+
+          {/* Par commune */}
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 24 }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 14, color: C.text, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+              <span>Coûts par commune</span>
+              <span style={{ color: C.textMuted, fontSize: 12, fontWeight: 400 }}>{byCommune.length} commune(s) imputée(s)</span>
+            </div>
+            {byCommune.length === 0 ? (
+              <div style={{ padding: 40, textAlign: "center", color: C.textMuted }}>Aucun coût IA imputable à une commune sur cette période.</div>
+            ) : (
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+                <thead>
+                  <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                    <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Commune</th>
+                    <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>INSEE</th>
+                    <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Appels</th>
+                    <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Coût</th>
+                    <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Dernier appel</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {byCommune.map((c) => (
+                    <tr
+                      key={c.commune_id}
+                      style={{ borderTop: `1px solid ${C.border}`, cursor: "pointer" }}
+                      onClick={() => navigate(`/admin/couts-ia/commune/${c.commune_id}`)}
+                      onMouseEnter={(e) => (e.currentTarget.style.background = C.bg)}
+                      onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
+                    >
+                      <td style={{ padding: "10px 20px", color: C.text, fontWeight: 600 }}>{c.commune_name ?? <span style={{ color: C.textLight }}>commune supprimée</span>}</td>
+                      <td style={{ padding: "10px 20px", color: C.textMuted, fontFamily: "monospace", fontSize: 12 }}>{c.insee_code ?? "—"}</td>
+                      <td style={{ padding: "10px 20px", color: C.textMuted, textAlign: "right" }}>{c.events.toLocaleString("fr-FR")}</td>
+                      <td style={{ padding: "10px 20px", color: C.text, fontWeight: 700, textAlign: "right" }}>{fmtEur(c.cost_eur)}</td>
+                      <td style={{ padding: "10px 20px", color: C.textMuted, fontSize: 12 }}>{new Date(c.last_event_at).toLocaleString("fr-FR")}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
           </div>
 
           {/* Top dossiers */}
@@ -3536,6 +3833,145 @@ function CoutsIADossier() {
   );
 }
 
+interface AiCostCommuneDetail {
+  commune: { id: string; name: string; insee_code: string } | null;
+  by_purpose: { purpose: string; model: string; events: number; cost_eur: number; input_tokens: number; output_tokens: number }[];
+  events: Array<{
+    id: string;
+    purpose: string;
+    model: string;
+    input_tokens: number;
+    output_tokens: number;
+    cache_read_input_tokens: number;
+    cache_creation_input_tokens: number;
+    cost_eur: number;
+    duration_ms: number | null;
+    created_at: string;
+    dossier_id: string | null;
+  }>;
+}
+
+function CoutsIACommune() {
+  const { id } = useParams<{ id: string }>();
+  const navigate = useNavigate();
+  const [detail, setDetail] = useState<AiCostCommuneDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    if (!id) return;
+    api.get<AiCostCommuneDetail>(`/admin/ai-cost/commune/${id}`)
+      .then(setDetail)
+      .catch(() => setError("Impossible de charger le détail."))
+      .finally(() => setLoading(false));
+  }, [id]);
+
+  const total = detail?.by_purpose.reduce((s, p) => s + p.cost_eur, 0) ?? 0;
+  const commName = detail?.commune?.name ?? "Commune inconnue";
+
+  return (
+    <PageShell>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+
+      <button
+        onClick={() => navigate("/admin/couts-ia")}
+        style={{ background: "transparent", border: "none", color: C.accent, fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0, marginBottom: 12 }}
+      >← Retour</button>
+      <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 800, color: C.text }}>
+        Coûts IA — {commName}
+      </h1>
+      <p style={{ margin: "0 0 24px", color: C.textMuted, fontSize: 13 }}>INSEE {detail?.commune?.insee_code ?? "—"}</p>
+
+      {error && (
+        <div style={{ background: C.redBg, border: `1px solid ${C.red}`, color: C.red, borderRadius: 10, padding: "12px 16px", marginBottom: 24, fontSize: 14 }}>{error}</div>
+      )}
+
+      {loading ? (
+        <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>
+      ) : detail && (
+        <>
+          <div style={{ background: C.accentLight, border: `1px solid ${C.accent}`, borderRadius: 12, padding: "16px 20px", marginBottom: 24, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ color: C.text, fontWeight: 600, fontSize: 14 }}>Coût IA total imputé à cette commune</div>
+            <div style={{ color: C.accent, fontWeight: 800, fontSize: 24 }}>{fmtEur(total)}</div>
+          </div>
+
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 24 }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 14, color: C.text }}>
+              Répartition par usage
+            </div>
+            <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+              <thead>
+                <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                  <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Usage</th>
+                  <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Modèle</th>
+                  <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Appels</th>
+                  <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>In</th>
+                  <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Out</th>
+                  <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Coût</th>
+                </tr>
+              </thead>
+              <tbody>
+                {[...detail.by_purpose].sort((a, b) => b.cost_eur - a.cost_eur).map((p, i) => (
+                  <tr key={i} style={{ borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "10px 20px", color: C.text }}>{PURPOSE_LABELS[p.purpose] ?? p.purpose}</td>
+                    <td style={{ padding: "10px 20px", color: C.textMuted, fontFamily: "monospace", fontSize: 12 }}>{p.model}</td>
+                    <td style={{ padding: "10px 20px", color: C.textMuted, textAlign: "right" }}>{p.events}</td>
+                    <td style={{ padding: "10px 20px", color: C.textMuted, textAlign: "right" }}>{p.input_tokens.toLocaleString("fr-FR")}</td>
+                    <td style={{ padding: "10px 20px", color: C.textMuted, textAlign: "right" }}>{p.output_tokens.toLocaleString("fr-FR")}</td>
+                    <td style={{ padding: "10px 20px", color: C.text, fontWeight: 700, textAlign: "right" }}>{fmtEur(p.cost_eur)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+
+          <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+            <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, fontWeight: 700, fontSize: 14, color: C.text }}>
+              Journal des appels ({detail.events.length})
+            </div>
+            <div style={{ maxHeight: 480, overflowY: "auto" }}>
+              <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 12 }}>
+                <thead style={{ position: "sticky", top: 0, background: C.bg }}>
+                  <tr style={{ borderBottom: `1px solid ${C.border}` }}>
+                    <th style={{ padding: "8px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted }}>Date</th>
+                    <th style={{ padding: "8px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted }}>Usage</th>
+                    <th style={{ padding: "8px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted }}>Modèle</th>
+                    <th style={{ padding: "8px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted }}>Dossier</th>
+                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>In</th>
+                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Out</th>
+                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Durée</th>
+                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Coût</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {detail.events.map((e) => (
+                    <tr key={e.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                      <td style={{ padding: "8px 16px", color: C.textMuted }}>{new Date(e.created_at).toLocaleString("fr-FR")}</td>
+                      <td style={{ padding: "8px 16px", color: C.text }}>{PURPOSE_LABELS[e.purpose] ?? e.purpose}</td>
+                      <td style={{ padding: "8px 16px", color: C.textMuted, fontFamily: "monospace" }}>{e.model}</td>
+                      <td style={{ padding: "8px 16px", color: C.accent, fontSize: 11, fontFamily: "monospace" }}>
+                        {e.dossier_id ? (
+                          <span style={{ cursor: "pointer" }} onClick={(ev) => { ev.stopPropagation(); navigate(`/admin/couts-ia/${e.dossier_id}`); }}>
+                            {e.dossier_id.slice(0, 8)}…
+                          </span>
+                        ) : "—"}
+                      </td>
+                      <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.input_tokens.toLocaleString("fr-FR")}</td>
+                      <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.output_tokens.toLocaleString("fr-FR")}</td>
+                      <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.duration_ms ? `${(e.duration_ms / 1000).toFixed(1)}s` : "—"}</td>
+                      <td style={{ padding: "8px 16px", color: C.text, fontWeight: 700, textAlign: "right" }}>{fmtEur(e.cost_eur)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      )}
+    </PageShell>
+  );
+}
+
 // ─── App Root ─────────────────────────────────────────────────────────────────
 export function SuperAdminApp() {
   return (
@@ -3556,6 +3992,7 @@ export function SuperAdminApp() {
           <Route path="/roles" element={<Roles />} />
           <Route path="/services" element={<ServicesAnnexes />} />
           <Route path="/couts-ia" element={<CoutsIA />} />
+          <Route path="/couts-ia/commune/:id" element={<CoutsIACommune />} />
           <Route path="/couts-ia/:id" element={<CoutsIADossier />} />
           <Route path="/audit" element={<AuditLogs />} />
           <Route path="/configuration" element={<Configuration />} />

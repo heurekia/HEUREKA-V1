@@ -554,9 +554,43 @@ CREATE TABLE IF NOT EXISTS ai_usage_events (
   duration_ms                 integer,
   created_at                  timestamp NOT NULL DEFAULT now()
 );
+ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS commune_id uuid REFERENCES communes(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_dossier ON ai_usage_events(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_events_commune ON ai_usage_events(commune_id);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_created_at ON ai_usage_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_purpose ON ai_usage_events(purpose);
+
+-- ── Configuration alertes Slack sur les coûts IA (singleton id=1) ──
+CREATE TABLE IF NOT EXISTS ai_alert_config (
+  id                      integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  slack_webhook_url       text,
+  per_call_threshold_eur  double precision,
+  daily_threshold_eur     double precision,
+  daily_last_notified_at  timestamp,
+  updated_at              timestamp NOT NULL DEFAULT now()
+);
+INSERT INTO ai_alert_config (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- ── Normalisation validation_status sur zone_regulatory_rules ──
+-- Le schéma historique posait DEFAULT 'draft' alors que tout le code applicatif
+-- raisonne en français ('valide' | 'brouillon' | 'rejete'). Conséquence : tout
+-- insert qui aurait omis le champ atterrissait en 'draft' → invisible des
+-- filtres applicatifs (trou silencieux). On normalise les lignes existantes
+-- et on aligne le défaut sur la convention applicative.
+UPDATE zone_regulatory_rules SET validation_status = 'brouillon'
+  WHERE validation_status NOT IN ('valide', 'brouillon', 'rejete');
+ALTER TABLE zone_regulatory_rules ALTER COLUMN validation_status SET DEFAULT 'brouillon';
+
+-- ── Validation des synthèses commune (audit juridique) ──
+-- Une synthèse est un texte libre rédigé/modifié par un humain ; tant qu'elle
+-- n'est pas validée, elle ne doit JAMAIS alimenter un verdict d'instruction.
+-- Convention de valeurs alignée avec zone_regulatory_rules : valide | brouillon | rejete.
+-- Default brouillon = safe-by-default : les synthèses existantes sont marquées
+-- non-validées et l'instructeur doit les passer en revue avant qu'elles
+-- ré-entrent dans la boucle d'instruction (fuite documentée).
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS validation_status text NOT NULL DEFAULT 'brouillon';
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS validated_by uuid REFERENCES users(id) ON DELETE SET NULL;
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS validated_at timestamp;
 `;
 
 async function main() {

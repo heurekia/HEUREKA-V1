@@ -1,6 +1,6 @@
 import path from "path";
 import { fileURLToPath } from "url";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   dossiers,
@@ -24,6 +24,7 @@ import {
   type VerdictDocumentCommuneInput,
 } from "./ruleVerdicts.js";
 import { ilike } from "drizzle-orm";
+// `and`, `eq` déjà importés en haut.
 import { communes, commune_documents } from "@heureka-v1/db";
 import type { PieceExtraction } from "./pieceExtractor.js";
 
@@ -322,6 +323,14 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
     // 6. Zone PLU + règles
     const zoneCode = (meta.zone as string | undefined) ?? undefined;
     const commune = dossier.commune ?? undefined;
+    // Résolution de l'ID de commune pour l'imputation des coûts IA (nullable :
+    // si le nom de commune du dossier ne matche aucune commune en base, on
+    // continue sans imputation — le dossier_id reste, lui, toujours présent).
+    let resolvedCommuneId: string | null = null;
+    if (commune) {
+      const [c] = await db.select({ id: communes.id }).from(communes).where(ilike(communes.name, commune)).limit(1);
+      resolvedCommuneId = c?.id ?? null;
+    }
     const { rules, zoneFound, matchedChain } = await loadZoneRules(zoneCode, commune);
     if (zoneCode && !zoneFound) {
       warnings.push(`Aucune zone PLU ingérée pour "${zoneCode}" sur ${commune ?? "cette commune"}. Analyse réalisée sans règles PLU.`);
@@ -368,7 +377,7 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
         };
       } else {
         try {
-          const analysis = await analyzePiece(diskPath, p.type, p.nom, code, ctx, { dossierId });
+          const analysis = await analyzePiece(diskPath, p.type, p.nom, code, ctx, { dossierId, communeId: resolvedCommuneId });
           result = {
             piece_id: p.id,
             code_piece: p.code_piece,
@@ -458,6 +467,9 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
             .where(ilike(communes.name, commune))
             .limit(1);
           if (comm) {
+            // Gate juridique : ne lire QUE les synthèses validées par un humain.
+            // Une synthèse "brouillon" ou "rejete" ne doit jamais alimenter un
+            // verdict d'instruction.
             const docs = await db
               .select({
                 id: commune_documents.id,
@@ -466,7 +478,10 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
                 synthese: commune_documents.synthese,
               })
               .from(commune_documents)
-              .where(eq(commune_documents.commune_id, comm.id));
+              .where(and(
+                eq(commune_documents.commune_id, comm.id),
+                eq(commune_documents.validation_status, "valide"),
+              ));
             documentsCommune = docs;
           }
         }
@@ -481,7 +496,7 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
             natures,
             surface_plancher: surface || null,
           },
-          trace: { dossierId },
+          trace: { dossierId, communeId: resolvedCommuneId },
         });
       } else if (rules.length === 0) {
         warnings.push("Verdicts règle-par-règle non générés : aucune règle PLU indexée pour cette zone.");
