@@ -2055,17 +2055,37 @@ AUTRES RÈGLES :
 // zone (tous les articles, déjà résumés). Claude (Sonnet) renvoie une liste de
 // (sous-)règles découpées par sous-section, chacune pré-remplie ET dotée de sa
 // version « citoyen » (titre court + une phrase simple). L'instructeur valide.
+//
+// Streaming SSE : même justification que structure-article, accentuée ici par
+// le max_tokens 16k qui peut prendre 2-3 min. Sans streaming la passerelle
+// coupe systématiquement → 502 + facturation perdue.
 mairieRouter.post("/reglementation/structure-zone", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
-  try {
-    const { text, zone_code } = req.body as { text?: string; zone_code?: string };
-    // Le seuil bas accepte les chunks courts légitimes (Préambule, article
-    // « sans objet ») produits par le découpage par article côté front.
-    if (!text || text.trim().length < 10) {
-      return res.status(400).json({ error: "Texte vide ou trop court — collez le règlement complet de la zone." });
-    }
+  const { text, zone_code } = req.body as { text?: string; zone_code?: string };
+  // Le seuil bas accepte les chunks courts légitimes (Préambule, article
+  // « sans objet ») produits par le découpage par article côté front.
+  if (!text || text.trim().length < 10) {
+    return res.status(400).json({ error: "Texte vide ou trop court — collez le règlement complet de la zone." });
+  }
 
-    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 2, timeout: 120_000 });
-    const msg = await client.messages.create({
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const send = (data: Record<string, unknown>) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    (res as unknown as { flush?: () => void }).flush?.();
+  };
+
+  try {
+    send({ type: "started" });
+
+    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 2, timeout: 180_000 });
+
+    let accumulated = "";
+    let lastHeartbeat = Date.now();
+    const stream = client.messages.stream({
       model: "claude-sonnet-4-6",
       // Un règlement complet (14 articles × plusieurs sous-règles citoyen+mairie)
       // dépasse facilement 6 k tokens et provoquait des sorties tronquées. Avec
@@ -2111,8 +2131,20 @@ RÈGLES DE STRUCTURATION :
       messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}.\n\n` : ""}${text}` }],
     });
 
-    const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "";
-    const stopReason = msg.stop_reason;
+    // Forward des deltas en heartbeats : passerelle alive + progression visible.
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        accumulated += event.delta.text;
+        if (Date.now() - lastHeartbeat > 1500) {
+          send({ type: "progress", chars: accumulated.length });
+          lastHeartbeat = Date.now();
+        }
+      }
+    }
+
+    const finalMessage = await stream.finalMessage();
+    const raw = accumulated || (finalMessage.content[0]?.type === "text" ? finalMessage.content[0].text : "");
+    const stopReason = finalMessage.stop_reason;
     const arr = parseLooseArray(raw);
     // Trace de débogage utile : Claude a parlé mais on n'extrait rien.
     // Pointe à coup sûr vers un nouveau format de sortie (wrapper inconnu,
@@ -2172,11 +2204,13 @@ RÈGLES DE STRUCTURATION :
       }
     }
 
-    res.json({ rules, diagnostic });
+    send({ type: "done", rules, stop_reason: stopReason, diagnostic });
+    res.end();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[structure-zone]", msg);
-    res.status(500).json({ error: `Échec de l'analyse IA : ${msg}` });
+    send({ type: "error", message: `Échec de l'analyse IA : ${msg}` });
+    res.end();
   }
 });
 

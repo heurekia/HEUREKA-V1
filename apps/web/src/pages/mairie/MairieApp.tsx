@@ -3970,6 +3970,44 @@ export function splitZoneIntoChunks(raw: string): string[] {
   return safe;
 }
 
+// Consomme un stream SSE structure-article / structure-zone et retourne le
+// résultat final. Centralise la logique de parsing pour qu'analyzeArticle et
+// analyzeZone partagent exactement le même contrat (events `done` / `error`).
+async function consumeStructureStream(resp: Response): Promise<{ rules: ExtractedRule[]; diagnostic: string | null }> {
+  if (!resp.ok || !resp.body) {
+    const txt = await resp.text().catch(() => "");
+    throw new Error(txt || `Erreur ${resp.status}`);
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let rules: ExtractedRule[] | null = null;
+  let diagnostic: string | null = null;
+  let errorMsg: string | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      try {
+        const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
+        if (ev.type === "done") {
+          rules = (ev.rules as ExtractedRule[]) ?? [];
+          if (typeof ev.diagnostic === "string") diagnostic = ev.diagnostic;
+        } else if (ev.type === "error") {
+          errorMsg = (ev.message as string) || "Échec de l'analyse";
+        }
+      } catch { /* ligne mal formée — on continue */ }
+    }
+  }
+  if (errorMsg) throw new Error(errorMsg);
+  return { rules: rules ?? [], diagnostic };
+}
+
 function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCode?: string }) {
   const [data, setData] = useState<ReglData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -4008,9 +4046,6 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     if (pasteText.trim().length < 5 && !pasteImage) return;
     setAnalyzing(true);
     try {
-      // Stream SSE — voir mairie.ts route /reglementation/structure-article.
-      // La passerelle Railway/Cloudflare coupe les requêtes silencieuses qui
-      // dépassent ~100 s ; le streaming évite le 502 (et la facturation perdue).
       const resp = await fetch("/api/mairie/reglementation/structure-article", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
@@ -4020,41 +4055,8 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
           image_base64: pasteImage?.data, image_media_type: pasteImage?.media,
         }),
       });
-      if (!resp.ok || !resp.body) {
-        const txt = await resp.text().catch(() => "");
-        throw new Error(txt || `Erreur ${resp.status}`);
-      }
-
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf = "";
-      let result: ExtractedRule[] | null = null;
-      let diagnostic: string | null = null;
-
-      while (true) {
-        const { done, value } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        const lines = buf.split("\n");
-        buf = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
-            if (ev.type === "done") {
-              result = (ev.rules as ExtractedRule[]) ?? [];
-              if (typeof ev.diagnostic === "string") diagnostic = ev.diagnostic;
-            } else if (ev.type === "error") {
-              throw new Error((ev.message as string) || "Échec de l'analyse");
-            }
-          } catch (parseErr) {
-            // Une ligne mal formée n'interrompt pas le stream ; on continue.
-            if (parseErr instanceof Error && parseErr.message.includes("Échec")) throw parseErr;
-          }
-        }
-      }
-
-      setExtracted(result ?? []);
+      const { rules, diagnostic } = await consumeStructureStream(resp);
+      setExtracted(rules);
       if (diagnostic) alert(diagnostic);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Échec de l'analyse");
@@ -4087,13 +4089,17 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
         await Promise.all(slice.map(async (text, k) => {
           const idx = start + k;
           try {
-            const r = await api.post<{ rules: ExtractedRule[]; diagnostic?: string }>(
-              "/mairie/reglementation/structure-zone",
-              { text, zone_code: zoneCode },
-              { timeoutMs: 120_000 },
-            );
-            results[idx] = r.rules ?? [];
-            if ((r.rules?.length ?? 0) === 0 && r.diagnostic) diagnostics.push(r.diagnostic);
+            // Stream SSE — voir mairie.ts route /reglementation/structure-zone.
+            // Évite le 502 passerelle sur les zones denses (max_tokens 16 k).
+            const resp = await fetch("/api/mairie/reglementation/structure-zone", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({ text, zone_code: zoneCode }),
+            });
+            const { rules, diagnostic } = await consumeStructureStream(resp);
+            results[idx] = rules;
+            if (rules.length === 0 && diagnostic) diagnostics.push(diagnostic);
           } catch (e) {
             results[idx] = [];
             errors.push(e instanceof Error ? e.message : String(e));
