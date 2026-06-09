@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations, external_services, service_communes, instruction_events } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations, external_services, service_communes, instruction_events, document_segments, document_segment_annotations, ANNOTATION_KINDS } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike, inArray } from "drizzle-orm";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
@@ -2275,6 +2275,177 @@ mairieRouter.get("/documents/search", requireRole("mairie", "instructeur", "admi
   } catch (err) {
     console.error("[rag-search]", err);
     res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// ── Annotations chunk-level (Phase 1 niveau B) ──────────────────────────────
+// Permet à l'instructeur d'attacher une note à un passage indexé qui
+// remontera AVEC le chunk au moment de la recherche RAG. Gate de validation
+// identique à commune_documents / zone_regulatory_rules.
+
+const ANNOTATION_KINDS_SET = new Set(ANNOTATION_KINDS as readonly string[]);
+const VALID_STATUSES_SET = new Set(["brouillon", "valide", "rejete"]);
+
+// GET /mairie/documents/:docId/segments — liste les chunks indexés d'un
+// document avec leur métadonnée + annotations. Sert au visualiseur côté UI
+// pour permettre à l'instructeur d'annoter passage par passage.
+mairieRouter.get("/documents/:docId/segments", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const docId = req.params.docId as string;
+    const segs = await db.select({
+      id: document_segments.id,
+      segment_code: document_segments.segment_code,
+      raw_text: document_segments.raw_text,
+      metadata: document_segments.metadata,
+      char_count: document_segments.char_count,
+    })
+      .from(document_segments)
+      .where(sql`${document_segments.metadata}->>'source_id' = ${docId}`)
+      .orderBy(document_segments.segment_code);
+
+    // Annotations TOUTES STATUS (pas seulement validées) — l'instructeur
+    // doit voir aussi les brouillons et rejets dans le visualiseur pour les
+    // gérer.
+    const segmentIds = segs.map((s) => s.id);
+    const annsRows = segmentIds.length > 0
+      ? await db.select().from(document_segment_annotations)
+          .where(inArray(document_segment_annotations.segment_id, segmentIds))
+      : [];
+    const annsBySegment = new Map<string, typeof annsRows>();
+    for (const a of annsRows) {
+      const arr = annsBySegment.get(a.segment_id) ?? [];
+      arr.push(a);
+      annsBySegment.set(a.segment_id, arr);
+    }
+
+    res.json(segs.map((s) => ({
+      ...s,
+      annotations: annsBySegment.get(s.id) ?? [],
+    })));
+  } catch (err) {
+    console.error("[segments:list]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /mairie/documents/:docId/annotations — liste toutes les annotations
+// d'un document (tous statuts). Sert au panneau de validation côté UI.
+mairieRouter.get("/documents/:docId/annotations", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const docId = req.params.docId as string;
+    const rows = await db.select().from(document_segment_annotations)
+      .where(eq(document_segment_annotations.source_id, docId))
+      .orderBy(desc(document_segment_annotations.created_at));
+    res.json(rows);
+  } catch (err) {
+    console.error("[annotations:list]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /mairie/segments/:segmentId/annotations — créer une annotation.
+// Le statut initial est "brouillon" — il faut une action explicite de
+// validation pour qu'elle remonte dans le RAG.
+mairieRouter.post("/segments/:segmentId/annotations", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const segmentId = req.params.segmentId as string;
+    const { kind, note, applies_if } = req.body as { kind?: string; note?: string; applies_if?: string[] };
+
+    if (!note || !note.trim()) return res.status(400).json({ error: "note requise" });
+    const finalKind = kind && ANNOTATION_KINDS_SET.has(kind) ? kind : "precision";
+
+    // Récupère le segment pour reporter source_id (= commune_documents.id).
+    const [seg] = await db.select({ id: document_segments.id, metadata: document_segments.metadata })
+      .from(document_segments).where(eq(document_segments.id, segmentId)).limit(1);
+    if (!seg) return res.status(404).json({ error: "Segment introuvable" });
+    const meta = (seg.metadata ?? {}) as Record<string, unknown>;
+    const sourceId = typeof meta.source_id === "string" ? meta.source_id : null;
+    if (!sourceId) return res.status(400).json({ error: "Segment sans source_id (incohérence d'index)" });
+
+    const [created] = await db.insert(document_segment_annotations).values({
+      segment_id: segmentId,
+      source_id: sourceId,
+      kind: finalKind,
+      note: note.trim(),
+      applies_if: Array.isArray(applies_if) ? applies_if : [],
+      validation_status: "brouillon",
+      author_user_id: req.user?.id ?? null,
+    }).returning();
+
+    res.status(201).json(created);
+  } catch (err) {
+    console.error("[annotations:create]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PATCH /mairie/annotations/:id — modifier OU valider/rejeter.
+// Toute modification de la note rebascule en brouillon (anti-édit silencieux).
+mairieRouter.patch("/annotations/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const id = req.params.id as string;
+    const { note, kind, applies_if, validation_status } = req.body as {
+      note?: string; kind?: string; applies_if?: string[];
+      validation_status?: "brouillon" | "valide" | "rejete";
+    };
+
+    const patch: {
+      note?: string; kind?: string; applies_if?: string[];
+      validation_status?: string; validated_by?: string | null; validated_at?: Date | null;
+      updated_at: Date;
+    } = { updated_at: new Date() };
+
+    const noteChanged = note !== undefined;
+    if (noteChanged) {
+      if (!note.trim()) return res.status(400).json({ error: "note non vide requise" });
+      patch.note = note.trim();
+    }
+    if (kind !== undefined) {
+      if (!ANNOTATION_KINDS_SET.has(kind)) return res.status(400).json({ error: "kind invalide" });
+      patch.kind = kind;
+    }
+    if (applies_if !== undefined) {
+      if (!Array.isArray(applies_if)) return res.status(400).json({ error: "applies_if doit être un tableau" });
+      patch.applies_if = applies_if;
+    }
+
+    if (validation_status) {
+      if (!VALID_STATUSES_SET.has(validation_status)) {
+        return res.status(400).json({ error: "validation_status invalide" });
+      }
+      patch.validation_status = validation_status;
+      if (validation_status === "valide") {
+        if (!req.user?.id) return res.status(401).json({ error: "Authentification requise pour valider" });
+        patch.validated_by = req.user.id;
+        patch.validated_at = new Date();
+      } else {
+        patch.validated_by = null;
+        patch.validated_at = null;
+      }
+    } else if (noteChanged || kind !== undefined || applies_if !== undefined) {
+      // Édition de fond sans validation explicite → bascule auto en brouillon.
+      patch.validation_status = "brouillon";
+      patch.validated_by = null;
+      patch.validated_at = null;
+    }
+
+    const [updated] = await db.update(document_segment_annotations).set(patch)
+      .where(eq(document_segment_annotations.id, id)).returning();
+    if (!updated) return res.status(404).json({ error: "Annotation introuvable" });
+    res.json(updated);
+  } catch (err) {
+    console.error("[annotations:patch]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+mairieRouter.delete("/annotations/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    await db.delete(document_segment_annotations).where(eq(document_segment_annotations.id, req.params.id as string));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[annotations:delete]", err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 

@@ -3239,8 +3239,179 @@ type CommuneDoc = {
   validated_at?: string | null;
 };
 
+type Annotation = {
+  id: string;
+  segment_id: string;
+  kind: "correction" | "precision" | "jurisprudence" | "warning";
+  note: string;
+  validation_status: "brouillon" | "valide" | "rejete";
+  validated_at: string | null;
+};
+
+type Segment = {
+  id: string;
+  segment_code: string;
+  raw_text: string;
+  metadata: { page?: number; char_count?: number; [k: string]: unknown };
+  char_count: number | null;
+  annotations: Annotation[];
+};
+
+const KIND_META: Record<Annotation["kind"], { label: string; color: string; bg: string }> = {
+  correction:    { label: "Correction",    color: "#B91C1C", bg: "#FEE2E2" },
+  precision:     { label: "Précision",     color: "#1E40AF", bg: "#DBEAFE" },
+  jurisprudence: { label: "Jurisprudence", color: "#9A3412", bg: "#FED7AA" },
+  warning:       { label: "Attention",     color: "#92400E", bg: "#FEF3C7" },
+};
+
+function SegmentsModal({ docId, docName, onClose }: { docId: string; docName: string; onClose: () => void }) {
+  const [segments, setSegments] = useState<Segment[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [editing, setEditing] = useState<{ segmentId: string; annotationId?: string } | null>(null);
+  const [draft, setDraft] = useState<{ kind: Annotation["kind"]; note: string }>({ kind: "precision", note: "" });
+  const [saving, setSaving] = useState(false);
+
+  const reload = () => {
+    api.get<Segment[]>(`/mairie/documents/${docId}/segments`)
+      .then(setSegments)
+      .catch((e: unknown) => setError(e instanceof Error ? e.message : "Erreur de chargement"));
+  };
+  useEffect(reload, [docId]);
+
+  const startCreate = (segmentId: string) => { setEditing({ segmentId }); setDraft({ kind: "precision", note: "" }); };
+  const startEdit = (segmentId: string, a: Annotation) => { setEditing({ segmentId, annotationId: a.id }); setDraft({ kind: a.kind, note: a.note }); };
+  const cancel = () => setEditing(null);
+
+  const save = async () => {
+    if (!editing || !draft.note.trim()) return;
+    setSaving(true);
+    try {
+      if (editing.annotationId) {
+        await api.patch(`/mairie/annotations/${editing.annotationId}`, { kind: draft.kind, note: draft.note });
+      } else {
+        await api.post(`/mairie/segments/${editing.segmentId}/annotations`, { kind: draft.kind, note: draft.note });
+      }
+      setEditing(null);
+      reload();
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Échec de l'enregistrement");
+    } finally { setSaving(false); }
+  };
+
+  const setStatus = async (annotationId: string, status: "valide" | "brouillon" | "rejete") => {
+    try {
+      await api.patch(`/mairie/annotations/${annotationId}`, { validation_status: status });
+      reload();
+    } catch (e) { alert(e instanceof Error ? e.message : "Échec"); }
+  };
+
+  const remove = async (annotationId: string) => {
+    if (!confirm("Supprimer cette annotation ?")) return;
+    try { await api.delete(`/mairie/annotations/${annotationId}`); reload(); }
+    catch (e) { alert(e instanceof Error ? e.message : "Échec"); }
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.5)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }} onClick={onClose}>
+      <div onClick={(e) => e.stopPropagation()} style={{ background: "white", borderRadius: 14, maxWidth: 900, width: "100%", maxHeight: "90vh", display: "flex", flexDirection: "column", boxShadow: "0 20px 60px rgba(0,0,0,0.3)" }}>
+        <div style={{ padding: "18px 24px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Passages indexés — {docName}</div>
+            <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>Annotez un passage pour préciser la jurisprudence locale ou corriger une erreur d'édition.</div>
+          </div>
+          <button onClick={onClose} style={{ border: "none", background: "none", fontSize: 22, cursor: "pointer", color: "#94a3b8" }}>✕</button>
+        </div>
+
+        <div style={{ flex: 1, overflowY: "auto", padding: 20 }}>
+          {error && <div style={{ color: "#DC2626", padding: 16 }}>{error}</div>}
+          {!segments && !error && <div style={{ textAlign: "center", color: "#94a3b8", padding: 40 }}>Chargement…</div>}
+          {segments && segments.length === 0 && (
+            <div style={{ textAlign: "center", color: "#94a3b8", padding: 40 }}>Aucun passage indexé. L'indexation a peut-être échoué.</div>
+          )}
+          {segments && segments.map((s) => {
+            const page = s.metadata?.page;
+            const isEditingThis = editing?.segmentId === s.id;
+            return (
+              <div key={s.id} style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: 14, marginBottom: 14 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", letterSpacing: "0.05em" }}>
+                    {s.segment_code}{page != null ? ` · Page ${page}` : ""}
+                  </div>
+                  {!isEditingThis && (
+                    <button onClick={() => startCreate(s.id)} style={{ border: "1px solid #C7D2FE", background: "white", color: "#4F46E5", borderRadius: 6, padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>+ Annoter</button>
+                  )}
+                </div>
+                <div style={{ fontSize: 13, color: "#334155", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>{s.raw_text}</div>
+
+                {s.annotations.length > 0 && (
+                  <div style={{ marginTop: 10, display: "flex", flexDirection: "column", gap: 6 }}>
+                    {s.annotations.map((a) => {
+                      const meta = KIND_META[a.kind];
+                      const isEditingThisAnn = isEditingThis && editing?.annotationId === a.id;
+                      const validated = a.validation_status === "valide";
+                      const rejected = a.validation_status === "rejete";
+                      return (
+                        <div key={a.id} style={{ background: "white", border: `1px solid ${validated ? "#A7F3D0" : rejected ? "#FECACA" : "#FDE68A"}`, borderRadius: 8, padding: 10 }}>
+                          {isEditingThisAnn ? (
+                            <div>
+                              <select value={draft.kind} onChange={(e) => setDraft((d) => ({ ...d, kind: e.target.value as Annotation["kind"] }))} style={{ border: "1px solid #CBD5E1", borderRadius: 5, padding: "4px 8px", fontSize: 12, marginBottom: 6 }}>
+                                {Object.entries(KIND_META).map(([v, m]) => <option key={v} value={v}>{m.label}</option>)}
+                              </select>
+                              <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={3} style={{ width: "100%", border: "1px solid #CBD5E1", borderRadius: 5, padding: 8, fontSize: 12.5, fontFamily: "inherit", boxSizing: "border-box" }} />
+                              <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 6 }}>
+                                <button onClick={cancel} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 5, padding: "4px 12px", fontSize: 11, cursor: "pointer" }}>Annuler</button>
+                                <button onClick={() => void save()} disabled={saving || !draft.note.trim()} style={{ border: "none", background: saving ? "#A5B4FC" : "#4F46E5", color: "white", borderRadius: 5, padding: "4px 14px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{saving ? "…" : "Enregistrer"}</button>
+                              </div>
+                            </div>
+                          ) : (
+                            <>
+                              <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: meta.color, background: meta.bg, padding: "2px 8px", borderRadius: 4, letterSpacing: "0.04em" }}>{meta.label.toUpperCase()}</span>
+                                <span style={{ fontSize: 10, fontWeight: 700, color: validated ? "#047857" : rejected ? "#B91C1C" : "#B45309" }}>
+                                  {validated ? `✓ Validé${a.validated_at ? ` ${new Date(a.validated_at).toLocaleDateString("fr-FR")}` : ""}` : rejected ? "✗ Rejeté" : "Brouillon"}
+                                </span>
+                                <div style={{ flex: 1 }} />
+                                <button onClick={() => startEdit(s.id, a)} style={{ border: "none", background: "none", color: "#4F46E5", fontSize: 11, cursor: "pointer", fontWeight: 600 }}>Modifier</button>
+                                <button onClick={() => void remove(a.id)} style={{ border: "none", background: "none", color: "#94a3b8", fontSize: 11, cursor: "pointer" }}>Supprimer</button>
+                              </div>
+                              <div style={{ fontSize: 12.5, color: "#334155", lineHeight: 1.5, whiteSpace: "pre-wrap" as const }}>{a.note}</div>
+                              <div style={{ display: "flex", gap: 6, marginTop: 8 }}>
+                                {!validated && <button onClick={() => void setStatus(a.id, "valide")} style={{ border: "none", background: "#047857", color: "white", borderRadius: 5, padding: "3px 10px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>Valider</button>}
+                                {!rejected && <button onClick={() => void setStatus(a.id, "rejete")} style={{ border: "1px solid #FECACA", background: "white", color: "#B91C1C", borderRadius: 5, padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Rejeter</button>}
+                                {(validated || rejected) && <button onClick={() => void setStatus(a.id, "brouillon")} style={{ border: "1px solid #E2E8F0", background: "white", color: "#475569", borderRadius: 5, padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>Repasser en brouillon</button>}
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {isEditingThis && !editing?.annotationId && (
+                  <div style={{ marginTop: 10, background: "white", border: "1px dashed #C7D2FE", borderRadius: 8, padding: 10 }}>
+                    <select value={draft.kind} onChange={(e) => setDraft((d) => ({ ...d, kind: e.target.value as Annotation["kind"] }))} style={{ border: "1px solid #CBD5E1", borderRadius: 5, padding: "4px 8px", fontSize: 12, marginBottom: 6 }}>
+                      {Object.entries(KIND_META).map(([v, m]) => <option key={v} value={v}>{m.label}</option>)}
+                    </select>
+                    <textarea value={draft.note} onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))} rows={3} placeholder="Ex: La cote NGF de référence est celle de 1997, pas celle reprise par erreur dans cette édition." style={{ width: "100%", border: "1px solid #CBD5E1", borderRadius: 5, padding: 8, fontSize: 12.5, fontFamily: "inherit", boxSizing: "border-box" }} />
+                    <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 6 }}>
+                      <button onClick={cancel} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 5, padding: "4px 12px", fontSize: 11, cursor: "pointer" }}>Annuler</button>
+                      <button onClick={() => void save()} disabled={saving || !draft.note.trim()} style={{ border: "none", background: saving ? "#A5B4FC" : "#4F46E5", color: "white", borderRadius: 5, padding: "4px 14px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>{saving ? "…" : "Créer en brouillon"}</button>
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DocumentsPanel({ commune }: { commune: string }) {
   const [docs, setDocs] = useState<CommuneDoc[]>([]);
+  const [viewingSegments, setViewingSegments] = useState<{ id: string; name: string } | null>(null);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -3482,14 +3653,27 @@ function DocumentsPanel({ commune }: { commune: string }) {
                             {vBadge.label}
                           </span>
                         )}
-                        <span style={{
-                          fontSize: 11, fontWeight: 600,
-                          color: doc.status === "ingested" ? "#10B981" : "#94a3b8",
-                          background: doc.status === "ingested" ? "#D1FAE5" : "#F1F5F9",
-                          borderRadius: 6, padding: "2px 8px",
-                        }}>
-                          {doc.status === "ingested" ? "Ingéré" : "Importé"}
-                        </span>
+                        {(() => {
+                          const indexBadge =
+                            doc.status === "indexed" ? { label: "Indexé", color: "#0E7490", bg: "#CFFAFE" } :
+                            doc.status === "indexing" ? { label: "Indexation…", color: "#5B21B6", bg: "#EDE9FE" } :
+                            doc.status === "indexing_error" ? { label: "Erreur indexation", color: "#B91C1C", bg: "#FEE2E2" } :
+                            doc.status === "indexing_empty" ? { label: "Index vide", color: "#92400E", bg: "#FEF3C7" } :
+                            doc.status === "ingested" ? { label: "Ingéré", color: "#10B981", bg: "#D1FAE5" } :
+                            { label: "Importé", color: "#94a3b8", bg: "#F1F5F9" };
+                          return (
+                            <span style={{ fontSize: 11, fontWeight: 600, color: indexBadge.color, background: indexBadge.bg, borderRadius: 6, padding: "2px 8px" }}>
+                              {indexBadge.label}
+                            </span>
+                          );
+                        })()}
+                        {doc.status === "indexed" && (
+                          <button onClick={() => setViewingSegments({ id: doc.id, name: doc.name })}
+                            title="Voir les passages indexés et les annoter"
+                            style={{ border: "1px solid #C7D2FE", background: "white", color: "#4F46E5", borderRadius: 6, padding: "3px 8px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                            📑 Passages
+                          </button>
+                        )}
                         <button onClick={() => deleteDoc(doc.id)}
                           style={{ border: "none", background: "none", color: "#94a3b8", cursor: "pointer", padding: 4, fontSize: 16, lineHeight: 1 }}
                           title="Supprimer">✕</button>
@@ -3577,6 +3761,9 @@ function DocumentsPanel({ commune }: { commune: string }) {
             </div>
           ))}
         </div>
+      )}
+      {viewingSegments && (
+        <SegmentsModal docId={viewingSegments.id} docName={viewingSegments.name} onClose={() => setViewingSegments(null)} />
       )}
     </div>
   );
