@@ -5,9 +5,28 @@ import { probeAiUsageTable } from "./services/aiUsage.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
 
-
-app.listen(PORT, "0.0.0.0", () => {
+const server = app.listen(PORT, "0.0.0.0", () => {
   console.log(`🚀 HEUREKA V1 API running on http://0.0.0.0:${PORT}`);
   startScheduledJobs();
   void probeAiUsageTable();
 });
+
+// Graceful shutdown. Sans ça, Railway envoie SIGTERM pendant un rolling
+// deploy, Node sort en code 143, pnpm rapporte ELIFECYCLE et Railway lève
+// une alerte "crash" alors que c'est un arrêt normal demandé par la plateforme.
+function shutdown(signal: NodeJS.Signals) {
+  console.log(`[shutdown] ${signal} reçu — fermeture HTTP…`);
+  const force = setTimeout(() => {
+    console.warn("[shutdown] timeout 10s — force exit");
+    process.exit(0);
+  }, 10_000);
+  force.unref();
+  server.close((err) => {
+    if (err) console.error("[shutdown] server.close error:", err);
+    else console.log("[shutdown] HTTP fermé proprement");
+    process.exit(0);
+  });
+}
+
+process.on("SIGTERM", () => shutdown("SIGTERM"));
+process.on("SIGINT", () => shutdown("SIGINT"));
