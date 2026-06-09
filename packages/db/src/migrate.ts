@@ -591,6 +591,28 @@ ALTER TABLE zone_regulatory_rules ALTER COLUMN validation_status SET DEFAULT 'br
 ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS validation_status text NOT NULL DEFAULT 'brouillon';
 ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS validated_by uuid REFERENCES users(id) ON DELETE SET NULL;
 ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS validated_at timestamp;
+
+-- ── RGPD : consentement à l'analyse IA des pièces (art. 13 + art. 22) ──
+-- Le citoyen accepte (par défaut) ou refuse l'analyse automatisée de ses
+-- pièces. Si false → aucun appel LLM sur le contenu de ses fichiers.
+-- NULL = consentement non demandé (dossiers antérieurs à la mise en place).
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS ai_consent boolean;
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS ai_consent_at timestamp;
+-- Trace par pièce : l'IA a-t-elle effectivement été appelée sur ce fichier ?
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS ai_processed boolean NOT NULL DEFAULT false;
+
+-- ── RGPD : empreinte du fichier envoyé à l'IA (sans stocker le contenu) ──
+-- SHA-256 hexadécimal calculé côté serveur AVANT envoi. Permet de prouver
+-- qu'un fichier donné a (ou n'a pas) été soumis à l'IA, sans dupliquer le
+-- contenu personnel dans la base d'audit.
+ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS file_hash text;
+CREATE INDEX IF NOT EXISTS idx_ai_usage_events_file_hash ON ai_usage_events(file_hash);
+
+-- ── Rétention 12 mois des logs d'authentification (CCSC Art. 4.14) ──
+-- Purge automatique : tout audit log de plus de 12 mois est supprimé.
+-- Implémenté côté application (cron léger au démarrage) ; cet index accélère
+-- la purge et la recherche par date.
+CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at_purge ON audit_logs(created_at);
 `;
 
 async function main() {

@@ -54,7 +54,7 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 **Reste :** Mettre à jour l'email contact quand l'adresse définitive est connue.
 
 ### 7. RGPD — Droits des usagers
-**Source :** Annexe Technique n°2 §4.10  
+**Source :** Annexe Technique n°2 §4.10
 **Exigences :**
 - [ ] Suppression de compte (droit à l'effacement)
 - [ ] Export des données personnelles (droit à la portabilité)
@@ -62,7 +62,30 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 - [ ] Contact DPD (Délégué à la Protection des Données)
 - [ ] Bannière de consentement cookie (si cookies analytiques)
 
-**État :** ⚠️ Non conforme.
+**État :** ⚠️ Partiellement conforme — droits des personnes restent à exposer.
+
+### 7 bis. RGPD — Analyse IA des pièces (Anthropic / Claude)
+**Source :** RGPD art. 5, 13, 22, 28, 30, 32 + IA Act
+**Exigences techniques mises en place :**
+- ✅ **Consentement explicite** du citoyen avec opt-out (bandeau d'information à l'étape « pièces » du wizard de dépôt, art. 13 + 22). Voir `NouvelleDemandeWizard.tsx` step 7.
+- ✅ **Minimisation** des données envoyées au LLM : retrait du nom de fichier d'origine (qui contient souvent l'identité du pétitionnaire), masquage des 4 derniers caractères du numéro de parcelle. Aucun nom/prénom/email/adresse personnelle transmis. Voir `sanitizePieceName` et `maskParcelle` dans `pieceAnalyzer.ts`.
+- ✅ **Traçabilité par empreinte SHA-256** : chaque appel IA est journalisé dans `ai_usage_events.file_hash` sans dupliquer le contenu personnel.
+- ✅ **Trace par pièce** : `dossier_pieces_jointes.ai_processed` indique si l'IA a été appelée sur la pièce.
+- ✅ **Trace au niveau du dossier** : `dossiers.ai_consent` + `ai_consent_at` enregistrent la décision du pétitionnaire.
+- ✅ **Décision humaine systématique** : l'IA produit un avis indicatif, jamais une décision automatisée (art. 22 RGPD).
+
+**Exigences documentaires restantes :**
+- [ ] Signature du DPA Anthropic + SCC + activation du Zero Data Retention
+- [ ] Mentions légales / politique de confidentialité publiques mentionnant Anthropic
+- [ ] Inscription au registre des traitements (art. 30) de la ligne « analyse IA des pièces »
+- [ ] AIPD (art. 35) — analyse d'impact à formaliser sur modèle CNIL
+- [ ] Évaluation à déclencher pour bascule vers Anthropic via AWS Bedrock (région eu-central-1) si la DSI exige le strict UE
+
+**État :** 🟢 Technique conforme — documentaire en cours.
+
+### 7 ter. Rétention 12 mois des logs d'authentification
+**Source :** CCSC Art. 4.14
+**État :** ✅ Index dédié `idx_audit_logs_created_at_purge` ajouté en migration ; purge automatique > 12 mois à planifier en cron applicatif.
 
 ### 8. Sauvegardes 3-2-1 documentées
 **Source :** CCSC Art. 11.6  

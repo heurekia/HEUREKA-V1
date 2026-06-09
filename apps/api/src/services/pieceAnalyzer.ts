@@ -1,5 +1,25 @@
 import fs from "fs";
+import crypto from "crypto";
 import { callClaude } from "./aiUsage.js";
+
+// ── RGPD : minimisation du nom de pièce ──────────────────────────────────────
+// Le nom passé au LLM peut contenir le NOM du citoyen (« Plan de masse -
+// permis-Jean-Dupont.pdf »). On garde uniquement la rubrique métier (« Plan
+// de masse ») et on remplace le nom de fichier d'origine par un placeholder.
+// La logique : si le nom contient " - ", on coupe avant le premier tiret.
+export function sanitizePieceName(nomPiece: string): string {
+  if (!nomPiece) return "Pièce";
+  const idx = nomPiece.indexOf(" - ");
+  if (idx > 0) return nomPiece.slice(0, idx).trim();
+  // Si pas de séparateur, on retire l'extension pour limiter l'info personnelle.
+  return nomPiece.replace(/\.[a-z0-9]{2,5}$/i, "").trim() || "Pièce";
+}
+
+function sha256File(filePath: string): string {
+  const hash = crypto.createHash("sha256");
+  hash.update(fs.readFileSync(filePath));
+  return hash.digest("hex");
+}
 
 // ── Scores normalisés ────────────────────────────────────────────────────────
 // 4 niveaux explicites — utilisés à la fois pour la pièce et pour le dossier.
@@ -40,15 +60,29 @@ export interface PieceContext {
   // Informations sur la pièce attendue
   aide?: string;                  // texte d'aide officiel (depuis piecesRequises.ts)
   // Informations sur le dossier et la parcelle
+  // ⚠️ RGPD : ce contexte est envoyé au LLM. N'inclure QUE ce qui est
+  // strictement utile à l'analyse réglementaire. Ne jamais inclure
+  // nom/prénom/email/adresse postale du pétitionnaire (cf. buildContextSection).
   dossierType?: string;           // permis_de_construire, declaration_prealable, …
   natures?: string[];             // nature(s) des travaux
   surface?: number;               // surface plancher
   zone?: string;                  // zone PLU (UB, UC, A, N…)
+  // Commune : utile pour situer la règle PLU (ex: PPRI). Acceptable.
   commune?: string;
+  // Parcelle cadastrale : identifiant indirect au sens RGPD. Désormais
+  // tronquée à la section (les 6 derniers caractères = numéro de parcelle
+  // précis sont masqués) avant envoi au LLM. Voir buildContextSection.
   parcelle?: string;
   hasABF?: boolean;
   // Règles réglementaires applicables (pré-filtrées par l'orchestrateur)
   regles?: RegulatoryRuleHint[];
+}
+
+// Tronque l'identifiant cadastral pour ne garder que commune + section,
+// pas le numéro de parcelle exact (ex: "37218000AB0050" → "37218000AB****").
+function maskParcelle(p: string): string {
+  if (p.length <= 4) return "****";
+  return p.slice(0, -4) + "****";
 }
 
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
@@ -155,7 +189,9 @@ function buildContextSection(ctx?: PieceContext): string {
   if (ctx.surface) lines.push(`Surface plancher projetée : ${ctx.surface} m²`);
   if (ctx.zone) lines.push(`Zone PLU : ${ctx.zone}`);
   if (ctx.commune) lines.push(`Commune : ${ctx.commune}`);
-  if (ctx.parcelle) lines.push(`Parcelle : ${ctx.parcelle}`);
+  // RGPD : on n'envoie au LLM que la section cadastrale (les 4 derniers
+  // chiffres = numéro de parcelle exact sont masqués).
+  if (ctx.parcelle) lines.push(`Parcelle (section) : ${maskParcelle(ctx.parcelle)}`);
   if (ctx.hasABF) lines.push("Périmètre ABF : OUI (consultation Architecte des Bâtiments de France requise)");
   if (ctx.aide) lines.push(`\nAttendu pour cette pièce :\n${ctx.aide}`);
   if (ctx.regles?.length) {
@@ -259,11 +295,16 @@ export async function analyzePiece(
   }
 
   const base64 = fs.readFileSync(filePath).toString("base64");
+  const fileHash = sha256File(filePath);
   const useRegulatory = !!ctx && !!(ctx.regles?.length || ctx.zone || ctx.aide);
   const system = useRegulatory ? SYSTEM_PROMPT_REGULATORY : SYSTEM_PROMPT_BASIC;
   const contextText = buildContextSection(ctx);
+  // RGPD : on n'envoie au LLM que la rubrique métier (« Plan de masse »),
+  // pas le nom de fichier d'origine qui contient souvent l'identité du
+  // pétitionnaire (« permis-Jean-Dupont.pdf »).
+  const safeName = sanitizePieceName(nomPiece);
   const userText = [
-    `Pièce demandée : ${nomPiece}${codePiece ? ` (code ${codePiece})` : ""}`,
+    `Pièce demandée : ${safeName}${codePiece ? ` (code ${codePiece})` : ""}`,
     contextText,
   ].filter(Boolean).join("\n\n");
 
@@ -272,7 +313,7 @@ export async function analyzePiece(
     : { type: "image" as const, source: { type: "base64" as const, media_type: mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: base64 } };
 
   const msg = await callClaude(
-    { purpose: "piece_analyze", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId },
+    { purpose: "piece_analyze", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId, fileHash },
     {
       model: "claude-haiku-4-5-20251001",
       max_tokens: useRegulatory ? 1500 : 500,

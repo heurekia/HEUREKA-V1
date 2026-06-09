@@ -108,6 +108,10 @@ export interface CallClaudeContext {
   dossierId?: string | null;
   communeId?: string | null;
   userId?: string | null;
+  // RGPD : SHA-256 hex du fichier envoyé à l'IA (pour les appels qui
+  // intègrent un contenu utilisateur). Tracé en clair dans
+  // `ai_usage_events.file_hash` pour audit.
+  fileHash?: string | null;
 }
 
 /**
@@ -148,6 +152,7 @@ export async function callClaude(
     cache_creation_input_tokens: cacheCreate,
     cost_eur: cost,
     duration_ms: durationMs,
+    file_hash: ctx.fileHash ?? null,
   }).then(() => {
     // Alertes Slack en arrière-plan (non bloquant).
     void maybeNotify({
@@ -207,6 +212,7 @@ export function trackClaudeStreamUsage(
     cache_creation_input_tokens: cacheCreate,
     cost_eur: cost,
     duration_ms: durationMs,
+    file_hash: ctx.fileHash ?? null,
   }).then(() => {
     void maybeNotify({
       purpose: ctx.purpose,

@@ -1,5 +1,24 @@
 import { describe, it, expect } from "vitest";
-import { extractFirstJson, normalizeScore, parsePieceAnalysis } from "./pieceAnalyzer.js";
+import { extractFirstJson, normalizeScore, parsePieceAnalysis, sanitizePieceName } from "./pieceAnalyzer.js";
+
+describe("sanitizePieceName", () => {
+  it("retire le nom de fichier original quand le format est 'Rubrique - fichier'", () => {
+    expect(sanitizePieceName("Plan de masse - permis-Jean-Dupont.pdf")).toBe("Plan de masse");
+  });
+
+  it("retire l'extension quand pas de séparateur", () => {
+    expect(sanitizePieceName("mon-document-perso.pdf")).toBe("mon-document-perso");
+  });
+
+  it("retombe sur 'Pièce' si nom vide", () => {
+    expect(sanitizePieceName("")).toBe("Pièce");
+    expect(sanitizePieceName(".pdf")).toBe("Pièce");
+  });
+
+  it("préserve la rubrique métier seule", () => {
+    expect(sanitizePieceName("Plan de coupe - DP3-Martin.jpg")).toBe("Plan de coupe");
+  });
+});
 
 describe("extractFirstJson", () => {
   it("parses a clean JSON object", () => {

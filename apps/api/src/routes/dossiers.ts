@@ -472,6 +472,14 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
 
     const code_piece = (req.body as Record<string, string>).code_piece ?? "";
     const nom_piece = (req.body as Record<string, string>).nom_piece ?? req.file.originalname;
+    // RGPD : le citoyen peut refuser l'analyse IA automatisée (art. 13 +
+    // art. 22 — décision automatisée). Le flag est envoyé par le wizard à
+    // chaque upload. Si absent → on suppose true (analyse standard) pour ne
+    // pas casser les anciens clients, mais on n'écrit pas le consentement en
+    // base si le client ne l'a pas envoyé explicitement.
+    const aiConsentRaw = (req.body as Record<string, string>).ai_consent;
+    const aiConsent = aiConsentRaw === undefined ? null : aiConsentRaw === "true";
+    const runAi = aiConsent !== false;
     const url = `/api/uploads/${req.file.filename}`;
 
     const [piece] = await db
@@ -487,36 +495,56 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       })
       .returning();
 
-    // Deux passes IA en parallèle, non-bloquantes :
-    //   1) analyse qualitative (score conforme/acceptable/incomplet/non_conforme)
-    //   2) extraction structurée (dimensions, surfaces, NGF…) qui alimentera
-    //      ensuite le moteur de conformité au moment de l'instruction.
-    const expected = expectedTypeFromCode(code_piece);
-    // Imputation par commune : recherche tolérante sur le nom (les dossiers
-    // n'ont qu'un commune textuel, pas d'FK directe).
-    let communeIdForTrace: string | null = null;
-    if (dossier.commune) {
-      const { communes } = await import("@heureka-v1/db");
-      const [c] = await db.select({ id: communes.id }).from(communes).where(ilike(communes.name, dossier.commune)).limit(1);
-      communeIdForTrace = c?.id ?? null;
+    // RGPD : persiste le consentement au niveau du dossier (dernière valeur
+    // explicite du pétitionnaire). Permet l'audit "ce dossier a-t-il été
+    // soumis à l'analyse automatisée ?".
+    if (aiConsent !== null) {
+      await db
+        .update(dossiers)
+        .set({ ai_consent: aiConsent, ai_consent_at: new Date() })
+        .where(eq(dossiers.id, req.params.id as string));
     }
-    const trace = { dossierId: req.params.id as string, userId: req.user!.id, communeId: communeIdForTrace };
-    const [analyse_ia, extraction_ia] = await Promise.all([
-      analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece, undefined, trace).catch(() => null),
-      extractPiece(req.file.path, req.file.mimetype, {
-        expected_type: expected,
-        nom_piece,
-        code_piece,
-      }, trace).catch(() => null as PieceExtraction | null),
-    ]);
-    if (analyse_ia || extraction_ia) {
+
+    let analyse_ia: Awaited<ReturnType<typeof analyzePiece>> | null = null;
+    let extraction_ia: PieceExtraction | null = null;
+
+    if (runAi) {
+      // Deux passes IA en parallèle, non-bloquantes :
+      //   1) analyse qualitative (score conforme/acceptable/incomplet/non_conforme)
+      //   2) extraction structurée (dimensions, surfaces, NGF…) qui alimentera
+      //      ensuite le moteur de conformité au moment de l'instruction.
+      const expected = expectedTypeFromCode(code_piece);
+      // Imputation par commune : recherche tolérante sur le nom (les dossiers
+      // n'ont qu'un commune textuel, pas d'FK directe).
+      let communeIdForTrace: string | null = null;
+      if (dossier.commune) {
+        const { communes } = await import("@heureka-v1/db");
+        const [c] = await db.select({ id: communes.id }).from(communes).where(ilike(communes.name, dossier.commune)).limit(1);
+        communeIdForTrace = c?.id ?? null;
+      }
+      const trace = { dossierId: req.params.id as string, userId: req.user!.id, communeId: communeIdForTrace };
+      [analyse_ia, extraction_ia] = await Promise.all([
+        analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece, undefined, trace).catch(() => null),
+        extractPiece(req.file.path, req.file.mimetype, {
+          expected_type: expected,
+          nom_piece,
+          code_piece,
+        }, trace).catch(() => null as PieceExtraction | null),
+      ]);
+    }
+
+    if (analyse_ia || extraction_ia || !runAi) {
       await db
         .update(dossier_pieces_jointes)
-        .set({ analyse_ia: analyse_ia ?? null, extraction_ia: extraction_ia ?? null })
+        .set({
+          analyse_ia: analyse_ia ?? null,
+          extraction_ia: extraction_ia ?? null,
+          ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null),
+        })
         .where(eq(dossier_pieces_jointes.id, piece!.id));
     }
 
-    res.status(201).json({ ...piece, analyse_ia, extraction_ia });
+    res.status(201).json({ ...piece, analyse_ia, extraction_ia, ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null) });
   } catch (err) {
     if (req.file?.path) {
       try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
