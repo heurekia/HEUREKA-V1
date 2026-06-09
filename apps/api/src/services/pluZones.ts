@@ -52,6 +52,9 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
 
   // Identification de la partition (PLU communal, /document, PLUi)
   let partition: string | undefined;
+  // Tracke les pannes upstream pour distinguer "API GPU en vrac" (retry-worthy)
+  // de "vraiment pas de PLU pour cette commune" (404 stable).
+  let upstreamFailed = false;
 
   const candidate = `${inseeCode}_PLU`;
   const r0 = await fetchWithRetry(
@@ -59,6 +62,7 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
     { signal: AbortSignal.timeout(8000) }
   );
   if (r0) { const j = await r0.json() as { features?: unknown[] }; if ((j.features?.length ?? 0) > 0) partition = candidate; }
+  else upstreamFailed = true;
 
   if (!partition) {
     const r = await fetchWithRetry(
@@ -70,7 +74,7 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
       const docs = ((await r.json()) as Doc).features ?? [];
       const doc = docs.find(f => f.properties.etat === "approuve") ?? docs.find(f => !!f.properties.partition) ?? docs[0];
       partition = doc?.properties.partition ?? undefined;
-    }
+    } else upstreamFailed = true;
   }
 
   if (!partition) {
@@ -88,11 +92,19 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
           { signal: AbortSignal.timeout(8000) }
         );
         if (r) { const j = await r.json() as { features?: unknown[] }; if ((j.features?.length ?? 0) > 0) partition = cand; }
+        else upstreamFailed = true;
       }
-    }
+    } else upstreamFailed = true;
   }
 
-  if (!partition) return { ok: false, status: 404, error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme" };
+  if (!partition) {
+    // Si au moins une sonde a échoué côté réseau, on ne peut pas conclure que
+    // la commune n'a pas de PLU — c'est l'API qui est temporairement KO.
+    if (upstreamFailed) {
+      return { ok: false, status: 502, error: "Le Géoportail de l'Urbanisme est temporairement indisponible. Réessayez dans quelques instants." };
+    }
+    return { ok: false, status: 404, error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme" };
+  }
 
   const params = new URLSearchParams({ partition, _limit: "1000" });
   params.set("geom", communeGeom);

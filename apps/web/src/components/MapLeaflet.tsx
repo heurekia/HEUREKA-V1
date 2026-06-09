@@ -195,10 +195,21 @@ export function MapLeaflet({
     const ctrl = new AbortController();
     const sig = ctrl.signal;
 
-    fetch(`/api/mairie/plu-zones?insee_code=${encodeURIComponent(inseeCode)}`, {
+    // Le GPU IGN est flaky en cold-fetch : on retry silencieusement 1× sur 5xx
+    // avant d'afficher l'erreur à l'utilisateur (cas typique "de temps en temps").
+    const fetchOnce = () => fetch(`/api/mairie/plu-zones?insee_code=${encodeURIComponent(inseeCode)}`, {
       credentials: "include",
       signal: sig,
-    })
+    });
+    const fetchWithRetry = async () => {
+      const r1 = await fetchOnce();
+      if (r1.ok || r1.status < 500) return r1;
+      await new Promise(res => setTimeout(res, 3000));
+      if (sig.aborted) throw new Error("aborted");
+      return fetchOnce();
+    };
+
+    fetchWithRetry()
       .then(r =>
         r.ok
           ? r.json()
