@@ -4008,11 +4008,54 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     if (pasteText.trim().length < 5 && !pasteImage) return;
     setAnalyzing(true);
     try {
-      const r = await api.post<{ rules: ExtractedRule[] }>("/mairie/reglementation/structure-article", {
-        text: pasteText, zone_code: zoneCode, article_number: newRule.article_number ?? undefined,
-        image_base64: pasteImage?.data, image_media_type: pasteImage?.media,
+      // Stream SSE — voir mairie.ts route /reglementation/structure-article.
+      // La passerelle Railway/Cloudflare coupe les requêtes silencieuses qui
+      // dépassent ~100 s ; le streaming évite le 502 (et la facturation perdue).
+      const resp = await fetch("/api/mairie/reglementation/structure-article", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          text: pasteText, zone_code: zoneCode, article_number: newRule.article_number ?? undefined,
+          image_base64: pasteImage?.data, image_media_type: pasteImage?.media,
+        }),
       });
-      setExtracted(r.rules ?? []);
+      if (!resp.ok || !resp.body) {
+        const txt = await resp.text().catch(() => "");
+        throw new Error(txt || `Erreur ${resp.status}`);
+      }
+
+      const reader = resp.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      let result: ExtractedRule[] | null = null;
+      let diagnostic: string | null = null;
+
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        const lines = buf.split("\n");
+        buf = lines.pop() ?? "";
+        for (const line of lines) {
+          if (!line.startsWith("data: ")) continue;
+          try {
+            const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
+            if (ev.type === "done") {
+              result = (ev.rules as ExtractedRule[]) ?? [];
+              if (typeof ev.diagnostic === "string") diagnostic = ev.diagnostic;
+            } else if (ev.type === "error") {
+              throw new Error((ev.message as string) || "Échec de l'analyse");
+            }
+          } catch (parseErr) {
+            // Une ligne mal formée n'interrompt pas le stream ; on continue.
+            if (parseErr instanceof Error && parseErr.message.includes("Échec")) throw parseErr;
+          }
+        }
+      }
+
+      setExtracted(result ?? []);
+      if (diagnostic) alert(diagnostic);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Échec de l'analyse");
     } finally {

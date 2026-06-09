@@ -1892,27 +1892,46 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules/bulk", requireRole("mairi
 // « Agent » de structuration : l'instructeur colle le TEXTE d'un article ; Claude
 // (texte court, pas le PDF) renvoie les champs structurés pour pré-remplir le
 // formulaire. L'instructeur vérifie puis enregistre.
+//
+// Streaming SSE : la passerelle (Railway/Cloudflare) coupe sans préavis une
+// requête HTTP « silencieuse » qui dépasse ~100 s — l'utilisateur voit alors
+// un 502 ALORS QUE Anthropic a déjà facturé la génération. Le stream Anthropic
+// est forwardé au client en heartbeats SSE → la passerelle voit du trafic
+// régulier → plus de 502. À la fin, on parse l'accumulé et on envoie les
+// règles dans un événement `done`.
 mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  const { text, zone_code, article_number, image_base64, image_media_type } = req.body as { text?: string; zone_code?: string; article_number?: number | string; image_base64?: string; image_media_type?: string };
+  const hasImage = typeof image_base64 === "string" && image_base64.length > 0;
+  if ((!text || text.trim().length < 5) && !hasImage) return res.status(400).json({ error: "Texte de l'article ou image requis" });
+
+  // Image (tableau / croquis) → vision : Sonnet lit mieux les tableaux complexes.
+  const userContent: Anthropic.ContentBlockParam[] = [];
+  if (hasImage) {
+    const media = (["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image_media_type ?? "") ? image_media_type : "image/png") as "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+    userContent.push({ type: "image", source: { type: "base64", media_type: media, data: image_base64! } });
+  }
+  const prefix = `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}`;
+  userContent.push({ type: "text", text: `${prefix}\n\n${text ?? "(Voir le tableau / croquis fourni en image.)"}` });
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const send = (data: Record<string, unknown>) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    (res as unknown as { flush?: () => void }).flush?.();
+  };
+
   try {
-    const { text, zone_code, article_number, image_base64, image_media_type } = req.body as { text?: string; zone_code?: string; article_number?: number | string; image_base64?: string; image_media_type?: string };
-    const hasImage = typeof image_base64 === "string" && image_base64.length > 0;
-    if ((!text || text.trim().length < 5) && !hasImage) return res.status(400).json({ error: "Texte de l'article ou image requis" });
+    send({ type: "started" });
 
-    // Image (tableau / croquis) → vision : Sonnet lit mieux les tableaux complexes.
-    const userContent: Anthropic.ContentBlockParam[] = [];
-    if (hasImage) {
-      const media = (["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image_media_type ?? "") ? image_media_type : "image/png") as "image/png" | "image/jpeg" | "image/webp" | "image/gif";
-      userContent.push({ type: "image", source: { type: "base64", media_type: media, data: image_base64! } });
-    }
-    const prefix = `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}`;
-    userContent.push({ type: "text", text: `${prefix}\n\n${text ?? "(Voir le tableau / croquis fourni en image.)"}` });
+    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 120_000 });
 
-    const client = new Anthropic({ apiKey: getAnthropicApiKey(), maxRetries: 3, timeout: 90_000 });
-    const msg = await client.messages.create({
-      // Sonnet sur les deux flux : un article PLU qui se découpe en 5–7 sous-règles
-      // produit un JSON volumineux que Haiku tronque ou met trop longtemps à
-      // générer (au point de faire couper la connexion par la passerelle, d'où
-      // les « Load failed » côté Safari).
+    let accumulated = "";
+    let lastHeartbeat = Date.now();
+    const stream = client.messages.stream({
       model: "claude-sonnet-4-6",
       max_tokens: 6000,
       system: `Tu es un expert en droit de l'urbanisme français. On te donne le TEXTE d'UN article de règlement PLU (souvent long, avec sous-sections) ET/OU une IMAGE (tableau ou croquis).
@@ -1958,7 +1977,23 @@ AUTRES RÈGLES :
       messages: [{ role: "user", content: userContent }],
     });
 
-    const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
+    // Forward des deltas de texte en heartbeats : la passerelle voit du
+    // trafic, le client peut afficher une progression réelle. On limite à un
+    // heartbeat toutes les 1.5 s pour ne pas saturer.
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        accumulated += event.delta.text;
+        if (Date.now() - lastHeartbeat > 1500) {
+          send({ type: "progress", chars: accumulated.length });
+          lastHeartbeat = Date.now();
+        }
+      }
+    }
+
+    const finalMessage = await stream.finalMessage();
+    const raw = accumulated || (finalMessage.content[0]?.type === "text" ? finalMessage.content[0].text : "[]");
+    const stopReason = finalMessage.stop_reason;
+
     // Parsing tolérant : si la réponse est tronquée (max_tokens), on récupère les
     // sous-règles COMPLÈTES en fermant l'array au dernier objet entier.
     const arr = parseLooseArray(raw);
@@ -1999,10 +2034,19 @@ AUTRES RÈGLES :
       rules.push({ sub_theme: null, article_number: article_number ? Number(article_number) : null, article_title: "", topic: "general", rule_text: (text ?? "").trim() || "Voir le tableau / croquis fourni.", value_min: null, value_max: null, value_exact: null, unit: null, conditions: null, exceptions: null, summary: "", cases: [], applies_if: [], citizen_title: null, citizen_summary: null, citizen_relevant: true });
     }
 
-    res.json({ rules });
+    // Diagnostic explicite si la sortie a été coupée — l'instructeur saura
+    // qu'il doit raccourcir / découper plutôt que de retenter à l'identique
+    // (et repayer les mêmes tokens).
+    const diagnostic = stopReason === "max_tokens"
+      ? "Réponse IA tronquée (limite de 6000 tokens atteinte). Les règles complètes ont été conservées ; pour récupérer la fin, soumettez le reste de l'article séparément."
+      : undefined;
+
+    send({ type: "done", rules, stop_reason: stopReason, diagnostic });
+    res.end();
   } catch (err) {
     console.error("[structure-article]", err);
-    res.status(500).json({ error: "Échec de l'analyse IA — réessayez ou saisissez manuellement." });
+    send({ type: "error", message: err instanceof Error ? err.message : "Échec de l'analyse IA — réessayez ou saisissez manuellement." });
+    res.end();
   }
 });
 
