@@ -6,7 +6,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./canonical": "./src/canonical/index.ts"
+    "./canonical": "./src/canonical/index.ts",
+    "./rag": "./src/rag/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
