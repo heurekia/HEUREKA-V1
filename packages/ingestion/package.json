@@ -20,7 +20,8 @@
     "@anthropic-ai/sdk": "^0.97.0",
     "@heureka-v1/db": "workspace:*",
     "drizzle-orm": "^0.45.2",
-    "tsx": "^4.19.4"
+    "tsx": "^4.19.4",
+    "zod": "^3.24.4"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",
