@@ -2253,6 +2253,31 @@ RÈGLES DE STRUCTURATION :
 // réinsertion (transaction). C'est volontaire pour rejouer l'import sans
 // laisser de résidus, mais ça veut dire qu'il faut soit exporter d'abord, soit
 // confirmer côté UI.
+
+// GET /mairie/documents/search?q=...&insee=...&doc_types=PPRI,OAP&top_k=5
+//
+// Recherche sémantique RAG dans les documents annexes indexés d'une commune.
+// Sert au flux d'instruction (le moteur de verdict appellera ce search pour
+// récupérer les passages réglementaires pertinents avec leur citation
+// "PPRI, p. 23"), mais est aussi exposé pour debug/exploration manuelle.
+mairieRouter.get("/documents/search", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const query = (req.query.q as string | undefined)?.trim();
+    const insee = (req.query.insee as string | undefined)?.trim();
+    const doc_types = (req.query.doc_types as string | undefined)?.split(",").map((s) => s.trim().toUpperCase()).filter(Boolean);
+    const top_k = req.query.top_k ? Math.min(Math.max(1, parseInt(req.query.top_k as string, 10)), 20) : 5;
+
+    if (!query || !insee) return res.status(400).json({ error: "q et insee requis" });
+
+    const { searchInCommune } = await import("../services/ragService.js");
+    const hits = await searchInCommune({ query, insee, doc_types, top_k });
+    res.json({ query, insee, hits });
+  } catch (err) {
+    console.error("[rag-search]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
 mairieRouter.post(
   "/reglementation/import-canonical",
   requireRole("mairie", "instructeur", "admin"),
@@ -2782,7 +2807,7 @@ mairieRouter.post("/documents", async (req: AuthRequest, res) => {
       return res.status(400).json({ error: "Champs requis manquants" });
     }
 
-    const [commune] = await db.select({ id: communes.id })
+    const [commune] = await db.select({ id: communes.id, insee_code: communes.insee_code, name: communes.name })
       .from(communes).where(ilike(communes.name, commune_name)).limit(1);
     if (!commune) return res.status(404).json({ error: "Commune introuvable" });
 
@@ -2794,7 +2819,7 @@ mairieRouter.post("/documents", async (req: AuthRequest, res) => {
       file_size: file_size ?? null,
       pdf_content: pdf_base64 ?? null,
       synthese: synthese?.trim() || null,
-      status: "uploaded",
+      status: pdf_base64 ? "indexing" : "uploaded",
     }).returning({
       id: commune_documents.id,
       type: commune_documents.type,
@@ -2807,6 +2832,35 @@ mairieRouter.post("/documents", async (req: AuthRequest, res) => {
     });
 
     res.json(doc);
+
+    // Indexation RAG en arrière-plan : on a déjà répondu au client. Si ça
+    // échoue (Voyage HS, PDF illisible…), on log et on met le statut en
+    // "indexing_error" — le doc reste dans la liste avec un badge clair.
+    if (pdf_base64 && doc) {
+      void (async () => {
+        try {
+          const { indexCommuneDocument } = await import("../services/ragService.js");
+          const result = await indexCommuneDocument({
+            document_id: doc.id,
+            insee: commune.insee_code,
+            commune_name: commune.name,
+            doc_type: type,
+            document_name: name,
+            original_filename,
+            pdf_base64,
+          });
+          await db.update(commune_documents)
+            .set({ status: result.chunks > 0 ? "indexed" : "indexing_empty", ingested_at: new Date(), updated_at: new Date() })
+            .where(eq(commune_documents.id, doc.id));
+        } catch (err) {
+          console.error(`[rag] indexation échouée pour doc=${doc.id}:`, err instanceof Error ? err.message : err);
+          await db.update(commune_documents)
+            .set({ status: "indexing_error", updated_at: new Date() })
+            .where(eq(commune_documents.id, doc.id))
+            .catch(() => { /* best-effort */ });
+        }
+      })();
+    }
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -2883,7 +2937,16 @@ mairieRouter.patch("/documents/:id", async (req: AuthRequest, res) => {
 
 mairieRouter.delete("/documents/:id", async (req: AuthRequest, res) => {
   try {
-    await db.delete(commune_documents).where(eq(commune_documents.id, req.params.id as string));
+    const documentId = req.params.id as string;
+    // Nettoyer l'index RAG avant de supprimer la ligne : sinon on laisse des
+    // segments orphelins pointant vers un source_id qui n'existe plus.
+    try {
+      const { deleteIndexFor } = await import("../services/ragService.js");
+      await deleteIndexFor(documentId);
+    } catch (err) {
+      console.error(`[rag] nettoyage index échoué pour doc=${documentId}:`, err instanceof Error ? err.message : err);
+    }
+    await db.delete(commune_documents).where(eq(commune_documents.id, documentId));
     res.json({ ok: true });
   } catch (err) {
     console.error(err);

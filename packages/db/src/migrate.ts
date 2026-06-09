@@ -616,7 +616,7 @@ CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at_purge ON audit_logs(created
 `;
 
 async function main() {
-  const client = postgres(connectionString, { max: 1 });
+  const client = postgres(connectionString, { max: 1, onnotice: () => {} });
   try {
     console.log("Running migrations...");
     await client.unsafe(SQL);

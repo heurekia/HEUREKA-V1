@@ -6,7 +6,8 @@
   "types": "./src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./canonical": "./src/canonical/index.ts"
+    "./canonical": "./src/canonical/index.ts",
+    "./rag": "./src/rag/index.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit",
@@ -18,7 +19,7 @@
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.0",
     "@heureka-v1/db": "workspace:*",
-    "drizzle-orm": "^0.42.0",
+    "drizzle-orm": "^0.45.2",
     "tsx": "^4.19.4",
     "zod": "^3.24.4"
   },
