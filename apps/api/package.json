@@ -13,6 +13,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.24.0",
     "@anthropic-ai/sdk": "^0.97.0",
     "@heureka-v1/db": "workspace:*",
     "@heureka-v1/ingestion": "workspace:*",

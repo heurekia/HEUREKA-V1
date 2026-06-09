@@ -85,9 +85,15 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 
 **État :** 🟢 Technique conforme — documentaire en cours.
 
-### 7 ter. Rétention 12 mois des logs d'authentification
-**Source :** CCSC Art. 4.14
-**État :** ✅ Index dédié `idx_audit_logs_created_at_purge` ajouté en migration ; purge automatique > 12 mois à planifier en cron applicatif.
+### 7 ter. Rétention et purges automatiques
+**Source :** CCSC Art. 4.14 + RGPD art. 5.1.e
+**État :** ✅ Cron applicatif (`jobs/scheduler.ts`) avec `node-cron` :
+- Quotidien 02h00 — purge `audit_logs` > 12 mois (paramétrable `AUDIT_LOG_RETENTION_MONTHS`).
+- Quotidien 02h30 — purge des dossiers `brouillon` inactifs > 180 jours + fichiers physiques associés (paramétrable `DRAFT_DOSSIER_RETENTION_DAYS`).
+
+### 7 quater. Hébergement de l'inférence IA en UE
+**Source :** RGPD art. 44
+**État :** ✅ Bascule disponible via `AI_PROVIDER=bedrock` (région `AWS_REGION`, défaut `eu-central-1` / Francfort). Les modèles canoniques Anthropic sont traduits en inference profiles `eu.anthropic.*` (mapping `BEDROCK_MODEL_MAP` dans `aiUsage.ts`). Aucun changement de code applicatif n'est requis pour basculer.
 
 ### 8. Sauvegardes 3-2-1 documentées
 **Source :** CCSC Art. 11.6  
