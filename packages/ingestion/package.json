@@ -4,17 +4,23 @@
   "type": "module",
   "main": "./src/index.ts",
   "types": "./src/index.ts",
+  "exports": {
+    ".": "./src/index.ts",
+    "./canonical": "./src/canonical/index.ts"
+  },
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "ingest": "tsx src/index.ts"
+    "ingest": "tsx src/index.ts",
+    "eval:ingestion": "tsx src/eval/cli.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.97.0",
     "@heureka-v1/db": "workspace:*",
     "drizzle-orm": "^0.42.0",
-    "tsx": "^4.19.4"
+    "tsx": "^4.19.4",
+    "zod": "^3.24.4"
   },
   "devDependencies": {
     "@types/node": "^22.15.3",

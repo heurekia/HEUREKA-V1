@@ -3235,6 +3235,8 @@ const DOC_TYPES: { value: string; label: string; color: string }[] = [
 type CommuneDoc = {
   id: string; type: string; name: string; original_filename: string;
   file_size: number | null; synthese: string | null; status: string; created_at: string;
+  validation_status?: "valide" | "brouillon" | "rejete";
+  validated_at?: string | null;
 };
 
 function DocumentsPanel({ commune }: { commune: string }) {
@@ -3435,14 +3437,28 @@ function DocumentsPanel({ commune }: { commune: string }) {
               <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                 {group.items.map(doc => {
                   const isEditing = editingSynthese === doc.id;
+                  // Toute édition de synthèse rebascule le statut en "brouillon" côté
+                  // serveur — la synthèse n'alimente plus l'instruction tant que
+                  // l'instructeur n'a pas explicitement re-validé.
                   const saveSynthese = async () => {
                     setSavingSynthese(true);
                     try {
-                      await api.patch(`/mairie/documents/${doc.id}`, { synthese: syntheseDraft });
-                      setDocs((arr) => arr.map((d) => d.id === doc.id ? { ...d, synthese: syntheseDraft.trim() || null } : d));
+                      const updated = await api.patch<CommuneDoc>(`/mairie/documents/${doc.id}`, { synthese: syntheseDraft });
+                      setDocs((arr) => arr.map((d) => d.id === doc.id ? { ...d, ...updated } : d));
                       setEditingSynthese(null);
                     } catch { /* ignore */ } finally { setSavingSynthese(false); }
                   };
+                  const setStatus = async (next: "valide" | "rejete" | "brouillon") => {
+                    try {
+                      const updated = await api.patch<CommuneDoc>(`/mairie/documents/${doc.id}`, { validation_status: next });
+                      setDocs((arr) => arr.map((d) => d.id === doc.id ? { ...d, ...updated } : d));
+                    } catch { /* ignore */ }
+                  };
+                  const vStatus = doc.validation_status ?? "brouillon";
+                  const vBadge =
+                    vStatus === "valide" ? { label: "Validé", color: "#047857", bg: "#D1FAE5" } :
+                    vStatus === "rejete" ? { label: "Rejeté", color: "#B91C1C", bg: "#FEE2E2" } :
+                    { label: "Brouillon", color: "#B45309", bg: "#FEF3C7" };
                   return (
                     <div key={doc.id} style={{
                       background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px 16px",
@@ -3457,6 +3473,15 @@ function DocumentsPanel({ commune }: { commune: string }) {
                             <span style={{ marginLeft: 8 }}>· {new Date(doc.created_at).toLocaleDateString("fr-FR")}</span>
                           </div>
                         </div>
+                        {doc.synthese && (
+                          <span title={vStatus === "valide" && doc.validated_at ? `Validée le ${new Date(doc.validated_at).toLocaleDateString("fr-FR")}` : "La synthèse ne sera utilisée par l'instructeur qu'une fois validée"} style={{
+                            fontSize: 11, fontWeight: 700,
+                            color: vBadge.color, background: vBadge.bg,
+                            borderRadius: 6, padding: "2px 8px",
+                          }}>
+                            {vBadge.label}
+                          </span>
+                        )}
                         <span style={{
                           fontSize: 11, fontWeight: 600,
                           color: doc.status === "ingested" ? "#10B981" : "#94a3b8",
@@ -3481,6 +3506,9 @@ function DocumentsPanel({ commune }: { commune: string }) {
                               placeholder="Résumé en quelques phrases : règles à appliquer, périmètre concerné, articles clés…"
                               style={{ width: "100%", border: "1px solid #D1D5DB", borderRadius: 6, padding: "8px 10px", fontSize: 12.5, fontFamily: "inherit", boxSizing: "border-box", lineHeight: 1.5, resize: "vertical" }}
                             />
+                            <div style={{ fontSize: 11, color: "#B45309", marginTop: 6 }}>
+                              ⓘ La synthèse repassera en brouillon après enregistrement — elle ne sera plus utilisée par l'instructeur tant que vous ne l'aurez pas re-validée.
+                            </div>
                             <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 6 }}>
                               <button onClick={() => setEditingSynthese(null)}
                                 style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "5px 12px", fontSize: 12, cursor: "pointer", color: "#374151" }}>
@@ -3493,13 +3521,47 @@ function DocumentsPanel({ commune }: { commune: string }) {
                             </div>
                           </div>
                         ) : doc.synthese ? (
-                          <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
-                            <span style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", letterSpacing: "0.06em", marginTop: 2 }}>SYNTHÈSE</span>
-                            <div style={{ flex: 1, fontSize: 12.5, color: "#374151", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>{doc.synthese}</div>
-                            <button onClick={() => { setEditingSynthese(doc.id); setSyntheseDraft(doc.synthese ?? ""); }}
-                              style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "3px 10px", fontSize: 11, cursor: "pointer", color: "#4F46E5", fontWeight: 600, flexShrink: 0 }}>
-                              Modifier
-                            </button>
+                          <div>
+                            <div style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                              <span style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", letterSpacing: "0.06em", marginTop: 2 }}>SYNTHÈSE</span>
+                              <div style={{ flex: 1, fontSize: 12.5, color: "#374151", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>{doc.synthese}</div>
+                              <button onClick={() => { setEditingSynthese(doc.id); setSyntheseDraft(doc.synthese ?? ""); }}
+                                style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "3px 10px", fontSize: 11, cursor: "pointer", color: "#4F46E5", fontWeight: 600, flexShrink: 0 }}>
+                                Modifier
+                              </button>
+                            </div>
+                            {/* Bandeau de validation : seule la synthèse "valide" est consommée par le moteur d'instruction. */}
+                            {vStatus !== "valide" ? (
+                              <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: vStatus === "rejete" ? "#FEF2F2" : "#FFFBEB", border: `1px solid ${vStatus === "rejete" ? "#FECACA" : "#FDE68A"}`, borderRadius: 6, padding: "6px 10px" }}>
+                                <div style={{ fontSize: 11.5, color: vStatus === "rejete" ? "#991B1B" : "#92400E" }}>
+                                  {vStatus === "rejete"
+                                    ? "Synthèse rejetée — non utilisée pour l'instruction."
+                                    : "Synthèse en brouillon — non utilisée pour l'instruction tant qu'elle n'est pas validée."}
+                                </div>
+                                <div style={{ display: "flex", gap: 6 }}>
+                                  {vStatus !== "rejete" && (
+                                    <button onClick={() => void setStatus("rejete")}
+                                      style={{ border: "1px solid #FECACA", background: "white", color: "#B91C1C", borderRadius: 5, padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                                      Rejeter
+                                    </button>
+                                  )}
+                                  <button onClick={() => void setStatus("valide")}
+                                    style={{ border: "none", background: "#047857", color: "white", borderRadius: 5, padding: "3px 12px", fontSize: 11, fontWeight: 700, cursor: "pointer" }}>
+                                    Valider
+                                  </button>
+                                </div>
+                              </div>
+                            ) : (
+                              <div style={{ marginTop: 10, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 6, padding: "6px 10px" }}>
+                                <div style={{ fontSize: 11.5, color: "#065F46" }}>
+                                  ✓ Synthèse validée{doc.validated_at ? ` le ${new Date(doc.validated_at).toLocaleDateString("fr-FR")}` : ""} — utilisée par le moteur d'instruction.
+                                </div>
+                                <button onClick={() => void setStatus("brouillon")}
+                                  style={{ border: "1px solid #A7F3D0", background: "white", color: "#047857", borderRadius: 5, padding: "3px 10px", fontSize: 11, fontWeight: 600, cursor: "pointer" }}>
+                                  Repasser en brouillon
+                                </button>
+                              </div>
+                            )}
                           </div>
                         ) : (
                           <button onClick={() => { setEditingSynthese(doc.id); setSyntheseDraft(""); }}
@@ -3920,6 +3982,44 @@ export function splitZoneIntoChunks(raw: string): string[] {
   return safe;
 }
 
+// Consomme un stream SSE structure-article / structure-zone et retourne le
+// résultat final. Centralise la logique de parsing pour qu'analyzeArticle et
+// analyzeZone partagent exactement le même contrat (events `done` / `error`).
+async function consumeStructureStream(resp: Response): Promise<{ rules: ExtractedRule[]; diagnostic: string | null }> {
+  if (!resp.ok || !resp.body) {
+    const txt = await resp.text().catch(() => "");
+    throw new Error(txt || `Erreur ${resp.status}`);
+  }
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let rules: ExtractedRule[] | null = null;
+  let diagnostic: string | null = null;
+  let errorMsg: string | null = null;
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    const lines = buf.split("\n");
+    buf = lines.pop() ?? "";
+    for (const line of lines) {
+      if (!line.startsWith("data: ")) continue;
+      try {
+        const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
+        if (ev.type === "done") {
+          rules = (ev.rules as ExtractedRule[]) ?? [];
+          if (typeof ev.diagnostic === "string") diagnostic = ev.diagnostic;
+        } else if (ev.type === "error") {
+          errorMsg = (ev.message as string) || "Échec de l'analyse";
+        }
+      } catch { /* ligne mal formée — on continue */ }
+    }
+  }
+  if (errorMsg) throw new Error(errorMsg);
+  return { rules: rules ?? [], diagnostic };
+}
+
 function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCode?: string }) {
   const [data, setData] = useState<ReglData | null>(null);
   const [loading, setLoading] = useState(true);
@@ -3958,11 +4058,18 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     if (pasteText.trim().length < 5 && !pasteImage) return;
     setAnalyzing(true);
     try {
-      const r = await api.post<{ rules: ExtractedRule[] }>("/mairie/reglementation/structure-article", {
-        text: pasteText, zone_code: zoneCode, article_number: newRule.article_number ?? undefined,
-        image_base64: pasteImage?.data, image_media_type: pasteImage?.media,
+      const resp = await fetch("/api/mairie/reglementation/structure-article", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({
+          text: pasteText, zone_code: zoneCode, article_number: newRule.article_number ?? undefined,
+          image_base64: pasteImage?.data, image_media_type: pasteImage?.media,
+        }),
       });
-      setExtracted(r.rules ?? []);
+      const { rules, diagnostic } = await consumeStructureStream(resp);
+      setExtracted(rules);
+      if (diagnostic) alert(diagnostic);
     } catch (e) {
       alert(e instanceof Error ? e.message : "Échec de l'analyse");
     } finally {
@@ -3994,13 +4101,17 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
         await Promise.all(slice.map(async (text, k) => {
           const idx = start + k;
           try {
-            const r = await api.post<{ rules: ExtractedRule[]; diagnostic?: string }>(
-              "/mairie/reglementation/structure-zone",
-              { text, zone_code: zoneCode },
-              { timeoutMs: 120_000 },
-            );
-            results[idx] = r.rules ?? [];
-            if ((r.rules?.length ?? 0) === 0 && r.diagnostic) diagnostics.push(r.diagnostic);
+            // Stream SSE — voir mairie.ts route /reglementation/structure-zone.
+            // Évite le 502 passerelle sur les zones denses (max_tokens 16 k).
+            const resp = await fetch("/api/mairie/reglementation/structure-zone", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              credentials: "include",
+              body: JSON.stringify({ text, zone_code: zoneCode }),
+            });
+            const { rules, diagnostic } = await consumeStructureStream(resp);
+            results[idx] = rules;
+            if (rules.length === 0 && diagnostic) diagnostics.push(diagnostic);
           } catch (e) {
             results[idx] = [];
             errors.push(e instanceof Error ? e.message : String(e));
@@ -4072,7 +4183,10 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
     const param = inseeCode
       ? `insee_code=${encodeURIComponent(inseeCode)}`
       : `commune_name=${encodeURIComponent(commune)}`;
-    api.get<ReglData>(`/mairie/reglementation?${param}`)
+    // Écran d'administration des règles : on doit voir les brouillons et
+    // rejetées pour pouvoir les valider. Tous les autres callers (carte,
+    // dashboards) reçoivent par défaut uniquement les règles validées.
+    api.get<ReglData>(`/mairie/reglementation?${param}&include_drafts=true`)
       .then(d => {
         setData(d);
         if (d.zones[0] && !selectedZoneId) setSelectedZoneId(d.zones[0].id);

@@ -76,7 +76,7 @@ CREATE TABLE IF NOT EXISTS zone_regulatory_rules (
   value_exact double precision,
   unit text,
   instructor_note text,
-  validation_status text NOT NULL DEFAULT 'draft',
+  validation_status text NOT NULL DEFAULT 'brouillon',
   created_at timestamp NOT NULL DEFAULT now(),
   updated_at timestamp NOT NULL DEFAULT now()
 );

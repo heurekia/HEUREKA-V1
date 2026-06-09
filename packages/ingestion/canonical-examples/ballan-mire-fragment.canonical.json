@@ -1,0 +1,103 @@
+{
+  "schema_version": 1,
+  "_meta": {
+    "commune": "Ballan-Miré",
+    "insee": "37018",
+    "zip_code": "37510",
+    "doc_version": "M5_20180129",
+    "adopted_at": "2018-01-29",
+    "effective_from": "2018-01-29",
+    "source_url": "https://www.tours-metropole.fr/plu-ballan",
+    "produced_by": "Bureau d'études Tours Métropole — équipe urbanisme",
+    "produced_at": "2026-06-09",
+    "notes": "Fragment de démonstration : zone UA, 3 règles seulement. Le fichier complet inclurait les 17 zones et leurs 14 articles."
+  },
+  "zones": [
+    {
+      "code": "UA",
+      "label": "Zone urbaine — centre ancien",
+      "type": "U",
+      "summary": "Le centre ancien de Ballan-Miré, organisé en étoile autour de la place de l'église. Implantation dense, alignement de voirie et limites séparatives.",
+      "rules": [
+        {
+          "article_number": 6,
+          "article_title": "Implantation des constructions par rapport aux voies",
+          "topic": "recul_voie",
+          "sub_theme": null,
+          "rule_text": "Les constructions doivent être implantées à l'alignement des voies existantes ou projetées. Un retrait est autorisé s'il s'intègre à l'alignement bâti des constructions voisines.",
+          "value_min": null,
+          "value_max": null,
+          "value_exact": null,
+          "unit": null,
+          "conditions": "Implantation à l'alignement OU dans la continuité du bâti voisin",
+          "exceptions": "Constructions et installations nécessaires aux services publics ou d'intérêt collectif",
+          "summary": "Construction à l'alignement de la voie (ou dans la continuité)",
+          "instructor_note": "Vérifier l'alignement des deux constructions voisines pour les dérogations",
+          "citizen_title": "Construire en bord de rue",
+          "citizen_summary": "Votre maison doit être collée à la rue, ou alignée avec les maisons voisines.",
+          "citizen_relevant": true,
+          "cases": [],
+          "applies_if": [],
+          "source": {
+            "document": "PLU-Ballan-Reglement.pdf",
+            "page": 6,
+            "paragraph": "UA-ARTICLE 6"
+          }
+        },
+        {
+          "article_number": 10,
+          "article_title": "Hauteur maximale des constructions",
+          "topic": "hauteur",
+          "sub_theme": null,
+          "rule_text": "La hauteur maximale des constructions est de 9 mètres à l'égout du toit, soit environ R+1+C (rez-de-chaussée + 1 étage + combles).",
+          "value_min": null,
+          "value_max": 9,
+          "value_exact": null,
+          "unit": "m",
+          "conditions": null,
+          "exceptions": "Constructions et installations nécessaires aux services publics ou d'intérêt collectif",
+          "summary": "Hauteur max 9 m à l'égout",
+          "instructor_note": null,
+          "citizen_title": "Hauteur des maisons",
+          "citizen_summary": "Votre maison ne peut pas dépasser 9 mètres de haut au bord du toit.",
+          "citizen_relevant": true,
+          "cases": [],
+          "applies_if": [],
+          "source": {
+            "document": "PLU-Ballan-Reglement.pdf",
+            "page": 9,
+            "paragraph": "UA-ARTICLE 10"
+          }
+        },
+        {
+          "article_number": 12,
+          "article_title": "Stationnement — Habitation",
+          "topic": "stationnement",
+          "sub_theme": "Habitation collective",
+          "rule_text": "Pour les constructions à usage d'habitation, il est exigé 1 place de stationnement par logement de moins de 60 m² de surface de plancher, et 2 places par logement à partir de 60 m².",
+          "value_min": null,
+          "value_max": null,
+          "value_exact": null,
+          "unit": "places",
+          "conditions": "1 place si < 60 m² ; 2 places si ≥ 60 m²",
+          "exceptions": null,
+          "summary": "1 place < 60 m² ; 2 places ≥ 60 m²",
+          "instructor_note": "Vérifier la surface de plancher CERFA et compter les places sur le plan masse",
+          "citizen_title": "Places de parking",
+          "citizen_summary": "Vous devez prévoir 1 place de parking pour un logement de moins de 60 m², 2 places si votre logement fait 60 m² ou plus.",
+          "citizen_relevant": true,
+          "cases": [
+            { "condition": "logement < 60 m²", "value": 1, "unit": "places", "kind": "condition" },
+            { "condition": "logement ≥ 60 m²", "value": 2, "unit": "places", "kind": "condition" }
+          ],
+          "applies_if": [],
+          "source": {
+            "document": "PLU-Ballan-Reglement.pdf",
+            "page": 13,
+            "paragraph": "UA-ARTICLE 12 §1"
+          }
+        }
+      ]
+    }
+  ]
+}

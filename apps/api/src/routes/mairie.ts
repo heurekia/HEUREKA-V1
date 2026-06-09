@@ -8,7 +8,7 @@ import { analyseParcel } from "../services/parcelAnalysis.js";
 import { runDossierConformityAnalysis, runDossierConformityAnalysisBackground, type ConformiteReport } from "../services/dossierConformity.js";
 import { parseLooseArray } from "../services/jsonExtract.js";
 import { extractPiece, expectedTypeFromCode } from "../services/pieceExtractor.js";
-import { callClaude, anthropicClient } from "../services/aiUsage.js";
+import { callClaude, anthropicClient, trackClaudeStreamUsage } from "../services/aiUsage.js";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import path from "path";
@@ -1655,11 +1655,18 @@ mairieRouter.get("/notifications", async (req: AuthRequest, res) => {
 // ── Réglementation ────────────────────────────────────────────────────────────
 
 // GET /mairie/reglementation?insee_code=37018 (or legacy ?commune_name=Ballan-Miré)
-// Returns zones with their rules and per-zone validation stats.
+//
+// Renvoie les zones et leurs règles. Filtre safe-by-default : seules les règles
+// `validation_status = 'valide'` sont incluses. Tout caller qui doit voir les
+// brouillons / rejetées (= UI de validation) doit passer `?include_drafts=true`
+// explicitement. Les consommateurs « lecture » (carte, dashboards, futurs
+// services) reçoivent ainsi par défaut un référentiel utilisable, sans risque
+// de mélange visuel avec du contenu non validé.
 mairieRouter.get("/reglementation", async (req: AuthRequest, res) => {
   try {
     const communeName = (req.query.commune_name as string | undefined)?.trim();
     const inseeCode = (req.query.insee_code as string | undefined)?.trim();
+    const includeDrafts = req.query.include_drafts === "true";
     if (!communeName && !inseeCode) return res.status(400).json({ error: "commune_name ou insee_code requis" });
 
     const [commune] = await db.select().from(communes)
@@ -1674,16 +1681,20 @@ mairieRouter.get("/reglementation", async (req: AuthRequest, res) => {
       .orderBy(zones.display_order);
 
     const result = await Promise.all(zoneRows.map(async zone => {
-      const rules = await db.select().from(zone_regulatory_rules)
+      const allRules = await db.select().from(zone_regulatory_rules)
         .where(eq(zone_regulatory_rules.zone_id, zone.id))
         .orderBy(zone_regulatory_rules.article_number);
 
       const stats = {
-        total: rules.length,
-        valide: rules.filter(r => r.validation_status === "valide").length,
-        brouillon: rules.filter(r => r.validation_status === "brouillon" || r.validation_status === "draft").length,
-        rejete: rules.filter(r => r.validation_status === "rejete").length,
+        total: allRules.length,
+        valide: allRules.filter(r => r.validation_status === "valide").length,
+        brouillon: allRules.filter(r => r.validation_status === "brouillon" || r.validation_status === "draft").length,
+        rejete: allRules.filter(r => r.validation_status === "rejete").length,
       };
+
+      const rules = includeDrafts
+        ? allRules
+        : allRules.filter(r => r.validation_status === "valide");
 
       return { ...zone, rules, stats };
     }));
@@ -1888,30 +1899,48 @@ mairieRouter.post("/reglementation/zones/:zoneId/rules/bulk", requireRole("mairi
 // « Agent » de structuration : l'instructeur colle le TEXTE d'un article ; Claude
 // (texte court, pas le PDF) renvoie les champs structurés pour pré-remplir le
 // formulaire. L'instructeur vérifie puis enregistre.
+//
+// Streaming SSE : la passerelle (Railway/Cloudflare) coupe sans préavis une
+// requête HTTP « silencieuse » qui dépasse ~100 s — l'utilisateur voit alors
+// un 502 ALORS QUE Anthropic a déjà facturé la génération. Le stream Anthropic
+// est forwardé au client en heartbeats SSE → la passerelle voit du trafic
+// régulier → plus de 502. À la fin, on parse l'accumulé et on envoie les
+// règles dans un événement `done`.
 mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  const { text, zone_code, article_number, image_base64, image_media_type } = req.body as { text?: string; zone_code?: string; article_number?: number | string; image_base64?: string; image_media_type?: string };
+  const hasImage = typeof image_base64 === "string" && image_base64.length > 0;
+  if ((!text || text.trim().length < 5) && !hasImage) return res.status(400).json({ error: "Texte de l'article ou image requis" });
+
+  // Image (tableau / croquis) → vision : Sonnet lit mieux les tableaux complexes.
+  const userContent: Anthropic.ContentBlockParam[] = [];
+  if (hasImage) {
+    const media = (["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image_media_type ?? "") ? image_media_type : "image/png") as "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+    userContent.push({ type: "image", source: { type: "base64", media_type: media, data: image_base64! } });
+  }
+  const prefix = `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}`;
+  userContent.push({ type: "text", text: `${prefix}\n\n${text ?? "(Voir le tableau / croquis fourni en image.)"}` });
+
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const send = (data: Record<string, unknown>) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    (res as unknown as { flush?: () => void }).flush?.();
+  };
+
   try {
-    const { text, zone_code, article_number, image_base64, image_media_type } = req.body as { text?: string; zone_code?: string; article_number?: number | string; image_base64?: string; image_media_type?: string };
-    const hasImage = typeof image_base64 === "string" && image_base64.length > 0;
-    if ((!text || text.trim().length < 5) && !hasImage) return res.status(400).json({ error: "Texte de l'article ou image requis" });
+    send({ type: "started" });
 
-    // Image (tableau / croquis) → vision : Sonnet lit mieux les tableaux complexes.
-    const userContent: Anthropic.ContentBlockParam[] = [];
-    if (hasImage) {
-      const media = (["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image_media_type ?? "") ? image_media_type : "image/png") as "image/png" | "image/jpeg" | "image/webp" | "image/gif";
-      userContent.push({ type: "image", source: { type: "base64", media_type: media, data: image_base64! } });
-    }
-    const prefix = `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}`;
-    userContent.push({ type: "text", text: `${prefix}\n\n${text ?? "(Voir le tableau / croquis fourni en image.)"}` });
-
-    const client = anthropicClient({ maxRetries: 3, timeout: 90_000 });
+    const client = anthropicClient({ maxRetries: 3, timeout: 120_000 });
     const communeId = await resolveCommuneIdFromUser(req);
-    const msg = await callClaude(
-      { purpose: "plu_article_structure", userId: req.user?.id ?? null, communeId },
-      {
-      // Sonnet sur les deux flux : un article PLU qui se découpe en 5–7 sous-règles
-      // produit un JSON volumineux que Haiku tronque ou met trop longtemps à
-      // générer (au point de faire couper la connexion par la passerelle, d'où
-      // les « Load failed » côté Safari).
+    const startedAt = Date.now();
+
+    let accumulated = "";
+    let lastHeartbeat = Date.now();
+    const stream = client.messages.stream({
       model: "claude-sonnet-4-6",
       max_tokens: 6000,
       system: `Tu es un expert en droit de l'urbanisme français. On te donne le TEXTE d'UN article de règlement PLU (souvent long, avec sous-sections) ET/OU une IMAGE (tableau ou croquis).
@@ -1959,7 +1988,29 @@ AUTRES RÈGLES :
       client,
     );
 
-    const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
+    // Forward des deltas de texte en heartbeats : la passerelle voit du
+    // trafic, le client peut afficher une progression réelle. On limite à un
+    // heartbeat toutes les 1.5 s pour ne pas saturer.
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        accumulated += event.delta.text;
+        if (Date.now() - lastHeartbeat > 1500) {
+          send({ type: "progress", chars: accumulated.length });
+          lastHeartbeat = Date.now();
+        }
+      }
+    }
+
+    const finalMessage = await stream.finalMessage();
+    // Tracking coûts IA (best-effort, n'échoue jamais la requête métier).
+    trackClaudeStreamUsage(
+      { purpose: "plu_article_structure", userId: req.user?.id ?? null, communeId },
+      finalMessage,
+      startedAt,
+    );
+    const raw = accumulated || (finalMessage.content[0]?.type === "text" ? finalMessage.content[0].text : "[]");
+    const stopReason = finalMessage.stop_reason;
+
     // Parsing tolérant : si la réponse est tronquée (max_tokens), on récupère les
     // sous-règles COMPLÈTES en fermant l'array au dernier objet entier.
     const arr = parseLooseArray(raw);
@@ -2000,10 +2051,19 @@ AUTRES RÈGLES :
       rules.push({ sub_theme: null, article_number: article_number ? Number(article_number) : null, article_title: "", topic: "general", rule_text: (text ?? "").trim() || "Voir le tableau / croquis fourni.", value_min: null, value_max: null, value_exact: null, unit: null, conditions: null, exceptions: null, summary: "", cases: [], applies_if: [], citizen_title: null, citizen_summary: null, citizen_relevant: true });
     }
 
-    res.json({ rules });
+    // Diagnostic explicite si la sortie a été coupée — l'instructeur saura
+    // qu'il doit raccourcir / découper plutôt que de retenter à l'identique
+    // (et repayer les mêmes tokens).
+    const diagnostic = stopReason === "max_tokens"
+      ? "Réponse IA tronquée (limite de 6000 tokens atteinte). Les règles complètes ont été conservées ; pour récupérer la fin, soumettez le reste de l'article séparément."
+      : undefined;
+
+    send({ type: "done", rules, stop_reason: stopReason, diagnostic });
+    res.end();
   } catch (err) {
     console.error("[structure-article]", err);
-    res.status(500).json({ error: "Échec de l'analyse IA — réessayez ou saisissez manuellement." });
+    send({ type: "error", message: err instanceof Error ? err.message : "Échec de l'analyse IA — réessayez ou saisissez manuellement." });
+    res.end();
   }
 });
 
@@ -2012,20 +2072,39 @@ AUTRES RÈGLES :
 // zone (tous les articles, déjà résumés). Claude (Sonnet) renvoie une liste de
 // (sous-)règles découpées par sous-section, chacune pré-remplie ET dotée de sa
 // version « citoyen » (titre court + une phrase simple). L'instructeur valide.
+//
+// Streaming SSE : même justification que structure-article, accentuée ici par
+// le max_tokens 16k qui peut prendre 2-3 min. Sans streaming la passerelle
+// coupe systématiquement → 502 + facturation perdue.
 mairieRouter.post("/reglementation/structure-zone", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
-  try {
-    const { text, zone_code } = req.body as { text?: string; zone_code?: string };
-    // Le seuil bas accepte les chunks courts légitimes (Préambule, article
-    // « sans objet ») produits par le découpage par article côté front.
-    if (!text || text.trim().length < 10) {
-      return res.status(400).json({ error: "Texte vide ou trop court — collez le règlement complet de la zone." });
-    }
+  const { text, zone_code } = req.body as { text?: string; zone_code?: string };
+  // Le seuil bas accepte les chunks courts légitimes (Préambule, article
+  // « sans objet ») produits par le découpage par article côté front.
+  if (!text || text.trim().length < 10) {
+    return res.status(400).json({ error: "Texte vide ou trop court — collez le règlement complet de la zone." });
+  }
 
-    const client = anthropicClient({ maxRetries: 2, timeout: 120_000 });
+  res.setHeader("Content-Type", "text/event-stream");
+  res.setHeader("Cache-Control", "no-cache");
+  res.setHeader("Connection", "keep-alive");
+  res.setHeader("X-Accel-Buffering", "no");
+  res.flushHeaders?.();
+
+  const send = (data: Record<string, unknown>) => {
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+    (res as unknown as { flush?: () => void }).flush?.();
+  };
+
+  try {
+    send({ type: "started" });
+
+    const client = anthropicClient({ maxRetries: 2, timeout: 180_000 });
     const communeId = await resolveCommuneIdFromUser(req);
-    const msg = await callClaude(
-      { purpose: "plu_zone_structure", userId: req.user?.id ?? null, communeId },
-      {
+    const startedAt = Date.now();
+
+    let accumulated = "";
+    let lastHeartbeat = Date.now();
+    const stream = client.messages.stream({
       model: "claude-sonnet-4-6",
       // Un règlement complet (14 articles × plusieurs sous-règles citoyen+mairie)
       // dépasse facilement 6 k tokens et provoquait des sorties tronquées. Avec
@@ -2073,8 +2152,25 @@ RÈGLES DE STRUCTURATION :
       client,
     );
 
-    const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "";
-    const stopReason = msg.stop_reason;
+    // Forward des deltas en heartbeats : passerelle alive + progression visible.
+    for await (const event of stream) {
+      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
+        accumulated += event.delta.text;
+        if (Date.now() - lastHeartbeat > 1500) {
+          send({ type: "progress", chars: accumulated.length });
+          lastHeartbeat = Date.now();
+        }
+      }
+    }
+
+    const finalMessage = await stream.finalMessage();
+    trackClaudeStreamUsage(
+      { purpose: "plu_zone_structure", userId: req.user?.id ?? null, communeId },
+      finalMessage,
+      startedAt,
+    );
+    const raw = accumulated || (finalMessage.content[0]?.type === "text" ? finalMessage.content[0].text : "");
+    const stopReason = finalMessage.stop_reason;
     const arr = parseLooseArray(raw);
     // Trace de débogage utile : Claude a parlé mais on n'extrait rien.
     // Pointe à coup sûr vers un nouveau format de sortie (wrapper inconnu,
@@ -2134,15 +2230,55 @@ RÈGLES DE STRUCTURATION :
       }
     }
 
-    res.json({ rules, diagnostic });
+    send({ type: "done", rules, stop_reason: stopReason, diagnostic });
+    res.end();
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
     console.error("[structure-zone]", msg);
-    res.status(500).json({ error: `Échec de l'analyse IA : ${msg}` });
+    send({ type: "error", message: `Échec de l'analyse IA : ${msg}` });
+    res.end();
   }
 });
 
 // POST /mairie/reglementation/zones — create a zone manually
+// POST /mairie/reglementation/import-canonical
+//
+// Ingestion directe d'un règlement PLU au format canonique (HEUREKA Canonical
+// PLU v1) — voir packages/ingestion/src/canonical/schema.ts. Aucun appel LLM,
+// aucun coût Anthropic, aucune hallucination possible : la DB reflète
+// strictement ce qu'on importe. Les règles sont marquées "brouillon" et
+// doivent être validées une à une comme pour le pipeline IA.
+//
+// L'opération PURGE les zones + règles existantes de la commune avant
+// réinsertion (transaction). C'est volontaire pour rejouer l'import sans
+// laisser de résidus, mais ça veut dire qu'il faut soit exporter d'abord, soit
+// confirmer côté UI.
+mairieRouter.post(
+  "/reglementation/import-canonical",
+  requireRole("mairie", "instructeur", "admin"),
+  async (req: AuthRequest, res) => {
+    try {
+      const { parseCanonical, importCanonical } = await import("@heureka-v1/ingestion/canonical");
+      const parsed = parseCanonical(req.body);
+      if (!parsed.ok) {
+        return res.status(400).json({
+          error: "Format canonique invalide",
+          schema_errors: parsed.errors,
+        });
+      }
+      const result = await importCanonical(parsed.data!);
+      res.json({
+        ok: true,
+        ...result,
+        warnings: parsed.warnings ?? [],
+      });
+    } catch (err) {
+      console.error("[import-canonical]", err);
+      res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+    }
+  },
+);
+
 mairieRouter.post("/reglementation/zones", async (req: AuthRequest, res) => {
   try {
     const { insee_code, commune_name, zone_code, zone_label, zone_type } = req.body as {
@@ -2613,6 +2749,9 @@ mairieRouter.get("/documents", async (req: AuthRequest, res) => {
       file_size: commune_documents.file_size,
       synthese: commune_documents.synthese,
       status: commune_documents.status,
+      validation_status: commune_documents.validation_status,
+      validated_by: commune_documents.validated_by,
+      validated_at: commune_documents.validated_at,
       ingested_at: commune_documents.ingested_at,
       created_at: commune_documents.created_at,
     })
@@ -2674,13 +2813,53 @@ mairieRouter.post("/documents", async (req: AuthRequest, res) => {
   }
 });
 
-// Met à jour la synthèse (et éventuellement le nom) d'un document de commune.
+// Met à jour la synthèse, le nom, ou le statut de validation d'un document.
+//
+// Règles importantes (gate juridique) :
+//  - Toute modification de la synthèse remet le statut à "brouillon" : un
+//    édit non explicitement re-validé ne doit pas continuer d'alimenter
+//    l'instruction.
+//  - Passer à "valide" exige un utilisateur authentifié (validated_by) et
+//    horodate la décision (validated_at) — c'est l'amorce de l'audit trail.
 mairieRouter.patch("/documents/:id", async (req: AuthRequest, res) => {
   try {
-    const { synthese, name } = req.body as { synthese?: string | null; name?: string };
-    const patch: { synthese?: string | null; name?: string; updated_at: Date } = { updated_at: new Date() };
-    if (synthese !== undefined) patch.synthese = synthese?.trim() || null;
+    const { synthese, name, validation_status } = req.body as {
+      synthese?: string | null;
+      name?: string;
+      validation_status?: "valide" | "brouillon" | "rejete";
+    };
+    const patch: {
+      synthese?: string | null;
+      name?: string;
+      validation_status?: string;
+      validated_by?: string | null;
+      validated_at?: Date | null;
+      updated_at: Date;
+    } = { updated_at: new Date() };
+
+    const sytheseChanged = synthese !== undefined;
+    if (sytheseChanged) patch.synthese = synthese?.trim() || null;
     if (name !== undefined && name.trim()) patch.name = name.trim();
+
+    if (validation_status) {
+      if (!["valide", "brouillon", "rejete"].includes(validation_status)) {
+        return res.status(400).json({ error: "validation_status invalide" });
+      }
+      patch.validation_status = validation_status;
+      if (validation_status === "valide") {
+        if (!req.user?.id) return res.status(401).json({ error: "Authentification requise pour valider" });
+        patch.validated_by = req.user.id;
+        patch.validated_at = new Date();
+      } else {
+        patch.validated_by = null;
+        patch.validated_at = null;
+      }
+    } else if (sytheseChanged) {
+      // Édit de synthèse sans validation explicite → bascule auto en brouillon.
+      patch.validation_status = "brouillon";
+      patch.validated_by = null;
+      patch.validated_at = null;
+    }
 
     const [doc] = await db.update(commune_documents)
       .set(patch)
@@ -2690,6 +2869,9 @@ mairieRouter.patch("/documents/:id", async (req: AuthRequest, res) => {
         type: commune_documents.type,
         name: commune_documents.name,
         synthese: commune_documents.synthese,
+        validation_status: commune_documents.validation_status,
+        validated_by: commune_documents.validated_by,
+        validated_at: commune_documents.validated_at,
       });
     if (!doc) return res.status(404).json({ error: "Document introuvable" });
     res.json(doc);
@@ -2730,6 +2912,8 @@ mairieRouter.get("/dossiers/:id/commune-documents", async (req: AuthRequest, res
       file_size: commune_documents.file_size,
       synthese: commune_documents.synthese,
       status: commune_documents.status,
+      validation_status: commune_documents.validation_status,
+      validated_at: commune_documents.validated_at,
       created_at: commune_documents.created_at,
     })
       .from(commune_documents)

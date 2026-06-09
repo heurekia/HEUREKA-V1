@@ -1,0 +1,44 @@
+{
+  "_meta": {
+    "fixture_version": 1,
+    "source_pdf": "../../../../docs/reglementation/ballan-mire/PLU-Ballan-Reglement.pdf",
+    "adapter": "plu-reglement",
+    "insee": "37018",
+    "commune": "Ballan-Miré",
+    "doc_version": "M5_20180129",
+    "annotated_by": "Evi Deletang (annotation initiale depuis sommaire PDF)",
+    "annotated_at": "2026-06-08",
+    "notes": "Zones extraites du SOMMAIRE du PLU Modification n°5 du 29/01/2018 (pages 1-2). Chaque zone définit 14 articles standards (Code Urb. R.151-x). À durcir après vérification page par page."
+  },
+  "expected": {
+    "zones": [
+      "UA",
+      "UB",
+      "UC",
+      "UD",
+      "UL",
+      "US",
+      "UV",
+      "UX",
+      "UY",
+      "UZ",
+      "1AU",
+      "1AUZ",
+      "AUH",
+      "AUY",
+      "A",
+      "N",
+      "NI"
+    ],
+    "articles_per_zone": {
+      "UA": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14],
+      "UB": [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]
+    }
+  },
+  "tolerances": {
+    "extra_zones_allowed": 0,
+    "missing_zones_allowed": 0,
+    "min_zone_f1": 1.0,
+    "min_article_f1": 0.9
+  }
+}

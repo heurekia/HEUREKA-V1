@@ -1,0 +1,24 @@
+{
+  "_meta": {
+    "fixture_version": 1,
+    "source_pdf": "../../../../docs/reglementation/ballan-mire/PLU-Ballan-OAP.pdf",
+    "adapter": "plu-oap",
+    "insee": "37018",
+    "commune": "Ballan-Miré",
+    "doc_version": "M5_20180129",
+    "annotated_by": "Evi Deletang (annotation initiale depuis présentation PDF)",
+    "annotated_at": "2026-06-08",
+    "notes": "L'OAP de Ballan-Miré couvre 4 secteurs nommés (Sagetterie, Savatterie, Salle, Gare). Tant que adapters/plu-oap.ts est un stub, cette fixture échoue volontairement — elle sert de cahier des charges exécutable pour la Phase 2."
+  },
+  "expected": {
+    "zones": [
+      "SAGETTERIE",
+      "SAVATTERIE",
+      "SALLE",
+      "GARE"
+    ]
+  },
+  "tolerances": {
+    "min_zone_f1": 1.0
+  }
+}

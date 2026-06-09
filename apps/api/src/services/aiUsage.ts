@@ -168,3 +168,57 @@ export async function callClaude(
 
   return msg;
 }
+
+/**
+ * Variante streaming : tracking idempotent à partir du `finalMessage` d'un
+ * stream Anthropic. Utilisée par les routes SSE (structure-article,
+ * structure-zone) qui doivent forwarder les deltas vers le client en
+ * heartbeats pour éviter les 502 passerelle — voir mairie.ts.
+ *
+ * Appel best-effort comme `callClaude` : une erreur d'écriture en DB ne
+ * fait pas échouer la requête métier.
+ */
+export function trackClaudeStreamUsage(
+  ctx: CallClaudeContext,
+  finalMessage: Anthropic.Message,
+  startedAt: number,
+): void {
+  const durationMs = Date.now() - startedAt;
+  const usage = finalMessage.usage ?? { input_tokens: 0, output_tokens: 0 };
+  const cacheRead = (usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0;
+  const cacheCreate = (usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0;
+  const model = finalMessage.model;
+  const cost = computeCostEur(model, {
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheCreate,
+  });
+
+  void db.insert(ai_usage_events).values({
+    dossier_id: ctx.dossierId ?? null,
+    commune_id: ctx.communeId ?? null,
+    user_id: ctx.userId ?? null,
+    purpose: ctx.purpose,
+    model,
+    input_tokens: usage.input_tokens ?? 0,
+    output_tokens: usage.output_tokens ?? 0,
+    cache_read_input_tokens: cacheRead,
+    cache_creation_input_tokens: cacheCreate,
+    cost_eur: cost,
+    duration_ms: durationMs,
+  }).then(() => {
+    void maybeNotify({
+      purpose: ctx.purpose,
+      model,
+      cost_eur: cost,
+      dossier_id: ctx.dossierId ?? null,
+      commune_id: ctx.communeId ?? null,
+    });
+  }).catch((err) => {
+    console.error(
+      `[aiUsage] ⚠️  INSERT ÉCHOUÉ (stream) — événement payant non tracé (purpose=${ctx.purpose}, model=${model}, cost=${cost}€).`,
+      err instanceof Error ? err.message : err,
+    );
+  });
+}
