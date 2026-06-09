@@ -2612,13 +2612,15 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
       }
     }
 
+    const wantDiag = req.query.diag === "1" || req.query.diag === "true";
+
     // Cache expiré, inexistant, ou refresh forcé → fetch upstream
     const result = await refreshPluZones(inseeCode);
     if (!result.ok) {
-      if (communeRow?.plu_zones_geojson) {
+      if (communeRow?.plu_zones_geojson && !wantDiag) {
         return sendCached(communeRow.plu_zones_geojson, communeRow.plu_zones_cached_at, "STALE");
       }
-      return res.status(result.status).json({ error: result.error });
+      return res.status(result.status).json({ error: result.error, diag: result.diag });
     }
 
     const freshAt = new Date();
@@ -2626,7 +2628,8 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
     if (etag) res.setHeader("ETag", etag);
     res.setHeader("Cache-Control", PLU_CACHE_CONTROL);
     res.setHeader("X-PLU-Cache", "MISS");
-    res.json(result.zones);
+    if (wantDiag) res.json({ zones: result.zones, diag: result.diag });
+    else res.json(result.zones);
   } catch (err) {
     console.error("[plu-zones proxy]", err);
     if (communeRow?.plu_zones_geojson) {

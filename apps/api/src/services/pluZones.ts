@@ -19,9 +19,16 @@ async function fetchWithRetry(url: string, opts: RequestInit, retries = 3, delay
 
 export type PluZonesGeoJson = { type?: string; features?: unknown[] };
 
+export type PluDiag = {
+  insee: string;
+  candidates: Array<{ partition: string; source: string; du_type?: string; etat?: string; probe?: "ok" | "empty" | "failed" }>;
+  picked?: string;
+  upstreamFailed: boolean;
+};
+
 export type PluFetchResult =
-  | { ok: true; zones: PluZonesGeoJson }
-  | { ok: false; status: number; error: string };
+  | { ok: true; zones: PluZonesGeoJson; diag: PluDiag }
+  | { ok: false; status: number; error: string; diag: PluDiag };
 
 type ZoneFeature = { properties?: { insee?: string; partition?: string; typezone?: string } };
 
@@ -42,15 +49,17 @@ export function filterZonesByInsee(zones: PluZonesGeoJson, inseeCode: string): P
 // Fait l'appel complet GPU + persiste en DB. Aucun side-effect HTTP.
 // L'appelant gère les fallbacks (cache DB stale, codes d'erreur).
 export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult> {
+  const diag: PluDiag = { insee: inseeCode, candidates: [], upstreamFailed: false };
+
   // Contour commune
   const geoR = await fetchWithRetry(
     `https://geo.api.gouv.fr/communes?code=${encodeURIComponent(inseeCode)}&fields=contour&format=geojson&geometry=contour&limit=1`,
     { signal: AbortSignal.timeout(8000) }
   );
-  if (!geoR) return { ok: false, status: 502, error: "Erreur geo.api.gouv.fr" };
+  if (!geoR) return { ok: false, status: 502, error: "Erreur geo.api.gouv.fr", diag };
   type GeoComm = { features?: Array<{ geometry?: { coordinates: number[][][] } }> };
   const fullRing = ((await geoR.json()) as GeoComm).features?.[0]?.geometry?.coordinates[0];
-  if (!fullRing?.length) return { ok: false, status: 404, error: "Commune non trouvée" };
+  if (!fullRing?.length) return { ok: false, status: 404, error: "Commune non trouvée", diag };
 
   const MAX_PTS = 50;
   let queryRing = fullRing;
@@ -66,40 +75,14 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   const centroid = [(Math.min(...lngs) + Math.max(...lngs)) / 2, (Math.min(...lats) + Math.max(...lats)) / 2];
   const ptGeom = JSON.stringify({ type: "Point", coordinates: centroid });
 
-  // ── Identification de la partition ──────────────────────────────────────────
-  // Tracke les pannes upstream pour distinguer "API GPU en vrac" (retry-worthy)
-  // de "vraiment pas de PLU pour cette commune" (404 stable).
-  let upstreamFailed = false;
-  let partition: string | undefined;
-  const tried: string[] = []; // pour logs diagnostiques
+  // ── Collecte des partitions candidates (sans probe à ce stade) ──────────────
+  type Cand = { partition: string; source: string; du_type?: string; etat?: string };
+  const cands: Cand[] = [];
+  const seen = new Set<string>();
+  const addCand = (c: Cand) => { if (!seen.has(c.partition)) { seen.add(c.partition); cands.push(c); } };
 
-  // Probe une partition AVEC le polygone commune. On veut une partition qui
-  // contient au moins une zone INTERSECTANT notre commune, pas juste une
-  // partition qui existe globalement (ex: une PLUi voisine qui aurait été
-  // mal référencée).
-  const probeForCommune = async (part: string): Promise<number> => {
-    tried.push(part);
-    const r = await fetchWithRetry(
-      `https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(part)}&_limit=1&geom=${encodeURIComponent(communeGeom)}`,
-      { signal: AbortSignal.timeout(8000) }
-    );
-    if (!r) return -1;
-    const j = (await r.json()) as { features?: unknown[] };
-    return j.features?.length ?? 0;
-  };
-
-  // A) Fast-path : PLU communal "<INSEE>_PLU".
+  // (A) /document — source autoritative
   {
-    const cand = `${inseeCode}_PLU`;
-    const n = await probeForCommune(cand);
-    if (n > 0) partition = cand;
-    else if (n < 0) upstreamFailed = true;
-  }
-
-  // B) Endpoint /document : liste autoritative des documents d'urbanisme couvrant
-  // le centroïde. Pour les communes en PLUi (ex: Tours, Métropole), c'est ici
-  // qu'on récupère la bonne partition.
-  if (!partition) {
     const r = await fetchWithRetry(
       `https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(ptGeom)}`,
       { signal: AbortSignal.timeout(8000) }
@@ -108,9 +91,6 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
       type Doc = { properties: { partition?: string; etat?: string; gpu_status?: string; du_type?: string } };
       const docs = ((await r.json()) as { features?: Doc[] }).features ?? [];
 
-      // Tri par préférence — mais on ne filtre PAS : si du_type est absent ou
-      // d'une casse inattendue, on essaie quand même. C'était la cause des
-      // 404 sur "bon nombre de villes".
       const DU_PRIORITY = ["PLUI", "PLUIH", "PLU", "POS", "CC", "PSMV"];
       const duRank = (s?: string) => {
         const i = DU_PRIORITY.indexOf((s ?? "").toUpperCase());
@@ -122,27 +102,26 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
         return e === "approuve" || e === "opposable" || g.includes("opposable");
       };
 
-      const candidates = docs
+      docs
         .filter(d => !!d.properties.partition)
         .sort((a, b) => {
           if (isInForce(a) !== isInForce(b)) return isInForce(a) ? -1 : 1;
           return duRank(a.properties.du_type) - duRank(b.properties.du_type);
-        });
-
-      // Probe chaque candidat avec le filtre géo de la commune → garantit que
-      // la partition choisie contient bien des zones DANS notre commune.
-      for (const cand of candidates) {
-        const part = cand.properties.partition!;
-        const n = await probeForCommune(part);
-        if (n > 0) { partition = part; break; }
-        if (n < 0) upstreamFailed = true;
-      }
-    } else upstreamFailed = true;
+        })
+        .forEach(d => addCand({
+          partition: d.properties.partition!,
+          source: "document",
+          du_type: d.properties.du_type,
+          etat: d.properties.etat ?? d.properties.gpu_status,
+        }));
+    } else diag.upstreamFailed = true;
   }
 
-  // C) PLUi intercommunal : récupère le SIREN de l'EPCI → "<SIREN>_PLUI".
-  // Fallback si /document n'a rien donné (API GPU instable ou data manquante).
-  if (!partition) {
+  // (B) Fast-path conventionnel : "<INSEE>_PLU"
+  addCand({ partition: `${inseeCode}_PLU`, source: "convention/INSEE_PLU" });
+
+  // (C) Fallback EPCI : "<SIREN>_PLUI" / "<SIREN>_PLU"
+  {
     const epciR = await fetchWithRetry(
       `https://geo.api.gouv.fr/communes/${encodeURIComponent(inseeCode)}/epcis?fields=code&limit=5`,
       { signal: AbortSignal.timeout(8000) }
@@ -150,44 +129,74 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
     if (epciR) {
       const epcis = (await epciR.json()) as Array<{ code?: string }>;
       for (const epci of epcis) {
-        if (!epci.code || partition) continue;
-        for (const suffix of ["_PLUI", "_PLU"]) {
-          const cand = `${epci.code}${suffix}`;
-          const n = await probeForCommune(cand);
-          if (n > 0) { partition = cand; break; }
-          if (n < 0) upstreamFailed = true;
-        }
-        if (partition) break;
+        if (!epci.code) continue;
+        addCand({ partition: `${epci.code}_PLUI`, source: "convention/EPCI_PLUI" });
+        addCand({ partition: `${epci.code}_PLU`, source: "convention/EPCI_PLU" });
       }
-    } else upstreamFailed = true;
+    } else diag.upstreamFailed = true;
   }
 
-  if (!partition) {
-    console.warn(`[plu-zones] INSEE=${inseeCode} : aucune partition trouvée. Sondes tentées : ${tried.join(", ") || "(none)"}. upstreamFailed=${upstreamFailed}`);
-  } else {
-    console.log(`[plu-zones] INSEE=${inseeCode} → partition=${partition} (après ${tried.length} sonde(s))`);
-  }
+  // ── Itère sur les candidats : pour chacun, on tente le fetch RÉEL (avec geom).
+  // Si 0 feature, on retombe sur un fetch SANS geom + filtre INSEE local — au
+  // cas où le filtre spatial GPU planterait sur un polygone complexe.
+  let chosenPartition: string | undefined;
+  let chosenZones: PluZonesGeoJson | undefined;
 
-  if (!partition) {
-    if (upstreamFailed) {
-      return { ok: false, status: 502, error: "Le Géoportail de l'Urbanisme est temporairement indisponible. Réessayez dans quelques instants." };
+  for (const cand of cands) {
+    // Fetch principal : partition + geom commune
+    const params1 = new URLSearchParams({ partition: cand.partition, _limit: "1000" });
+    params1.set("geom", communeGeom);
+    const r1 = await fetchWithRetry(
+      `https://apicarto.ign.fr/api/gpu/zone-urba?${params1.toString()}`,
+      { signal: AbortSignal.timeout(25000) }, 2, 2000
+    );
+    if (!r1) {
+      diag.upstreamFailed = true;
+      diag.candidates.push({ ...cand, probe: "failed" });
+      continue;
     }
-    return { ok: false, status: 404, error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme" };
+    const j1 = (await r1.json()) as PluZonesGeoJson;
+    if ((j1.features?.length ?? 0) > 0) {
+      diag.candidates.push({ ...cand, probe: "ok" });
+      chosenPartition = cand.partition;
+      chosenZones = j1;
+      break;
+    }
+
+    // 0 feature avec geom — on retente SANS geom + filtre INSEE local
+    const params2 = new URLSearchParams({ partition: cand.partition, _limit: "5000" });
+    const r2 = await fetchWithRetry(
+      `https://apicarto.ign.fr/api/gpu/zone-urba?${params2.toString()}`,
+      { signal: AbortSignal.timeout(25000) }, 2, 2000
+    );
+    if (!r2) {
+      diag.upstreamFailed = true;
+      diag.candidates.push({ ...cand, probe: "failed" });
+      continue;
+    }
+    const j2 = (await r2.json()) as PluZonesGeoJson;
+    const cleaned2 = filterZonesByInsee(j2, inseeCode);
+    if ((cleaned2.features?.length ?? 0) > 0) {
+      diag.candidates.push({ ...cand, probe: "ok" });
+      chosenPartition = cand.partition;
+      chosenZones = cleaned2;
+      break;
+    }
+    diag.candidates.push({ ...cand, probe: "empty" });
   }
 
-  // ── Récupération des zones filtrées par partition + polygone commune ────────
-  const params = new URLSearchParams({ partition, _limit: "1000" });
-  params.set("geom", communeGeom);
-  const zoneR = await fetchWithRetry(
-    `https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`,
-    { signal: AbortSignal.timeout(25000) }, 2, 2000
-  );
-  if (!zoneR) return { ok: false, status: 502, error: "Le Géoportail de l'Urbanisme est temporairement indisponible. Réessayez dans quelques instants." };
+  if (!chosenPartition || !chosenZones) {
+    console.warn(`[plu-zones] INSEE=${inseeCode} échec — candidats=${JSON.stringify(diag.candidates)} upstreamFailed=${diag.upstreamFailed}`);
+    if (diag.upstreamFailed) {
+      return { ok: false, status: 502, error: "Le Géoportail de l'Urbanisme est temporairement indisponible. Réessayez dans quelques instants.", diag };
+    }
+    return { ok: false, status: 404, error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme", diag };
+  }
 
-  const zoneJson = (await zoneR.json()) as PluZonesGeoJson;
-  if (!zoneJson.features?.length) return { ok: false, status: 404, error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme" };
+  diag.picked = chosenPartition;
+  console.log(`[plu-zones] INSEE=${inseeCode} → partition=${chosenPartition} (${chosenZones.features?.length ?? 0} features)`);
 
-  const cleaned = filterZonesByInsee(zoneJson, inseeCode);
+  const cleaned = filterZonesByInsee(chosenZones, inseeCode);
 
   // Persistance en base (await pour que la fraîcheur soit garantie au retour)
   await db.update(communes)
@@ -195,7 +204,7 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
     .where(eq(communes.insee_code, inseeCode))
     .catch((e: unknown) => console.error("[plu-zones DB persist]", e));
 
-  return { ok: true, zones: cleaned };
+  return { ok: true, zones: cleaned, diag };
 }
 
 // ETag faible basé sur l'horodatage du cache DB — suffisant pour 304.

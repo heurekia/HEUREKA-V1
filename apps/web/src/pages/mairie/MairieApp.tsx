@@ -8566,6 +8566,18 @@ export function MairieApp() {
     return <NoCommuneAssignedScreen prenom={user?.prenom ?? ""} />;
   }
 
+  // Tant que la liste des communes accessibles n'est pas chargée, on n'affiche
+  // rien — sinon les écrans rendent avec `commune=""` ou la commune principale
+  // par défaut, ce qui provoque un flash de carte centrée sur Ballan-Miré
+  // avant que localStorage restaure la dernière commune sélectionnée.
+  if (!communesLoaded) {
+    return (
+      <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex", alignItems: "center", justifyContent: "center", color: "#64748b", fontSize: 13 }}>
+        Chargement…
+      </div>
+    );
+  }
+
   return (
     <div style={{ fontFamily: "'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif", background: "#F8F9FC", minHeight: "100vh", display: "flex" }}>
       <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} signaturesBadge={signaturesBadge} isSignataire={isSignataire} communes={userCommunes} />
