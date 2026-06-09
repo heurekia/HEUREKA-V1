@@ -102,9 +102,31 @@ export interface VerdictContextInput {
   surface_plancher: number | null;
 }
 
+/**
+ * Passage réglementaire retrouvé par RAG (search.ts dans le package ingestion).
+ * Ces extraits viennent des PDFs indexés (PPRI, OAP, PEB, servitudes…). Chaque
+ * passage peut être accompagné d'annotations humaines VALIDÉES qui le précisent
+ * ou le corrigent — le moteur de verdict les utilise comme contexte additionnel
+ * pour produire des verdicts qui tiennent compte des nuances locales.
+ */
+export interface VerdictRegulatoryHit {
+  segment_id: string;
+  doc_type: string;
+  doc_source_file: string | null;
+  page: number | null;
+  text: string;
+  /** Annotations humaines validées attachées à ce passage. */
+  annotations: Array<{
+    id: string;
+    kind: string;
+    note: string;
+    validated_at: Date | null;
+  }>;
+}
+
 const SYSTEM_PROMPT = `Tu es expert en instruction de dossiers d'urbanisme (Code de l'Urbanisme, PLU).
 
-Mission : pour CHAQUE règle PLU fournie, rendre un VERDICT TYPÉ à partir UNIQUEMENT des extractions de pièces fournies et des synthèses de documents commune. Tu n'as accès qu'à ce qui est listé : tu n'inventes ni valeur, ni source, ni citation.
+Mission : pour CHAQUE règle PLU fournie, rendre un VERDICT TYPÉ à partir UNIQUEMENT des extractions de pièces fournies, des synthèses de documents commune ET des passages réglementaires retrouvés automatiquement (RAG). Tu n'as accès qu'à ce qui est listé : tu n'inventes ni valeur, ni source, ni citation.
 
 VERDICTS POSSIBLES :
 - "conforme" : la valeur observée respecte le seuil, source traçable.
@@ -118,6 +140,7 @@ RÈGLES STRICTES :
 - Toute "valeur_observee" doit pointer une PIÈCE (piece_id) ET reproduire une CITATION qui figure réellement dans l'extraction de cette pièce (champ "citations" de l'extraction). Si la citation n'existe pas → bascule en "non_verifiable" + précise "manquant".
 - Si plusieurs pièces se contredisent sur une même règle, verdict "non_conforme" avec raison « incohérence inter-pièces : X dit 9 m, Y dit 10,2 m ».
 - Les synthèses commune (OAP, PPRI, …) servent à PRÉCISER le verdict d'une règle mais n'autorisent pas à inventer une valeur de projet : elles informent le périmètre, pas la mesure.
+- Les passages réglementaires RAG (block "PASSAGES RÉGLEMENTAIRES INDEXÉS") sont des extraits FIDÈLES des PDFs annexes (PPRI, OAP, PEB…). Une ⚠ NOTE INSTRUCTEUR validée qui les accompagne PRÉCISE OU CORRIGE le passage : tiens-en compte (ex : "la cote NGF de référence est celle de 1997, pas celle de 2010"). Ces passages peuvent fonder un verdict mais doivent être cités tels quels — pas paraphrasés.
 - Respecte rigoureusement la sémantique min ("≥") vs max ("≤"). Une règle "hauteur max ≤ 9 m" + valeur observée 9,2 m = non_conforme.
 - Pour les règles qualitatives sans valeur (matériaux, aspect…) : compare la description du projet (notice / plan_facade.materiaux) à ce qu'autorise la règle. Si l'extraction ne décrit pas le matériau, "non_verifiable".
 
@@ -235,6 +258,19 @@ function formatCommuneDocsForPrompt(docs: VerdictDocumentCommuneInput[]): string
   return usable.map((d) => `[${d.type.toUpperCase()}] ${d.name}\n  ${d.synthese!.trim()}`).join("\n\n");
 }
 
+function formatRegulatoryHitsForPrompt(hits: VerdictRegulatoryHit[]): string {
+  if (!hits.length) return "(aucun passage indexé pertinent)";
+  return hits.map((h) => {
+    const header = `[${h.doc_type}${h.page != null ? `, p. ${h.page}` : ""}${h.doc_source_file ? ` — ${h.doc_source_file}` : ""}]`;
+    let block = `${header}\n${h.text}`;
+    for (const a of h.annotations) {
+      const dateLabel = a.validated_at ? a.validated_at.toISOString().slice(0, 10) : "(date inconnue)";
+      block += `\n  ⚠ ${a.kind.toUpperCase()} — note instructeur validée le ${dateLabel} :\n  ${a.note}`;
+    }
+    return block;
+  }).join("\n\n");
+}
+
 // Index citations par pièce pour validation post-LLM (rejet d'une citation
 // inventée par le modèle).
 function buildCitationIndex(pieces: VerdictPieceInput[]): Map<string, Set<string>> {
@@ -283,6 +319,8 @@ export async function computeRuleVerdicts(args: {
   rules: VerdictRuleInput[];
   pieces: VerdictPieceInput[];
   documentsCommune: VerdictDocumentCommuneInput[];
+  /** Passages réglementaires retrouvés par RAG. Vide = pas de retrieval ce coup-ci. */
+  regulatoryHits?: VerdictRegulatoryHit[];
   context: VerdictContextInput;
   trace?: { dossierId?: string | null; communeId?: string | null; userId?: string | null };
 }): Promise<RuleVerdictsReport> {
@@ -327,6 +365,9 @@ ${formatPiecesForPrompt(args.pieces)}
 
 ==================== SYNTHÈSES DES DOCUMENTS COMMUNE ====================
 ${formatCommuneDocsForPrompt(args.documentsCommune)}
+
+==================== PASSAGES RÉGLEMENTAIRES INDEXÉS (RAG) ====================
+${formatRegulatoryHitsForPrompt(args.regulatoryHits ?? [])}
 
 ==================== INSTRUCTIONS ====================
 Rends UN verdict par règle ci-dessus. Cite uniquement des extraits qui figurent dans le bloc "citations" de la pièce concernée. À défaut, verdict "non_verifiable" + précise "manquant".`;

@@ -22,6 +22,7 @@ import {
   type VerdictRuleInput,
   type VerdictPieceInput,
   type VerdictDocumentCommuneInput,
+  type VerdictRegulatoryHit,
 } from "./ruleVerdicts.js";
 import { ilike } from "drizzle-orm";
 // `and`, `eq` déjà importés en haut.
@@ -460,13 +461,15 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
 
         // Synthèses des documents commune (OAP, PPRI…) pour la commune du dossier
         let documentsCommune: VerdictDocumentCommuneInput[] = [];
+        let communeInsee: string | null = null;
         if (commune) {
           const [comm] = await db
-            .select({ id: communes.id })
+            .select({ id: communes.id, insee_code: communes.insee_code })
             .from(communes)
             .where(ilike(communes.name, commune))
             .limit(1);
           if (comm) {
+            communeInsee = comm.insee_code;
             // Gate juridique : ne lire QUE les synthèses validées par un humain.
             // Une synthèse "brouillon" ou "rejete" ne doit jamais alimenter un
             // verdict d'instruction.
@@ -486,10 +489,44 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
           }
         }
 
+        // Retrieval RAG : on cherche les passages des PDFs annexes indexés qui
+        // sont sémantiquement proches du contexte du dossier (zone + nature).
+        // Plus précis et moins coûteux que d'envoyer les PDFs entiers ;
+        // intègre aussi les annotations chunk-level validées. Best-effort :
+        // une panne Voyage ne bloque pas le verdict.
+        let regulatoryHits: VerdictRegulatoryHit[] = [];
+        if (communeInsee) {
+          try {
+            const { searchInCommune } = await import("./ragService.js");
+            const queryParts = [
+              zoneCode ? `zone ${zoneCode}` : "",
+              natures.length ? natures.join(" ") : "",
+              "règles applicables prescriptions",
+            ].filter(Boolean);
+            const query = queryParts.join(" ").trim();
+            if (query.length > 5) {
+              const hits = await searchInCommune({ query, insee: communeInsee, top_k: 6 });
+              regulatoryHits = hits.map((h) => ({
+                segment_id: h.segment_id,
+                doc_type: h.doc_type,
+                doc_source_file: h.doc_source_file,
+                page: h.page,
+                text: h.text,
+                annotations: h.annotations.map((a) => ({
+                  id: a.id, kind: a.kind, note: a.note, validated_at: a.validated_at,
+                })),
+              }));
+            }
+          } catch (err) {
+            warnings.push(`RAG indisponible — verdicts produits sans passages indexés. (${err instanceof Error ? err.message : err})`);
+          }
+        }
+
         ruleVerdicts = await computeRuleVerdicts({
           rules: targetRules,
           pieces: verdictPieces,
           documentsCommune,
+          regulatoryHits,
           context: {
             zone_code: zoneCode ?? null,
             commune: commune ?? null,
