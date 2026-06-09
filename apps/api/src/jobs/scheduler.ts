@@ -3,8 +3,9 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { db } from "../db.js";
-import { audit_logs, dossiers, dossier_pieces_jointes } from "@heureka-v1/db";
-import { sql, eq, lt, and } from "drizzle-orm";
+import { audit_logs, communes, dossiers, dossier_pieces_jointes } from "@heureka-v1/db";
+import { sql, eq, lt, and, or, isNull } from "drizzle-orm";
+import { refreshPluZones, PLU_REFRESH_AFTER_MS } from "../services/pluZones.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
@@ -69,6 +70,33 @@ export function startScheduledJobs() {
       console.log(`[cron] Purged ${oldDrafts.length} brouillon dossier(s) > ${DRAFT_DOSSIER_RETENTION_DAYS} days (+ ${filesDeleted} files)`);
     } catch (err) {
       console.error("[cron] draft purge failed:", err);
+    }
+  });
+
+  // Daily at 03:00 — refresh PLU zones whose DB cache is older than 30 days.
+  // Évite que la 1ère ouverture de l'onglet Carte tombe sur un cold-fetch (10-30s).
+  cron.schedule("0 3 * * *", async () => {
+    try {
+      const threshold = new Date(Date.now() - PLU_REFRESH_AFTER_MS);
+      const stale = await db.select({ insee_code: communes.insee_code })
+        .from(communes)
+        .where(or(
+          isNull(communes.plu_zones_cached_at),
+          lt(communes.plu_zones_cached_at, threshold),
+        ));
+      if (stale.length === 0) return;
+      console.log(`[cron] PLU refresh: ${stale.length} commune(s) à rafraîchir`);
+      // Séquentiel + délai entre appels pour rester poli avec apicarto.ign.fr
+      let ok = 0, ko = 0;
+      for (const row of stale) {
+        if (!row.insee_code) continue;
+        const r = await refreshPluZones(row.insee_code);
+        if (r.ok) ok++; else ko++;
+        await new Promise(res => setTimeout(res, 1500));
+      }
+      console.log(`[cron] PLU refresh terminé : ${ok} OK, ${ko} échec(s)`);
+    } catch (err) {
+      console.error("[cron] PLU refresh failed:", err);
     }
   });
 
