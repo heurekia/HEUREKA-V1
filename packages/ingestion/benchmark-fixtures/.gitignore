@@ -1,0 +1,4 @@
+# RGPD : ne JAMAIS commiter de pièce réelle même anonymisée — à partager
+# uniquement via canal chiffré.
+pieces/*
+!pieces/.gitkeep

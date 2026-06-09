@@ -243,6 +243,9 @@ importers:
 
   packages/ingestion:
     dependencies:
+      '@anthropic-ai/bedrock-sdk':
+        specifier: ^0.24.0
+        version: 0.24.0(zod@3.25.76)
       '@anthropic-ai/sdk':
         specifier: ^0.97.0
         version: 0.97.0(zod@3.25.76)

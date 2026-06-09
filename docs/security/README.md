@@ -11,6 +11,7 @@ Ce dossier documente l'architecture de sécurité, les exigences de conformité 
 | [aipd.md](./aipd.md) | Analyse d'Impact relative à la Protection des Données — RGPD art. 35 |
 | [registre-traitements.md](./registre-traitements.md) | Fiches de registre des traitements pré-remplies — RGPD art. 30 |
 | [dpa-anthropic-checklist.md](./dpa-anthropic-checklist.md) | Checklist opérationnelle de la sous-traitance LLM Anthropic |
+| [benchmark-llm.md](./benchmark-llm.md) | Méthodologie de comparaison des fournisseurs d'inférence LLM (souveraineté / qualité / coût) — harnais dans `packages/ingestion/src/benchmark/` |
 | [todo.md](./todo.md) | Chantiers de sécurité par priorité |
 
 ## Périmètre
