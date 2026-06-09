@@ -6469,6 +6469,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         valeur_observee: { value: number; unit: string | null } | null;
         valeur_attendue: { min?: number | null; max?: number | null; exact?: number | null; unit?: string | null } | null;
         sources: Array<{ piece_id: string; piece_nom: string; citation: string }>;
+        regulatory_sources?: Array<{
+          segment_id: string;
+          doc_type: string;
+          doc_source_file: string | null;
+          page: number | null;
+          citation: string;
+        }>;
       }>;
       counts: Record<string, number>;
       warnings: string[];
@@ -7553,12 +7560,32 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           )}
                           {v.sources.length > 0 && (
                             <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${meta.border}` }}>
-                              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", letterSpacing: "0.04em", marginBottom: 4 }}>SOURCES</div>
+                              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", letterSpacing: "0.04em", marginBottom: 4 }}>SOURCES — PIÈCES DU DOSSIER</div>
                               {v.sources.map((s, i) => (
                                 <div key={i} style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55 }}>
                                   📎 <strong>{s.piece_nom}</strong> — « {s.citation} »
                                 </div>
                               ))}
+                            </div>
+                          )}
+                          {(v.regulatory_sources?.length ?? 0) > 0 && (
+                            <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${meta.border}` }}>
+                              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", letterSpacing: "0.04em", marginBottom: 4 }}>
+                                SOURCES — RÉGLEMENTATION (PASSAGES VÉRIFIÉS)
+                              </div>
+                              {v.regulatory_sources!.map((s, i) => {
+                                const pageLabel = s.page != null ? `, p. ${s.page}` : "";
+                                const fileLabel = s.doc_source_file ? ` · ${s.doc_source_file}` : "";
+                                return (
+                                  <div key={i} style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55, marginBottom: i === v.regulatory_sources!.length - 1 ? 0 : 4 }}>
+                                    <span style={{ background: "#EEF2FF", border: "1px solid #C7D2FE", color: "#4338CA", borderRadius: 5, padding: "1px 7px", fontSize: 10.5, fontWeight: 700, letterSpacing: "0.02em", marginRight: 6 }}>
+                                      📑 {s.doc_type}{pageLabel}
+                                    </span>
+                                    « {s.citation} »
+                                    {fileLabel && <span style={{ fontSize: 10.5, color: "#94a3b8", marginLeft: 4 }}>{fileLabel}</span>}
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                         </div>
