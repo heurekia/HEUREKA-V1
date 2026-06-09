@@ -68,6 +68,38 @@ export function anthropicClient(opts?: { maxRetries?: number; timeout?: number }
   return _client;
 }
 
+// ── Probe de démarrage ──────────────────────────────────────────────────────
+// Vérifie au boot que la table `ai_usage_events` existe ET porte les colonnes
+// attendues (commune_id, en particulier). Loggue UN message clair plutôt que
+// de laisser le serveur insérer dans le vide pendant des semaines.
+const REQUIRED_COLUMNS = [
+  "id", "dossier_id", "commune_id", "user_id", "purpose", "model",
+  "input_tokens", "output_tokens", "cache_read_input_tokens",
+  "cache_creation_input_tokens", "cost_eur", "duration_ms", "created_at",
+] as const;
+
+export async function probeAiUsageTable(): Promise<void> {
+  try {
+    const { sql } = await import("drizzle-orm");
+    const rows = await db.execute<{ column_name: string }>(
+      sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'ai_usage_events'`,
+    );
+    const cols = new Set((rows as unknown as { column_name: string }[]).map((r) => r.column_name));
+    if (cols.size === 0) {
+      console.error("[aiUsage] ⚠️  Table ai_usage_events INTROUVABLE — relance la migration : pnpm --filter @heureka-v1/db migrate");
+      return;
+    }
+    const missing = REQUIRED_COLUMNS.filter((c) => !cols.has(c));
+    if (missing.length > 0) {
+      console.error(`[aiUsage] ⚠️  Colonnes manquantes sur ai_usage_events: ${missing.join(", ")} — relance la migration.`);
+      return;
+    }
+    console.log("[aiUsage] ✅ Table ai_usage_events OK, suivi des coûts actif.");
+  } catch (err) {
+    console.error("[aiUsage] probe échoué:", err instanceof Error ? err.message : err);
+  }
+}
+
 // ── Wrapper de tracking ─────────────────────────────────────────────────────
 
 export interface CallClaudeContext {
@@ -116,7 +148,12 @@ export async function callClaude(
     cost_eur: cost,
     duration_ms: durationMs,
   }).catch((err) => {
-    console.error("[aiUsage] insert failed:", err);
+    // Bien visible : on a payé l'appel mais on a perdu la trace. Cas typique :
+    // migration `ai_usage_events` non appliquée ou colonne manquante.
+    console.error(
+      `[aiUsage] ⚠️  INSERT ÉCHOUÉ — événement payant non tracé (purpose=${ctx.purpose}, model=${request.model}, cost=${cost}€). Vérifier la migration ai_usage_events.`,
+      err instanceof Error ? err.message : err,
+    );
   });
 
   return msg;

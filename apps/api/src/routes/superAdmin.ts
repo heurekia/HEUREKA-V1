@@ -972,6 +972,79 @@ superAdminRouter.delete("/legal-mentions/:id", async (req, res) => {
 });
 
 // ─── Coûts IA ────────────────────────────────────────────────────────────────
+
+// Diagnostic : la table ai_usage_events existe-t-elle, et a-t-elle toutes les
+// colonnes attendues ? Utile quand la page « Coûts IA » reste à zéro alors que
+// la console Anthropic facture — typiquement migration non appliquée.
+superAdminRouter.get("/ai-cost/healthcheck", async (_req, res) => {
+  try {
+    const rows = await db.execute<{ column_name: string }>(
+      sql`SELECT column_name FROM information_schema.columns WHERE table_name = 'ai_usage_events'`,
+    );
+    const cols = (rows as unknown as { column_name: string }[]).map((r) => r.column_name);
+    const required = [
+      "id", "dossier_id", "commune_id", "user_id", "purpose", "model",
+      "input_tokens", "output_tokens", "cache_read_input_tokens",
+      "cache_creation_input_tokens", "cost_eur", "duration_ms", "created_at",
+    ];
+    const missing = required.filter((c) => !cols.includes(c));
+    let totalEvents = 0;
+    let lastEventAt: Date | null = null;
+    if (cols.length > 0 && missing.length === 0) {
+      const [row] = await db
+        .select({ events: count(), last_event_at: sql<Date>`MAX(${ai_usage_events.created_at})` })
+        .from(ai_usage_events);
+      totalEvents = Number(row?.events ?? 0);
+      lastEventAt = row?.last_event_at ?? null;
+    }
+    res.json({
+      table_exists: cols.length > 0,
+      columns_present: cols.sort(),
+      missing_columns: missing,
+      total_events: totalEvents,
+      last_event_at: lastEventAt,
+      ok: cols.length > 0 && missing.length === 0,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ ok: false, error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// Indicateur temps réel : compteur du jour + activité des 5 dernières minutes.
+// Le frontend (sidebar admin) le poll toutes les 30 s pour afficher un pouls
+// dès qu'un appel IA est passé.
+superAdminRouter.get("/ai-cost/live", async (_req, res) => {
+  try {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const fiveMinAgo = new Date(Date.now() - 5 * 60 * 1000);
+
+    const [[today], [last5m]] = await Promise.all([
+      db.select({
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+        last_event_at: sql<Date>`MAX(${ai_usage_events.created_at})`,
+      }).from(ai_usage_events).where(gte(ai_usage_events.created_at, todayStart)),
+      db.select({
+        events: count(),
+        cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
+      }).from(ai_usage_events).where(gte(ai_usage_events.created_at, fiveMinAgo)),
+    ]);
+
+    res.json({
+      today_events: Number(today?.events ?? 0),
+      today_cost_eur: Number(today?.cost_eur ?? 0),
+      last_5min_events: Number(last5m?.events ?? 0),
+      last_5min_cost_eur: Number(last5m?.cost_eur ?? 0),
+      last_event_at: today?.last_event_at ?? null,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // Filtre temporel : ?period=7d|30d|all (défaut 30d).
 function aiUsagePeriodCutoff(req: { query: { period?: string } }): Date | null {
   const p = String(req.query.period ?? "30d");

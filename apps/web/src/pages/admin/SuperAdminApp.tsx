@@ -364,6 +364,89 @@ const navItems = [
   { path: "/admin/configuration", icon: "⚙", label: "Configuration" },
 ];
 
+// ─── Indicateur temps réel d'activité IA ─────────────────────────────────────
+// Pill cliquable en pied de sidebar : montre le coût IA cumulé du jour et
+// pulse quand un appel a eu lieu dans les 5 dernières minutes. Auto-refresh
+// toutes les 30 s. Pour pouvoir surveiller la conso d'un coup d'œil.
+interface AiLive {
+  today_events: number;
+  today_cost_eur: number;
+  last_5min_events: number;
+  last_5min_cost_eur: number;
+  last_event_at: string | null;
+}
+
+function AiLiveWidget() {
+  const navigate = useNavigate();
+  const [data, setData] = useState<AiLive | null>(null);
+  const [prevEventAt, setPrevEventAt] = useState<string | null>(null);
+  const [pulse, setPulse] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    const fetchOnce = () => {
+      api.get<AiLive>("/admin/ai-cost/live")
+        .then((d) => {
+          if (cancelled) return;
+          setData(d);
+          if (d.last_event_at && d.last_event_at !== prevEventAt) {
+            setPulse(true);
+            setTimeout(() => !cancelled && setPulse(false), 1500);
+            setPrevEventAt(d.last_event_at);
+          }
+        })
+        .catch(() => { /* silencieux : ne pas polluer la sidebar */ });
+    };
+    fetchOnce();
+    const t = setInterval(fetchOnce, 30_000);
+    return () => { cancelled = true; clearInterval(t); };
+  }, [prevEventAt]);
+
+  if (!data) return null;
+  const recentlyActive = data.last_5min_events > 0;
+  const cost = data.today_cost_eur;
+  const fmt = cost < 0.01 ? `${(cost * 100).toFixed(2)} c€` : `${cost.toFixed(cost < 1 ? 3 : 2)} €`;
+
+  return (
+    <div style={{ padding: "0 12px 12px" }}>
+      <style>{`
+        @keyframes aiPulse { 0%{box-shadow:0 0 0 0 rgba(16,185,129,0.6)} 70%{box-shadow:0 0 0 8px rgba(16,185,129,0)} 100%{box-shadow:0 0 0 0 rgba(16,185,129,0)} }
+      `}</style>
+      <button
+        onClick={() => navigate("/admin/couts-ia")}
+        title={data.last_event_at ? `Dernier appel : ${new Date(data.last_event_at).toLocaleString("fr-FR")}` : "Aucun appel IA aujourd'hui"}
+        style={{
+          width: "100%", display: "flex", alignItems: "center", gap: 10,
+          padding: "10px 12px", borderRadius: 8, border: "1px solid rgba(255,255,255,0.08)",
+          background: "rgba(255,255,255,0.04)", cursor: "pointer", color: "#CBD5E1",
+          textAlign: "left", fontSize: 12,
+        }}
+        onMouseEnter={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.08)"; }}
+        onMouseLeave={(e) => { e.currentTarget.style.background = "rgba(255,255,255,0.04)"; }}
+      >
+        <div style={{
+          width: 8, height: 8, borderRadius: "50%",
+          background: recentlyActive ? "#10B981" : "#475569",
+          flexShrink: 0,
+          animation: pulse ? "aiPulse 1.5s ease-out" : "none",
+        }} />
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ color: "white", fontSize: 13, fontWeight: 700, lineHeight: 1.1 }}>
+            {fmt}
+            <span style={{ color: "#64748B", fontWeight: 400, marginLeft: 6, fontSize: 11 }}>
+              aujourd'hui
+            </span>
+          </div>
+          <div style={{ color: "#64748B", fontSize: 10.5, marginTop: 2 }}>
+            {data.today_events} appel{data.today_events > 1 ? "s" : ""}
+            {recentlyActive && <span style={{ color: "#10B981", marginLeft: 6 }}>● {data.last_5min_events} dans les 5 min</span>}
+          </div>
+        </div>
+      </button>
+    </div>
+  );
+}
+
 function Sidebar() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
@@ -439,6 +522,9 @@ function Sidebar() {
           );
         })}
       </nav>
+
+      {/* Live AI activity widget */}
+      <AiLiveWidget />
 
       {/* Logout */}
       <div style={{ padding: "12px 12px 20px" }}>
