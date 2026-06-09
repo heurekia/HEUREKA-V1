@@ -56,13 +56,13 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 ### 7. RGPD — Droits des usagers
 **Source :** Annexe Technique n°2 §4.10
 **Exigences :**
-- [ ] Suppression de compte (droit à l'effacement)
-- [ ] Export des données personnelles (droit à la portabilité)
-- [ ] Mentions légales + politique de confidentialité
-- [ ] Contact DPD (Délégué à la Protection des Données)
+- [x] Suppression de compte (droit à l'effacement, art. 17) — `DELETE /api/auth/me` avec confirmation mot de passe + effacement physique des fichiers sur disque (`auth.ts`)
+- [x] Export des données personnelles (droit d'accès art. 15 + portabilité art. 20) — `GET /api/auth/me/export` : profil + dossiers + pièces + messages + consentement IA + journal des appels IA + journal d'audit (`auth.ts` + `Profil.tsx`)
+- [x] Contact DPD (Délégué à la Protection des Données) — affiché sur la page Profil
+- [ ] Mentions légales + politique de confidentialité (pages publiques)
 - [ ] Bannière de consentement cookie (si cookies analytiques)
 
-**État :** ⚠️ Partiellement conforme — droits des personnes restent à exposer.
+**État :** 🟢 Droits techniques conformes — pages publiques restent à produire.
 
 ### 7 bis. RGPD — Analyse IA des pièces (Anthropic / Claude)
 **Source :** RGPD art. 5, 13, 22, 28, 30, 32 + IA Act
