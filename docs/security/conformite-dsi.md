@@ -76,14 +76,14 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 - ✅ **Trace au niveau du dossier** : `dossiers.ai_consent` + `ai_consent_at` enregistrent la décision du pétitionnaire.
 - ✅ **Décision humaine systématique** : l'IA produit un avis indicatif, jamais une décision automatisée (art. 22 RGPD).
 
-**Exigences documentaires restantes :**
-- [ ] Signature du DPA Anthropic + SCC + activation du Zero Data Retention
-- [ ] Mentions légales / politique de confidentialité publiques mentionnant Anthropic
-- [ ] Inscription au registre des traitements (art. 30) de la ligne « analyse IA des pièces »
-- [ ] AIPD (art. 35) — analyse d'impact à formaliser sur modèle CNIL
-- [ ] Évaluation à déclencher pour bascule vers Anthropic via AWS Bedrock (région eu-central-1) si la DSI exige le strict UE
+**Exigences documentaires :**
+- [ ] Signature du DPA Anthropic + SCC + activation du Zero Data Retention — voir [`dpa-anthropic-checklist.md`](./dpa-anthropic-checklist.md)
+- [x] Mentions légales / politique de confidentialité publiques mentionnant Anthropic — `MentionsLegales.tsx` + `PolitiqueConfidentialite.tsx`
+- [x] Modèle de fiche de registre des traitements (art. 30) prêt à recopier — voir [`registre-traitements.md`](./registre-traitements.md)
+- [x] AIPD (art. 35) — voir [`aipd.md`](./aipd.md)
+- [x] Bascule technique vers AWS Bedrock UE implémentée — activable via `AI_PROVIDER=bedrock`
 
-**État :** 🟢 Technique conforme — documentaire en cours.
+**État :** 🟢 Technique conforme — DPA Anthropic à signer pour finaliser.
 
 ### 7 ter. Rétention et purges automatiques
 **Source :** CCSC Art. 4.14 + RGPD art. 5.1.e

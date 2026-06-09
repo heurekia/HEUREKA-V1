@@ -2418,9 +2418,10 @@ function Conformite() {
         },
         {
           titre: "DPA avec Anthropic (sous-traitant LLM)",
-          description: "Signature du Data Processing Agreement Anthropic, incluant clauses contractuelles types (SCC) pour le transfert hors UE et option Zero Data Retention (suppression de la rétention 30 jours côté Anthropic).",
+          description: "Checklist opérationnelle prête à exécuter (docs/security/dpa-anthropic-checklist.md) : DPA + SCC 2021/914 module 2 + Zero Data Retention + TIA + procédure d'incident. Reste l'acte de signature à la mise en production.",
           reference: "RGPD art. 28 + 44-46",
           statut: "doc",
+          code_ref: "docs/security/dpa-anthropic-checklist.md",
         },
         {
           titre: "Mentions légales & politique de confidentialité",
@@ -2431,15 +2432,17 @@ function Conformite() {
         },
         {
           titre: "Registre des traitements (art. 30)",
-          description: "Ligne « analyse IA des pièces d'urbanisme » au registre : finalité, catégories de données, sous-traitant, transferts, durée, mesures de sécurité.",
+          description: "4 fiches pré-remplies prêtes à recopier dans le registre de la collectivité (docs/security/registre-traitements.md) : instruction des autorisations, analyse IA, gestion des comptes, journaux de sécurité. Sections marquées [À COMPLÉTER] pour les éléments propres à chaque collectivité.",
           reference: "RGPD art. 30",
-          statut: "doc",
+          statut: "actif",
+          code_ref: "docs/security/registre-traitements.md",
         },
         {
           titre: "AIPD — Analyse d'Impact (art. 35)",
-          description: "Le traitement à grande échelle de données personnelles via un service public déclenche une AIPD obligatoire (modèle CNIL). À tenir à jour à chaque évolution majeure de l'analyse IA.",
+          description: "AIPD rédigée et structurée selon la méthodologie CNIL (docs/security/aipd.md) : description du traitement, nécessité et proportionnalité, évaluation des risques (confidentialité, intégrité, disponibilité, biais IA), plan d'action. Section avis DPD à compléter par la collectivité avant mise en production. Revue annuelle prévue.",
           reference: "RGPD art. 35",
-          statut: "doc",
+          statut: "actif",
+          code_ref: "docs/security/aipd.md",
         },
         {
           titre: "Droits des personnes — accès, portabilité, effacement",
