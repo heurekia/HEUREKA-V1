@@ -380,6 +380,9 @@ export function NouvelleDemandeWizard() {
   const [search, setSearch] = useState(qParam);
   const [searching, setSearching] = useState(false);
   const [parcel, setParcel] = useState<ParcelInfo | null>(null);
+  // Réponse brute de /public/analyse — propagée à la mairie via metadata.parcel_analysis
+  // pour qu'elle dispose immédiatement de la zone PLU, surface terrain, servitudes, etc.
+  const [parcelRaw, setParcelRaw] = useState<Record<string, unknown> | null>(null);
   const [banSuggestions, setBanSuggestions] = useState<{ label: string }[]>([]);
   const [showBanSuggestions, setShowBanSuggestions] = useState(false);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -496,6 +499,9 @@ export function NouvelleDemandeWizard() {
             ? (meta.servitudes as Array<{ categorie?: string; libelle?: string }>)
             : [],
         };
+        const resumedParcelRaw = (meta.parcel_analysis && typeof meta.parcel_analysis === "object")
+          ? (meta.parcel_analysis as Record<string, unknown>)
+          : null;
 
         // Re-run classification to recover libelle / delai_moyen / pieces_requises.
         // Fallback minimal si l'appel échoue → on garde au moins le type.
@@ -535,6 +541,7 @@ export function NouvelleDemandeWizard() {
         setDossierId(d.id);
         setDossierNumero(d.numero);
         setParcel(resumedParcel);
+        setParcelRaw(resumedParcelRaw);
         setNatures(resumedNatures);
         if (resumedSurface > 0) {
           setSurface(resumedSurface);
@@ -583,8 +590,10 @@ export function NouvelleDemandeWizard() {
         `/public/analyse?q=${encodeURIComponent(query)}`,
       );
       setParcel(mapAnalysis(result, query));
+      setParcelRaw(result);
     } catch {
       setParcel({ adresse: query });
+      setParcelRaw(null);
     } finally {
       setSearching(false);
     }
@@ -652,6 +661,7 @@ export function NouvelleDemandeWizard() {
         type: classification.type,
         adresse: parcel?.adresse ?? "",
         commune: parcel?.commune ?? "",
+        parcelle: parcel?.parcelle,
         description: description || undefined,
         surface_plancher: natures.some((n) => n !== "certificat") && surface > 0 ? String(surface) : undefined,
         metadata: {
@@ -659,6 +669,9 @@ export function NouvelleDemandeWizard() {
           zone: parcel?.zone,
           parcelle: parcel?.parcelle,
           servitudes: parcel?.servitudes ?? [],
+          // Analyse parcellaire complète (zone PLU, surface terrain, ABF…) :
+          // la mairie l'affiche directement sans re-fetcher /analyse-parcelle.
+          parcel_analysis: parcelRaw ?? undefined,
           cerfa_data: {
             qualiteDemandeur: qualiteDemandeur || undefined,
             empriseSol: empriseSol || undefined,
@@ -677,7 +690,7 @@ export function NouvelleDemandeWizard() {
     } finally {
       setCreatingDossier(false);
     }
-  }, [dossierId, classification, parcel, description, natures, surface, qualiteDemandeur, empriseSol, hauteurProjet, destinationActuelle, destinationFuture, nbLogements]);
+  }, [dossierId, classification, parcel, parcelRaw, description, natures, surface, qualiteDemandeur, empriseSol, hauteurProjet, destinationActuelle, destinationFuture, nbLogements]);
 
   // ── Upload a piece and get AI analysis ───────────────────────────────────────
   // `rubricLabel` = libellé de la catégorie (ex. "Plan de situation" ou "Annexe")
