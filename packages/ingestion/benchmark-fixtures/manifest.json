@@ -1,0 +1,80 @@
+[
+  {
+    "id": "plan-masse-01",
+    "file": "plan-masse-01.png",
+    "mime": "image/png",
+    "label": "Plan de masse — maison individuelle Tours UB",
+    "context": {
+      "dossierType": "permis_de_construire",
+      "natures": ["maison_neuve"],
+      "zone": "UB",
+      "commune": "Tours",
+      "surface": 95,
+      "aide": "Plan en projection horizontale avec cotes de recul, distances aux limites, échelle et orientation."
+    },
+    "golden": {
+      "piece_type": "plan_masse",
+      "expected_quality": "lisible",
+      "expected_score": "conforme",
+      "expected_values": {
+        "echelle": "1/200",
+        "nord_visible": true,
+        "plan_masse.recul_voie_m": 4.2,
+        "plan_masse.emprise_au_sol_m2": 95,
+        "plan_masse.longueur_batiment_m": 12.5,
+        "plan_masse.largeur_batiment_m": 8.0
+      },
+      "expected_non_conformites": [],
+      "notes": "Référence simulée — remplacer le fichier par un VRAI plan anonymisé avant exécution."
+    }
+  },
+  {
+    "id": "plan-coupe-01",
+    "file": "plan-coupe-01.png",
+    "mime": "image/png",
+    "label": "Plan de coupe — maison R+1 avec NGF",
+    "context": {
+      "dossierType": "permis_de_construire",
+      "natures": ["maison_neuve"],
+      "zone": "UC",
+      "commune": "Tours",
+      "aide": "Coupe verticale avec niveaux NGF sol naturel, sol fini, égout, faîtage."
+    },
+    "golden": {
+      "piece_type": "plan_coupe",
+      "expected_quality": "lisible",
+      "expected_score": "conforme",
+      "expected_values": {
+        "plan_coupe.sol_naturel_ngf_m": 105.10,
+        "plan_coupe.egout_ngf_m": 111.90,
+        "plan_coupe.faitage_ngf_m": 114.50,
+        "plan_coupe.hauteur_egout_m": 6.80,
+        "plan_coupe.hauteur_faitage_m": 9.40
+      },
+      "expected_non_conformites": []
+    }
+  },
+  {
+    "id": "cerfa-01",
+    "file": "cerfa-01.png",
+    "mime": "image/png",
+    "label": "CERFA PC rempli — petite extension",
+    "context": {
+      "dossierType": "permis_de_construire",
+      "natures": ["agrandissement"],
+      "zone": "UB",
+      "commune": "Ballan-Miré"
+    },
+    "golden": {
+      "piece_type": "cerfa",
+      "expected_quality": "lisible",
+      "expected_score": "conforme",
+      "expected_values": {
+        "cerfa.surface_plancher_creee_m2": 25,
+        "cerfa.destination": "habitation",
+        "cerfa.nb_logements": 1
+      },
+      "expected_non_conformites": []
+    }
+  }
+]

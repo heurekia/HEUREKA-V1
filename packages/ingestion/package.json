@@ -14,9 +14,11 @@
     "test": "vitest run",
     "test:watch": "vitest",
     "ingest": "tsx src/index.ts",
-    "eval:ingestion": "tsx src/eval/cli.ts"
+    "eval:ingestion": "tsx src/eval/cli.ts",
+    "benchmark:llm": "tsx src/benchmark/cli.ts"
   },
   "dependencies": {
+    "@anthropic-ai/bedrock-sdk": "^0.24.0",
     "@anthropic-ai/sdk": "^0.97.0",
     "@heureka-v1/db": "workspace:*",
     "drizzle-orm": "^0.45.2",

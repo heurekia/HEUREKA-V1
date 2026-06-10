@@ -523,13 +523,23 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
         communeIdForTrace = c?.id ?? null;
       }
       const trace = { dossierId: req.params.id as string, userId: req.user!.id, communeId: communeIdForTrace };
+      // Diagnostic : on log explicitement les erreurs au lieu de les avaler
+      // silencieusement avec .catch(() => null). Sans ça, un échec Bedrock
+      // (model ID invalide, AccessDenied, etc.) se traduit côté UI par une
+      // pièce sans badge d'analyse — sans aucune trace serveur.
       [analyse_ia, extraction_ia] = await Promise.all([
-        analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece, undefined, trace).catch(() => null),
+        analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece, undefined, trace).catch((err) => {
+          console.error("[upload] analyzePiece a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+          return null;
+        }),
         extractPiece(req.file.path, req.file.mimetype, {
           expected_type: expected,
           nom_piece,
           code_piece,
-        }, trace).catch(() => null as PieceExtraction | null),
+        }, trace).catch((err) => {
+          console.error("[upload] extractPiece a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+          return null as PieceExtraction | null;
+        }),
       ]);
     }
 
