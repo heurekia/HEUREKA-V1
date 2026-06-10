@@ -15,6 +15,7 @@ import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../ser
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
 import { computeInstructionDelay } from "../services/instructionDelays.js";
 import { getStorageProvider } from "../services/storage.js";
+import { attachCerfaToDossier } from "../services/cerfaAttachment.js";
 
 // Multer stocke le fichier en MÉMOIRE (Buffer) plutôt que sur disque local.
 // On délègue l'écriture finale au StorageProvider (local OU S3), ce qui
@@ -365,6 +366,15 @@ dossiersRouter.post("/", async (req: AuthRequest, res) => {
       .insert(dossiers)
       .values({ ...data, numero, user_id: req.user!.id })
       .returning();
+
+    // Génération + attachement du CERFA prérempli, best-effort : un échec
+    // ici (PDF template manquant, erreur storage) ne doit pas bloquer la
+    // création du brouillon. Le citoyen pourra retrouver le formulaire vide
+    // sur service-public.fr et le déposer manuellement.
+    attachCerfaToDossier(dossier!.id).catch((err) => {
+      console.error("[dossiers] attachCerfaToDossier a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+    });
+
     res.status(201).json(dossier);
   } catch (err) {
     if (err instanceof z.ZodError) {

@@ -113,6 +113,12 @@ const PIECES_DP: Piece[] = [
 // ── Permis de Construire ──────────────────────────────────────────────────────
 const PIECES_PC: Piece[] = [
   {
+    code: "PCMI-FORMULAIRE",
+    nom: "Formulaire CERFA 13406*16 prérempli (PCMI)",
+    requis: true,
+    aide: "Pré-rempli automatiquement par Heureka à partir des informations du dossier. Vérifie les données, complète si nécessaire, date et signe avant le dépôt final.",
+  },
+  {
     code: "PC1",
     nom: "Plan de situation du terrain (PC1)",
     requis: true,
