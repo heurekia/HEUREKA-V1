@@ -4,6 +4,12 @@ import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/Ma
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
+import {
+  STATUS_LABELS as DOSSIER_STATUS_LABELS,
+  primaryNextAction as primaryNextActionFor,
+  type DossierStatus,
+  type NextAction,
+} from "@heureka-v1/shared";
 
 const COMMUNE_INSEE: Record<string, string> = {
   "Ballan-Miré": "37018",
@@ -729,9 +735,15 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   const tabs = ["Tous", "Nouveau", "En instruction", "Pré-instruction", "Incomplet", "Décision en cours", "Accepté", "Refusé"];
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState(searchParams.get("filter") ?? "Tous");
+  // Portée de la liste : tous les dossiers de la commune, uniquement ceux
+  // pris en charge par l'utilisateur connecté, ou la "boîte à trier" des
+  // dossiers sans instructeur.
+  type Scope = "all" | "mine" | "unassigned";
+  const [scope, setScope] = useState<Scope>((searchParams.get("scope") as Scope) || "all");
 
   useEffect(() => {
     setActiveTab(searchParams.get("filter") ?? "Tous");
+    setScope((searchParams.get("scope") as Scope) || "all");
   }, [searchParams]);
 
   const [searchQ, setSearchQ] = useState("");
@@ -766,19 +778,21 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
     });
   };
 
-  // Re-fetch when commune changes; compute deadlines on first load
+  // Re-fetch when commune or scope changes; compute deadlines on first load
   useEffect(() => {
     setLoading(true);
-    const communeQ = `commune=${encodeURIComponent(commune)}`;
+    const params = new URLSearchParams({ commune });
+    if (scope === "mine") params.set("mine", "true");
+    else if (scope === "unassigned") params.set("unassigned", "true");
     fetch("/api/mairie/admin/compute-deadlines", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } })
       .catch(() => {})
       .finally(() => {
-        api.get<ApiDossier[]>(`/mairie/dossiers?${communeQ}`)
+        api.get<ApiDossier[]>(`/mairie/dossiers?${params.toString()}`)
           .then(d => setApiDossiers(d))
           .catch(() => {})
           .finally(() => setLoading(false));
       });
-  }, [commune]);
+  }, [commune, scope]);
 
   const allRows = apiDossiers.map(d => ({
     id: d.id,
@@ -812,12 +826,47 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
         <p style={{ color: "#64748b", fontSize: 13 }}>Retrouvez et suivez l'avancement de tous les dossiers.</p>
       </div>
 
+      {/* Portée : tous / mes dossiers / boîte à trier */}
+      <div style={{ display: "flex", gap: 6, marginBottom: 12 }}>
+        {([
+          { key: "all", label: "Tous les dossiers" },
+          { key: "mine", label: "Mes dossiers" },
+          { key: "unassigned", label: "Non assignés" },
+        ] as { key: Scope; label: string }[]).map(opt => {
+          const active = scope === opt.key;
+          return (
+            <button
+              key={opt.key}
+              onClick={() => {
+                setScope(opt.key);
+                const sp = new URLSearchParams(searchParams);
+                if (opt.key === "all") sp.delete("scope"); else sp.set("scope", opt.key);
+                setSearchParams(sp, { replace: true });
+              }}
+              style={{
+                border: active ? "1px solid #4F46E5" : "1px solid #E2E8F0",
+                background: active ? "#EEF2FF" : "white",
+                color: active ? "#4F46E5" : "#475569",
+                borderRadius: 999, padding: "5px 12px", fontSize: 12.5, fontWeight: 600,
+                cursor: "pointer", whiteSpace: "nowrap" as const,
+              }}>
+              {opt.label}
+            </button>
+          );
+        })}
+      </div>
+
       {/* Status tabs */}
       <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #E2E8F0", marginBottom: 16, overflowX: "auto" }}>
         {tabs.map(t => {
           const active = t === activeTab;
           return (
-            <button key={t} onClick={() => { setActiveTab(t); setSearchParams(t !== "Tous" ? { filter: t } : {}, { replace: true }); }} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13, fontWeight: active ? 600 : 400, color: active ? "#4F46E5" : "#64748b", borderBottom: active ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer", whiteSpace: "nowrap" }}>
+            <button key={t} onClick={() => {
+              setActiveTab(t);
+              const sp = new URLSearchParams(searchParams);
+              if (t === "Tous") sp.delete("filter"); else sp.set("filter", t);
+              setSearchParams(sp, { replace: true });
+            }} style={{ border: "none", background: "none", padding: "8px 14px", fontSize: 13, fontWeight: active ? 600 : 400, color: active ? "#4F46E5" : "#64748b", borderBottom: active ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer", whiteSpace: "nowrap" }}>
               {t} <span style={{ fontSize: 11, color: active ? "#4F46E5" : "#94a3b8" }}>{tabCounts[t] ?? 0}</span>
             </button>
           );
@@ -5656,13 +5705,26 @@ type DelaiBreakdown = {
   breakdown: Array<{ label: string; mois: number; article: string }>;
 };
 
+type WorkflowMeta = {
+  status: DossierStatus;
+  next_action: NextAction | null;
+  allowed_transitions: DossierStatus[];
+  can_take_charge: boolean;
+  can_reassign: boolean;
+  can_unassign: boolean;
+  is_mine: boolean;
+};
+
 type DossierInfo = {
   id: string; numero: string; type: string; petitionnaire: string; adresse: string;
   status: string; echeance: string; date_depot?: string;
   date_completude?: string;
   delai?: DelaiBreakdown | null;
   description?: string; parcelle?: string; surface_plancher?: string;
-  commune?: string; code_postal?: string; instructeur?: string;
+  commune?: string; code_postal?: string;
+  instructeur?: string;
+  instructeur_id?: string;
+  workflow?: WorkflowMeta;
   lat?: number; lng?: number;
 };
 
@@ -6567,7 +6629,88 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     : null;
 
   const typeLabel = TYPE_LABEL[dossier.type] ?? dossier.type;
-  const instructeurName = dossier.instructeur ?? "Non assigné";
+
+  // ── Workflow d'instruction (statut + assignation) ──
+  // Source de vérité côté serveur : la machine à états partagée. On reflète ici
+  // les actions disponibles renvoyées par GET /mairie/dossiers/:id et on
+  // rafraîchit après chaque mutation pour rester synchronisé.
+  const [workflow, setWorkflow] = useState<WorkflowMeta | null>(dossier.workflow ?? null);
+  const [currentStatus, setCurrentStatus] = useState<string>(dossier.status);
+  const [currentInstructeur, setCurrentInstructeur] = useState<string | undefined>(dossier.instructeur);
+  const [currentInstructeurId, setCurrentInstructeurId] = useState<string | undefined>(dossier.instructeur_id);
+  const [instructeurOptions, setInstructeurOptions] = useState<Array<{ id: string; prenom: string; nom: string }>>([]);
+  const [workflowBusy, setWorkflowBusy] = useState(false);
+  const [workflowError, setWorkflowError] = useState<string | null>(null);
+  const [showAssignPicker, setShowAssignPicker] = useState(false);
+
+  const instructeurName = currentInstructeur ?? "Non assigné";
+
+  const refreshWorkflow = useCallback(async () => {
+    type ApiDetail = {
+      status: string;
+      instructeur_id: string | null;
+      instructeur: { prenom?: string; nom?: string } | null;
+      workflow?: WorkflowMeta;
+    };
+    try {
+      const fresh = await api.get<ApiDetail>(`/mairie/dossiers/${dossier.id}`);
+      setWorkflow(fresh.workflow ?? null);
+      setCurrentStatus(fresh.status);
+      setCurrentInstructeur(fresh.instructeur ? ([fresh.instructeur.prenom, fresh.instructeur.nom].filter(Boolean).join(" ") || undefined) : undefined);
+      setCurrentInstructeurId(fresh.instructeur_id ?? undefined);
+    } catch (e) {
+      console.warn("Workflow refresh failed", e);
+    }
+  }, [dossier.id]);
+
+  const ensureInstructeursLoaded = useCallback(async () => {
+    if (instructeurOptions.length > 0) return;
+    try {
+      const list = await api.get<Array<{ id: string; prenom: string; nom: string }>>("/mairie/instructeurs");
+      setInstructeurOptions(list);
+    } catch (e) {
+      console.warn("Instructeurs list failed", e);
+    }
+  }, [instructeurOptions.length]);
+
+  const runWorkflowAction = useCallback(async (fn: () => Promise<unknown>) => {
+    setWorkflowBusy(true);
+    setWorkflowError(null);
+    try {
+      await fn();
+      await refreshWorkflow();
+    } catch (e) {
+      setWorkflowError(e instanceof Error ? e.message : "Action impossible");
+    } finally {
+      setWorkflowBusy(false);
+    }
+  }, [refreshWorkflow]);
+
+  const handleTakeCharge = useCallback(() =>
+    runWorkflowAction(() => api.post(`/mairie/dossiers/${dossier.id}/take-charge`, {})),
+    [dossier.id, runWorkflowAction]);
+
+  const handleTransition = useCallback((target: DossierStatus, reason?: string) =>
+    runWorkflowAction(() => api.patch(`/mairie/dossiers/${dossier.id}/status`, { status: target, reason: reason ?? null })),
+    [dossier.id, runWorkflowAction]);
+
+  const handleAssign = useCallback((instructeurId: string) =>
+    runWorkflowAction(async () => {
+      await api.patch(`/mairie/dossiers/${dossier.id}/assign`, { instructeur_id: instructeurId });
+      setShowAssignPicker(false);
+    }),
+    [dossier.id, runWorkflowAction]);
+
+  const handleUnassign = useCallback(() =>
+    runWorkflowAction(() => api.delete(`/mairie/dossiers/${dossier.id}/assign`)),
+    [dossier.id, runWorkflowAction]);
+
+  // Fallback si l'API ne renvoie pas encore le bloc workflow (ex. cache front).
+  const nextAction = workflow?.next_action ?? primaryNextActionFor(currentStatus as DossierStatus);
+  const allowedTransitions = workflow?.allowed_transitions ?? [];
+  const canTakeCharge = workflow?.can_take_charge ?? false;
+  const canReassign = workflow?.can_reassign ?? false;
+  const canUnassign = workflow?.can_unassign ?? false;
 
   const CARD: React.CSSProperties = { background: "white", borderRadius: 14, border: "1px solid #E8EEF4", padding: 22, boxShadow: "0 1px 4px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)" };
   const SH: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 18 };
@@ -6618,7 +6761,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 3 }}>
               <h1 style={{ fontSize: 26, fontWeight: 800, color: "#0F172A", margin: 0, letterSpacing: "-0.8px", lineHeight: 1 }}>{dossier.numero}</h1>
-              <StatusBadge status={dossier.status} />
+              <StatusBadge status={currentStatus} />
             </div>
             <div style={{ fontSize: 13, color: "#475569", fontWeight: 500, marginBottom: 8 }}>{typeLabel}{dossier.description ? ` – ${dossier.description}` : ""}</div>
             <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" as const }}>
@@ -6725,6 +6868,156 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             </div>
           </div>
         </div>
+
+        {/* ── Bandeau workflow d'instruction ── */}
+        {/* CTA contextuel (prochaine étape attendue) + actions d'assignation.
+            Le bloc se rétracte naturellement sur dossiers terminaux (accepté /
+            refusé) où aucune action n'est plus attendue. */}
+        {(nextAction || canTakeCharge || canReassign || canUnassign || workflowError) && (
+          <div style={{
+            display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" as const,
+            padding: "10px 14px", marginBottom: 12,
+            background: "linear-gradient(180deg,#F8FAFF,#EEF2FF)",
+            border: "1px solid #DDE3FF", borderRadius: 12,
+          }}>
+            {/* Côté gauche : action principale ─────────────────────────── */}
+            <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "1 1 auto", minWidth: 0 }}>
+              <div style={{
+                width: 28, height: 28, borderRadius: 8, background: "white",
+                border: "1px solid #DDE3FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
+              }}>
+                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
+              </div>
+              <div style={{ minWidth: 0 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: "#4F46E5", letterSpacing: "0.06em", textTransform: "uppercase" as const }}>Prochaine étape</div>
+                <div style={{ fontSize: 13, color: "#1E293B", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis" as const, whiteSpace: "nowrap" as const }}>
+                  {nextAction
+                    ? nextAction.hint
+                    : (currentStatus === "decision_en_cours"
+                      ? "L'arrêté est en circuit de signature."
+                      : currentStatus === "brouillon"
+                        ? "Le pétitionnaire n'a pas encore soumis le dossier."
+                        : "Aucune action attendue à ce stade.")}
+                </div>
+              </div>
+            </div>
+
+            {/* Côté droit : CTA + transitions secondaires + assignation ─── */}
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flexShrink: 0, flexWrap: "wrap" as const }}>
+              {canTakeCharge && (
+                <button
+                  onClick={handleTakeCharge}
+                  disabled={workflowBusy}
+                  style={{
+                    background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none",
+                    borderRadius: 8, padding: "7px 14px", fontSize: 12.5, fontWeight: 600,
+                    cursor: workflowBusy ? "default" : "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.30)",
+                    opacity: workflowBusy ? 0.7 : 1,
+                  }}>
+                  Prendre en charge
+                </button>
+              )}
+
+              {nextAction && !canTakeCharge && (
+                <button
+                  onClick={() => handleTransition(nextAction.target_status)}
+                  disabled={workflowBusy}
+                  style={{
+                    background: nextAction.variant === "success" ? "linear-gradient(135deg,#16A34A,#22C55E)"
+                              : nextAction.variant === "warning" ? "linear-gradient(135deg,#D97706,#F59E0B)"
+                              : "linear-gradient(135deg,#4F46E5,#6366F1)",
+                    color: "white", border: "none", borderRadius: 8, padding: "7px 14px",
+                    fontSize: 12.5, fontWeight: 600, cursor: workflowBusy ? "default" : "pointer",
+                    boxShadow: "0 2px 6px rgba(79,70,229,0.25)", opacity: workflowBusy ? 0.7 : 1,
+                  }}>
+                  {nextAction.label}
+                </button>
+              )}
+
+              {allowedTransitions.filter(s => s !== nextAction?.target_status).map(target => (
+                <button
+                  key={target}
+                  onClick={() => handleTransition(target)}
+                  disabled={workflowBusy}
+                  title={`Passer en : ${DOSSIER_STATUS_LABELS[target]}`}
+                  style={{
+                    background: "white", color: "#374151", border: "1px solid #E2E8F0",
+                    borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 500,
+                    cursor: workflowBusy ? "default" : "pointer", opacity: workflowBusy ? 0.6 : 1,
+                  }}>
+                  → {DOSSIER_STATUS_LABELS[target]}
+                </button>
+              ))}
+
+              {(canReassign || canUnassign) && (
+                <div style={{ position: "relative" as const }}>
+                  <button
+                    onClick={() => { setShowAssignPicker(v => !v); if (!showAssignPicker) void ensureInstructeursLoaded(); }}
+                    disabled={workflowBusy}
+                    style={{
+                      background: "white", color: "#374151", border: "1px solid #E2E8F0",
+                      borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 500, cursor: "pointer",
+                      display: "flex", alignItems: "center", gap: 5,
+                    }}>
+                    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+                    {currentInstructeurId ? "Réassigner" : "Assigner"}
+                  </button>
+                  {showAssignPicker && (
+                    <>
+                      <div onClick={() => setShowAssignPicker(false)} style={{ position: "fixed", inset: 0, zIndex: 98 }} />
+                      <div style={{
+                        position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 99,
+                        background: "white", border: "1px solid #E2E8F0", borderRadius: 10,
+                        boxShadow: "0 10px 32px rgba(15,23,42,0.16)", minWidth: 240,
+                        maxHeight: 320, overflowY: "auto" as const, padding: 4,
+                      }}>
+                        <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase" as const, padding: "8px 12px 4px" }}>Choisir un instructeur</div>
+                        {instructeurOptions.length === 0 ? (
+                          <div style={{ padding: "10px 12px", fontSize: 12.5, color: "#94a3b8" }}>Chargement…</div>
+                        ) : instructeurOptions.map(opt => {
+                          const isCurrent = opt.id === currentInstructeurId;
+                          return (
+                            <button
+                              key={opt.id}
+                              onClick={() => handleAssign(opt.id)}
+                              disabled={workflowBusy || isCurrent}
+                              style={{
+                                display: "flex", alignItems: "center", gap: 8, width: "100%",
+                                background: isCurrent ? "#F1F5F9" : "transparent", border: "none",
+                                padding: "8px 12px", borderRadius: 8, fontSize: 13, color: "#0F172A",
+                                cursor: isCurrent || workflowBusy ? "default" : "pointer", textAlign: "left" as const,
+                              }}
+                              onMouseEnter={e => { if (!isCurrent && !workflowBusy) e.currentTarget.style.background = "#F8FAFC"; }}
+                              onMouseLeave={e => { if (!isCurrent) e.currentTarget.style.background = "transparent"; }}>
+                              <span style={{ flex: 1 }}>{opt.prenom} {opt.nom}</span>
+                              {isCurrent && <span style={{ fontSize: 10.5, color: "#16A34A", fontWeight: 600 }}>en charge</span>}
+                            </button>
+                          );
+                        })}
+                        {canUnassign && (
+                          <button
+                            onClick={() => { setShowAssignPicker(false); void handleUnassign(); }}
+                            disabled={workflowBusy}
+                            style={{
+                              display: "block", width: "100%", border: "none", background: "transparent",
+                              color: "#B91C1C", fontSize: 12.5, padding: "8px 12px", borderTop: "1px solid #F1F5F9",
+                              textAlign: "left" as const, cursor: workflowBusy ? "default" : "pointer", marginTop: 4,
+                            }}>
+                            Retirer l'instructeur
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
+                </div>
+              )}
+            </div>
+
+            {workflowError && (
+              <div style={{ width: "100%", marginTop: 4, fontSize: 12, color: "#B91C1C" }}>{workflowError}</div>
+            )}
+          </div>
+        )}
 
         {/* Éditeur d'adresse (dans l'en-tête sticky) */}
         {showAddressEditor && (
@@ -8385,8 +8678,10 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
       date_limite_instruction: string | null; date_depot: string | null;
       date_completude: string | null;
       metadata: Record<string, unknown> | null;
+      instructeur_id: string | null;
       demandeur: { prenom?: string; nom?: string } | null;
       instructeur: { prenom?: string; nom?: string } | null;
+      workflow?: WorkflowMeta;
     };
     api.get<ApiDetail>(`/mairie/dossiers/${id}`)
       .then(data => {
@@ -8410,6 +8705,8 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
           commune: data.commune ?? undefined,
           code_postal: data.code_postal ?? undefined,
           instructeur: data.instructeur ? ([data.instructeur.prenom, data.instructeur.nom].filter(Boolean).join(" ") || undefined) : undefined,
+          instructeur_id: data.instructeur_id ?? undefined,
+          workflow: data.workflow,
           lat: isNaN(lat) ? undefined : lat,
           lng: isNaN(lng) ? undefined : lng,
         });

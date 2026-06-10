@@ -1,10 +1,20 @@
 // ── Re-exports ──
 export * from "./legalArticlesCatalog.js";
+export * from "./dossierWorkflow.js";
+
+import type { DossierStatus } from "./dossierWorkflow.js";
 
 // ── Enums ──
-export type Role = "citoyen" | "mairie" | "instructeur" | "admin";
-export type DossierStatus = "brouillon" | "soumis" | "en_instruction" | "complete" | "refuse";
-export type DossierType = "urbanisme" | "permis_de_construire" | "declaration_prealable" | "declaration_intention" | "permis_amenager" | "permis_demolir" | "permis_lotir";
+export type Role = "citoyen" | "mairie" | "instructeur" | "admin" | "service_externe";
+// DossierStatus est défini dans dossierWorkflow.ts (réexporté ci-dessus) pour
+// garder la machine à états source de vérité.
+export type DossierType =
+  | "permis_de_construire"
+  | "declaration_prealable"
+  | "permis_amenager"
+  | "permis_demolir"
+  | "permis_lotir"
+  | "certificat_urbanisme";
 export type NotificationChannel = "email" | "sms" | "push";
 export type NotificationEvent = "nouveau_dossier" | "changement_statut" | "message_recu" | "rappel_echeance" | "decision_rendue";
 export type ParcelleStatus = "conforme" | "non_conforme" | "a_verifier" | "en_attente";

@@ -6,6 +6,7 @@ import {
 import { eq, and, or, desc } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
+import { changeDossierStatus } from "../services/dossierWorkflow.js";
 
 export const decisionsRouter = Router();
 decisionsRouter.use(requireAuth);
@@ -187,9 +188,15 @@ decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur",
     });
   }
 
-  // Set dossier to decision_en_cours
-  await db.update(dossiers).set({ status: "decision_en_cours" as const, updated_at: new Date() })
-    .where(and(eq(dossiers.id, dossierId)));
+  // Le dossier bascule en "décision en cours" — transition imposée par le
+  // moteur de décision, donc bypass de la machine à états mais on garde la
+  // trace dans instruction_events via le service workflow.
+  await changeDossierStatus(dossierId, "decision_en_cours", req.user!.id, {
+    bypassStateMachine: true,
+    eventType: "decision_initiated",
+    reason: "création d'une décision",
+    extraMetadata: { decision_id: decision!.id },
+  });
 
   res.json(decision);
 });
@@ -263,15 +270,21 @@ decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: Au
 
   if (!decision) return res.status(500).json({ error: "Erreur lors de la signature" });
 
-  // Update dossier status
+  // Update dossier status — transition terminale imposée par la signature.
   const dossierStatus =
     decision.type === "accord" ? "accepte" :
     decision.type === "accord_prescription" || decision.type === "non_opposition_prescription" ? "accord_prescription" :
     "refuse";
 
   await db.update(dossiers)
-    .set({ status: dossierStatus as "accepte" | "refuse" | "accord_prescription", date_delivrance: now, updated_at: now })
+    .set({ date_delivrance: now, updated_at: now })
     .where(eq(dossiers.id, decision.dossier_id));
+  await changeDossierStatus(decision.dossier_id, dossierStatus as "accepte" | "refuse" | "accord_prescription", req.user!.id, {
+    bypassStateMachine: true,
+    eventType: "decision_signed",
+    reason: "signature de l'arrêté",
+    extraMetadata: { decision_id: id, arrete_numero: decision.arrete_numero },
+  });
 
   await db.insert(decision_events).values({
     decision_id: id, user_id: req.user!.id, event_type: "signe",
