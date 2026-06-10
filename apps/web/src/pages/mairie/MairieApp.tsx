@@ -5726,6 +5726,9 @@ type DossierInfo = {
   instructeur_id?: string;
   workflow?: WorkflowMeta;
   lat?: number; lng?: number;
+  // Analyse parcellaire propagée depuis la création du dossier côté citoyen,
+  // évite un re-fetch /analyse-parcelle à l'ouverture.
+  cachedParcelAnalysis?: Record<string, unknown> | null;
 };
 
 type DecisionStatus = "brouillon" | "soumis_signature" | "revision_necessaire" | "signe" | "notifie" | "archive";
@@ -6294,7 +6297,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       typeprotect?: string;
     }>;
   };
-  const [parcelAnalysis, setParcelAnalysis] = useState<ParcelAnalysis | null>(null);
+  const [parcelAnalysis, setParcelAnalysis] = useState<ParcelAnalysis | null>(
+    (dossier.cachedParcelAnalysis as ParcelAnalysis | null) ?? null
+  );
   const [parcelLoading, setParcelLoading] = useState(false);
   const [parcelError, setParcelError] = useState<string | null>(null);
   const [showAddressEditor, setShowAddressEditor] = useState(false);
@@ -8780,6 +8785,9 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
           workflow: data.workflow,
           lat: isNaN(lat) ? undefined : lat,
           lng: isNaN(lng) ? undefined : lng,
+          cachedParcelAnalysis: (meta["parcel_analysis"] && typeof meta["parcel_analysis"] === "object")
+            ? (meta["parcel_analysis"] as Record<string, unknown>)
+            : null,
         });
       })
       .catch(() => routerNavigate("/mairie/dossiers", { replace: true }))
