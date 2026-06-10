@@ -71,10 +71,6 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   }
   const communeGeom = JSON.stringify({ type: "Polygon", coordinates: [queryRing] });
 
-  const lats = fullRing.map(p => p[1]!), lngs = fullRing.map(p => p[0]!);
-  const centroid = [(Math.min(...lngs) + Math.max(...lngs)) / 2, (Math.min(...lats) + Math.max(...lats)) / 2];
-  const ptGeom = JSON.stringify({ type: "Point", coordinates: centroid });
-
   // ── Collecte des partitions candidates (sans probe à ce stade) ──────────────
   type Cand = { partition: string; source: string; du_type?: string; etat?: string };
   const cands: Cand[] = [];
@@ -82,10 +78,13 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   const addCand = (c: Cand) => { if (!seen.has(c.partition)) { seen.add(c.partition); cands.push(c); } };
 
   // (A) /document — source autoritative
+  // On envoie le POLYGONE commune (pas juste le centroïde) : le centroïde
+  // peut tomber sur un cours d'eau, une zone non couverte, etc., ce qui
+  // ferait revenir 0 docs alors qu'un PLU existe pour la commune.
   {
     const r = await fetchWithRetry(
-      `https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(ptGeom)}`,
-      { signal: AbortSignal.timeout(8000) }
+      `https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(communeGeom)}`,
+      { signal: AbortSignal.timeout(10000) }
     );
     if (r) {
       // ⚠️ Le champ de type est `typedoc` (pas `du_type`) avec des valeurs
