@@ -3,7 +3,7 @@ import { db } from "../db.js";
 import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, ai_usage_events, ai_alert_config } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
-import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, inArray } from "drizzle-orm";
+import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, lt, inArray } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
@@ -1160,7 +1160,7 @@ superAdminRouter.get("/ai-cost/summary", async (req, res) => {
     const range = aiUsagePeriodRange(req);
     const dateConds = [];
     if (range.from) dateConds.push(gte(ai_usage_events.created_at, range.from));
-    if (range.to) dateConds.push(sql`${ai_usage_events.created_at} < ${range.to}`);
+    if (range.to) dateConds.push(lt(ai_usage_events.created_at, range.to));
     const cond = dateConds.length > 0 ? and(...dateConds) : undefined;
     const [[totals], byPurpose, byModel] = await Promise.all([
       db.select({
@@ -1197,8 +1197,8 @@ superAdminRouter.get("/ai-cost/summary", async (req, res) => {
       by_model: byModel.map((r) => ({ model: r.model, events: Number(r.events), cost_eur: Number(r.cost_eur) })),
     });
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erreur serveur" });
+    console.error("[ai-cost/summary]", { query: req.query, err });
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
   }
 });
 
@@ -1209,7 +1209,7 @@ superAdminRouter.get("/ai-cost/by-dossier", async (req, res) => {
     const limit = Math.min(Number(req.query.limit ?? 50), 200);
     const conds = [isNotNull(ai_usage_events.dossier_id)];
     if (range.from) conds.push(gte(ai_usage_events.created_at, range.from));
-    if (range.to) conds.push(sql`${ai_usage_events.created_at} < ${range.to}`);
+    if (range.to) conds.push(lt(ai_usage_events.created_at, range.to));
 
     const rows = await db
       .select({
@@ -1240,8 +1240,8 @@ superAdminRouter.get("/ai-cost/by-dossier", async (req, res) => {
       last_event_at: r.last_event_at,
     })));
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erreur serveur" });
+    console.error("[ai-cost/by-dossier]", { query: req.query, err });
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
   }
 });
 
@@ -1253,7 +1253,7 @@ superAdminRouter.get("/ai-cost/by-commune", async (req, res) => {
     const limit = Math.min(Number(req.query.limit ?? 50), 200);
     const conds = [isNotNull(ai_usage_events.commune_id)];
     if (range.from) conds.push(gte(ai_usage_events.created_at, range.from));
-    if (range.to) conds.push(sql`${ai_usage_events.created_at} < ${range.to}`);
+    if (range.to) conds.push(lt(ai_usage_events.created_at, range.to));
 
     const rows = await db
       .select({
@@ -1280,8 +1280,8 @@ superAdminRouter.get("/ai-cost/by-commune", async (req, res) => {
       last_event_at: r.last_event_at,
     })));
   } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: "Erreur serveur" });
+    console.error("[ai-cost/by-commune]", { query: req.query, err });
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
   }
 });
 

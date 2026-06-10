@@ -3885,8 +3885,8 @@ function CoutsIA() {
       api.get<AiCostByDossier[]>(`/admin/ai-cost/by-dossier?${qs}&limit=50`),
       api.get<AiCostByCommune[]>(`/admin/ai-cost/by-commune?${qs}&limit=50`),
     ])
-      .then(([s, d, c]) => { setSummary(s); setByDossier(d); setByCommune(c); })
-      .catch(() => setError("Impossible de charger les coûts IA"))
+      .then(([s, d, c]) => { setSummary(s); setByDossier(d); setByCommune(c); setError(""); })
+      .catch((e) => setError(`Impossible de charger les coûts IA — ${(e as Error).message}`))
       .finally(() => setLoading(false));
   }, [period, from, to, useCustom]);
 
