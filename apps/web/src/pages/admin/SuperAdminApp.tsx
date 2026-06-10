@@ -3863,7 +3863,12 @@ function AlertsCard() {
 
 function CoutsIA() {
   const navigate = useNavigate();
+  // Deux modes de filtre exclusifs : quick (boutons 7j/30j/Tout) ou custom
+  // (deux dates from/to). Dès qu'une date est saisie, on passe en mode custom.
   const [period, setPeriod] = useState<"7d" | "30d" | "all">("30d");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const useCustom = from !== "" || to !== "";
   const [summary, setSummary] = useState<AiCostSummary | null>(null);
   const [byDossier, setByDossier] = useState<AiCostByDossier[] | null>(null);
   const [byCommune, setByCommune] = useState<AiCostByCommune[] | null>(null);
@@ -3872,40 +3877,73 @@ function CoutsIA() {
 
   useEffect(() => {
     setLoading(true);
+    const qs = useCustom
+      ? `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`
+      : `period=${period}`;
     Promise.all([
-      api.get<AiCostSummary>(`/admin/ai-cost/summary?period=${period}`),
-      api.get<AiCostByDossier[]>(`/admin/ai-cost/by-dossier?period=${period}&limit=50`),
-      api.get<AiCostByCommune[]>(`/admin/ai-cost/by-commune?period=${period}&limit=50`),
+      api.get<AiCostSummary>(`/admin/ai-cost/summary?${qs}`),
+      api.get<AiCostByDossier[]>(`/admin/ai-cost/by-dossier?${qs}&limit=50`),
+      api.get<AiCostByCommune[]>(`/admin/ai-cost/by-commune?${qs}&limit=50`),
     ])
       .then(([s, d, c]) => { setSummary(s); setByDossier(d); setByCommune(c); })
       .catch(() => setError("Impossible de charger les coûts IA"))
       .finally(() => setLoading(false));
-  }, [period]);
+  }, [period, from, to, useCustom]);
+
+  const setQuick = (p: "7d" | "30d" | "all") => { setFrom(""); setTo(""); setPeriod(p); };
+  const clearCustom = () => { setFrom(""); setTo(""); };
 
   return (
     <PageShell>
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 24 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24, gap: 16, flexWrap: "wrap" }}>
         <div>
           <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Coûts IA</h1>
           <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>
             Suivi du coût des appels Claude par dossier et par usage métier.
           </p>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
+        <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
           {(["7d", "30d", "all"] as const).map((p) => (
             <button
               key={p}
-              onClick={() => setPeriod(p)}
+              onClick={() => setQuick(p)}
               style={{
-                padding: "8px 14px", borderRadius: 8, border: `1px solid ${period === p ? C.accent : C.border}`,
-                background: period === p ? C.accent : "white",
-                color: period === p ? "white" : C.text,
+                padding: "8px 14px", borderRadius: 8,
+                border: `1px solid ${!useCustom && period === p ? C.accent : C.border}`,
+                background: !useCustom && period === p ? C.accent : "white",
+                color: !useCustom && period === p ? "white" : C.text,
                 fontSize: 13, fontWeight: 600, cursor: "pointer",
               }}
             >{p === "7d" ? "7 jours" : p === "30d" ? "30 jours" : "Tout"}</button>
           ))}
+          <div style={{ width: 1, height: 24, background: C.border, margin: "0 4px" }} />
+          <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", border: `1px solid ${useCustom ? C.accent : C.border}`, borderRadius: 8, background: "white" }}>
+            <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}>📅</span>
+            <input
+              type="date"
+              value={from}
+              max={to || undefined}
+              onChange={(e) => setFrom(e.target.value)}
+              style={{ border: "none", outline: "none", fontSize: 13, fontFamily: "inherit", color: C.text, background: "transparent" }}
+            />
+            <span style={{ color: C.textMuted, fontSize: 12 }}>→</span>
+            <input
+              type="date"
+              value={to}
+              min={from || undefined}
+              onChange={(e) => setTo(e.target.value)}
+              style={{ border: "none", outline: "none", fontSize: 13, fontFamily: "inherit", color: C.text, background: "transparent" }}
+            />
+            {useCustom && (
+              <button
+                onClick={clearCustom}
+                title="Effacer la plage personnalisée"
+                style={{ border: "none", background: "transparent", color: C.textMuted, fontSize: 14, cursor: "pointer", padding: "0 4px", marginLeft: 2 }}
+              >×</button>
+            )}
+          </div>
         </div>
       </div>
 

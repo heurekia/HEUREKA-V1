@@ -1,14 +1,9 @@
 import cron from "node-cron";
 import { db } from "../db.js";
-import { audit_logs, dossiers, dossier_pieces_jointes } from "@heureka-v1/db";
-import { sql, eq, lt, and } from "drizzle-orm";
-import { getStorageProvider } from "../services/storage.js";
 import { audit_logs, communes, dossiers, dossier_pieces_jointes } from "@heureka-v1/db";
 import { sql, eq, lt, and, or, isNull } from "drizzle-orm";
+import { getStorageProvider } from "../services/storage.js";
 import { refreshPluZones, PLU_REFRESH_AFTER_MS } from "../services/pluZones.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
 
 // Rétention paramétrable. Valeurs par défaut alignées sur la politique de
 // confidentialité publique et les exigences DSI Tours (CCSC).

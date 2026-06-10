@@ -1126,21 +1126,42 @@ superAdminRouter.post("/ai-cost/alerts/test", async (_req, res) => {
   }
 });
 
-// Filtre temporel : ?period=7d|30d|all (défaut 30d).
-function aiUsagePeriodCutoff(req: { query: { period?: string } }): Date | null {
+// Filtre temporel : ?period=7d|30d|all (défaut 30d) OU ?from=YYYY-MM-DD&to=YYYY-MM-DD
+// (les deux dates sont incluses ; to+1 jour côté requête pour borne stricte).
+function aiUsagePeriodRange(req: { query: { period?: string; from?: string; to?: string } }): { from: Date | null; to: Date | null } {
+  const fromStr = typeof req.query.from === "string" ? req.query.from.trim() : "";
+  const toStr = typeof req.query.to === "string" ? req.query.to.trim() : "";
+  const parse = (s: string): Date | null => {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return null;
+    const d = new Date(`${s}T00:00:00`);
+    return Number.isNaN(d.getTime()) ? null : d;
+  };
+  if (fromStr || toStr) {
+    const from = fromStr ? parse(fromStr) : null;
+    let to: Date | null = toStr ? parse(toStr) : null;
+    if (to) {
+      // Borne haute incluse : on prend la fin du jour.
+      to = new Date(to);
+      to.setDate(to.getDate() + 1);
+    }
+    return { from, to };
+  }
   const p = String(req.query.period ?? "30d");
-  if (p === "all") return null;
+  if (p === "all") return { from: null, to: null };
   const days = p === "7d" ? 7 : 30;
   const d = new Date();
   d.setDate(d.getDate() - days);
-  return d;
+  return { from: d, to: null };
 }
 
 // Vue d'ensemble : total cumulé + répartition par usage / par modèle.
 superAdminRouter.get("/ai-cost/summary", async (req, res) => {
   try {
-    const cutoff = aiUsagePeriodCutoff(req);
-    const cond = cutoff ? gte(ai_usage_events.created_at, cutoff) : undefined;
+    const range = aiUsagePeriodRange(req);
+    const dateConds = [];
+    if (range.from) dateConds.push(gte(ai_usage_events.created_at, range.from));
+    if (range.to) dateConds.push(sql`${ai_usage_events.created_at} < ${range.to}`);
+    const cond = dateConds.length > 0 ? and(...dateConds) : undefined;
     const [[totals], byPurpose, byModel] = await Promise.all([
       db.select({
         events: count(),
@@ -1184,10 +1205,11 @@ superAdminRouter.get("/ai-cost/summary", async (req, res) => {
 // Top des dossiers par coût IA (avec n° de dossier et commune pour identifier).
 superAdminRouter.get("/ai-cost/by-dossier", async (req, res) => {
   try {
-    const cutoff = aiUsagePeriodCutoff(req);
+    const range = aiUsagePeriodRange(req);
     const limit = Math.min(Number(req.query.limit ?? 50), 200);
     const conds = [isNotNull(ai_usage_events.dossier_id)];
-    if (cutoff) conds.push(gte(ai_usage_events.created_at, cutoff));
+    if (range.from) conds.push(gte(ai_usage_events.created_at, range.from));
+    if (range.to) conds.push(sql`${ai_usage_events.created_at} < ${range.to}`);
 
     const rows = await db
       .select({
@@ -1227,10 +1249,11 @@ superAdminRouter.get("/ai-cost/by-dossier", async (req, res) => {
 // dossiers déposés sur cette commune…).
 superAdminRouter.get("/ai-cost/by-commune", async (req, res) => {
   try {
-    const cutoff = aiUsagePeriodCutoff(req);
+    const range = aiUsagePeriodRange(req);
     const limit = Math.min(Number(req.query.limit ?? 50), 200);
     const conds = [isNotNull(ai_usage_events.commune_id)];
-    if (cutoff) conds.push(gte(ai_usage_events.created_at, cutoff));
+    if (range.from) conds.push(gte(ai_usage_events.created_at, range.from));
+    if (range.to) conds.push(sql`${ai_usage_events.created_at} < ${range.to}`);
 
     const rows = await db
       .select({
