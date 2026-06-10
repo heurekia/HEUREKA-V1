@@ -385,6 +385,77 @@ dossiersRouter.post("/", async (req: AuthRequest, res) => {
   }
 });
 
+// ── Mise à jour d'un dossier brouillon ──
+// Permet au citoyen d'ajuster ses informations entre la création (étape 6 du
+// wizard) et la soumission. Régénère automatiquement le CERFA prérempli si
+// un champ « source » change (parcelle, adresse, description, surface,
+// metadata.cerfa_data). Les statuts post-brouillon ne sont pas modifiables
+// via cette route — il faut alors passer par la mairie.
+const updateSchema = z.object({
+  parcelle: z.string().optional(),
+  adresse: z.string().optional(),
+  commune: z.string().optional(),
+  code_postal: z.string().optional(),
+  description: z.string().optional(),
+  surface_plancher: z.string().optional(),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+const CERFA_SOURCE_FIELDS = [
+  "parcelle",
+  "adresse",
+  "commune",
+  "code_postal",
+  "description",
+  "surface_plancher",
+] as const;
+
+function metadataCerfaChanged(prev: unknown, next: unknown): boolean {
+  const p = (prev as Record<string, unknown> | null)?.cerfa_data;
+  const n = (next as Record<string, unknown> | null)?.cerfa_data;
+  return JSON.stringify(p ?? null) !== JSON.stringify(n ?? null);
+}
+
+dossiersRouter.patch("/:id", async (req: AuthRequest, res) => {
+  try {
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    if (dossier.status !== "brouillon") {
+      return res.status(403).json({ error: "Le dossier n'est plus modifiable une fois soumis" });
+    }
+
+    const data = updateSchema.parse(req.body);
+
+    // Détecte si une régénération du CERFA est nécessaire AVANT l'écriture
+    // (sinon on comparerait l'état contre lui-même).
+    const sourceChanged = CERFA_SOURCE_FIELDS.some(
+      (k) => k in data && (data[k] ?? null) !== (dossier[k] ?? null),
+    );
+    const cerfaDataChanged = "metadata" in data && metadataCerfaChanged(dossier.metadata, data.metadata);
+    const needsRegen = sourceChanged || cerfaDataChanged;
+
+    const [updated] = await db
+      .update(dossiers)
+      .set({ ...data, updated_at: new Date() })
+      .where(eq(dossiers.id, req.params.id as string))
+      .returning();
+
+    if (needsRegen) {
+      attachCerfaToDossier(updated!.id).catch((err) => {
+        console.error("[dossiers] régénération CERFA a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+      });
+    }
+
+    res.json(updated);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Données invalides", details: err.errors });
+    }
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ── Messages d'un dossier ──
 dossiersRouter.get("/:id/messages", async (req: AuthRequest, res) => {
   try {

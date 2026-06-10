@@ -3,6 +3,7 @@ import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { api } from "../../lib/api";
 import { linkifyArticles } from "../../utils/linkifyArticles";
+import { Step5CerfaInfos } from "./Step5CerfaInfos";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -404,13 +405,66 @@ export function NouvelleDemandeWizard() {
   const [classifying, setClassifying] = useState(false);
   const [classification, setClassification] = useState<Classification | null>(null);
 
-  // Step 5 – Compléments CERFA
-  const [qualiteDemandeur, setQualiteDemandeur] = useState("");
-  const [empriseSol, setEmpriseSol] = useState("");
-  const [hauteurProjet, setHauteurProjet] = useState("");
-  const [destinationActuelle, setDestinationActuelle] = useState("");
-  const [destinationFuture, setDestinationFuture] = useState("");
-  const [nbLogements, setNbLogements] = useState("");
+  // Step 5 – Compléments CERFA (sections miroir du formulaire officiel)
+  // Stocké en un seul objet pour faciliter la persistance (metadata.cerfa_data)
+  // et le PATCH de régénération automatique. Toutes propriétés facultatives.
+  type CerfaData = {
+    // Identité
+    qualiteDemandeur?: "particulier" | "sci" | "indivision" | "autre";
+    dateNaissance?: string;
+    communeNaissance?: string;
+    deptNaissance?: string;
+    paysNaissance?: string;
+    societeDenomination?: string;
+    societeTypeJuridique?: string;
+    societeSiret?: string;
+    societeRepresentantNom?: string;
+    societeRepresentantPrenom?: string;
+    // Adresse demandeur si différente du terrain
+    adresseDemandeurNumero?: string;
+    adresseDemandeurVoie?: string;
+    adresseDemandeurLocalite?: string;
+    adresseDemandeurCodePostal?: string;
+    // Caractéristiques projet
+    empriseSol?: string;
+    hauteurProjet?: string;
+    destinationActuelle?: string;
+    destinationFuture?: string;
+    destinationUsage?: "principale" | "secondaire";
+    nbLogements?: string;
+    nbPieces?: string;
+    nbNiveaux?: string;
+    comporteGarage?: boolean;
+    comporteVeranda?: boolean;
+    comportePiscine?: boolean;
+    comporteAbriJardin?: boolean;
+    surfaceExistanteAvant?: string;
+    surfaceCreee?: string;
+    surfaceSupprimee?: string;
+    surelevation?: boolean;
+    // Usage projeté
+    destinationVente?: boolean;
+    destinationLocation?: boolean;
+    // Architecte
+    architecteRequis?: boolean;
+    architecteNom?: string;
+    architectePrenom?: string;
+    architecteOrdre?: string;
+    architecteEmail?: string;
+    architecteTelephone?: string;
+    // Situations particulières
+    proximiteABF?: boolean;
+    siteRemarquable?: boolean;
+    monumentHistorique?: boolean;
+    siteClasse?: boolean;
+    raccordementReseaux?: boolean;
+    // Consentement
+    accepteEmail?: boolean;
+  };
+  const [cerfaData, setCerfaData] = useState<CerfaData>({});
+  const setCerfa = useCallback(<K extends keyof CerfaData>(field: K, value: CerfaData[K]) => {
+    setCerfaData((prev) => ({ ...prev, [field]: value }));
+  }, []);
 
   // Step 6 – Infos personnelles
   const [nom, setNom] = useState(user?.nom ?? "");
@@ -548,6 +602,12 @@ export function NouvelleDemandeWizard() {
           setSurfaceStr(String(resumedSurface));
         }
         if (d.description) setDescription(d.description);
+        // Restaure les compléments CERFA saisis avant que le brouillon soit
+        // mis en pause, pour que le citoyen puisse compléter / corriger.
+        const resumedCerfa = meta.cerfa_data;
+        if (resumedCerfa && typeof resumedCerfa === "object") {
+          setCerfaData(resumedCerfa as CerfaData);
+        }
         setClassification(resumedClassification);
         setUploadedPieces(grouped);
         setStep(7);
@@ -652,12 +712,14 @@ export function NouvelleDemandeWizard() {
   }, [natures, surface, parcel, empriseExistante, amenagementType, description, certificatType, hasVoirieCommune]);
 
   // ── Create dossier brouillon then advance to step 7 ─────────────────────────
+  // Si le brouillon existe déjà (cas où le citoyen revient à l'étape 5 pour
+  // ajuster ses infos après création), on PATCH au lieu de POST pour que le
+  // CERFA prérempli soit régénéré côté API.
   const createDossierAndNext = useCallback(async () => {
-    if (dossierId) { setStep((s) => (s + 1) as Step); return; }
     if (!classification || classification.type === "aucune_autorisation") return;
     setCreatingDossier(true);
     try {
-      const result = await api.post<{ id: string; numero: string }>("/dossiers", {
+      const payload = {
         type: classification.type,
         adresse: parcel?.adresse ?? "",
         commune: parcel?.commune ?? "",
@@ -672,25 +734,23 @@ export function NouvelleDemandeWizard() {
           // Analyse parcellaire complète (zone PLU, surface terrain, ABF…) :
           // la mairie l'affiche directement sans re-fetcher /analyse-parcelle.
           parcel_analysis: parcelRaw ?? undefined,
-          cerfa_data: {
-            qualiteDemandeur: qualiteDemandeur || undefined,
-            empriseSol: empriseSol || undefined,
-            hauteurProjet: hauteurProjet || undefined,
-            destinationActuelle: destinationActuelle || undefined,
-            destinationFuture: destinationFuture || undefined,
-            nbLogements: nbLogements || undefined,
-          },
+          cerfa_data: cerfaData,
         },
-      });
-      setDossierId(result.id);
-      setDossierNumero(result.numero);
+      };
+      if (dossierId) {
+        await api.patch(`/dossiers/${dossierId}`, payload);
+      } else {
+        const result = await api.post<{ id: string; numero: string }>("/dossiers", payload);
+        setDossierId(result.id);
+        setDossierNumero(result.numero);
+      }
       setStep((s) => (s + 1) as Step);
     } catch {
-      alert("Erreur lors de la création du dossier. Vérifiez votre connexion et réessayez.");
+      alert("Erreur lors de l'enregistrement du dossier. Vérifiez votre connexion et réessayez.");
     } finally {
       setCreatingDossier(false);
     }
-  }, [dossierId, classification, parcel, parcelRaw, description, natures, surface, qualiteDemandeur, empriseSol, hauteurProjet, destinationActuelle, destinationFuture, nbLogements]);
+  }, [dossierId, classification, parcel, parcelRaw, description, natures, surface, cerfaData]);
 
   // ── Upload a piece and get AI analysis ───────────────────────────────────────
   // `rubricLabel` = libellé de la catégorie (ex. "Plan de situation" ou "Annexe")
@@ -1743,168 +1803,16 @@ export function NouvelleDemandeWizard() {
 
           {/* ───── STEP 5 : Compléments CERFA ───── */}
           {step === 5 && (
-            <div>
-              <div style={{ textAlign: "center", marginBottom: 28 }}>
-                <div style={{ fontSize: 52, marginBottom: 10 }}>📋</div>
-                <h2 style={{ fontSize: 22, fontWeight: 800, color: "#0F172A", marginBottom: 8 }}>
-                  Informations CERFA
-                </h2>
-                <p style={{ fontSize: 14, color: "#64748b", maxWidth: 460, margin: "0 auto" }}>
-                  Ces informations serviront à préremplir votre formulaire officiel. Tous les champs sont facultatifs.
-                </p>
-              </div>
-
-              {/* Qualité du demandeur */}
-              <div style={{ marginBottom: 22 }}>
-                <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 10 }}>
-                  Vous êtes{" "}
-                  <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
-                </label>
-                <div style={{ display: "flex", gap: 10, flexWrap: "wrap" }}>
-                  {(["Propriétaire", "Mandataire du propriétaire", "Autre"] as const).map((q) => (
-                    <button
-                      key={q}
-                      onClick={() => setQualiteDemandeur(qualiteDemandeur === q ? "" : q)}
-                      style={{
-                        padding: "10px 16px",
-                        border: `2px solid ${qualiteDemandeur === q ? "#4F46E5" : "#E2E8F0"}`,
-                        borderRadius: 10,
-                        background: qualiteDemandeur === q ? "#EEF2FF" : "white",
-                        fontSize: 13,
-                        fontWeight: qualiteDemandeur === q ? 700 : 400,
-                        color: qualiteDemandeur === q ? "#4F46E5" : "#374151",
-                        cursor: "pointer",
-                        transition: "all 0.15s",
-                      }}
-                    >
-                      {q}
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              {/* Emprise au sol créée */}
-              {!natures.includes("certificat") && (
-                <div style={{ marginBottom: 20 }}>
-                  <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
-                    Emprise au sol créée{" "}
-                    <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif · m²</span>
-                  </label>
-                  <input
-                    type="number"
-                    value={empriseSol}
-                    onChange={(e) => setEmpriseSol(e.target.value)}
-                    placeholder="Ex : 25"
-                    style={inputStyle}
-                    onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
-                    onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
-                  />
-                  <p style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>
-                    Surface au sol de la construction projetée (projection verticale sur le terrain).
-                  </p>
-                </div>
-              )}
-
-              {/* Changement de destination */}
-              {natures.includes("changement_destination") && (
-                <>
-                  <div style={{ marginBottom: 16 }}>
-                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
-                      Destination actuelle{" "}
-                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
-                    </label>
-                    <select
-                      value={destinationActuelle}
-                      onChange={(e) => setDestinationActuelle(e.target.value)}
-                      style={{ ...inputStyle, background: "white", cursor: "pointer" }}
-                    >
-                      <option value="">— Sélectionner —</option>
-                      {CERFA_DESTINATIONS.map((d) => (
-                        <option key={d.value} value={d.value}>{d.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                  <div style={{ marginBottom: 20 }}>
-                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
-                      Destination future{" "}
-                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
-                    </label>
-                    <select
-                      value={destinationFuture}
-                      onChange={(e) => setDestinationFuture(e.target.value)}
-                      style={{ ...inputStyle, background: "white", cursor: "pointer" }}
-                    >
-                      <option value="">— Sélectionner —</option>
-                      {CERFA_DESTINATIONS.map((d) => (
-                        <option key={d.value} value={d.value}>{d.label}</option>
-                      ))}
-                    </select>
-                  </div>
-                </>
-              )}
-
-              {/* PC uniquement : hauteur + nombre de logements */}
-              {classification?.type === "permis_de_construire" && (
-                <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginBottom: 20 }}>
-                  <div>
-                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
-                      Hauteur maximale{" "}
-                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif · m</span>
-                    </label>
-                    <input
-                      type="number"
-                      value={hauteurProjet}
-                      onChange={(e) => setHauteurProjet(e.target.value)}
-                      placeholder="Ex : 6.5"
-                      step="0.1"
-                      style={inputStyle}
-                      onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
-                      onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
-                    />
-                  </div>
-                  <div>
-                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 8 }}>
-                      Logements créés{" "}
-                      <span style={{ fontWeight: 400, color: "#94a3b8", fontSize: 12 }}>facultatif</span>
-                    </label>
-                    <input
-                      type="number"
-                      value={nbLogements}
-                      onChange={(e) => setNbLogements(e.target.value)}
-                      placeholder="Ex : 1"
-                      min={0}
-                      style={inputStyle}
-                      onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
-                      onBlur={(e) => (e.target.style.borderColor = "#E2E8F0")}
-                    />
-                  </div>
-                </div>
-              )}
-
-              <div
-                style={{
-                  background: "#EFF6FF",
-                  border: "1px solid #BFDBFE",
-                  borderRadius: 12,
-                  padding: "13px 18px",
-                  marginBottom: 24,
-                  fontSize: 13,
-                  color: "#1E40AF",
-                  lineHeight: 1.6,
-                }}
-              >
-                💡 Ces informations sont facultatives. Elles permettront de préremplir votre formulaire CERFA officiel lors du dépôt final.
-              </div>
-
-              <div style={{ display: "flex", justifyContent: "space-between" }}>
-                <button onClick={prev} style={{ padding: "10px 20px", background: "white", color: "#374151", border: "1px solid #E2E8F0", borderRadius: 10, fontSize: 13, cursor: "pointer" }}>
-                  ← Retour
-                </button>
-                <button onClick={next} style={{ padding: "11px 28px", background: "#4F46E5", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>
-                  Continuer →
-                </button>
-              </div>
-            </div>
+            <Step5CerfaInfos
+              classification={classification}
+              natures={natures}
+              surface={surface}
+              cerfaData={cerfaData}
+              setCerfa={setCerfa}
+              inputStyle={inputStyle}
+              onPrev={prev}
+              onNext={next}
+            />
           )}
 
           {/* ───── STEP 6 : Informations ───── */}
