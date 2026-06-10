@@ -142,6 +142,55 @@ export function warmCodeTocCache(codeKey: string): void {
   void getCodeNumIndex(code.id);
 }
 
+export type TocSearchHit = {
+  num: string;          // ex. "R431-2"
+  sectionPath: string;  // ex. "Livre IV › Titre III › Section 2"
+  score: number;        // pour debug / future pagination
+};
+
+// Recherche dans la TOC d'un code. Le query peut être :
+//   - un num partiel (ex. "R431") → match par préfixe
+//   - un mot-clé (ex. "DAACT") → match sur le chemin de section
+// Top N triés par score décroissant. Sans résultat → liste vide
+// (jamais null) ; si la TOC n'est pas encore chargée, on attend (avec timeout).
+export async function searchTocByQuery(codeKey: string, query: string, limit = 20): Promise<TocSearchHit[]> {
+  const code = resolveCode(codeKey);
+  if (!code) return [];
+  const q = query.trim().toLowerCase();
+  if (!q) return [];
+
+  const idx = await getCodeNumIndex(code.id);
+  if (idx.size === 0) return [];
+
+  const looksLikeNum = /^[lrd]?\*?\d/i.test(q);
+  const qNoStar = q.replace(/\*/g, "");
+
+  const hits: TocSearchHit[] = [];
+  for (const [num, entry] of idx) {
+    const numLc = num.toLowerCase();
+    const numNoStar = numLc.replace(/\*/g, "");
+    const sectionLc = entry.sectionPath.toLowerCase();
+    let score = 0;
+
+    if (looksLikeNum) {
+      if (numNoStar === qNoStar) score = 1000;
+      else if (numNoStar.startsWith(qNoStar)) score = 500 - (numNoStar.length - qNoStar.length);
+      else if (numNoStar.includes(qNoStar)) score = 200;
+    } else {
+      // Match par mots-clés sur le chemin de section.
+      const words = q.split(/\s+/).filter(Boolean);
+      const matched = words.filter((w) => sectionLc.includes(w));
+      if (matched.length === words.length) score = 100 * matched.length;
+      else if (matched.length > 0) score = 30 * matched.length;
+    }
+
+    if (score > 0) hits.push({ num, sectionPath: entry.sectionPath, score });
+  }
+
+  hits.sort((a, b) => b.score - a.score || a.num.localeCompare(b.num));
+  return hits.slice(0, limit);
+}
+
 // Récupère le chemin de section pour un num, ou null si la TOC n'est pas dispo.
 async function lookupSectionPath(codeId: string, num: string): Promise<string | null> {
   const idx = await getCodeNumIndex(codeId);

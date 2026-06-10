@@ -2663,7 +2663,11 @@ function Configuration() {
   const [editContexte, setEditContexte] = useState("");
   const [saving, setSaving] = useState(false);
   const [addRef, setAddRef] = useState("");
-  const [addTitle, setAddTitle] = useState("");
+  const [addCode, setAddCode] = useState<"CU" | "CCH" | "CE">("CU");
+  const [addSearchQuery, setAddSearchQuery] = useState("");
+  const [addSearchHits, setAddSearchHits] = useState<{ num: string; sectionPath: string }[]>([]);
+  const [addSearchLoading, setAddSearchLoading] = useState(false);
+  const [addError, setAddError] = useState<string | null>(null);
   const [showAdd, setShowAdd] = useState(false);
   const [refreshingId, setRefreshingId] = useState<string | null>(null);
 
@@ -2764,16 +2768,46 @@ function Configuration() {
   const handleAdd = async () => {
     if (!addRef.trim()) return;
     setSaving(true);
+    setAddError(null);
     try {
-      const row = await api.post<LegalMentionRow>("/admin/legal-mentions", { article_ref: addRef, article_title: addTitle, courrier_types: [], dossier_types: [], contexte: null });
-      setArticles(prev => [...prev, row].sort((a, b) => a.article_ref.localeCompare(b.article_ref)));
-      setAddRef(""); setAddTitle(""); setShowAdd(false);
-    } catch {
-      // ignore
+      const row = await api.post<LegalMentionRow>("/admin/legal-mentions", {
+        article_ref: addRef,
+        code: addCode,
+        courrier_types: [],
+        dossier_types: [],
+        categories: [],
+        contexte: null,
+      });
+      // Comme l'article peut être un upsert, on retire l'ancien d'abord si présent.
+      setArticles(prev => [...prev.filter(a => a.id !== row.id), row].sort((a, b) => a.article_ref.localeCompare(b.article_ref)));
+      setAddRef(""); setAddSearchQuery(""); setAddSearchHits([]); setShowAdd(false);
+    } catch (err) {
+      setAddError(err instanceof Error ? err.message : "Erreur inconnue");
     } finally {
       setSaving(false);
     }
   };
+
+  // Recherche debouncée dans la TOC du code sélectionné.
+  useEffect(() => {
+    if (!showAdd) return;
+    const q = addSearchQuery.trim();
+    if (q.length < 2) { setAddSearchHits([]); return; }
+    setAddSearchLoading(true);
+    const timer = setTimeout(async () => {
+      try {
+        const { hits } = await api.get<{ hits: { num: string; sectionPath: string }[] }>(
+          `/admin/legal-mentions/toc-search?code=${addCode}&q=${encodeURIComponent(q)}&limit=15`,
+        );
+        setAddSearchHits(hits);
+      } catch {
+        setAddSearchHits([]);
+      } finally {
+        setAddSearchLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [addSearchQuery, addCode, showAdd]);
 
   const handleDelete = async (id: string) => {
     if (!window.confirm("Supprimer cet article ?")) return;
@@ -2795,7 +2829,7 @@ function Configuration() {
 
       {/* ── Articles juridiques (Code de l'urbanisme + CCH + CE) ── */}
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18, gap: 16, flexWrap: "wrap" }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12, gap: 16, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
             <div style={{ width: 48, height: 48, background: "#EFF6FF", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>📜</div>
             <div>
@@ -2809,6 +2843,21 @@ function Configuration() {
             style={{ padding: "8px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
             + Ajouter
           </button>
+        </div>
+
+        {/* Sommaire CU / CCH / CE — toujours visible pour rappeler à quoi correspondent les badges. */}
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 18, padding: "10px 14px", background: "#F8FAFC", border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 12 }}>
+          <span style={{ color: C.textMuted, fontWeight: 600 }}>Codes :</span>
+          {[
+            { k: "CU",  label: "Code de l'urbanisme",                       desc: "PC, DP, PA, certificat d'urbanisme, ABF, recours…" },
+            { k: "CCH", label: "Code de la construction et de l'habitation", desc: "RE2020, accessibilité, sécurité incendie…" },
+            { k: "CE",  label: "Code de l'environnement",                   desc: "PPRN, PPRI, étude d'impact, sites pollués…" },
+          ].map(c => (
+            <span key={c.k} title={c.desc} style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+              <span style={{ padding: "2px 7px", background: "#1E293B", color: "white", borderRadius: 4, fontSize: 10, fontWeight: 700, letterSpacing: 0.3 }}>{c.k}</span>
+              <span style={{ color: C.text }}>{c.label}</span>
+            </span>
+          ))}
         </div>
 
         {/* ── Barre de filtres ── */}
@@ -2843,21 +2892,54 @@ function Configuration() {
         </div>
 
         {showAdd && (
-          <div style={{ background: C.bg, borderRadius: 10, padding: 16, marginBottom: 16, display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
-            <div>
-              <div style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Référence (ex : L424-1)</div>
-              <input value={addRef} onChange={e => setAddRef(e.target.value.toUpperCase())} placeholder="L424-1"
-                style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 13, width: 120 }} />
+          <div style={{ background: C.bg, borderRadius: 10, padding: 16, marginBottom: 16 }}>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "flex-end" }}>
+              <div>
+                <div style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Code</div>
+                <select value={addCode} onChange={e => { setAddCode(e.target.value as "CU" | "CCH" | "CE"); setAddSearchHits([]); }}
+                  style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 13, background: "white", cursor: "pointer", width: 80 }}>
+                  <option value="CU">CU</option>
+                  <option value="CCH">CCH</option>
+                  <option value="CE">CE</option>
+                </select>
+              </div>
+              <div style={{ flex: 1, minWidth: 220, position: "relative" }}>
+                <div style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Recherche (référence ou mot-clé)</div>
+                <input
+                  value={addSearchQuery}
+                  onChange={e => { setAddSearchQuery(e.target.value); setAddRef(e.target.value.toUpperCase()); }}
+                  placeholder="R431-2, DAACT, lotissement…"
+                  style={{ width: "100%", padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 13, boxSizing: "border-box" }} />
+                {addSearchHits.length > 0 && (
+                  <div style={{ position: "absolute", top: "100%", left: 0, right: 0, marginTop: 4, maxHeight: 280, overflowY: "auto", background: "white", border: `1px solid ${C.border}`, borderRadius: 8, boxShadow: "0 4px 16px rgba(0,0,0,0.1)", zIndex: 10 }}>
+                    {addSearchHits.map(h => (
+                      <div key={h.num} onClick={() => { setAddRef(h.num); setAddSearchQuery(h.num); setAddSearchHits([]); }}
+                        style={{ padding: "8px 12px", cursor: "pointer", borderBottom: `1px solid ${C.border}`, fontSize: 12 }}
+                        onMouseEnter={e => (e.currentTarget.style.background = C.bg)}
+                        onMouseLeave={e => (e.currentTarget.style.background = "white")}>
+                        <div style={{ fontWeight: 700, color: C.accent, marginBottom: 2 }}>Art. {h.num}</div>
+                        <div style={{ color: C.textMuted, fontSize: 11, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{h.sectionPath || "—"}</div>
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {addSearchLoading && addSearchHits.length === 0 && (
+                  <div style={{ marginTop: 4, fontSize: 11, color: C.textMuted }}>Recherche…</div>
+                )}
+              </div>
+              <button onClick={handleAdd} disabled={saving || !addRef.trim()}
+                style={{ padding: "8px 16px", background: addRef.trim() && !saving ? "#0F172A" : "#E2E8F0", color: addRef.trim() && !saving ? "white" : "#94a3b8", border: "none", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: addRef.trim() && !saving ? "pointer" : "default" }}>
+                {saving ? "Validation…" : "Créer"}
+              </button>
             </div>
-            <div style={{ flex: 1, minWidth: 200 }}>
-              <div style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 4 }}>Titre</div>
-              <input value={addTitle} onChange={e => setAddTitle(e.target.value)} placeholder="Non-opposition / accord"
-                style={{ width: "100%", padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 13 }} />
+            <div style={{ marginTop: 8, fontSize: 11, color: C.textMuted }}>
+              💡 La référence est validée contre Légifrance à la création. Texte et titre seront récupérés automatiquement.
             </div>
-            <button onClick={handleAdd} disabled={saving || !addRef.trim()}
-              style={{ padding: "8px 16px", background: addRef.trim() ? "#0F172A" : "#E2E8F0", color: addRef.trim() ? "white" : "#94a3b8", border: "none", borderRadius: 7, fontSize: 13, fontWeight: 600, cursor: addRef.trim() ? "pointer" : "default" }}>
-              Créer
-            </button>
+            {addError && (
+              <div style={{ marginTop: 10, padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#7F1D1D" }}>
+                {addError}
+              </div>
+            )}
           </div>
         )}
 

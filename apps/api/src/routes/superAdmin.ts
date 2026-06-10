@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db } from "../db.js";
 import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, ai_usage_events, ai_alert_config } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
-import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode } from "../services/legifrance.js";
+import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, lt, inArray } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
@@ -957,25 +957,65 @@ superAdminRouter.post("/legal-mentions/:id/refresh", async (req, res) => {
   }
 });
 
+// Recherche dans la table des matières d'un code (CU/CCH/CE).
+// Sert l'autocomplete au moment d'ajouter un article — évite les erreurs
+// de saisie type L410-2 (n'existe pas) ou les fautes de frappe.
+// Query : ?code=CU&q=DAACT (ou un num partiel comme "R431").
+superAdminRouter.get("/legal-mentions/toc-search", async (req, res) => {
+  try {
+    const codeKey = String(req.query.code ?? "CU").toUpperCase();
+    const q = String(req.query.q ?? "");
+    const limit = Math.min(50, Number(req.query.limit ?? 20));
+    const hits = await searchTocByQuery(codeKey, q, limit);
+    res.json({ hits, code: codeKey });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 superAdminRouter.post("/legal-mentions", async (req, res) => {
   try {
-    const { article_ref, article_title, article_html, courrier_types, dossier_types, categories, contexte } = req.body as {
+    const { article_ref, code, article_title, article_html, courrier_types, dossier_types, categories, contexte, skip_validation } = req.body as {
       article_ref?: string;
+      code?: string; // "CU" | "CCH" | "CE" — défaut CU pour rétro-compatibilité
       article_title?: string;
       article_html?: string;
       courrier_types?: string[];
       dossier_types?: string[];
       categories?: string[];
       contexte?: string;
+      skip_validation?: boolean; // bypass volontaire si Légifrance est down
     };
     if (!article_ref?.trim()) return res.status(400).json({ error: "article_ref requis" });
 
+    const codeKey = (code ?? "CU").toUpperCase();
+    const resolvedCode = resolveCode(codeKey);
+    if (!resolvedCode) return res.status(400).json({ error: `Code non supporté : ${codeKey}` });
+
+    const refUpper = article_ref.trim().toUpperCase();
+
+    // Validation Légifrance — sauf si déjà en base OU skip explicite.
+    // Si l'article existe : refreshArticle a déjà fait l'upsert avec title/html.
+    // S'il n'existe pas : refus net pour ne pas polluer la base.
+    if (!skip_validation) {
+      const fresh = await refreshArticle(codeKey, refUpper);
+      if (!fresh) {
+        return res.status(404).json({
+          error: `Article ${refUpper} introuvable dans ${resolvedCode.name}. Vérifie la référence sur legifrance.gouv.fr, ou ajoute-le avec skip_validation: true si tu veux forcer.`,
+        });
+      }
+    }
+
+    // Upsert final avec les méta utilisateur (catégories, courrier_types, etc.).
+    // Si refreshArticle a tourné, il a déjà posé title/html ; ici on ne les écrase
+    // que si l'admin en a fourni explicitement.
     const [row] = await db
       .insert(legal_mentions)
       .values({
-        code: CODE_URBANISME_ID,
-        code_name: CODE_URBANISME_NAME,
-        article_ref: article_ref.trim().toUpperCase(),
+        code: resolvedCode.id,
+        code_name: resolvedCode.name,
+        article_ref: refUpper,
         article_title: article_title ?? null,
         article_html: article_html ?? null,
         courrier_types: courrier_types ?? [],
@@ -988,8 +1028,9 @@ superAdminRouter.post("/legal-mentions", async (req, res) => {
       .onConflictDoUpdate({
         target: [legal_mentions.code, legal_mentions.article_ref],
         set: {
-          article_title: article_title ?? null,
-          article_html: article_html ?? null,
+          // Ne pas écraser le titre/html fetché à l'instant si l'admin n'a rien donné.
+          ...(article_title !== undefined ? { article_title } : {}),
+          ...(article_html  !== undefined ? { article_html  } : {}),
           courrier_types: courrier_types ?? [],
           dossier_types: dossier_types ?? [],
           categories: categories ?? [],
