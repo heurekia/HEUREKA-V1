@@ -7628,10 +7628,10 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             return "FICHIER";
           };
           const scoreToStatus = (s?: string) => {
-            if (s === "conforme") return { label: "Conforme", bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0" };
-            if (s === "acceptable") return { label: "Acceptable", bg: "#FEF9C3", color: "#854D0E", border: "#FDE68A" };
-            if (s === "incomplet") return { label: "Incomplet", bg: "#FEF3C7", color: "#92400E", border: "#FDE68A" };
-            if (s === "non_conforme") return { label: "Non conforme", bg: "#FEE2E2", color: "#DC2626", border: "#FECACA" };
+            if (s === "conforme") return { label: "Document exploitable", bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0" };
+            if (s === "acceptable") return { label: "Exploitable avec réserves", bg: "#FEF9C3", color: "#854D0E", border: "#FDE68A" };
+            if (s === "incomplet") return { label: "À compléter", bg: "#FEF3C7", color: "#92400E", border: "#FDE68A" };
+            if (s === "non_conforme") return { label: "À reprendre", bg: "#FEE2E2", color: "#DC2626", border: "#FECACA" };
             return { label: "Déposé", bg: "#EFF6FF", color: "#1D4ED8", border: "#BFDBFE" };
           };
 
