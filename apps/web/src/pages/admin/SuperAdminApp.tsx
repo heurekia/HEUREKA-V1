@@ -2753,8 +2753,9 @@ function Configuration() {
         setEditHtml(updated.article_html ?? "");
         setEditTitle(updated.article_title ?? "");
       }
-    } catch {
-      window.alert("Le rafraîchissement Légifrance a échoué. Vérifie les credentials PISTE et les CGU.");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Erreur inconnue";
+      window.alert(`Rafraîchissement Légifrance échoué pour ${a.article_ref} :\n\n${msg}`);
     } finally {
       setRefreshingId(null);
     }

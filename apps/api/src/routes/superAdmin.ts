@@ -940,7 +940,11 @@ superAdminRouter.post("/legal-mentions/:id/refresh", async (req, res) => {
     if (!codeKey) return res.status(400).json({ error: "Code non supporté", code: row.code });
 
     const fresh = await refreshArticle(codeKey, row.article_ref);
-    if (!fresh) return res.status(502).json({ error: "Légifrance n'a pas renvoyé l'article" });
+    if (!fresh) {
+      return res.status(404).json({
+        error: `Article ${row.article_ref} introuvable côté Légifrance — vérifie la référence (peut-être renumérotée ou inexistante dans ce code).`,
+      });
+    }
 
     const [updated] = await db
       .select()
