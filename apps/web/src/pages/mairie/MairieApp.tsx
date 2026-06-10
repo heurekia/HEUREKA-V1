@@ -6671,7 +6671,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               )}
               {showDelaiPopover && dossier.delai && (
-                <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute" as const, top: "calc(100% + 6px)", right: 0, width: 360, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 8px 28px rgba(0,0,0,0.12)", padding: 16, zIndex: 50, textAlign: "left" as const }}>
+                <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute" as const, top: "calc(100% + 6px)", right: 0, width: 360, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 8px 28px rgba(0,0,0,0.12)", padding: 16, zIndex: 1100, textAlign: "left" as const }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Délai légal d'instruction</div>
                     <button onClick={() => setShowDelaiPopover(false)} style={{ border: "none", background: "transparent", fontSize: 16, cursor: "pointer", color: "#94a3b8", padding: 0 }}>✕</button>
