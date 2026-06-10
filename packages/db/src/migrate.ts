@@ -636,6 +636,22 @@ CREATE TABLE IF NOT EXISTS document_segment_annotations (
 );
 CREATE INDEX IF NOT EXISTS idx_segment_annotations_segment ON document_segment_annotations(segment_id);
 CREATE INDEX IF NOT EXISTS idx_segment_annotations_source ON document_segment_annotations(source_id);
+
+CREATE TABLE IF NOT EXISTS dossier_courriers (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  type text NOT NULL,
+  subject text,
+  body_snapshot text,
+  pieces_jointes_ids jsonb DEFAULT '[]'::jsonb,
+  articles_cites jsonb DEFAULT '[]'::jsonb,
+  emis_par uuid REFERENCES users(id),
+  emis_le timestamp NOT NULL DEFAULT now(),
+  delivery_method text,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dossier_courriers_dossier ON dossier_courriers(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_dossier_courriers_type ON dossier_courriers(dossier_id, type);
 `;
 
 async function main() {

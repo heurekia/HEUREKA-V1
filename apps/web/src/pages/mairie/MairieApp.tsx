@@ -6251,7 +6251,11 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 }) {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<DetailTab>("Résumé");
-  const [showCourrierModal, setShowCourrierModal] = useState(false);
+  // Mode d'ouverture de la modale courrier : null = fermée, "general" = bouton
+  // historique, "pieces_complementaires" = entrée dédiée depuis le bandeau
+  // workflow. Le mode pilote le panneau de sélection des pièces et le bouton
+  // "Émettre" dans la modale.
+  const [courrierMode, setCourrierMode] = useState<null | "general" | "pieces_complementaires">(null);
   const [showMapFull, setShowMapFull] = useState(false);
 
   // ── Analyse parcellaire réelle ──
@@ -6645,6 +6649,25 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
   const instructeurName = currentInstructeur ?? "Non assigné";
 
+  // Pré-charge les pièces + le rapport conformité quand on entre dans le mode
+  // "Demande de pièces complémentaires" — sinon le sélecteur s'ouvrirait sur
+  // une liste vide tant que l'instructeur n'a pas visité l'onglet Documents.
+  useEffect(() => {
+    if (courrierMode !== "pieces_complementaires") return;
+    if (documents === null && !documentsLoading) {
+      setDocumentsLoading(true);
+      api.get<DossierPiece[]>(`/mairie/dossiers/${dossier.id}/pieces`)
+        .then((data) => setDocuments(data))
+        .catch(() => setDocuments([]))
+        .finally(() => setDocumentsLoading(false));
+    }
+    if (conformite === null) {
+      api.get<{ status: string; report: ConformiteReport | null; analyzed_at: string | null }>(`/mairie/dossiers/${dossier.id}/conformite`)
+        .then(setConformite)
+        .catch(() => setConformite({ status: "absent", report: null, analyzed_at: null }));
+    }
+  }, [courrierMode, documents, documentsLoading, conformite, dossier.id]);
+
   const refreshWorkflow = useCallback(async () => {
     type ApiDetail = {
       status: string;
@@ -6744,7 +6767,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>
               Contacter le pétitionnaire
             </button>
-            <button onClick={() => setShowCourrierModal(true)} style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "7px 15px", fontSize: 12.5, color: "#374151", cursor: "pointer", fontWeight: 500, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+            <button onClick={() => setCourrierMode("general")} style={{ display: "flex", alignItems: "center", gap: 7, border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "7px 15px", fontSize: 12.5, color: "#374151", cursor: "pointer", fontWeight: 500, boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
               <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /></svg>
               Générer un courrier
             </button>
@@ -6940,6 +6963,24 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   → {DOSSIER_STATUS_LABELS[target]}
                 </button>
               ))}
+
+              {/* Demande de pièces complémentaires : disponible pendant toute
+                  la phase de complétude (pre_instruction / incomplet) et même
+                  une fois passé à en_instruction si un complément est jugé
+                  nécessaire au fond. */}
+              {(["pre_instruction", "incomplet", "en_instruction"] as const).includes(currentStatus as "pre_instruction" | "incomplet" | "en_instruction") && (
+                <button
+                  onClick={() => setCourrierMode("pieces_complementaires")}
+                  disabled={workflowBusy}
+                  title="Construire et émettre une demande de pièces complémentaires"
+                  style={{
+                    background: "white", color: "#B45309", border: "1px solid #FDE68A",
+                    borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 600,
+                    cursor: workflowBusy ? "default" : "pointer", display: "flex", alignItems: "center", gap: 5,
+                  }}>
+                  📎 Demander des pièces
+                </button>
+              )}
 
               {(canReassign || canUnassign) && (
                 <div style={{ position: "relative" as const }}>
@@ -8392,7 +8433,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         )}
 
       </div>
-      {showCourrierModal && (
+      {courrierMode && (
         <CourrierModal
           dossier={{
             id: dossier.id,
@@ -8405,9 +8446,25 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             parcelle: dossier.parcelle,
             surface_plancher: dossier.surface_plancher,
             date_depot: dossier.date_depot,
+            date_completude: dossier.date_completude,
             echeance: dossier.echeance,
           }}
-          onClose={() => setShowCourrierModal(false)}
+          mode={courrierMode}
+          availablePieces={(documents ?? []).map((d) => ({
+            id: d.id,
+            nom: d.nom,
+            code_piece: d.code_piece,
+            instructeur_status: d.instructeur_status,
+            ia_score: (d.analyse_ia?.score as "conforme" | "acceptable" | "incomplet" | "non_conforme" | undefined) ?? null,
+          }))}
+          aiSuggestedMissingPieces={conformite?.report?.pieces_manquantes ?? []}
+          onEmitted={() => {
+            // Après émission : rafraîchir workflow + pièces pour refléter le
+            // nouveau statut "incomplet" et les pièces marquées complement_demande.
+            void refreshWorkflow();
+            setDocuments(null); // force le rechargement au prochain accès onglet
+          }}
+          onClose={() => setCourrierMode(null)}
         />
       )}
     </div>
