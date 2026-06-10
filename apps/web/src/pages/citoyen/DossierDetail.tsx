@@ -44,6 +44,23 @@ interface Piece {
   uploaded_at: string;
 }
 
+interface PieceACompleter {
+  code_piece: string | null;
+  nom: string;
+  raison: string | null;
+  manquante: boolean;
+  aide: string | null;
+  deja_redeposee: boolean;
+  redepot: { id: string; nom: string; url: string; uploaded_at: string } | null;
+}
+
+interface PiecesACompleterResponse {
+  courrier_id: string | null;
+  emis_le: string | null;
+  subject?: string | null;
+  pieces: PieceACompleter[];
+}
+
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const TYPE_LABELS: Record<string, string> = {
@@ -77,6 +94,8 @@ const EVENT_ICONS: Record<string, string> = {
   decision_prise: "📌",
   message_instructeur: "💬",
   document_demande: "📄",
+  pieces_complementaires_demandees: "📋",
+  pieces_complementaires_recues: "📥",
   default: "📝",
 };
 
@@ -188,6 +207,16 @@ export function DossierDetail() {
   const [submitting, setSubmitting] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [completude, setCompletude] = useState<{ complete: boolean; manquantes: { code: string; nom: string }[] } | null>(null);
+  const [piecesACompleter, setPiecesACompleter] = useState<PiecesACompleterResponse | null>(null);
+  const [uploadingCodes, setUploadingCodes] = useState<Set<string>>(new Set());
+  const [resoumettant, setResoumettant] = useState(false);
+
+  const refreshPiecesACompleter = async (dossierId: string) => {
+    try {
+      const data = await api.get<PiecesACompleterResponse>(`/dossiers/${dossierId}/pieces-a-completer`);
+      setPiecesACompleter(data);
+    } catch { /* silencieux : la section ne s'affiche pas */ }
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -207,10 +236,70 @@ export function DossierDetail() {
             .then(setCompletude)
             .catch(() => {});
         }
+        if (d.status === "incomplet") {
+          void refreshPiecesACompleter(d.id);
+        }
       })
       .catch(() => navigate("/citoyen/mes-demandes"))
       .finally(() => setLoading(false));
   }, [id, navigate]);
+
+  const uploadComplement = async (piece: PieceACompleter, file: File) => {
+    if (!id) return;
+    const key = piece.code_piece ?? piece.nom;
+    setUploadingCodes((prev) => new Set(prev).add(key));
+    try {
+      const combinedName = `${piece.nom} - ${file.name}`;
+      const formData = new FormData();
+      formData.append("file", file);
+      if (piece.code_piece) formData.append("code_piece", piece.code_piece);
+      formData.append("nom_piece", combinedName);
+      const res = await fetch(`/api/dossiers/${id}/pieces/upload`, {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(err.error ?? `Erreur ${res.status}`);
+      }
+      // Rafraîchit la liste des pièces ET l'état "à compléter" pour cocher la
+      // pièce qui vient d'être redéposée.
+      const [p, pac] = await Promise.all([
+        api.get<Piece[]>(`/dossiers/${id}/pieces`),
+        api.get<PiecesACompleterResponse>(`/dossiers/${id}/pieces-a-completer`),
+      ]);
+      setPieces(p);
+      setPiecesACompleter(pac);
+    } catch (e) {
+      const msg = e instanceof Error && e.message ? e.message : "Erreur inconnue";
+      alert(`Erreur lors du dépôt : ${msg}`);
+    } finally {
+      setUploadingCodes((prev) => {
+        const next = new Set(prev);
+        next.delete(key);
+        return next;
+      });
+    }
+  };
+
+  const transmettreComplements = async () => {
+    if (!id) return;
+    setResoumettant(true);
+    try {
+      const updated = await api.post<Dossier>(`/dossiers/${id}/resoumettre`, {});
+      setDossier(updated);
+      setPiecesACompleter(null);
+      // Recharge l'historique pour faire apparaître l'event de transmission.
+      const ev = await api.get<Event[]>(`/dossiers/${id}/events`);
+      setEvents([...ev].reverse());
+    } catch (e) {
+      const msg = e instanceof Error && e.message ? e.message : "Erreur inconnue";
+      alert(`Impossible de transmettre : ${msg}`);
+    } finally {
+      setResoumettant(false);
+    }
+  };
 
   const soumettreALaMairie = async () => {
     if (!id || !dossier) return;
@@ -391,10 +480,174 @@ export function DossierDetail() {
 
           {dossier.status === "incomplet" && (
             <div style={{ marginTop: 16, background: "#FFF7ED", border: "1px solid #FED7AA", borderRadius: 10, padding: "12px 16px", fontSize: 13, color: "#92400E" }}>
-              ⚠️ <strong>Action requise</strong> — Des pièces manquent à votre dossier. Consultez les messages de l'instructeur ci-dessous et ajoutez les documents demandés.
+              ⚠️ <strong>Action requise</strong> — Des pièces manquent à votre dossier. Déposez les documents demandés dans la section <em>Dépôt complémentaire</em> ci-dessous.
             </div>
           )}
         </div>
+
+        {/* Dépôt complémentaire — visible uniquement quand le dossier est en
+            "incomplet" ET qu'un courrier "pieces_complementaires" a bien été
+            émis avec au moins une pièce ciblée. */}
+        {dossier.status === "incomplet" && piecesACompleter && piecesACompleter.pieces.length > 0 && (() => {
+          const total = piecesACompleter.pieces.length;
+          const fournies = piecesACompleter.pieces.filter((p) => p.deja_redeposee).length;
+          const toutesFournies = fournies === total;
+          return (
+            <div style={{ background: "white", borderRadius: 16, border: "1.5px solid #FED7AA", padding: 28, marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                <span style={{ fontSize: 22 }}>📥</span>
+                <h2 style={{ fontSize: 18, fontWeight: 800, color: "#0F172A", margin: 0 }}>
+                  Dépôt complémentaire
+                </h2>
+              </div>
+              <p style={{ fontSize: 13, color: "#475569", lineHeight: 1.6, margin: "0 0 16px 0" }}>
+                Votre instructeur a demandé les pièces ci-dessous. Déposez-les ici, puis transmettez-les à la mairie pour reprise de l'instruction.
+              </p>
+
+              <div
+                style={{
+                  background: toutesFournies ? "#F0FDF4" : "#EFF6FF",
+                  border: `1px solid ${toutesFournies ? "#86EFAC" : "#BFDBFE"}`,
+                  borderRadius: 10,
+                  padding: "10px 16px",
+                  marginBottom: 16,
+                  fontSize: 13,
+                  color: toutesFournies ? "#15803D" : "#1E40AF",
+                  textAlign: "center",
+                  fontWeight: 600,
+                }}
+              >
+                {toutesFournies
+                  ? "✓ Toutes les pièces demandées ont été redéposées."
+                  : `${fournies} / ${total} pièce${total > 1 ? "s" : ""} redéposée${fournies > 1 ? "s" : ""}`}
+              </div>
+
+              <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
+                {piecesACompleter.pieces.map((piece, idx) => {
+                  const key = piece.code_piece ?? `${piece.nom}-${idx}`;
+                  const isUploading = uploadingCodes.has(piece.code_piece ?? piece.nom);
+                  const hasFile = piece.deja_redeposee && piece.redepot;
+                  return (
+                    <div
+                      key={key}
+                      style={{
+                        display: "flex",
+                        alignItems: "flex-start",
+                        gap: 14,
+                        padding: "14px 18px",
+                        background: hasFile ? "#F0FDF4" : "#FFFBEB",
+                        borderRadius: 12,
+                        border: `1px solid ${hasFile ? "#86EFAC" : "#FCD34D"}`,
+                      }}
+                    >
+                      <span style={{ fontSize: 22, marginTop: 1, flexShrink: 0 }}>
+                        {hasFile ? "✅" : "📄"}
+                      </span>
+                      <div style={{ flex: 1, minWidth: 0 }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>
+                            {piece.nom}
+                          </span>
+                          <span
+                            style={{
+                              padding: "2px 9px",
+                              borderRadius: 20,
+                              fontSize: 11,
+                              fontWeight: 700,
+                              background: piece.manquante ? "#FEF3C7" : "#E0F2FE",
+                              color: piece.manquante ? "#92400E" : "#0284C7",
+                            }}
+                          >
+                            {piece.manquante ? "À fournir" : "À compléter"}
+                          </span>
+                        </div>
+
+                        {piece.raison && (
+                          <div style={{ fontSize: 12.5, color: "#92400E", background: "#FEF3C7", borderRadius: 8, padding: "8px 10px", margin: "6px 0", lineHeight: 1.4 }}>
+                            <strong>Demande de l'instructeur :</strong> {piece.raison}
+                          </div>
+                        )}
+
+                        {piece.aide && (
+                          <p style={{ fontSize: 12, color: "#64748b", margin: "4px 0 8px 0", lineHeight: 1.4 }}>
+                            {piece.aide}
+                          </p>
+                        )}
+
+                        {hasFile && piece.redepot && (
+                          <a
+                            href={piece.redepot.url}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            style={{ display: "inline-flex", alignItems: "center", gap: 8, fontSize: 12, color: "#15803D", textDecoration: "none", padding: "6px 10px", background: "white", borderRadius: 8, border: "1px solid #86EFAC", marginBottom: 8 }}
+                          >
+                            📄 {piece.redepot.nom}
+                          </a>
+                        )}
+
+                        <div style={{ marginTop: 8 }}>
+                          {isUploading ? (
+                            <span style={{ fontSize: 12, color: "#4F46E5", fontStyle: "italic" }}>
+                              ⏳ Envoi en cours…
+                            </span>
+                          ) : (
+                            <label
+                              style={{
+                                cursor: "pointer",
+                                display: "inline-flex",
+                                alignItems: "center",
+                                gap: 6,
+                                padding: "6px 14px",
+                                background: "#EEF2FF",
+                                color: "#4F46E5",
+                                borderRadius: 8,
+                                fontSize: 12,
+                                fontWeight: 600,
+                                border: "1px solid #C7D2FE",
+                              }}
+                            >
+                              <input
+                                type="file"
+                                style={{ display: "none" }}
+                                accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.tiff"
+                                onChange={(e) => {
+                                  const file = e.target.files?.[0];
+                                  if (file) void uploadComplement(piece, file);
+                                  e.currentTarget.value = "";
+                                }}
+                              />
+                              {hasFile ? "↻ Remplacer le document" : "+ Déposer le document"}
+                            </label>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                <button
+                  onClick={() => void transmettreComplements()}
+                  disabled={!toutesFournies || resoumettant}
+                  title={!toutesFournies ? "Déposez toutes les pièces demandées avant de transmettre" : undefined}
+                  style={{
+                    padding: "11px 24px",
+                    background: (!toutesFournies || resoumettant) ? "#C7D2FE" : "#4F46E5",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 10,
+                    fontSize: 14,
+                    fontWeight: 700,
+                    cursor: (!toutesFournies || resoumettant) ? "not-allowed" : "pointer",
+                  }}
+                >
+                  {resoumettant ? "Transmission…" : "Transmettre les compléments à la mairie →"}
+                </button>
+              </div>
+            </div>
+          );
+        })()}
 
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
 

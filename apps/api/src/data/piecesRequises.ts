@@ -308,3 +308,24 @@ export function getPiecesForType(
     aide: typeof p.aide === "function" ? p.aide(ctx) : p.aide,
   }));
 }
+
+// Recherche tolérante d'une pièce par code, tous types d'autorisation confondus.
+// Utilisé côté dépôt complémentaire pour réafficher au citoyen la description
+// officielle ("aide") d'une pièce demandée par l'instructeur, indépendamment
+// du type de dossier.
+export function getPieceByCode(
+  code: string,
+  ctx: PiecesContext,
+): { code: string; nom: string; aide: string } | null {
+  for (const list of [PIECES_DP, PIECES_PC, PIECES_DEMOLIR, PIECES_CU]) {
+    const p = list.find((x) => x.code === code);
+    if (p) {
+      return {
+        code: p.code,
+        nom: p.nom,
+        aide: typeof p.aide === "function" ? p.aide(ctx) : p.aide,
+      };
+    }
+  }
+  return null;
+}
