@@ -79,6 +79,20 @@ import {
   type DeadlineServitude,
   type DeadlineBreakdownItem,
 } from "../services/instructionDelays.js";
+import {
+  changeDossierStatus,
+  assignInstructeur,
+  unassignInstructeur,
+  WorkflowError,
+  workflowErrorToHttp,
+} from "../services/dossierWorkflow.js";
+import {
+  nextStatuses,
+  primaryNextAction,
+  isTerminal,
+  ASSIGNABLE_ROLES,
+  type DossierStatus,
+} from "@heureka-v1/shared";
 
 // Façade legacy (call sites internes encore présents). Préférer computeInstructionDelay
 // pour récupérer le breakdown auditable.
@@ -128,12 +142,27 @@ mairieRouter.get("/dashboard", async (req: AuthRequest, res) => {
 });
 
 // ── Liste tous les dossiers (mairie) ──
+// Filtres supportés :
+//   ?status=...     statut exact
+//   ?search=...     recherche multi-champ
+//   ?commune=...    restriction à une commune (ILIKE)
+//   ?mine=true      dossiers assignés à l'utilisateur connecté
+//   ?unassigned=true dossiers sans instructeur (boîte à trier)
+// Le champ instructeur_id est renvoyé pour que l'UI puisse afficher l'agent
+// en charge sans aller-retour supplémentaire.
 mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
   try {
     const search = req.query.search as string | undefined;
     const status = req.query.status as string | undefined;
     const commune = req.query.commune as string | undefined;
+    const mine = req.query.mine === "true" || req.query.mine === "1";
+    const unassigned = req.query.unassigned === "true" || req.query.unassigned === "1";
     const communeFilter = commune ? sql`dossiers.commune ILIKE ${commune}` : sql`1=1`;
+    const assignmentFilter = unassigned
+      ? sql`dossiers.instructeur_id IS NULL`
+      : mine && req.user?.id
+        ? sql`dossiers.instructeur_id = ${req.user.id}`
+        : sql`1=1`;
 
     const sel = {
       id: dossiers.id, numero: dossiers.numero, type: dossiers.type, status: dossiers.status,
@@ -143,6 +172,7 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
       date_completude: dossiers.date_completude,
       date_limite_instruction: dossiers.date_limite_instruction,
       date_delivrance: dossiers.date_delivrance,
+      instructeur_id: dossiers.instructeur_id,
       created_at: dossiers.created_at,
       demandeur_prenom: users.prenom, demandeur_nom: users.nom,
     };
@@ -152,17 +182,17 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
       const pattern = `%${search}%`;
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
-        .where(sql`(${communeFilter}) AND dossiers.status != 'brouillon' AND (dossiers.numero ILIKE ${pattern} OR dossiers.adresse ILIKE ${pattern} OR dossiers.commune ILIKE ${pattern} OR users.prenom ILIKE ${pattern} OR users.nom ILIKE ${pattern} OR CONCAT(users.prenom, ' ', users.nom) ILIKE ${pattern})`)
+        .where(sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status != 'brouillon' AND (dossiers.numero ILIKE ${pattern} OR dossiers.adresse ILIKE ${pattern} OR dossiers.commune ILIKE ${pattern} OR users.prenom ILIKE ${pattern} OR users.nom ILIKE ${pattern} OR CONCAT(users.prenom, ' ', users.nom) ILIKE ${pattern})`)
         .orderBy(desc(dossiers.created_at));
     } else if (status) {
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
-        .where(sql`(${communeFilter}) AND dossiers.status = ${status}`)
+        .where(sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status = ${status}`)
         .orderBy(desc(dossiers.created_at));
     } else {
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
-        .where(sql`(${communeFilter}) AND dossiers.status != 'brouillon'`)
+        .where(sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status != 'brouillon'`)
         .orderBy(desc(dossiers.created_at));
     }
 
@@ -234,6 +264,9 @@ mairieRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
 });
 
 // ── Détail dossier mairie ──
+// Renvoie aussi les actions de workflow disponibles (prochaine étape, transitions
+// admissibles, possibilité de prise en charge) pour que le front affiche un seul
+// CTA contextuel sans avoir à recoder la machine à états côté client.
 mairieRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
   try {
     const [dossier] = await db
@@ -256,7 +289,28 @@ mairieRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
         .limit(1);
       instructeur = inst ?? null;
     }
-    res.json({ ...dossier, demandeur: demandeur ?? null, instructeur });
+
+    const status = dossier.status as DossierStatus;
+    const role = req.user?.role ?? "instructeur";
+    const userId = req.user?.id ?? null;
+    const isAssigned = !!dossier.instructeur_id;
+    const isMine = isAssigned && dossier.instructeur_id === userId;
+    const canManageAssignment = (role === "mairie" || role === "admin") && !isTerminal(status);
+
+    const workflow = {
+      status,
+      next_action: primaryNextAction(status),
+      allowed_transitions: nextStatuses(status),
+      // Actions liées à l'assignation, déjà filtrées par rôle pour que le
+      // front n'ait qu'à les afficher ou non. La (ré)assignation est désactivée
+      // sur les dossiers clos (accepté / refusé / accord avec prescriptions).
+      can_take_charge: !isAssigned && ASSIGNABLE_ROLES.has(role) && status !== "brouillon" && !isTerminal(status),
+      can_reassign: canManageAssignment,
+      can_unassign: canManageAssignment && isAssigned,
+      is_mine: isMine,
+    };
+
+    res.json({ ...dossier, demandeur: demandeur ?? null, instructeur, workflow });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -497,35 +551,38 @@ mairieRouter.post("/dossiers/:id/conformite/analyse", async (req: AuthRequest, r
 });
 
 // ── Changer le statut d'un dossier ──
+// La transition est validée par la machine à états partagée
+// (packages/shared/dossierWorkflow.ts) et journalisée dans instruction_events
+// via le service workflow. Cette route gère également deux effets de bord
+// historiques : pose de date_depot au passage "soumis" et calcul automatique
+// de la date limite d'instruction si elle n'est pas déjà fixée.
 mairieRouter.patch("/dossiers/:id/status", async (req: AuthRequest, res) => {
   try {
-    const { status } = req.body;
+    const { status, reason } = (req.body ?? {}) as { status?: string; reason?: string | null };
     if (!status) return res.status(400).json({ error: "Statut requis" });
 
-    // Lire le dossier avant update pour calculer l'échéance si nécessaire
-    const [before] = await db.select().from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
+    const dossierId = req.params.id as string;
+    const [before] = await db.select().from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
     if (!before) return res.status(404).json({ error: "Dossier non trouvé" });
 
-    const patch: Partial<typeof before> & { updated_at: Date } = { status: status as typeof before.status, updated_at: new Date() };
+    // 1) Transition de statut via la machine à états (refuse si interdite).
+    await changeDossierStatus(dossierId, status as DossierStatus, req.user?.id ?? null, { reason: reason ?? null });
 
-    // Auto-date dépôt quand passage en "soumis"
+    // 2) Effets de bord : date de dépôt + recalcul d'échéance.
+    const sideEffects: Partial<typeof before> & { updated_at?: Date } = {};
+    let needsSideEffectUpdate = false;
     if (status === "soumis" && !before.date_depot) {
-      patch.date_depot = new Date();
+      sideEffects.date_depot = new Date();
+      needsSideEffectUpdate = true;
     }
-
-    // Auto-calcul de l'échéance si elle n'est pas encore renseignée.
-    // Le code de l'urbanisme fait courir le délai à partir de la date de réception
-    // d'un dossier complet : on prend date_completude si elle est posée, sinon
-    // date_depot par défaut (équivaut à un dossier réputé complet au dépôt).
     if (!before.date_limite_instruction) {
-      const startDate = (before.date_completude ?? patch.date_depot ?? before.date_depot);
+      const startDate = (before.date_completude ?? sideEffects.date_depot ?? before.date_depot);
       if (startDate) {
         const meta = (before.metadata as DeadlineMetadata | null) ?? null;
         const servitudes = (meta as { servitudes?: DeadlineServitude[] } | null)?.servitudes ?? null;
         const calc = computeInstructionDelay(before.type, meta, servitudes);
-        patch.date_limite_instruction = applyMonthsToDate(new Date(startDate), calc.total_mois);
-        // Trace auditable dans metadata.delai pour affichage UI.
-        patch.metadata = {
+        sideEffects.date_limite_instruction = applyMonthsToDate(new Date(startDate), calc.total_mois);
+        sideEffects.metadata = {
           ...((before.metadata as Record<string, unknown>) ?? {}),
           delai: {
             total_mois: calc.total_mois,
@@ -535,12 +592,21 @@ mairieRouter.patch("/dossiers/:id/status", async (req: AuthRequest, res) => {
             computed_at: new Date().toISOString(),
           },
         };
+        needsSideEffectUpdate = true;
       }
     }
+    if (needsSideEffectUpdate) {
+      sideEffects.updated_at = new Date();
+      await db.update(dossiers).set(sideEffects).where(eq(dossiers.id, dossierId));
+    }
 
-    const [updated] = await db.update(dossiers).set(patch).where(eq(dossiers.id, req.params.id as string)).returning();
+    const [updated] = await db.select().from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
     res.json(updated);
   } catch (err) {
+    if (err instanceof WorkflowError) {
+      const { status, body } = workflowErrorToHttp(err);
+      return res.status(status).json(body);
+    }
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
   }
@@ -610,19 +676,76 @@ mairieRouter.patch("/dossiers/:id/deadline", async (req: AuthRequest, res) => {
   }
 });
 
-// ── Assigner un instructeur ──
-mairieRouter.patch("/dossiers/:id/assign", async (req: AuthRequest, res) => {
+// ── Assigner / réassigner un instructeur ──
+// Réservé aux rôles mairie/admin : un instructeur n'a pas le droit d'imposer
+// un autre instructeur sur le dossier (il peut uniquement s'auto-prendre en
+// charge via /take-charge).
+mairieRouter.patch("/dossiers/:id/assign", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   try {
-    const { instructeur_id } = req.body;
+    const { instructeur_id, reason } = (req.body ?? {}) as { instructeur_id?: string; reason?: string | null };
     if (!instructeur_id) return res.status(400).json({ error: "instructeur_id requis" });
-    const [dossier] = await db
-      .update(dossiers)
-      .set({ instructeur_id, updated_at: new Date() })
-      .where(eq(dossiers.id, req.params.id as string))
-      .returning();
-    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    await assignInstructeur(req.params.id as string, instructeur_id, req.user?.id ?? null, { reason: reason ?? null });
+    const [dossier] = await db.select().from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
     res.json(dossier);
   } catch (err) {
+    if (err instanceof WorkflowError) {
+      const { status, body } = workflowErrorToHttp(err);
+      return res.status(status).json(body);
+    }
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Retirer l'instructeur d'un dossier ──
+mairieRouter.delete("/dossiers/:id/assign", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const { reason } = (req.body ?? {}) as { reason?: string | null };
+    await unassignInstructeur(req.params.id as string, req.user?.id ?? null, { reason: reason ?? null });
+    const [dossier] = await db.select().from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
+    res.json(dossier);
+  } catch (err) {
+    if (err instanceof WorkflowError) {
+      const { status, body } = workflowErrorToHttp(err);
+      return res.status(status).json(body);
+    }
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Prise en charge (self-assign) ──
+// Ouvert à tout rôle assignable (instructeur, mairie, admin). Si le dossier
+// est encore "soumis", on enchaîne sur la transition pre_instruction qui démarre
+// formellement l'instruction. Toute autre transition reste manuelle.
+mairieRouter.post("/dossiers/:id/take-charge", async (req: AuthRequest, res) => {
+  try {
+    const role = req.user?.role ?? "";
+    if (!ASSIGNABLE_ROLES.has(role)) {
+      return res.status(403).json({ error: "Rôle non autorisé à prendre en charge un dossier" });
+    }
+    const dossierId = req.params.id as string;
+    const [before] = await db.select().from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+    if (!before) return res.status(404).json({ error: "Dossier non trouvé" });
+    if (before.instructeur_id && before.instructeur_id !== req.user!.id) {
+      return res.status(409).json({ error: "Dossier déjà assigné à un autre instructeur" });
+    }
+
+    await assignInstructeur(dossierId, req.user!.id, req.user!.id, { reason: "prise en charge" });
+
+    // Démarrage formel de l'instruction : soumis → pre_instruction. Toute
+    // autre transition reste à la main de l'instructeur.
+    if (before.status === "soumis") {
+      await changeDossierStatus(dossierId, "pre_instruction", req.user!.id, { reason: "prise en charge" });
+    }
+
+    const [updated] = await db.select().from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+    res.json(updated);
+  } catch (err) {
+    if (err instanceof WorkflowError) {
+      const { status, body } = workflowErrorToHttp(err);
+      return res.status(status).json(body);
+    }
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
   }
