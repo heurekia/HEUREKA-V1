@@ -165,8 +165,8 @@ export function Profil() {
 
           <p className="text-xs text-gray-400 mt-4 leading-relaxed">
             Autres droits (rectification, opposition à l'analyse IA, limitation) : modifiez vos informations ci-dessus, ou contactez le Délégué à la Protection des Données :{" "}
-            <a href="mailto:dpd@heureka-urba.fr" className="underline hover:text-gray-600">
-              dpd@heureka-urba.fr
+            <a href="mailto:dpd@heurekia.com" className="underline hover:text-gray-600">
+              dpd@heurekia.com
             </a>
             . Pour les questions liées à votre dossier d'urbanisme, contactez le DPD de votre mairie.
           </p>
