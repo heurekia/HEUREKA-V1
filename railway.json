@@ -5,8 +5,8 @@
   },
   "deploy": {
     "numReplicas": 1,
-    "startCommand": "pnpm start",
-    "preDeployCommand": "pnpm --filter @heureka-v1/db migrate && pnpm --filter @heureka-v1/api seed",
+    "startCommand": "cd apps/api && node --import tsx src/index.ts",
+    "preDeployCommand": "pnpm --filter @heureka-v1/db migrate",
     "healthcheckPath": "/api/health",
     "healthcheckTimeout": 30,
     "restartPolicyType": "ON_FAILURE",

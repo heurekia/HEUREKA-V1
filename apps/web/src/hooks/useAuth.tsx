@@ -24,6 +24,18 @@ interface AuthContextType {
 
 const AuthContext = createContext<AuthContextType | null>(null);
 
+// Pré-chauffe le cache PLU dès qu'on connaît la commune de l'utilisateur, pour
+// que l'onglet Carte s'affiche instantanément (la réponse est mise en cache
+// HTTP par le navigateur grâce à Cache-Control / ETag côté serveur).
+function prewarmPluZones(user: User | null) {
+  if (!user?.commune_insee) return;
+  if (user.role !== "mairie" && user.role !== "instructeur" && user.role !== "admin") return;
+  // Pas de await — feu et oublie
+  fetch(`/api/mairie/plu-zones?insee_code=${encodeURIComponent(user.commune_insee)}`, {
+    credentials: "include",
+  }).catch(() => { /* silencieux : sera retenté quand l'utilisateur ouvrira la carte */ });
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<User | null>(null);
   const [loading, setLoading] = useState(true);
@@ -32,6 +44,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     try {
       const me = await api.get<User>("/auth/me");
       setUser(me);
+      prewarmPluZones(me);
     } catch {
       setUser(null);
     } finally {
@@ -44,6 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const login = async (email: string, password: string) => {
     const res = await api.post<{ user: User }>("/auth/login", { email, password });
     setUser(res.user);
+    prewarmPluZones(res.user);
     return res.user;
   };
 

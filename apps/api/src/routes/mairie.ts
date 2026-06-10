@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations, external_services, service_communes, instruction_events } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations, external_services, service_communes, instruction_events, document_segments, document_segment_annotations, ANNOTATION_KINDS } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike, inArray } from "drizzle-orm";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
@@ -14,6 +14,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { PDFDocument } from "pdf-lib";
+import { refreshPluZones, pluEtagFor, filterZonesByInsee, PLU_CACHE_TTL_MS, type PluZonesGeoJson } from "../services/pluZones.js";
 
 const __dirname_mairie = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR_MAIRIE = path.resolve(__dirname_mairie, "../../uploads");
@@ -671,9 +672,22 @@ mairieRouter.get("/instructeurs", async (_req: AuthRequest, res) => {
 });
 
 // ── Communes de l'utilisateur connecté ──
+// Admin : voit toutes les communes en DB (cohérent avec son rôle "voit tout").
+// Mairie/instructeur : restreint via user_communes, sinon fallback sur la
+// commune principale.
 mairieRouter.get("/my-communes", async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
+    const role = req.user!.role;
+
+    if (role === "admin") {
+      const all = await db
+        .select({ name: communes.name, insee_code: communes.insee_code })
+        .from(communes)
+        .orderBy(communes.name);
+      return res.json(all);
+    }
+
     const rows = await db
       .select({ name: communes.name, insee_code: communes.insee_code })
       .from(user_communes)
@@ -693,14 +707,35 @@ mairieRouter.get("/my-communes", async (req: AuthRequest, res) => {
 });
 
 // ── Liste des communes (noms seuls pour le sélecteur) ──
-mairieRouter.get("/communes", async (_req: AuthRequest, res) => {
+// Filtré par utilisateur sauf pour les admins : un user mairie/instructeur ne
+// doit voir QUE les communes auxquelles il a accès (sinon le sélecteur de la
+// Carte montrait toute la France et permettait de "sélectionner" une commune
+// hors de ses droits → refresh = retour sur sa commune principale par défaut).
+mairieRouter.get("/communes", async (req: AuthRequest, res) => {
   try {
-    const rows = await db.select({ name: communes.name }).from(communes).orderBy(communes.name);
-    const names = rows.map(r => r.name);
-    if (names.length) return res.json(names);
-    // Fallback: read from dossiers if communes table is empty
-    const fallback = await db.selectDistinct({ commune: dossiers.commune }).from(dossiers).where(sql`commune IS NOT NULL`).orderBy(dossiers.commune);
-    res.json(fallback.map(r => r.commune).filter(Boolean));
+    const userId = req.user!.id;
+    const role = req.user!.role;
+
+    if (role === "admin") {
+      const rows = await db.select({ name: communes.name }).from(communes).orderBy(communes.name);
+      const names = rows.map(r => r.name);
+      if (names.length) return res.json(names);
+      const fallback = await db.selectDistinct({ commune: dossiers.commune }).from(dossiers).where(sql`commune IS NOT NULL`).orderBy(dossiers.commune);
+      return res.json(fallback.map(r => r.commune).filter(Boolean));
+    }
+
+    // Mairie / instructeur : restreindre aux communes liées via user_communes,
+    // sinon fallback sur la commune principale du user.
+    const linked = await db
+      .select({ name: communes.name })
+      .from(user_communes)
+      .innerJoin(communes, eq(user_communes.commune_id, communes.id))
+      .where(eq(user_communes.user_id, userId))
+      .orderBy(communes.name);
+    if (linked.length > 0) return res.json(linked.map(r => r.name));
+
+    const [user] = await db.select({ commune: users.commune }).from(users).where(eq(users.id, userId)).limit(1);
+    res.json(user?.commune ? [user.commune] : []);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -2278,6 +2313,177 @@ mairieRouter.get("/documents/search", requireRole("mairie", "instructeur", "admi
   }
 });
 
+// ── Annotations chunk-level (Phase 1 niveau B) ──────────────────────────────
+// Permet à l'instructeur d'attacher une note à un passage indexé qui
+// remontera AVEC le chunk au moment de la recherche RAG. Gate de validation
+// identique à commune_documents / zone_regulatory_rules.
+
+const ANNOTATION_KINDS_SET = new Set(ANNOTATION_KINDS as readonly string[]);
+const VALID_STATUSES_SET = new Set(["brouillon", "valide", "rejete"]);
+
+// GET /mairie/documents/:docId/segments — liste les chunks indexés d'un
+// document avec leur métadonnée + annotations. Sert au visualiseur côté UI
+// pour permettre à l'instructeur d'annoter passage par passage.
+mairieRouter.get("/documents/:docId/segments", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const docId = req.params.docId as string;
+    const segs = await db.select({
+      id: document_segments.id,
+      segment_code: document_segments.segment_code,
+      raw_text: document_segments.raw_text,
+      metadata: document_segments.metadata,
+      char_count: document_segments.char_count,
+    })
+      .from(document_segments)
+      .where(sql`${document_segments.metadata}->>'source_id' = ${docId}`)
+      .orderBy(document_segments.segment_code);
+
+    // Annotations TOUTES STATUS (pas seulement validées) — l'instructeur
+    // doit voir aussi les brouillons et rejets dans le visualiseur pour les
+    // gérer.
+    const segmentIds = segs.map((s) => s.id);
+    const annsRows = segmentIds.length > 0
+      ? await db.select().from(document_segment_annotations)
+          .where(inArray(document_segment_annotations.segment_id, segmentIds))
+      : [];
+    const annsBySegment = new Map<string, typeof annsRows>();
+    for (const a of annsRows) {
+      const arr = annsBySegment.get(a.segment_id) ?? [];
+      arr.push(a);
+      annsBySegment.set(a.segment_id, arr);
+    }
+
+    res.json(segs.map((s) => ({
+      ...s,
+      annotations: annsBySegment.get(s.id) ?? [],
+    })));
+  } catch (err) {
+    console.error("[segments:list]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// GET /mairie/documents/:docId/annotations — liste toutes les annotations
+// d'un document (tous statuts). Sert au panneau de validation côté UI.
+mairieRouter.get("/documents/:docId/annotations", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const docId = req.params.docId as string;
+    const rows = await db.select().from(document_segment_annotations)
+      .where(eq(document_segment_annotations.source_id, docId))
+      .orderBy(desc(document_segment_annotations.created_at));
+    res.json(rows);
+  } catch (err) {
+    console.error("[annotations:list]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /mairie/segments/:segmentId/annotations — créer une annotation.
+// Le statut initial est "brouillon" — il faut une action explicite de
+// validation pour qu'elle remonte dans le RAG.
+mairieRouter.post("/segments/:segmentId/annotations", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const segmentId = req.params.segmentId as string;
+    const { kind, note, applies_if } = req.body as { kind?: string; note?: string; applies_if?: string[] };
+
+    if (!note || !note.trim()) return res.status(400).json({ error: "note requise" });
+    const finalKind = kind && ANNOTATION_KINDS_SET.has(kind) ? kind : "precision";
+
+    // Récupère le segment pour reporter source_id (= commune_documents.id).
+    const [seg] = await db.select({ id: document_segments.id, metadata: document_segments.metadata })
+      .from(document_segments).where(eq(document_segments.id, segmentId)).limit(1);
+    if (!seg) return res.status(404).json({ error: "Segment introuvable" });
+    const meta = (seg.metadata ?? {}) as Record<string, unknown>;
+    const sourceId = typeof meta.source_id === "string" ? meta.source_id : null;
+    if (!sourceId) return res.status(400).json({ error: "Segment sans source_id (incohérence d'index)" });
+
+    const [created] = await db.insert(document_segment_annotations).values({
+      segment_id: segmentId,
+      source_id: sourceId,
+      kind: finalKind,
+      note: note.trim(),
+      applies_if: Array.isArray(applies_if) ? applies_if : [],
+      validation_status: "brouillon",
+      author_user_id: req.user?.id ?? null,
+    }).returning();
+
+    res.status(201).json(created);
+  } catch (err) {
+    console.error("[annotations:create]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PATCH /mairie/annotations/:id — modifier OU valider/rejeter.
+// Toute modification de la note rebascule en brouillon (anti-édit silencieux).
+mairieRouter.patch("/annotations/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const id = req.params.id as string;
+    const { note, kind, applies_if, validation_status } = req.body as {
+      note?: string; kind?: string; applies_if?: string[];
+      validation_status?: "brouillon" | "valide" | "rejete";
+    };
+
+    const patch: {
+      note?: string; kind?: string; applies_if?: string[];
+      validation_status?: string; validated_by?: string | null; validated_at?: Date | null;
+      updated_at: Date;
+    } = { updated_at: new Date() };
+
+    const noteChanged = note !== undefined;
+    if (noteChanged) {
+      if (!note.trim()) return res.status(400).json({ error: "note non vide requise" });
+      patch.note = note.trim();
+    }
+    if (kind !== undefined) {
+      if (!ANNOTATION_KINDS_SET.has(kind)) return res.status(400).json({ error: "kind invalide" });
+      patch.kind = kind;
+    }
+    if (applies_if !== undefined) {
+      if (!Array.isArray(applies_if)) return res.status(400).json({ error: "applies_if doit être un tableau" });
+      patch.applies_if = applies_if;
+    }
+
+    if (validation_status) {
+      if (!VALID_STATUSES_SET.has(validation_status)) {
+        return res.status(400).json({ error: "validation_status invalide" });
+      }
+      patch.validation_status = validation_status;
+      if (validation_status === "valide") {
+        if (!req.user?.id) return res.status(401).json({ error: "Authentification requise pour valider" });
+        patch.validated_by = req.user.id;
+        patch.validated_at = new Date();
+      } else {
+        patch.validated_by = null;
+        patch.validated_at = null;
+      }
+    } else if (noteChanged || kind !== undefined || applies_if !== undefined) {
+      // Édition de fond sans validation explicite → bascule auto en brouillon.
+      patch.validation_status = "brouillon";
+      patch.validated_by = null;
+      patch.validated_at = null;
+    }
+
+    const [updated] = await db.update(document_segment_annotations).set(patch)
+      .where(eq(document_segment_annotations.id, id)).returning();
+    if (!updated) return res.status(404).json({ error: "Annotation introuvable" });
+    res.json(updated);
+  } catch (err) {
+    console.error("[annotations:patch]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+mairieRouter.delete("/annotations/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    await db.delete(document_segment_annotations).where(eq(document_segment_annotations.id, req.params.id as string));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[annotations:delete]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 mairieRouter.post(
   "/reglementation/import-canonical",
   requireRole("mairie", "instructeur", "admin"),
@@ -2360,26 +2566,14 @@ mairieRouter.patch("/reglementation/zones/:id", async (req: AuthRequest, res) =>
 
 // ── Proxy APICarto GPU zones (évite le CORS côté navigateur) ─────────────────
 // GET /mairie/plu-zones?insee_code=37018 (or legacy ?commune=Ballan-Miré)
-const pluZonesCache = new Map<string, { zones: unknown; expiresAt: number }>();
-const PLU_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // 7 jours
+// Cache à 3 niveaux : navigateur (ETag + max-age) → DB Postgres → upstream GPU.
 
-async function fetchWithRetry(url: string, opts: RequestInit, retries = 3, delayMs = 1500): Promise<Response | null> {
-  for (let i = 0; i < retries; i++) {
-    const r = await fetch(url, opts).catch(() => null);
-    if (r?.ok) return r;
-    if (i < retries - 1) await new Promise(resolve => setTimeout(resolve, delayMs * (i + 1)));
-  }
-  return null;
-}
+// Headers HTTP : on autorise le cache navigateur 1h, puis stale-while-revalidate
+// jusqu'à 7 jours — le navigateur sert la version cached instantanément et
+// rafraîchit en tâche de fond.
+const PLU_CACHE_CONTROL = "private, max-age=3600, stale-while-revalidate=604800";
 
 mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
-  const cacheKey = ((req.query.insee_code as string | undefined) ?? (req.query.commune as string | undefined) ?? "").trim();
-  const cached = pluZonesCache.get(cacheKey);
-  if (cached && cached.expiresAt > Date.now()) {
-    res.setHeader("X-PLU-Cache", "HIT");
-    return res.json(cached.zones);
-  }
-
   // Déclaré avant try pour être accessible dans le catch (stale fallback)
   let communeRow: { id: string; plu_zones_geojson: unknown; plu_zones_cached_at: Date | null } | undefined;
 
@@ -2391,141 +2585,70 @@ mairieRouter.get("/plu-zones", async (req: AuthRequest, res) => {
       return res.status(400).json({ error: "insee_code ou commune requis" });
     }
 
-    // Charge le cache DB (survit aux redémarrages serveur)
-    if (inseeCode) {
-      communeRow = (await db.select({ id: communes.id, plu_zones_geojson: communes.plu_zones_geojson, plu_zones_cached_at: communes.plu_zones_cached_at })
-        .from(communes).where(eq(communes.insee_code, inseeCode)).limit(1))[0];
-    }
-    if (communeRow?.plu_zones_geojson && communeRow.plu_zones_cached_at) {
-      const ageMs = Date.now() - communeRow.plu_zones_cached_at.getTime();
-      if (ageMs < PLU_CACHE_TTL_MS) {
-        pluZonesCache.set(cacheKey, { zones: communeRow.plu_zones_geojson, expiresAt: Date.now() + (PLU_CACHE_TTL_MS - ageMs) });
-        res.setHeader("X-PLU-Cache", "DB-HIT");
-        return res.json(communeRow.plu_zones_geojson);
-      }
-    }
-
-    // Résolution du code INSEE si non fourni
+    // Résolution du code INSEE si non fourni (chemin legacy)
     if (!inseeCode && communeName) {
-      const r = await fetchWithRetry(
+      const r = await fetch(
         `https://geo.api.gouv.fr/communes?nom=${encodeURIComponent(communeName)}&fields=code&limit=1`,
         { signal: AbortSignal.timeout(8000) }
-      );
-      if (r) inseeCode = ((await r.json()) as Array<{ code?: string }>)[0]?.code ?? undefined;
+      ).catch(() => null);
+      if (r?.ok) inseeCode = ((await r.json()) as Array<{ code?: string }>)[0]?.code ?? undefined;
     }
+    if (!inseeCode) return res.status(404).json({ error: "Commune non trouvée" });
 
-    // Contour de la commune (utilisé pour la requête géographique)
-    const lookupQ = inseeCode ? `code=${encodeURIComponent(inseeCode)}` : `nom=${encodeURIComponent(communeName!)}`;
-    const geoR = await fetchWithRetry(
-      `https://geo.api.gouv.fr/communes?${lookupQ}&fields=contour&format=geojson&geometry=contour&limit=1`,
-      { signal: AbortSignal.timeout(8000) }
-    );
-    if (!geoR) {
-      if (communeRow?.plu_zones_geojson) { res.setHeader("X-PLU-Cache", "STALE"); return res.json(communeRow.plu_zones_geojson); }
-      return res.status(502).json({ error: "Erreur geo.api.gouv.fr" });
-    }
-    type GeoComm = { features?: Array<{ geometry?: { coordinates: number[][][] } }> };
-    const fullRing = ((await geoR.json()) as GeoComm).features?.[0]?.geometry?.coordinates[0];
-    if (!fullRing?.length) return res.status(404).json({ error: "Commune non trouvée" });
+    // `?refresh=1` force un re-fetch (utile après changement du PLU ou bug fix
+    // côté pipeline d'extraction — sans attendre l'expiration du cache de 7 j).
+    const forceRefresh = req.query.refresh === "1" || req.query.refresh === "true";
 
-    // Polygone simplifié ≤50 pts pour la requête GPU (URL manageable)
-    const MAX_PTS = 50;
-    let queryRing = fullRing;
-    if (fullRing.length > MAX_PTS) {
-      const step = Math.ceil((fullRing.length - 1) / (MAX_PTS - 1));
-      queryRing = fullRing.filter((_, i) => i % step === 0);
-      if (queryRing[queryRing.length - 1] !== fullRing[fullRing.length - 1])
-        queryRing.push(fullRing[fullRing.length - 1]!);
-    }
-    const communeGeom = JSON.stringify({ type: "Polygon", coordinates: [queryRing] });
+    // Charge le cache DB (survit aux redémarrages serveur)
+    communeRow = (await db.select({ id: communes.id, plu_zones_geojson: communes.plu_zones_geojson, plu_zones_cached_at: communes.plu_zones_cached_at })
+      .from(communes).where(eq(communes.insee_code, inseeCode)).limit(1))[0];
 
-    // Centroïde pour la stratégie document
-    const lats = fullRing.map(p => p[1]!), lngs = fullRing.map(p => p[0]!);
-    const centroid = [(Math.min(...lngs) + Math.max(...lngs)) / 2, (Math.min(...lats) + Math.max(...lats)) / 2];
-    const ptGeom = JSON.stringify({ type: "Point", coordinates: centroid });
+    const sendCached = (zones: unknown, cachedAt: Date | null, hitKind: "DB-HIT" | "STALE") => {
+      // Re-filtre par INSEE à la lecture : ça nettoie les anciens caches qui
+      // contiennent encore les zones limitrophes des communes voisines (avant
+      // le fix du filtre). Pas de coût si déjà filtré.
+      const cleaned = filterZonesByInsee(zones as PluZonesGeoJson, inseeCode!);
+      const etag = pluEtagFor(inseeCode!, cachedAt);
+      if (etag) res.setHeader("ETag", etag);
+      res.setHeader("Cache-Control", PLU_CACHE_CONTROL);
+      res.setHeader("X-PLU-Cache", hitKind);
+      if (etag && req.headers["if-none-match"] === etag) {
+        return res.status(304).end();
+      }
+      return res.json(cleaned);
+    };
 
-    // ── Identification de la partition ────────────────────────────────────────
-    let partition: string | undefined;
-
-    // A) PLU communal classique : partition = "{INSEE}_PLU"
-    if (!partition && inseeCode) {
-      const candidate = `${inseeCode}_PLU`;
-      const r = await fetchWithRetry(
-        `https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(candidate)}&_limit=1`,
-        { signal: AbortSignal.timeout(8000) }
-      );
-      if (r) { const j = await r.json() as { features?: unknown[] }; if ((j.features?.length ?? 0) > 0) partition = candidate; }
-    }
-
-    // B) Endpoint /document avec le centroïde de la commune
-    if (!partition) {
-      const r = await fetchWithRetry(
-        `https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(ptGeom)}`,
-        { signal: AbortSignal.timeout(8000) }
-      );
-      if (r) {
-        type Doc = { features?: Array<{ properties: { partition?: string; etat?: string } }> };
-        const docs = ((await r.json()) as Doc).features ?? [];
-        const doc = docs.find(f => f.properties.etat === "approuve") ?? docs.find(f => !!f.properties.partition) ?? docs[0];
-        partition = doc?.properties.partition ?? undefined;
+    if (!forceRefresh && communeRow?.plu_zones_geojson && communeRow.plu_zones_cached_at) {
+      const ageMs = Date.now() - communeRow.plu_zones_cached_at.getTime();
+      if (ageMs < PLU_CACHE_TTL_MS) {
+        return sendCached(communeRow.plu_zones_geojson, communeRow.plu_zones_cached_at, "DB-HIT");
       }
     }
 
-    // C) PLUi intercommunal : récupérer le SIREN de l'EPCI → partition = "{SIREN}_PLUI"
-    if (!partition && inseeCode) {
-      const epciR = await fetchWithRetry(
-        `https://geo.api.gouv.fr/communes/${encodeURIComponent(inseeCode)}/epcis?fields=code&limit=5`,
-        { signal: AbortSignal.timeout(8000) }
-      );
-      if (epciR) {
-        const epcis = (await epciR.json()) as Array<{ code?: string }>;
-        for (const epci of epcis) {
-          if (!epci.code || partition) continue;
-          const candidate = `${epci.code}_PLUI`;
-          const r = await fetchWithRetry(
-            `https://apicarto.ign.fr/api/gpu/zone-urba?partition=${encodeURIComponent(candidate)}&_limit=1`,
-            { signal: AbortSignal.timeout(8000) }
-          );
-          if (r) { const j = await r.json() as { features?: unknown[] }; if ((j.features?.length ?? 0) > 0) partition = candidate; }
-        }
+    const wantDiag = req.query.diag === "1" || req.query.diag === "true";
+
+    // Cache expiré, inexistant, ou refresh forcé → fetch upstream
+    const result = await refreshPluZones(inseeCode);
+    if (!result.ok) {
+      if (communeRow?.plu_zones_geojson && !wantDiag) {
+        return sendCached(communeRow.plu_zones_geojson, communeRow.plu_zones_cached_at, "STALE");
       }
+      return res.status(result.status).json({ error: result.error, diag: result.diag });
     }
 
-    if (!partition) {
-      if (communeRow?.plu_zones_geojson) { res.setHeader("X-PLU-Cache", "STALE"); return res.json(communeRow.plu_zones_geojson); }
-      return res.status(404).json({ error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme" });
-    }
-
-    // ── Récupération des zones filtrées par partition + polygone commune ──────
-    const params = new URLSearchParams({ partition, _limit: "1000" });
-    params.set("geom", communeGeom);
-    const zoneR = await fetchWithRetry(
-      `https://apicarto.ign.fr/api/gpu/zone-urba?${params.toString()}`,
-      { signal: AbortSignal.timeout(25000) }, 2, 2000
-    );
-    if (!zoneR) {
-      if (communeRow?.plu_zones_geojson) { res.setHeader("X-PLU-Cache", "STALE"); return res.json(communeRow.plu_zones_geojson); }
-      return res.status(502).json({ error: "Le Géoportail de l'Urbanisme est temporairement indisponible. Réessayez dans quelques instants." });
-    }
-    const zoneJson = await zoneR.json() as { type?: string; features?: unknown[] };
-    if (!zoneJson.features?.length) {
-      if (communeRow?.plu_zones_geojson) { res.setHeader("X-PLU-Cache", "STALE"); return res.json(communeRow.plu_zones_geojson); }
-      return res.status(404).json({ error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme" });
-    }
-
-    // Persist dans la mémoire + DB
-    pluZonesCache.set(cacheKey, { zones: zoneJson, expiresAt: Date.now() + PLU_CACHE_TTL_MS });
-    if (inseeCode) {
-      db.update(communes)
-        .set({ plu_zones_geojson: zoneJson, plu_zones_cached_at: new Date() })
-        .where(eq(communes.insee_code, inseeCode))
-        .catch(e => console.error("[plu-zones DB cache]", e));
-    }
-    res.setHeader("Cache-Control", "no-store");
-    res.json(zoneJson);
+    const freshAt = new Date();
+    const etag = pluEtagFor(inseeCode, freshAt);
+    if (etag) res.setHeader("ETag", etag);
+    res.setHeader("Cache-Control", PLU_CACHE_CONTROL);
+    res.setHeader("X-PLU-Cache", "MISS");
+    if (wantDiag) res.json({ zones: result.zones, diag: result.diag });
+    else res.json(result.zones);
   } catch (err) {
     console.error("[plu-zones proxy]", err);
-    if (communeRow?.plu_zones_geojson) { res.setHeader("X-PLU-Cache", "STALE"); return res.json(communeRow.plu_zones_geojson as object); }
+    if (communeRow?.plu_zones_geojson) {
+      res.setHeader("X-PLU-Cache", "STALE");
+      return res.json(communeRow.plu_zones_geojson as object);
+    }
     res.status(500).json({ error: "Erreur serveur", detail: String(err) });
   }
 });

@@ -6,9 +6,9 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc",
     "start": "tsx src/index.ts",
-    "seed": "tsx src/scripts/seed.ts",
     "ingest-plu": "tsx src/scripts/ingest-plu.ts",
     "migrate-uploads": "tsx src/scripts/migrate-uploads-to-s3.ts",
+    "seed:legal-articles": "tsx src/scripts/seed-legal-articles.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"

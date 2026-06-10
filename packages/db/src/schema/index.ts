@@ -26,5 +26,6 @@ export * from "./communeDocuments.js";
 export * from "./gpuCache.js";
 export * from "./dossierConsultations.js";
 export * from "./documentSegments.js";
+export * from "./documentSegmentAnnotations.js";
 export * from "./aiUsageEvents.js";
 export * from "./aiAlertConfig.js";

@@ -33,6 +33,21 @@ export interface VerdictSource {
   citation: string;
 }
 
+/**
+ * Citation d'un passage réglementaire RAG. Le `segment_id` doit correspondre à
+ * un passage effectivement injecté dans le prompt (cf. regulatoryHits), et la
+ * `citation` doit apparaître verbatim (tolérance whitespace) dans le texte de
+ * ce passage. Toute citation qui ne passe pas ces deux contrôles est rejetée
+ * post-LLM avec un warning — même mécanisme que pour les pièces.
+ */
+export interface VerdictRegulatorySource {
+  segment_id: string;
+  doc_type: string;
+  doc_source_file: string | null;
+  page: number | null;
+  citation: string;
+}
+
 export interface RuleVerdict {
   rule_id: string;
   topic: string;
@@ -45,6 +60,10 @@ export interface RuleVerdict {
   valeur_observee: { value: number; unit: string | null } | null;
   valeur_attendue: { min?: number | null; max?: number | null; exact?: number | null; unit?: string | null } | null;
   sources: VerdictSource[];
+  /** Citations vérifiées de passages réglementaires (PPRI, OAP, PEB…). Vide si
+   * l'IA n'a rien cité ou si toutes ses citations ont été rejetées comme
+   * hallucinées. */
+  regulatory_sources: VerdictRegulatorySource[];
 }
 
 export interface RuleVerdictsReport {
@@ -102,9 +121,31 @@ export interface VerdictContextInput {
   surface_plancher: number | null;
 }
 
+/**
+ * Passage réglementaire retrouvé par RAG (search.ts dans le package ingestion).
+ * Ces extraits viennent des PDFs indexés (PPRI, OAP, PEB, servitudes…). Chaque
+ * passage peut être accompagné d'annotations humaines VALIDÉES qui le précisent
+ * ou le corrigent — le moteur de verdict les utilise comme contexte additionnel
+ * pour produire des verdicts qui tiennent compte des nuances locales.
+ */
+export interface VerdictRegulatoryHit {
+  segment_id: string;
+  doc_type: string;
+  doc_source_file: string | null;
+  page: number | null;
+  text: string;
+  /** Annotations humaines validées attachées à ce passage. */
+  annotations: Array<{
+    id: string;
+    kind: string;
+    note: string;
+    validated_at: Date | null;
+  }>;
+}
+
 const SYSTEM_PROMPT = `Tu es expert en instruction de dossiers d'urbanisme (Code de l'Urbanisme, PLU).
 
-Mission : pour CHAQUE règle PLU fournie, rendre un VERDICT TYPÉ à partir UNIQUEMENT des extractions de pièces fournies et des synthèses de documents commune. Tu n'as accès qu'à ce qui est listé : tu n'inventes ni valeur, ni source, ni citation.
+Mission : pour CHAQUE règle PLU fournie, rendre un VERDICT TYPÉ à partir UNIQUEMENT des extractions de pièces fournies, des synthèses de documents commune ET des passages réglementaires retrouvés automatiquement (RAG). Tu n'as accès qu'à ce qui est listé : tu n'inventes ni valeur, ni source, ni citation.
 
 VERDICTS POSSIBLES :
 - "conforme" : la valeur observée respecte le seuil, source traçable.
@@ -118,12 +159,15 @@ RÈGLES STRICTES :
 - Toute "valeur_observee" doit pointer une PIÈCE (piece_id) ET reproduire une CITATION qui figure réellement dans l'extraction de cette pièce (champ "citations" de l'extraction). Si la citation n'existe pas → bascule en "non_verifiable" + précise "manquant".
 - Si plusieurs pièces se contredisent sur une même règle, verdict "non_conforme" avec raison « incohérence inter-pièces : X dit 9 m, Y dit 10,2 m ».
 - Les synthèses commune (OAP, PPRI, …) servent à PRÉCISER le verdict d'une règle mais n'autorisent pas à inventer une valeur de projet : elles informent le périmètre, pas la mesure.
+- Les passages réglementaires RAG (block "PASSAGES RÉGLEMENTAIRES INDEXÉS") sont des extraits FIDÈLES des PDFs annexes (PPRI, OAP, PEB…). Une ⚠ NOTE INSTRUCTEUR validée qui les accompagne PRÉCISE OU CORRIGE le passage : tiens-en compte (ex : "la cote NGF de référence est celle de 1997, pas celle de 2010"). Ces passages peuvent fonder un verdict mais doivent être cités tels quels — pas paraphrasés.
 - Respecte rigoureusement la sémantique min ("≥") vs max ("≤"). Une règle "hauteur max ≤ 9 m" + valeur observée 9,2 m = non_conforme.
 - Pour les règles qualitatives sans valeur (matériaux, aspect…) : compare la description du projet (notice / plan_facade.materiaux) à ce qu'autorise la règle. Si l'extraction ne décrit pas le matériau, "non_verifiable".
 
 CITATIONS — TRAÇABILITÉ :
-- "sources" : liste des pièces qui ont fourni l'information. Pour chaque source : piece_id, piece_nom, et la citation EXACTE telle qu'extraite (depuis citations[] de l'extraction). NE PARAPHRASE PAS.
-- Sans source valide → verdict = "non_verifiable" + "sources": [].
+- "sources" : liste des PIÈCES du dossier qui ont fourni l'information. Pour chaque source : piece_id, piece_nom, et la citation EXACTE telle qu'extraite (depuis citations[] de l'extraction). NE PARAPHRASE PAS.
+- "regulatory_sources" : liste des PASSAGES RÉGLEMENTAIRES indexés que tu cites. Pour chaque source : segment_id (= identifiant entre [crochets] AVANT le bloc dans "PASSAGES RÉGLEMENTAIRES INDEXÉS") et la citation EXACTE (un extrait verbatim du passage, pas une paraphrase). Toute citation qui ne se retrouve pas mot pour mot dans le passage sera REJETÉE — n'invente rien.
+- Si tu cites une note d'instructeur attachée à un passage (⚠ NOTE INSTRUCTEUR), reproduis la NOTE entre guillemets dans "citation" et garde le segment_id du passage parent.
+- Sans source valide → verdict = "non_verifiable" + "sources": [] + "regulatory_sources": [].
 
 SORTIE — JSON UNIQUEMENT (pas de markdown, pas de préambule) :
 {
@@ -136,6 +180,9 @@ SORTIE — JSON UNIQUEMENT (pas de markdown, pas de préambule) :
       "valeur_observee": null | { "value": 4.2, "unit": "m" },
       "sources": [
         { "piece_id": "<id>", "piece_nom": "<nom>", "citation": "<texte exact lu sur la pièce>" }
+      ],
+      "regulatory_sources": [
+        { "segment_id": "<id du passage>", "citation": "<extrait verbatim du passage>" }
       ]
     }
   ]
@@ -235,6 +282,35 @@ function formatCommuneDocsForPrompt(docs: VerdictDocumentCommuneInput[]): string
   return usable.map((d) => `[${d.type.toUpperCase()}] ${d.name}\n  ${d.synthese!.trim()}`).join("\n\n");
 }
 
+function formatRegulatoryHitsForPrompt(hits: VerdictRegulatoryHit[]): string {
+  if (!hits.length) return "(aucun passage indexé pertinent)";
+  return hits.map((h) => {
+    // L'identifiant entre crochets sert au LLM à citer le passage par
+    // segment_id — c'est le SEUL identifiant qu'on accepte côté validation.
+    const header = `[${h.segment_id}] ${h.doc_type}${h.page != null ? `, p. ${h.page}` : ""}${h.doc_source_file ? ` — ${h.doc_source_file}` : ""}`;
+    let block = `${header}\n${h.text}`;
+    for (const a of h.annotations) {
+      const dateLabel = a.validated_at ? a.validated_at.toISOString().slice(0, 10) : "(date inconnue)";
+      block += `\n  ⚠ ${a.kind.toUpperCase()} — note instructeur validée le ${dateLabel} :\n  ${a.note}`;
+    }
+    return block;
+  }).join("\n\n");
+}
+
+/**
+ * Index regulatoire — pour chaque segment retrouvé par RAG, ensemble des
+ * textes citables : le texte du passage lui-même + chacune des notes
+ * d'annotation. Sert à valider que l'IA ne fabrique pas de citation.
+ */
+function buildRegulatoryIndex(hits: VerdictRegulatoryHit[]): Map<string, { knownTexts: string[]; meta: VerdictRegulatoryHit }> {
+  const idx = new Map<string, { knownTexts: string[]; meta: VerdictRegulatoryHit }>();
+  for (const h of hits) {
+    const texts = [h.text, ...h.annotations.map((a) => a.note)];
+    idx.set(h.segment_id, { knownTexts: texts, meta: h });
+  }
+  return idx;
+}
+
 // Index citations par pièce pour validation post-LLM (rejet d'une citation
 // inventée par le modèle).
 function buildCitationIndex(pieces: VerdictPieceInput[]): Map<string, Set<string>> {
@@ -283,6 +359,8 @@ export async function computeRuleVerdicts(args: {
   rules: VerdictRuleInput[];
   pieces: VerdictPieceInput[];
   documentsCommune: VerdictDocumentCommuneInput[];
+  /** Passages réglementaires retrouvés par RAG. Vide = pas de retrieval ce coup-ci. */
+  regulatoryHits?: VerdictRegulatoryHit[];
   context: VerdictContextInput;
   trace?: { dossierId?: string | null; communeId?: string | null; userId?: string | null };
 }): Promise<RuleVerdictsReport> {
@@ -328,6 +406,9 @@ ${formatPiecesForPrompt(args.pieces)}
 ==================== SYNTHÈSES DES DOCUMENTS COMMUNE ====================
 ${formatCommuneDocsForPrompt(args.documentsCommune)}
 
+==================== PASSAGES RÉGLEMENTAIRES INDEXÉS (RAG) ====================
+${formatRegulatoryHitsForPrompt(args.regulatoryHits ?? [])}
+
 ==================== INSTRUCTIONS ====================
 Rends UN verdict par règle ci-dessus. Cite uniquement des extraits qui figurent dans le bloc "citations" de la pièce concernée. À défaut, verdict "non_verifiable" + précise "manquant".`;
 
@@ -350,6 +431,7 @@ Rends UN verdict par règle ci-dessus. Cite uniquement des extraits qui figurent
 
   // Index pour la validation des citations.
   const citationIndex = buildCitationIndex(args.pieces);
+  const regulatoryIndex = buildRegulatoryIndex(args.regulatoryHits ?? []);
   const pieceNomById = new Map(args.pieces.map((p) => [p.id, p.nom]));
 
   // Construction des verdicts complets (rule_text, article, etc.) à partir des règles d'entrée.
@@ -364,6 +446,7 @@ Rends UN verdict par règle ci-dessus. Cite uniquement des extraits qui figurent
     let manquant: string | null = null;
     let valeur_observee: RuleVerdict["valeur_observee"] = null;
     let sources: VerdictSource[] = [];
+    let regulatory_sources: VerdictRegulatorySource[] = [];
 
     if (found) {
       verdict = normalizeVerdict(found.verdict);
@@ -392,9 +475,39 @@ Rends UN verdict par règle ci-dessus. Cite uniquement des extraits qui figurent
           citation,
         });
       }
+
+      // Parsing des regulatory_sources : segment_id doit exister parmi les
+      // hits injectés ET citation doit apparaître verbatim dans le passage ou
+      // dans une de ses annotations. Toute citation hors corpus est rejetée.
+      const regSrcRaw = Array.isArray(found.regulatory_sources) ? (found.regulatory_sources as unknown[]) : [];
+      for (const s of regSrcRaw) {
+        if (!s || typeof s !== "object") continue;
+        const o = s as Record<string, unknown>;
+        const sid = strOrNull(o.segment_id);
+        const citation = strOrNull(o.citation);
+        if (!sid || !citation) continue;
+        const known = regulatoryIndex.get(sid);
+        if (!known) {
+          warnings.push(`Citation réglementaire rejetée (segment_id ${sid} inconnu) pour règle ${r.id} : "${citation.slice(0, 80)}"`);
+          continue;
+        }
+        if (!citationMatches(citation, new Set(known.knownTexts))) {
+          warnings.push(`Citation réglementaire rejetée (non trouvée dans le passage ${sid}) pour règle ${r.id} : "${citation.slice(0, 80)}"`);
+          continue;
+        }
+        regulatory_sources.push({
+          segment_id: sid,
+          doc_type: known.meta.doc_type,
+          doc_source_file: known.meta.doc_source_file,
+          page: known.meta.page,
+          citation,
+        });
+      }
+
       // Si le verdict revendique une valeur observée mais aucune source valide
-      // ne reste après filtrage, on rétrograde en non_verifiable.
-      if ((verdict === "conforme" || verdict === "non_conforme") && sources.length === 0) {
+      // (pièce OU passage réglementaire) ne reste après filtrage, on rétrograde
+      // en non_verifiable.
+      if ((verdict === "conforme" || verdict === "non_conforme") && sources.length === 0 && regulatory_sources.length === 0) {
         warnings.push(`Verdict ${verdict} rétrogradé en non_verifiable (aucune source vérifiable) pour règle ${r.id}.`);
         verdict = "non_verifiable";
         valeur_observee = null;
@@ -419,6 +532,7 @@ Rends UN verdict par règle ci-dessus. Cite uniquement des extraits qui figurent
         ? { min: rule.value_min, max: rule.value_max, exact: rule.value_exact, unit: rule.unit }
         : null,
       sources,
+      regulatory_sources,
     });
   }
 

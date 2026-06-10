@@ -613,6 +613,28 @@ CREATE INDEX IF NOT EXISTS idx_ai_usage_events_file_hash ON ai_usage_events(file
 -- Implémenté côté application (cron léger au démarrage) ; cet index accélère
 -- la purge et la recherche par date.
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at_purge ON audit_logs(created_at);
+
+-- ── Annotations chunk-level sur documents indexés (Phase 1 niveau B) ──
+-- Une annotation valide est INJECTÉE à côté du chunk lors du search RAG.
+-- Permet à l'instructeur de "patcher" un PDF sans le réécrire : corrections
+-- éditoriales, jurisprudence locale, cas particuliers connus de la commune.
+-- Garde juridique : statut 'brouillon' tant que non explicitement validé.
+CREATE TABLE IF NOT EXISTS document_segment_annotations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  segment_id text NOT NULL,
+  source_id text NOT NULL,
+  kind text NOT NULL DEFAULT 'precision',
+  note text NOT NULL,
+  applies_if jsonb NOT NULL DEFAULT '[]',
+  validation_status text NOT NULL DEFAULT 'brouillon',
+  author_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  validated_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  validated_at timestamp,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_segment_annotations_segment ON document_segment_annotations(segment_id);
+CREATE INDEX IF NOT EXISTS idx_segment_annotations_source ON document_segment_annotations(source_id);
 `;
 
 async function main() {

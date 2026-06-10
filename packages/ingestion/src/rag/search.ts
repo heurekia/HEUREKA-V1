@@ -6,7 +6,7 @@
  * que l'appelant produise une citation traçable type
  * "PPRI Vallée Cher, p. 23 : <extrait>".
  */
-import { db, document_segments } from "@heureka-v1/db";
+import { db, document_segments, document_segment_annotations } from "@heureka-v1/db";
 import { sql, eq, and, inArray } from "drizzle-orm";
 import { embedTexts } from "../db/embedder.ts";
 
@@ -21,6 +21,14 @@ export interface SearchParams {
   max_distance?: number;
 }
 
+export interface AnnotationHit {
+  id: string;
+  kind: string;
+  note: string;
+  applies_if: string[];
+  validated_at: Date | null;
+}
+
 export interface SearchHit {
   segment_id: string;
   doc_type: string;
@@ -33,6 +41,9 @@ export interface SearchHit {
   distance: number;
   /** Métadonnées additionnelles (depuis metadata jsonb). */
   metadata: Record<string, unknown>;
+  /** Annotations VALIDÉES attachées à ce chunk — à injecter à côté du texte
+   * dans le prompt LLM pour que l'IA voie les nuances métier. */
+  annotations: AnnotationHit[];
 }
 
 export async function searchSegments(p: SearchParams): Promise<SearchHit[]> {
@@ -66,20 +77,70 @@ export async function searchSegments(p: SearchParams): Promise<SearchHit[]> {
     .orderBy(sql`${document_segments.embedding} <=> ${embeddingLiteral}::vector`)
     .limit(topK);
 
-  return rows
-    .filter((r) => p.max_distance === undefined || r.distance <= p.max_distance)
-    .map((r) => {
-      const meta = (r.metadata ?? {}) as Record<string, unknown>;
-      return {
-        segment_id: r.id,
-        doc_type: r.doc_type,
-        doc_source_file: r.doc_source_file,
-        doc_version: r.doc_version,
-        page: typeof meta.page === "number" ? meta.page : null,
-        source_id: typeof meta.source_id === "string" ? meta.source_id : null,
-        text: r.raw_text,
-        distance: r.distance,
-        metadata: meta,
-      };
-    });
+  const filtered = rows.filter((r) => p.max_distance === undefined || r.distance <= p.max_distance);
+
+  // 3. Récupération des annotations VALIDÉES pour les chunks retenus, en un
+  // seul SELECT. Les brouillons et rejets sont exclus côté DB : c'est la
+  // garantie juridique qu'aucune note non-relue n'arrive dans le prompt.
+  const segmentIds = filtered.map((r) => r.id);
+  const annotationsBySegment = new Map<string, AnnotationHit[]>();
+  if (segmentIds.length > 0) {
+    const annRows = await db
+      .select({
+        id: document_segment_annotations.id,
+        segment_id: document_segment_annotations.segment_id,
+        kind: document_segment_annotations.kind,
+        note: document_segment_annotations.note,
+        applies_if: document_segment_annotations.applies_if,
+        validated_at: document_segment_annotations.validated_at,
+      })
+      .from(document_segment_annotations)
+      .where(and(
+        inArray(document_segment_annotations.segment_id, segmentIds),
+        eq(document_segment_annotations.validation_status, "valide"),
+      ));
+    for (const a of annRows) {
+      const arr = annotationsBySegment.get(a.segment_id) ?? [];
+      arr.push({
+        id: a.id,
+        kind: a.kind,
+        note: a.note,
+        applies_if: Array.isArray(a.applies_if) ? (a.applies_if as string[]) : [],
+        validated_at: a.validated_at,
+      });
+      annotationsBySegment.set(a.segment_id, arr);
+    }
+  }
+
+  return filtered.map((r) => {
+    const meta = (r.metadata ?? {}) as Record<string, unknown>;
+    return {
+      segment_id: r.id,
+      doc_type: r.doc_type,
+      doc_source_file: r.doc_source_file,
+      doc_version: r.doc_version,
+      page: typeof meta.page === "number" ? meta.page : null,
+      source_id: typeof meta.source_id === "string" ? meta.source_id : null,
+      text: r.raw_text,
+      distance: r.distance,
+      metadata: meta,
+      annotations: annotationsBySegment.get(r.id) ?? [],
+    };
+  });
+}
+
+/**
+ * Formate un SearchHit en bloc texte prêt à injecter dans un prompt LLM.
+ * L'IA voit le passage du PDF + les annotations humaines validées clairement
+ * étiquetées. C'est ce qui rend l'audit juridique possible : on peut citer
+ * à la fois la source officielle et la nuance ajoutée par l'instructeur.
+ */
+export function formatHitForPrompt(hit: SearchHit): string {
+  const header = `[${hit.doc_type}${hit.page != null ? `, p. ${hit.page}` : ""}${hit.doc_source_file ? ` — ${hit.doc_source_file}` : ""}]`;
+  let out = `${header}\n${hit.text}`;
+  for (const a of hit.annotations) {
+    const tag = a.kind.toUpperCase();
+    out += `\n\n⚠ ${tag} — note instructeur validée${a.validated_at ? ` le ${a.validated_at.toISOString().slice(0, 10)}` : ""} :\n${a.note}`;
+  }
+  return out;
 }

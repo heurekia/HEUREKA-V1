@@ -268,7 +268,7 @@ export function DossierDetail() {
 
   return (
     <div style={{ minHeight: "100%", background: "#F8FAFC", padding: "28px 24px" }}>
-      <div style={{ maxWidth: 760, margin: "0 auto" }}>
+      <div style={{ maxWidth: 1280, margin: "0 auto" }}>
 
         {/* Back */}
         <Link
@@ -281,22 +281,21 @@ export function DossierDetail() {
         {/* Bandeau brouillon */}
         {dossier.status === "brouillon" && (
           <div style={{ background: "#FFF7ED", border: "1.5px solid #FED7AA", borderRadius: 14, padding: "20px 24px", marginBottom: 16 }}>
-            <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" }}>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 14, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>
-                  📋 Dossier en cours de préparation
-                </div>
-                <div style={{ fontSize: 13, color: "#78350F", lineHeight: 1.6 }}>
-                  Ajoutez toutes vos pièces justificatives ci-dessous, puis soumettez votre dossier à la mairie pour démarrer l'instruction.
-                </div>
-                {completude && !completude.complete && (
-                  <div style={{ marginTop: 10, fontSize: 12, color: "#B45309" }}>
-                    <strong>Pièces manquantes :</strong>{" "}
-                    {completude.manquantes.map((p) => p.nom).join(", ")}
-                  </div>
-                )}
+            <div style={{ marginBottom: 16 }}>
+              <div style={{ fontSize: 14, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>
+                📋 Dossier en cours de préparation
               </div>
-              <div style={{ display: "flex", gap: 10, flexShrink: 0, flexWrap: "wrap" }}>
+              <div style={{ fontSize: 13, color: "#78350F", lineHeight: 1.6 }}>
+                Ajoutez toutes vos pièces justificatives ci-dessous, puis soumettez votre dossier à la mairie pour démarrer l'instruction.
+              </div>
+              {completude && !completude.complete && (
+                <div style={{ marginTop: 10, fontSize: 12, color: "#B45309" }}>
+                  <strong>Pièces manquantes :</strong>{" "}
+                  {completude.manquantes.map((p) => p.nom).join(", ")}
+                </div>
+              )}
+            </div>
+            <div style={{ display: "flex", gap: 10, flexWrap: "wrap", justifyContent: "flex-end" }}>
                 <button
                   onClick={() => void supprimerBrouillon()}
                   disabled={deleting}
@@ -313,6 +312,22 @@ export function DossierDetail() {
                   }}
                 >
                   {deleting ? "Suppression…" : "🗑 Supprimer"}
+                </button>
+                <button
+                  onClick={() => navigate(`/citoyen/nouvelle-demande?dossier=${id}`)}
+                  style={{
+                    padding: "11px 18px",
+                    background: "white",
+                    color: "#4F46E5",
+                    border: "1.5px solid #C7D2FE",
+                    borderRadius: 10,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  📂 Reprendre la constitution
                 </button>
                 <button
                   onClick={() => void soumettreALaMairie()}
@@ -333,7 +348,6 @@ export function DossierDetail() {
                   {submitting ? "Envoi…" : "Soumettre à la mairie →"}
                 </button>
               </div>
-            </div>
           </div>
         )}
 
