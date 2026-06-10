@@ -6339,7 +6339,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [clickedCoords, setClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
 
   useEffect(() => {
-    if (activeTab !== "Parcelle" || parcelAnalysis || parcelLoading) return;
+    // Chargement éager : l'analyse identifie notamment la référence
+    // cadastrale, qui s'affiche aussi dans le Résumé et l'en-tête.
+    if (parcelAnalysis || parcelLoading) return;
     setParcelLoading(true);
     setParcelError(null);
     const params = new URLSearchParams();
@@ -6354,7 +6356,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       .then(data => { setParcelAnalysis(data); setClickingParcel(false); })
       .catch(e => setParcelError(e instanceof Error ? e.message : "Erreur analyse parcellaire"))
       .finally(() => setParcelLoading(false));
-  }, [activeTab, dossier.id, parcelAnalysis, parcelLoading, addressOverride, selectedZone, clickedCoords]);
+  }, [dossier.id, parcelAnalysis, parcelLoading, addressOverride, selectedZone, clickedCoords]);
 
   // BAN autocomplete
   useEffect(() => {
@@ -6811,13 +6813,19 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   style={{ padding: "1px 6px", fontSize: 10, color: showAddressEditor ? "#4F46E5" : "#94a3b8", background: showAddressEditor ? "#EEF2FF" : "none", border: "1px solid " + (showAddressEditor ? "#4F46E5" : "#E2E8F0"), borderRadius: 4, cursor: "pointer", marginLeft: 2, fontWeight: 500 }}
                 >✏️</button>
               </span>
-              {dossier.parcelle && <>
-                <span style={{ color: "#CBD5E1", fontSize: 12 }}>·</span>
-                <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }}>
-                  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></svg>
-                  {dossier.parcelle}
-                </span>
-              </>}
+              {(() => {
+                const pp = parcelAnalysis?.parcel;
+                const parcelleLabel = dossier.parcelle ?? (pp ? `${pp.section} ${pp.numero}` : null);
+                return parcelleLabel ? (
+                  <>
+                    <span style={{ color: "#CBD5E1", fontSize: 12 }}>·</span>
+                    <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }}>
+                      <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="18" height="18" rx="2" /><path d="M3 9h18M9 21V9" /></svg>
+                      {parcelleLabel}
+                    </span>
+                  </>
+                ) : null;
+              })()}
               <span style={{ color: "#CBD5E1", fontSize: 12 }}>·</span>
               <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }} title="Instructeur">
                 <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><polyline points="17 11 19 13 23 9" /></svg>
@@ -7124,16 +7132,22 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               <div style={CARD}>
                 <SecTitle>Informations principales</SecTitle>
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
-                  {[
-                    ["Pétitionnaire", dossier.petitionnaire],
-                    ["Type de dossier", typeLabel],
-                    ["Adresse", liveAdresse ?? "—"],
-                    ["Commune", `${liveCommune ?? "—"}${dossier.code_postal ? ` (${dossier.code_postal})` : ""}`],
-                    ["Parcelle", dossier.parcelle ?? "—"],
-                    ["Surface de plancher", dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—"],
-                    ["Date de dépôt", dossier.date_depot ? fmtDate(dossier.date_depot) : "—"],
-                    ["Échéance", dossier.echeance],
-                  ].map(([l, v]) => (
+                  {(() => {
+                    const pp = parcelAnalysis?.parcel;
+                    const parcelleLabel = dossier.parcelle
+                      ?? (pp ? `${pp.section} ${pp.numero}` : null)
+                      ?? (parcelLoading ? "Identification…" : "—");
+                    return [
+                      ["Pétitionnaire", dossier.petitionnaire],
+                      ["Type de dossier", typeLabel],
+                      ["Adresse", liveAdresse ?? "—"],
+                      ["Commune", `${liveCommune ?? "—"}${dossier.code_postal ? ` (${dossier.code_postal})` : ""}`],
+                      ["Parcelle", parcelleLabel],
+                      ["Surface de plancher", dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—"],
+                      ["Date de dépôt", dossier.date_depot ? fmtDate(dossier.date_depot) : "—"],
+                      ["Échéance", dossier.echeance],
+                    ];
+                  })().map(([l, v]) => (
                     <div key={l}>
                       <div style={LABEL_ST}>{l}</div>
                       <div style={VALUE_ST}>{v}</div>
