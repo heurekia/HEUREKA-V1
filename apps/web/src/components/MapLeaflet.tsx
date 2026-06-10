@@ -209,6 +209,25 @@ export function MapLeaflet({
       return fetchOnce();
     };
 
+    // Fallback WMS : tuiles raster fournies par data.geopf.fr/wms-r/ows. Cet
+    // endpoint est totalement indépendant de l'API JSON apicarto.ign.fr qui
+    // tombe régulièrement. Pas d'interactivité (tooltip/clic) mais les zones
+    // restent visibles avec les couleurs officielles IGN.
+    const addWmsFallback = (notice: string) => {
+      if (!mapRef.current || sig.aborted) return;
+      const wms = L.tileLayer.wms("https://data.geopf.fr/wms-r/ows", {
+        layers: "GPU.ZONE_URBA",
+        format: "image/png",
+        transparent: true,
+        version: "1.3.0",
+        opacity: 0.55,
+        zIndex: 3,
+        attribution: "© IGN — Géoportail de l'Urbanisme",
+      }).addTo(mapRef.current);
+      pluLayerRef.current = wms;
+      setZoneError(`${notice} (affichage de secours via tuiles WMS)`);
+    };
+
     fetchWithRetry()
       .then(r =>
         r.ok
@@ -219,7 +238,10 @@ export function MapLeaflet({
       )
       .then((zones: { features?: unknown[] }) => {
         if (!mapRef.current || sig.aborted) return;
-        if (!zones.features?.length) throw new Error("Aucune zone PLU pour cette commune");
+        if (!zones.features?.length) {
+          addWmsFallback("Aucune zone PLU vectorielle disponible pour cette commune");
+          return;
+        }
 
         const layer = L.geoJSON(zones as Parameters<typeof L.geoJSON>[0], {
           style: feature => {
@@ -238,7 +260,7 @@ export function MapLeaflet({
       .catch((err: Error) => {
         if (sig.aborted) return;
         console.error("[PLU zones]", err);
-        setZoneError(err.message);
+        addWmsFallback(`API GPU indisponible : ${err.message}`);
       });
 
     return () => { ctrl.abort(); };

@@ -121,19 +121,36 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   addCand({ partition: `${inseeCode}_PLU`, source: "convention/INSEE_PLU" });
 
   // (C) Fallback EPCI : "<SIREN>_PLUI" / "<SIREN>_PLU"
+  // On utilise /communes/{insee}?fields=codeEpci en premier (plus stable que
+  // /communes/{insee}/epcis qui renvoie parfois vide ou 404).
   {
-    const epciR = await fetchWithRetry(
-      `https://geo.api.gouv.fr/communes/${encodeURIComponent(inseeCode)}/epcis?fields=code&limit=5`,
+    let epciSiren: string | undefined;
+
+    const r1 = await fetchWithRetry(
+      `https://geo.api.gouv.fr/communes/${encodeURIComponent(inseeCode)}?fields=codeEpci`,
       { signal: AbortSignal.timeout(8000) }
     );
-    if (epciR) {
-      const epcis = (await epciR.json()) as Array<{ code?: string }>;
-      for (const epci of epcis) {
-        if (!epci.code) continue;
-        addCand({ partition: `${epci.code}_PLUI`, source: "convention/EPCI_PLUI" });
-        addCand({ partition: `${epci.code}_PLU`, source: "convention/EPCI_PLU" });
-      }
+    if (r1) {
+      const j = (await r1.json()) as { codeEpci?: string };
+      if (j.codeEpci) epciSiren = j.codeEpci;
     } else diag.upstreamFailed = true;
+
+    // Fallback : /epcis (au cas où codeEpci ne soit pas remonté)
+    if (!epciSiren) {
+      const r2 = await fetchWithRetry(
+        `https://geo.api.gouv.fr/communes/${encodeURIComponent(inseeCode)}/epcis?fields=code&limit=5`,
+        { signal: AbortSignal.timeout(8000) }
+      );
+      if (r2) {
+        const epcis = (await r2.json()) as Array<{ code?: string }>;
+        epciSiren = epcis.find(e => !!e.code)?.code;
+      } else diag.upstreamFailed = true;
+    }
+
+    if (epciSiren) {
+      addCand({ partition: `${epciSiren}_PLUI`, source: "convention/EPCI_PLUI" });
+      addCand({ partition: `${epciSiren}_PLU`, source: "convention/EPCI_PLU" });
+    }
   }
 
   // ── Itère sur les candidats : pour chacun, on tente le fetch RÉEL (avec geom).
