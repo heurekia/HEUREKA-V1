@@ -268,7 +268,7 @@ export function DossierDetail() {
 
   return (
     <div style={{ minHeight: "100%", background: "#F8FAFC", padding: "28px 24px" }}>
-      <div style={{ maxWidth: 760, margin: "0 auto" }}>
+      <div style={{ maxWidth: 1280, margin: "0 auto" }}>
 
         {/* Back */}
         <Link
