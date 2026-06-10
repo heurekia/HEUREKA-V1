@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import DOMPurify from "dompurify";
+import { renderLegalHtml } from "../utils/renderLegalHtml";
 
 // Référence d'article (sans suffixe code), ex. "R431-2" ; et clé code "CU"/"CCH"/"CE".
 type Props = {
@@ -166,10 +166,9 @@ export function ArticleLink({ codeKey, num, label }: Props) {
             )}
 
             {!loading && data?.html && (
-              <div
-                style={{ fontSize: 14, color: "#1F2937", lineHeight: 1.6 }}
-                dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(data.html) }}
-              />
+              <div style={{ fontSize: 14, color: "#1F2937", lineHeight: 1.6 }}>
+                {renderLegalHtml(data.html, codeKey)}
+              </div>
             )}
 
             {!loading && !data && (
