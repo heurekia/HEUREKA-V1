@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect, useRef } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { api } from "../../lib/api";
 
@@ -2369,7 +2369,21 @@ export function NouvelleDemandeWizard() {
           }}
         >
           🔒 Données chiffrées en transit (HTTPS) et hébergées en UE. Traitement
-          conforme RGPD — voir les mentions légales et la politique de confidentialité.
+          conforme RGPD — voir les{" "}
+          <Link
+            to="/mentions-legales"
+            style={{ color: "#CBD5E1", textDecoration: "underline" }}
+          >
+            mentions légales
+          </Link>{" "}
+          et la{" "}
+          <Link
+            to="/politique-confidentialite"
+            style={{ color: "#CBD5E1", textDecoration: "underline" }}
+          >
+            politique de confidentialité
+          </Link>
+          .
         </p>
       </div>
     </div>
