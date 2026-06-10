@@ -92,25 +92,16 @@ describe("buildPcmiFieldValues", () => {
     expect(v.text.terrain_numero).toBe("0123");
   });
 
-  it("PCMI par définition = construction nouvelle, jamais existante", () => {
+  it("construction neuve par défaut (pas de surface existante)", () => {
     const v = buildPcmiFieldValues(baseInput);
     expect(v.checkboxes.construction_nouvelle).toBe(true);
     expect(v.checkboxes.construction_existante).toBe(false);
   });
 
-  it("destination principale cochée si habitation", () => {
+  it("destination principale cochée par défaut", () => {
     const v = buildPcmiFieldValues(baseInput);
     expect(v.checkboxes.destination_principale).toBe(true);
     expect(v.checkboxes.destination_secondaire).toBe(false);
-  });
-
-  it("destination secondaire si garage", () => {
-    const v = buildPcmiFieldValues({
-      ...baseInput,
-      cerfa: { ...baseInput.cerfa, destinationFuture: "garage" },
-    });
-    expect(v.checkboxes.destination_principale).toBe(false);
-    expect(v.checkboxes.destination_secondaire).toBe(true);
   });
 
   it("ABF coché uniquement si proximité explicite", () => {
@@ -119,6 +110,127 @@ describe("buildPcmiFieldValues", () => {
       ...baseInput,
       cerfa: { ...baseInput.cerfa, proximiteABF: true },
     }).checkboxes.abf).toBe(true);
+  });
+
+  it("SCI : remplit dénomination + représentant, laisse PP vides", () => {
+    const v = buildPcmiFieldValues({
+      ...baseInput,
+      cerfa: {
+        ...baseInput.cerfa,
+        qualiteDemandeur: "sci",
+        societeDenomination: "SCI Les Vergers",
+        societeSiret: "12345678900012",
+        societeTypeJuridique: "SCI",
+      },
+    });
+    expect(v.text.societe_denomination).toBe("SCI Les Vergers");
+    expect(v.text.societe_siret).toBe("12345678900012");
+    expect(v.text.societe_typeJuridique).toBe("SCI");
+    // Le représentant est par défaut le user authentifié.
+    expect(v.text.societe_representantNom).toBe("Dupont");
+    expect(v.text.societe_representantPrenom).toBe("Marie");
+  });
+
+  it("particulier : ne remplit aucun champ SCI", () => {
+    const v = buildPcmiFieldValues({
+      ...baseInput,
+      cerfa: { ...baseInput.cerfa, qualiteDemandeur: "particulier" },
+    });
+    expect(v.text.societe_denomination).toBe("");
+    expect(v.text.societe_siret).toBe("");
+  });
+
+  it("extension : coche construction existante et remplit surface avant", () => {
+    const v = buildPcmiFieldValues({
+      ...baseInput,
+      cerfa: {
+        ...baseInput.cerfa,
+        surfaceExistanteAvant: "85",
+        surfaceCreee: "35",
+      },
+    });
+    expect(v.checkboxes.construction_nouvelle).toBe(false);
+    expect(v.checkboxes.construction_existante).toBe(true);
+    expect(v.checkboxes.extension).toBe(true);
+    expect(v.text.surface_avantTravaux).toBe("85");
+    expect(v.text.surface_creee).toBe("35");
+  });
+
+  it("surélévation prime sur extension simple", () => {
+    const v = buildPcmiFieldValues({
+      ...baseInput,
+      cerfa: {
+        ...baseInput.cerfa,
+        surfaceExistanteAvant: "85",
+        surfaceCreee: "30",
+        surelevation: true,
+      },
+    });
+    expect(v.checkboxes.surelevation).toBe(true);
+    expect(v.checkboxes.extension).toBe(false);
+  });
+
+  it("architecte : remplit nom + ordre + email, coche honneur si dispense", () => {
+    const v = buildPcmiFieldValues({
+      ...baseInput,
+      cerfa: {
+        ...baseInput.cerfa,
+        architecteRequis: true,
+        architecteNom: "Martin",
+        architectePrenom: "Paul",
+        architecteOrdre: "12345",
+        architecteEmail: "paul.martin@archi.fr",
+      },
+    });
+    expect(v.text.architecte_nom).toBe("Martin");
+    expect(v.text.architecte_ordre).toBe("12345");
+    expect(v.text.architecte_email).toBe("paul.martin@archi.fr");
+    expect(v.checkboxes.architecte_honneur).toBe(false);
+
+    const dispense = buildPcmiFieldValues({
+      ...baseInput,
+      cerfa: { ...baseInput.cerfa, architecteRequis: false },
+    });
+    expect(dispense.checkboxes.architecte_honneur).toBe(true);
+  });
+
+  it("annexes : cases cochées séparément", () => {
+    const v = buildPcmiFieldValues({
+      ...baseInput,
+      cerfa: { ...baseInput.cerfa, comporteGarage: true, comportePiscine: true, comporteVeranda: false },
+    });
+    expect(v.checkboxes.annexe_garage).toBe(true);
+    expect(v.checkboxes.annexe_piscine).toBe(true);
+    expect(v.checkboxes.annexe_veranda).toBe(false);
+  });
+
+  it("adresse demandeur distincte si fournie au step 5", () => {
+    const v = buildPcmiFieldValues({
+      ...baseInput,
+      cerfa: {
+        ...baseInput.cerfa,
+        adresseDemandeurNumero: "3",
+        adresseDemandeurVoie: "boulevard Voltaire",
+        adresseDemandeurLocalite: "Paris",
+        adresseDemandeurCodePostal: "75011",
+      },
+    });
+    expect(v.text.demandeur_voieNumero).toBe("3");
+    expect(v.text.demandeur_voieNom).toBe("boulevard Voltaire");
+    expect(v.text.demandeur_localite).toBe("Paris");
+    expect(v.text.demandeur_codePostal).toBe("75011");
+    // Le terrain reste celui du dossier.
+    expect(v.text.terrain_localite).toBe("Ballan-Miré");
+  });
+
+  it("usage : par défaut principale, secondaire si déclaré", () => {
+    expect(buildPcmiFieldValues(baseInput).checkboxes.destination_principale).toBe(true);
+    const v = buildPcmiFieldValues({
+      ...baseInput,
+      cerfa: { ...baseInput.cerfa, destinationUsage: "secondaire" },
+    });
+    expect(v.checkboxes.destination_principale).toBe(false);
+    expect(v.checkboxes.destination_secondaire).toBe(true);
   });
 
   it("pré-remplit lieu+date d'engagement", () => {
