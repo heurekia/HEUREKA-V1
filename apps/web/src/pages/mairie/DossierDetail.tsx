@@ -54,10 +54,10 @@ interface ConformiteResponse {
 }
 
 const SCORE_META: Record<PieceScore, { label: string; variant: "success" | "warning" | "danger" | "info" | "default"; Icon: typeof ShieldCheck }> = {
-  conforme: { label: "Conforme", variant: "success", Icon: ShieldCheck },
-  acceptable: { label: "Acceptable", variant: "info", Icon: ShieldCheck },
-  incomplet: { label: "Incomplet", variant: "warning", Icon: ShieldAlert },
-  non_conforme: { label: "Non conforme", variant: "danger", Icon: ShieldX },
+  conforme: { label: "Document exploitable", variant: "success", Icon: ShieldCheck },
+  acceptable: { label: "Exploitable avec réserves", variant: "info", Icon: ShieldCheck },
+  incomplet: { label: "À compléter", variant: "warning", Icon: ShieldAlert },
+  non_conforme: { label: "À reprendre", variant: "danger", Icon: ShieldX },
 };
 
 const GRAVITE_META: Record<NonConformite["gravite"], { label: string; variant: "warning" | "danger" | "default" }> = {

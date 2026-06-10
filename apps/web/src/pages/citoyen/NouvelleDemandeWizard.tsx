@@ -81,10 +81,10 @@ interface UploadedPiece {
 
 function getScoreConfig(score: string): { label: string; bg: string; color: string } | null {
   switch (score) {
-    case "conforme":      return { label: "✓ Conforme",     bg: "#DCFCE7", color: "#15803D" };
-    case "acceptable":   return { label: "⚠ Acceptable",   bg: "#FEF9C3", color: "#854D0E" };
-    case "incomplet":    return { label: "⚠ Incomplet",    bg: "#FEF3C7", color: "#92400E" };
-    case "non_conforme": return { label: "✗ Non conforme", bg: "#FEE2E2", color: "#DC2626" };
+    case "conforme":      return { label: "✓ Document exploitable",        bg: "#DCFCE7", color: "#15803D" };
+    case "acceptable":   return { label: "⚠ Exploitable avec réserves",   bg: "#FEF9C3", color: "#854D0E" };
+    case "incomplet":    return { label: "⚠ À compléter",                 bg: "#FEF3C7", color: "#92400E" };
+    case "non_conforme": return { label: "✗ À reprendre",                 bg: "#FEE2E2", color: "#DC2626" };
     default: return null;
   }
 }
