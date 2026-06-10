@@ -369,8 +369,11 @@ export function NouvelleDemandeWizard() {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const qParam = searchParams.get("q") ?? "";
+  const dossierParam = searchParams.get("dossier");
 
   const [step, setStep] = useState<Step>(1);
+  const [resuming, setResuming] = useState<boolean>(!!dossierParam);
+  const [resumeError, setResumeError] = useState<string | null>(null);
 
   // Step 1 – Localisation
   const [search, setSearch] = useState(qParam);
@@ -439,6 +442,115 @@ export function NouvelleDemandeWizard() {
       .then((result) => setParcel(mapAnalysis(result, qParam)))
       .catch(() => setParcel({ adresse: qParam }))
       .finally(() => setSearching(false));
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []); // intentional: only on mount
+
+  // ── Resume an existing brouillon when opened with ?dossier=<id> ────────────
+  // Le citoyen revient depuis « Mes demandes » → on hydrate l'état du wizard
+  // depuis le dossier sauvegardé et on saute directement à l'étape 7 (Documents).
+  useEffect(() => {
+    if (!dossierParam) return;
+    let cancelled = false;
+
+    interface DossierApi {
+      id: string;
+      numero: string;
+      type: string;
+      status: string;
+      adresse?: string;
+      commune?: string;
+      surface_plancher?: string | null;
+      description?: string | null;
+      metadata?: Record<string, unknown> | null;
+    }
+    interface PieceApi {
+      id: string;
+      nom: string;
+      code_piece: string | null;
+      url: string;
+      analyse_ia: PieceAnalysis | null;
+    }
+
+    (async () => {
+      try {
+        const [d, existingPieces] = await Promise.all([
+          api.get<DossierApi>(`/dossiers/${dossierParam}`),
+          api.get<PieceApi[]>(`/dossiers/${dossierParam}/pieces`),
+        ]);
+        if (cancelled) return;
+        if (d.status !== "brouillon") {
+          navigate(`/citoyen/mes-demandes/${d.id}`, { replace: true });
+          return;
+        }
+
+        const meta = d.metadata ?? {};
+        const resumedNatures = Array.isArray(meta.natures) ? (meta.natures as NatureId[]) : [];
+        const resumedSurface = parseFloat(d.surface_plancher ?? "0") || 0;
+        const resumedParcel: ParcelInfo = {
+          adresse: d.adresse,
+          commune: d.commune,
+          zone: typeof meta.zone === "string" ? meta.zone : undefined,
+          parcelle: typeof meta.parcelle === "string" ? meta.parcelle : undefined,
+          servitudes: Array.isArray(meta.servitudes)
+            ? (meta.servitudes as Array<{ categorie?: string; libelle?: string }>)
+            : [],
+        };
+
+        // Re-run classification to recover libelle / delai_moyen / pieces_requises.
+        // Fallback minimal si l'appel échoue → on garde au moins le type.
+        let resumedClassification: Classification;
+        try {
+          resumedClassification = await api.post<Classification>("/dossiers/classify", {
+            natures: resumedNatures,
+            surface: resumedSurface > 0 ? resumedSurface : undefined,
+            parcelData: resumedParcel,
+            description: d.description ?? undefined,
+          });
+        } catch {
+          resumedClassification = {
+            type: d.type,
+            libelle: d.type,
+            explication: "",
+            delai_moyen: "—",
+            pieces_requises: [],
+            alertes: [],
+            confiance: "moyenne",
+          };
+        }
+        if (cancelled) return;
+
+        // Regroupe les pièces déjà uploadées par code_piece (ou ANNEXE_KEY).
+        const grouped: Record<string, UploadedPiece[]> = {};
+        for (const p of existingPieces) {
+          const key = p.code_piece ?? ANNEXE_KEY;
+          (grouped[key] ??= []).push({
+            id: p.id,
+            nom: p.nom,
+            url: p.url,
+            analyse: p.analyse_ia ?? null,
+          });
+        }
+
+        setDossierId(d.id);
+        setDossierNumero(d.numero);
+        setParcel(resumedParcel);
+        setNatures(resumedNatures);
+        if (resumedSurface > 0) {
+          setSurface(resumedSurface);
+          setSurfaceStr(String(resumedSurface));
+        }
+        if (d.description) setDescription(d.description);
+        setClassification(resumedClassification);
+        setUploadedPieces(grouped);
+        setStep(7);
+      } catch {
+        if (!cancelled) setResumeError("Impossible de reprendre ce dossier. Réessayez ou contactez le support.");
+      } finally {
+        if (!cancelled) setResuming(false);
+      }
+    })();
+
+    return () => { cancelled = true; };
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []); // intentional: only on mount
 
@@ -751,6 +863,42 @@ export function NouvelleDemandeWizard() {
               Retour à l'accueil
             </button>
           </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Resume loading screen ───────────────────────────────────────────────────
+  if (resuming) {
+    return (
+      <div style={{ minHeight: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ textAlign: "center", color: "#64748b" }}>
+          <div style={{ fontSize: 48, marginBottom: 14, animation: "heureka-resume-spin 1.5s linear infinite" }}>📂</div>
+          <style>{`@keyframes heureka-resume-spin { from { transform: rotate(0deg) } to { transform: rotate(360deg) } }`}</style>
+          <div style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>
+            Reprise de votre dossier…
+          </div>
+          <div style={{ fontSize: 13 }}>On récupère vos pièces déjà déposées.</div>
+        </div>
+      </div>
+    );
+  }
+
+  if (resumeError) {
+    return (
+      <div style={{ minHeight: "100%", display: "flex", alignItems: "center", justifyContent: "center", padding: 24 }}>
+        <div style={{ textAlign: "center", maxWidth: 420 }}>
+          <div style={{ fontSize: 48, marginBottom: 14 }}>⚠️</div>
+          <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>
+            Reprise impossible
+          </div>
+          <div style={{ fontSize: 13, color: "#64748b", marginBottom: 18 }}>{resumeError}</div>
+          <button
+            onClick={() => navigate("/citoyen/mes-demandes")}
+            style={{ padding: "10px 20px", background: "#4F46E5", color: "white", border: "none", borderRadius: 10, fontSize: 14, fontWeight: 600, cursor: "pointer" }}
+          >
+            Retour à mes demandes
+          </button>
         </div>
       </div>
     );

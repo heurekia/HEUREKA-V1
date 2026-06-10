@@ -315,6 +315,22 @@ export function DossierDetail() {
                   {deleting ? "Suppression…" : "🗑 Supprimer"}
                 </button>
                 <button
+                  onClick={() => navigate(`/citoyen/nouvelle-demande?dossier=${id}`)}
+                  style={{
+                    padding: "11px 18px",
+                    background: "white",
+                    color: "#4F46E5",
+                    border: "1.5px solid #C7D2FE",
+                    borderRadius: 10,
+                    fontSize: 13,
+                    fontWeight: 600,
+                    cursor: "pointer",
+                    whiteSpace: "nowrap",
+                  }}
+                >
+                  📂 Reprendre la constitution
+                </button>
+                <button
                   onClick={() => void soumettreALaMairie()}
                   disabled={submitting || (completude !== null && !completude.complete)}
                   title={completude && !completude.complete ? `${completude.manquantes.length} pièce(s) manquante(s)` : undefined}
