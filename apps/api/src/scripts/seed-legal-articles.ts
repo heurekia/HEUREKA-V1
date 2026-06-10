@@ -32,7 +32,8 @@ async function main() {
     const a = await refreshArticle(code, num);
     if (a) {
       ok++;
-      console.log(`✓ ${code} ${num} — ${a.article_title ?? "(sans titre)"}`);
+      const hint = a.article_title ? ` — ${a.article_title}` : a.article_html ? ` (${a.article_html.length} car.)` : "";
+      console.log(`✓ ${code} ${num}${hint}`);
     } else {
       ko++;
       console.warn(`✗ ${code} ${num} — non récupéré`);

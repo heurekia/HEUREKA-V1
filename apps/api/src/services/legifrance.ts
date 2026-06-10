@@ -47,11 +47,78 @@ type PisteGetArticleResponse = {
     num?: string;
     titre?: string;
     fullSectionTitre?: string;
-    texte?: string;        // HTML
-    texteHtml?: string;    // HTML alternatif selon endpoint
-    dateDebut?: number;    // ms epoch
+    texte?: string;        // HTML (ancien champ)
+    texteHtml?: string;    // HTML (champ swagger officiel)
+    dateDebut?: number;
   } | null;
 };
+
+// Table des matières d'un code — utilisée comme fallback pour résoudre
+// num → LEGIARTI quand getArticleWithIdAndNum échoue (typiquement pour les
+// articles avec version en vigueur différée — voir note du Swagger).
+type CodeTocSection = {
+  id?: string;
+  cid?: string;
+  title?: string;
+  articles?: { id?: string; cid?: string; num?: string; etat?: string }[];
+  sections?: CodeTocSection[];
+};
+type CodeTocResponse = {
+  sections?: CodeTocSection[];
+  articles?: { id?: string; cid?: string; num?: string; etat?: string }[];
+};
+
+// Cache TOC par code (en mémoire processus) : la structure d'un code change rarement.
+const tocCache = new Map<string, Promise<Map<string, string>>>();
+
+// Parcourt récursivement les sections pour construire un index {num → legifrance_id}.
+function indexToc(toc: CodeTocResponse): Map<string, string> {
+  const idx = new Map<string, string>();
+  const visit = (arts?: { id?: string; cid?: string; num?: string }[]) => {
+    for (const a of arts ?? []) {
+      const id = a.id ?? a.cid;
+      if (a.num && id) idx.set(a.num.toUpperCase(), id);
+    }
+  };
+  const walk = (sections?: CodeTocSection[]) => {
+    for (const s of sections ?? []) {
+      visit(s.articles);
+      walk(s.sections);
+    }
+  };
+  visit(toc.articles);
+  walk(toc.sections);
+  return idx;
+}
+
+async function getCodeNumIndex(codeId: string): Promise<Map<string, string>> {
+  let p = tocCache.get(codeId);
+  if (!p) {
+    p = pistePost<CodeTocResponse>("/consult/code/tableMatieres", {
+      textId: codeId,
+      date: new Date().toISOString().slice(0, 10), // YYYY-MM-DD
+    }).then(indexToc).catch((err) => {
+      console.warn(`[legifrance] TOC ${codeId} échoué:`, (err as Error).message);
+      tocCache.delete(codeId);
+      return new Map<string, string>();
+    });
+    tocCache.set(codeId, p);
+  }
+  return p;
+}
+
+// Variantes de `num` à essayer en cas d'introuvable. Le Code de l'urbanisme
+// note ses articles réglementaires avec un astérisque ("R*421-1") qui
+// signale un décret en Conseil d'État ; la canonicalisation API n'est pas
+// toujours symétrique selon les codes.
+function numVariants(num: string): string[] {
+  const v = new Set<string>([num]);
+  if (/^[LRD]\d/.test(num)) {
+    v.add(num.replace(/^([LRD])(\d)/, "$1*$2"));   // R421-1 → R*421-1
+    v.add(num.replace(/^([LRD])\*/, "$1"));        // R*421-1 → R421-1
+  }
+  return [...v];
+}
 
 export type LegalArticle = {
   code: string;
@@ -71,17 +138,50 @@ function buildSourceUrl(legifranceId: string | null, codeId: string, num: string
   return `https://www.legifrance.gouv.fr/codes/article_lc/?idArticle=${encodeURIComponent(num)}&cidTexte=${codeId}`;
 }
 
+// Tente getArticleWithIdAndNum sur chaque variante de `num`.
+async function tryGetArticleByNum(codeId: string, num: string): Promise<PisteGetArticleResponse["article"]> {
+  for (const candidate of numVariants(num)) {
+    try {
+      const data = await pistePost<PisteGetArticleResponse>("/consult/getArticleWithIdAndNum", {
+        id: codeId,
+        num: candidate,
+      });
+      if (data?.article) return data.article;
+    } catch {
+      // tente la variante suivante
+    }
+  }
+  return null;
+}
+
+// Fallback : résout num → LEGIARTI via la table des matières du code,
+// puis charge l'article par son id. Couvre les articles avec version en
+// vigueur différée que getArticleWithIdAndNum ne renvoie pas.
+async function tryGetArticleViaToc(codeId: string, num: string): Promise<PisteGetArticleResponse["article"]> {
+  const idx = await getCodeNumIndex(codeId);
+  let legiArtiId: string | undefined;
+  for (const candidate of numVariants(num)) {
+    legiArtiId = idx.get(candidate.toUpperCase());
+    if (legiArtiId) break;
+  }
+  if (!legiArtiId) return null;
+  try {
+    const data = await pistePost<PisteGetArticleResponse>("/consult/getArticle", { id: legiArtiId });
+    return data?.article ?? null;
+  } catch {
+    return null;
+  }
+}
+
 // Récupère un article depuis l'API Légifrance (PISTE) et upsert dans `legal_mentions`.
 async function fetchAndCacheFromPiste(codeId: string, codeName: string, num: string): Promise<LegalArticle> {
-  const data = await pistePost<PisteGetArticleResponse>("/consult/getArticleWithIdAndNum", {
-    id: codeId,
-    num,
-  });
-  const a = data?.article ?? null;
+  const a = (await tryGetArticleByNum(codeId, num)) ?? (await tryGetArticleViaToc(codeId, num));
   if (!a) throw new Error(`Article ${num} introuvable dans ${codeId}`);
 
-  const html  = a.texte ?? a.texteHtml ?? null;
-  const title = a.titre ?? a.fullSectionTitre ?? null;
+  const html  = a.texteHtml ?? a.texte ?? null;
+  // Les articles de codes n'ont presque jamais de "titre" propre — on prend
+  // le titre de la section englobante quand il est dispo, sinon null.
+  const title = a.fullSectionTitre ?? a.titre ?? null;
   const legifranceId = a.id ?? null;
 
   await db
