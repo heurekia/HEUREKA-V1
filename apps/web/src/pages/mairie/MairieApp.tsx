@@ -6786,10 +6786,16 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               <h1 style={{ fontSize: 26, fontWeight: 800, color: "#0F172A", margin: 0, letterSpacing: "-0.8px", lineHeight: 1 }}>{dossier.numero}</h1>
               <StatusBadge status={currentStatus} />
             </div>
-            <div
-              title={dossier.description ? `${typeLabel} – ${dossier.description}` : typeLabel}
-              style={{ fontSize: 13, color: "#475569", fontWeight: 500, marginBottom: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}
-            >{typeLabel}{dossier.description ? ` – ${dossier.description}` : ""}</div>
+            {(() => {
+              const fullDesc = dossier.description ?? "";
+              const shortDesc = fullDesc.length > 60 ? `${fullDesc.slice(0, 60).trimEnd()}…` : fullDesc;
+              return (
+                <div
+                  title={fullDesc ? `${typeLabel} – ${fullDesc}` : typeLabel}
+                  style={{ fontSize: 13, color: "#475569", fontWeight: 500, marginBottom: 8 }}
+                >{typeLabel}{shortDesc ? ` – ${shortDesc}` : ""}</div>
+              );
+            })()}
             <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" as const }}>
               <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }}>
                 <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
