@@ -21,6 +21,10 @@ function sha256File(filePath: string): string {
   return hash.digest("hex");
 }
 
+export function sha256Buffer(buf: Buffer): string {
+  return crypto.createHash("sha256").update(buf).digest("hex");
+}
+
 // ── Scores normalisés ────────────────────────────────────────────────────────
 // 4 niveaux explicites — utilisés à la fois pour la pièce et pour le dossier.
 // non_conforme = pièce inutilisable (mauvais type, illisible) ;
@@ -254,8 +258,13 @@ Règles strictes :
  * Supporte images (JPG/PNG/GIF/WEBP) et PDF. Tout autre format renvoie une analyse
  * "acceptable" non vérifiée plutôt que d'échouer.
  */
+/**
+ * Le premier argument peut être un chemin disque (legacy, dossierConformity)
+ * OU un Buffer (refactor S3 — upload route passe directement le Buffer
+ * multer sans toucher au disque). Le code interne uniformise.
+ */
 export async function analyzePiece(
-  filePath: string,
+  fileOrPath: string | Buffer,
   mimeType: string,
   nomPiece: string,
   codePiece: string,
@@ -274,28 +283,34 @@ export async function analyzePiece(
     };
   }
 
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(filePath);
-  } catch {
-    return {
-      score: "non_conforme",
-      commentaire: "Fichier introuvable sur le serveur.",
-      suggestions: ["Re-déposer la pièce."],
-      reglementaire: false,
-    };
+  // Chargement du contenu : soit depuis disque (chemin legacy), soit
+  // directement depuis le Buffer fourni (cas upload + S3).
+  let buf: Buffer;
+  if (typeof fileOrPath === "string") {
+    try {
+      buf = fs.readFileSync(fileOrPath);
+    } catch {
+      return {
+        score: "non_conforme",
+        commentaire: "Fichier introuvable sur le serveur.",
+        suggestions: ["Re-déposer la pièce."],
+        reglementaire: false,
+      };
+    }
+  } else {
+    buf = fileOrPath;
   }
-  if (stat.size > MAX_INLINE_BYTES) {
+  if (buf.length > MAX_INLINE_BYTES) {
     return {
       score: "acceptable",
-      commentaire: `Document trop volumineux (${(stat.size / 1024 / 1024).toFixed(1)} Mo) pour analyse automatique — un instructeur vérifiera manuellement.`,
+      commentaire: `Document trop volumineux (${(buf.length / 1024 / 1024).toFixed(1)} Mo) pour analyse automatique — un instructeur vérifiera manuellement.`,
       suggestions: ["Compresser le PDF ou réduire la résolution des images."],
       reglementaire: false,
     };
   }
 
-  const base64 = fs.readFileSync(filePath).toString("base64");
-  const fileHash = sha256File(filePath);
+  const base64 = buf.toString("base64");
+  const fileHash = sha256Buffer(buf);
   const useRegulatory = !!ctx && !!(ctx.regles?.length || ctx.zone || ctx.aide);
   const system = useRegulatory ? SYSTEM_PROMPT_REGULATORY : SYSTEM_PROMPT_BASIC;
   const contextText = buildContextSection(ctx);

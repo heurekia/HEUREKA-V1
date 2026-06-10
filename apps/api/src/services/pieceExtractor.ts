@@ -1,13 +1,6 @@
 import fs from "fs";
-import crypto from "crypto";
-import { extractFirstJson, sanitizePieceName } from "./pieceAnalyzer.js";
+import { extractFirstJson, sanitizePieceName, sha256Buffer } from "./pieceAnalyzer.js";
 import { anthropicClient, callClaude } from "./aiUsage.js";
-
-function sha256File(filePath: string): string {
-  const hash = crypto.createHash("sha256");
-  hash.update(fs.readFileSync(filePath));
-  return hash.digest("hex");
-}
 
 /**
  * Extraction structurée d'une pièce du dossier d'urbanisme.
@@ -311,20 +304,27 @@ export interface PieceExtractContext {
   code_piece?: string;
 }
 
+/**
+ * Comme analyzePiece : accepte un chemin disque (legacy) OU un Buffer (S3).
+ */
 export async function extractPiece(
-  filePath: string,
+  fileOrPath: string | Buffer,
   mimeType: string,
   ctx?: PieceExtractContext,
   trace?: { dossierId?: string | null; communeId?: string | null; userId?: string | null },
 ): Promise<PieceExtraction | null> {
   if (!isAllowedImage(mimeType) && !isPdf(mimeType)) return null;
 
-  let stat: fs.Stats;
-  try { stat = fs.statSync(filePath); } catch { return null; }
-  if (stat.size > MAX_INLINE_BYTES) return null;
+  let buf: Buffer;
+  if (typeof fileOrPath === "string") {
+    try { buf = fs.readFileSync(fileOrPath); } catch { return null; }
+  } else {
+    buf = fileOrPath;
+  }
+  if (buf.length > MAX_INLINE_BYTES) return null;
 
-  const base64 = fs.readFileSync(filePath).toString("base64");
-  const fileHash = sha256File(filePath);
+  const base64 = buf.toString("base64");
+  const fileHash = sha256Buffer(buf);
   const isPdfFile = isPdf(mimeType);
 
   const documentBlock = isPdfFile
