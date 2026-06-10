@@ -1,15 +1,16 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
-import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events } from "@heureka-v1/db";
-import { eq, desc, and, ilike } from "drizzle-orm";
+import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events, dossier_courriers } from "@heureka-v1/db";
+import { eq, desc, and, ilike, gt } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
 import { callClaude } from "../services/aiUsage.js";
 import path from "path";
 import multer from "multer";
 import { classifyPermit } from "../services/classificationEngine.js";
-import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
+import { buildPiecesContext, getPiecesForType, getPieceByCode } from "../data/piecesRequises.js";
+import { changeDossierStatus, WorkflowError } from "../services/dossierWorkflow.js";
 import { analyzePiece } from "../services/pieceAnalyzer.js";
 import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../services/pieceExtractor.js";
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
@@ -328,6 +329,160 @@ dossiersRouter.get("/:id/completude", async (req: AuthRequest, res) => {
     const manquantes = piecesRequises.filter((p) => !uploadedCodes.has(p.code));
 
     res.json({ complete: manquantes.length === 0, manquantes });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Pièces à compléter (citoyen) ──
+// Quand l'instructeur a émis une demande de pièces complémentaires, le citoyen
+// doit pouvoir consulter la liste exacte des pièces réclamées (et seulement
+// celles-là) avec, pour chacune, la description officielle de la pièce attendue
+// + la raison libre saisie par l'instructeur. La source de vérité est le dernier
+// courrier de type "pieces_complementaires" émis sur le dossier.
+dossiersRouter.get("/:id/pieces-a-completer", async (req: AuthRequest, res) => {
+  try {
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    const [courrier] = await db
+      .select()
+      .from(dossier_courriers)
+      .where(and(
+        eq(dossier_courriers.dossier_id, dossier.id),
+        eq(dossier_courriers.type, "pieces_complementaires"),
+      ))
+      .orderBy(desc(dossier_courriers.emis_le))
+      .limit(1);
+
+    if (!courrier) {
+      return res.json({ courrier_id: null, emis_le: null, pieces: [] });
+    }
+
+    // Contexte pour résoudre l'aide officielle conditionnelle (ABF, surface…).
+    const meta = (dossier.metadata as Record<string, unknown>) ?? {};
+    const natures = Array.isArray(meta.natures) ? (meta.natures as string[]) : [];
+    const surface = parseFloat(dossier.surface_plancher ?? "0") || 0;
+    const ctx = buildPiecesContext(natures, surface);
+
+    const requested = courrier.pieces_jointes_ids ?? [];
+
+    // Pour savoir si une pièce a déjà été redéposée, on cherche un upload
+    // postérieur à l'émission du courrier portant le même code_piece. Pour les
+    // pièces "manquantes" sans code, on ne peut pas matcher → toujours
+    // considéré non déposé.
+    const uploadsAfter = await db
+      .select({
+        id: dossier_pieces_jointes.id,
+        nom: dossier_pieces_jointes.nom,
+        url: dossier_pieces_jointes.url,
+        code_piece: dossier_pieces_jointes.code_piece,
+        uploaded_at: dossier_pieces_jointes.uploaded_at,
+      })
+      .from(dossier_pieces_jointes)
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossier.id),
+        gt(dossier_pieces_jointes.uploaded_at, courrier.emis_le),
+      ))
+      .orderBy(desc(dossier_pieces_jointes.uploaded_at));
+    // Plusieurs redépôts possibles sur le même code (le citoyen corrige et
+    // renvoie) : on garde le plus récent comme "redepot" affiché à l'UI.
+    const uploadsByCode = new Map<string, typeof uploadsAfter[number]>();
+    for (const u of uploadsAfter) {
+      if (u.code_piece && !uploadsByCode.has(u.code_piece)) uploadsByCode.set(u.code_piece, u);
+    }
+
+    const pieces = requested.map((p) => {
+      const aideSource = p.code_piece ? getPieceByCode(p.code_piece, ctx) : null;
+      const upload = p.code_piece ? uploadsByCode.get(p.code_piece) : undefined;
+      return {
+        code_piece: p.code_piece ?? null,
+        nom: p.nom,
+        raison: p.raison ?? null,
+        manquante: p.manquante ?? !p.piece_id,
+        aide: aideSource?.aide ?? null,
+        deja_redeposee: !!upload,
+        redepot: upload
+          ? { id: upload.id, nom: upload.nom, url: upload.url, uploaded_at: upload.uploaded_at }
+          : null,
+      };
+    });
+
+    res.json({
+      courrier_id: courrier.id,
+      emis_le: courrier.emis_le,
+      subject: courrier.subject,
+      pieces,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Resoumettre un dossier après dépôt des compléments ──
+// Bascule incomplet → pre_instruction quand toutes les pièces réclamées dans
+// le dernier courrier "pieces_complementaires" ont été redéposées. La machine
+// à états refuse la transition si le dossier n'est pas en "incomplet" — c'est
+// notre garantie qu'on ne resoumet pas un dossier déjà en cours d'instruction.
+dossiersRouter.post("/:id/resoumettre", async (req: AuthRequest, res) => {
+  try {
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    if (dossier.status !== "incomplet") {
+      return res.status(400).json({ error: "Le dossier n'est pas en attente de pièces complémentaires" });
+    }
+
+    const [courrier] = await db
+      .select()
+      .from(dossier_courriers)
+      .where(and(
+        eq(dossier_courriers.dossier_id, dossier.id),
+        eq(dossier_courriers.type, "pieces_complementaires"),
+      ))
+      .orderBy(desc(dossier_courriers.emis_le))
+      .limit(1);
+    if (!courrier) {
+      return res.status(400).json({ error: "Aucune demande de pièces complémentaires sur ce dossier" });
+    }
+
+    const requested = courrier.pieces_jointes_ids ?? [];
+    const uploadsAfter = await db
+      .select({ code_piece: dossier_pieces_jointes.code_piece })
+      .from(dossier_pieces_jointes)
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossier.id),
+        gt(dossier_pieces_jointes.uploaded_at, courrier.emis_le),
+      ));
+    const uploadedCodes = new Set(uploadsAfter.map((u) => u.code_piece).filter(Boolean));
+    const manquantes = requested.filter((p) => !p.code_piece || !uploadedCodes.has(p.code_piece));
+    if (manquantes.length > 0) {
+      return res.status(422).json({
+        error: "Toutes les pièces demandées doivent être redéposées avant de retransmettre le dossier",
+        manquantes: manquantes.map((p) => ({ code_piece: p.code_piece ?? null, nom: p.nom })),
+      });
+    }
+
+    try {
+      await changeDossierStatus(dossier.id, "pre_instruction", req.user!.id, {
+        reason: "compléments transmis par le pétitionnaire",
+        eventType: "pieces_complementaires_recues",
+        extraMetadata: { courrier_id: courrier.id, pieces_count: requested.length },
+      });
+    } catch (err) {
+      if (err instanceof WorkflowError) {
+        return res.status(400).json({ error: err.message, code: err.code });
+      }
+      throw err;
+    }
+
+    const [updated] = await db
+      .select()
+      .from(dossiers)
+      .where(eq(dossiers.id, dossier.id))
+      .limit(1);
+    res.json(updated);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
