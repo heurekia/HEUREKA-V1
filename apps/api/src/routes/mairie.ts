@@ -672,9 +672,22 @@ mairieRouter.get("/instructeurs", async (_req: AuthRequest, res) => {
 });
 
 // ── Communes de l'utilisateur connecté ──
+// Admin : voit toutes les communes en DB (cohérent avec son rôle "voit tout").
+// Mairie/instructeur : restreint via user_communes, sinon fallback sur la
+// commune principale.
 mairieRouter.get("/my-communes", async (req: AuthRequest, res) => {
   try {
     const userId = req.user!.id;
+    const role = req.user!.role;
+
+    if (role === "admin") {
+      const all = await db
+        .select({ name: communes.name, insee_code: communes.insee_code })
+        .from(communes)
+        .orderBy(communes.name);
+      return res.json(all);
+    }
+
     const rows = await db
       .select({ name: communes.name, insee_code: communes.insee_code })
       .from(user_communes)
