@@ -13,5 +13,6 @@ export const legal_mentions = pgTable("legal_mentions", {
   updated_at: timestamp("updated_at").notNull().defaultNow(),
   courrier_types: jsonb("courrier_types").$type<string[]>().default(sql`'[]'::jsonb`),
   dossier_types: jsonb("dossier_types").$type<string[]>().default(sql`'[]'::jsonb`),
+  categories: jsonb("categories").$type<string[]>().default(sql`'[]'::jsonb`),
   contexte: text("contexte"),
 }, (t) => [unique("legal_mentions_code_ref").on(t.code, t.article_ref)]);

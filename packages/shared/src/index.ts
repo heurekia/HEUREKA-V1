@@ -1,3 +1,6 @@
+// ── Re-exports ──
+export * from "./legalArticlesCatalog.js";
+
 // ── Enums ──
 export type Role = "citoyen" | "mairie" | "instructeur" | "admin";
 export type DossierStatus = "brouillon" | "soumis" | "en_instruction" | "complete" | "refuse";

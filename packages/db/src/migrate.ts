@@ -343,6 +343,7 @@ CREATE TABLE IF NOT EXISTS legal_mentions (
 ALTER TABLE legal_mentions ADD COLUMN IF NOT EXISTS courrier_types jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE legal_mentions ADD COLUMN IF NOT EXISTS dossier_types jsonb NOT NULL DEFAULT '[]';
 ALTER TABLE legal_mentions ADD COLUMN IF NOT EXISTS contexte text;
+ALTER TABLE legal_mentions ADD COLUMN IF NOT EXISTS categories jsonb NOT NULL DEFAULT '[]';
 
 -- Date de délivrance (date de la décision / arrêté)
 ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS date_delivrance timestamp;

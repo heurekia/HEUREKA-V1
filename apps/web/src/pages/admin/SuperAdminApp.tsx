@@ -1,7 +1,8 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
+import { CATEGORIES } from "@heureka-v1/shared";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface DashboardStats {
@@ -2251,14 +2252,31 @@ function Roles() {
 // ─── Configuration ────────────────────────────────────────────────────────────
 interface LegalMentionRow {
   id: string;
+  code: string;       // LEGITEXT id
+  code_name: string;
   article_ref: string;
   article_title: string | null;
   article_html: string | null;
   courrier_types: string[];
   dossier_types: string[];
+  categories: string[];
   contexte: string | null;
   updated_at: string;
+  fetched_at?: string;
 }
+
+// Map LEGITEXT id → clé courte (CU/CCH/CE) pour l'affichage et le filtrage.
+// Doit rester aligné avec apps/api/src/services/legifrance.ts → resolveCode.
+const CODE_KEY_BY_LEGITEXT: Record<string, "CU" | "CCH" | "CE"> = {
+  LEGITEXT000006074075: "CU",
+  LEGITEXT000006074096: "CCH",
+  LEGITEXT000006074220: "CE",
+};
+const CODE_LABEL: Record<string, string> = {
+  CU:  "Code de l'urbanisme",
+  CCH: "Code de la construction",
+  CE:  "Code de l'environnement",
+};
 
 const COURRIER_TYPE_OPTIONS = [
   { value: "pieces_complementaires", label: "Pièces complémentaires" },
@@ -2641,11 +2659,18 @@ function Configuration() {
   const [editHtml, setEditHtml] = useState("");
   const [editCourrierTypes, setEditCourrierTypes] = useState<string[]>([]);
   const [editDossierTypes, setEditDossierTypes] = useState<string[]>([]);
+  const [editCategories, setEditCategories] = useState<string[]>([]);
   const [editContexte, setEditContexte] = useState("");
   const [saving, setSaving] = useState(false);
   const [addRef, setAddRef] = useState("");
   const [addTitle, setAddTitle] = useState("");
   const [showAdd, setShowAdd] = useState(false);
+  const [refreshingId, setRefreshingId] = useState<string | null>(null);
+
+  // ── Filtres ──
+  const [filterCode, setFilterCode] = useState<"all" | "CU" | "CCH" | "CE">("all");
+  const [filterCategory, setFilterCategory] = useState<string>("all");
+  const [filterText, setFilterText] = useState("");
 
   const load = useCallback(async () => {
     try {
@@ -2660,12 +2685,46 @@ function Configuration() {
 
   useEffect(() => { load(); }, [load]);
 
+  const filteredArticles = useMemo(() => {
+    const q = filterText.trim().toLowerCase();
+    return articles.filter(a => {
+      const codeKey = CODE_KEY_BY_LEGITEXT[a.code];
+      if (filterCode !== "all" && codeKey !== filterCode) return false;
+      if (filterCategory !== "all" && !(a.categories ?? []).includes(filterCategory)) return false;
+      if (q && !a.article_ref.toLowerCase().includes(q) && !(a.article_title ?? "").toLowerCase().includes(q)) return false;
+      return true;
+    });
+  }, [articles, filterCode, filterCategory, filterText]);
+
+  // Groupage par catégorie (display-only). Un article apparaît dans chacune
+  // de ses catégories ; les articles sans catégorie tombent dans "_uncategorized".
+  const articlesByCategory = useMemo(() => {
+    const groups = new Map<string, LegalMentionRow[]>();
+    for (const a of filteredArticles) {
+      const cats = a.categories?.length ? a.categories : ["_uncategorized"];
+      for (const c of cats) {
+        if (!groups.has(c)) groups.set(c, []);
+        groups.get(c)!.push(a);
+      }
+    }
+    return groups;
+  }, [filteredArticles]);
+
+  const categoryCounts = useMemo(() => {
+    const counts = new Map<string, number>();
+    for (const a of articles) {
+      for (const c of a.categories ?? []) counts.set(c, (counts.get(c) ?? 0) + 1);
+    }
+    return counts;
+  }, [articles]);
+
   const openEdit = (a: LegalMentionRow) => {
     setEditing(a);
     setEditTitle(a.article_title ?? "");
     setEditHtml(a.article_html ?? "");
     setEditCourrierTypes(a.courrier_types ?? []);
     setEditDossierTypes(a.dossier_types ?? []);
+    setEditCategories(a.categories ?? []);
     setEditContexte(a.contexte ?? "");
   };
 
@@ -2673,13 +2732,31 @@ function Configuration() {
     if (!editing) return;
     setSaving(true);
     try {
-      const updated = await api.patch<LegalMentionRow>(`/admin/legal-mentions/${editing.id}`, { article_title: editTitle, article_html: editHtml, courrier_types: editCourrierTypes, dossier_types: editDossierTypes, contexte: editContexte });
+      const updated = await api.patch<LegalMentionRow>(`/admin/legal-mentions/${editing.id}`, { article_title: editTitle, article_html: editHtml, courrier_types: editCourrierTypes, dossier_types: editDossierTypes, categories: editCategories, contexte: editContexte });
       setArticles(prev => prev.map(a => a.id === updated.id ? updated : a));
       setEditing(null);
     } catch {
       // ignore
     } finally {
       setSaving(false);
+    }
+  };
+
+  // Rafraîchir le texte de l'article depuis Légifrance (via PISTE).
+  const handleRefresh = async (a: LegalMentionRow, e?: React.MouseEvent) => {
+    e?.stopPropagation();
+    setRefreshingId(a.id);
+    try {
+      const updated = await api.post<LegalMentionRow>(`/admin/legal-mentions/${a.id}/refresh`, {});
+      setArticles(prev => prev.map(x => x.id === updated.id ? updated : x));
+      if (editing?.id === updated.id) {
+        setEditHtml(updated.article_html ?? "");
+        setEditTitle(updated.article_title ?? "");
+      }
+    } catch {
+      window.alert("Le rafraîchissement Légifrance a échoué. Vérifie les credentials PISTE et les CGU.");
+    } finally {
+      setRefreshingId(null);
     }
   };
 
@@ -2715,15 +2792,15 @@ function Configuration() {
         <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Paramètres avancés de la plateforme</p>
       </div>
 
-      {/* ── Mentions légales ── */}
+      {/* ── Articles juridiques (Code de l'urbanisme + CCH + CE) ── */}
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
-        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18 }}>
+        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 18, gap: 16, flexWrap: "wrap" }}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 16 }}>
             <div style={{ width: 48, height: 48, background: "#EFF6FF", borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0 }}>📜</div>
             <div>
-              <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.text }}>Mentions légales — Code de l'urbanisme</h3>
+              <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.text }}>Articles juridiques</h3>
               <p style={{ margin: 0, fontSize: 13, color: C.textMuted }}>
-                {articles.length} articles · cliquez sur un article pour éditer son titre et son texte HTML.
+                {articles.length} articles en base · {filteredArticles.length} affichés. Texte officiel synchronisé depuis Légifrance.
               </p>
             </div>
           </div>
@@ -2731,6 +2808,37 @@ function Configuration() {
             style={{ padding: "8px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
             + Ajouter
           </button>
+        </div>
+
+        {/* ── Barre de filtres ── */}
+        <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 16, alignItems: "center" }}>
+          <input
+            value={filterText}
+            onChange={e => setFilterText(e.target.value)}
+            placeholder="🔍 Rechercher (référence ou titre)…"
+            style={{ flex: 1, minWidth: 220, padding: "7px 12px", border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 13 }}
+          />
+          <div style={{ display: "flex", gap: 4 }}>
+            {(["all", "CU", "CCH", "CE"] as const).map(c => (
+              <button key={c} onClick={() => setFilterCode(c)}
+                style={{
+                  padding: "6px 12px", borderRadius: 7, border: `1px solid ${filterCode === c ? "#0F172A" : C.border}`,
+                  background: filterCode === c ? "#0F172A" : "white", color: filterCode === c ? "white" : C.text,
+                  fontSize: 12, fontWeight: 600, cursor: "pointer",
+                }}>
+                {c === "all" ? "Tous codes" : c}
+              </button>
+            ))}
+          </div>
+          <select value={filterCategory} onChange={e => setFilterCategory(e.target.value)}
+            style={{ padding: "7px 10px", border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 13, background: "white", cursor: "pointer" }}>
+            <option value="all">Toutes catégories ({articles.length})</option>
+            {CATEGORIES.map(cat => (
+              <option key={cat.id} value={cat.id}>
+                {cat.label} ({categoryCounts.get(cat.id) ?? 0})
+              </option>
+            ))}
+          </select>
         </div>
 
         {showAdd && (
@@ -2755,25 +2863,77 @@ function Configuration() {
         {loading ? (
           <div style={{ textAlign: "center", padding: 24 }}><Spinner size={20} /></div>
         ) : (
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-            {articles.map(a => (
-              <div key={a.id} onClick={() => openEdit(a)}
-                style={{ padding: "10px 14px", borderRadius: 9, border: `1px solid ${C.border}`, cursor: "pointer", background: C.bg, display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, transition: "box-shadow 0.15s" }}
-                onMouseEnter={e => (e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)")}
-                onMouseLeave={e => (e.currentTarget.style.boxShadow = "none")}>
-                <div style={{ minWidth: 0 }}>
-                  <div style={{ fontWeight: 700, fontSize: 13, color: C.accent }}>Art. {a.article_ref}</div>
-                  <div style={{ fontSize: 12, color: C.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                    {a.article_title ?? <em>Sans titre</em>}
+          // Groupage par catégorie (selon le filtre) — un même article peut
+          // apparaître dans plusieurs sections s'il est multi-catégorisé.
+          <div>
+            {[...articlesByCategory.entries()]
+              .sort(([a], [b]) => {
+                if (a === "_uncategorized") return 1;
+                if (b === "_uncategorized") return -1;
+                const orderA = CATEGORIES.findIndex(c => c.id === a);
+                const orderB = CATEGORIES.findIndex(c => c.id === b);
+                return orderA - orderB;
+              })
+              .map(([catId, arts]) => {
+                const catDef = CATEGORIES.find(c => c.id === catId);
+                const label = catDef?.label ?? "Sans catégorie";
+                return (
+                  <div key={catId} style={{ marginBottom: 20 }}>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10 }}>
+                      <div style={{ fontSize: 12, fontWeight: 700, color: C.text, textTransform: "uppercase", letterSpacing: 0.5 }}>{label}</div>
+                      <div style={{ fontSize: 11, color: C.textMuted }}>({arts.length})</div>
+                    </div>
+                    <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))", gap: 10 }}>
+                      {arts.map(a => {
+                        const codeKey = CODE_KEY_BY_LEGITEXT[a.code] ?? "?";
+                        return (
+                          <div key={`${catId}-${a.id}`} onClick={() => openEdit(a)}
+                            style={{ padding: "10px 14px", borderRadius: 9, border: `1px solid ${C.border}`, cursor: "pointer", background: C.bg, transition: "box-shadow 0.15s" }}
+                            onMouseEnter={e => (e.currentTarget.style.boxShadow = "0 2px 8px rgba(0,0,0,0.08)")}
+                            onMouseLeave={e => (e.currentTarget.style.boxShadow = "none")}>
+                            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 4 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, minWidth: 0 }}>
+                                <span style={{ padding: "2px 6px", background: "#1E293B", color: "white", borderRadius: 4, fontSize: 10, fontWeight: 700, letterSpacing: 0.3 }}>{codeKey}</span>
+                                <span style={{ fontWeight: 700, fontSize: 13, color: C.accent, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>Art. {a.article_ref}</span>
+                              </div>
+                              <div style={{ display: "flex", gap: 4, alignItems: "center", flexShrink: 0 }}>
+                                <div title={a.article_html ? "Texte renseigné" : "Texte vide"} style={{ width: 8, height: 8, borderRadius: "50%", background: a.article_html ? "#22C55E" : "#E2E8F0" }} />
+                                <button onClick={e => handleRefresh(a, e)} disabled={refreshingId === a.id}
+                                  title="Rafraîchir depuis Légifrance"
+                                  style={{ background: "none", border: "none", cursor: refreshingId === a.id ? "wait" : "pointer", color: C.textMuted, fontSize: 14, padding: "0 4px" }}>
+                                  {refreshingId === a.id ? "⏳" : "↻"}
+                                </button>
+                                <button onClick={e => { e.stopPropagation(); handleDelete(a.id); }}
+                                  style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted, fontSize: 16, lineHeight: 1, padding: "0 2px" }}>×</button>
+                              </div>
+                            </div>
+                            <div style={{ fontSize: 11, color: C.textMuted, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
+                              {a.article_title ?? <em>Sans titre — {a.article_html ? `${a.article_html.length} car.` : "texte non récupéré"}</em>}
+                            </div>
+                            {a.categories?.length > 1 && (
+                              <div style={{ display: "flex", gap: 3, flexWrap: "wrap", marginTop: 5 }}>
+                                {a.categories.filter(c => c !== catId).map(c => {
+                                  const def = CATEGORIES.find(d => d.id === c);
+                                  return def ? (
+                                    <span key={c} style={{ padding: "1px 6px", background: "white", border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 9, color: C.textMuted }}>
+                                      {def.label}
+                                    </span>
+                                  ) : null;
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-                <div style={{ display: "flex", gap: 4, flexShrink: 0 }}>
-                  <div title={a.article_html ? "Texte renseigné" : "Texte vide"} style={{ width: 8, height: 8, borderRadius: "50%", background: a.article_html ? "#22C55E" : "#E2E8F0" }} />
-                  <button onClick={e => { e.stopPropagation(); handleDelete(a.id); }}
-                    style={{ background: "none", border: "none", cursor: "pointer", color: C.textMuted, fontSize: 16, lineHeight: 1, padding: "0 2px" }}>×</button>
-                </div>
+                );
+              })}
+            {articlesByCategory.size === 0 && (
+              <div style={{ textAlign: "center", padding: 30, color: C.textMuted, fontSize: 13 }}>
+                Aucun article ne correspond aux filtres.
               </div>
-            ))}
+            )}
           </div>
         )}
       </div>
@@ -2784,9 +2944,22 @@ function Configuration() {
           onClick={() => setEditing(null)}>
           <div style={{ background: "white", borderRadius: 16, padding: 28, width: "min(640px, 95vw)", maxHeight: "85vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.25)" }}
             onClick={e => e.stopPropagation()}>
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20 }}>
-              <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Art. {editing.article_ref}</h3>
-              <button onClick={() => setEditing(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, color: C.textMuted }}>×</button>
+            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 20, gap: 10 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <span style={{ padding: "3px 7px", background: "#1E293B", color: "white", borderRadius: 5, fontSize: 10, fontWeight: 700 }}>
+                  {CODE_KEY_BY_LEGITEXT[editing.code] ?? "?"}
+                </span>
+                <h3 style={{ margin: 0, fontSize: 16, fontWeight: 700 }}>Art. {editing.article_ref}</h3>
+                <span style={{ fontSize: 12, color: C.textMuted }}>· {CODE_LABEL[CODE_KEY_BY_LEGITEXT[editing.code] ?? ""] ?? editing.code_name}</span>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => handleRefresh(editing)} disabled={refreshingId === editing.id}
+                  title="Rafraîchir le texte depuis Légifrance"
+                  style={{ padding: "5px 10px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 12, cursor: refreshingId === editing.id ? "wait" : "pointer" }}>
+                  {refreshingId === editing.id ? "⏳ Sync…" : "↻ Légifrance"}
+                </button>
+                <button onClick={() => setEditing(null)} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 22, color: C.textMuted }}>×</button>
+              </div>
             </div>
 
             <div style={{ marginBottom: 14 }}>
@@ -2797,13 +2970,38 @@ function Configuration() {
 
             <div style={{ marginBottom: 14 }}>
               <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 6 }}>
-                Texte HTML <span style={{ fontWeight: 400 }}>(affiché dans les courriers)</span>
+                Catégories <span style={{ fontWeight: 400 }}>(groupage dans l'admin + filtres)</span>
+              </label>
+              <div style={{ display: "flex", gap: 5, flexWrap: "wrap" }}>
+                {CATEGORIES.map(cat => {
+                  const active = editCategories.includes(cat.id);
+                  return (
+                    <button key={cat.id} type="button"
+                      onClick={() => setEditCategories(prev => active ? prev.filter(c => c !== cat.id) : [...prev, cat.id])}
+                      title={cat.description}
+                      style={{
+                        padding: "5px 10px", borderRadius: 14,
+                        border: `1px solid ${active ? "#0F172A" : C.border}`,
+                        background: active ? "#0F172A" : "white",
+                        color: active ? "white" : C.text,
+                        fontSize: 11, fontWeight: 600, cursor: "pointer",
+                      }}>
+                      {cat.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: 14 }}>
+              <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 6 }}>
+                Texte HTML <span style={{ fontWeight: 400 }}>(rendu dans les courriers et le wizard citoyen)</span>
               </label>
               <textarea value={editHtml} onChange={e => setEditHtml(e.target.value)} rows={10}
                 style={{ width: "100%", padding: "8px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, fontFamily: "monospace", boxSizing: "border-box", resize: "vertical" }}
                 placeholder="<p>Texte de l'article...</p>" />
               <p style={{ margin: "6px 0 0", fontSize: 11, color: C.textMuted }}>
-                Le HTML est rendu directement dans le courrier. Utilise &lt;p&gt;, &lt;strong&gt;, &lt;em&gt;, &lt;ul&gt;/&lt;li&gt;.
+                Le HTML est rendu directement. Utilise &lt;p&gt;, &lt;strong&gt;, &lt;em&gt;, &lt;ul&gt;/&lt;li&gt;. « ↻ Légifrance » récupère le texte officiel actuel.
               </p>
             </div>
 

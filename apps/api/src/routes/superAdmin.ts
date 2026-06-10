@@ -2,7 +2,7 @@ import { Router } from "express";
 import { db } from "../db.js";
 import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, ai_usage_events, ai_alert_config } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
-import { CODE_URBANISME_ID, CODE_URBANISME_NAME } from "../services/legifrance.js";
+import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, lt, inArray } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
@@ -870,13 +870,15 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
 
 // ── Legal mentions (Code de l'urbanisme) — CRUD ───────────────────────────────
 
-superAdminRouter.get("/legal-mentions", async (_req, res) => {
+superAdminRouter.get("/legal-mentions", async (req, res) => {
   try {
-    const rows = await db
-      .select()
-      .from(legal_mentions)
-      .where(eq(legal_mentions.code, CODE_URBANISME_ID))
-      .orderBy(legal_mentions.article_ref);
+    // Filtre optionnel : ?code=CU|CCH|CE → restreint au LEGITEXT correspondant.
+    // Sans param, on renvoie tous les codes (UI admin).
+    const codeKey = String(req.query.code ?? "").toUpperCase();
+    const resolved = codeKey ? resolveCode(codeKey) : null;
+    const rows = resolved
+      ? await db.select().from(legal_mentions).where(eq(legal_mentions.code, resolved.id)).orderBy(legal_mentions.article_ref)
+      : await db.select().from(legal_mentions).orderBy(legal_mentions.code, legal_mentions.article_ref);
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -887,11 +889,12 @@ superAdminRouter.get("/legal-mentions", async (_req, res) => {
 superAdminRouter.patch("/legal-mentions/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const { article_title, article_html, courrier_types, dossier_types, contexte } = req.body as {
+    const { article_title, article_html, courrier_types, dossier_types, categories, contexte } = req.body as {
       article_title?: string;
       article_html?: string;
       courrier_types?: string[];
       dossier_types?: string[];
+      categories?: string[];
       contexte?: string;
     };
 
@@ -900,6 +903,7 @@ superAdminRouter.patch("/legal-mentions/:id", async (req, res) => {
     if (article_html !== undefined) patch.article_html = article_html;
     if (courrier_types !== undefined) patch.courrier_types = courrier_types;
     if (dossier_types !== undefined) patch.dossier_types = dossier_types;
+    if (categories !== undefined) patch.categories = categories;
     if (contexte !== undefined) patch.contexte = contexte;
 
     const [updated] = await db
@@ -916,14 +920,48 @@ superAdminRouter.patch("/legal-mentions/:id", async (req, res) => {
   }
 });
 
+// Rafraîchit le contenu d'un article depuis l'API Légifrance (PISTE).
+// Préserve les catégories et autres méta — n'écrase que titre / html / fetched_at.
+superAdminRouter.post("/legal-mentions/:id/refresh", async (req, res) => {
+  try {
+    const [row] = await db
+      .select()
+      .from(legal_mentions)
+      .where(eq(legal_mentions.id, req.params.id))
+      .limit(1);
+    if (!row) return res.status(404).json({ error: "Article introuvable" });
+
+    // Mapper le LEGITEXT stocké → clé code lisible (CU/CCH/CE) pour le service.
+    let codeKey: string | null = null;
+    for (const k of ["CU", "CCH", "CE"]) {
+      const r = resolveCode(k);
+      if (r && r.id === row.code) { codeKey = k; break; }
+    }
+    if (!codeKey) return res.status(400).json({ error: "Code non supporté", code: row.code });
+
+    const fresh = await refreshArticle(codeKey, row.article_ref);
+    if (!fresh) return res.status(502).json({ error: "Légifrance n'a pas renvoyé l'article" });
+
+    const [updated] = await db
+      .select()
+      .from(legal_mentions)
+      .where(eq(legal_mentions.id, req.params.id));
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 superAdminRouter.post("/legal-mentions", async (req, res) => {
   try {
-    const { article_ref, article_title, article_html, courrier_types, dossier_types, contexte } = req.body as {
+    const { article_ref, article_title, article_html, courrier_types, dossier_types, categories, contexte } = req.body as {
       article_ref?: string;
       article_title?: string;
       article_html?: string;
       courrier_types?: string[];
       dossier_types?: string[];
+      categories?: string[];
       contexte?: string;
     };
     if (!article_ref?.trim()) return res.status(400).json({ error: "article_ref requis" });
@@ -938,6 +976,7 @@ superAdminRouter.post("/legal-mentions", async (req, res) => {
         article_html: article_html ?? null,
         courrier_types: courrier_types ?? [],
         dossier_types: dossier_types ?? [],
+        categories: categories ?? [],
         contexte: contexte ?? null,
         fetched_at: new Date(),
         updated_at: new Date(),
@@ -949,6 +988,7 @@ superAdminRouter.post("/legal-mentions", async (req, res) => {
           article_html: article_html ?? null,
           courrier_types: courrier_types ?? [],
           dossier_types: dossier_types ?? [],
+          categories: categories ?? [],
           contexte: contexte ?? null,
           updated_at: new Date(),
         },
