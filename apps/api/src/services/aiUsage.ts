@@ -18,15 +18,20 @@ const BEDROCK_REGION = process.env.AWS_REGION ?? "eu-central-1";
 // Bedrock utilise des "inference profile IDs" préfixés par la région
 // (eu.* = profil cross-region UE qui route entre Francfort / Irlande / Paris
 // pour la disponibilité, sans transfert hors UE).
+// IDs confirmés depuis la console Bedrock eu-central-1 (Francfort) :
+//   - Haiku 4.5 garde le suffixe -v1:0
+//   - Sonnet 4.6 N'A PAS le suffixe -v1:0 (différence de convention AWS sur
+//     les modèles les plus récents). À re-vérifier dans la console à chaque
+//     ajout de modèle, AWS change parfois la convention.
 // Si un modèle n'a pas encore d'équivalent Bedrock, on échoue explicitement
 // plutôt que de basculer silencieusement sur la mauvaise région.
 const BEDROCK_MODEL_MAP: Record<string, string> = {
   "claude-haiku-4-5-20251001": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
   "claude-haiku-4-5":          "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-  "claude-sonnet-4-6":          "eu.anthropic.claude-sonnet-4-6-v1:0",
-  "claude-sonnet-4-5":          "eu.anthropic.claude-sonnet-4-5-v1:0",
-  "claude-opus-4-8":             "eu.anthropic.claude-opus-4-8-v1:0",
-  "claude-opus-4-7":             "eu.anthropic.claude-opus-4-7-v1:0",
+  "claude-sonnet-4-6":          "eu.anthropic.claude-sonnet-4-6",
+  "claude-sonnet-4-5":          "eu.anthropic.claude-sonnet-4-5",
+  "claude-opus-4-8":             "eu.anthropic.claude-opus-4-8",
+  "claude-opus-4-7":             "eu.anthropic.claude-opus-4-7",
 };
 
 // Mapping inverse : depuis un modelId Bedrock vu dans la réponse, retrouver
