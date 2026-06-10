@@ -2705,9 +2705,7 @@ function Configuration() {
 
   const todoCards = [
     { icon: "⚙️", title: "Paramètres plateforme", desc: "Configurez les paramètres généraux de la plateforme HEUREKIA." },
-    { icon: "🔒", title: "Sécurité", desc: "Gestion des politiques de sécurité, 2FA, sessions et accès." },
     { icon: "📧", title: "Emails & notifications", desc: "Templates d'emails, règles de notification et intégrations SMTP." },
-    { icon: "📊", title: "Logs d'activité", desc: "Historique des actions, audits et traçabilité des opérations." },
   ];
 
   return (
