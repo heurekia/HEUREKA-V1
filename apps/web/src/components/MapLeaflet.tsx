@@ -408,7 +408,7 @@ export function MapLeaflet({
   }, [height]);
 
   return (
-    <div style={{ width: "100%", height, borderRadius: "inherit", position: "relative" }}>
+    <div style={{ width: "100%", height, borderRadius: "inherit", position: "relative", isolation: "isolate" }}>
       <div ref={containerRef} style={{ width: "100%", height: "100%", borderRadius: "inherit" }} />
       {pluZoneLayer && zoneError && (
         <div style={{
