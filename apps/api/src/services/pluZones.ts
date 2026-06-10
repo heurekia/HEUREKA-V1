@@ -81,6 +81,10 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   // On envoie le POLYGONE commune (pas juste le centroïde) : le centroïde
   // peut tomber sur un cours d'eau, une zone non couverte, etc., ce qui
   // ferait revenir 0 docs alors qu'un PLU existe pour la commune.
+  // ⚠️ Pour les grandes communes (Tours), le polygone touche les communes
+  // limitrophes, donc /document peut renvoyer leurs docs (DU_37179 =
+  // Parçay-Meslay quand on cherche Tours 37261). On filtre : si le partition
+  // contient un INSEE explicite ET que ce n'est pas le nôtre, on rejette.
   {
     const r = await fetchWithRetry(
       `https://apicarto.ign.fr/api/gpu/document?geom=${encodeURIComponent(communeGeom)}`,
@@ -89,11 +93,9 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
     if (r) {
       // ⚠️ Le champ de type est `typedoc` (pas `du_type`) avec des valeurs
       // comme "PLU", "PLUi" (i minuscule), "CC", "PIG", "RNU", "POS", "PSMV".
-      // C'était la cause des candidats systématiquement vides avant.
       type Doc = { properties: { partition?: string; etat?: string; gpu_status?: string; typedoc?: string } };
       const docs = ((await r.json()) as { features?: Doc[] }).features ?? [];
 
-      // Types qui ont un zonage (zone-urba). RNU n'a pas de zones.
       const PLU_TYPES_PRIORITY = ["PLUI", "PLUIH", "PLU", "POS", "CC", "PIG", "PSMV"];
       const typeRank = (s?: string) => {
         const i = PLU_TYPES_PRIORITY.indexOf((s ?? "").toUpperCase());
@@ -105,8 +107,15 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
         return e === "approuve" || e === "opposable" || g.includes("opposable");
       };
 
+      // Rejette les partitions d'autres communes : DU_37179 quand on cherche 37261.
+      const INSEE_RE = /(?:^|[_-])(\d{5})(?:[_-]|$)/;
+      const partitionTargetsOtherCommune = (part: string): boolean => {
+        const m = part.match(INSEE_RE);
+        return m !== null && m[1] !== inseeCode;
+      };
+
       docs
-        .filter(d => !!d.properties.partition)
+        .filter(d => !!d.properties.partition && !partitionTargetsOtherCommune(d.properties.partition!))
         .sort((a, b) => {
           if (isInForce(a) !== isInForce(b)) return isInForce(a) ? -1 : 1;
           return typeRank(a.properties.typedoc) - typeRank(b.properties.typedoc);
@@ -120,7 +129,8 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
     } else diag.upstreamFailed = true;
   }
 
-  // (B) Fast-path conventionnel : "<INSEE>_PLU"
+  // (B) Conventions PLU communal (essayer les deux formats connus)
+  addCand({ partition: `DU_${inseeCode}`, source: "convention/DU_INSEE" });
   addCand({ partition: `${inseeCode}_PLU`, source: "convention/INSEE_PLU" });
 
   // (C) Fallback EPCI : "<SIREN>_PLUI" / "<SIREN>_PLU"
@@ -151,6 +161,7 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
     }
 
     if (epciSiren) {
+      addCand({ partition: `DU_${epciSiren}`, source: "convention/DU_SIREN" });
       addCand({ partition: `${epciSiren}_PLUI`, source: "convention/EPCI_PLUI" });
       addCand({ partition: `${epciSiren}_PLU`, source: "convention/EPCI_PLU" });
     }
@@ -161,6 +172,39 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   // cas où le filtre spatial GPU planterait sur un polygone complexe.
   let chosenPartition: string | undefined;
   let chosenZones: PluZonesGeoJson | undefined;
+
+  // Vérifie que les features rapatriées concernent BIEN notre commune.
+  // Quand /document retourne un partition voisin (DU_37179 pour Tours), le
+  // fetch zone-urba ramène les zones de Parçay-Meslay (idurba=37179_PLU_…).
+  // On rejette si les features ont un idurba qui commence par un INSEE
+  // différent du nôtre.
+  type FeatProps = { idurba?: string; insee?: string | null };
+  const featuresMatchCommune = (zones: PluZonesGeoJson): boolean => {
+    const feats = (zones.features ?? []) as Array<{ properties?: FeatProps }>;
+    if (feats.length === 0) return false;
+    let anyMismatch = false;
+    let anyMatch = false;
+    for (const f of feats) {
+      const idurba = f.properties?.idurba ?? "";
+      const insee = f.properties?.insee;
+      // idurba conventionnel : "<INSEE>_PLU_<date>" ou "DU_<INSEE>" — on cherche
+      // un INSEE 5 chiffres au début (avec ou sans préfixe DU_).
+      const m = idurba.match(/^(?:DU_)?(\d{5})(?:[_-]|$)/);
+      if (m) {
+        if (m[1] === inseeCode) anyMatch = true;
+        else anyMismatch = true;
+      }
+      if (insee === inseeCode) anyMatch = true;
+      else if (insee && insee !== inseeCode) anyMismatch = true;
+    }
+    // Si on a une preuve qu'au moins une feature concerne notre commune → OK.
+    // Sinon, si toutes les features pointent ailleurs → rejet.
+    // Cas ambigu (pas de marqueur du tout) → on accepte (filtre spatial GPU
+    // a déjà fait son travail).
+    if (anyMatch) return true;
+    if (anyMismatch) return false;
+    return true;
+  };
 
   for (const cand of cands) {
     // Fetch principal : partition + geom commune
@@ -176,7 +220,7 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
       continue;
     }
     const j1 = (await r1.json()) as PluZonesGeoJson;
-    if ((j1.features?.length ?? 0) > 0) {
+    if ((j1.features?.length ?? 0) > 0 && featuresMatchCommune(j1)) {
       diag.candidates.push({ ...cand, probe: "ok" });
       chosenPartition = cand.partition;
       chosenZones = j1;
@@ -196,7 +240,7 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
     }
     const j2 = (await r2.json()) as PluZonesGeoJson;
     const cleaned2 = filterZonesByInsee(j2, inseeCode);
-    if ((cleaned2.features?.length ?? 0) > 0) {
+    if ((cleaned2.features?.length ?? 0) > 0 && featuresMatchCommune(cleaned2)) {
       diag.candidates.push({ ...cand, probe: "ok" });
       chosenPartition = cand.partition;
       chosenZones = cleaned2;
