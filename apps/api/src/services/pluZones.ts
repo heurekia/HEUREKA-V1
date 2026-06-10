@@ -88,12 +88,16 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
       { signal: AbortSignal.timeout(8000) }
     );
     if (r) {
-      type Doc = { properties: { partition?: string; etat?: string; gpu_status?: string; du_type?: string } };
+      // ⚠️ Le champ de type est `typedoc` (pas `du_type`) avec des valeurs
+      // comme "PLU", "PLUi" (i minuscule), "CC", "PIG", "RNU", "POS", "PSMV".
+      // C'était la cause des candidats systématiquement vides avant.
+      type Doc = { properties: { partition?: string; etat?: string; gpu_status?: string; typedoc?: string } };
       const docs = ((await r.json()) as { features?: Doc[] }).features ?? [];
 
-      const DU_PRIORITY = ["PLUI", "PLUIH", "PLU", "POS", "CC", "PSMV"];
-      const duRank = (s?: string) => {
-        const i = DU_PRIORITY.indexOf((s ?? "").toUpperCase());
+      // Types qui ont un zonage (zone-urba). RNU n'a pas de zones.
+      const PLU_TYPES_PRIORITY = ["PLUI", "PLUIH", "PLU", "POS", "CC", "PIG", "PSMV"];
+      const typeRank = (s?: string) => {
+        const i = PLU_TYPES_PRIORITY.indexOf((s ?? "").toUpperCase());
         return i < 0 ? 99 : i;
       };
       const isInForce = (d: Doc) => {
@@ -106,12 +110,12 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
         .filter(d => !!d.properties.partition)
         .sort((a, b) => {
           if (isInForce(a) !== isInForce(b)) return isInForce(a) ? -1 : 1;
-          return duRank(a.properties.du_type) - duRank(b.properties.du_type);
+          return typeRank(a.properties.typedoc) - typeRank(b.properties.typedoc);
         })
         .forEach(d => addCand({
           partition: d.properties.partition!,
           source: "document",
-          du_type: d.properties.du_type,
+          du_type: d.properties.typedoc,
           etat: d.properties.etat ?? d.properties.gpu_status,
         }));
     } else diag.upstreamFailed = true;
