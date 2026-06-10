@@ -6758,12 +6758,15 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         {/* identity row */}
         <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 12 }}>
           {/* left: numero + description + meta */}
-          <div>
+          <div style={{ flex: 1, minWidth: 0, marginRight: 16 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 3 }}>
               <h1 style={{ fontSize: 26, fontWeight: 800, color: "#0F172A", margin: 0, letterSpacing: "-0.8px", lineHeight: 1 }}>{dossier.numero}</h1>
               <StatusBadge status={currentStatus} />
             </div>
-            <div style={{ fontSize: 13, color: "#475569", fontWeight: 500, marginBottom: 8 }}>{typeLabel}{dossier.description ? ` – ${dossier.description}` : ""}</div>
+            <div
+              title={dossier.description ? `${typeLabel} – ${dossier.description}` : typeLabel}
+              style={{ fontSize: 13, color: "#475569", fontWeight: 500, marginBottom: 8, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}
+            >{typeLabel}{dossier.description ? ` – ${dossier.description}` : ""}</div>
             <div style={{ display: "flex", alignItems: "center", gap: 18, flexWrap: "wrap" as const }}>
               <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }}>
                 <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
@@ -6786,6 +6789,11 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   {dossier.parcelle}
                 </span>
               </>}
+              <span style={{ color: "#CBD5E1", fontSize: 12 }}>·</span>
+              <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }} title="Instructeur">
+                <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M16 21v-2a4 4 0 00-4-4H6a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><polyline points="17 11 19 13 23 9" /></svg>
+                <span style={{ fontWeight: 500, color: currentInstructeurId ? "#334155" : "#94a3b8" }}>{instructeurName}</span>
+              </span>
             </div>
           </div>
           {/* right: date chips */}
@@ -6797,7 +6805,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             <div
               style={{ background: "#F8FAFC", border: "1px solid #E8EEF4", borderRadius: 10, padding: "8px 14px", textAlign: "center" as const, minWidth: 110, cursor: dossier.delai ? "pointer" : "default", position: "relative" as const }}
               onClick={() => dossier.delai && setShowDelaiPopover((v) => !v)}
-              title={dossier.delai ? "Voir le détail légal du délai" : undefined}
+              title={dossier.delai ? `Délai légal : ${dossier.delai.total_mois} mois — cliquer pour détail` : undefined}
             >
               <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>Échéance</div>
               <div style={{ display: "flex", alignItems: "center", gap: 6, justifyContent: "center" }}>
@@ -6808,11 +6816,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   </span>
                 )}
               </div>
-              {dossier.delai && (
-                <div style={{ fontSize: 10, color: "#64748b", marginTop: 2, fontWeight: 500 }}>
-                  {dossier.delai.total_mois} mois · cliquer pour détail
-                </div>
-              )}
               {showDelaiPopover && dossier.delai && (
                 <div onClick={(e) => e.stopPropagation()} style={{ position: "absolute" as const, top: "calc(100% + 6px)", right: 0, width: 360, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 8px 28px rgba(0,0,0,0.12)", padding: 16, zIndex: 1100, textAlign: "left" as const }}>
                   <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
@@ -6862,10 +6865,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               )}
             </div>
-            <div style={{ background: "#F8FAFC", border: "1px solid #E8EEF4", borderRadius: 10, padding: "8px 14px", textAlign: "center" as const, minWidth: 120 }}>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 3 }}>Instructeur</div>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#1E293B" }}>{instructeurName}</div>
-            </div>
           </div>
         </div>
 
@@ -6876,30 +6875,23 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         {(nextAction || canTakeCharge || canReassign || canUnassign || workflowError) && (
           <div style={{
             display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" as const,
-            padding: "10px 14px", marginBottom: 12,
-            background: "linear-gradient(180deg,#F8FAFF,#EEF2FF)",
-            border: "1px solid #DDE3FF", borderRadius: 12,
+            padding: "6px 12px", marginBottom: 10,
+            background: "#FAFBFF",
+            border: "1px solid #E8EBF7", borderRadius: 10,
           }}>
             {/* Côté gauche : action principale ─────────────────────────── */}
-            <div style={{ display: "flex", alignItems: "center", gap: 10, flex: "1 1 auto", minWidth: 0 }}>
-              <div style={{
-                width: 28, height: 28, borderRadius: 8, background: "white",
-                border: "1px solid #DDE3FF", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0,
-              }}>
-                <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><polyline points="9 18 15 12 9 6" /></svg>
-              </div>
-              <div style={{ minWidth: 0 }}>
-                <div style={{ fontSize: 10.5, fontWeight: 700, color: "#4F46E5", letterSpacing: "0.06em", textTransform: "uppercase" as const }}>Prochaine étape</div>
-                <div style={{ fontSize: 13, color: "#1E293B", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis" as const, whiteSpace: "nowrap" as const }}>
-                  {nextAction
-                    ? nextAction.hint
-                    : (currentStatus === "decision_en_cours"
-                      ? "L'arrêté est en circuit de signature."
-                      : currentStatus === "brouillon"
-                        ? "Le pétitionnaire n'a pas encore soumis le dossier."
-                        : "Aucune action attendue à ce stade.")}
-                </div>
-              </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, flex: "1 1 auto", minWidth: 0 }}>
+              <span style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", letterSpacing: "0.06em", textTransform: "uppercase" as const, flexShrink: 0 }}>Prochaine étape</span>
+              <span style={{ color: "#CBD5E1", fontSize: 12, flexShrink: 0 }}>·</span>
+              <span style={{ fontSize: 12.5, color: "#1E293B", fontWeight: 500, overflow: "hidden", textOverflow: "ellipsis" as const, whiteSpace: "nowrap" as const, minWidth: 0 }}>
+                {nextAction
+                  ? nextAction.hint
+                  : (currentStatus === "decision_en_cours"
+                    ? "L'arrêté est en circuit de signature."
+                    : currentStatus === "brouillon"
+                      ? "Le pétitionnaire n'a pas encore soumis le dossier."
+                      : "Aucune action attendue à ce stade.")}
+              </span>
             </div>
 
             {/* Côté droit : CTA + transitions secondaires + assignation ─── */}
@@ -6909,9 +6901,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   onClick={handleTakeCharge}
                   disabled={workflowBusy}
                   style={{
-                    background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none",
-                    borderRadius: 8, padding: "7px 14px", fontSize: 12.5, fontWeight: 600,
-                    cursor: workflowBusy ? "default" : "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.30)",
+                    background: "#4F46E5", color: "white", border: "none",
+                    borderRadius: 6, padding: "5px 11px", fontSize: 12, fontWeight: 600,
+                    cursor: workflowBusy ? "default" : "pointer",
                     opacity: workflowBusy ? 0.7 : 1,
                   }}>
                   Prendre en charge
@@ -6923,12 +6915,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   onClick={() => handleTransition(nextAction.target_status)}
                   disabled={workflowBusy}
                   style={{
-                    background: nextAction.variant === "success" ? "linear-gradient(135deg,#16A34A,#22C55E)"
-                              : nextAction.variant === "warning" ? "linear-gradient(135deg,#D97706,#F59E0B)"
-                              : "linear-gradient(135deg,#4F46E5,#6366F1)",
-                    color: "white", border: "none", borderRadius: 8, padding: "7px 14px",
-                    fontSize: 12.5, fontWeight: 600, cursor: workflowBusy ? "default" : "pointer",
-                    boxShadow: "0 2px 6px rgba(79,70,229,0.25)", opacity: workflowBusy ? 0.7 : 1,
+                    background: nextAction.variant === "success" ? "#16A34A"
+                              : nextAction.variant === "warning" ? "#D97706"
+                              : "#4F46E5",
+                    color: "white", border: "none", borderRadius: 6, padding: "5px 11px",
+                    fontSize: 12, fontWeight: 600, cursor: workflowBusy ? "default" : "pointer",
+                    opacity: workflowBusy ? 0.7 : 1,
                   }}>
                   {nextAction.label}
                 </button>
@@ -6941,8 +6933,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   disabled={workflowBusy}
                   title={`Passer en : ${DOSSIER_STATUS_LABELS[target]}`}
                   style={{
-                    background: "white", color: "#374151", border: "1px solid #E2E8F0",
-                    borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 500,
+                    background: "transparent", color: "#64748b", border: "1px solid #E2E8F0",
+                    borderRadius: 6, padding: "5px 10px", fontSize: 11.5, fontWeight: 500,
                     cursor: workflowBusy ? "default" : "pointer", opacity: workflowBusy ? 0.6 : 1,
                   }}>
                   → {DOSSIER_STATUS_LABELS[target]}
@@ -6955,11 +6947,11 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     onClick={() => { setShowAssignPicker(v => !v); if (!showAssignPicker) void ensureInstructeursLoaded(); }}
                     disabled={workflowBusy}
                     style={{
-                      background: "white", color: "#374151", border: "1px solid #E2E8F0",
-                      borderRadius: 8, padding: "7px 12px", fontSize: 12, fontWeight: 500, cursor: "pointer",
+                      background: "transparent", color: "#64748b", border: "1px solid #E2E8F0",
+                      borderRadius: 6, padding: "5px 10px", fontSize: 11.5, fontWeight: 500, cursor: "pointer",
                       display: "flex", alignItems: "center", gap: 5,
                     }}>
-                    <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
+                    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
                     {currentInstructeurId ? "Réassigner" : "Assigner"}
                   </button>
                   {showAssignPicker && (
