@@ -14,6 +14,7 @@ import { changeDossierStatus, WorkflowError } from "../services/dossierWorkflow.
 import { analyzePiece } from "../services/pieceAnalyzer.js";
 import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../services/pieceExtractor.js";
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
+import { autoReopenAfterCitizenUpload } from "../services/dossierWorkflow.js";
 import { computeInstructionDelay } from "../services/instructionDelays.js";
 import { getStorageProvider } from "../services/storage.js";
 import { attachCerfaToDossier } from "../services/cerfaAttachment.js";
@@ -788,6 +789,15 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
           ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null),
         })
         .where(eq(dossier_pieces_jointes.id, piece!.id));
+    }
+
+    // Auto-réouverture si le dossier était en "incomplet" : le pétitionnaire
+    // vient de redéposer une pièce, donc la complétude doit être réexaminée.
+    // Best-effort : on n'échoue jamais l'upload pour un problème de transition.
+    try {
+      await autoReopenAfterCitizenUpload(req.params.id as string, req.user!.id);
+    } catch (e) {
+      console.warn("[upload] autoReopen:", e);
     }
 
     res.status(201).json({ ...piece, analyse_ia, extraction_ia, ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null) });

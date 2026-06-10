@@ -83,6 +83,7 @@ import {
   changeDossierStatus,
   assignInstructeur,
   unassignInstructeur,
+  autoAdvanceIfAllPiecesValid,
   WorkflowError,
   workflowErrorToHttp,
 } from "../services/dossierWorkflow.js";
@@ -446,6 +447,17 @@ mairieRouter.patch("/dossiers/:id/pieces/:pieceId/annotation", async (req: AuthR
           note: rawNote ?? piece.instructeur_note ?? null,
         },
       });
+    }
+
+    // Auto-bascule pre_instruction → en_instruction si la dernière pièce
+    // restante vient d'être validée. Best-effort : on n'échoue jamais la
+    // route d'annotation pour un problème de transition.
+    if (statusChanged && rawStatus === "valide") {
+      try {
+        await autoAdvanceIfAllPiecesValid(piece.dossier_id, req.user?.id ?? null);
+      } catch (e) {
+        console.warn("[pieces/annotation] autoAdvance:", e);
+      }
     }
 
     res.json(updated);

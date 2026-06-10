@@ -5823,7 +5823,7 @@ function decisionStepIndex(status: DecisionStatus): number {
   return 0;
 }
 
-const DETAIL_TABS = ["Résumé", "Parcelle", "Conformité IA", "Documents", "Consultations", "Chronologie", "Décision"] as const;
+const DETAIL_TABS = ["Résumé", "Parcelle", "Conformité IA", "Documents", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
 type DetailTab = typeof DETAIL_TABS[number];
 
 const TAB_ICONS: Record<string, React.ReactNode> = {
@@ -5832,6 +5832,7 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
   "Conformité IA": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>,
   "Documents": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
   "Consultations": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>,
+  "Courriers": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>,
   "Chronologie": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
   "Décision": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><polyline points="9 15 11 17 15 13" /></svg>,
 };
@@ -6241,6 +6242,136 @@ function DecisionPanel({ dossier, liveCommune, currentUserId }: {
               <button onClick={handleRefuse} disabled={!refuseMotif.trim() || saving} style={{ background: "#EF4444", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: !refuseMotif.trim() ? "not-allowed" : "pointer" }}>Confirmer le refus</button>
             </div>
           </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─── Onglet "Courriers" ──────────────────────────────────────────────────────
+// Historique des courriers d'instruction émis pour un dossier. Liste, type,
+// auteur, pièces visées, articles cités. Sert de référence auditable pour
+// le pétitionnaire et l'instructeur.
+function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGeneralCourrier }: {
+  dossierId: string;
+  onRequestNewPiecesCourrier: () => void;
+  onRequestNewGeneralCourrier: () => void;
+}) {
+  type CourrierRow = {
+    id: string;
+    type: string;
+    subject: string | null;
+    pieces_jointes_ids: Array<{ piece_id?: string; code_piece?: string; nom: string; raison?: string; manquante?: boolean }>;
+    articles_cites: string[];
+    emis_par: string | null;
+    emis_le: string;
+    delivery_method: string | null;
+  };
+  const [rows, setRows] = useState<CourrierRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    api.get<CourrierRow[]>(`/mairie/dossiers/${dossierId}/courriers`)
+      .then((d) => { if (!cancelled) setRows(d); })
+      .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Erreur"); });
+    return () => { cancelled = true; };
+  }, [dossierId]);
+
+  const COURRIER_LABEL: Record<string, { label: string; color: string; bg: string }> = {
+    pieces_complementaires: { label: "Demande de pièces", color: "#B45309", bg: "#FEF3C7" },
+    refus: { label: "Refus", color: "#B91C1C", bg: "#FEE2E2" },
+    non_opposition: { label: "Non-opposition", color: "#15803D", bg: "#DCFCE7" },
+    majoration_delai: { label: "Majoration de délai", color: "#0284C7", bg: "#E0F2FE" },
+    daact: { label: "DAACT", color: "#7C3AED", bg: "#EDE9FE" },
+    sursis: { label: "Sursis", color: "#475569", bg: "#F1F5F9" },
+    notification: { label: "Notification", color: "#0F172A", bg: "#F1F5F9" },
+    general: { label: "Général", color: "#6B7280", bg: "#F3F4F6" },
+  };
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Courriers émis</div>
+          <div style={{ fontSize: 12, color: "#64748b" }}>Historique de tous les courriers envoyés au pétitionnaire pour ce dossier.</div>
+        </div>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button onClick={onRequestNewPiecesCourrier}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", background: "white", color: "#B45309", border: "1px solid #FDE68A", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+            📎 Demander des pièces
+          </button>
+          <button onClick={onRequestNewGeneralCourrier}
+            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+            + Nouveau courrier
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ padding: 12, background: "#FEE2E2", color: "#991B1B", borderRadius: 8, fontSize: 12.5 }}>{error}</div>
+      )}
+
+      {rows === null ? (
+        <div style={{ padding: 32, background: "white", borderRadius: 12, border: "1px solid #E8EEF4", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Chargement…</div>
+      ) : rows.length === 0 ? (
+        <div style={{ padding: 32, background: "white", borderRadius: 12, border: "1px dashed #CBD5E1", textAlign: "center", color: "#64748b", fontSize: 13 }}>
+          Aucun courrier émis pour ce dossier.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
+          {rows.map((c) => {
+            const meta = COURRIER_LABEL[c.type] ?? COURRIER_LABEL.general!;
+            const pieces = Array.isArray(c.pieces_jointes_ids) ? c.pieces_jointes_ids : [];
+            const articles = Array.isArray(c.articles_cites) ? c.articles_cites : [];
+            return (
+              <div key={c.id} style={{ background: "white", border: "1px solid #E8EEF4", borderRadius: 12, padding: 16 }}>
+                <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                    <span style={{ fontSize: 11, fontWeight: 700, color: meta.color, background: meta.bg, padding: "2px 8px", borderRadius: 5 }}>{meta.label}</span>
+                    {c.subject && <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.subject}</span>}
+                  </div>
+                  <div style={{ fontSize: 11.5, color: "#64748b", whiteSpace: "nowrap" as const }}>
+                    {new Date(c.emis_le).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                    {c.delivery_method && <> · <span style={{ textTransform: "capitalize" as const }}>{c.delivery_method}</span></>}
+                  </div>
+                </div>
+
+                {pieces.length > 0 && (
+                  <div style={{ marginBottom: 8 }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase" as const, marginBottom: 5 }}>
+                      Pièces visées ({pieces.length})
+                    </div>
+                    <ul style={{ margin: 0, padding: "0 0 0 18px", fontSize: 12.5, color: "#334155" }}>
+                      {pieces.map((p, i) => (
+                        <li key={i} style={{ marginBottom: 2 }}>
+                          {p.code_piece && <span style={{ fontFamily: "monospace", color: "#64748b", marginRight: 6 }}>{p.code_piece}</span>}
+                          {p.nom}
+                          {p.manquante
+                            ? <span style={{ fontSize: 10.5, color: "#B45309", marginLeft: 6 }}>à fournir</span>
+                            : <span style={{ fontSize: 10.5, color: "#0284C7", marginLeft: 6 }}>à compléter</span>}
+                          {p.raison && <span style={{ color: "#64748b" }}> — {p.raison}</span>}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+
+                {articles.length > 0 && (
+                  <div>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase" as const, marginBottom: 5 }}>
+                      Articles cités
+                    </div>
+                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" as const }}>
+                      {articles.map((a) => (
+                        <span key={a} style={{ fontSize: 11, fontWeight: 600, color: "#374151", background: "#F1F5F9", padding: "2px 8px", borderRadius: 5, fontFamily: "monospace" }}>Art. {a}</span>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>
@@ -8451,6 +8582,15 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           </div>
           );
         })()}
+
+        {/* ── COURRIERS ── */}
+        {activeTab === "Courriers" && (
+          <CourriersPanel
+            dossierId={dossier.id}
+            onRequestNewPiecesCourrier={() => setCourrierMode("pieces_complementaires")}
+            onRequestNewGeneralCourrier={() => setCourrierMode("general")}
+          />
+        )}
 
         {/* ── DÉCISION ── */}
         {activeTab === "Décision" && (

@@ -28,6 +28,12 @@ export type CuratedArticle = {
   code: "CU" | "CCH" | "CE";
   num: string;
   categories: string[]; // CategoryDef.id
+  // Types de courrier où l'article est pertinent. Sert au tagging
+  // legal_mentions.courrier_types côté DB, qui pilote la suggestion auto
+  // dans le CourrierModal. Aligné sur COURRIER_TYPES côté UI :
+  // "pieces_complementaires", "refus", "non_opposition", "majoration_delai",
+  // "daact", "sursis", "notification".
+  courrier_types?: string[];
 };
 
 // Liste curatée — pas exhaustive, axée sur ce qui apparaît dans le tunnel
@@ -70,13 +76,24 @@ export const CURATED_ARTICLES: CuratedArticle[] = [
   // ── Délais et recours ──────────────────────────────────────────────────────
   { code: "CU", num: "R423-23", categories: ["delais_recours"] },               // Délais d'instruction de droit commun
   { code: "CU", num: "R423-32", categories: ["delais_recours", "abf"] },        // Majoration de délai (avis ABF, etc.)
+  // R.423-38 — notification du caractère incomplet du dossier dans le mois
+  // qui suit le dépôt. C'est l'article-clé à citer dans une demande de
+  // pièces complémentaires : il fonde juridiquement l'envoi et suspend
+  // formellement le délai d'instruction.
+  { code: "CU", num: "R423-38", categories: ["pieces_dossier", "delais_recours"], courrier_types: ["pieces_complementaires"] },
+  // R.423-39 — délai de 3 mois laissé au pétitionnaire pour compléter,
+  // sous peine de rejet tacite.
+  { code: "CU", num: "R423-39", categories: ["pieces_dossier", "delais_recours"], courrier_types: ["pieces_complementaires"] },
   { code: "CU", num: "R600-1",  categories: ["delais_recours"] },               // Notification du recours
   { code: "CU", num: "R600-2",  categories: ["delais_recours"] },               // Délai de recours des tiers
 
   // ── Pièces du dossier ──────────────────────────────────────────────────────
-  { code: "CU", num: "R431-5",  categories: ["pieces_dossier"] },               // PC : pièces communes
-  { code: "CU", num: "R431-7",  categories: ["pieces_dossier"] },               // PC : plans
-  { code: "CU", num: "R441-1",  categories: ["pieces_dossier"] },               // PA : pièces
+  // Articles à citer dans une demande de pièces complémentaires — chacun
+  // fixe la composition du dossier pour son type d'autorisation. Le filtrage
+  // serveur (legal_mentions.courrier_types) les remontera en "suggéré".
+  { code: "CU", num: "R431-5",  categories: ["pieces_dossier"], courrier_types: ["pieces_complementaires"] }, // PC : pièces communes
+  { code: "CU", num: "R431-7",  categories: ["pieces_dossier"], courrier_types: ["pieces_complementaires"] }, // PC : plans
+  { code: "CU", num: "R441-1",  categories: ["pieces_dossier"], courrier_types: ["pieces_complementaires"] }, // PA : pièces
 
   // ── Performance énergétique (CCH) ──────────────────────────────────────────
   { code: "CCH", num: "L171-1", categories: ["performance_energetique"] },      // Performance énergétique : champ
