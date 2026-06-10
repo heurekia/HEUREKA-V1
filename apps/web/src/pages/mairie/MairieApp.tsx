@@ -7131,8 +7131,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               </div>
               {/* Mini map */}
-              <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
-                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px 8px" }}>
+              <div style={{ ...CARD, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" as const }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "12px 14px 8px", flexShrink: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>Localisation</div>
                   {(() => { const rLat = parcelAnalysis?.address?.lat ?? dossier.lat; const rLng = parcelAnalysis?.address?.lng ?? dossier.lng; return (rLat && rLng) ? (
                     <button onClick={() => setShowMapFull(true)} title="Agrandir la carte"
@@ -7143,9 +7143,11 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   ) : null; })()}
                 </div>
                 {(() => { const rLat = parcelAnalysis?.address?.lat ?? dossier.lat; const rLng = parcelAnalysis?.address?.lng ?? dossier.lng; return rLat && rLng ? (
-                  <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: rLat, lng: rLng }]} height={140} commune={liveCommune ?? dossier.commune} />
+                  <div style={{ flex: 1, minHeight: 200 }}>
+                    <MapLeaflet dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: rLat, lng: rLng }]} height="100%" commune={liveCommune ?? dossier.commune} />
+                  </div>
                 ) : (
-                  <div style={{ height: 140, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 8 }}>
+                  <div style={{ flex: 1, minHeight: 200, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 8 }}>
                     <svg width={32} height={32} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
                     <span style={{ fontSize: 12, color: "#94a3b8" }}>Géolocalisation indisponible</span>
                   </div>
