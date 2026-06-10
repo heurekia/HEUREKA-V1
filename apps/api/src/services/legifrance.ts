@@ -98,6 +98,23 @@ function indexToc(toc: CodeTocResponse): Map<string, TocEntry> {
   return idx;
 }
 
+// La TOC d'un code (surtout le CU) peut peser plusieurs Mo et prendre
+// 10-20 s à charger au cold-start. Le gateway Railway ayant un timeout
+// ~30 s, on borne l'attente à 12 s ici pour ne jamais bloquer une requête
+// utilisateur trop longtemps. Si l'index n'est pas prêt à temps, on rend
+// une Map vide — l'article sera fetché sans chemin de section.
+const TOC_FETCH_TIMEOUT_MS = 12_000;
+
+function withTimeout<T>(promise: Promise<T>, ms: number, onTimeoutValue: T): Promise<T> {
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => resolve(onTimeoutValue), ms);
+    promise.then(
+      (v) => { clearTimeout(timer); resolve(v); },
+      ()  => { clearTimeout(timer); resolve(onTimeoutValue); },
+    );
+  });
+}
+
 async function getCodeNumIndex(codeId: string): Promise<Map<string, TocEntry>> {
   let p = tocCache.get(codeId);
   if (!p) {
@@ -111,7 +128,18 @@ async function getCodeNumIndex(codeId: string): Promise<Map<string, TocEntry>> {
     });
     tocCache.set(codeId, p);
   }
-  return p;
+  // Borne le temps d'attente côté caller — la promesse continue en arrière-plan
+  // et hydrate le cache pour les appels suivants.
+  return withTimeout(p, TOC_FETCH_TIMEOUT_MS, new Map<string, TocEntry>());
+}
+
+// Déclenche le chargement de la TOC d'un code en arrière-plan (sans await).
+// À appeler au démarrage du serveur pour qu'à la première requête utilisateur,
+// la TOC soit déjà en cache.
+export function warmCodeTocCache(codeKey: string): void {
+  const code = resolveCode(codeKey);
+  if (!code) return;
+  void getCodeNumIndex(code.id);
 }
 
 // Récupère le chemin de section pour un num, ou null si la TOC n'est pas dispo.
