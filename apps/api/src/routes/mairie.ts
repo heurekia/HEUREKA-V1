@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations, external_services, service_communes, instruction_events, document_segments, document_segment_annotations, ANNOTATION_KINDS } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations, external_services, service_communes, instruction_events, document_segments, document_segment_annotations, ANNOTATION_KINDS, dossier_courriers } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike, inArray } from "drizzle-orm";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
@@ -86,6 +86,11 @@ import {
   WorkflowError,
   workflowErrorToHttp,
 } from "../services/dossierWorkflow.js";
+import {
+  emitPieceComplementRequest,
+  renderPieceListHtml,
+  type PieceRequestItem,
+} from "../services/pieceRequest.js";
 import {
   nextStatuses,
   primaryNextAction,
@@ -747,6 +752,93 @@ mairieRouter.post("/dossiers/:id/take-charge", async (req: AuthRequest, res) => 
       return res.status(status).json(body);
     }
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Demande de pièces complémentaires : émission ──
+// L'instructeur choisit les pièces (déjà déposées ou totalement absentes),
+// éventuellement les articles juridiques cités, puis émet le courrier.
+// Effets :
+//   - création d'une ligne dans dossier_courriers (snapshot du contenu)
+//   - bascule des pièces sélectionnées en "complement_demande"
+//   - transition du dossier vers "incomplet" via la machine à états
+//   - event tracé dans la chronologie d'instruction
+mairieRouter.post("/dossiers/:id/courriers/pieces-complementaires", async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const body = (req.body ?? {}) as {
+      pieces?: PieceRequestItem[];
+      articles_cites?: string[];
+      body_snapshot?: string | null;
+      subject?: string | null;
+      delivery_method?: string | null;
+    };
+
+    if (!Array.isArray(body.pieces) || body.pieces.length === 0) {
+      return res.status(400).json({ error: "Au moins une pièce doit être sélectionnée" });
+    }
+    // Sécurise les entrées libres : on accepte seulement nom + raison + flags
+    // attendus, pas d'HTML brut. Un nom vide est invalide.
+    const cleaned: PieceRequestItem[] = body.pieces
+      .filter((p) => p && typeof p === "object" && typeof p.nom === "string" && p.nom.trim().length > 0)
+      .map((p) => ({
+        piece_id: typeof p.piece_id === "string" ? p.piece_id : undefined,
+        code_piece: typeof p.code_piece === "string" ? p.code_piece : undefined,
+        nom: p.nom.trim(),
+        raison: typeof p.raison === "string" && p.raison.trim() ? p.raison.trim() : undefined,
+        manquante: p.manquante === true || !p.piece_id,
+      }));
+    if (cleaned.length === 0) {
+      return res.status(400).json({ error: "Aucune pièce valide dans la sélection" });
+    }
+    const articles = Array.isArray(body.articles_cites) ? body.articles_cites.filter((a) => typeof a === "string") : [];
+
+    const result = await emitPieceComplementRequest({
+      dossier_id: dossierId,
+      pieces: cleaned,
+      articles_cites: articles,
+      body_snapshot: body.body_snapshot ?? null,
+      subject: body.subject ?? null,
+      delivery_method: body.delivery_method ?? null,
+      emis_par: req.user!.id,
+    });
+    res.status(201).json(result);
+  } catch (err) {
+    console.error("[courriers/pieces-complementaires]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// ── Aperçu rapide du bloc HTML "pièces à compléter" ──
+// Permet à l'UI de pré-visualiser la liste qui sera substituée à
+// {liste_pieces_a_completer} dans le template, SANS émettre le courrier.
+mairieRouter.post("/dossiers/:id/courriers/pieces-complementaires/preview", async (req: AuthRequest, res) => {
+  const body = (req.body ?? {}) as { pieces?: PieceRequestItem[] };
+  const pieces = Array.isArray(body.pieces) ? body.pieces.filter((p) => p && typeof p.nom === "string" && p.nom.trim()) : [];
+  res.json({ html: renderPieceListHtml(pieces) });
+});
+
+// ── Liste des courriers émis pour un dossier ──
+mairieRouter.get("/dossiers/:id/courriers", async (req: AuthRequest, res) => {
+  try {
+    const rows = await db
+      .select({
+        id: dossier_courriers.id,
+        type: dossier_courriers.type,
+        subject: dossier_courriers.subject,
+        pieces_jointes_ids: dossier_courriers.pieces_jointes_ids,
+        articles_cites: dossier_courriers.articles_cites,
+        emis_par: dossier_courriers.emis_par,
+        emis_le: dossier_courriers.emis_le,
+        delivery_method: dossier_courriers.delivery_method,
+      })
+      .from(dossier_courriers)
+      .where(eq(dossier_courriers.dossier_id, req.params.id as string))
+      .orderBy(desc(dossier_courriers.emis_le));
+    res.json(rows);
+  } catch (err) {
+    console.error("[courriers list]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

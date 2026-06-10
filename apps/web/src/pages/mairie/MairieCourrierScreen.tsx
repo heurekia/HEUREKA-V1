@@ -31,6 +31,10 @@ const TEMPLATE_VARIABLES = [
     { label: "Références cadastrales", name: "parcelle" },
     { label: "Superficie (surface plancher)", name: "surface_plancher" },
   ]},
+  { group: "Demande de pièces complémentaires", vars: [
+    { label: "Liste des pièces à compléter", name: "liste_pieces_a_completer" },
+    { label: "Nombre de pièces à compléter", name: "nombre_pieces_a_completer" },
+  ]},
 ];
 
 const CATEGORY_CONFIG: Record<string, { label: string; color: string; bg: string }> = {
@@ -94,6 +98,25 @@ const BLOCK_BORDER: Record<CanvasBlock["borderStyle"], string> = {
   medium: "1.5px solid #94a3b8", dashed: "1px dashed #94a3b8",
 };
 
+// Variante client de renderPieceListHtml (cf. apps/api/src/services/pieceRequest.ts).
+// Le rendu doit rester identique à celui produit côté serveur pour que
+// l'aperçu corresponde au snapshot persisté à l'émission.
+function renderPieceListHtmlClient(pieces: PieceRequestSelection[]): string {
+  if (pieces.length === 0) return "";
+  const escape = (s: string) => s.replace(/[&<>"']/g, (c) => ({
+    "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;",
+  }[c] ?? c));
+  const items = pieces.map((p) => {
+    const codeLabel = p.code_piece ? `<strong>${escape(p.code_piece)}</strong> — ` : "";
+    const reason = p.raison ? `<br/><span style="font-size:0.9em;color:#475569;">${escape(p.raison)}</span>` : "";
+    const tag = p.manquante
+      ? `<span style="font-size:0.78em;color:#B45309;background:#FEF3C7;padding:1px 6px;border-radius:4px;margin-left:6px;">à fournir</span>`
+      : `<span style="font-size:0.78em;color:#0284C7;background:#E0F2FE;padding:1px 6px;border-radius:4px;margin-left:6px;">à compléter</span>`;
+    return `<li style="margin-bottom:6px;">${codeLabel}${escape(p.nom)}${tag}${reason}</li>`;
+  }).join("");
+  return `<ul style="padding-left:18px;margin:0;">${items}</ul>`;
+}
+
 function substituteVariables(body: string, vars: Record<string, string>): string {
   const subHtml = (html: string) =>
     html.replace(/<span[^>]*data-variable="([^"]+)"[^>]*>[^<]*<\/span>/g,
@@ -126,6 +149,31 @@ export interface DossierForCourrier {
   adresse?: string; commune?: string; code_postal?: string; parcelle?: string;
   surface_plancher?: string; date_depot?: string; echeance?: string;
   date_completude?: string; date_delivrance?: string;
+}
+
+// Pièce déjà déposée par le pétitionnaire — sert au sélecteur "Demande de
+// pièces complémentaires" pour proposer les pièces existantes à compléter
+// (à côté des entrées libres pour les pièces totalement absentes).
+export interface CourrierAvailablePiece {
+  id: string;
+  nom: string;
+  code_piece: string | null;
+  instructeur_status: "valide" | "rejete" | "complement_demande" | null;
+  // Score IA optionnel — affiché uniquement si l'utilisateur n'a pas désactivé
+  // les suggestions IA (préférence persistée côté localStorage).
+  ia_score?: "conforme" | "acceptable" | "incomplet" | "non_conforme" | null;
+}
+
+// Sélection construite par l'instructeur dans le picker. Convertie en payload
+// pour POST /mairie/dossiers/:id/courriers/pieces-complementaires.
+export interface PieceRequestSelection {
+  // Pièce existante cochée (référence piece_id)
+  piece_id?: string;
+  // Pièce libre (texte saisi)
+  code_piece?: string;
+  nom: string;
+  raison?: string;
+  manquante: boolean;
 }
 interface MentionRow {
   id: string;
@@ -283,7 +331,36 @@ function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; l
 }
 
 // ─── Courrier Modal ────────────────────────────────────────────────────────
-export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrier; onClose: () => void }) {
+// `mode` détermine le scénario d'usage :
+//   - "general"               : génération libre (comportement historique)
+//   - "pieces_complementaires" : préfiltrage sur la catégorie, panneau de
+//     sélection des pièces actif, bouton "Émettre" qui appelle la route
+//     d'émission. L'instructeur reste maître de la sélection — l'IA suggère
+//     mais ne coche rien d'office si la préférence "sans IA" est activée.
+export type CourrierMode = "general" | "pieces_complementaires";
+
+export interface CourrierModalProps {
+  dossier: DossierForCourrier;
+  onClose: () => void;
+  mode?: CourrierMode;
+  // Pièces déjà déposées sur le dossier, requises en mode pieces_complementaires.
+  availablePieces?: CourrierAvailablePiece[];
+  // Pièces manquantes détectées par l'analyse de conformité IA. Affichées
+  // comme suggestions repliables, jamais pré-cochées.
+  aiSuggestedMissingPieces?: Array<{ code: string; nom: string }>;
+  // Callback appelé après une émission réussie (le parent rafraîchit le dossier).
+  onEmitted?: () => void;
+}
+
+const NO_AI_HINTS_KEY = "heureka_no_ai_hints";
+
+export function CourrierModal({
+  dossier, onClose,
+  mode = "general",
+  availablePieces = [],
+  aiSuggestedMissingPieces = [],
+  onEmitted,
+}: CourrierModalProps) {
   const { user } = useAuth();
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
   const [selected, setSelected] = useState<CourrierTemplate | null>(null);
@@ -300,9 +377,60 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
   const [mentionsLoading, setMentionsLoading] = useState(false);
   const [allMentions, setAllMentions] = useState<MentionRow[]>([]);
   const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
-  const [courrierType, setCourrierType] = useState("");
+  const [courrierType, setCourrierType] = useState(mode === "pieces_complementaires" ? "pieces_complementaires" : "");
   const [insertedMentionsHtml, setInsertedMentionsHtml] = useState("");
   const [viewingArticle, setViewingArticle] = useState<MentionRow | null>(null);
+
+  // ── Pièces complémentaires : état de sélection ──
+  // Préférence persistée : un instructeur peut décider de ne pas voir les
+  // suggestions IA (score par pièce + liste détectée comme manquante). On
+  // ne change jamais le comportement métier — uniquement l'affichage.
+  const [noAiHints, setNoAiHints] = useState<boolean>(() => {
+    try { return localStorage.getItem(NO_AI_HINTS_KEY) === "1"; } catch { return false; }
+  });
+  const toggleNoAiHints = useCallback(() => {
+    setNoAiHints((v) => {
+      const next = !v;
+      try { localStorage.setItem(NO_AI_HINTS_KEY, next ? "1" : "0"); } catch { /* ignore */ }
+      return next;
+    });
+  }, []);
+  // Pré-sélection automatique : pièces déjà marquées par l'instructeur comme
+  // "rejete" ou "complement_demande". Aucune pré-sélection automatique sur
+  // base d'un score IA — l'instructeur est seul juge.
+  const initialSelected = (): Set<string> => {
+    const s = new Set<string>();
+    for (const p of availablePieces) {
+      if (p.instructeur_status === "rejete" || p.instructeur_status === "complement_demande") s.add(p.id);
+    }
+    return s;
+  };
+  const [selectedPieceIds, setSelectedPieceIds] = useState<Set<string>>(initialSelected);
+  const [pieceReasons, setPieceReasons] = useState<Record<string, string>>({});
+  const [extraPieces, setExtraPieces] = useState<Array<{ id: string; nom: string; code_piece: string; raison: string }>>([]);
+  const [showPiecesPanel, setShowPiecesPanel] = useState<boolean>(mode === "pieces_complementaires");
+  const [emitting, setEmitting] = useState(false);
+  const [emitError, setEmitError] = useState<string | null>(null);
+  const [emittedAt, setEmittedAt] = useState<string | null>(null);
+
+  // Synthèse des pièces sélectionnées (pour la prévisualisation HTML et la
+  // bascule serveur). Ordre : pièces déposées sélectionnées, puis ajouts libres.
+  const requestedPieces: PieceRequestSelection[] = [
+    ...availablePieces.filter((p) => selectedPieceIds.has(p.id)).map((p) => ({
+      piece_id: p.id,
+      code_piece: p.code_piece ?? undefined,
+      nom: p.nom,
+      raison: pieceReasons[p.id]?.trim() || undefined,
+      manquante: false,
+    })),
+    ...extraPieces.filter((e) => e.nom.trim().length > 0).map((e) => ({
+      code_piece: e.code_piece.trim() || undefined,
+      nom: e.nom.trim(),
+      raison: e.raison.trim() || undefined,
+      manquante: true,
+    })),
+  ];
+  const piecesListHtml = renderPieceListHtmlClient(requestedPieces);
 
   const loadMentions = useCallback((ct: string) => {
     setMentionsLoading(true);
@@ -325,6 +453,33 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
       return !v;
     });
   }, [allMentions.length, loadMentions, courrierType]);
+
+  // ── Émission de la demande de pièces complémentaires ──
+  // 1) POST courrier (snapshot + pièces + articles) — gère la transition de
+  //    statut et le marquage des pièces côté serveur. 2) verrouille la modale
+  //    (emittedAt) pour éviter une double émission. 3) notifie le parent
+  //    pour qu'il rafraîchisse le dossier.
+  const handleEmitPieceRequest = useCallback(async () => {
+    if (requestedPieces.length === 0 || emitting || emittedAt) return;
+    setEmitting(true);
+    setEmitError(null);
+    try {
+      const articles = Array.from(selectedRefs);
+      await api.post(`/mairie/dossiers/${dossier.id}/courriers/pieces-complementaires`, {
+        pieces: requestedPieces,
+        articles_cites: articles,
+        body_snapshot: substitutedHtml || null,
+        subject: selected?.name ?? "Demande de pièces complémentaires",
+        delivery_method: "print",
+      });
+      setEmittedAt(new Date().toISOString());
+      onEmitted?.();
+    } catch (e) {
+      setEmitError(e instanceof Error ? e.message : "Émission impossible");
+    } finally {
+      setEmitting(false);
+    }
+  }, [dossier.id, requestedPieces, emitting, emittedAt, selectedRefs, substitutedHtml, selected, onEmitted]);
 
   const handleInsertMentions = useCallback(() => {
     if (selectedRefs.size === 0) return;
@@ -373,9 +528,22 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
       code_postal: dossier.code_postal ?? "—",
       parcelle: dossier.parcelle ?? "—",
       surface_plancher: dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—",
+      // Demande de pièces complémentaires : liste dynamique injectée
+      // dans le corps du template via la variable {liste_pieces_a_completer}.
+      liste_pieces_a_completer: piecesListHtml || "—",
+      nombre_pieces_a_completer: String(requestedPieces.length),
     };
     setSubstitutedHtml(substituteVariables(selected.body, vars));
-  }, [selected, letterhead, dossier, user]);
+  }, [selected, letterhead, dossier, user, piecesListHtml, requestedPieces.length]);
+
+  // Auto-sélection d'un template de catégorie "pieces_complementaires" quand
+  // la modale est ouverte en mode demande de pièces — fallback : premier
+  // template disponible.
+  useEffect(() => {
+    if (mode !== "pieces_complementaires" || selected || templates.length === 0) return;
+    const preferred = templates.find((t) => t.category === "pieces_complementaires");
+    setSelected(preferred ?? templates[0] ?? null);
+  }, [mode, templates, selected]);
 
   return (
     <div className="print-modal-overlay" style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex" }}>
@@ -458,8 +626,15 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
                 🔵 Tampon
               </button>
             )}
+            {/* Pièces à demander — visible uniquement en mode pieces_complementaires */}
+            {mode === "pieces_complementaires" && (
+              <button onClick={() => { setShowPiecesPanel((v) => !v); if (showMentions) setShowMentions(false); }}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showPiecesPanel ? "#B45309" : "#E2E8F0"}`, borderRadius: 7, background: showPiecesPanel ? "#FEF3C7" : "white", color: showPiecesPanel ? "#B45309" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
+                📎 Pièces à demander {requestedPieces.length > 0 ? `(${requestedPieces.length})` : ""}
+              </button>
+            )}
             {/* Mentions légales toggle */}
-            <button onClick={handleToggleMentions}
+            <button onClick={() => { handleToggleMentions(); if (showPiecesPanel) setShowPiecesPanel(false); }}
               style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showMentions ? "#0284C7" : "#E2E8F0"}`, borderRadius: 7, background: showMentions ? "#E0F2FE" : "white", color: showMentions ? "#0284C7" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
               📜 Mentions légales
             </button>
@@ -468,11 +643,33 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
               <Printer size={14} /> Imprimer / PDF
             </button>
+            {mode === "pieces_complementaires" && (
+              <button
+                onClick={handleEmitPieceRequest}
+                disabled={emitting || requestedPieces.length === 0 || !!emittedAt}
+                title={emittedAt ? "Courrier déjà émis pour cette session" : requestedPieces.length === 0 ? "Sélectionnez au moins une pièce" : "Émettre et basculer le dossier en incomplet"}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, padding: "7px 16px",
+                  background: (emitting || requestedPieces.length === 0 || !!emittedAt) ? "#E2E8F0" : "linear-gradient(135deg,#D97706,#F59E0B)",
+                  color: (emitting || requestedPieces.length === 0 || !!emittedAt) ? "#94a3b8" : "white",
+                  border: "none", borderRadius: 8,
+                  cursor: (emitting || requestedPieces.length === 0 || !!emittedAt) ? "default" : "pointer",
+                  fontSize: 13, fontWeight: 600,
+                }}>
+                {emittedAt ? "✓ Émise" : emitting ? "Émission…" : "Émettre la demande"}
+              </button>
+            )}
             <button onClick={onClose} style={{ padding: 6, border: "1px solid #E2E8F0", borderRadius: 8, background: "white", cursor: "pointer", display: "flex" }}>
               <X size={16} color="#64748b" />
             </button>
           </div>
         </div>
+
+        {emitError && (
+          <div className="no-print-modal" style={{ padding: "8px 20px", background: "#FEE2E2", color: "#991B1B", fontSize: 12, borderBottom: "1px solid #FCA5A5" }}>
+            {emitError}
+          </div>
+        )}
 
         {/* Body */}
         <div className="print-modal-body" style={{ flex: 1, display: "flex", overflow: "hidden" }}>
@@ -602,6 +799,158 @@ export function CourrierModal({ dossier, onClose }: { dossier: DossierForCourrie
                   style={{ width: "100%", padding: "8px 12px", border: "none", borderRadius: 7, background: selectedRefs.size > 0 ? "#0F172A" : "#E2E8F0", color: selectedRefs.size > 0 ? "white" : "#94a3b8", fontSize: 12, fontWeight: 600, cursor: selectedRefs.size > 0 ? "pointer" : "default" }}>
                   Ajouter au courrier {selectedRefs.size > 0 ? `(${selectedRefs.size})` : ""}
                 </button>
+              </div>
+            </div>
+          )}
+
+          {/* ── Pièces à demander (mode pieces_complementaires) ─────────── */}
+          {mode === "pieces_complementaires" && showPiecesPanel && (
+            <div className="no-print-modal" style={{ width: 320, borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", flexShrink: 0, background: "#FAFAFA" }}>
+              {/* Panel header */}
+              <div style={{ padding: "12px 14px 10px", borderBottom: "1px solid #E2E8F0", background: "white" }}>
+                <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 6 }}>📎 Pièces à demander au pétitionnaire</div>
+                <div style={{ fontSize: 11, color: "#64748b", marginBottom: 8, lineHeight: 1.4 }}>
+                  Sélectionnez les pièces déposées à compléter, et ajoutez les pièces absentes.
+                </div>
+                <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#475569", cursor: "pointer" }}>
+                  <input type="checkbox" checked={noAiHints} onChange={toggleNoAiHints} style={{ cursor: "pointer" }} />
+                  Masquer les suggestions IA (préférence personnelle)
+                </label>
+              </div>
+
+              {/* Available pieces */}
+              <div style={{ flex: 1, overflowY: "auto", padding: "8px 0" }}>
+                {availablePieces.length === 0 ? (
+                  <div style={{ padding: "16px 14px", color: "#94a3b8", fontSize: 12, textAlign: "center" }}>Aucune pièce déposée sur ce dossier.</div>
+                ) : (
+                  <>
+                    <div style={{ padding: "4px 14px 6px", fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase" }}>
+                      Pièces déposées ({availablePieces.length})
+                    </div>
+                    {availablePieces.map((p) => {
+                      const checked = selectedPieceIds.has(p.id);
+                      const score = p.ia_score;
+                      const scoreLabel = score && !noAiHints ? (
+                        <span title={`Avis IA : ${score}`} style={{
+                          fontSize: 9.5, fontWeight: 700, padding: "1px 5px", borderRadius: 4, marginLeft: 6,
+                          color: score === "non_conforme" || score === "incomplet" ? "#B91C1C" : score === "acceptable" ? "#B45309" : "#15803D",
+                          background: score === "non_conforme" || score === "incomplet" ? "#FEE2E2" : score === "acceptable" ? "#FEF3C7" : "#DCFCE7",
+                        }}>IA: {score.replace("_", " ")}</span>
+                      ) : null;
+                      const statusBadge = p.instructeur_status === "valide"
+                        ? <span style={{ fontSize: 9.5, fontWeight: 600, color: "#15803D", marginLeft: 6 }}>✓ validée</span>
+                        : p.instructeur_status === "rejete"
+                          ? <span style={{ fontSize: 9.5, fontWeight: 600, color: "#B91C1C", marginLeft: 6 }}>✕ rejetée</span>
+                          : p.instructeur_status === "complement_demande"
+                            ? <span style={{ fontSize: 9.5, fontWeight: 600, color: "#B45309", marginLeft: 6 }}>↻ déjà demandée</span>
+                            : null;
+                      return (
+                        <div key={p.id} style={{ padding: "6px 14px", borderBottom: "1px solid #F1F5F9", background: checked ? "#FEF3C7" : "transparent" }}>
+                          <label style={{ display: "flex", alignItems: "flex-start", gap: 8, cursor: "pointer" }}>
+                            <input type="checkbox" checked={checked}
+                              onChange={() => setSelectedPieceIds((prev) => {
+                                const next = new Set(prev);
+                                if (next.has(p.id)) next.delete(p.id); else next.add(p.id);
+                                return next;
+                              })}
+                              style={{ marginTop: 3, flexShrink: 0, cursor: "pointer" }} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 4, flexWrap: "wrap" }}>
+                                {p.code_piece && <span style={{ fontFamily: "monospace", fontSize: 10.5, color: "#64748b" }}>{p.code_piece}</span>}
+                                <span style={{ fontSize: 12, color: "#1E293B", fontWeight: 500 }}>{p.nom}</span>
+                                {statusBadge}
+                                {scoreLabel}
+                              </div>
+                              {checked && (
+                                <input
+                                  type="text"
+                                  placeholder="Raison (facultatif) — ex. plan illisible"
+                                  value={pieceReasons[p.id] ?? ""}
+                                  onChange={(e) => setPieceReasons((prev) => ({ ...prev, [p.id]: e.target.value }))}
+                                  onClick={(e) => e.preventDefault()}
+                                  style={{ width: "100%", marginTop: 6, padding: "4px 8px", border: "1px solid #E2E8F0", borderRadius: 5, fontSize: 11, color: "#374151" }}
+                                />
+                              )}
+                            </div>
+                          </label>
+                        </div>
+                      );
+                    })}
+                  </>
+                )}
+
+                {/* Suggestions IA — repliable et masquable par préférence */}
+                {!noAiHints && aiSuggestedMissingPieces.length > 0 && (
+                  <div style={{ padding: "12px 14px 4px" }}>
+                    <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>
+                      Suggestions IA — pièces détectées comme absentes
+                    </div>
+                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 8 }}>
+                      Cliquez pour ajouter à la liste libre.
+                    </div>
+                    {aiSuggestedMissingPieces.map((s) => {
+                      const alreadyAdded = extraPieces.some((e) => e.code_piece === s.code || e.nom === s.nom);
+                      return (
+                        <button
+                          key={s.code}
+                          disabled={alreadyAdded}
+                          onClick={() => setExtraPieces((prev) => [...prev, { id: Math.random().toString(36).slice(2), code_piece: s.code, nom: s.nom, raison: "" }])}
+                          style={{
+                            display: "block", width: "100%", textAlign: "left", padding: "5px 8px",
+                            background: alreadyAdded ? "#F1F5F9" : "white", border: "1px solid #E2E8F0",
+                            borderRadius: 6, marginBottom: 4, fontSize: 11.5, color: alreadyAdded ? "#94a3b8" : "#374151",
+                            cursor: alreadyAdded ? "default" : "pointer",
+                          }}>
+                          <span style={{ fontFamily: "monospace", color: "#94a3b8", marginRight: 6 }}>{s.code}</span>{s.nom}{alreadyAdded ? " ✓" : ""}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
+
+                {/* Pièces libres */}
+                <div style={{ padding: "12px 14px 4px" }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>
+                    Pièces à fournir ({extraPieces.length})
+                  </div>
+                  {extraPieces.map((e, idx) => (
+                    <div key={e.id} style={{ display: "flex", flexDirection: "column", gap: 4, marginBottom: 8, padding: 8, border: "1px solid #FDE68A", background: "#FFFBEB", borderRadius: 6 }}>
+                      <div style={{ display: "flex", gap: 6 }}>
+                        <input
+                          type="text"
+                          placeholder="Code (ex. PC2)"
+                          value={e.code_piece}
+                          onChange={(ev) => setExtraPieces((prev) => prev.map((x, i) => i === idx ? { ...x, code_piece: ev.target.value } : x))}
+                          style={{ width: 80, padding: "4px 6px", border: "1px solid #FDE68A", borderRadius: 5, fontSize: 11, fontFamily: "monospace" }}
+                        />
+                        <input
+                          type="text"
+                          placeholder="Nom de la pièce"
+                          value={e.nom}
+                          onChange={(ev) => setExtraPieces((prev) => prev.map((x, i) => i === idx ? { ...x, nom: ev.target.value } : x))}
+                          style={{ flex: 1, padding: "4px 6px", border: "1px solid #FDE68A", borderRadius: 5, fontSize: 11 }}
+                        />
+                        <button onClick={() => setExtraPieces((prev) => prev.filter((_, i) => i !== idx))}
+                          style={{ padding: "2px 8px", background: "white", border: "1px solid #FCA5A5", color: "#B91C1C", borderRadius: 5, fontSize: 11, cursor: "pointer" }}>×</button>
+                      </div>
+                      <input
+                        type="text"
+                        placeholder="Raison ou précision (facultatif)"
+                        value={e.raison}
+                        onChange={(ev) => setExtraPieces((prev) => prev.map((x, i) => i === idx ? { ...x, raison: ev.target.value } : x))}
+                        style={{ width: "100%", padding: "4px 6px", border: "1px solid #FDE68A", borderRadius: 5, fontSize: 11 }}
+                      />
+                    </div>
+                  ))}
+                  <button onClick={() => setExtraPieces((prev) => [...prev, { id: Math.random().toString(36).slice(2), code_piece: "", nom: "", raison: "" }])}
+                    style={{ width: "100%", padding: "6px 8px", background: "white", border: "1px dashed #CBD5E1", borderRadius: 6, fontSize: 11.5, color: "#64748b", cursor: "pointer" }}>
+                    + Ajouter une pièce
+                  </button>
+                </div>
+              </div>
+
+              <div style={{ padding: "10px 14px", borderTop: "1px solid #E2E8F0", background: "white", fontSize: 11, color: "#64748b" }}>
+                {requestedPieces.length} pièce{requestedPieces.length > 1 ? "s" : ""} sera{requestedPieces.length > 1 ? "ont" : ""} listée{requestedPieces.length > 1 ? "s" : ""} dans le courrier (variable <code style={{ fontSize: 10, background: "#F1F5F9", padding: "1px 4px", borderRadius: 3 }}>{"{liste_pieces_a_completer}"}</code>).
               </div>
             </div>
           )}
