@@ -8,6 +8,7 @@ import {
   zone_regulatory_rules,
 } from "@heureka-v1/db";
 import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
+import { getStorageProvider } from "./storage.js";
 import {
   analyzePiece,
   type PieceAnalysis,
@@ -169,6 +170,8 @@ function filterRulesForPiece(
 }
 
 // Convertit l'URL stockée ("/api/uploads/<file>") en chemin disque.
+// Conservé pour rétrocompatibilité — toute nouvelle lecture passe désormais
+// par le StorageProvider qui gère local et S3 indifféremment.
 function urlToDiskPath(url: string): string | null {
   const filename = url.split("/").pop();
   if (!filename) return null;
@@ -362,9 +365,23 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
         hasABF: piecesCtx.hasABF,
         regles: reglesPiece,
       };
-      const diskPath = urlToDiskPath(p.url);
+      // Lecture du fichier via StorageProvider (local OU S3). On retombe sur
+      // le chemin disque pour les très anciens enregistrements si jamais
+      // l'URL est cassée.
+      const storage = getStorageProvider();
+      let pieceBuffer: Buffer | null = null;
+      try {
+        pieceBuffer = await storage.getBuffer(storage.keyFromUrl(p.url));
+      } catch {
+        // Fallback legacy : tente le chemin disque historique.
+        const diskPath = urlToDiskPath(p.url);
+        if (diskPath) {
+          try { pieceBuffer = await import("node:fs").then((fs) => fs.promises.readFile(diskPath)); }
+          catch { pieceBuffer = null; }
+        }
+      }
       let result: ConformitePieceReport;
-      if (!diskPath) {
+      if (!pieceBuffer) {
         result = {
           piece_id: p.id,
           code_piece: p.code_piece,
@@ -378,7 +395,7 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
         };
       } else {
         try {
-          const analysis = await analyzePiece(diskPath, p.type, p.nom, code, ctx, { dossierId, communeId: resolvedCommuneId });
+          const analysis = await analyzePiece(pieceBuffer, p.type, p.nom, code, ctx, { dossierId, communeId: resolvedCommuneId });
           result = {
             piece_id: p.id,
             code_piece: p.code_piece,

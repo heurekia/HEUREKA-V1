@@ -8,17 +8,8 @@ import { eq, and, gt, isNull, inArray } from "drizzle-orm";
 import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import { sendPasswordResetEmail } from "../services/mailer.js";
 import { logAudit } from "../services/audit.js";
+import { getStorageProvider } from "../services/storage.js";
 import crypto from "crypto";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-// Même résolution que dans routes/dossiers.ts : les fichiers déposés par les
-// citoyens vivent sous apps/api/uploads. On en a besoin pour respecter le
-// droit à l'effacement (RGPD art. 17) en supprimant les fichiers physiques
-// quand un compte est supprimé.
-const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
 
 export const authRouter = Router();
 
@@ -252,28 +243,21 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     if (!valid) return res.status(401).json({ error: "Mot de passe incorrect" });
 
     // RGPD art. 17 (droit à l'effacement) : le simple DELETE en DB laisse les
-    // fichiers physiques (PDF, plans, photos) sur disque → fuite de données.
-    // On les supprime AVANT le DELETE en base. Best-effort : si un fichier est
-    // déjà absent, on continue (l'objectif est zéro orphelin résiduel).
+    // fichiers physiques (PDF, plans, photos) sur disque/S3 → fuite de données.
+    // On les supprime AVANT le DELETE en base via l'abstraction StorageProvider
+    // qui gère indifféremment local et S3-compatible.
+    const storage = getStorageProvider();
     const userPieces = await db
       .select({ url: dossier_pieces_jointes.url })
       .from(dossier_pieces_jointes)
       .where(eq(dossier_pieces_jointes.user_id, user.id));
-    let filesDeleted = 0;
-    let filesFailed = 0;
-    for (const p of userPieces) {
-      const filename = p.url?.split("/").pop();
-      if (!filename) continue;
-      try {
-        fs.unlinkSync(path.join(UPLOADS_DIR, filename));
-        filesDeleted++;
-      } catch (err) {
-        // ENOENT = déjà supprimé, on l'ignore ; tout autre code est tracé.
-        if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-          console.warn(`[rgpd] échec suppression ${filename}:`, err);
-          filesFailed++;
-        }
-      }
+    const keys = userPieces
+      .map((p) => p.url)
+      .filter((u): u is string => !!u)
+      .map((u) => storage.keyFromUrl(u));
+    const { deleted: filesDeleted, failed: filesFailed } = await storage.removeBulk(keys);
+    if (filesFailed > 0) {
+      console.warn(`[rgpd] suppression compte ${user.id} : ${filesFailed} fichiers en échec sur ${keys.length}`);
     }
 
     await writeAudit(user.id, user.email, "account_deleted", req);

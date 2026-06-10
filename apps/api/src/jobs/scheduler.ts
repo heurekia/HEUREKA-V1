@@ -1,8 +1,8 @@
 import cron from "node-cron";
-import fs from "fs";
-import path from "path";
-import { fileURLToPath } from "url";
 import { db } from "../db.js";
+import { audit_logs, dossiers, dossier_pieces_jointes } from "@heureka-v1/db";
+import { sql, eq, lt, and } from "drizzle-orm";
+import { getStorageProvider } from "../services/storage.js";
 import { audit_logs, communes, dossiers, dossier_pieces_jointes } from "@heureka-v1/db";
 import { sql, eq, lt, and, or, isNull } from "drizzle-orm";
 import { refreshPluZones, PLU_REFRESH_AFTER_MS } from "../services/pluZones.js";
@@ -47,22 +47,19 @@ export function startScheduledJobs() {
 
       const draftIds = oldDrafts.map((d) => d.id);
 
-      // 2) Récupérer leurs pièces pour effacer les fichiers physiques.
+      // 2) Récupérer leurs pièces pour effacer les fichiers physiques via
+      // l'abstraction StorageProvider (local OU S3-compatible).
+      const storage = getStorageProvider();
       const pieces = await db.select({ url: dossier_pieces_jointes.url })
         .from(dossier_pieces_jointes)
         .where(sql`${dossier_pieces_jointes.dossier_id} = ANY(${draftIds})`);
-      let filesDeleted = 0;
-      for (const p of pieces) {
-        const filename = p.url?.split("/").pop();
-        if (!filename) continue;
-        try {
-          fs.unlinkSync(path.join(UPLOADS_DIR, filename));
-          filesDeleted++;
-        } catch (err) {
-          if ((err as NodeJS.ErrnoException).code !== "ENOENT") {
-            console.warn(`[cron] échec suppression fichier ${filename}:`, err);
-          }
-        }
+      const keys = pieces
+        .map((p) => p.url)
+        .filter((u): u is string => !!u)
+        .map((u) => storage.keyFromUrl(u));
+      const { deleted: filesDeleted, failed: filesFailed } = await storage.removeBulk(keys);
+      if (filesFailed > 0) {
+        console.warn(`[cron] purge brouillons : ${filesFailed} fichiers en échec sur ${keys.length}`);
       }
 
       // 3) Supprimer en cascade (dossier → pieces, messages, notifications).

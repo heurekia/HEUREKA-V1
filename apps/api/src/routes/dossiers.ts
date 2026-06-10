@@ -5,10 +5,8 @@ import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events 
 import { eq, desc, and, ilike } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
-import fs from "fs";
 import { callClaude } from "../services/aiUsage.js";
 import path from "path";
-import { fileURLToPath } from "url";
 import multer from "multer";
 import { classifyPermit } from "../services/classificationEngine.js";
 import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js";
@@ -16,23 +14,13 @@ import { analyzePiece } from "../services/pieceAnalyzer.js";
 import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../services/pieceExtractor.js";
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
 import { computeInstructionDelay } from "../services/instructionDelays.js";
+import { getStorageProvider } from "../services/storage.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
-
-// Multer requires the destination to exist before write — create it once at boot.
-fs.mkdirSync(UPLOADS_DIR, { recursive: true });
-
-const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, UPLOADS_DIR),
-  filename: (_req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `${crypto.randomUUID()}${ext}`);
-  },
-});
-
+// Multer stocke le fichier en MÉMOIRE (Buffer) plutôt que sur disque local.
+// On délègue l'écriture finale au StorageProvider (local OU S3), ce qui
+// permet de basculer Cellar/Scaleway/OVH OS sans toucher au code des routes.
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 20 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowed = /pdf|jpe?g|png|gif|webp|tiff?/i;
@@ -456,8 +444,15 @@ function uploadSingle(req: AuthRequest, res: import("express").Response, next: i
 }
 
 dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest, res) => {
+  // Avec multer.memoryStorage(), req.file.buffer contient le contenu binaire
+  // et req.file.path est undefined. La key est générée ici (UUID + extension)
+  // puis l'écriture est déléguée au StorageProvider (local OU S3).
+  const storage = getStorageProvider();
+  const fileKey = req.file
+    ? `${crypto.randomUUID()}${path.extname(req.file.originalname)}`
+    : null;
   try {
-    if (!req.file) return res.status(400).json({ error: "Fichier requis" });
+    if (!req.file || !fileKey) return res.status(400).json({ error: "Fichier requis" });
 
     // Verify dossier belongs to user
     const [dossier] = await db
@@ -466,21 +461,22 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       .where(and(eq(dossiers.id, req.params.id as string), eq(dossiers.user_id, req.user!.id)))
       .limit(1);
     if (!dossier) {
-      fs.unlinkSync(req.file.path);
+      // Pas de fichier écrit côté storage à ce stade — rien à nettoyer.
       return res.status(404).json({ error: "Dossier non trouvé" });
     }
 
     const code_piece = (req.body as Record<string, string>).code_piece ?? "";
     const nom_piece = (req.body as Record<string, string>).nom_piece ?? req.file.originalname;
-    // RGPD : le citoyen peut refuser l'analyse IA automatisée (art. 13 +
-    // art. 22 — décision automatisée). Le flag est envoyé par le wizard à
-    // chaque upload. Si absent → on suppose true (analyse standard) pour ne
-    // pas casser les anciens clients, mais on n'écrit pas le consentement en
-    // base si le client ne l'a pas envoyé explicitement.
     const aiConsentRaw = (req.body as Record<string, string>).ai_consent;
     const aiConsent = aiConsentRaw === undefined ? null : aiConsentRaw === "true";
     const runAi = aiConsent !== false;
-    const url = `/api/uploads/${req.file.filename}`;
+
+    // 1) Écriture du fichier via l'abstraction de stockage (local OU S3).
+    const stored = await storage.put({
+      key: fileKey,
+      body: req.file.buffer,
+      mime: req.file.mimetype,
+    });
 
     const [piece] = await db
       .insert(dossier_pieces_jointes)
@@ -488,7 +484,7 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
         dossier_id: req.params.id as string,
         user_id: req.user!.id,
         nom: nom_piece,
-        url,
+        url: stored.url,
         type: req.file.mimetype,
         taille: req.file.size,
         code_piece: code_piece || null,
@@ -523,16 +519,20 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
         communeIdForTrace = c?.id ?? null;
       }
       const trace = { dossierId: req.params.id as string, userId: req.user!.id, communeId: communeIdForTrace };
+      // On passe directement le Buffer aux services d'analyse — plus de
+      // chemin disque. Les services prennent en charge local ET S3 via le
+      // StorageProvider en relisant la key si besoin (cf. signature *FromBuffer).
       // Diagnostic : on log explicitement les erreurs au lieu de les avaler
-      // silencieusement avec .catch(() => null). Sans ça, un échec Bedrock
-      // (model ID invalide, AccessDenied, etc.) se traduit côté UI par une
-      // pièce sans badge d'analyse — sans aucune trace serveur.
+      // silencieusement, sinon un échec Bedrock (model ID invalide,
+      // AccessDenied, etc.) reste invisible.
+      const fileBuffer = req.file.buffer;
+      const mimeType = req.file.mimetype;
       [analyse_ia, extraction_ia] = await Promise.all([
-        analyzePiece(req.file.path, req.file.mimetype, nom_piece, code_piece, undefined, trace).catch((err) => {
+        analyzePiece(fileBuffer, mimeType, nom_piece, code_piece, undefined, trace).catch((err) => {
           console.error("[upload] analyzePiece a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
           return null;
         }),
-        extractPiece(req.file.path, req.file.mimetype, {
+        extractPiece(fileBuffer, mimeType, {
           expected_type: expected,
           nom_piece,
           code_piece,
@@ -556,8 +556,10 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
 
     res.status(201).json({ ...piece, analyse_ia, extraction_ia, ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null) });
   } catch (err) {
-    if (req.file?.path) {
-      try { fs.unlinkSync(req.file.path); } catch { /* ignore */ }
+    // Si le fichier a été écrit dans le storage avant l'erreur, on le retire
+    // pour éviter les orphelins. Best-effort.
+    if (fileKey) {
+      try { await storage.remove(fileKey); } catch { /* ignore */ }
     }
     console.error(err);
     res.status(500).json({ error: "Erreur upload" });
@@ -584,10 +586,8 @@ dossiersRouter.delete("/:id/pieces/:pieceId", async (req: AuthRequest, res) => {
     if (!piece) return res.status(404).json({ error: "Pièce non trouvée" });
 
     if (piece.url) {
-      const filename = piece.url.split("/").pop();
-      if (filename) {
-        try { fs.unlinkSync(path.join(UPLOADS_DIR, filename)); } catch { /* already gone */ }
-      }
+      const storage = getStorageProvider();
+      await storage.remove(storage.keyFromUrl(piece.url));
     }
     await db.delete(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.id, piece.id));
 
@@ -610,21 +610,18 @@ dossiersRouter.delete("/:id", async (req: AuthRequest, res) => {
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
     if (dossier.status !== "brouillon") return res.status(403).json({ error: "Seuls les brouillons peuvent être supprimés" });
 
-    // Delete uploaded files from disk
+    // Suppression des fichiers physiques via l'abstraction StorageProvider
+    // (local ou S3-compatible), puis purge en base.
     const pieces = await db
-      .select()
+      .select({ url: dossier_pieces_jointes.url })
       .from(dossier_pieces_jointes)
       .where(eq(dossier_pieces_jointes.dossier_id, dossier.id));
-
-    for (const piece of pieces) {
-      if (piece.url) {
-        const filename = piece.url.split("/").pop();
-        if (filename) {
-          const filePath = path.join(UPLOADS_DIR, filename);
-          try { fs.unlinkSync(filePath); } catch { /* already gone */ }
-        }
-      }
-    }
+    const storage = getStorageProvider();
+    const keys = pieces
+      .map((p) => p.url)
+      .filter((u): u is string => !!u)
+      .map((u) => storage.keyFromUrl(u));
+    await storage.removeBulk(keys);
 
     await db.delete(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.dossier_id, dossier.id));
     await db.delete(dossiers).where(eq(dossiers.id, dossier.id));
