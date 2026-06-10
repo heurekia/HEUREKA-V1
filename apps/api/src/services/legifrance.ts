@@ -68,30 +68,37 @@ type CodeTocResponse = {
   articles?: { id?: string; cid?: string; num?: string; etat?: string }[];
 };
 
-// Cache TOC par code (en mémoire processus) : la structure d'un code change rarement.
-const tocCache = new Map<string, Promise<Map<string, string>>>();
+// Entrée d'index TOC : ce dont on a besoin pour fetcher ET enrichir l'article.
+type TocEntry = { id: string; sectionPath: string };
 
-// Parcourt récursivement les sections pour construire un index {num → legifrance_id}.
-function indexToc(toc: CodeTocResponse): Map<string, string> {
-  const idx = new Map<string, string>();
-  const visit = (arts?: { id?: string; cid?: string; num?: string }[]) => {
+// Cache TOC par code (en mémoire processus) : la structure d'un code change rarement.
+const tocCache = new Map<string, Promise<Map<string, TocEntry>>>();
+
+// Parcourt récursivement les sections pour construire un index
+// { num → { id, sectionPath } } où sectionPath est la suite des titres
+// de sections parents, séparés par " › ".
+function indexToc(toc: CodeTocResponse): Map<string, TocEntry> {
+  const idx = new Map<string, TocEntry>();
+  const visitArticles = (arts: { id?: string; cid?: string; num?: string }[] | undefined, sectionPath: string) => {
     for (const a of arts ?? []) {
       const id = a.id ?? a.cid;
-      if (a.num && id) idx.set(a.num.toUpperCase(), id);
+      if (a.num && id) idx.set(a.num.toUpperCase(), { id, sectionPath });
     }
   };
-  const walk = (sections?: CodeTocSection[]) => {
+  const walk = (sections: CodeTocSection[] | undefined, parentPath: string[]) => {
     for (const s of sections ?? []) {
-      visit(s.articles);
-      walk(s.sections);
+      const path = s.title ? [...parentPath, s.title.trim()] : parentPath;
+      visitArticles(s.articles, path.join(" › "));
+      walk(s.sections, path);
     }
   };
-  visit(toc.articles);
-  walk(toc.sections);
+  // Articles à la racine (rare) : pas de section path.
+  visitArticles(toc.articles, "");
+  walk(toc.sections, []);
   return idx;
 }
 
-async function getCodeNumIndex(codeId: string): Promise<Map<string, string>> {
+async function getCodeNumIndex(codeId: string): Promise<Map<string, TocEntry>> {
   let p = tocCache.get(codeId);
   if (!p) {
     p = pistePost<CodeTocResponse>("/consult/code/tableMatieres", {
@@ -100,11 +107,21 @@ async function getCodeNumIndex(codeId: string): Promise<Map<string, string>> {
     }).then(indexToc).catch((err) => {
       console.warn(`[legifrance] TOC ${codeId} échoué:`, (err as Error).message);
       tocCache.delete(codeId);
-      return new Map<string, string>();
+      return new Map<string, TocEntry>();
     });
     tocCache.set(codeId, p);
   }
   return p;
+}
+
+// Récupère le chemin de section pour un num, ou null si la TOC n'est pas dispo.
+async function lookupSectionPath(codeId: string, num: string): Promise<string | null> {
+  const idx = await getCodeNumIndex(codeId);
+  for (const candidate of numVariants(num)) {
+    const entry = idx.get(candidate.toUpperCase());
+    if (entry?.sectionPath) return entry.sectionPath;
+  }
+  return null;
 }
 
 // Variantes de `num` à essayer en cas d'introuvable. Le Code de l'urbanisme
@@ -159,14 +176,14 @@ async function tryGetArticleByNum(codeId: string, num: string): Promise<PisteGet
 // vigueur différée que getArticleWithIdAndNum ne renvoie pas.
 async function tryGetArticleViaToc(codeId: string, num: string): Promise<PisteGetArticleResponse["article"]> {
   const idx = await getCodeNumIndex(codeId);
-  let legiArtiId: string | undefined;
+  let entry: TocEntry | undefined;
   for (const candidate of numVariants(num)) {
-    legiArtiId = idx.get(candidate.toUpperCase());
-    if (legiArtiId) break;
+    entry = idx.get(candidate.toUpperCase());
+    if (entry) break;
   }
-  if (!legiArtiId) return null;
+  if (!entry) return null;
   try {
-    const data = await pistePost<PisteGetArticleResponse>("/consult/getArticle", { id: legiArtiId });
+    const data = await pistePost<PisteGetArticleResponse>("/consult/getArticle", { id: entry.id });
     return data?.article ?? null;
   } catch {
     return null;
@@ -178,11 +195,13 @@ async function fetchAndCacheFromPiste(codeId: string, codeName: string, num: str
   const a = (await tryGetArticleByNum(codeId, num)) ?? (await tryGetArticleViaToc(codeId, num));
   if (!a) throw new Error(`Article ${num} introuvable dans ${codeId}`);
 
-  const html  = a.texteHtml ?? a.texte ?? null;
-  // Les articles de codes n'ont presque jamais de "titre" propre — on prend
-  // le titre de la section englobante quand il est dispo, sinon null.
-  const title = a.fullSectionTitre ?? a.titre ?? null;
+  const html = a.texteHtml ?? a.texte ?? null;
   const legifranceId = a.id ?? null;
+  // Titre = chemin de section dans la TOC (les articles de codes n'ont pas
+  // de titre propre). Si la TOC est indisponible, on tombe sur les champs
+  // directs de l'article (rare mais ça arrive selon le fonds).
+  const sectionPath = await lookupSectionPath(codeId, num);
+  const title = sectionPath ?? a.fullSectionTitre ?? a.titre ?? null;
 
   await db
     .insert(legal_mentions)
