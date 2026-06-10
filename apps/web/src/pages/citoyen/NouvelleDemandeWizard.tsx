@@ -2,6 +2,7 @@ import { useState, useCallback, useEffect, useRef } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { api } from "../../lib/api";
+import { linkifyArticles } from "../../utils/linkifyArticles";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -1591,7 +1592,7 @@ export function NouvelleDemandeWizard() {
                         marginBottom: 20,
                       }}
                     >
-                      {classification.explication}
+                      {linkifyArticles(classification.explication)}
                     </p>
                     <div style={{ display: "flex", gap: 24, flexWrap: "wrap" }}>
                       {[
@@ -1638,7 +1639,7 @@ export function NouvelleDemandeWizard() {
                           Architecte obligatoire
                         </div>
                         <div style={{ fontSize: 13, color: "#7F1D1D", lineHeight: 1.5 }}>
-                          La surface plancher totale (existante + créée) dépasse 150 m². Le recours à un architecte est obligatoire pour déposer ce dossier (art. R431-2 CU).
+                          {linkifyArticles("La surface plancher totale (existante + créée) dépasse 150 m². Le recours à un architecte est obligatoire pour déposer ce dossier (art. R431-2 CU).")}
                         </div>
                       </div>
                     </div>
@@ -1669,7 +1670,7 @@ export function NouvelleDemandeWizard() {
                           key={i}
                           style={{ fontSize: 13, color: "#78350F", marginBottom: 5, lineHeight: 1.5 }}
                         >
-                          • {a}
+                          • {linkifyArticles(a)}
                         </div>
                       ))}
                     </div>

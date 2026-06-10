@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import { gpuDebug } from "../services/gpuDebug.js";
+import { getOrFetchArticle, parseArticleRef } from "../services/legifrance.js";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
 
 export const publicRouter = Router();
@@ -65,4 +66,57 @@ publicRouter.get("/analyse-parcelle/:parcelle", async (req, res) => {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
   }
+});
+
+/**
+ * GET /public/legal-articles/:code/:num
+ * Code = "CU" | "CCH" | "CE" (résolu vers son LEGITEXT côté serveur).
+ * Num  = numéro brut, ex. "R431-2", "L410-1".
+ *
+ * Sert le contenu officiel d'un article (cache DB + lazy-fetch Légifrance).
+ * Endpoint public — le contenu est en licence ouverte v2.0 Etalab.
+ */
+publicRouter.get("/legal-articles/:code/:num", async (req, res) => {
+  try {
+    const codeKey = String(req.params.code ?? "").toUpperCase();
+    const num = String(req.params.num ?? "").trim().toUpperCase();
+    if (!codeKey || !num) {
+      return res.status(400).json({ error: "code et num requis" });
+    }
+    const article = await getOrFetchArticle(codeKey, num);
+    if (!article) {
+      // Fallback : on renvoie au moins une URL Légifrance utilisable par le client.
+      return res.status(404).json({
+        error: "Article introuvable",
+        fallback_url: `https://www.legifrance.gouv.fr/search/code?query=${encodeURIComponent(num)}`,
+      });
+    }
+    res.json({
+      code: codeKey,
+      article_ref: article.article_ref,
+      title: article.article_title,
+      html: article.article_html,
+      legifrance_id: article.legifrance_id,
+      source_url: article.source_url,
+      fetched_at: article.fetched_at,
+      // Mention obligatoire par la licence Etalab.
+      license: "Licence ouverte v2.0 — Source : Légifrance (DILA)",
+    });
+  } catch (err) {
+    console.error("[public/legal-articles] ", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+/**
+ * GET /public/legal-articles/parse?ref=<référence brute>
+ * Helper de debug : normalise une référence type "R421-17 a) CU" → article fetch.
+ */
+publicRouter.get("/legal-articles/parse", async (req, res) => {
+  const ref = String(req.query.ref ?? "").trim();
+  const parsed = parseArticleRef(ref);
+  if (!parsed) return res.status(400).json({ error: "Référence non reconnue" });
+  const article = await getOrFetchArticle(parsed.codeKey, parsed.normalized);
+  if (!article) return res.status(404).json({ error: "Article introuvable", parsed });
+  res.json({ parsed, article });
 });
