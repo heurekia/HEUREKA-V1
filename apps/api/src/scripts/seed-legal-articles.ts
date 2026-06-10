@@ -15,13 +15,22 @@ import { legal_mentions } from "@heureka-v1/db";
 import { CURATED_ARTICLES, type CuratedArticle } from "@heureka-v1/shared";
 import { refreshArticle, resolveCode } from "../services/legifrance.js";
 
-// Met à jour `categories` sans écraser un éventuel HTML déjà fetché.
+// Met à jour `categories` (et `courrier_types` si fournis dans la curation)
+// sans écraser un éventuel HTML déjà fetché. courrier_types pilote la
+// suggestion automatique des articles dans le CourrierModal côté instructeur.
 async function setCategories(art: CuratedArticle): Promise<void> {
   const code = resolveCode(art.code);
   if (!code) return;
+  const patch: Record<string, unknown> = {
+    categories: art.categories,
+    updated_at: new Date(),
+  };
+  if (art.courrier_types && art.courrier_types.length > 0) {
+    patch.courrier_types = art.courrier_types;
+  }
   await db
     .update(legal_mentions)
-    .set({ categories: art.categories, updated_at: new Date() })
+    .set(patch)
     .where(and(eq(legal_mentions.code, code.id), eq(legal_mentions.article_ref, art.num)));
 }
 

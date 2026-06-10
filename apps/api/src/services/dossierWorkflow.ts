@@ -195,3 +195,102 @@ export function workflowErrorToHttp(err: WorkflowError): { status: number; body:
       return { status: 400, body: { error: err.message, code: err.code } };
   }
 }
+
+// ── Auto-transitions pilotées par l'état des pièces ──────────────────────────
+// Les deux fonctions ci-dessous formalisent la "boucle complétude" :
+//   citoyen redépose une pièce  → incomplet → pre_instruction
+//   instructeur valide la dernière pièce → pre_instruction → en_instruction
+// (avec pose de date_completude qui démarre formellement le délai légal
+//  d'instruction au sens de R.423-23).
+//
+// Elles sont conçues pour être idempotentes et ultra conservatrices : aucun
+// effet de bord si le statut ne s'y prête pas. Toute exception WorkflowError
+// "INVALID_TRANSITION" est avalée (ce n'est pas une erreur métier).
+
+import { dossier_pieces_jointes } from "@heureka-v1/db";
+import { computeInstructionDelay, applyMonthsToDate, type DeadlineMetadata, type DeadlineServitude } from "./instructionDelays.js";
+
+export async function autoReopenAfterCitizenUpload(
+  dossierId: string,
+  actorId: string | null,
+): Promise<{ transitioned: boolean }> {
+  const [before] = await db
+    .select({ id: dossiers.id, status: dossiers.status })
+    .from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+  if (!before) return { transitioned: false };
+  if (before.status !== "incomplet") return { transitioned: false };
+  try {
+    const res = await changeDossierStatus(dossierId, "pre_instruction", actorId, {
+      eventType: "auto_reexamen_complete",
+      reason: "nouveau dépôt de pièce par le pétitionnaire",
+    });
+    return { transitioned: res.changed };
+  } catch (err) {
+    if (err instanceof WorkflowError && err.code === "INVALID_TRANSITION") return { transitioned: false };
+    throw err;
+  }
+}
+
+export async function autoAdvanceIfAllPiecesValid(
+  dossierId: string,
+  actorId: string | null,
+): Promise<{ transitioned: boolean; date_completude?: Date | null }> {
+  const [before] = await db
+    .select().from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+  if (!before) return { transitioned: false };
+  if (before.status !== "pre_instruction") return { transitioned: false };
+
+  const pieces = await db
+    .select({
+      id: dossier_pieces_jointes.id,
+      status: dossier_pieces_jointes.instructeur_status,
+    })
+    .from(dossier_pieces_jointes)
+    .where(eq(dossier_pieces_jointes.dossier_id, dossierId));
+
+  // Garde-fous :
+  //  - au moins une pièce déposée (évite l'auto-bascule sur dossier vide)
+  //  - toutes les pièces sont explicitement "valide" (acceptable / null /
+  //    rejete / complement_demande bloquent la bascule)
+  if (pieces.length === 0) return { transitioned: false };
+  if (pieces.some((p) => p.status !== "valide")) return { transitioned: false };
+
+  const now = new Date();
+  const completude = before.date_completude ?? now;
+
+  try {
+    const res = await changeDossierStatus(dossierId, "en_instruction", actorId, {
+      eventType: "auto_dossier_complet",
+      reason: "toutes les pièces validées par l'instructeur",
+      extraMetadata: { pieces_count: pieces.length },
+    });
+
+    if (res.changed) {
+      // Pose date_completude (si elle n'existait pas) et recalcule l'échéance
+      // depuis cette date — c'est le point juridique : le délai légal court à
+      // partir du dossier déclaré complet (R.423-23).
+      const patch: Record<string, unknown> = { updated_at: now };
+      if (!before.date_completude) patch.date_completude = completude;
+      const meta = (before.metadata as DeadlineMetadata | null) ?? null;
+      const servitudes = (meta as { servitudes?: DeadlineServitude[] } | null)?.servitudes ?? null;
+      const calc = computeInstructionDelay(before.type, meta, servitudes);
+      patch.date_limite_instruction = applyMonthsToDate(new Date(completude), calc.total_mois);
+      patch.metadata = {
+        ...((before.metadata as Record<string, unknown>) ?? {}),
+        delai: {
+          total_mois: calc.total_mois,
+          breakdown: calc.breakdown,
+          base_date: new Date(completude).toISOString(),
+          base_date_source: "completude",
+          computed_at: now.toISOString(),
+        },
+      };
+      await db.update(dossiers).set(patch).where(eq(dossiers.id, dossierId));
+    }
+
+    return { transitioned: res.changed, date_completude: completude };
+  } catch (err) {
+    if (err instanceof WorkflowError && err.code === "INVALID_TRANSITION") return { transitioned: false };
+    throw err;
+  }
+}
