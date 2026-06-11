@@ -5,6 +5,14 @@ import { useAuth } from "../hooks/useAuth";
 const WWW = "www.heurekia.com";
 const APP = "app.heurekia.com";
 
+// N'accepte que des chemins internes ("/...") — rejette "//evil.com",
+// "/\evil.com" et les URLs absolues pour éviter les open redirects.
+export function sanitizeNextParam(next: string | null): string | null {
+  if (!next || !next.startsWith("/")) return null;
+  if (next.startsWith("//") || next.startsWith("/\\")) return null;
+  return next;
+}
+
 function Spinner() {
   return (
     <div className="flex items-center justify-center min-h-screen">
@@ -61,7 +69,7 @@ export function PublicOnlyRoute({
 
   if (user) {
     const params = new URLSearchParams(location.search);
-    const next = params.get("next");
+    const next = sanitizeNextParam(params.get("next"));
     const fallback =
       user.role === "citoyen"
         ? "/citoyen"
