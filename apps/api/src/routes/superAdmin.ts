@@ -134,25 +134,22 @@ superAdminRouter.post("/communes", async (req, res) => {
 superAdminRouter.patch("/communes/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const fields = req.body as Partial<{
-      name: string;
-      insee_code: string;
-      zip_code: string;
-      email: string;
-      telephone: string;
-      logo_url: string;
-      population: string;
-      surface: string;
-      departement: string;
-      region: string;
-      description: string;
-      epci_id: string | null;
-      instruction_mutualisee: boolean;
-    }>;
+    // Whitelist explicite — empêche un client de poser des colonnes non
+    // prévues (clés API, secrets letterhead…) si le schéma évolue.
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const ALLOWED = [
+      "name", "insee_code", "zip_code", "email", "telephone", "logo_url",
+      "population", "surface", "departement", "region", "description",
+      "epci_id", "instruction_mutualisee",
+    ] as const;
+    const updates: Record<string, unknown> = { updated_at: new Date() };
+    for (const f of ALLOWED) {
+      if (b[f] !== undefined) updates[f] = b[f];
+    }
 
     const [updated] = await db
       .update(communes)
-      .set({ ...fields, updated_at: new Date() })
+      .set(updates)
       .where(eq(communes.id, id))
       .returning();
 
@@ -215,18 +212,16 @@ superAdminRouter.post("/epci", async (req, res) => {
 superAdminRouter.patch("/epci/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const fields = req.body as Partial<{
-      name: string;
-      siren: string;
-      type: string;
-      departement: string;
-      region: string;
-      logo_url: string;
-    }>;
+    const b = (req.body ?? {}) as Record<string, unknown>;
+    const ALLOWED = ["name", "siren", "type", "departement", "region", "logo_url"] as const;
+    const updates: Record<string, unknown> = { updated_at: new Date() };
+    for (const f of ALLOWED) {
+      if (b[f] !== undefined) updates[f] = b[f];
+    }
 
     const [updated] = await db
       .update(epci)
-      .set({ ...fields, updated_at: new Date() })
+      .set(updates)
       .where(eq(epci.id, id))
       .returning();
 

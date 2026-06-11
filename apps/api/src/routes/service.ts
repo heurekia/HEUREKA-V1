@@ -9,6 +9,20 @@ export const serviceRouter = Router();
 serviceRouter.use(requireAuth);
 serviceRouter.use(requireRole("service_externe"));
 
+/**
+ * Vérifie qu'un dossier appartient au périmètre du service de l'utilisateur.
+ * Renvoie true si OK, écrit la réponse 403/404 et renvoie false sinon.
+ */
+async function enforceDossierInServiceScope(req: AuthRequest, res: import("express").Response, dossierId: string): Promise<boolean> {
+  const [dossier] = await db.select({ commune: dossiers.commune })
+    .from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+  if (!dossier) { res.status(404).json({ error: "Dossier introuvable" }); return false; }
+  const { names } = await getServiceCommunes(req.user!.id);
+  const inScope = names.some(n => dossier.commune?.toLowerCase() === n.toLowerCase());
+  if (!inScope) { res.status(403).json({ error: "Hors périmètre" }); return false; }
+  return true;
+}
+
 // ── Helper: get commune names covered by the logged-in user's service ────────
 async function getServiceCommunes(userId: string): Promise<{ ids: string[]; names: string[]; service: typeof external_services.$inferSelect | null }> {
   const [user] = await db.select({ service_id: users.service_id }).from(users).where(eq(users.id, userId)).limit(1);
@@ -132,6 +146,7 @@ serviceRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
 serviceRouter.get("/dossiers/:id/messages", async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
+    if (!await enforceDossierInServiceScope(req, res, dossierId)) return;
     const msgs = await db.select().from(dossier_messages)
       .where(eq(dossier_messages.dossier_id, dossierId))
       .orderBy(dossier_messages.created_at);
@@ -145,6 +160,7 @@ serviceRouter.get("/dossiers/:id/messages", async (req: AuthRequest, res) => {
 serviceRouter.post("/dossiers/:id/messages", async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
+    if (!await enforceDossierInServiceScope(req, res, dossierId)) return;
     const { content, type = "consultation" } = req.body as { content?: string; type?: string };
     if (!content?.trim()) return res.status(400).json({ error: "Contenu requis" });
 

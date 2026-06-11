@@ -13,6 +13,11 @@ import crypto from "crypto";
 
 export const authRouter = Router();
 
+// Hash bcrypt fictif (cost 10) utilisé pour le compare timing-safe quand
+// l'email n'existe pas. Généré une fois et figé pour ne pas payer le coût
+// du hashing à chaque requête.
+const TIMING_SAFE_DUMMY_HASH = "$2a$10$CwTycUXWue0Thq9StjUM0uJ8.9V1cM0gmK2BqkPe4QGOI1mO3R8fy";
+
 const loginLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
   max: 10,
@@ -20,9 +25,12 @@ const loginLimiter = rateLimit({
   standardHeaders: true,
   legacyHeaders: false,
   keyGenerator: (req) => {
-    // Rate-limit per IP, or per email body if available
+    // Rate-limit per IP (résolue par Express via `trust proxy`) ou par
+    // (IP, email) si l'email est fourni. NE PAS lire x-forwarded-for à la main :
+    // ça contourne `trust proxy` et permet la rotation triviale du header par
+    // un attaquant.
     const email = typeof req.body?.email === "string" ? req.body.email.toLowerCase() : null;
-    const ip = (req.headers["x-forwarded-for"] as string)?.split(",")[0]?.trim() ?? req.socket.remoteAddress ?? "unknown";
+    const ip = req.ip ?? "unknown";
     return email ? `login:${ip}:${email}` : `login:${ip}`;
   },
 });
@@ -120,12 +128,13 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
       return res.status(400).json({ error: "Email et mot de passe requis" });
     }
     const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
-    if (!user) {
-      await writeAudit(null, email, "login_failed", req);
-      return res.status(401).json({ error: "Email ou mot de passe incorrect" });
-    }
-    const valid = await bcrypt.compare(password, user.password_hash);
-    if (!valid) {
+    // Empêche l'énumération d'utilisateurs par timing : on consomme toujours
+    // un bcrypt.compare, sur le hash réel si l'utilisateur existe, sur un hash
+    // factice sinon. Coût quasi identique → pas de signal exploitable côté
+    // client pour distinguer "email inconnu" de "mot de passe incorrect".
+    const hash = user?.password_hash ?? TIMING_SAFE_DUMMY_HASH;
+    const valid = await bcrypt.compare(password, hash);
+    if (!user || !valid) {
       await writeAudit(null, email, "login_failed", req);
       return res.status(401).json({ error: "Email ou mot de passe incorrect" });
     }

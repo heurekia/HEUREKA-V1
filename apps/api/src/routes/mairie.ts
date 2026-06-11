@@ -252,7 +252,11 @@ mairieRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
 
     const esc = (v: unknown): string => {
       if (v === null || v === undefined) return "";
-      const s = v instanceof Date ? v.toISOString() : String(v);
+      let s = v instanceof Date ? v.toISOString() : String(v);
+      // Anti formula-injection Excel/LibreOffice : toute cellule commençant
+      // par =, +, -, @, \t ou \r serait évaluée comme une formule à l'ouverture
+      // du fichier. On préfixe ' pour neutraliser tout en restant lisible.
+      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
       return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
     };
 
@@ -274,7 +278,10 @@ mairieRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
     ].map(esc).join(","));
 
     const csv = [headers.join(","), ...csvRows].join("\n");
-    const filename = `dossiers-${commune ?? "all"}-${new Date().toISOString().slice(0, 10)}.csv`;
+    // Sanitize la commune pour le nom de fichier : seuls a-z0-9-_ sont conservés
+    // (évite l'injection de CR/LF dans le header Content-Disposition).
+    const safeCommune = (commune ?? "all").toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 50);
+    const filename = `dossiers-${safeCommune}-${new Date().toISOString().slice(0, 10)}.csv`;
 
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
@@ -3007,15 +3014,12 @@ async function getCommuneRowForUser(req: AuthRequest) {
     const [byUnaccent] = await db.select().from(communes)
       .where(sql`unaccent(name) ILIKE unaccent(${name})`).limit(1);
     if (byUnaccent) return byUnaccent;
-
-    // 3. Commune not in table yet — create minimal row
-    const [created] = await db.insert(communes).values({
-      name,
-      insee_code: `tmp_${name.toLowerCase().replace(/[^a-z0-9]/g, "_")}_${Date.now()}`,
-    }).returning();
-    return created ?? null;
   }
 
+  // Pas de création silencieuse : la commune doit avoir été créée par un
+  // admin (via superAdmin /communes). Sinon n'importe quel mairie peut
+  // polluer la table avec des `insee_code` `tmp_*` et créer des templates
+  // sous une fausse commune.
   return null;
 }
 
