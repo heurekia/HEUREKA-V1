@@ -1,6 +1,13 @@
+import { Seo } from "../../components/Seo";
+
 export function MentionsLegales() {
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-12">
+      <Seo
+        title="Mentions légales"
+        description="Mentions légales de Heurekia : éditeur, hébergeur et informations légales du service."
+        path="/mentions-legales"
+      />
       <h1 className="text-3xl font-bold text-[#000020] mb-2">Mentions légales</h1>
       <p className="text-sm text-gray-400 mb-10">Dernière mise à jour : juin 2026</p>
 

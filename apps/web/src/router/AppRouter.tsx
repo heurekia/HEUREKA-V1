@@ -5,12 +5,15 @@ import { MairieLogin } from "../pages/mairie/MairieLogin";
 import { MairieApp } from "../pages/mairie/MairieApp";
 import { SuperAdminApp } from "../pages/admin/SuperAdminApp";
 import { ServiceExterneApp } from "../pages/service/ServiceExterneApp";
+import { Seo } from "../components/Seo";
 
 const WWW = "https://www.heurekia.com";
 
 export function AppRouter() {
   return (
-    <Routes>
+    <>
+      <Seo title="Espace professionnel" noindex />
+      <Routes>
       {/* Activation link works on both subdomains */}
       <Route path="/activer-compte" element={<ActiverCompte />} />
 
@@ -48,6 +51,7 @@ export function AppRouter() {
 
       <Route path="/" element={<Navigate to="/mairie/login" replace />} />
       <Route path="*" element={<Navigate to="/mairie/login" replace />} />
-    </Routes>
+      </Routes>
+    </>
   );
 }
