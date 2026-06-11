@@ -12,15 +12,27 @@ calendrierRouter.use(requireAuth);
 calendrierRouter.get("/", async (req: AuthRequest, res) => {
   try {
     const { debut, fin } = req.query;
+    // Filtrage strict par user_id : un utilisateur ne voit que ses propres
+    // événements (RDV instructeur, échéances dossier qui le concernent…).
+    const userFilter = eq(calendarEvents.user_id, req.user!.id);
     let events;
     if (debut && fin) {
       events = await db
         .select()
         .from(calendarEvents)
-        .where(and(gte(calendarEvents.date, new Date(debut as string)), lte(calendarEvents.date, new Date(fin as string))))
+        .where(and(
+          userFilter,
+          gte(calendarEvents.date, new Date(debut as string)),
+          lte(calendarEvents.date, new Date(fin as string)),
+        ))
         .orderBy(calendarEvents.date);
     } else {
-      events = await db.select().from(calendarEvents).orderBy(calendarEvents.date).limit(100);
+      events = await db
+        .select()
+        .from(calendarEvents)
+        .where(userFilter)
+        .orderBy(calendarEvents.date)
+        .limit(100);
     }
     res.json(events);
   } catch (err) {
