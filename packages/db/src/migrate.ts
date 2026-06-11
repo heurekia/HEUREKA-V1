@@ -165,6 +165,7 @@ CREATE TABLE IF NOT EXISTS calendar_events (
 
 -- Schema changes (idempotent)
 ALTER TABLE dossier_messages ADD COLUMN IF NOT EXISTS read_at timestamp;
+CREATE INDEX IF NOT EXISTS idx_dossier_messages_dossier ON dossier_messages(dossier_id);
 
 ALTER TABLE communes DROP CONSTRAINT IF EXISTS communes_name_unique;
 ALTER TABLE communes DROP CONSTRAINT IF EXISTS communes_name_key;
@@ -481,6 +482,16 @@ CREATE TABLE IF NOT EXISTS dossier_consultations (
 CREATE INDEX IF NOT EXISTS idx_dossier_consultations_dossier ON dossier_consultations(dossier_id);
 ALTER TABLE dossier_consultations ADD COLUMN IF NOT EXISTS external_service_id uuid REFERENCES external_services(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_dossier_consultations_service ON dossier_consultations(external_service_id);
+
+-- Fil de discussion par consultation (mairie ↔ service externe).
+-- NULL ⇒ fil citoyen ↔ mairie (comportement historique préservé).
+ALTER TABLE dossier_messages ADD COLUMN IF NOT EXISTS consultation_id uuid;
+DO $$ BEGIN
+  ALTER TABLE dossier_messages
+    ADD CONSTRAINT dossier_messages_consultation_fk
+    FOREIGN KEY (consultation_id) REFERENCES dossier_consultations(id) ON DELETE CASCADE;
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_dossier_messages_consultation ON dossier_messages(consultation_id);
 
 -- Upload de pièces justificatives avec analyse IA
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS code_piece text;

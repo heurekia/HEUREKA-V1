@@ -129,11 +129,28 @@ serviceRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
 });
 
 // ── Messagerie consultation ───────────────────────────────────────────────────
+// Scopée à la consultation : un service ne voit JAMAIS le fil citoyen↔mairie,
+// uniquement les messages portant un consultation_id rattaché à une consultation
+// adressée à son service.
+async function getServiceConsultationIds(userId: string, dossierId: string): Promise<string[]> {
+  const [u] = await db.select({ service_id: users.service_id }).from(users).where(eq(users.id, userId)).limit(1);
+  if (!u?.service_id) return [];
+  const rows = await db.select({ id: dossier_consultations.id })
+    .from(dossier_consultations)
+    .where(and(
+      eq(dossier_consultations.dossier_id, dossierId),
+      eq(dossier_consultations.external_service_id, u.service_id),
+    ));
+  return rows.map(r => r.id);
+}
+
 serviceRouter.get("/dossiers/:id/messages", async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
+    const ids = await getServiceConsultationIds(req.user!.id, dossierId);
+    if (ids.length === 0) return res.json([]);
     const msgs = await db.select().from(dossier_messages)
-      .where(eq(dossier_messages.dossier_id, dossierId))
+      .where(inArray(dossier_messages.consultation_id, ids))
       .orderBy(dossier_messages.created_at);
     res.json(msgs);
   } catch (err) {
@@ -148,9 +165,17 @@ serviceRouter.post("/dossiers/:id/messages", async (req: AuthRequest, res) => {
     const { content, type = "consultation" } = req.body as { content?: string; type?: string };
     if (!content?.trim()) return res.status(400).json({ error: "Contenu requis" });
 
+    // Rattachement à une consultation existante adressée à ce service. Sans
+    // consultation côté mairie, le service ne peut pas initier un fil — c'est
+    // la mairie qui crée la consultation et déclenche la conversation.
+    const ids = await getServiceConsultationIds(req.user!.id, dossierId);
+    if (ids.length === 0) return res.status(403).json({ error: "Aucune consultation adressée à votre service" });
+    const consultationId = ids[0]!;
+
     const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
     const [msg] = await db.insert(dossier_messages).values({
       dossier_id: dossierId,
+      consultation_id: consultationId,
       from_user_id: req.user!.id,
       from_role: `service_externe:${type}`,
       content: content.trim(),
