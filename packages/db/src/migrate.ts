@@ -255,10 +255,6 @@ CREATE TABLE IF NOT EXISTS password_tokens (
 CREATE INDEX IF NOT EXISTS idx_password_tokens_token ON password_tokens(token);
 CREATE INDEX IF NOT EXISTS idx_password_tokens_user_id ON password_tokens(user_id);
 
--- Extend courrier_templates for mairie usage
-ALTER TABLE courrier_templates ALTER COLUMN service_id DROP NOT NULL;
-ALTER TABLE courrier_templates ADD COLUMN IF NOT EXISTS commune text;
-
 -- Letterhead & signature for communes (mairie)
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS letterhead_logo text;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS letterhead_title text;
@@ -276,16 +272,23 @@ ALTER TABLE external_services ADD COLUMN IF NOT EXISTS letterhead_address text;
 ALTER TABLE external_services ADD COLUMN IF NOT EXISTS footer_text text;
 ALTER TABLE external_services ADD COLUMN IF NOT EXISTS signature_image text;
 
--- Courrier templates (WYSIWYG, with variable placeholders)
+-- Courrier templates (WYSIWYG, with variable placeholders).
+-- service_id reste nullable : un template peut appartenir à une mairie
+-- (commune) plutôt qu'à un service externe.
 CREATE TABLE IF NOT EXISTS courrier_templates (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-  service_id uuid NOT NULL REFERENCES external_services(id) ON DELETE CASCADE,
+  service_id uuid REFERENCES external_services(id) ON DELETE CASCADE,
   name text NOT NULL,
   category text NOT NULL DEFAULT 'general',
   body text NOT NULL DEFAULT '',
+  commune text,
   created_at timestamp NOT NULL DEFAULT now(),
   updated_at timestamp NOT NULL DEFAULT now()
 );
+-- Idempotent pour les bases existantes créées avec le schéma initial
+-- (service_id NOT NULL, pas de colonne commune).
+ALTER TABLE courrier_templates ALTER COLUMN service_id DROP NOT NULL;
+ALTER TABLE courrier_templates ADD COLUMN IF NOT EXISTS commune text;
 CREATE INDEX IF NOT EXISTS idx_courrier_templates_service_id ON courrier_templates(service_id);
 
 -- Code INSEE comme lien vertical (commune active de l'utilisateur)
