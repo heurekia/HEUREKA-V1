@@ -4,6 +4,7 @@ import { useAuth } from "../../hooks/useAuth";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
+import { Seo } from "../../components/Seo";
 
 export function Login() {
   const [email, setEmail] = useState("");
@@ -37,6 +38,7 @@ export function Login() {
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+      <Seo title="Connexion" path="/login" noindex />
       <Card className="w-full max-w-md">
         <CardHeader>
           <Link to="/" className="flex items-center gap-2 mb-6">
