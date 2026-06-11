@@ -91,6 +91,7 @@ const EVENT_ICONS: Record<string, string> = {
   dossier_complet: "✅",
   dossier_incomplet: "⚠️",
   instruction_demarree: "🔍",
+  instructeur_assigned: "👤",
   decision_prise: "📌",
   message_instructeur: "💬",
   document_demande: "📄",

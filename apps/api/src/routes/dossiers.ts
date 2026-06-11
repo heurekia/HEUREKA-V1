@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
-import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events, dossier_courriers } from "@heureka-v1/db";
+import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events, dossier_courriers, users } from "@heureka-v1/db";
 import { eq, desc, and, ilike, gt } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
@@ -894,6 +894,19 @@ dossiersRouter.delete("/:id", async (req: AuthRequest, res) => {
 });
 
 // ── Événements d'instruction ──
+// Vue citoyen : on masque l'historique RH interne (réassignations, redirections
+// pour absence, retraits) pour ne conserver que la dernière attribution
+// effective. Sa description est normalisée pour n'exposer ni le motif
+// (absence, réassignation) ni les agents précédents — seul le nom de
+// l'instructeur courant est révélé, comme l'exige la loi DCRA du 12 avril
+// 2000 (art. 4).
+const ASSIGNMENT_EVENT_TYPES = new Set([
+  "instructeur_assigned",
+  "instructeur_reassigned",
+  "instructeur_redirected_absence",
+  "instructeur_unassigned",
+]);
+
 dossiersRouter.get("/:id/events", async (req: AuthRequest, res) => {
   try {
     const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
@@ -903,7 +916,44 @@ dossiersRouter.get("/:id/events", async (req: AuthRequest, res) => {
       .from(instruction_events)
       .where(eq(instruction_events.dossier_id, req.params.id as string))
       .orderBy(desc(instruction_events.created_at));
-    res.json(events);
+
+    const latestAssignmentIdx = events.findIndex((e) => ASSIGNMENT_EVENT_TYPES.has(e.type));
+    const latestAssignment = latestAssignmentIdx >= 0 ? events[latestAssignmentIdx]! : null;
+    const hasCurrentInstructeur =
+      latestAssignment !== null && latestAssignment.type !== "instructeur_unassigned";
+
+    let currentInstructeurName: string | null = null;
+    if (hasCurrentInstructeur && latestAssignment) {
+      const meta = latestAssignment.metadata as { new_instructeur_id?: string } | null;
+      const instructeurId = meta?.new_instructeur_id ?? null;
+      if (instructeurId) {
+        const [u] = await db
+          .select({ prenom: users.prenom, nom: users.nom })
+          .from(users)
+          .where(eq(users.id, instructeurId))
+          .limit(1);
+        if (u) currentInstructeurName = [u.prenom, u.nom].filter(Boolean).join(" ").trim() || null;
+      }
+    }
+
+    const filtered = events
+      .filter((e, i) => {
+        if (!ASSIGNMENT_EVENT_TYPES.has(e.type)) return true;
+        return hasCurrentInstructeur && i === latestAssignmentIdx;
+      })
+      .map((e) => {
+        if (!ASSIGNMENT_EVENT_TYPES.has(e.type)) return e;
+        return {
+          ...e,
+          type: "instructeur_assigned",
+          description: currentInstructeurName
+            ? `Votre dossier est pris en charge par ${currentInstructeurName}`
+            : "Votre dossier est pris en charge",
+          metadata: null,
+        };
+      });
+
+    res.json(filtered);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
