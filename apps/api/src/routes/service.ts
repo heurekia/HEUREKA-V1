@@ -147,6 +147,9 @@ async function getServiceConsultationIds(userId: string, dossierId: string): Pro
 serviceRouter.get("/dossiers/:id/messages", async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
+    // Filtrage strict par consultation_id : un service ne voit que les
+    // messages des consultations qui lui sont adressées (plus restrictif
+    // que le simple scope commune).
     const ids = await getServiceConsultationIds(req.user!.id, dossierId);
     if (ids.length === 0) return res.json([]);
     const msgs = await db.select().from(dossier_messages)

@@ -1,13 +1,59 @@
 import { Router } from "express";
+import type { Response } from "express";
 import { db } from "../db.js";
-import { zones, zone_regulatory_rules } from "@heureka-v1/db";
+import { zones, zone_regulatory_rules, communes } from "@heureka-v1/db";
 import { eq, and } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
+import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
 import { calculateBuildability, type BuildabilityInput } from "../services/buildability.js";
 
 export const calibrationRouter = Router();
 
 calibrationRouter.use(requireAuth);
+
+/**
+ * Vérifie qu'une zone appartient à une commune du scope de l'utilisateur.
+ * Renvoie la zone ou null après avoir écrit la réponse 403/404 sur res.
+ */
+async function loadZoneInScope(req: AuthRequest, res: Response, zoneId: string) {
+  const [row] = await db.select({
+    id: zones.id,
+    commune_id: zones.commune_id,
+    commune_name: communes.name,
+  })
+    .from(zones)
+    .leftJoin(communes, eq(zones.commune_id, communes.id))
+    .where(eq(zones.id, zoneId))
+    .limit(1);
+  if (!row) { res.status(404).json({ error: "Zone non trouvée" }); return null; }
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(row.commune_name, scope)) {
+    res.status(404).json({ error: "Zone non trouvée" });
+    return null;
+  }
+  return row;
+}
+
+/** Idem pour une règle : remonte à la zone puis check le scope. */
+async function loadRuleInScope(req: AuthRequest, res: Response, ruleId: string) {
+  const [row] = await db.select({
+    rule_id: zone_regulatory_rules.id,
+    zone_id: zone_regulatory_rules.zone_id,
+    commune_name: communes.name,
+  })
+    .from(zone_regulatory_rules)
+    .leftJoin(zones, eq(zone_regulatory_rules.zone_id, zones.id))
+    .leftJoin(communes, eq(zones.commune_id, communes.id))
+    .where(eq(zone_regulatory_rules.id, ruleId))
+    .limit(1);
+  if (!row) { res.status(404).json({ error: "Règle non trouvée" }); return null; }
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(row.commune_name, scope)) {
+    res.status(404).json({ error: "Règle non trouvée" });
+    return null;
+  }
+  return row;
+}
 
 // Convention applicative : aucun autre statut n'est consommé par le moteur
 // d'instruction. Toute valeur en dehors de cet ensemble est rejetée en 400
@@ -21,21 +67,35 @@ function normalizeStatus(v: unknown): string | null | undefined {
   return VALID_STATUSES.has(s) ? s : null;
 }
 
-// ── Lister les zones ──
-calibrationRouter.get("/zones", async (_req: AuthRequest, res) => {
+// ── Lister les zones (restreint au scope commune des agents) ──
+calibrationRouter.get("/zones", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
-    const list = await db.select().from(zones).orderBy(zones.zone_code);
-    res.json(list);
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    const rows = await db.select({
+      id: zones.id, commune_id: zones.commune_id, zone_code: zones.zone_code,
+      zone_label: zones.zone_label, zone_type: zones.zone_type, summary: zones.summary,
+      geometry: zones.geometry, status: zones.status, constraints: zones.constraints,
+      parent_zone_code: zones.parent_zone_code, is_active: zones.is_active,
+      display_order: zones.display_order, created_at: zones.created_at, updated_at: zones.updated_at,
+      commune_name: communes.name,
+    })
+      .from(zones)
+      .leftJoin(communes, eq(zones.commune_id, communes.id))
+      .orderBy(zones.zone_code);
+    const filtered = scope === null ? rows : rows.filter(r => communeInScope(r.commune_name, scope));
+    res.json(filtered);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
-// ── Détail d'une zone avec ses règles ──
-calibrationRouter.get("/zones/:id", async (req: AuthRequest, res) => {
+// ── Détail d'une zone avec ses règles (scope commune) ──
+calibrationRouter.get("/zones/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
-    const [zone] = await db.select().from(zones).where(eq(zones.id, req.params.id as string)).limit(1);
+    const inScope = await loadZoneInScope(req, res, String(req.params.id ?? ""));
+    if (!inScope) return;
+    const [zone] = await db.select().from(zones).where(eq(zones.id, inScope.id)).limit(1);
     if (!zone) return res.status(404).json({ error: "Zone non trouvée" });
     const rules = await db
       .select()
@@ -52,6 +112,7 @@ calibrationRouter.get("/zones/:id", async (req: AuthRequest, res) => {
 // ── Mettre à jour une règle ──
 calibrationRouter.patch("/rules/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
+    if (!await loadRuleInScope(req, res, String(req.params.id ?? ""))) return;
     const b = req.body as Record<string, unknown>;
     const updates: Record<string, unknown> = { updated_at: new Date() };
     // Numeric + classification fields
@@ -93,9 +154,8 @@ calibrationRouter.post("/rules", requireRole("mairie", "instructeur", "admin"), 
     if (!zone_id) return res.status(400).json({ error: "zone_id requis" });
     if (!rule_text) return res.status(400).json({ error: "rule_text requis" });
 
-    // Verify the zone exists before inserting (FK + clearer error than a 500)
-    const [zone] = await db.select({ id: zones.id }).from(zones).where(eq(zones.id, zone_id)).limit(1);
-    if (!zone) return res.status(404).json({ error: "Zone non trouvée" });
+    // Verify the zone exists AND appartient au scope de l'utilisateur.
+    if (!await loadZoneInScope(req, res, zone_id)) return;
 
     const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
     const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
@@ -137,6 +197,7 @@ calibrationRouter.post("/rules", requireRole("mairie", "instructeur", "admin"), 
 // ── Supprimer une règle ──
 calibrationRouter.delete("/rules/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
+    if (!await loadRuleInScope(req, res, String(req.params.id ?? ""))) return;
     const [deleted] = await db
       .delete(zone_regulatory_rules)
       .where(eq(zone_regulatory_rules.id, req.params.id as string))
