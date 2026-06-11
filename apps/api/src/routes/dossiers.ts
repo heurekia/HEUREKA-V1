@@ -11,6 +11,7 @@ import multer from "multer";
 import { classifyPermit } from "../services/classificationEngine.js";
 import { buildPiecesContext, getPiecesForType, getPieceByCode } from "../data/piecesRequises.js";
 import { changeDossierStatus, WorkflowError } from "../services/dossierWorkflow.js";
+import { notifyDossierAgents } from "../services/notify.js";
 import { analyzePiece } from "../services/pieceAnalyzer.js";
 import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../services/pieceExtractor.js";
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
@@ -350,6 +351,15 @@ dossiersRouter.post("/:id/soumettre", async (req: AuthRequest, res) => {
     // Analyse de conformité automatique côté mairie — non bloquante. Échoue
     // silencieusement : l'instructeur pourra toujours relancer manuellement.
     runDossierConformityAnalysisBackground(req.params.id as string);
+    // Notifie les agents (instructeur assigné ou agents de la commune) qu'un
+    // nouveau dossier vient d'arriver. Non bloquant.
+    void notifyDossierAgents({
+      dossier_id: req.params.id as string,
+      type: "dossier_soumis",
+      title: "Nouveau dossier déposé",
+      message: `Le dossier ${dossier.numero} (${dossier.commune ?? "commune non précisée"}) vient d'être déposé par le pétitionnaire.`,
+      exclude_user_id: req.user!.id,
+    });
     res.json(updated);
   } catch (err) {
     console.error(err);
@@ -544,6 +554,15 @@ dossiersRouter.post("/:id/resoumettre", async (req: AuthRequest, res) => {
       .from(dossiers)
       .where(eq(dossiers.id, dossier.id))
       .limit(1);
+    // Notifie l'instructeur (ou les agents de la commune) que les compléments
+    // sont arrivés et que le dossier est prêt à être réexaminé.
+    void notifyDossierAgents({
+      dossier_id: dossier.id,
+      type: "pieces_complementaires_recues",
+      title: `Pièces complémentaires reçues — dossier ${dossier.numero}`,
+      message: `Le pétitionnaire a redéposé ${requested.length} pièce${requested.length > 1 ? "s" : ""}. Le dossier est en attente de réexamen de complétude.`,
+      exclude_user_id: req.user!.id,
+    });
     res.json(updated);
   } catch (err) {
     console.error(err);
@@ -710,6 +729,19 @@ dossiersRouter.post("/:id/messages", async (req: AuthRequest, res) => {
         content,
       })
       .returning();
+    // Notifie les agents en charge — uniquement quand l'expéditeur est le
+    // citoyen ; un message intra-mairie est déjà visible dans la fil de
+    // discussion sans bruit supplémentaire.
+    if (req.user!.role === "citoyen") {
+      const preview = content.length > 120 ? `${content.slice(0, 117)}…` : content;
+      void notifyDossierAgents({
+        dossier_id: req.params.id as string,
+        type: "message_citoyen",
+        title: `Message — dossier ${dossier.numero}`,
+        message: preview,
+        exclude_user_id: req.user!.id,
+      });
+    }
     res.status(201).json(rows[0]!);
   } catch (err) {
     console.error(err);
@@ -792,8 +824,14 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
     const code_piece = (req.body as Record<string, string>).code_piece ?? "";
     const nom_piece = (req.body as Record<string, string>).nom_piece ?? req.file.originalname;
     const aiConsentRaw = (req.body as Record<string, string>).ai_consent;
-    const aiConsent = aiConsentRaw === undefined ? null : aiConsentRaw === "true";
-    const runAi = aiConsent !== false;
+    // Si l'upload ne précise pas le consentement (cas typique d'un dépôt
+    // complémentaire après "incomplet"), on retombe sur la dernière décision
+    // explicite du citoyen enregistrée au niveau du dossier. NULL = pas de
+    // consentement explicite → on n'exécute pas l'IA.
+    const aiConsent: boolean | null = aiConsentRaw === undefined
+      ? (dossier.ai_consent ?? null)
+      : aiConsentRaw === "true";
+    const runAi = aiConsent === true;
 
     // 1) Écriture du fichier via l'abstraction de stockage (local OU S3).
     const stored = await storage.put({

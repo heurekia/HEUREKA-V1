@@ -245,15 +245,18 @@ export function DossierDetail() {
       .finally(() => setLoading(false));
   }, [id, navigate]);
 
-  const uploadComplement = async (piece: PieceACompleter, file: File) => {
+  const uploadComplement = async (piece: PieceACompleter, slotKey: string, file: File) => {
     if (!id) return;
-    const key = piece.code_piece ?? piece.nom;
-    setUploadingCodes((prev) => new Set(prev).add(key));
+    setUploadingCodes((prev) => new Set(prev).add(slotKey));
     try {
+      // Le nom déposé suit la convention "${nom du slot} - ${nom du fichier}",
+      // que l'API utilise pour rattacher l'upload à l'emplacement attendu
+      // (matching par préfixe). Le code_piece est conservé tel que demandé par
+      // l'instructeur (chaîne vide pour les pièces libres sans code).
       const combinedName = `${piece.nom} - ${file.name}`;
       const formData = new FormData();
       formData.append("file", file);
-      if (piece.code_piece) formData.append("code_piece", piece.code_piece);
+      formData.append("code_piece", piece.code_piece ?? "");
       formData.append("nom_piece", combinedName);
       const res = await fetch(`/api/dossiers/${id}/pieces/upload`, {
         method: "POST",
@@ -264,21 +267,24 @@ export function DossierDetail() {
         const err = await res.json().catch(() => ({})) as { error?: string };
         throw new Error(err.error ?? `Erreur ${res.status}`);
       }
-      // Rafraîchit la liste des pièces ET l'état "à compléter" pour cocher la
-      // pièce qui vient d'être redéposée.
-      const [p, pac] = await Promise.all([
-        api.get<Piece[]>(`/dossiers/${id}/pieces`),
-        api.get<PiecesACompleterResponse>(`/dossiers/${id}/pieces-a-completer`),
-      ]);
-      setPieces(p);
-      setPiecesACompleter(pac);
+      // Le dépôt a réussi : on rafraîchit les listes en best-effort. Si l'une
+      // des requêtes échoue (réseau intermittent), on garde le succès et la
+      // prochaine action déclenchera le refresh — pas d'alerte d'erreur.
+      try {
+        const p = await api.get<Piece[]>(`/dossiers/${id}/pieces`);
+        setPieces(p);
+      } catch { /* refresh non bloquant */ }
+      try {
+        const pac = await api.get<PiecesACompleterResponse>(`/dossiers/${id}/pieces-a-completer`);
+        setPiecesACompleter(pac);
+      } catch { /* refresh non bloquant */ }
     } catch (e) {
       const msg = e instanceof Error && e.message ? e.message : "Erreur inconnue";
       alert(`Erreur lors du dépôt : ${msg}`);
     } finally {
       setUploadingCodes((prev) => {
         const next = new Set(prev);
-        next.delete(key);
+        next.delete(slotKey);
         return next;
       });
     }
@@ -525,12 +531,14 @@ export function DossierDetail() {
 
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
                 {piecesACompleter.pieces.map((piece, idx) => {
-                  const key = piece.code_piece ?? `${piece.nom}-${idx}`;
-                  const isUploading = uploadingCodes.has(piece.code_piece ?? piece.nom);
+                  // Clé stable d'emplacement : index dans la liste du courrier.
+                  // Deux entrées avec même nom restent distinctes.
+                  const slotKey = `slot-${idx}`;
+                  const isUploading = uploadingCodes.has(slotKey);
                   const hasFile = piece.deja_redeposee && piece.redepot;
                   return (
                     <div
-                      key={key}
+                      key={slotKey}
                       style={{
                         display: "flex",
                         alignItems: "flex-start",
@@ -613,7 +621,7 @@ export function DossierDetail() {
                                 accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.tiff"
                                 onChange={(e) => {
                                   const file = e.target.files?.[0];
-                                  if (file) void uploadComplement(piece, file);
+                                  if (file) void uploadComplement(piece, slotKey, file);
                                   e.currentTarget.value = "";
                                 }}
                               />
