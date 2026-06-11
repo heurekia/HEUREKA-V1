@@ -528,6 +528,8 @@ type ApiDossier = {
   adresse: string | null; commune: string | null; description: string | null;
   date_depot: string | null; date_limite_instruction: string | null;
   demandeur: string;
+  instructeur_id?: string | null;
+  instructeur?: string | null;
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -732,6 +734,11 @@ function DashboardScreen({ navigate, navigateDossiers, commune, inseeCode, onDos
 }
 
 function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossierClick: (d: DossierInfo) => void }) {
+  const { user } = useAuth();
+  // Les rôles de supervision (mairie, admin) voient la colonne « Instructeur »
+  // pour identifier rapidement l'agent en charge ; les instructeurs eux-mêmes
+  // ne la voient pas (ils n'instruisent que leurs propres dossiers).
+  const isSupervisor = user?.role === "mairie" || user?.role === "admin";
   const tabs = ["Tous", "Nouveau", "En instruction", "Pré-instruction", "Incomplet", "Décision en cours", "Accepté", "Refusé"];
   const [searchParams, setSearchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState(searchParams.get("filter") ?? "Tous");
@@ -751,7 +758,7 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   const [loading, setLoading] = useState(true);
   const [showColPicker, setShowColPicker] = useState(false);
 
-  type ColKey = "petitionnaire" | "adresse" | "type" | "statut" | "date_depot" | "echeance";
+  type ColKey = "petitionnaire" | "adresse" | "type" | "statut" | "date_depot" | "echeance" | "instructeur";
   const ALL_COLS: { key: ColKey; label: string }[] = [
     { key: "petitionnaire", label: "Pétitionnaire" },
     { key: "adresse", label: "Adresse" },
@@ -759,14 +766,21 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
     { key: "statut", label: "Statut" },
     { key: "date_depot", label: "Date de dépôt" },
     { key: "echeance", label: "Date d'échéance" },
+    ...(isSupervisor ? [{ key: "instructeur" as ColKey, label: "Instructeur" }] : []),
   ];
 
   const [visibleCols, setVisibleCols] = useState<Set<ColKey>>(() => {
     try {
       const saved = localStorage.getItem("dossiers_cols");
-      if (saved) return new Set(JSON.parse(saved) as ColKey[]);
+      if (saved) {
+        const cols = new Set(JSON.parse(saved) as ColKey[]);
+        if (isSupervisor && !cols.has("instructeur")) cols.add("instructeur");
+        return cols;
+      }
     } catch {}
-    return new Set<ColKey>(["petitionnaire", "adresse", "type", "statut", "date_depot", "echeance"]);
+    const defaults: ColKey[] = ["petitionnaire", "adresse", "type", "statut", "date_depot", "echeance"];
+    if (isSupervisor) defaults.push("instructeur");
+    return new Set<ColKey>(defaults);
   });
 
   const toggleCol = (key: ColKey) => {
@@ -804,6 +818,7 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
     statusRaw: d.status,
     ech: fmtDate(d.date_limite_instruction),
     dateDepot: fmtDate(d.date_depot),
+    instructeur: d.instructeur ?? null,
   }));
 
   const tabCounts: Record<string, number> = Object.fromEntries(
@@ -815,7 +830,9 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
     return matchTab && matchQ;
   });
 
-  const colSpan = 2 + visibleCols.size; // N° + visible cols + Actions
+  // N° Dossier + colonnes visibles (en excluant « instructeur » pour les
+  // non-superviseurs, qui ne voient pas la colonne) + Actions.
+  const colSpan = 2 + [...visibleCols].filter(c => c !== "instructeur" || isSupervisor).length;
 
   const thStyle: React.CSSProperties = { padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0", whiteSpace: "nowrap" };
 
@@ -957,6 +974,7 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
               {visibleCols.has("statut") && <th style={thStyle}>Statut</th>}
               {visibleCols.has("date_depot") && <th style={thStyle}>Date de dépôt</th>}
               {visibleCols.has("echeance") && <th style={thStyle}>Date d'échéance</th>}
+              {isSupervisor && visibleCols.has("instructeur") && <th style={thStyle}>Instructeur</th>}
               <th style={thStyle}>Actions</th>
             </tr>
           </thead>
@@ -985,6 +1003,11 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
                         })()
                       : <span style={{ color: "#CBD5E1" }}>—</span>
                     }
+                  </td>
+                )}
+                {isSupervisor && visibleCols.has("instructeur") && (
+                  <td style={{ padding: "12px 16px", fontSize: 13, color: r.instructeur ? "#374151" : "#94A3B8" }}>
+                    {r.instructeur ?? "Non assigné"}
                   </td>
                 )}
                 <td style={{ padding: "12px 16px" }}>
