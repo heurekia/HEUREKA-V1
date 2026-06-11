@@ -22,9 +22,9 @@ export function CentreAide() {
   );
 
   return (
-    <div className="max-w-4xl mx-auto px-6 py-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#000020]">Centre d'aide</h1>
+    <div className="max-w-4xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+      <div className="mb-6 sm:mb-8">
+        <h1 className="text-xl sm:text-2xl font-bold text-[#000020]">Centre d'aide</h1>
         <p className="text-gray-500 text-sm mt-1">Questions fréquentes et assistance</p>
       </div>
 

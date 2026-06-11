@@ -6,7 +6,52 @@ import {
 import { eq, and, or, desc } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
+import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
 import { changeDossierStatus } from "../services/dossierWorkflow.js";
+
+/**
+ * Charge le dossier référencé par une décision et vérifie que sa commune
+ * appartient au scope de l'utilisateur connecté. Renvoie le dossier en cas
+ * de succès, OU `null` après avoir écrit la réponse 403/404 sur res.
+ */
+async function loadDossierForDecision(req: AuthRequest, res: import("express").Response, decisionId: string) {
+  const [row] = await db.select({
+    decision_id: decisions.id,
+    dossier_id: decisions.dossier_id,
+    commune: decisions.commune,
+    dossier_commune: dossiers.commune,
+  })
+    .from(decisions)
+    .leftJoin(dossiers, eq(decisions.dossier_id, dossiers.id))
+    .where(eq(decisions.id, decisionId))
+    .limit(1);
+  if (!row) {
+    res.status(404).json({ error: "Décision introuvable" });
+    return null;
+  }
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  const targetCommune = row.dossier_commune ?? row.commune;
+  if (!communeInScope(targetCommune, scope)) {
+    res.status(404).json({ error: "Décision introuvable" });
+    return null;
+  }
+  return row;
+}
+
+async function loadDossierForDossierId(req: AuthRequest, res: import("express").Response, dossierId: string) {
+  const [row] = await db.select({ id: dossiers.id, commune: dossiers.commune })
+    .from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+  if (!row) {
+    res.status(404).json({ error: "Dossier introuvable" });
+    return null;
+  }
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(row.commune, scope)) {
+    res.status(404).json({ error: "Dossier introuvable" });
+    return null;
+  }
+  return row;
+}
 
 export const decisionsRouter = Router();
 decisionsRouter.use(requireAuth);
@@ -92,6 +137,8 @@ decisionsRouter.get("/pending-count", async (req: AuthRequest, res) => {
 // ── GET /api/decisions/dossier/:dossierId ────────────────────────────────────
 decisionsRouter.get("/dossier/:dossierId", async (req: AuthRequest, res) => {
   const { dossierId } = req.params as { dossierId: string };
+  const dossier = await loadDossierForDossierId(req, res, dossierId);
+  if (!dossier) return;
   const rows = await db
     .select({
       id: decisions.id,
@@ -130,14 +177,20 @@ decisionsRouter.get("/dossier/:dossierId", async (req: AuthRequest, res) => {
 // Create or update the draft decision (upsert)
 decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { dossierId } = req.params as { dossierId: string };
-  const { type, motif, prescriptions, conditions, signataire_id, commune } = req.body as {
+  const dossier = await loadDossierForDossierId(req, res, dossierId);
+  if (!dossier) return;
+  const { type, motif, prescriptions, conditions, signataire_id } = req.body as {
     type: string;
     motif?: string;
     prescriptions?: string[];
     conditions?: string;
     signataire_id?: string | null;
-    commune: string;
   };
+  // La commune est dérivée du dossier (source de vérité), jamais du body :
+  // un instructeur ne peut pas créer une décision pour une commune dont il
+  // n'a pas accès via le scope user_communes.
+  const commune = dossier.commune ?? "";
+  if (!commune) return res.status(400).json({ error: "Dossier sans commune" });
 
   const existing = await db
     .select({ id: decisions.id })
@@ -244,9 +297,22 @@ decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: Au
   const now = new Date();
   const dateStr = now.toISOString().split("T")[0];
 
+  if (!await loadDossierForDecision(req, res, id)) return;
   const existing = await db.select().from(decisions).where(eq(decisions.id, id)).limit(1);
   if (!existing.length) return res.status(404).json({ error: "Décision introuvable" });
   const dec = existing[0]!;
+  // Le signataire doit appartenir à la liste active des signataires de la
+  // commune de la décision. Empêche un mairie d'une autre commune (mais
+  // figurant dans son scope) de signer un arrêté qui ne le concerne pas.
+  const [isSign] = await db.select({ id: signataires.id })
+    .from(signataires)
+    .where(and(
+      eq(signataires.user_id, req.user!.id),
+      eq(signataires.commune, dec.commune),
+      eq(signataires.active, true),
+    ))
+    .limit(1);
+  if (!isSign) return res.status(403).json({ error: "Vous n'êtes pas signataire actif de cette commune" });
 
   // Any signataire of the commune can sign, or the assigned signataire
   const dossierRow = await db.select({ type: dossiers.type }).from(dossiers)
@@ -306,6 +372,7 @@ decisionsRouter.post("/:id/refuse-signature", requireRole("mairie", "admin"), as
   const { id } = req.params as { id: string };
   const { motif } = req.body as { motif: string };
 
+  if (!await loadDossierForDecision(req, res, id)) return;
   const [decision] = await db
     .update(decisions)
     .set({ status: "revision_necessaire", motif_refus_signature: motif, updated_at: new Date() })
@@ -334,6 +401,7 @@ decisionsRouter.post("/:id/notify", requireRole("mairie", "instructeur", "admin"
   const { id } = req.params as { id: string };
   const { date_notification } = req.body as { date_notification?: string };
 
+  if (!await loadDossierForDecision(req, res, id)) return;
   const [decision] = await db
     .update(decisions)
     .set({
@@ -381,6 +449,10 @@ decisionsRouter.get("/communes/:commune/signataires", async (req: AuthRequest, r
 // ── POST /api/decisions/communes/:commune/signataires ────────────────────────
 decisionsRouter.post("/communes/:commune/signataires", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(commune, scope)) {
+    return res.status(403).json({ error: "Commune hors de votre périmètre" });
+  }
   const { user_id, role, delegation_arrete, delegation_date } = req.body as {
     user_id: string; role: string; delegation_arrete?: string; delegation_date?: string;
   };
@@ -397,6 +469,11 @@ decisionsRouter.post("/communes/:commune/signataires", requireRole("mairie", "ad
 // ── PUT /api/decisions/communes/:commune/signataires/:id ─────────────────────
 decisionsRouter.put("/communes/:commune/signataires/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
+  const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(commune, scope)) {
+    return res.status(403).json({ error: "Commune hors de votre périmètre" });
+  }
   const { role, delegation_arrete, delegation_date, active } = req.body as {
     role?: string; delegation_arrete?: string; delegation_date?: string; active?: boolean;
   };
@@ -414,6 +491,11 @@ decisionsRouter.put("/communes/:commune/signataires/:id", requireRole("mairie", 
 // ── DELETE /api/decisions/communes/:commune/signataires/:id ──────────────────
 decisionsRouter.delete("/communes/:commune/signataires/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
+  const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(commune, scope)) {
+    return res.status(403).json({ error: "Commune hors de votre périmètre" });
+  }
   await db.update(signataires).set({ active: false }).where(eq(signataires.id, id));
   res.json({ ok: true });
 });

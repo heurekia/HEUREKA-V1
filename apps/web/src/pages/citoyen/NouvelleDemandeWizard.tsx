@@ -1043,7 +1043,7 @@ export function NouvelleDemandeWizard() {
 
   // ── Wizard shell ─────────────────────────────────────────────────────────────
   return (
-    <div style={{ minHeight: "100%", background: "#F8FAFC", padding: "32px 24px" }}>
+    <div style={{ minHeight: "100%", background: "#F8FAFC", padding: "clamp(16px, 4vw, 32px) clamp(12px, 4vw, 24px)" }}>
       <div style={{ maxWidth: 700, margin: "0 auto" }}>
         {/* Nav + Progress */}
         <div style={{ marginBottom: 28 }}>
@@ -1099,7 +1099,7 @@ export function NouvelleDemandeWizard() {
             background: "white",
             borderRadius: 18,
             border: "1px solid #E2E8F0",
-            padding: "36px 36px",
+            padding: "clamp(20px, 5vw, 36px)",
             boxShadow: "0 2px 12px rgba(0,0,0,0.04)",
           }}
         >
@@ -2152,7 +2152,7 @@ export function NouvelleDemandeWizard() {
                       </label>
                       {!aiConsent && (
                         <div style={{ marginTop: 8, padding: "8px 12px", background: "#FEF3C7", borderRadius: 8, color: "#92400E", fontSize: 12.5, lineHeight: 1.5 }}>
-                          ⓘ Vous avez refusé l'analyse IA. Vos pièces seront uniquement vérifiées par un instructeur humain. Le délai d'instruction peut être légèrement allongé.
+                          ⓘ Vous avez refusé l'analyse IA. Vos pièces seront uniquement vérifiées manuellement par un instructeur humain.
                         </div>
                       )}
                     </div>

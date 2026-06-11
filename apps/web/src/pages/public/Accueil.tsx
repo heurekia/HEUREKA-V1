@@ -2,6 +2,7 @@ import { useState, useRef } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { FileText, MessageSquare, Eye, Search } from "lucide-react";
 import { useAuth } from "../../hooks/useAuth";
+import { Seo, ORGANIZATION_JSON_LD, WEBSITE_JSON_LD } from "../../components/Seo";
 
 type BanSuggestion = { label: string };
 
@@ -121,6 +122,11 @@ export function Accueil() {
 
   return (
     <div className="bg-white">
+      <Seo
+        path="/"
+        description="Heurekia simplifie l'urbanisme : analysez votre parcelle, comprenez les règles du PLU, déposez et suivez vos demandes d'autorisation d'urbanisme en ligne."
+        jsonLd={[ORGANIZATION_JSON_LD, WEBSITE_JSON_LD]}
+      />
       {/* ── Hero ── */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-10 flex items-center justify-between gap-10">
         <div className="max-w-xl">

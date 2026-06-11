@@ -12,19 +12,19 @@ const documents = [
 
 export function MesDocuments() {
   return (
-    <div className="max-w-7xl mx-auto px-6 py-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-[#000020]">Mes documents</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-[#000020]">Mes documents</h1>
           <p className="text-gray-500 text-sm">Retrouvez tous vos documents et pièces jointes</p>
         </div>
-        <Button className="gap-2">
+        <Button className="gap-2 w-full sm:w-auto justify-center">
           <Upload className="w-4 h-4" />
           Ajouter un document
         </Button>
       </div>
 
-      <div className="relative mb-6 max-w-md">
+      <div className="relative mb-6 sm:max-w-md">
         <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
         <Input placeholder="Rechercher un document..." className="pl-9" />
       </div>

@@ -1,6 +1,13 @@
+import { Seo } from "../../components/Seo";
+
 export function PolitiqueConfidentialite() {
   return (
     <div className="max-w-3xl mx-auto px-4 sm:px-6 py-12">
+      <Seo
+        title="Politique de confidentialité"
+        description="Politique de confidentialité Heurekia : traitement de vos données personnelles et respect du RGPD."
+        path="/politique-confidentialite"
+      />
       <h1 className="text-3xl font-bold text-[#000020] mb-2">Politique de confidentialité</h1>
       <p className="text-sm text-gray-400 mb-10">Dernière mise à jour : juin 2026</p>
 
