@@ -76,12 +76,12 @@ export function CitoyenDashboard() {
   const needsAction = active.filter((d) => d.status === "incomplet" || d.status === "brouillon");
 
   return (
-    <div style={{ maxWidth: 860, margin: "0 auto", padding: "36px 24px" }}>
+    <div style={{ maxWidth: 860, margin: "0 auto", padding: "clamp(20px, 4vw, 36px) clamp(16px, 4vw, 24px)" }}>
 
       {/* ── Header ────────────────────────────────────────── */}
-      <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", marginBottom: 28, gap: 16 }}>
+      <div className="dashboard-header">
         <div>
-          <h1 style={{ fontSize: 24, fontWeight: 800, color: "#0F172A", margin: 0 }}>
+          <h1 style={{ fontSize: "clamp(20px, 5vw, 24px)", fontWeight: 800, color: "#0F172A", margin: 0 }}>
             Bonjour, {user?.prenom}
           </h1>
           <p style={{ fontSize: 14, color: "#64748b", marginTop: 4, margin: 0 }}>
@@ -94,16 +94,19 @@ export function CitoyenDashboard() {
         </div>
         <Link
           to="/citoyen/nouvelle-demande"
-          style={{
-            display: "inline-flex", alignItems: "center", gap: 7,
-            padding: "10px 20px", background: "#4F46E5", color: "white",
-            borderRadius: 10, fontWeight: 600, fontSize: 13, textDecoration: "none",
-            flexShrink: 0, whiteSpace: "nowrap",
-          }}
+          className="dashboard-new-btn"
         >
           + Nouvelle demande
         </Link>
       </div>
+      <style>{`
+        .dashboard-header { display: flex; align-items: flex-start; justify-content: space-between; margin-bottom: 28px; gap: 16px; flex-wrap: wrap; }
+        .dashboard-new-btn { display: inline-flex; align-items: center; gap: 7px; padding: 10px 20px; background: #4F46E5; color: white; border-radius: 10px; font-weight: 600; font-size: 13px; text-decoration: none; flex-shrink: 0; white-space: nowrap; }
+        @media (max-width: 640px) {
+          .dashboard-header { flex-direction: column; align-items: stretch; }
+          .dashboard-new-btn { justify-content: center; width: 100%; padding: 12px 20px; }
+        }
+      `}</style>
 
       {/* ── Alerte action requise ──────────────────────────── */}
       {needsAction.length > 0 && (
@@ -283,7 +286,7 @@ export function CitoyenDashboard() {
       )}
 
       {/* ── Accès rapides ──────────────────────────────────── */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(220px, 1fr))", gap: 10 }}>
         {[
           { to: "/citoyen/messagerie",    emoji: "💬", title: "Messagerie",      sub: "Échangez avec les instructeurs" },
           { to: "/citoyen/mes-documents", emoji: "📄", title: "Mes documents",   sub: "Pièces justificatives déposées" },

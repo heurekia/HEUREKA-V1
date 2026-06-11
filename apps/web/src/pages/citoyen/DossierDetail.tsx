@@ -134,7 +134,7 @@ function StatusStepper({ status }: { status: string }) {
           <span style={{ fontSize: 16, fontWeight: 700, color: terminal.color }}>{terminal.label}</span>
         </div>
       ) : (
-        <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 0, overflowX: "auto", paddingBottom: 4 }}>
           {STATUS_PIPELINE.map((s, i) => {
             const done = currentIdx > i;
             const active = currentIdx === i;
@@ -356,7 +356,7 @@ export function DossierDetail() {
   const statusMeta = statusLabels[dossier.status] ?? { label: dossier.status, variant: "default" as const };
 
   return (
-    <div style={{ minHeight: "100%", background: "#F8FAFC", padding: "28px 24px" }}>
+    <div style={{ minHeight: "100%", background: "#F8FAFC", padding: "clamp(16px, 4vw, 28px) clamp(12px, 4vw, 24px)" }}>
       <div style={{ maxWidth: 1280, margin: "0 auto" }}>
 
         {/* Back */}
@@ -441,7 +441,7 @@ export function DossierDetail() {
         )}
 
         {/* Header */}
-        <div style={{ background: "white", borderRadius: 16, border: "1px solid #E2E8F0", padding: 28, marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+        <div style={{ background: "white", borderRadius: 16, border: "1px solid #E2E8F0", padding: "clamp(18px, 4vw, 28px)", marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
             <div>
               <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 4 }}>Numéro de dossier</div>
@@ -649,7 +649,7 @@ export function DossierDetail() {
           );
         })()}
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginBottom: 16 }}>
 
           {/* Timeline des événements */}
           <Card className="border-gray-200/80">
