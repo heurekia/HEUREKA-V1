@@ -1276,16 +1276,18 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
               <div style={{ width: 32, height: 32, borderRadius: "50%", background: svcColor, color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{svcInitials}</div>
               <div>
                 <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>{svcName}</div>
-                <div style={{ fontSize: 12, color: "#94a3b8" }}>Consultation — {selectedService.numero}</div>
+                <div style={{ fontSize: 12, color: "#94a3b8" }}>
+                  Consultation —{" "}
+                  <button
+                    onClick={() => onDossierClick({ id: selectedService.dossier_id, numero: selectedService.numero, type: selectedService.type, petitionnaire: "—", adresse: "—", status: selectedService.status, echeance: "—" })}
+                    style={{ background: "none", border: "none", padding: 0, color: "#4F46E5", fontWeight: 600, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}
+                  >
+                    {selectedService.numero}
+                  </button>
+                </div>
               </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <button
-                onClick={() => onDossierClick({ id: selectedService.dossier_id, numero: selectedService.numero, type: selectedService.type, petitionnaire: "—", adresse: "—", status: selectedService.status, echeance: "—" })}
-                style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}
-              >
-                Voir le dossier ↗
-              </button>
               <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8" }}><DotsIcon /></button>
             </div>
           </div>
@@ -1340,10 +1342,17 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
           <div style={{ padding: "14px 20px", borderBottom: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
               <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>{selected.petitionnaire}</div>
-              <div style={{ fontSize: 12, color: "#94a3b8" }}>{selected.numero} – {TYPE_LABEL[selected.type] ?? selected.type}</div>
+              <div style={{ fontSize: 12, color: "#94a3b8" }}>
+                <button
+                  onClick={() => onDossierClick({ id: selected.dossier_id, numero: selected.numero, type: selected.type, petitionnaire: selected.petitionnaire, adresse: "—", status: selected.status, echeance: "—" })}
+                  style={{ background: "none", border: "none", padding: 0, color: "#4F46E5", fontWeight: 600, fontSize: 12, cursor: "pointer", textDecoration: "underline" }}
+                >
+                  {selected.numero}
+                </button>
+                {" "}– {TYPE_LABEL[selected.type] ?? selected.type}
+              </div>
             </div>
             <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              <button onClick={() => onDossierClick({ id: selected.dossier_id, numero: selected.numero, type: selected.type, petitionnaire: selected.petitionnaire, adresse: "—", status: selected.status, echeance: "—" })} style={{ padding: "6px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, color: "#374151", cursor: "pointer" }}>Voir le dossier ↗</button>
               <button
                 onClick={markUnread}
                 title="Marquer comme non lu"
@@ -1428,7 +1437,12 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
           )}
           <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
             <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Dossier lié</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4 }}>{selectedService.numero}</div>
+            <button
+              onClick={() => onDossierClick({ id: selectedService.dossier_id, numero: selectedService.numero, type: selectedService.type, petitionnaire: "—", adresse: "—", status: selectedService.status, echeance: "—" })}
+              style={{ background: "none", border: "none", padding: 0, fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4, cursor: "pointer", textDecoration: "underline", display: "block" }}
+            >
+              {selectedService.numero}
+            </button>
             <div style={{ fontSize: 12, color: "#64748b" }}>{TYPE_LABEL[selectedService.type] ?? selectedService.type}</div>
           </div>
           {selectedService.last_content && (
@@ -1447,7 +1461,12 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
           <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 12 }}>{selected.petitionnaire}</div>
           <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 12, marginBottom: 12 }}>
             <div style={{ fontSize: 11, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Dossier</div>
-            <div style={{ fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4 }}>{selected.numero}</div>
+            <button
+              onClick={() => onDossierClick({ id: selected.dossier_id, numero: selected.numero, type: selected.type, petitionnaire: selected.petitionnaire, adresse: "—", status: selected.status, echeance: "—" })}
+              style={{ background: "none", border: "none", padding: 0, fontSize: 13, fontWeight: 600, color: "#4F46E5", marginBottom: 4, cursor: "pointer", textDecoration: "underline", display: "block" }}
+            >
+              {selected.numero}
+            </button>
             <div style={{ fontSize: 12, color: "#64748b", marginBottom: 8 }}>{TYPE_LABEL[selected.type] ?? selected.type}</div>
             <StatusBadge status={STATUS_LABEL[selected.status] ?? selected.status} />
           </div>
