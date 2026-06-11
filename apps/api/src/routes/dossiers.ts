@@ -370,9 +370,10 @@ dossiersRouter.get("/:id/pieces-a-completer", async (req: AuthRequest, res) => {
     const requested = courrier.pieces_jointes_ids ?? [];
 
     // Pour savoir si une pièce a déjà été redéposée, on cherche un upload
-    // postérieur à l'émission du courrier portant le même code_piece. Pour les
-    // pièces "manquantes" sans code, on ne peut pas matcher → toujours
-    // considéré non déposé.
+    // postérieur à l'émission du courrier dont le nom commence par le libellé
+    // exact de la pièce demandée (le citoyen upload avec
+    // nom = "${piece.nom} - ${file.name}"). Cela permet de distinguer deux
+    // emplacements qui partagent le même code_piece (ex. deux annexes).
     const uploadsAfter = await db
       .select({
         id: dossier_pieces_jointes.id,
@@ -387,16 +388,19 @@ dossiersRouter.get("/:id/pieces-a-completer", async (req: AuthRequest, res) => {
         gt(dossier_pieces_jointes.uploaded_at, courrier.emis_le),
       ))
       .orderBy(desc(dossier_pieces_jointes.uploaded_at));
-    // Plusieurs redépôts possibles sur le même code (le citoyen corrige et
-    // renvoie) : on garde le plus récent comme "redepot" affiché à l'UI.
-    const uploadsByCode = new Map<string, typeof uploadsAfter[number]>();
-    for (const u of uploadsAfter) {
-      if (u.code_piece && !uploadsByCode.has(u.code_piece)) uploadsByCode.set(u.code_piece, u);
-    }
+
+    const findUploadForSlot = (slotNom: string, slotCode: string | null | undefined) => {
+      const prefix = `${slotNom} - `;
+      return uploadsAfter.find((u) => {
+        if (!u.nom.startsWith(prefix)) return false;
+        if (slotCode && u.code_piece && u.code_piece !== slotCode) return false;
+        return true;
+      });
+    };
 
     const pieces = requested.map((p) => {
       const aideSource = p.code_piece ? getPieceByCode(p.code_piece, ctx) : null;
-      const upload = p.code_piece ? uploadsByCode.get(p.code_piece) : undefined;
+      const upload = findUploadForSlot(p.nom, p.code_piece);
       return {
         code_piece: p.code_piece ?? null,
         nom: p.nom,
@@ -450,14 +454,24 @@ dossiersRouter.post("/:id/resoumettre", async (req: AuthRequest, res) => {
 
     const requested = courrier.pieces_jointes_ids ?? [];
     const uploadsAfter = await db
-      .select({ code_piece: dossier_pieces_jointes.code_piece })
+      .select({ code_piece: dossier_pieces_jointes.code_piece, nom: dossier_pieces_jointes.nom })
       .from(dossier_pieces_jointes)
       .where(and(
         eq(dossier_pieces_jointes.dossier_id, dossier.id),
         gt(dossier_pieces_jointes.uploaded_at, courrier.emis_le),
       ));
-    const uploadedCodes = new Set(uploadsAfter.map((u) => u.code_piece).filter(Boolean));
-    const manquantes = requested.filter((p) => !p.code_piece || !uploadedCodes.has(p.code_piece));
+    // Un emplacement est considéré rempli lorsqu'au moins un upload postérieur
+    // au courrier porte un nom commençant par "${slot.nom} - " (et, si
+    // disponible, le même code_piece). Permet à deux emplacements partageant
+    // le même code (ex. deux annexes) d'être tracés indépendamment.
+    const manquantes = requested.filter((p) => {
+      const prefix = `${p.nom} - `;
+      return !uploadsAfter.some((u) => {
+        if (!u.nom.startsWith(prefix)) return false;
+        if (p.code_piece && u.code_piece && u.code_piece !== p.code_piece) return false;
+        return true;
+      });
+    });
     if (manquantes.length > 0) {
       return res.status(422).json({
         error: "Toutes les pièces demandées doivent être redéposées avant de retransmettre le dossier",
