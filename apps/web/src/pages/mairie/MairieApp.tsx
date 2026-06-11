@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect, useCallback } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
@@ -5392,6 +5392,235 @@ function DisponibilitesPanel() {
   );
 }
 
+function DelegationsPanel() {
+  type DelegationRow = {
+    id: string;
+    delegate_user_id: string;
+    priority: number;
+    prenom: string | null;
+    nom: string | null;
+    email: string | null;
+  };
+  type InstructeurOption = { id: string; prenom: string; nom: string; email: string };
+
+  const [instructeurs, setInstructeurs] = useState<InstructeurOption[]>([]);
+  const [delegates, setDelegates] = useState<string[]>([]);
+  const [initial, setInitial] = useState<string[]>([]);
+  const [absences, setAbsences] = useState<Absence[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [msg, setMsg] = useState<{ ok: boolean; text: string } | null>(null);
+
+  useEffect(() => {
+    Promise.all([
+      api.get<InstructeurOption[]>("/mairie/instructeurs").catch(() => []),
+      api.get<DelegationRow[]>("/mairie/my-delegations").catch(() => []),
+      api.get<{ absences: Absence[] }>("/mairie/my-availability").catch(() => ({ absences: [] as Absence[] })),
+    ]).then(([list, delegs, avail]) => {
+      setInstructeurs(list);
+      const ordered = [...delegs].sort((a, b) => a.priority - b.priority).map((d) => d.delegate_user_id);
+      setDelegates(ordered);
+      setInitial(ordered);
+      setAbsences(avail.absences ?? []);
+    }).finally(() => setLoading(false));
+  }, []);
+
+  const usersById = useMemo(() => {
+    const m = new Map<string, InstructeurOption>();
+    instructeurs.forEach((u) => m.set(u.id, u));
+    return m;
+  }, [instructeurs]);
+
+  const dirty = useMemo(() => {
+    if (delegates.length !== initial.length) return true;
+    return delegates.some((id, i) => id !== initial[i]);
+  }, [delegates, initial]);
+
+  const available = instructeurs.filter((u) => !delegates.includes(u.id));
+  const todayIso = new Date().toISOString().slice(0, 10);
+  const activeAbsence = absences.find((a) => a.start_date <= todayIso && a.end_date >= todayIso);
+  const upcomingAbsence = absences
+    .filter((a) => a.start_date > todayIso)
+    .sort((a, b) => a.start_date.localeCompare(b.start_date))[0];
+
+  const addDelegate = (id: string) => {
+    if (!id || delegates.includes(id)) return;
+    setDelegates((prev) => [...prev, id]);
+    setMsg(null);
+  };
+  const removeDelegate = (id: string) => setDelegates((prev) => prev.filter((d) => d !== id));
+  const move = (idx: number, dir: -1 | 1) => {
+    setDelegates((prev) => {
+      const next = [...prev];
+      const j = idx + dir;
+      if (j < 0 || j >= next.length) return prev;
+      const a = next[idx]!;
+      const b = next[j]!;
+      next[idx] = b;
+      next[j] = a;
+      return next;
+    });
+  };
+
+  const save = async () => {
+    setSaving(true); setMsg(null);
+    try {
+      await api.put("/mairie/my-delegations", { delegates });
+      setInitial(delegates);
+      setMsg({ ok: true, text: "Délégation enregistrée." });
+    } catch (e) {
+      setMsg({ ok: false, text: e instanceof Error ? e.message : "Erreur" });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const fullName = (u: { prenom?: string | null; nom?: string | null; email?: string | null }) =>
+    [u.prenom, u.nom].filter(Boolean).join(" ").trim() || u.email || "—";
+
+  if (loading) return <div style={{ padding: 40, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>;
+
+  return (
+    <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
+      <div style={{ marginBottom: 16 }}>
+        <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Délégations</div>
+        <div style={{ fontSize: 12, color: "#94a3b8" }}>
+          Désignez les instructeurs qui prendront le relais pendant vos absences.
+        </div>
+      </div>
+
+      {(activeAbsence || upcomingAbsence) && (
+        <div style={{
+          marginBottom: 16,
+          padding: "10px 14px",
+          borderRadius: 8,
+          border: `1px solid ${activeAbsence ? "#FED7AA" : "#BFDBFE"}`,
+          background: activeAbsence ? "#FFF7ED" : "#EFF6FF",
+          color: activeAbsence ? "#9A3412" : "#1E40AF",
+          fontSize: 12.5,
+        }}>
+          {activeAbsence ? (
+            <>Vous êtes en absence jusqu'au <strong>{new Date(activeAbsence.end_date).toLocaleDateString("fr-FR")}</strong>. Vos nouveaux dossiers et ceux dont l'échéance tombe d'ici là sont redirigés vers la chaîne ci-dessous.</>
+          ) : (
+            <>Prochaine absence prévue du <strong>{new Date(upcomingAbsence!.start_date).toLocaleDateString("fr-FR")}</strong> au <strong>{new Date(upcomingAbsence!.end_date).toLocaleDateString("fr-FR")}</strong>.</>
+          )}
+        </div>
+      )}
+
+      <div style={{ marginBottom: 12, fontSize: 12, color: "#64748b" }}>
+        Le 1er instructeur est sollicité en priorité. Si lui-même est absent, le système passe au suivant, et ainsi de suite.
+      </div>
+
+      {delegates.length === 0 ? (
+        <div style={{
+          padding: "24px 16px",
+          textAlign: "center",
+          border: "1px dashed #E2E8F0",
+          borderRadius: 8,
+          color: "#94a3b8",
+          fontSize: 13,
+        }}>
+          Aucun délégué configuré. En cas d'absence, vos dossiers resteront sur votre nom.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {delegates.map((id, idx) => {
+            const u = usersById.get(id);
+            return (
+              <div key={id} style={{
+                display: "flex",
+                alignItems: "center",
+                gap: 12,
+                padding: "12px 14px",
+                border: "1px solid #E2E8F0",
+                borderRadius: 8,
+                background: "white",
+              }}>
+                <span style={{
+                  background: "#EEF2FF",
+                  color: "#4F46E5",
+                  fontSize: 11,
+                  fontWeight: 700,
+                  borderRadius: 6,
+                  padding: "3px 8px",
+                  flexShrink: 0,
+                }}>
+                  Priorité {idx + 1}
+                </span>
+                <div style={{ flex: 1, minWidth: 0 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>
+                    {u ? fullName(u) : "Utilisateur introuvable"}
+                  </div>
+                  {u?.email && <div style={{ fontSize: 11, color: "#64748b" }}>{u.email}</div>}
+                </div>
+                <button onClick={() => move(idx, -1)} disabled={idx === 0} title="Monter"
+                  style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 8px", fontSize: 12, color: "#64748b", cursor: idx === 0 ? "not-allowed" : "pointer", opacity: idx === 0 ? 0.4 : 1 }}>↑</button>
+                <button onClick={() => move(idx, 1)} disabled={idx === delegates.length - 1} title="Descendre"
+                  style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 8px", fontSize: 12, color: "#64748b", cursor: idx === delegates.length - 1 ? "not-allowed" : "pointer", opacity: idx === delegates.length - 1 ? 0.4 : 1 }}>↓</button>
+                <button onClick={() => removeDelegate(id)} title="Retirer"
+                  style={{ border: "1px solid #FECACA", background: "white", borderRadius: 6, padding: "4px 8px", fontSize: 12, color: "#EF4444", cursor: "pointer" }}>Retirer</button>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {available.length > 0 && (
+        <div style={{ marginTop: 12, display: "flex", gap: 8 }}>
+          <select
+            onChange={(e) => {
+              if (e.target.value) addDelegate(e.target.value);
+              e.currentTarget.selectedIndex = 0;
+            }}
+            defaultValue=""
+            style={{ flex: 1, padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151" }}
+          >
+            <option value="" disabled>Ajouter un délégué…</option>
+            {available.map((u) => (
+              <option key={u.id} value={u.id}>
+                {fullName(u)} {u.email ? `(${u.email})` : ""}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+
+      {msg && (
+        <div style={{
+          marginTop: 12,
+          padding: "8px 12px",
+          borderRadius: 8,
+          border: `1px solid ${msg.ok ? "#86EFAC" : "#FECACA"}`,
+          background: msg.ok ? "#F0FDF4" : "#FEF2F2",
+          color: msg.ok ? "#15803d" : "#DC2626",
+          fontSize: 13,
+        }}>
+          {msg.text}
+        </div>
+      )}
+
+      <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16 }}>
+        <button
+          onClick={save}
+          disabled={!dirty || saving}
+          style={{
+            background: !dirty || saving ? "#A5B4FC" : "linear-gradient(135deg,#4F46E5,#6366F1)",
+            color: "white",
+            border: "none",
+            borderRadius: 8,
+            padding: "8px 16px",
+            fontSize: 13,
+            fontWeight: 600,
+            cursor: !dirty || saving ? "not-allowed" : "pointer",
+          }}
+        >
+          {saving ? "Enregistrement…" : "Enregistrer"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function InfosPersoScreen() {
   const { user, refreshUser } = useAuth();
   const [stab, setStab] = useState("À propos");
@@ -5560,30 +5789,7 @@ function InfosPersoScreen() {
 
           {stab === "Disponibilités" && <DisponibilitesPanel />}
 
-          {stab === "Délégations" && (
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-              <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 20 }}>
-                <div>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Délégations</div>
-                  <div style={{ fontSize: 12, color: "#94a3b8" }}>Gérez les délégations de traitement de dossiers.</div>
-                </div>
-                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>+ Nouvelle délégation</button>
-              </div>
-              {[
-                { to: "Julien D.", type: "Permis de construire", period: "27 mai – 3 juin 2024", status: "À venir" },
-                { to: "Claire P.", type: "Tous les dossiers", period: "15 – 22 avr. 2024", status: "Terminé" },
-              ].map((d, i) => (
-                <div key={i} style={{ padding: "14px 0", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", gap: 12 }}>
-                  <div style={{ width: 36, height: 36, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{d.to.split(" ").map(w => w[0]).join("")}</div>
-                  <div style={{ flex: 1 }}>
-                    <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{d.to}</div>
-                    <div style={{ fontSize: 11, color: "#64748b" }}>{d.type} · {d.period}</div>
-                  </div>
-                  <StatusBadge status={d.status === "À venir" ? "En attente" : "Terminé"} />
-                </div>
-              ))}
-            </div>
-          )}
+          {stab === "Délégations" && <DelegationsPanel />}
 
           {stab === "Mes Signatures" && (
             <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
