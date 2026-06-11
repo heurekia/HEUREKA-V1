@@ -28,6 +28,21 @@ describe("parseRules", () => {
     expect(parseRules("désolé je ne sais pas")).toEqual([]);
     expect(parseRules("[oups")).toEqual([]);
   });
+
+  it("rejette les règles invalides en les signalant, sans perdre les valides", () => {
+    const issues: string[] = [];
+    const raw = `[
+      {"topic":"hauteur","rule_text":"9 m au faîtage.","summary":"9m"},
+      {"topic":"general"},
+      "pas un objet"
+    ]`;
+    const rules = parseRules(raw, (msg) => issues.push(msg));
+    expect(rules).toHaveLength(1);
+    expect(rules[0]!.rule_text).toBe("9 m au faîtage.");
+    expect(issues).toHaveLength(2);
+    expect(issues[0]).toContain("règle 2/3 rejetée");
+    expect(issues[1]).toContain("règle 3/3 rejetée");
+  });
 });
 
 describe("inferZoneType", () => {
