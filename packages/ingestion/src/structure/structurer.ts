@@ -7,6 +7,7 @@
  *
  * Le LLM est injecté (LlmFn) → cœur testable sans réseau.
  */
+import { z } from "zod";
 import type { Segment } from "../adapters/interface.ts";
 
 export const RULE_TOPICS = [
@@ -47,6 +48,54 @@ export interface ZoneRules {
   rules: StructuredRule[];
 }
 
+// ── Validation Zod de la sortie LLM ──────────────────────────────────────────
+// Le LLM renvoie parfois "x" ou "" là où l'on attend un nombre/une chaîne :
+// ces champs dégradent en null plutôt que de rejeter toute la règle. En
+// revanche une règle sans rule_text NI article_title est inutilisable → rejet
+// (tracé via onIssue, plus de filtrage silencieux).
+const looseNumber = z.preprocess(
+  (v) => (typeof v === "number" && Number.isFinite(v) ? v : null),
+  z.number().nullable(),
+);
+const looseString = z.preprocess(
+  (v) => (typeof v === "string" && v.trim() ? v.trim() : null),
+  z.string().nullable(),
+);
+
+const ruleCaseSchema = z.object({
+  condition: looseString,
+  value: looseNumber,
+  unit: looseString,
+  kind: z.preprocess((v) => (v === "condition" ? "condition" : "parametre"), z.enum(["condition", "parametre"])),
+});
+
+export const structuredRuleSchema = z
+  .object({
+    article_number: looseNumber,
+    article_title: looseString.transform((v) => v ?? ""),
+    topic: looseString.transform((v) => v ?? "general"),
+    rule_text: looseString.transform((v) => v ?? ""),
+    value_min: looseNumber,
+    value_max: looseNumber,
+    value_exact: looseNumber,
+    unit: looseString,
+    conditions: looseString,
+    summary: looseString.transform((v) => v ?? ""),
+    instructor_note: looseString,
+    cases: z
+      .array(ruleCaseSchema)
+      .catch([])
+      .transform((cs) => cs.flatMap((c) => (c.condition ? [{ ...c, condition: c.condition }] : []))),
+    sub_theme: looseString,
+    applies_if: z
+      .array(looseString)
+      .catch([])
+      .transform((xs) => xs.filter((x): x is string => x !== null)),
+  })
+  .refine((r) => r.rule_text !== "" || r.article_title !== "", {
+    message: "rule_text et article_title tous deux vides",
+  });
+
 /** Injected LLM call: receives a system + user prompt, returns raw text (JSON expected). */
 export type LlmFn = (system: string, user: string) => Promise<string>;
 
@@ -84,43 +133,42 @@ function buildUserPrompt(zone: { code: string; label: string }, articles: Array<
   return `Zone ${zone.code} — ${zone.label}\n\n${body}`;
 }
 
-/** Parse the LLM's JSON array defensively. */
-export function parseRules(raw: string): StructuredRule[] {
+/**
+ * Parse + valide le tableau JSON renvoyé par le LLM.
+ * Chaque règle passe par structuredRuleSchema ; les entrées invalides sont
+ * écartées une à une (le reste du lot est conservé) et signalées via onIssue.
+ */
+export function parseRules(
+  raw: string,
+  onIssue: (msg: string) => void = (msg) => console.warn(`[structurer] ${msg}`),
+): StructuredRule[] {
   const match = raw.match(/\[[\s\S]*\]/);
-  if (!match) return [];
+  if (!match) {
+    onIssue("réponse LLM sans tableau JSON — 0 règle extraite");
+    return [];
+  }
   let arr: unknown;
   try {
     arr = JSON.parse(match[0]);
-  } catch {
+  } catch (err) {
+    onIssue(`JSON LLM invalide (${err instanceof Error ? err.message : String(err)}) — 0 règle extraite`);
     return [];
   }
-  if (!Array.isArray(arr)) return [];
-  const num = (v: unknown): number | null => (typeof v === "number" && Number.isFinite(v) ? v : null);
-  const str = (v: unknown): string | null => (typeof v === "string" && v.trim() ? v.trim() : null);
-  return arr
-    .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
-    .map((r) => ({
-      article_number: num(r.article_number),
-      article_title: str(r.article_title) ?? "",
-      topic: str(r.topic) ?? "general",
-      rule_text: str(r.rule_text) ?? "",
-      value_min: num(r.value_min),
-      value_max: num(r.value_max),
-      value_exact: num(r.value_exact),
-      unit: str(r.unit),
-      conditions: str(r.conditions),
-      summary: str(r.summary) ?? "",
-      instructor_note: str(r.instructor_note),
-      cases: Array.isArray(r.cases)
-        ? (r.cases as unknown[])
-            .filter((c): c is Record<string, unknown> => !!c && typeof c === "object")
-            .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit), kind: c.kind === "condition" ? "condition" as const : "parametre" as const }))
-            .filter((c) => c.condition)
-        : [],
-      sub_theme: str(r.sub_theme),
-      applies_if: Array.isArray(r.applies_if) ? (r.applies_if as unknown[]).map(str).filter((t): t is string => !!t) : [],
-    }))
-    .filter((r) => r.rule_text || r.article_title);
+  if (!Array.isArray(arr)) {
+    onIssue("JSON LLM exploitable mais pas un tableau — 0 règle extraite");
+    return [];
+  }
+  const rules: StructuredRule[] = [];
+  arr.forEach((item, i) => {
+    const parsed = structuredRuleSchema.safeParse(item);
+    if (parsed.success) {
+      rules.push(parsed.data);
+    } else {
+      const detail = parsed.error.issues.map((iss) => `${iss.path.join(".") || "(racine)"} : ${iss.message}`).join(" ; ");
+      onIssue(`règle ${i + 1}/${arr.length} rejetée — ${detail}`);
+    }
+  });
+  return rules;
 }
 
 /**
@@ -144,7 +192,8 @@ export async function structureSegments(
     let rules: StructuredRule[] = [];
     try {
       rules = parseRules(await llm(SYSTEM, input));
-    } catch {
+    } catch (err) {
+      console.warn(`[structurer] zone ${zone.segment_code} : appel LLM échoué (${err instanceof Error ? err.message : String(err)})`);
       rules = [];
     }
     opts.onZone?.(zone.segment_code, rules.length);
