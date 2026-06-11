@@ -5,6 +5,7 @@ import { eq, desc, and, sql, like, ilike, inArray } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
+import { enforceDossierAccess } from "../middlewares/dossierAccess.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import { runDossierConformityAnalysis, runDossierConformityAnalysisBackground, type ConformiteReport } from "../services/dossierConformity.js";
 import { parseLooseArray } from "../services/jsonExtract.js";
@@ -60,6 +61,15 @@ async function resolveCommuneIdFromUser(req: AuthRequest): Promise<string | null
 
 mairieRouter.use(requireAuth);
 mairieRouter.use(requireRole("mairie", "instructeur", "admin"));
+// Garde-fou IDOR : toute route /dossiers/:id* doit appartenir au scope commune
+// de l'utilisateur. Le middleware charge aussi le dossier dans req.dossier pour
+// éviter de le refetcher dans chaque handler.
+mairieRouter.use("/dossiers/:id", enforceDossierAccess);
+mairieRouter.use("/conversations/:dossierId", (req, res, next) => {
+  // Réutilise enforceDossierAccess en remappant :dossierId → :id.
+  (req.params as Record<string, string>).id = req.params["dossierId"] as string;
+  return enforceDossierAccess(req as AuthRequest, res, next);
+});
 
 // Délais réglementaires d'instruction (Code de l'Urbanisme)
 // Implémentation détaillée et auditable : voir services/instructionDelays.ts.

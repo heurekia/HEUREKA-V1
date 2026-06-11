@@ -15,6 +15,7 @@ import { notificationsRouter } from "./routes/notifications.js";
 import { superAdminRouter } from "./routes/superAdmin.js";
 import { serviceRouter } from "./routes/service.js";
 import { decisionsRouter } from "./routes/decisions.js";
+import { uploadsRouter } from "./routes/uploads.js";
 
 export const app = express();
 
@@ -84,12 +85,11 @@ app.get("/api/health", (_req, res) => {
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const frontendDist = path.resolve(__dirname, "../../web/dist");
-const uploadsDir = path.resolve(__dirname, "../uploads");
 
-// Uploaded files — no-cache so the client always gets the latest version.
-// IMPORTANT : enregistré AVANT le catch-all `/api` ci-dessous, sinon toute requête
-// vers /api/uploads/<fichier> tombe dans le 404 JSON.
-app.use("/api/uploads", express.static(uploadsDir, { maxAge: 0 }));
+// Fichiers déposés (pièces jointes des dossiers) — authentifié et vérifié
+// par routes/uploads.ts (auth + scope commune / propriétaire).
+// IMPORTANT : enregistré AVANT le catch-all `/api` ci-dessous.
+app.use("/api/uploads", uploadsRouter);
 
 // Unknown API routes must return a JSON 404 — not the SPA's index.html.
 // Otherwise a typo'd or removed endpoint silently serves HTML, which the
