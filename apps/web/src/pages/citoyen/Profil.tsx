@@ -61,15 +61,15 @@ export function Profil() {
   };
 
   return (
-    <div className="max-w-3xl mx-auto px-6 py-8">
-      <div className="mb-8">
-        <h1 className="text-2xl font-bold text-[#000020]">Mon profil</h1>
+    <div className="max-w-3xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
+      <div className="mb-6 sm:mb-8">
+        <h1 className="text-xl sm:text-2xl font-bold text-[#000020]">Mon profil</h1>
         <p className="text-gray-500 text-sm mt-1">Gérez vos informations personnelles</p>
       </div>
 
       <Card className="border-gray-200/80 mb-6">
-        <CardContent className="p-8">
-          <div className="flex items-center gap-6 mb-8 pb-6 border-b border-gray-100">
+        <CardContent className="p-5 sm:p-8">
+          <div className="flex flex-col sm:flex-row sm:items-center gap-4 sm:gap-6 mb-6 sm:mb-8 pb-6 border-b border-gray-100">
             <div className="relative">
               <Avatar
                 fallback={user ? `${user.prenom} ${user.nom}` : "U"}
@@ -111,7 +111,7 @@ export function Profil() {
           </div>
 
           <div className="mt-8 pt-6 border-t border-gray-100 flex justify-end">
-            <Button className="gap-2">
+            <Button className="gap-2 w-full sm:w-auto justify-center">
               <Save className="w-4 h-4" />
               Enregistrer
             </Button>
@@ -121,7 +121,7 @@ export function Profil() {
 
       {/* RGPD */}
       <Card className="border-gray-200/80 mb-6">
-        <CardContent className="p-8">
+        <CardContent className="p-5 sm:p-8">
           <h2 className="text-base font-semibold text-[#000020] mb-1">Mes données personnelles (RGPD)</h2>
           <p className="text-sm text-gray-500 mb-6">
             Vous disposez de plusieurs droits sur vos données personnelles. Vous pouvez les exercer librement depuis cette page.
