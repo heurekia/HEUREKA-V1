@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, commune_documents, dossier_consultations, external_services, service_communes, instruction_events, document_segments, document_segment_annotations, ANNOTATION_KINDS, dossier_courriers } from "@heureka-v1/db";
+import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, user_delegations, commune_documents, dossier_consultations, external_services, service_communes, instruction_events, document_segments, document_segment_annotations, ANNOTATION_KINDS, dossier_courriers } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike, inArray } from "drizzle-orm";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
@@ -1896,6 +1896,88 @@ mairieRouter.delete("/my-absences/:id", async (req: AuthRequest, res) => {
     const { id } = req.params as { id: string };
     await db.delete(user_absences).where(and(eq(user_absences.id, id), eq(user_absences.user_id, userId)));
     res.json({ ok: true });
+  } catch (err) { console.error(err); res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+// ── Délégations ──────────────────────────────────────────────────────────────
+// Chaîne ordonnée des instructeurs qui prennent le relais pendant une absence.
+// L'ordre dans la liste reçue détermine la priorité (1er = principal).
+
+mairieRouter.get("/my-delegations", async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const rows = await db
+      .select({
+        id: user_delegations.id,
+        delegate_user_id: user_delegations.delegate_user_id,
+        priority: user_delegations.priority,
+        prenom: users.prenom,
+        nom: users.nom,
+        email: users.email,
+      })
+      .from(user_delegations)
+      .leftJoin(users, eq(user_delegations.delegate_user_id, users.id))
+      .where(eq(user_delegations.user_id, userId))
+      .orderBy(user_delegations.priority);
+    res.json(rows);
+  } catch (err) { console.error(err); res.status(500).json({ error: "Erreur serveur" }); }
+});
+
+mairieRouter.put("/my-delegations", async (req: AuthRequest, res) => {
+  try {
+    const userId = req.user!.id;
+    const { delegates } = req.body as { delegates: string[] };
+    if (!Array.isArray(delegates)) {
+      return res.status(400).json({ error: "delegates doit être un tableau d'UUID" });
+    }
+    // Pas d'auto-délégation ni de doublons.
+    const seen = new Set<string>();
+    const ordered = delegates.filter((d) => {
+      if (typeof d !== "string" || !d) return false;
+      if (d === userId) return false;
+      if (seen.has(d)) return false;
+      seen.add(d);
+      return true;
+    });
+
+    if (ordered.length > 0) {
+      const found = await db
+        .select({ id: users.id })
+        .from(users)
+        .where(and(inArray(users.id, ordered), sql`role IN ('instructeur', 'mairie', 'admin')`));
+      const validIds = new Set(found.map((r) => r.id));
+      const filtered = ordered.filter((d) => validIds.has(d));
+      if (filtered.length !== ordered.length) {
+        return res.status(400).json({ error: "Un ou plusieurs délégués n'ont pas les droits d'instruction" });
+      }
+    }
+
+    await db.transaction(async (tx) => {
+      await tx.delete(user_delegations).where(eq(user_delegations.user_id, userId));
+      if (ordered.length === 0) return;
+      await tx.insert(user_delegations).values(
+        ordered.map((delegate_user_id, idx) => ({
+          user_id: userId,
+          delegate_user_id,
+          priority: idx + 1,
+        })),
+      );
+    });
+
+    const rows = await db
+      .select({
+        id: user_delegations.id,
+        delegate_user_id: user_delegations.delegate_user_id,
+        priority: user_delegations.priority,
+        prenom: users.prenom,
+        nom: users.nom,
+        email: users.email,
+      })
+      .from(user_delegations)
+      .leftJoin(users, eq(user_delegations.delegate_user_id, users.id))
+      .where(eq(user_delegations.user_id, userId))
+      .orderBy(user_delegations.priority);
+    res.json(rows);
   } catch (err) { console.error(err); res.status(500).json({ error: "Erreur serveur" }); }
 });
 

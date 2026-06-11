@@ -20,6 +20,7 @@ export * from "./userCommunes.js";
 export * from "./legalMentions.js";
 export * from "./userAvailability.js";
 export * from "./userAbsences.js";
+export * from "./userDelegations.js";
 export * from "./decisions.js";
 export * from "./signataires.js";
 export * from "./decisionEvents.js";
