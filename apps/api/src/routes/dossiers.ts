@@ -2,7 +2,7 @@ import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
 import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events, dossier_courriers, users } from "@heureka-v1/db";
-import { eq, desc, and, ilike, gt } from "drizzle-orm";
+import { eq, desc, and, ilike, gt, sql, isNull } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import crypto from "crypto";
 import { callClaude } from "../services/aiUsage.js";
@@ -259,6 +259,53 @@ dossiersRouter.get("/", async (req: AuthRequest, res) => {
       .where(eq(dossiers.user_id, req.user!.id))
       .orderBy(desc(dossiers.created_at));
     res.json(list);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Liste des conversations du citoyen ──
+// Un dossier = une conversation avec la mairie. On renvoie la liste des
+// dossiers du citoyen avec, pour chacun, le dernier message + le nombre de
+// messages non lus (= messages d'instructeur que le citoyen n'a pas encore
+// consultés). Seuls les fils citoyen↔mairie sont remontés (consultation_id IS NULL).
+// Placée AVANT la route `/:id` pour éviter la collision « conversations » → :id.
+dossiersRouter.get("/conversations", async (req: AuthRequest, res) => {
+  try {
+    const rows = await db.execute(sql`
+      WITH my_dossiers AS (
+        SELECT id, numero, type, status, commune
+        FROM dossiers
+        WHERE user_id = ${req.user!.id}
+      ),
+      last_msg AS (
+        SELECT DISTINCT ON (dm.dossier_id)
+          dm.dossier_id, dm.content, dm.from_role, dm.created_at
+        FROM dossier_messages dm
+        WHERE dm.consultation_id IS NULL
+          AND dm.dossier_id IN (SELECT id FROM my_dossiers)
+        ORDER BY dm.dossier_id, dm.created_at DESC
+      ),
+      unread AS (
+        SELECT dm.dossier_id, COUNT(*)::int AS cnt
+        FROM dossier_messages dm
+        WHERE dm.consultation_id IS NULL
+          AND dm.from_role <> 'citoyen'
+          AND dm.read_at IS NULL
+          AND dm.dossier_id IN (SELECT id FROM my_dossiers)
+        GROUP BY dm.dossier_id
+      )
+      SELECT
+        d.id AS dossier_id, d.numero, d.type, d.status, d.commune,
+        lm.content AS last_content, lm.from_role AS last_from_role, lm.created_at AS last_at,
+        COALESCE(ur.cnt, 0) AS unread_count
+      FROM my_dossiers d
+      LEFT JOIN last_msg lm ON lm.dossier_id = d.id
+      LEFT JOIN unread ur ON ur.dossier_id = d.id
+      ORDER BY lm.created_at DESC NULLS LAST, d.numero DESC
+    `);
+    res.json(rows);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -626,7 +673,9 @@ dossiersRouter.patch("/:id", async (req: AuthRequest, res) => {
   }
 });
 
-// ── Messages d'un dossier ──
+// ── Messages d'un dossier (citoyen ↔ mairie uniquement) ──
+// Filtre consultation_id IS NULL pour cacher les fils services consultés
+// (ABF/SDIS/…) que le citoyen ne doit jamais voir.
 dossiersRouter.get("/:id/messages", async (req: AuthRequest, res) => {
   try {
     const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
@@ -634,7 +683,10 @@ dossiersRouter.get("/:id/messages", async (req: AuthRequest, res) => {
     const messages = await db
       .select()
       .from(dossier_messages)
-      .where(eq(dossier_messages.dossier_id, req.params.id as string))
+      .where(and(
+        eq(dossier_messages.dossier_id, req.params.id as string),
+        isNull(dossier_messages.consultation_id),
+      ))
       .orderBy(dossier_messages.created_at);
     res.json(messages);
   } catch (err) {
@@ -659,6 +711,27 @@ dossiersRouter.post("/:id/messages", async (req: AuthRequest, res) => {
       })
       .returning();
     res.status(201).json(rows[0]!);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Marquer comme lus les messages d'instructeur d'un dossier ──
+dossiersRouter.post("/:id/messages/read", async (req: AuthRequest, res) => {
+  try {
+    const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    await db
+      .update(dossier_messages)
+      .set({ read_at: new Date() })
+      .where(and(
+        eq(dossier_messages.dossier_id, req.params.id as string),
+        isNull(dossier_messages.consultation_id),
+        sql`from_role <> 'citoyen'`,
+        isNull(dossier_messages.read_at),
+      ));
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
