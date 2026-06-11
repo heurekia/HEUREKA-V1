@@ -2,6 +2,7 @@ import { Router } from "express";
 import { db } from "../db.js";
 import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, user_delegations, commune_documents, dossier_consultations, external_services, service_communes, instruction_events, document_segments, document_segment_annotations, ANNOTATION_KINDS, dossier_courriers } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike, inArray } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
@@ -170,6 +171,7 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
         ? sql`dossiers.instructeur_id = ${req.user.id}`
         : sql`1=1`;
 
+    const instructeurU = alias(users, "instructeur_user");
     const sel = {
       id: dossiers.id, numero: dossiers.numero, type: dossiers.type, status: dossiers.status,
       adresse: dossiers.adresse, commune: dossiers.commune, code_postal: dossiers.code_postal,
@@ -181,6 +183,7 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
       instructeur_id: dossiers.instructeur_id,
       created_at: dossiers.created_at,
       demandeur_prenom: users.prenom, demandeur_nom: users.nom,
+      instructeur_prenom: instructeurU.prenom, instructeur_nom: instructeurU.nom,
     };
 
     let rows;
@@ -188,16 +191,19 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
       const pattern = `%${search}%`;
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
+        .leftJoin(instructeurU, eq(dossiers.instructeur_id, instructeurU.id))
         .where(sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status != 'brouillon' AND (dossiers.numero ILIKE ${pattern} OR dossiers.adresse ILIKE ${pattern} OR dossiers.commune ILIKE ${pattern} OR users.prenom ILIKE ${pattern} OR users.nom ILIKE ${pattern} OR CONCAT(users.prenom, ' ', users.nom) ILIKE ${pattern})`)
         .orderBy(desc(dossiers.created_at));
     } else if (status) {
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
+        .leftJoin(instructeurU, eq(dossiers.instructeur_id, instructeurU.id))
         .where(sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status = ${status}`)
         .orderBy(desc(dossiers.created_at));
     } else {
       rows = await db.select(sel).from(dossiers)
         .leftJoin(users, eq(dossiers.user_id, users.id))
+        .leftJoin(instructeurU, eq(dossiers.instructeur_id, instructeurU.id))
         .where(sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status != 'brouillon'`)
         .orderBy(desc(dossiers.created_at));
     }
@@ -205,6 +211,7 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
     res.json(rows.map(r => ({
       ...r,
       demandeur: [r.demandeur_prenom, r.demandeur_nom].filter(Boolean).join(" ") || "—",
+      instructeur: [r.instructeur_prenom, r.instructeur_nom].filter(Boolean).join(" ") || null,
     })));
   } catch (err) {
     console.error(err);
