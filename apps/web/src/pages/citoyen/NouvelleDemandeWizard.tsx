@@ -2152,7 +2152,7 @@ export function NouvelleDemandeWizard() {
                       </label>
                       {!aiConsent && (
                         <div style={{ marginTop: 8, padding: "8px 12px", background: "#FEF3C7", borderRadius: 8, color: "#92400E", fontSize: 12.5, lineHeight: 1.5 }}>
-                          ⓘ Vous avez refusé l'analyse IA. Vos pièces seront uniquement vérifiées par un instructeur humain. Le délai d'instruction peut être légèrement allongé.
+                          ⓘ Vous avez refusé l'analyse IA. Vos pièces seront uniquement vérifiées manuellement par un instructeur humain.
                         </div>
                       )}
                     </div>
