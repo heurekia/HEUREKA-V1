@@ -14,6 +14,7 @@ import {
   canTransition,
   type DossierStatus,
 } from "@heureka-v1/shared";
+import { resolveEffectiveInstructeur } from "./absenceDelegation.js";
 
 export type WorkflowErrorCode =
   | "DOSSIER_NOT_FOUND"
@@ -95,6 +96,10 @@ export async function changeDossierStatus(
 
 export interface AssignOptions {
   reason?: string | null;
+  // Désactive la redirection automatique en cas d'absence (utilisé par le job
+  // cron pour ne pas re-rediriger un dossier déjà redirigé, ou par
+  // l'administration pour forcer une attribution explicite).
+  skipAbsenceRedirection?: boolean;
 }
 
 export async function assignInstructeur(
@@ -102,7 +107,7 @@ export async function assignInstructeur(
   instructeurId: string,
   actorId: string | null,
   opts: AssignOptions = {},
-): Promise<{ changed: boolean; previous_instructeur_id: string | null }> {
+): Promise<{ changed: boolean; previous_instructeur_id: string | null; redirected_from?: string }> {
   const [before] = await db
     .select({ id: dossiers.id, instructeur_id: dossiers.instructeur_id })
     .from(dossiers)
@@ -110,10 +115,22 @@ export async function assignInstructeur(
     .limit(1);
   if (!before) throw new WorkflowError("DOSSIER_NOT_FOUND", "Dossier non trouvé");
 
+  // Résolution de la chaîne de délégation : si la cible est en absence
+  // aujourd'hui, on suit ses délégués jusqu'à trouver un instructeur disponible.
+  let effectiveId = instructeurId;
+  let redirected = false;
+  let chain: string[] = [instructeurId];
+  if (!opts.skipAbsenceRedirection) {
+    const resolved = await resolveEffectiveInstructeur(instructeurId, new Date());
+    effectiveId = resolved.instructeurId;
+    redirected = resolved.redirected;
+    chain = resolved.chain;
+  }
+
   const [target] = await db
     .select({ id: users.id, role: users.role, prenom: users.prenom, nom: users.nom })
     .from(users)
-    .where(eq(users.id, instructeurId))
+    .where(eq(users.id, effectiveId))
     .limit(1);
   if (!target) throw new WorkflowError("ASSIGNEE_NOT_FOUND", "Utilisateur cible inconnu");
   if (!ASSIGNABLE_ROLES.has(target.role)) {
@@ -123,31 +140,44 @@ export async function assignInstructeur(
     );
   }
 
-  if (before.instructeur_id === instructeurId) {
+  if (before.instructeur_id === effectiveId) {
     return { changed: false, previous_instructeur_id: before.instructeur_id };
   }
 
   await db
     .update(dossiers)
-    .set({ instructeur_id: instructeurId, updated_at: new Date() })
+    .set({ instructeur_id: effectiveId, updated_at: new Date() })
     .where(eq(dossiers.id, dossierId));
 
   const targetName = [target.prenom, target.nom].filter(Boolean).join(" ").trim() || target.id;
+  const description = redirected
+    ? `Dossier redirigé vers ${targetName} (instructeur initial absent)`
+    : before.instructeur_id
+      ? `Dossier réassigné à ${targetName}`
+      : `Dossier pris en charge par ${targetName}`;
   await db.insert(instruction_events).values({
     dossier_id: dossierId,
-    type: before.instructeur_id ? "instructeur_reassigned" : "instructeur_assigned",
+    type: redirected
+      ? "instructeur_redirected_absence"
+      : before.instructeur_id
+        ? "instructeur_reassigned"
+        : "instructeur_assigned",
     user_id: actorId,
-    description: before.instructeur_id
-      ? `Dossier réassigné à ${targetName}`
-      : `Dossier pris en charge par ${targetName}`,
+    description,
     metadata: {
       previous_instructeur_id: before.instructeur_id,
-      new_instructeur_id: instructeurId,
+      new_instructeur_id: effectiveId,
+      requested_instructeur_id: instructeurId,
+      delegation_chain: redirected ? chain : undefined,
       reason: opts.reason ?? null,
     },
   });
 
-  return { changed: true, previous_instructeur_id: before.instructeur_id };
+  return {
+    changed: true,
+    previous_instructeur_id: before.instructeur_id,
+    redirected_from: redirected ? instructeurId : undefined,
+  };
 }
 
 export async function unassignInstructeur(

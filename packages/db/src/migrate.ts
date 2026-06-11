@@ -637,6 +637,22 @@ CREATE TABLE IF NOT EXISTS document_segment_annotations (
 CREATE INDEX IF NOT EXISTS idx_segment_annotations_segment ON document_segment_annotations(segment_id);
 CREATE INDEX IF NOT EXISTS idx_segment_annotations_source ON document_segment_annotations(source_id);
 
+-- ── Délégations de portefeuille en cas d'absence ──
+-- Chaîne ordonnée de délégués configurée par l'instructeur lui-même.
+-- Utilisée par le moteur d'attribution et un job quotidien pour rediriger
+-- les nouveaux dossiers + les dossiers dont l'échéance tombe pendant l'absence.
+CREATE TABLE IF NOT EXISTS user_delegations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  delegate_user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  priority integer NOT NULL DEFAULT 1,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS user_delegations_user_priority_uniq
+  ON user_delegations(user_id, priority);
+CREATE INDEX IF NOT EXISTS idx_user_delegations_delegate ON user_delegations(delegate_user_id);
+
 CREATE TABLE IF NOT EXISTS dossier_courriers (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,

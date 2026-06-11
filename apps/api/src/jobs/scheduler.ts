@@ -2,10 +2,12 @@ import cron from "node-cron";
 import path from "path";
 import { fileURLToPath } from "url";
 import { db } from "../db.js";
-import { audit_logs, communes, dossiers, dossier_pieces_jointes } from "@heureka-v1/db";
-import { sql, eq, lt, and, or, isNull } from "drizzle-orm";
+import { audit_logs, communes, dossiers, dossier_pieces_jointes, user_absences } from "@heureka-v1/db";
+import { sql, eq, lt, lte, gte, and, or, isNull } from "drizzle-orm";
 import { getStorageProvider } from "../services/storage.js";
 import { refreshPluZones, PLU_REFRESH_AFTER_MS } from "../services/pluZones.js";
+import { resolveEffectiveInstructeur } from "../services/absenceDelegation.js";
+import { assignInstructeur } from "../services/dossierWorkflow.js";
 
 // Rétention paramétrable. Valeurs par défaut alignées sur la politique de
 // confidentialité publique et les exigences DSI Tours (CCSC).
@@ -91,6 +93,69 @@ export function startScheduledJobs() {
       console.log(`[cron] PLU refresh terminé : ${ok} OK, ${ko} échec(s)`);
     } catch (err) {
       console.error("[cron] PLU refresh failed:", err);
+    }
+  });
+
+  // Daily at 04:00 — redirection des dossiers en cours pendant l'absence d'un
+  // instructeur. On cible les dossiers dont l'échéance d'instruction tombe
+  // entre aujourd'hui et la fin de l'absence : ils risquent d'expirer sans
+  // que quelqu'un ne s'en occupe. Les nouveaux dossiers attribués pendant
+  // l'absence sont déjà redirigés à l'assignation par `assignInstructeur`.
+  cron.schedule("0 4 * * *", async () => {
+    try {
+      const todayIso = new Date().toISOString().slice(0, 10);
+      const activeAbsences = await db
+        .select({
+          user_id: user_absences.user_id,
+          end_date: user_absences.end_date,
+        })
+        .from(user_absences)
+        .where(and(
+          lte(user_absences.start_date, todayIso),
+          gte(user_absences.end_date, todayIso),
+        ));
+
+      if (activeAbsences.length === 0) return;
+
+      const TERMINAL = ["accepte", "refuse", "accord_prescription"] as const;
+      let redirectedCount = 0;
+      let skippedCount = 0;
+
+      for (const abs of activeAbsences) {
+        // Dossiers dont l'échéance tombe pendant l'absence (ou déjà dépassée
+        // si l'instructeur est revenu en retard / vient de partir).
+        const due = await db
+          .select({ id: dossiers.id })
+          .from(dossiers)
+          .where(and(
+            eq(dossiers.instructeur_id, abs.user_id),
+            sql`${dossiers.status}::text NOT IN ('accepte','refuse','accord_prescription')`,
+            sql`date(${dossiers.date_limite_instruction}) <= ${abs.end_date}`,
+          ));
+
+        for (const d of due) {
+          const resolved = await resolveEffectiveInstructeur(abs.user_id, new Date());
+          if (!resolved.redirected || resolved.instructeurId === abs.user_id) {
+            skippedCount++;
+            continue;
+          }
+          try {
+            const r = await assignInstructeur(d.id, resolved.instructeurId, null, {
+              reason: "Redirection automatique : échéance pendant l'absence",
+              skipAbsenceRedirection: true,
+            });
+            if (r.changed) redirectedCount++;
+          } catch (err) {
+            console.error(`[cron] redirection dossier ${d.id} échouée:`, err);
+          }
+        }
+      }
+
+      if (redirectedCount > 0 || skippedCount > 0) {
+        console.log(`[cron] Redirection absences : ${redirectedCount} dossier(s) redirigé(s), ${skippedCount} sans délégué disponible`);
+      }
+    } catch (err) {
+      console.error("[cron] absence redirection failed:", err);
     }
   });
 
