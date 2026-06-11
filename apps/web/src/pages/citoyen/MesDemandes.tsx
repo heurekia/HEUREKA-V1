@@ -23,20 +23,20 @@ export function MesDemandes() {
   );
 
   return (
-    <div className="max-w-7xl mx-auto px-6 py-8">
+    <div className="max-w-7xl mx-auto px-4 sm:px-6 py-6 sm:py-8">
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 mb-6">
         <div>
-          <h1 className="text-2xl font-bold text-[#000020]">Mes demandes</h1>
+          <h1 className="text-xl sm:text-2xl font-bold text-[#000020]">Mes demandes</h1>
           <p className="text-gray-500 text-sm">Suivez l'avancement de vos dossiers</p>
         </div>
-        <Button className="gap-2" onClick={() => navigate("/citoyen/nouvelle-demande")}>
+        <Button className="gap-2 w-full sm:w-auto justify-center" onClick={() => navigate("/citoyen/nouvelle-demande")}>
           <Plus className="w-4 h-4" />
           Nouvelle demande
         </Button>
       </div>
 
       <div className="flex items-center gap-3 mb-6">
-        <div className="relative flex-1 max-w-md">
+        <div className="relative flex-1 sm:max-w-md">
           <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
           <Input
             placeholder="Rechercher un dossier..."
@@ -45,14 +45,14 @@ export function MesDemandes() {
             onChange={(e) => setSearch(e.target.value)}
           />
         </div>
-        <Button variant="outline" size="sm" className="gap-2">
+        <Button variant="outline" size="sm" className="gap-2 shrink-0">
           <Filter className="w-4 h-4" />
-          Filtres
+          <span className="hidden sm:inline">Filtres</span>
         </Button>
       </div>
 
       <Card className="border-gray-200/80">
-        <CardContent className="p-0">
+        <CardContent className="p-0 overflow-x-auto">
           {loading ? (
             <div className="p-12 text-center text-gray-400">Chargement...</div>
           ) : filtered.length === 0 ? (

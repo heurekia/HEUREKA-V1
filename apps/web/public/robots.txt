@@ -1,0 +1,8 @@
+User-agent: *
+Allow: /
+Disallow: /citoyen/
+Disallow: /login
+Disallow: /register
+Disallow: /activer-compte
+
+Sitemap: https://www.heurekia.com/sitemap.xml

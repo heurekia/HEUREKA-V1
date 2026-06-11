@@ -4,6 +4,7 @@ import { useAuth } from "../../hooks/useAuth";
 import { MapLeaflet } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 import type { BaseLayer } from "../../components/MapLeaflet";
+import { Seo } from "../../components/Seo";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -260,6 +261,11 @@ export function AnalyseParcellaire() {
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "white", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+      <Seo
+        title="Analyse parcellaire — PLU, risques et constructibilité"
+        description="Analysez gratuitement une parcelle cadastrale : zone PLU, règles d'urbanisme applicables, risques (inondation, séisme, argile, radon) et constructibilité."
+        path="/analyse-parcellaire"
+      />
       {/* ── Header ── */}
       <header style={{ height: 52, borderBottom: "1px solid #E5E7EB", display: "flex", alignItems: "center", padding: "0 20px", gap: 16, flexShrink: 0, background: "white", zIndex: 10 }}>
         <Link to="/" style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none", color: "inherit" }}>

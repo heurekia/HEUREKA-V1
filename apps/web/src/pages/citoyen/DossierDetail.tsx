@@ -91,6 +91,7 @@ const EVENT_ICONS: Record<string, string> = {
   dossier_complet: "✅",
   dossier_incomplet: "⚠️",
   instruction_demarree: "🔍",
+  instructeur_assigned: "👤",
   decision_prise: "📌",
   message_instructeur: "💬",
   document_demande: "📄",
@@ -134,7 +135,7 @@ function StatusStepper({ status }: { status: string }) {
           <span style={{ fontSize: 16, fontWeight: 700, color: terminal.color }}>{terminal.label}</span>
         </div>
       ) : (
-        <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 0, overflowX: "auto", paddingBottom: 4 }}>
           {STATUS_PIPELINE.map((s, i) => {
             const done = currentIdx > i;
             const active = currentIdx === i;
@@ -244,15 +245,18 @@ export function DossierDetail() {
       .finally(() => setLoading(false));
   }, [id, navigate]);
 
-  const uploadComplement = async (piece: PieceACompleter, file: File) => {
+  const uploadComplement = async (piece: PieceACompleter, slotKey: string, file: File) => {
     if (!id) return;
-    const key = piece.code_piece ?? piece.nom;
-    setUploadingCodes((prev) => new Set(prev).add(key));
+    setUploadingCodes((prev) => new Set(prev).add(slotKey));
     try {
+      // Le nom déposé suit la convention "${nom du slot} - ${nom du fichier}",
+      // que l'API utilise pour rattacher l'upload à l'emplacement attendu
+      // (matching par préfixe). Le code_piece est conservé tel que demandé par
+      // l'instructeur (chaîne vide pour les pièces libres sans code).
       const combinedName = `${piece.nom} - ${file.name}`;
       const formData = new FormData();
       formData.append("file", file);
-      if (piece.code_piece) formData.append("code_piece", piece.code_piece);
+      formData.append("code_piece", piece.code_piece ?? "");
       formData.append("nom_piece", combinedName);
       const res = await fetch(`/api/dossiers/${id}/pieces/upload`, {
         method: "POST",
@@ -263,21 +267,24 @@ export function DossierDetail() {
         const err = await res.json().catch(() => ({})) as { error?: string };
         throw new Error(err.error ?? `Erreur ${res.status}`);
       }
-      // Rafraîchit la liste des pièces ET l'état "à compléter" pour cocher la
-      // pièce qui vient d'être redéposée.
-      const [p, pac] = await Promise.all([
-        api.get<Piece[]>(`/dossiers/${id}/pieces`),
-        api.get<PiecesACompleterResponse>(`/dossiers/${id}/pieces-a-completer`),
-      ]);
-      setPieces(p);
-      setPiecesACompleter(pac);
+      // Le dépôt a réussi : on rafraîchit les listes en best-effort. Si l'une
+      // des requêtes échoue (réseau intermittent), on garde le succès et la
+      // prochaine action déclenchera le refresh — pas d'alerte d'erreur.
+      try {
+        const p = await api.get<Piece[]>(`/dossiers/${id}/pieces`);
+        setPieces(p);
+      } catch { /* refresh non bloquant */ }
+      try {
+        const pac = await api.get<PiecesACompleterResponse>(`/dossiers/${id}/pieces-a-completer`);
+        setPiecesACompleter(pac);
+      } catch { /* refresh non bloquant */ }
     } catch (e) {
       const msg = e instanceof Error && e.message ? e.message : "Erreur inconnue";
       alert(`Erreur lors du dépôt : ${msg}`);
     } finally {
       setUploadingCodes((prev) => {
         const next = new Set(prev);
-        next.delete(key);
+        next.delete(slotKey);
         return next;
       });
     }
@@ -356,7 +363,7 @@ export function DossierDetail() {
   const statusMeta = statusLabels[dossier.status] ?? { label: dossier.status, variant: "default" as const };
 
   return (
-    <div style={{ minHeight: "100%", background: "#F8FAFC", padding: "28px 24px" }}>
+    <div style={{ minHeight: "100%", background: "#F8FAFC", padding: "clamp(16px, 4vw, 28px) clamp(12px, 4vw, 24px)" }}>
       <div style={{ maxWidth: 1280, margin: "0 auto" }}>
 
         {/* Back */}
@@ -441,7 +448,7 @@ export function DossierDetail() {
         )}
 
         {/* Header */}
-        <div style={{ background: "white", borderRadius: 16, border: "1px solid #E2E8F0", padding: 28, marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
+        <div style={{ background: "white", borderRadius: 16, border: "1px solid #E2E8F0", padding: "clamp(18px, 4vw, 28px)", marginBottom: 16, boxShadow: "0 1px 4px rgba(0,0,0,0.04)" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20, flexWrap: "wrap", gap: 12 }}>
             <div>
               <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 4 }}>Numéro de dossier</div>
@@ -524,12 +531,14 @@ export function DossierDetail() {
 
               <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 20 }}>
                 {piecesACompleter.pieces.map((piece, idx) => {
-                  const key = piece.code_piece ?? `${piece.nom}-${idx}`;
-                  const isUploading = uploadingCodes.has(piece.code_piece ?? piece.nom);
+                  // Clé stable d'emplacement : index dans la liste du courrier.
+                  // Deux entrées avec même nom restent distinctes.
+                  const slotKey = `slot-${idx}`;
+                  const isUploading = uploadingCodes.has(slotKey);
                   const hasFile = piece.deja_redeposee && piece.redepot;
                   return (
                     <div
-                      key={key}
+                      key={slotKey}
                       style={{
                         display: "flex",
                         alignItems: "flex-start",
@@ -612,7 +621,7 @@ export function DossierDetail() {
                                 accept=".pdf,.jpg,.jpeg,.png,.gif,.webp,.tiff"
                                 onChange={(e) => {
                                   const file = e.target.files?.[0];
-                                  if (file) void uploadComplement(piece, file);
+                                  if (file) void uploadComplement(piece, slotKey, file);
                                   e.currentTarget.value = "";
                                 }}
                               />
@@ -649,7 +658,7 @@ export function DossierDetail() {
           );
         })()}
 
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 16 }}>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 16, marginBottom: 16 }}>
 
           {/* Timeline des événements */}
           <Card className="border-gray-200/80">
