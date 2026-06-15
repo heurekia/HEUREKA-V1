@@ -18,8 +18,8 @@ const SENSITIVE_KEYS = new Set([
   "password", "current_password", "new_password", "password_hash",
   "token", "jwt", "secret", "api_key", "apiKey", "authorization",
   // Contenus binaires base64 — feraient exploser la taille des audits.
-  "file_b64", "fileB64", "pdf_content", "pdfContent", "logo_url",
-  "letterhead_logo", "signature_image", "tampon_image", "avatar_url",
+  "file_b64", "fileB64", "pdf_content", "pdfContent", "pdf_base64",
+  "logo_url", "letterhead_logo", "signature_image", "tampon_image", "avatar_url",
 ]);
 
 // Tronque récursivement un body utilisateur pour insert en jsonb : on garde
