@@ -134,9 +134,24 @@ function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
     const pdfPath = path.join(dir, "in.pdf");
     const outPrefix = path.join(dir, "out");
     writeFileSync(pdfPath, pdf);
-    execFileSync("pdftoppm", ["-png", "-r", "200", "-f", "1", "-l", "1", pdfPath, outPrefix], {
-      stdio: ["ignore", "ignore", "pipe"],
-    });
+    try {
+      execFileSync("pdftoppm", ["-png", "-r", "200", "-f", "1", "-l", "1", pdfPath, outPrefix], {
+        stdio: ["ignore", "ignore", "pipe"],
+      });
+    } catch (err) {
+      // ENOENT = binaire absent → message actionnable plutôt que stack
+      // trace cryptique. Le déploiement Railway installe poppler-utils via
+      // nixpacks.toml ; en local : `apt install poppler-utils` (Debian/
+      // Ubuntu), `brew install poppler` (macOS), ou `nix-shell -p
+      // poppler_utils`. Cf. apps/api/.env.example.
+      const code = (err as { code?: string }).code;
+      if (code === "ENOENT") {
+        throw new Error(
+          "pdftoppm introuvable (paquet poppler-utils). Installer : `apt install poppler-utils` (Linux), `brew install poppler` (macOS). En prod Railway : redéployer pour appliquer nixpacks.toml.",
+        );
+      }
+      throw err;
+    }
     return readFileSync(`${outPrefix}-1.png`);
   } finally {
     rmSync(dir, { recursive: true, force: true });
