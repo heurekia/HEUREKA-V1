@@ -76,10 +76,13 @@ describe("runEvaluation", () => {
   });
 
   it("reports rules that have no evaluator in summary.rules_without_evaluator", () => {
+    // 'aspect' et 'destinations' ne sont pas encore couverts par un
+    // evaluator → ils doivent remonter dans rules_without_evaluator avec
+    // leur rule_id + topic.
     const rules = [
       rule({ rule_id: "r1", topic: "hauteur", value_max: 9 }),
-      rule({ rule_id: "r2", topic: "emprise_sol", value_max: 0.4 }),
-      rule({ rule_id: "r3", topic: "stationnement", value_min: 2 }),
+      rule({ rule_id: "r2", topic: "aspect" }),
+      rule({ rule_id: "r3", topic: "destinations" }),
     ];
     const run = runEvaluation(
       ctx({ facts: [{ key: "hauteur", value: 7, source: "document_extraction" }] }),
@@ -87,8 +90,8 @@ describe("runEvaluation", () => {
     );
     expect(run.summary.rules_without_evaluator).toEqual(
       expect.arrayContaining([
-        { rule_id: "r2", topic: "emprise_sol" },
-        { rule_id: "r3", topic: "stationnement" },
+        { rule_id: "r2", topic: "aspect" },
+        { rule_id: "r3", topic: "destinations" },
       ]),
     );
     expect(run.findings).toHaveLength(1);
