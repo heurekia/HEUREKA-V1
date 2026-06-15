@@ -3,7 +3,8 @@ import { rateLimit } from "express-rate-limit";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import { gpuDebug } from "../services/gpuDebug.js";
 import { getOrFetchArticle, parseArticleRef } from "../services/legifrance.js";
-import { requireAuth, requireRole } from "../middlewares/auth.js";
+import { requireAuth, requireRole, optionalAuth, type AuthRequest } from "../middlewares/auth.js";
+import { logAudit } from "../services/audit.js";
 
 export const publicRouter = Router();
 
@@ -16,7 +17,7 @@ const analyseLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, legacyHead
  * Accept: "12 rue du Commerce, Ballan-Miré" OR "37018000AB0050"
  * Returns full ParcelAnalysis including GPU zone, risks, DB rules, buildability.
  */
-publicRouter.get("/analyse", analyseLimiter, async (req, res) => {
+publicRouter.get("/analyse", analyseLimiter, optionalAuth, async (req: AuthRequest, res) => {
   try {
     const q = ((req.query.q as string | undefined) ?? "").trim();
     const lat = req.query.lat !== undefined ? parseFloat(req.query.lat as string) : undefined;
@@ -34,6 +35,30 @@ publicRouter.get("/analyse", analyseLimiter, async (req, res) => {
       zoneOverride,
       coords: hasCoords ? { lat: lat!, lng: lng! } : undefined,
     });
+
+    // Traçabilité : enregistrer l'adresse cherchée pour le super admin.
+    // user_id et email sont remplis si le citoyen est connecté (optionalAuth),
+    // sinon on garde l'IP comme seul identifiant — utile pour mesurer l'usage
+    // anonyme du portail.
+    void logAudit(req, "address_search", {
+      role: req.user?.role ?? "anonyme",
+      targetType: "address",
+      targetId: q || null,
+      metadata: {
+        query: q || null,
+        coords: hasCoords ? { lat, lng } : null,
+        citycode: citycode ?? null,
+        zone_override: zoneOverride ?? null,
+        // Résultat synthétique de l'analyse, sans le payload géométrique
+        // lourd : code INSEE, zone PLU et nom de commune si trouvés.
+        result: {
+          insee: (analysis as { insee?: string } | null)?.insee ?? null,
+          commune: (analysis as { commune?: string } | null)?.commune ?? null,
+          zone: (analysis as { zone?: { code?: string } } | null)?.zone?.code ?? null,
+        },
+      },
+    });
+
     res.json(analysis);
   } catch (err) {
     console.error(err);
@@ -63,9 +88,23 @@ publicRouter.get("/debug/gpu", requireAuth, requireRole("admin"), async (req, re
  * GET /public/analyse-parcelle/:parcelle
  * Legacy endpoint — kept for backwards compatibility, proxies to analyseParcel.
  */
-publicRouter.get("/analyse-parcelle/:parcelle", analyseLimiter, async (req, res) => {
+publicRouter.get("/analyse-parcelle/:parcelle", analyseLimiter, optionalAuth, async (req: AuthRequest, res) => {
   try {
-    const analysis = await analyseParcel(req.params.parcelle as string);
+    const parcelle = req.params.parcelle as string;
+    const analysis = await analyseParcel(parcelle);
+    void logAudit(req, "address_search", {
+      role: req.user?.role ?? "anonyme",
+      targetType: "parcelle",
+      targetId: parcelle,
+      metadata: {
+        query: parcelle,
+        result: {
+          insee: (analysis as { insee?: string } | null)?.insee ?? null,
+          commune: (analysis as { commune?: string } | null)?.commune ?? null,
+          zone: (analysis as { zone?: { code?: string } } | null)?.zone?.code ?? null,
+        },
+      },
+    });
     res.json(analysis);
   } catch (err) {
     console.error(err);

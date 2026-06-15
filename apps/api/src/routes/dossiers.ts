@@ -4,6 +4,7 @@ import { db } from "../db.js";
 import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events, dossier_courriers, users } from "@heureka-v1/db";
 import { eq, desc, and, ilike, gt, sql, isNull } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
+import { auditMutations } from "../middlewares/auditMutations.js";
 import crypto from "crypto";
 import { callClaude } from "../services/aiUsage.js";
 import path from "path";
@@ -67,6 +68,16 @@ const NATURE_LABELS: Record<string, string> = {
 export const dossiersRouter = Router();
 
 dossiersRouter.use(requireAuth);
+// Traçabilité super admin : tout dépôt/modification de dossier par un citoyen
+// (création, upload de pièce, soumission, messages) est journalisé. Le label
+// d'acteur est dérivé du rôle réel du user au moment de la requête, donc une
+// mairie qui agit ici sera taggée "mairie".
+dossiersRouter.use(auditMutations({
+  actor: "citoyen",
+  ignorePaths: new Set([
+    "/:id/messages/read",
+  ]),
+}));
 
 // Verify that a dossier exists AND belongs to the authenticated user.
 // Returns the dossier when owned, otherwise null (caller replies 404).

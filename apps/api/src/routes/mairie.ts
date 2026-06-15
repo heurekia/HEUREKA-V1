@@ -6,6 +6,7 @@ import { alias } from "drizzle-orm/pg-core";
 import { CODE_URBANISME_ID } from "../services/legifrance.js";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { enforceDossierAccess } from "../middlewares/dossierAccess.js";
+import { auditMutations } from "../middlewares/auditMutations.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import { runDossierConformityAnalysis, runDossierConformityAnalysisBackground, type ConformiteReport } from "../services/dossierConformity.js";
 import { parseLooseArray } from "../services/jsonExtract.js";
@@ -61,6 +62,17 @@ async function resolveCommuneIdFromUser(req: AuthRequest): Promise<string | null
 
 mairieRouter.use(requireAuth);
 mairieRouter.use(requireRole("mairie", "instructeur", "admin"));
+// Traçabilité super admin : toute mutation mairie (statut dossier, courriers,
+// PLU, templates…) est journalisée dans audit_logs avec route + body filtré.
+// Les routes "marquer lu/non-lu" sont ignorées (bruyantes, sans valeur d'audit).
+mairieRouter.use(auditMutations({
+  actor: "mairie",
+  ignorePaths: new Set([
+    "/conversations/:dossierId/read",
+    "/conversations/:dossierId/unread",
+    "/service-conversations/:consultationId/read",
+  ]),
+}));
 // Garde-fou IDOR : toute route /dossiers/:id* doit appartenir au scope commune
 // de l'utilisateur. Le middleware charge aussi le dossier dans req.dossier pour
 // éviter de le refetcher dans chaque handler.
