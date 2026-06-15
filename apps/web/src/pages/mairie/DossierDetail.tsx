@@ -4,6 +4,7 @@ import { api } from "../../lib/api";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
 import { Badge, statusLabels } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
+import { RegulatoryChecklist } from "../../components/RegulatoryChecklist";
 import {
   ArrowLeft, FileText, User, MessageSquare, AlertTriangle, CheckCircle,
   RefreshCw, ChevronDown, ChevronRight, ShieldCheck, ShieldAlert, ShieldX,
@@ -404,6 +405,8 @@ export function MairieDossierDetail() {
           </Card>
 
           <ConformitePanel dossierId={id!} />
+
+          <RegulatoryChecklist dossierId={id!} />
         </div>
 
         <div className="space-y-6">
