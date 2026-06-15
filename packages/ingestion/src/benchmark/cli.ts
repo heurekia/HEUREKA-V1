@@ -1,10 +1,12 @@
 /**
  * CLI du harnais de benchmark.
  *
- *   pnpm benchmark:llm                       → exécute toutes les fixtures
- *   pnpm benchmark:llm --limit 3             → smoke test sur 3 fixtures
- *   pnpm benchmark:llm --out rapport.md      → chemin du rapport
- *   pnpm benchmark:llm --providers anthropic,mistral
+ *   pnpm benchmark:llm                                    → exécute toutes les fixtures
+ *   pnpm benchmark:llm --limit 3                          → smoke test sur 3 fixtures
+ *   pnpm benchmark:llm --out rapport.md                   → chemin du rapport
+ *   pnpm benchmark:llm --providers anthropic,mistral      → providers à comparer
+ *   pnpm benchmark:llm --anthropic-models haiku           → restreindre les modèles Anthropic
+ *   pnpm benchmark:llm --mistral-models pixtral-large,pixtral-12b
  *
  * Variables d'environnement requises :
  *   ANTHROPIC_API_KEY          → pour provider "anthropic"
@@ -32,17 +34,51 @@ const limitArg = arg("--limit");
 const limit = limitArg ? Number(limitArg) : undefined;
 const providersSelected = (arg("--providers") ?? "anthropic,mistral").split(",").map((s) => s.trim());
 
+/** Modèles supportés par provider — alias courts pour le CLI. */
+const ANTHROPIC_MODELS = {
+  haiku: "claude-haiku-4-5-20251001",
+  sonnet: "claude-sonnet-4-6",
+} as const;
+type AnthropicModel = (typeof ANTHROPIC_MODELS)[keyof typeof ANTHROPIC_MODELS];
+
+const MISTRAL_MODELS = {
+  "pixtral-large": "pixtral-large-latest",
+  "pixtral-12b": "pixtral-12b-2409",
+} as const;
+type MistralModel = (typeof MISTRAL_MODELS)[keyof typeof MISTRAL_MODELS];
+
+function resolveModels<T extends Record<string, string>>(
+  map: T,
+  flag: string | undefined,
+  defaults: Array<T[keyof T]>,
+): Array<T[keyof T]> {
+  if (!flag) return defaults;
+  return flag.split(",").map((s) => s.trim()).map((alias) => {
+    const resolved = map[alias as keyof T] ?? alias;
+    if (!Object.values(map).includes(resolved as T[keyof T])) {
+      throw new Error(`Modèle inconnu \`${alias}\`. Valeurs supportées : ${Object.keys(map).join(", ")}`);
+    }
+    return resolved as T[keyof T];
+  });
+}
+
 async function loadProviders(names: string[]): Promise<BenchmarkProvider[]> {
   const providers: BenchmarkProvider[] = [];
+  const anthropicModels = resolveModels(ANTHROPIC_MODELS, arg("--anthropic-models"), [
+    ANTHROPIC_MODELS.haiku, ANTHROPIC_MODELS.sonnet,
+  ]) as AnthropicModel[];
+  const mistralModels = resolveModels(MISTRAL_MODELS, arg("--mistral-models"), [
+    MISTRAL_MODELS["pixtral-large"],
+  ]) as MistralModel[];
+
   for (const name of names) {
     try {
       if (name === "anthropic") {
         const { AnthropicProvider } = await import("./providers/anthropic.js");
-        providers.push(new AnthropicProvider("claude-haiku-4-5-20251001"));
-        providers.push(new AnthropicProvider("claude-sonnet-4-6"));
+        for (const m of anthropicModels) providers.push(new AnthropicProvider(m));
       } else if (name === "mistral") {
         const { MistralProvider } = await import("./providers/mistral.js");
-        providers.push(new MistralProvider("pixtral-large-latest"));
+        for (const m of mistralModels) providers.push(new MistralProvider(m));
       } else {
         console.warn(`Provider inconnu : ${name}`);
       }
