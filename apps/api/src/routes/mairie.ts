@@ -11,7 +11,7 @@ import { analyseParcel } from "../services/parcelAnalysis.js";
 import { runDossierConformityAnalysis, runDossierConformityAnalysisBackground, type ConformiteReport } from "../services/dossierConformity.js";
 import { parseLooseArray } from "../services/jsonExtract.js";
 import { extractPiece, expectedTypeFromCode } from "../services/pieceExtractor.js";
-import { callClaude, anthropicClient, trackClaudeStreamUsage } from "../services/aiUsage.js";
+import { callClaude, anthropicClient, trackClaudeStreamUsage, resolveModelForProvider } from "../services/aiUsage.js";
 import Anthropic from "@anthropic-ai/sdk";
 import fs from "fs";
 import path from "path";
@@ -2557,7 +2557,7 @@ mairieRouter.post("/reglementation/structure-article", requireRole("mairie", "in
     let accumulated = "";
     let lastHeartbeat = Date.now();
     const stream = client.messages.stream({
-      model: "claude-sonnet-4-6",
+      model: resolveModelForProvider("claude-sonnet-4-6"),
       max_tokens: 6000,
       system: `Tu es un expert en droit de l'urbanisme français. On te donne le TEXTE d'UN article de règlement PLU (souvent long, avec sous-sections) ET/OU une IMAGE (tableau ou croquis).
 
@@ -2600,9 +2600,7 @@ AUTRES RÈGLES :
 - N'invente AUCUNE valeur. Articles 5 et 14 → "sans objet" (loi ALUR) ET citizen_relevant=false.
 - VERSION CITOYEN ("citizen_title" + "citizen_summary") : OBLIGATOIRE par sous-règle, COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme. Phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol » → dis « la surface que votre maison occupe au sol ». Ne recopie PAS les exceptions juridiques dans citizen_summary (elles restent dans "exceptions").`,
       messages: [{ role: "user", content: userContent }],
-      },
-      client,
-    );
+    });
 
     // Forward des deltas de texte en heartbeats : la passerelle voit du
     // trafic, le client peut afficher une progression réelle. On limite à un
@@ -2721,7 +2719,7 @@ mairieRouter.post("/reglementation/structure-zone", requireRole("mairie", "instr
     let accumulated = "";
     let lastHeartbeat = Date.now();
     const stream = client.messages.stream({
-      model: "claude-sonnet-4-6",
+      model: resolveModelForProvider("claude-sonnet-4-6"),
       // Un règlement complet (14 articles × plusieurs sous-règles citoyen+mairie)
       // dépasse facilement 6 k tokens et provoquait des sorties tronquées. Avec
       // 16 k on couvre les zones les plus chargées sans surcoût significatif
@@ -2764,9 +2762,7 @@ RÈGLES DE STRUCTURATION :
 - N'invente AUCUNE valeur. Reste fidèle au texte fourni.
 - La version « citoyen » doit être COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme : phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol », dis « la surface que votre maison occupe au sol ».`,
       messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}.\n\n` : ""}${text}` }],
-      },
-      client,
-    );
+    });
 
     // Forward des deltas en heartbeats : passerelle alive + progression visible.
     for await (const event of stream) {
