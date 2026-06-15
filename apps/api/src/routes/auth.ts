@@ -1,6 +1,6 @@
 import { Router } from "express";
 import bcrypt from "bcryptjs";
-import { rateLimit } from "express-rate-limit";
+import { rateLimit, ipKeyGenerator } from "express-rate-limit";
 import { z } from "zod";
 import { db } from "../db.js";
 import { users, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens, ai_usage_events, audit_logs } from "@heureka-v1/db";
@@ -28,9 +28,11 @@ const loginLimiter = rateLimit({
     // Rate-limit per IP (résolue par Express via `trust proxy`) ou par
     // (IP, email) si l'email est fourni. NE PAS lire x-forwarded-for à la main :
     // ça contourne `trust proxy` et permet la rotation triviale du header par
-    // un attaquant.
+    // un attaquant. ipKeyGenerator normalise l'IPv6 au préfixe /56 — sans ça
+    // un client IPv6 peut rotater son adresse dans son propre /64 pour
+    // contourner la limite (cf. ERR_ERL_KEY_GEN_IPV6).
     const email = typeof req.body?.email === "string" ? req.body.email.toLowerCase() : null;
-    const ip = req.ip ?? "unknown";
+    const ip = ipKeyGenerator(req.ip ?? "unknown");
     return email ? `login:${ip}:${email}` : `login:${ip}`;
   },
 });
