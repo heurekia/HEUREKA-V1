@@ -8975,17 +8975,173 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 }
 
 
-function NouveauDossierModal({ onClose }: { onClose: () => void }) {
+type NouveauDossierType = "permis_de_construire" | "declaration_prealable" | "permis_amenager" | "permis_demolir" | "permis_lotir" | "certificat_urbanisme";
+
+type NouveauDossierForm = {
+  type: NouveauDossierType;
+  petitionnaire_prenom: string;
+  petitionnaire_nom: string;
+  petitionnaire_email: string;
+  adresse: string;
+  code_postal: string;
+  commune: string;
+  parcelle: string;
+  surface_plancher: string;
+  description: string;
+  date_depot: string;
+  instructeur_id: string;
+};
+
+const DOSSIER_TYPE_OPTIONS: { value: NouveauDossierType; label: string }[] = [
+  { value: "permis_de_construire", label: "Permis de construire" },
+  { value: "declaration_prealable", label: "Déclaration préalable" },
+  { value: "permis_amenager", label: "Permis d'aménager" },
+  { value: "permis_demolir", label: "Permis de démolir" },
+  { value: "certificat_urbanisme", label: "Certificat d'urbanisme" },
+];
+
+type OcrExtraction = {
+  type: NouveauDossierType | null;
+  numero_cerfa: string | null;
+  petitionnaire_prenom: string | null;
+  petitionnaire_nom: string | null;
+  petitionnaire_email: string | null;
+  siret: string | null;
+  adresse: string | null;
+  code_postal: string | null;
+  commune: string | null;
+  parcelle: string | null;
+  surface_plancher: string | null;
+  description: string | null;
+  confidence: number;
+};
+
+function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commune: string }) {
+  const routerNavigate = useNavigate();
   const [mode, setMode] = useState<"choose" | "manual" | "ocr">("choose");
-  const [ocrFile, setOcrFile] = useState<string | null>(null);
+  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  const emptyForm: NouveauDossierForm = {
+    type: "permis_de_construire",
+    petitionnaire_prenom: "",
+    petitionnaire_nom: "",
+    petitionnaire_email: "",
+    adresse: "",
+    code_postal: "",
+    commune,
+    parcelle: "",
+    surface_plancher: "",
+    description: "",
+    date_depot: today,
+    instructeur_id: "",
+  };
+  const [form, setForm] = useState<NouveauDossierForm>(emptyForm);
+  const [instructeurs, setInstructeurs] = useState<{ id: string; prenom: string; nom: string }[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+
+  // OCR state
+  const [ocrFileName, setOcrFileName] = useState<string | null>(null);
   const [ocrScanning, setOcrScanning] = useState(false);
   const [ocrDone, setOcrDone] = useState(false);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [ocrNumero, setOcrNumero] = useState<string | null>(null);
 
-  const handleOcrFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.[0]) {
-      setOcrFile(e.target.files[0].name);
-      setOcrScanning(true);
-      setTimeout(() => { setOcrScanning(false); setOcrDone(true); }, 2000);
+  useEffect(() => {
+    api.get<{ id: string; prenom: string; nom: string }[]>("/mairie/instructeurs")
+      .then(setInstructeurs)
+      .catch(() => setInstructeurs([]));
+  }, []);
+
+  // Garde le champ "commune" du formulaire en phase avec la commune active
+  // si l'opérateur change de commune dans la sidebar tant que la modale est ouverte.
+  useEffect(() => {
+    setForm(prev => prev.commune ? prev : { ...prev, commune });
+  }, [commune]);
+
+  const setField = <K extends keyof NouveauDossierForm>(key: K, value: NouveauDossierForm[K]) =>
+    setForm(prev => ({ ...prev, [key]: value }));
+
+  const handleOcrFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setOcrError(null);
+    setOcrFileName(file.name);
+    setOcrScanning(true);
+    setOcrDone(false);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/mairie/ocr-cerfa", {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        throw new Error(body.error ?? `Erreur ${res.status}`);
+      }
+      const data = await res.json() as OcrExtraction;
+      // Pré-remplit le formulaire avec ce que Claude a extrait. L'opérateur peut
+      // tout modifier avant de cliquer « Créer le dossier ».
+      setForm(prev => ({
+        ...prev,
+        type: data.type ?? prev.type,
+        petitionnaire_prenom: data.petitionnaire_prenom ?? prev.petitionnaire_prenom,
+        petitionnaire_nom: data.petitionnaire_nom ?? prev.petitionnaire_nom,
+        petitionnaire_email: data.petitionnaire_email ?? prev.petitionnaire_email,
+        adresse: data.adresse ?? prev.adresse,
+        code_postal: data.code_postal ?? prev.code_postal,
+        commune: data.commune ?? prev.commune,
+        parcelle: data.parcelle ?? prev.parcelle,
+        surface_plancher: data.surface_plancher ?? prev.surface_plancher,
+        description: data.description ?? prev.description,
+      }));
+      setOcrNumero(data.numero_cerfa);
+      setOcrDone(true);
+    } catch (err) {
+      setOcrError(err instanceof Error ? err.message : "Échec de l'extraction OCR");
+      setOcrFileName(null);
+    } finally {
+      setOcrScanning(false);
+    }
+  };
+
+  const submit = async () => {
+    if (submitting) return;
+    setSubmitError(null);
+    if (!form.petitionnaire_nom.trim()) {
+      setSubmitError("Le nom du pétitionnaire est obligatoire.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const payload: Record<string, unknown> = {
+        type: form.type,
+        petitionnaire_nom: form.petitionnaire_nom.trim(),
+        petitionnaire_prenom: form.petitionnaire_prenom.trim() || undefined,
+        petitionnaire_email: form.petitionnaire_email.trim() || undefined,
+        adresse: form.adresse.trim() || undefined,
+        code_postal: form.code_postal.trim() || undefined,
+        commune: form.commune.trim() || undefined,
+        parcelle: form.parcelle.trim() || undefined,
+        surface_plancher: form.surface_plancher.trim() || undefined,
+        description: form.description.trim() || undefined,
+        date_depot: form.date_depot || undefined,
+        instructeur_id: form.instructeur_id || undefined,
+      };
+      if (ocrNumero) {
+        payload["metadata"] = { numero_cerfa: ocrNumero, created_via: "ocr" };
+      } else if (mode === "manual") {
+        payload["metadata"] = { created_via: "manual" };
+      }
+      const created = await api.post<{ id: string }>("/mairie/dossiers", payload);
+      onClose();
+      routerNavigate(`/mairie/dossiers/${created.id}`);
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Erreur lors de la création");
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -9004,6 +9160,8 @@ function NouveauDossierModal({ onClose }: { onClose: () => void }) {
       <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 20, color: "#94a3b8", lineHeight: 1 }}>×</button>
     </div>
   );
+
+  const inputStyle = { width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const, background: "white" };
 
   if (mode === "choose") return (
     <Overlay>
@@ -9028,81 +9186,138 @@ function NouveauDossierModal({ onClose }: { onClose: () => void }) {
     </Overlay>
   );
 
+  const formFields = (
+    <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Type de dossier</label>
+        <select value={form.type} onChange={e => setField("type", e.target.value as NouveauDossierType)} style={inputStyle}>
+          {DOSSIER_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Prénom du pétitionnaire</label>
+          <input value={form.petitionnaire_prenom} onChange={e => setField("petitionnaire_prenom", e.target.value)} placeholder="Jean" style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Nom du pétitionnaire *</label>
+          <input value={form.petitionnaire_nom} onChange={e => setField("petitionnaire_nom", e.target.value)} placeholder="DUPONT" style={inputStyle} />
+        </div>
+      </div>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Email du pétitionnaire</label>
+        <input type="email" value={form.petitionnaire_email} onChange={e => setField("petitionnaire_email", e.target.value)} placeholder="jean.dupont@example.com" style={inputStyle} />
+      </div>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Adresse du projet</label>
+        <input value={form.adresse} onChange={e => setField("adresse", e.target.value)} placeholder="12 rue des Lilas" style={inputStyle} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Code postal</label>
+          <input value={form.code_postal} onChange={e => setField("code_postal", e.target.value)} placeholder="37510" style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Commune</label>
+          <input value={form.commune} onChange={e => setField("commune", e.target.value)} placeholder={commune || "Ballan-Miré"} style={inputStyle} />
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 140px", gap: 10 }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Références cadastrales</label>
+          <input value={form.parcelle} onChange={e => setField("parcelle", e.target.value)} placeholder="AB 142" style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Surface plancher (m²)</label>
+          <input value={form.surface_plancher} onChange={e => setField("surface_plancher", e.target.value)} placeholder="95" style={inputStyle} />
+        </div>
+      </div>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Description du projet</label>
+        <textarea value={form.description} onChange={e => setField("description", e.target.value)} rows={2} placeholder="Construction d'une maison individuelle de 95 m²…" style={{ ...inputStyle, resize: "vertical" as const, fontFamily: "inherit" }} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: 10 }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Date de dépôt</label>
+          <input type="date" value={form.date_depot} onChange={e => setField("date_depot", e.target.value)} style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Instructeur assigné</label>
+          <select value={form.instructeur_id} onChange={e => setField("instructeur_id", e.target.value)} style={inputStyle}>
+            <option value="">— Non assigné —</option>
+            {instructeurs.map(i => <option key={i.id} value={i.id}>{i.prenom} {i.nom}</option>)}
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+
+  const footer = (
+    <div style={{ padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
+      {submitError && (
+        <div style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 12, padding: "8px 12px", borderRadius: 6, marginBottom: 10, border: "1px solid #FECACA" }}>{submitError}</div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <button onClick={onClose} disabled={submitting} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: submitting ? "not-allowed" : "pointer", fontWeight: 500, opacity: submitting ? 0.6 : 1 }}>Annuler</button>
+        <button onClick={submit} disabled={submitting} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1 }}>
+          {submitting ? "Création…" : "Créer le dossier"}
+        </button>
+      </div>
+    </div>
+  );
+
   if (mode === "ocr") return (
     <Overlay>
-      <ModalHeader title="Reconnaissance OCR" back={() => setMode("choose")} />
+      <ModalHeader title="Reconnaissance OCR" back={() => { setMode("choose"); setOcrFileName(null); setOcrDone(false); setOcrError(null); }} />
       <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
-        {!ocrFile ? (
+        {!ocrFileName && !ocrError ? (
           <label style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", border: "2px dashed #CBD5E1", borderRadius: 12, padding: "40px 24px", cursor: "pointer", gap: 10, background: "#F8FAFC" }}>
             <span style={{ fontSize: 36 }}>📂</span>
             <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>Déposez votre fichier ici</div>
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>PDF, JPG ou PNG — CERFA, plan de situation, pièces complémentaires</div>
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>PDF, JPG ou PNG — CERFA scanné</div>
             <div style={{ background: "#4F46E5", color: "white", borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 600 }}>Choisir un fichier</div>
             <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={handleOcrFile} style={{ display: "none" }} />
           </label>
+        ) : ocrError ? (
+          <div>
+            <div style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 13, padding: "12px 14px", borderRadius: 8, border: "1px solid #FECACA", marginBottom: 12 }}>
+              <strong>Échec de l'extraction.</strong> {ocrError}
+            </div>
+            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 13, color: "#374151", background: "white" }}>
+              Réessayer avec un autre fichier
+              <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={handleOcrFile} style={{ display: "none" }} />
+            </label>
+          </div>
         ) : ocrScanning ? (
-          <div style={{ textAlign: "center", padding: "32px 0" }}>
+          <div style={{ textAlign: "center" as const, padding: "32px 0" }}>
             <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
             <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>Analyse en cours…</div>
-            <div style={{ fontSize: 12, color: "#64748b" }}>Extraction des données de {ocrFile}</div>
+            <div style={{ fontSize: 12, color: "#64748b" }}>Extraction des données de {ocrFileName}</div>
             <div style={{ marginTop: 16, height: 4, background: "#E2E8F0", borderRadius: 2, overflow: "hidden" }}>
-              <div style={{ height: "100%", background: "linear-gradient(90deg,#4F46E5,#6366F1)", borderRadius: 2, animation: "none", width: "60%" }} />
+              <div style={{ height: "100%", background: "linear-gradient(90deg,#4F46E5,#6366F1)", borderRadius: 2, width: "60%" }} />
             </div>
           </div>
         ) : ocrDone ? (
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, background: "#F0FDF4", borderRadius: 8, padding: "10px 14px", border: "1px solid #BBF7D0" }}>
               <span style={{ fontSize: 18 }}>✅</span>
-              <div style={{ fontSize: 13, color: "#15803D", fontWeight: 500 }}>Données extraites de {ocrFile}</div>
+              <div style={{ fontSize: 13, color: "#15803D", fontWeight: 500 }}>
+                Données extraites de {ocrFileName}{ocrNumero ? ` — CERFA n° ${ocrNumero}` : ""}. Vérifiez et corrigez si besoin.
+              </div>
             </div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
-              {[["Type de dossier", "Permis de construire"], ["Pétitionnaire", "Jean Dupont"], ["Adresse", "12 rue des Lilas, Ballan-Miré"], ["CERFA n°", "13406*08"], ["SIRET", "—"]].map(([label, value]) => (
-                <div key={label} style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                  <div style={{ width: 160, fontSize: 12, fontWeight: 600, color: "#374151", flexShrink: 0 }}>{label}</div>
-                  <input defaultValue={value} style={{ flex: 1, padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none" }} />
-                </div>
-              ))}
-            </div>
+            {formFields}
           </div>
         ) : null}
       </div>
-      {ocrDone && (
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
-          <button onClick={onClose} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: "pointer" }}>Annuler</button>
-          <button onClick={onClose} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Créer le dossier</button>
-        </div>
-      )}
+      {ocrDone && footer}
     </Overlay>
   );
 
   return (
     <Overlay>
       <ModalHeader title="Nouveau dossier — Saisie manuelle" back={() => setMode("choose")} />
-      <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 14 }}>
-        {[
-          { label: "Type de dossier", el: <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}><option>Permis de construire</option><option>Déclaration préalable</option><option>Permis d'aménager</option><option>Certificat d'urbanisme</option></select> },
-          { label: "Pétitionnaire", el: <input placeholder="Nom du pétitionnaire" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} /> },
-          { label: "Adresse du projet", el: <input placeholder="Adresse" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} /> },
-          { label: "Date de dépôt", el: <input type="date" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} /> },
-          { label: "Instructeur assigné", el: <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}><option>Marie Lambert</option><option>Pierre Martin</option><option>Sophie Dubois</option></select> },
-        ].map(({ label, el }) => (
-          <div key={label}>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>{label}</label>
-            {el}
-          </div>
-        ))}
-        <div>
-          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Pièces jointes</label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, border: "1px dashed #CBD5E1", borderRadius: 8, padding: "10px 14px", cursor: "pointer", fontSize: 12, color: "#64748b" }}>
-            <span style={{ fontSize: 18 }}>📎</span> Ajouter des pièces (PDF, JPG, PNG)
-            <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} />
-          </label>
-        </div>
-      </div>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
-        <button onClick={onClose} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: "pointer", fontWeight: 500 }}>Annuler</button>
-        <button onClick={onClose} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Créer le dossier</button>
-      </div>
+      <div style={{ padding: "20px 24px" }}>{formFields}</div>
+      {footer}
     </Overlay>
   );
 }
@@ -9455,7 +9670,7 @@ export function MairieApp() {
           </Routes>
         </div>
       </div>
-      {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} />}
+      {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} commune={commune} />}
     </div>
   );
 }
