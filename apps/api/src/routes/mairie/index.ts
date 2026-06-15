@@ -14,6 +14,7 @@ import { communesRouter } from "./communes.js";
 import { adminRouter } from "./admin.js";
 import { reglementationRouter } from "./reglementation.js";
 import { consultationsRouter } from "./consultations.js";
+import { documentationRouter } from "./documentation.js";
 
 export const mairieRouter = Router();
 mairieRouter.use(requireAuth);
@@ -47,3 +48,4 @@ mairieRouter.use(communesRouter);
 mairieRouter.use(adminRouter);
 mairieRouter.use(reglementationRouter);
 mairieRouter.use(consultationsRouter);
+mairieRouter.use(documentationRouter);
