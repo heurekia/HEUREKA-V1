@@ -1,1 +1,1 @@
-export { db } from "@heureka-v1/db";
+export { db, client } from "@heureka-v1/db";
