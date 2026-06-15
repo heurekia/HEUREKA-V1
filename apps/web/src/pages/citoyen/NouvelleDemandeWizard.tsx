@@ -86,6 +86,10 @@ interface UploadedPiece {
   // échoué (clé Mistral manquante, pdftoppm absent, time-out…). Permet
   // d'afficher un badge « analyse indisponible » plutôt qu'un silence.
   aiUnavailable?: boolean;
+  // Message d'erreur brut renvoyé par l'API (tooltip diagnostic). Non
+  // exposé publiquement aux citoyens en prod — réservé au cas où la
+  // chaîne IA est mal configurée et qu'on veut un signal lisible.
+  aiError?: string | null;
 }
 
 function getScoreConfig(score: string): { label: string; bg: string; color: string } | null {
@@ -863,6 +867,7 @@ export function NouvelleDemandeWizard() {
             url: data.url,
             analyse: data.analyse_ia,
             aiUnavailable,
+            aiError: data.ai_error ?? null,
           }],
         };
       });
@@ -2074,7 +2079,9 @@ export function NouvelleDemandeWizard() {
                     {!scoreConf && file.aiUnavailable && (
                       <span
                         style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: "#F1F5F9", color: "#475569", flexShrink: 0 }}
-                        title="Le service d'analyse automatique est indisponible — un instructeur vérifiera votre pièce manuellement."
+                        title={file.aiError
+                          ? `Service d'analyse indisponible — un instructeur vérifiera manuellement.\n\nDiagnostic : ${file.aiError}`
+                          : "Le service d'analyse automatique est indisponible — un instructeur vérifiera votre pièce manuellement."}
                       >
                         ⓘ Analyse indisponible
                       </span>
