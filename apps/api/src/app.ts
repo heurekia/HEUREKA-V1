@@ -8,13 +8,14 @@ import { fileURLToPath } from "url";
 import { publicRouter } from "./routes/public.js";
 import { authRouter } from "./routes/auth.js";
 import { dossiersRouter } from "./routes/dossiers.js";
-import { mairieRouter } from "./routes/mairie.js";
+import { mairieRouter } from "./routes/mairie/index.js";
 import { calibrationRouter } from "./routes/calibration.js";
 import { calendrierRouter } from "./routes/calendrier.js";
 import { notificationsRouter } from "./routes/notifications.js";
 import { superAdminRouter } from "./routes/superAdmin.js";
 import { serviceRouter } from "./routes/service.js";
 import { decisionsRouter } from "./routes/decisions.js";
+import { regulatoryRouter } from "./routes/regulatory.js";
 import { uploadsRouter } from "./routes/uploads.js";
 
 export const app = express();
@@ -78,6 +79,7 @@ app.use("/api/notifications", notificationsRouter);
 app.use("/api/admin", superAdminRouter);
 app.use("/api/service", serviceRouter);
 app.use("/api/decisions", decisionsRouter);
+app.use("/api/regulatory", regulatoryRouter);
 
 app.get("/api/health", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });

@@ -16,6 +16,7 @@ import { notifyDossierAgents } from "../services/notify.js";
 import { analyzePiece } from "../services/pieceAnalyzer.js";
 import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../services/pieceExtractor.js";
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
+import { syncDossierFactsFromPieces } from "../services/dossierFacts.js";
 import { autoReopenAfterCitizenUpload } from "../services/dossierWorkflow.js";
 import { computeInstructionDelay } from "../services/instructionDelays.js";
 import { getStorageProvider } from "../services/storage.js";
@@ -964,6 +965,18 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       await autoReopenAfterCitizenUpload(req.params.id as string, req.user!.id);
     } catch (e) {
       console.warn("[upload] autoReopen:", e);
+    }
+
+    // Best-effort : remappe les extractions IA en dossier_facts pour que le
+    // moteur réglementaire dispose de données fraiches dès que l'instructeur
+    // ouvre le dossier — pas besoin de relancer manuellement. Sync défensive
+    // côté /api/regulatory/analyze couvre les cas où celle-ci échoue.
+    if (extraction_ia) {
+      try {
+        await syncDossierFactsFromPieces(req.params.id as string);
+      } catch (e) {
+        console.warn("[upload] syncDossierFacts:", e);
+      }
     }
 
     res.status(201).json({ ...piece, analyse_ia, extraction_ia, ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null) });
