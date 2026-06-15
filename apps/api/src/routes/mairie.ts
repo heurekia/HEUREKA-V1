@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { db } from "../db.js";
+import { db, client as pgClient } from "../db.js";
 import { dossiers, users, notifications, dossier_messages, dossier_pieces_jointes, zones, zone_regulatory_rules, communes, courrier_templates, user_communes, legal_mentions, user_availability, user_absences, user_delegations, commune_documents, dossier_consultations, external_services, service_communes, instruction_events, document_segments, document_segment_annotations, ANNOTATION_KINDS, dossier_courriers } from "@heureka-v1/db";
 import { eq, desc, and, sql, like, ilike, inArray, isNull } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -167,6 +167,14 @@ mairieRouter.get("/dashboard", async (req: AuthRequest, res) => {
 //   ?unassigned=true dossiers sans instructeur (boîte à trier)
 // Le champ instructeur_id est renvoyé pour que l'UI puisse afficher l'agent
 // en charge sans aller-retour supplémentaire.
+// Pagination défensive : la réponse reste un Array (rétrocompatible avec tous
+// les call-sites existants) mais le serveur applique systématiquement un LIMIT.
+// Sans cela, sur un parc de 200 000 dossiers, un GET unique chargerait toute
+// la table en mémoire → OOM. Le total réel est exposé via le header
+// X-Total-Count pour permettre une vraie pagination côté UI.
+const DOSSIERS_DEFAULT_LIMIT = 100;
+const DOSSIERS_MAX_LIMIT = 500;
+
 mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
   try {
     const search = req.query.search as string | undefined;
@@ -174,6 +182,14 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
     const commune = req.query.commune as string | undefined;
     const mine = req.query.mine === "true" || req.query.mine === "1";
     const unassigned = req.query.unassigned === "true" || req.query.unassigned === "1";
+
+    const rawLimit = Number.parseInt((req.query.limit as string | undefined) ?? "", 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0
+      ? Math.min(rawLimit, DOSSIERS_MAX_LIMIT)
+      : DOSSIERS_DEFAULT_LIMIT;
+    const rawOffset = Number.parseInt((req.query.offset as string | undefined) ?? "", 10);
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+
     const communeFilter = commune ? sql`dossiers.commune ILIKE ${commune}` : sql`1=1`;
     const assignmentFilter = unassigned
       ? sql`dossiers.instructeur_id IS NULL`
@@ -196,28 +212,34 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
       instructeur_prenom: instructeurU.prenom, instructeur_nom: instructeurU.nom,
     };
 
-    let rows;
-    if (search) {
-      const pattern = `%${search}%`;
-      rows = await db.select(sel).from(dossiers)
-        .leftJoin(users, eq(dossiers.user_id, users.id))
-        .leftJoin(instructeurU, eq(dossiers.instructeur_id, instructeurU.id))
-        .where(sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status != 'brouillon' AND (dossiers.numero ILIKE ${pattern} OR dossiers.adresse ILIKE ${pattern} OR dossiers.commune ILIKE ${pattern} OR users.prenom ILIKE ${pattern} OR users.nom ILIKE ${pattern} OR CONCAT(users.prenom, ' ', users.nom) ILIKE ${pattern})`)
-        .orderBy(desc(dossiers.created_at));
-    } else if (status) {
-      rows = await db.select(sel).from(dossiers)
-        .leftJoin(users, eq(dossiers.user_id, users.id))
-        .leftJoin(instructeurU, eq(dossiers.instructeur_id, instructeurU.id))
-        .where(sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status = ${status}`)
-        .orderBy(desc(dossiers.created_at));
-    } else {
-      rows = await db.select(sel).from(dossiers)
-        .leftJoin(users, eq(dossiers.user_id, users.id))
-        .leftJoin(instructeurU, eq(dossiers.instructeur_id, instructeurU.id))
-        .where(sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status != 'brouillon'`)
-        .orderBy(desc(dossiers.created_at));
-    }
+    const whereClause = search
+      ? (() => {
+          const pattern = `%${search}%`;
+          return sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status != 'brouillon' AND (dossiers.numero ILIKE ${pattern} OR dossiers.adresse ILIKE ${pattern} OR dossiers.commune ILIKE ${pattern} OR users.prenom ILIKE ${pattern} OR users.nom ILIKE ${pattern} OR CONCAT(users.prenom, ' ', users.nom) ILIKE ${pattern})`;
+        })()
+      : status
+        ? sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status = ${status}`
+        : sql`(${communeFilter}) AND (${assignmentFilter}) AND dossiers.status != 'brouillon'`;
 
+    const rows = await db.select(sel).from(dossiers)
+      .leftJoin(users, eq(dossiers.user_id, users.id))
+      .leftJoin(instructeurU, eq(dossiers.instructeur_id, instructeurU.id))
+      .where(whereClause)
+      .orderBy(desc(dossiers.created_at))
+      .limit(limit)
+      .offset(offset);
+
+    // Total séparé : utile au frontend pour afficher "X dossiers, page Y/Z"
+    // sans charger toutes les lignes. COUNT(*) sur l'index commune/status est
+    // peu coûteux comparé au join + ORDER BY.
+    const totalRows = await db
+      .select({ total: sql<number>`count(*)::int` })
+      .from(dossiers)
+      .leftJoin(users, eq(dossiers.user_id, users.id))
+      .where(whereClause);
+    const total = totalRows[0]?.total ?? 0;
+
+    res.setHeader("X-Total-Count", String(total));
     res.json(rows.map(r => ({
       ...r,
       demandeur: [r.demandeur_prenom, r.demandeur_nom].filter(Boolean).join(" ") || "—",
@@ -230,66 +252,91 @@ mairieRouter.get("/dossiers", async (req: AuthRequest, res) => {
 });
 
 // ── Export CSV dossiers ──
+// Itération via curseur postgres (1 000 lignes à la fois) écrites directement
+// dans la réponse HTTP. Évite de matérialiser 200 000 lignes en mémoire avant
+// envoi : le client reçoit le CSV au fil de l'eau et le pic mémoire reste à
+// ~1 Mo quel que soit le volume.
 mairieRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
+  const commune = req.query.commune as string | undefined;
+
+  const esc = (v: unknown): string => {
+    if (v === null || v === undefined) return "";
+    let s = v instanceof Date ? v.toISOString() : String(v);
+    // Anti formula-injection Excel/LibreOffice : toute cellule commençant
+    // par =, +, -, @, \t ou \r serait évaluée comme une formule à l'ouverture
+    // du fichier. On préfixe ' pour neutraliser tout en restant lisible.
+    if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
+    return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
+  };
+
+  const headers = [
+    "Numéro", "Type", "Statut", "Pétitionnaire", "Email", "Adresse", "Commune",
+    "Code postal", "Parcelle", "Surface plancher", "Description",
+    "Date dépôt", "Date complétude", "Date limite instruction",
+    "Tacite", "Créé le", "Mis à jour le",
+  ];
+
+  // Sanitize la commune pour le nom de fichier : seuls a-z0-9-_ sont conservés
+  // (évite l'injection de CR/LF dans le header Content-Disposition).
+  const safeCommune = (commune ?? "all").toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 50);
+  const filename = `dossiers-${safeCommune}-${new Date().toISOString().slice(0, 10)}.csv`;
+
+  res.setHeader("Content-Type", "text/csv; charset=utf-8");
+  res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+  // BOM UTF-8 pour Excel.
+  res.write("﻿");
+  res.write(headers.join(",") + "\n");
+
   try {
-    const commune = req.query.commune as string | undefined;
-    const communeFilter = commune ? sql`dossiers.commune ILIKE ${commune}` : sql`1=1`;
+    const cursor = commune
+      ? pgClient`
+          SELECT
+            d.numero, d.type, d.status, d.adresse, d.commune, d.code_postal,
+            d.parcelle, d.surface_plancher, d.description,
+            d.date_depot, d.date_completude, d.date_limite_instruction,
+            d.is_tacite, d.created_at, d.updated_at,
+            u.prenom AS demandeur_prenom, u.nom AS demandeur_nom, u.email AS demandeur_email
+          FROM dossiers d
+          LEFT JOIN users u ON u.id = d.user_id
+          WHERE d.commune ILIKE ${commune}
+          ORDER BY d.created_at DESC
+        `.cursor(1000)
+      : pgClient`
+          SELECT
+            d.numero, d.type, d.status, d.adresse, d.commune, d.code_postal,
+            d.parcelle, d.surface_plancher, d.description,
+            d.date_depot, d.date_completude, d.date_limite_instruction,
+            d.is_tacite, d.created_at, d.updated_at,
+            u.prenom AS demandeur_prenom, u.nom AS demandeur_nom, u.email AS demandeur_email
+          FROM dossiers d
+          LEFT JOIN users u ON u.id = d.user_id
+          ORDER BY d.created_at DESC
+        `.cursor(1000);
 
-    const rows = await db.select({
-      id: dossiers.id, numero: dossiers.numero, type: dossiers.type, status: dossiers.status,
-      adresse: dossiers.adresse, commune: dossiers.commune, code_postal: dossiers.code_postal,
-      parcelle: dossiers.parcelle, description: dossiers.description,
-      surface_plancher: dossiers.surface_plancher,
-      date_depot: dossiers.date_depot, date_completude: dossiers.date_completude,
-      date_limite_instruction: dossiers.date_limite_instruction,
-      is_tacite: dossiers.is_tacite, created_at: dossiers.created_at, updated_at: dossiers.updated_at,
-      demandeur_prenom: users.prenom, demandeur_nom: users.nom, demandeur_email: users.email,
-    })
-      .from(dossiers)
-      .leftJoin(users, eq(dossiers.user_id, users.id))
-      .where(communeFilter)
-      .orderBy(desc(dossiers.created_at));
-
-    const esc = (v: unknown): string => {
-      if (v === null || v === undefined) return "";
-      let s = v instanceof Date ? v.toISOString() : String(v);
-      // Anti formula-injection Excel/LibreOffice : toute cellule commençant
-      // par =, +, -, @, \t ou \r serait évaluée comme une formule à l'ouverture
-      // du fichier. On préfixe ' pour neutraliser tout en restant lisible.
-      if (/^[=+\-@\t\r]/.test(s)) s = "'" + s;
-      return s.includes(",") || s.includes('"') || s.includes("\n") ? `"${s.replace(/"/g, '""')}"` : s;
-    };
-
-    const headers = [
-      "Numéro", "Type", "Statut", "Pétitionnaire", "Email", "Adresse", "Commune",
-      "Code postal", "Parcelle", "Surface plancher", "Description",
-      "Date dépôt", "Date complétude", "Date limite instruction",
-      "Tacite", "Créé le", "Mis à jour le",
-    ];
-
-    const csvRows = rows.map(r => [
-      r.numero, r.type, r.status,
-      [r.demandeur_prenom, r.demandeur_nom].filter(Boolean).join(" "),
-      r.demandeur_email,
-      r.adresse, r.commune, r.code_postal, r.parcelle, r.surface_plancher, r.description,
-      r.date_depot, r.date_completude, r.date_limite_instruction,
-      r.is_tacite ? "oui" : "non",
-      r.created_at, r.updated_at,
-    ].map(esc).join(","));
-
-    const csv = [headers.join(","), ...csvRows].join("\n");
-    // Sanitize la commune pour le nom de fichier : seuls a-z0-9-_ sont conservés
-    // (évite l'injection de CR/LF dans le header Content-Disposition).
-    const safeCommune = (commune ?? "all").toLowerCase().replace(/[^a-z0-9_-]/g, "_").slice(0, 50);
-    const filename = `dossiers-${safeCommune}-${new Date().toISOString().slice(0, 10)}.csv`;
-
-    res.setHeader("Content-Type", "text/csv; charset=utf-8");
-    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
-    // BOM for Excel compatibility (UTF-8)
-    res.send("﻿" + csv);
+    for await (const batch of cursor) {
+      let chunk = "";
+      for (const r of batch) {
+        chunk += [
+          r.numero, r.type, r.status,
+          [r.demandeur_prenom, r.demandeur_nom].filter(Boolean).join(" "),
+          r.demandeur_email,
+          r.adresse, r.commune, r.code_postal, r.parcelle, r.surface_plancher, r.description,
+          r.date_depot, r.date_completude, r.date_limite_instruction,
+          r.is_tacite ? "oui" : "non",
+          r.created_at, r.updated_at,
+        ].map(esc).join(",") + "\n";
+      }
+      if (!res.write(chunk)) {
+        // Backpressure : laisser le socket se vider avant d'écrire le batch suivant.
+        await new Promise<void>(resolve => res.once("drain", resolve));
+      }
+    }
+    res.end();
   } catch (err) {
     console.error(err);
-    res.status(500).json({ error: "Erreur serveur" });
+    // Les headers ont déjà été envoyés : on ne peut plus changer le statut,
+    // on coupe la réponse pour signaler au client que l'export est incomplet.
+    res.destroy(err instanceof Error ? err : new Error("Export failed"));
   }
 });
 

@@ -682,6 +682,17 @@ CREATE TABLE IF NOT EXISTS dossier_courriers (
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_courriers_dossier ON dossier_courriers(dossier_id);
 CREATE INDEX IF NOT EXISTS idx_dossier_courriers_type ON dossier_courriers(dossier_id, type);
+
+-- ── Indexes complémentaires pour la montée en charge ──
+-- Postgres ne crée pas d'index automatique pour les FK : sans ces lignes, les
+-- requêtes "pièces d'un dossier" et "dossiers d'un user/commune triés" font un
+-- scan séquentiel dès que les tables dépassent quelques dizaines de milliers
+-- de lignes.
+CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_dossier ON dossier_pieces_jointes(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_user ON dossier_pieces_jointes(user_id);
+CREATE INDEX IF NOT EXISTS idx_dossiers_commune_created ON dossiers(commune, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dossiers_user_created ON dossiers(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dossiers_instructeur_created ON dossiers(instructeur_id, created_at DESC);
 `;
 
 async function main() {

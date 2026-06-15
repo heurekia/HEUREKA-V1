@@ -252,13 +252,23 @@ dossiersRouter.post("/pieces", async (req: AuthRequest, res) => {
 });
 
 // ── Lister mes dossiers ──
+// Pagination défensive (mêmes bornes que la route mairie) : un citoyen aura
+// rarement plus de quelques dizaines de dossiers, mais la limite serveur
+// garantit qu'aucun client mal formé ne peut demander un volume arbitraire.
 dossiersRouter.get("/", async (req: AuthRequest, res) => {
   try {
+    const rawLimit = Number.parseInt((req.query.limit as string | undefined) ?? "", 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
+    const rawOffset = Number.parseInt((req.query.offset as string | undefined) ?? "", 10);
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+
     const list = await db
       .select()
       .from(dossiers)
       .where(eq(dossiers.user_id, req.user!.id))
-      .orderBy(desc(dossiers.created_at));
+      .orderBy(desc(dossiers.created_at))
+      .limit(limit)
+      .offset(offset);
     res.json(list);
   } catch (err) {
     console.error(err);

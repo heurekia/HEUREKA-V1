@@ -362,7 +362,7 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
   useEffect(() => {
     if (searchQuery.length <= 1) { setSearchResults([]); return; }
     const timer = setTimeout(() => {
-      const qs = commune ? `search=${encodeURIComponent(searchQuery)}&commune=${encodeURIComponent(commune)}` : `search=${encodeURIComponent(searchQuery)}`;
+      const qs = commune ? `search=${encodeURIComponent(searchQuery)}&commune=${encodeURIComponent(commune)}&limit=8` : `search=${encodeURIComponent(searchQuery)}&limit=8`;
       api.get<ApiDossier[]>(`/mairie/dossiers?${qs}`)
         .then(data => setSearchResults(data.slice(0, 8)))
         .catch(() => setSearchResults([]));
@@ -795,7 +795,7 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   // Re-fetch when commune or scope changes; compute deadlines on first load
   useEffect(() => {
     setLoading(true);
-    const params = new URLSearchParams({ commune });
+    const params = new URLSearchParams({ commune, limit: "500" });
     if (scope === "mine") params.set("mine", "true");
     else if (scope === "unassigned") params.set("unassigned", "true");
     fetch("/api/mairie/admin/compute-deadlines", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } })
@@ -2878,7 +2878,7 @@ function CalendrierScreen({ commune }: { commune: string }) {
   });
 
   useEffect(() => {
-    fetch(`/api/mairie/dossiers?commune=${encodeURIComponent(commune)}`, { credentials: "include" })
+    fetch(`/api/mairie/dossiers?commune=${encodeURIComponent(commune)}&limit=500`, { credentials: "include" })
       .then(r => r.json())
       .then((data: unknown) => setDossiers(Array.isArray(data) ? data as DossierRow[] : []))
       .catch(() => {});
