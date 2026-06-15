@@ -6,6 +6,7 @@ import { eq, and, desc } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
 import { runAnalysis } from "@heureka-v1/regulatory-engine";
+import { syncDossierFactsFromPieces } from "../services/dossierFacts.js";
 
 export const regulatoryRouter = Router();
 regulatoryRouter.use(requireAuth);
@@ -46,6 +47,15 @@ regulatoryRouter.post(
       const owned = await loadOwnedDossier(req, res, dossierId);
       if (!owned) return;
 
+      // Sync défensif : on remappe les extractions IA des pièces vers
+      // dossier_facts juste avant l'analyse. Garantit que le moteur tourne
+      // sur le contexte le plus à jour, même si la sync best-effort post-
+      // upload a échoué pour une raison ou une autre.
+      const factsSync = await syncDossierFactsFromPieces(dossierId).catch((err) => {
+        console.warn("[regulatory] syncDossierFactsFromPieces a échoué (non bloquant):", err);
+        return null;
+      });
+
       const { analysis_id, run } = await runAnalysis(dossierId, {
         triggered_by: req.user!.id,
       });
@@ -54,6 +64,7 @@ regulatoryRouter.post(
         status: "done",
         summary: run.summary,
         findings_count: run.findings.length,
+        facts_sync: factsSync,
       });
     } catch (err) {
       if (err instanceof z.ZodError) {
