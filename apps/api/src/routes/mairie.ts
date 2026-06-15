@@ -10,10 +10,11 @@ import { auditMutations } from "../middlewares/auditMutations.js";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import { runDossierConformityAnalysis, runDossierConformityAnalysisBackground, type ConformiteReport } from "../services/dossierConformity.js";
 import { parseLooseArray } from "../services/jsonExtract.js";
-import { extractPiece, expectedTypeFromCode } from "../services/pieceExtractor.js";
+import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../services/pieceExtractor.js";
 import { callClaude, anthropicClient, trackClaudeStreamUsage, resolveModelForProvider } from "../services/aiUsage.js";
-import { extractFirstJson, sha256Buffer } from "../services/pieceAnalyzer.js";
+import { extractFirstJson, sha256Buffer, analyzePiece } from "../services/pieceAnalyzer.js";
 import { attachCerfaToDossier } from "../services/cerfaAttachment.js";
+import { getStorageProvider } from "../services/storage.js";
 import Anthropic from "@anthropic-ai/sdk";
 import multer from "multer";
 import crypto from "crypto";
@@ -27,17 +28,19 @@ import { refreshPluZones, pluEtagFor, filterZonesByInsee, PLU_CACHE_TTL_MS, type
 const __dirname_mairie = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR_MAIRIE = path.resolve(__dirname_mairie, "../../uploads");
 
-// Multer en mémoire pour l'extraction OCR d'un CERFA — le buffer est envoyé
-// directement à Claude vision, on n'écrit jamais ce fichier sur disque.
+// Multer en mémoire pour les uploads OCR / pièces jointes côté mairie. Le
+// buffer est envoyé directement à Claude vision et au StorageProvider, on
+// n'écrit jamais le fichier sur disque local. Le sniff de signature binaire
+// est fait côté handler (les filtres MIME sont falsifiables).
 const ocrUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 25 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
-    const allowed = /pdf|jpe?g|png/i;
+    const allowed = /pdf|jpe?g|png|gif|webp|tiff?/i;
     if (allowed.test(path.extname(file.originalname)) || allowed.test(file.mimetype)) {
       cb(null, true);
     } else {
-      cb(new Error("Format non supporté (PDF, JPEG, PNG uniquement)"));
+      cb(new Error("Format non supporté (PDF, JPEG, PNG, GIF, WEBP, TIFF)"));
     }
   },
 });
@@ -4046,5 +4049,101 @@ mairieRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
   } catch (err) {
     console.error("[mairie/ocr-cerfa]", err);
     res.status(500).json({ error: "Erreur serveur lors de l'extraction OCR" });
+  }
+});
+
+// ── Upload d'une pièce sur un dossier créé au comptoir (mairie) ──
+// Pendant côté mairie du POST /api/dossiers/:id/pieces/upload citoyen. Permet
+// à l'opérateur d'attacher les pièces (plans, notice, photos, etc.) qu'il
+// vient de scanner avec le CERFA. La pièce est rattachée à l'utilisateur
+// propriétaire du dossier (le placeholder pétitionnaire le cas échéant), et
+// les analyses IA tournent sans demander de consentement explicite : c'est
+// l'opérateur mairie qui a sciemment numérisé et déposé le document.
+mairieRouter.post("/dossiers/:id/pieces/upload", ocrSingle, async (req: AuthRequest, res) => {
+  const storage = getStorageProvider();
+  const fileKey = req.file
+    ? `${crypto.randomUUID()}${path.extname(req.file.originalname)}`
+    : null;
+  try {
+    if (!req.file || !fileKey) return res.status(400).json({ error: "Fichier requis" });
+
+    const sniffed = ocrSniff(req.file.buffer);
+    // ocrSniff ne couvre que PDF/JPEG/PNG ; les autres formats (GIF/WEBP/TIFF)
+    // sont autorisés par le multer mais on les écrit sans analyse IA — Claude
+    // vision ne lit que PDF/JPEG/PNG/GIF/WEBP.
+    const aiEligible = sniffed !== null;
+    if (!aiEligible && !/gif|webp|tiff?/i.test(req.file.mimetype)) {
+      return res.status(400).json({ error: "Le contenu du fichier ne correspond pas à un format supporté" });
+    }
+
+    const dossierId = req.params.id as string;
+    const dossier = (req as AuthRequest & { dossier?: { id: string; user_id: string; commune: string | null } }).dossier;
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    const code_piece = (req.body as Record<string, string>).code_piece ?? "";
+    const nom_piece = (req.body as Record<string, string>).nom_piece ?? req.file.originalname;
+
+    const stored = await storage.put({
+      key: fileKey,
+      body: req.file.buffer,
+      mime: req.file.mimetype,
+    });
+
+    const [piece] = await db
+      .insert(dossier_pieces_jointes)
+      .values({
+        dossier_id: dossierId,
+        // Le user_id de la pièce reflète le propriétaire du dossier, pas
+        // l'agent mairie : cohérent avec la lecture côté citoyen et avec le
+        // garde-fou IDOR (le pétitionnaire pourra voir/télécharger sa pièce
+        // s'il active son compte ultérieurement).
+        user_id: dossier.user_id,
+        nom: nom_piece,
+        url: stored.url,
+        type: req.file.mimetype,
+        taille: req.file.size,
+        code_piece: code_piece || null,
+      })
+      .returning();
+
+    let analyse_ia: Awaited<ReturnType<typeof analyzePiece>> | null = null;
+    let extraction_ia: PieceExtraction | null = null;
+
+    if (aiEligible) {
+      const communeIdForTrace = await resolveCommuneIdFromUser(req);
+      const trace = { dossierId, userId: req.user?.id ?? null, communeId: communeIdForTrace };
+      const expected = expectedTypeFromCode(code_piece);
+      const fileBuffer = req.file.buffer;
+      const mimeType = req.file.mimetype;
+      [analyse_ia, extraction_ia] = await Promise.all([
+        analyzePiece(fileBuffer, mimeType, nom_piece, code_piece, undefined, trace).catch((err) => {
+          console.error("[mairie/pieces/upload] analyzePiece:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+          return null;
+        }),
+        extractPiece(fileBuffer, mimeType, { expected_type: expected, nom_piece, code_piece }, trace).catch((err) => {
+          console.error("[mairie/pieces/upload] extractPiece:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+          return null as PieceExtraction | null;
+        }),
+      ]);
+    }
+
+    if (analyse_ia || extraction_ia) {
+      await db
+        .update(dossier_pieces_jointes)
+        .set({
+          analyse_ia: analyse_ia ?? null,
+          extraction_ia: extraction_ia ?? null,
+          ai_processed: analyse_ia !== null || extraction_ia !== null,
+        })
+        .where(eq(dossier_pieces_jointes.id, piece!.id));
+    }
+
+    res.status(201).json({ ...piece, analyse_ia, extraction_ia, ai_processed: analyse_ia !== null || extraction_ia !== null });
+  } catch (err) {
+    if (fileKey) {
+      try { await storage.remove(fileKey); } catch { /* ignore */ }
+    }
+    console.error("[mairie/pieces/upload]", err);
+    res.status(500).json({ error: "Erreur upload" });
   }
 });

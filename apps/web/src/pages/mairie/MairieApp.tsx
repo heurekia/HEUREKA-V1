@@ -9016,6 +9016,31 @@ type OcrExtraction = {
   confidence: number;
 };
 
+// Heuristique : à quel code_piece (DP/PC*) correspond le fichier d'après son nom ?
+// Permet de pré-coder la pièce avant upload pour que l'extracteur côté serveur
+// reçoive un hint pertinent (plan_masse, plan_facade, etc.).
+function guessCodePieceFromName(name: string): string {
+  const n = name.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (/cerfa|13406|13703|13409|13405|13410/.test(n)) return "CERFA";
+  if (/situation|dp1\b|pc1\b/.test(n)) return "DP1";
+  if (/masse|dp2\b|pc2\b/.test(n)) return "DP2";
+  if (/coupe|dp3\b|pc3\b/.test(n)) return "DP3";
+  if (/notice|dp4\b|pc4\b/.test(n)) return "DP4";
+  if (/facade|dp5\b|pc5\b/.test(n)) return "DP5";
+  if (/insertion|paysag|pc6\b/.test(n)) return "PC6";
+  if (/photo.*proche|dp7\b|pc7\b/.test(n)) return "PC7";
+  if (/photo.*lointain|dp8\b|pc8\b/.test(n)) return "PC8";
+  return "";
+}
+
+type StagedFile = {
+  id: string;
+  file: File;
+  isCerfa: boolean;
+  status: "queued" | "uploading" | "done" | "error";
+  error?: string | null;
+};
+
 function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commune: string }) {
   const routerNavigate = useNavigate();
   const [mode, setMode] = useState<"choose" | "manual" | "ocr">("choose");
@@ -9039,11 +9064,13 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
   const [instructeurs, setInstructeurs] = useState<{ id: string; prenom: string; nom: string }[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
 
-  // OCR state
-  const [ocrFileName, setOcrFileName] = useState<string | null>(null);
-  const [ocrScanning, setOcrScanning] = useState(false);
-  const [ocrDone, setOcrDone] = useState(false);
+  // OCR state — multi-fichiers : le CERFA pré-remplit le formulaire, les
+  // autres pièces sont mises en attente et uploadées après création du dossier.
+  const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
+  const [cerfaScanning, setCerfaScanning] = useState(false);
+  const [cerfaDone, setCerfaDone] = useState(false);
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [ocrNumero, setOcrNumero] = useState<string | null>(null);
 
@@ -9062,13 +9089,13 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
   const setField = <K extends keyof NouveauDossierForm>(key: K, value: NouveauDossierForm[K]) =>
     setForm(prev => ({ ...prev, [key]: value }));
 
-  const handleOcrFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (!file) return;
+  // Lance l'extraction CERFA sur le fichier marqué comme CERFA. Appelé soit
+  // au moment où l'utilisateur ajoute des fichiers (le premier CERFA détecté
+  // est extrait), soit quand l'utilisateur change le fichier désigné CERFA.
+  const runCerfaExtract = async (file: File) => {
     setOcrError(null);
-    setOcrFileName(file.name);
-    setOcrScanning(true);
-    setOcrDone(false);
+    setCerfaScanning(true);
+    setCerfaDone(false);
     try {
       const formData = new FormData();
       formData.append("file", file);
@@ -9082,8 +9109,6 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
         throw new Error(body.error ?? `Erreur ${res.status}`);
       }
       const data = await res.json() as OcrExtraction;
-      // Pré-remplit le formulaire avec ce que Claude a extrait. L'opérateur peut
-      // tout modifier avant de cliquer « Créer le dossier ».
       setForm(prev => ({
         ...prev,
         type: data.type ?? prev.type,
@@ -9098,13 +9123,68 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
         description: data.description ?? prev.description,
       }));
       setOcrNumero(data.numero_cerfa);
-      setOcrDone(true);
+      setCerfaDone(true);
     } catch (err) {
       setOcrError(err instanceof Error ? err.message : "Échec de l'extraction OCR");
-      setOcrFileName(null);
     } finally {
-      setOcrScanning(false);
+      setCerfaScanning(false);
     }
+  };
+
+  const addFiles = (files: FileList | File[]) => {
+    const arr = Array.from(files);
+    if (arr.length === 0) return;
+    setStagedFiles(prev => {
+      const next = [...prev];
+      const hasCerfa = next.some(f => f.isCerfa);
+      for (const file of arr) {
+        // Évite les doublons exacts (nom + taille) si l'opérateur ré-importe.
+        if (next.some(f => f.file.name === file.name && f.file.size === file.size)) continue;
+        const guessed = guessCodePieceFromName(file.name);
+        const looksLikeCerfa = guessed === "CERFA";
+        next.push({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          file,
+          // Premier CERFA détecté → marqué CERFA ; sinon si on n'a encore rien
+          // de désigné CERFA et que c'est un PDF, on prend le 1er PDF par défaut.
+          isCerfa: looksLikeCerfa && !hasCerfa,
+          status: "queued",
+        });
+      }
+      // Si toujours pas de CERFA désigné, prend le premier PDF (fallback).
+      if (!next.some(f => f.isCerfa)) {
+        const firstPdf = next.find(f => /\.pdf$/i.test(f.file.name));
+        if (firstPdf) firstPdf.isCerfa = true;
+      }
+      return next;
+    });
+  };
+
+  // Quand le CERFA désigné change, déclenche l'extraction. On lit la liste
+  // mise à jour via la callback de setStagedFiles pour ne pas dépendre de
+  // l'état périmé.
+  useEffect(() => {
+    const cerfa = stagedFiles.find(f => f.isCerfa);
+    if (!cerfa) {
+      setCerfaDone(false);
+      setOcrNumero(null);
+      return;
+    }
+    // Re-extraction uniquement quand la cible change.
+    void runCerfaExtract(cerfa.file);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stagedFiles.find(f => f.isCerfa)?.id]);
+
+  const setCerfa = (id: string) => {
+    setStagedFiles(prev => prev.map(f => ({ ...f, isCerfa: f.id === id })));
+  };
+  const removeFile = (id: string) => {
+    setStagedFiles(prev => {
+      const next = prev.filter(f => f.id !== id);
+      // Si on a retiré le CERFA, promeut le premier fichier restant.
+      if (!next.some(f => f.isCerfa) && next.length > 0) next[0]!.isCerfa = true;
+      return next;
+    });
   };
 
   const submit = async () => {
@@ -9136,12 +9216,53 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
         payload["metadata"] = { created_via: "manual" };
       }
       const created = await api.post<{ id: string }>("/mairie/dossiers", payload);
+
+      // Upload séquentiel des pièces : on évite de saturer la bande passante
+      // côté navigateur (CERFAs scannés à 15 Mo par fichier × N pièces) et on
+      // garde un feedback de progression simple. Une erreur sur une pièce
+      // n'empêche pas les suivantes : le dossier est déjà créé, l'opérateur
+      // pourra rejouer l'ajout depuis l'écran du dossier.
+      if (stagedFiles.length > 0) {
+        setUploadProgress({ done: 0, total: stagedFiles.length });
+        let done = 0;
+        const errors: string[] = [];
+        for (const f of stagedFiles) {
+          try {
+            const fd = new FormData();
+            fd.append("file", f.file);
+            const code = f.isCerfa ? "CERFA" : guessCodePieceFromName(f.file.name);
+            if (code) fd.append("code_piece", code);
+            fd.append("nom_piece", f.file.name);
+            const res = await fetch(`/api/mairie/dossiers/${created.id}/pieces/upload`, {
+              method: "POST",
+              credentials: "include",
+              body: fd,
+            });
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({})) as { error?: string };
+              errors.push(`${f.file.name} : ${body.error ?? `Erreur ${res.status}`}`);
+            }
+          } catch (err) {
+            errors.push(`${f.file.name} : ${err instanceof Error ? err.message : "échec"}`);
+          } finally {
+            done += 1;
+            setUploadProgress({ done, total: stagedFiles.length });
+          }
+        }
+        if (errors.length > 0) {
+          // Best-effort : on prévient mais on continue vers le détail du dossier
+          // pour que l'opérateur voie l'état réel et rejoue les uploads ratés.
+          console.warn("[NouveauDossier] uploads en échec :", errors);
+        }
+      }
+
       onClose();
       routerNavigate(`/mairie/dossiers/${created.id}`);
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Erreur lors de la création");
     } finally {
       setSubmitting(false);
+      setUploadProgress(null);
     }
   };
 
@@ -9252,6 +9373,10 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
     </div>
   );
 
+  const submitLabel = submitting
+    ? (uploadProgress ? `Pièces ${uploadProgress.done}/${uploadProgress.total}…` : "Création…")
+    : (mode === "ocr" && stagedFiles.length > 0 ? `Créer le dossier (${stagedFiles.length} pièce${stagedFiles.length > 1 ? "s" : ""})` : "Créer le dossier");
+
   const footer = (
     <div style={{ padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
       {submitError && (
@@ -9260,56 +9385,91 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
       <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
         <button onClick={onClose} disabled={submitting} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: submitting ? "not-allowed" : "pointer", fontWeight: 500, opacity: submitting ? 0.6 : 1 }}>Annuler</button>
         <button onClick={submit} disabled={submitting} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1 }}>
-          {submitting ? "Création…" : "Créer le dossier"}
+          {submitLabel}
         </button>
       </div>
     </div>
   );
 
-  if (mode === "ocr") return (
-    <Overlay>
-      <ModalHeader title="Reconnaissance OCR" back={() => { setMode("choose"); setOcrFileName(null); setOcrDone(false); setOcrError(null); }} />
-      <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
-        {!ocrFileName && !ocrError ? (
-          <label style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", border: "2px dashed #CBD5E1", borderRadius: 12, padding: "40px 24px", cursor: "pointer", gap: 10, background: "#F8FAFC" }}>
-            <span style={{ fontSize: 36 }}>📂</span>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>Déposez votre fichier ici</div>
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>PDF, JPG ou PNG — CERFA scanné</div>
-            <div style={{ background: "#4F46E5", color: "white", borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 600 }}>Choisir un fichier</div>
-            <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={handleOcrFile} style={{ display: "none" }} />
-          </label>
-        ) : ocrError ? (
-          <div>
-            <div style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 13, padding: "12px 14px", borderRadius: 8, border: "1px solid #FECACA", marginBottom: 12 }}>
-              <strong>Échec de l'extraction.</strong> {ocrError}
-            </div>
-            <label style={{ display: "inline-flex", alignItems: "center", gap: 8, border: "1px solid #E2E8F0", borderRadius: 8, padding: "8px 14px", cursor: "pointer", fontSize: 13, color: "#374151", background: "white" }}>
-              Réessayer avec un autre fichier
-              <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={handleOcrFile} style={{ display: "none" }} />
-            </label>
-          </div>
-        ) : ocrScanning ? (
-          <div style={{ textAlign: "center" as const, padding: "32px 0" }}>
-            <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>Analyse en cours…</div>
-            <div style={{ fontSize: 12, color: "#64748b" }}>Extraction des données de {ocrFileName}</div>
-            <div style={{ marginTop: 16, height: 4, background: "#E2E8F0", borderRadius: 2, overflow: "hidden" }}>
-              <div style={{ height: "100%", background: "linear-gradient(90deg,#4F46E5,#6366F1)", borderRadius: 2, width: "60%" }} />
-            </div>
-          </div>
-        ) : ocrDone ? (
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, background: "#F0FDF4", borderRadius: 8, padding: "10px 14px", border: "1px solid #BBF7D0" }}>
-              <span style={{ fontSize: 18 }}>✅</span>
-              <div style={{ fontSize: 13, color: "#15803D", fontWeight: 500 }}>
-                Données extraites de {ocrFileName}{ocrNumero ? ` — CERFA n° ${ocrNumero}` : ""}. Vérifiez et corrigez si besoin.
+  const fileList = stagedFiles.length > 0 && (
+    <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" }}>
+      <div style={{ padding: "8px 12px", background: "#F8FAFC", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase" as const, letterSpacing: 0.4, display: "flex", justifyContent: "space-between" }}>
+        <span>{stagedFiles.length} fichier{stagedFiles.length > 1 ? "s" : ""}</span>
+        <span style={{ textTransform: "none" as const, letterSpacing: 0, fontWeight: 500 }}>Choisissez le CERFA</span>
+      </div>
+      {stagedFiles.map(f => {
+        const code = f.isCerfa ? "CERFA" : guessCodePieceFromName(f.file.name);
+        return (
+          <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderTop: "1px solid #F1F5F9", fontSize: 13 }}>
+            <input type="radio" checked={f.isCerfa} onChange={() => setCerfa(f.id)} title="Désigner comme CERFA" />
+            <span style={{ fontSize: 16 }}>{/\.pdf$/i.test(f.file.name) ? "📄" : "🖼️"}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ color: "#0F172A", whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" as const }}>{f.file.name}</div>
+              <div style={{ fontSize: 11, color: "#94a3b8" }}>
+                {(f.file.size / 1024).toFixed(0)} Ko
+                {code && <> · <span style={{ color: f.isCerfa ? "#4F46E5" : "#64748b", fontWeight: 600 }}>{code}</span></>}
               </div>
             </div>
-            {formFields}
+            <button onClick={() => removeFile(f.id)} title="Retirer" style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 16, padding: 4 }}>×</button>
           </div>
-        ) : null}
+        );
+      })}
+      <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 12px", borderTop: "1px solid #F1F5F9", background: "#F8FAFC", cursor: "pointer", fontSize: 12, color: "#4F46E5", fontWeight: 600 }}>
+        ＋ Ajouter d'autres fichiers
+        <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onChange={e => { if (e.target.files) { addFiles(e.target.files); e.target.value = ""; } }} style={{ display: "none" }} />
+      </label>
+    </div>
+  );
+
+  if (mode === "ocr") return (
+    <Overlay>
+      <ModalHeader title="Reconnaissance OCR" back={() => { setMode("choose"); setStagedFiles([]); setCerfaDone(false); setOcrError(null); setOcrNumero(null); }} />
+      <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
+        {stagedFiles.length === 0 ? (
+          <>
+            <label style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", border: "2px dashed #CBD5E1", borderRadius: 12, padding: "40px 24px", cursor: "pointer", gap: 10, background: "#F8FAFC" }}>
+              <span style={{ fontSize: 36 }}>📂</span>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>Déposez vos fichiers ici</div>
+              <div style={{ fontSize: 12, color: "#94a3b8" }}>CERFA + plans + photos — PDF, JPG, PNG (max 25 Mo / fichier)</div>
+              <div style={{ background: "#4F46E5", color: "white", borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 600 }}>Choisir des fichiers</div>
+              <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onChange={e => { if (e.target.files) addFiles(e.target.files); }} style={{ display: "none" }} />
+            </label>
+            {ocrError && (
+              <div style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 13, padding: "12px 14px", borderRadius: 8, border: "1px solid #FECACA" }}>
+                <strong>Échec de l'extraction.</strong> {ocrError}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {fileList}
+            {cerfaScanning ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#EEF2FF", borderRadius: 8, padding: "10px 14px", border: "1px solid #C7D2FE" }}>
+                <span style={{ fontSize: 18 }}>🔍</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#3730A3" }}>Analyse du CERFA en cours…</div>
+                  <div style={{ marginTop: 6, height: 4, background: "#E0E7FF", borderRadius: 2, overflow: "hidden" }}>
+                    <div style={{ height: "100%", background: "linear-gradient(90deg,#4F46E5,#6366F1)", borderRadius: 2, width: "60%" }} />
+                  </div>
+                </div>
+              </div>
+            ) : ocrError ? (
+              <div style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 13, padding: "12px 14px", borderRadius: 8, border: "1px solid #FECACA" }}>
+                <strong>L'extraction du CERFA a échoué.</strong> {ocrError} Vous pouvez quand même remplir le formulaire à la main et créer le dossier — toutes les pièces seront jointes.
+              </div>
+            ) : cerfaDone ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#F0FDF4", borderRadius: 8, padding: "10px 14px", border: "1px solid #BBF7D0" }}>
+                <span style={{ fontSize: 18 }}>✅</span>
+                <div style={{ fontSize: 13, color: "#15803D", fontWeight: 500 }}>
+                  Données extraites du CERFA{ocrNumero ? ` n° ${ocrNumero}` : ""}. Vérifiez et corrigez si besoin.
+                </div>
+              </div>
+            ) : null}
+            {formFields}
+          </>
+        )}
       </div>
-      {ocrDone && footer}
+      {stagedFiles.length > 0 && footer}
     </Overlay>
   );
 
