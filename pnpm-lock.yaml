@@ -281,6 +281,28 @@ importers:
         specifier: ^3.0.5
         version: 3.2.4(@types/node@22.19.19)(jiti@1.21.7)(tsx@4.22.1)
 
+  packages/regulatory-engine:
+    dependencies:
+      '@heureka-v1/db':
+        specifier: workspace:*
+        version: link:../db
+      '@heureka-v1/shared':
+        specifier: workspace:*
+        version: link:../shared
+      drizzle-orm:
+        specifier: ^0.45.2
+        version: 0.45.2(gel@2.2.0)(postgres@3.4.9)
+    devDependencies:
+      '@types/node':
+        specifier: ^22.15.3
+        version: 22.19.19
+      typescript:
+        specifier: ~5.9.2
+        version: 5.9.3
+      vitest:
+        specifier: ^3.0.5
+        version: 3.2.4(@types/node@22.19.19)(jiti@1.21.7)(tsx@4.22.1)
+
   packages/shared:
     devDependencies:
       typescript:
