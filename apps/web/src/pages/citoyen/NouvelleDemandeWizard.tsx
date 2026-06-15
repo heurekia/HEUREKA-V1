@@ -470,6 +470,22 @@ export function NouvelleDemandeWizard() {
     setCerfaData((prev) => ({ ...prev, [field]: value }));
   }, []);
 
+  // Reprend les surfaces saisies à l'étape 3 (Précisions) pour pré-remplir les
+  // champs équivalents du CERFA à l'étape 5. L'utilisateur peut toujours
+  // surcharger ces valeurs ; toute modification ultérieure de l'étape 3 écrase
+  // la surcharge pour garder l'étape 3 comme source de vérité.
+  useEffect(() => {
+    setCerfaData((prev) => {
+      const next = { ...prev };
+      const createdStr = surface > 0 ? String(surface) : "";
+      if (createdStr !== (prev.surfaceCreee ?? "")) next.surfaceCreee = createdStr;
+      if (empriseExistante !== (prev.surfaceExistanteAvant ?? "")) {
+        next.surfaceExistanteAvant = empriseExistante;
+      }
+      return next;
+    });
+  }, [surface, empriseExistante]);
+
   // Step 6 – Infos personnelles
   const [nom, setNom] = useState(user?.nom ?? "");
   const [prenom, setPrenom] = useState(user?.prenom ?? "");
