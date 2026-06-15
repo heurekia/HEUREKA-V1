@@ -907,6 +907,10 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
 
     let analyse_ia: Awaited<ReturnType<typeof analyzePiece>> | null = null;
     let extraction_ia: PieceExtraction | null = null;
+    // Remonté au client quand l'IA était attendue mais a échoué (clé Mistral
+    // manquante, pdftoppm absent, time-out…). Permet au wizard d'afficher
+    // « analyse indisponible » au lieu d'un silence trompeur.
+    let ai_error: string | null = null;
 
     if (runAi) {
       // Deux passes IA en parallèle, non-bloquantes :
@@ -931,9 +935,16 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       // AccessDenied, etc.) reste invisible.
       const fileBuffer = req.file.buffer;
       const mimeType = req.file.mimetype;
+      const captureErr = (label: string) => (err: unknown) => {
+        const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        console.error(`[upload] ${label} a échoué:`, msg);
+        // Première erreur rencontrée = celle qu'on remonte. On masque la clé
+        // API au passage si elle a fuité dans le message (paranoïa).
+        if (!ai_error) ai_error = msg.replace(/Bearer\s+[A-Za-z0-9._-]+/g, "Bearer ***");
+      };
       [analyse_ia, extraction_ia] = await Promise.all([
         analyzePiece(fileBuffer, mimeType, nom_piece, code_piece, undefined, trace).catch((err) => {
-          console.error("[upload] analyzePiece a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+          captureErr("analyzePiece")(err);
           return null;
         }),
         extractPiece(fileBuffer, mimeType, {
@@ -941,7 +952,7 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
           nom_piece,
           code_piece,
         }, trace).catch((err) => {
-          console.error("[upload] extractPiece a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+          captureErr("extractPiece")(err);
           return null as PieceExtraction | null;
         }),
       ]);
@@ -979,7 +990,14 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       }
     }
 
-    res.status(201).json({ ...piece, analyse_ia, extraction_ia, ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null) });
+    res.status(201).json({
+      ...piece,
+      analyse_ia,
+      extraction_ia,
+      ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null),
+      ai_requested: runAi,
+      ai_error,
+    });
   } catch (err) {
     // Si le fichier a été écrit dans le storage avant l'erreur, on le retire
     // pour éviter les orphelins. Best-effort.
