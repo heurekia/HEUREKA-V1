@@ -12,15 +12,35 @@ import { runDossierConformityAnalysis, runDossierConformityAnalysisBackground, t
 import { parseLooseArray } from "../services/jsonExtract.js";
 import { extractPiece, expectedTypeFromCode } from "../services/pieceExtractor.js";
 import { callClaude, anthropicClient, trackClaudeStreamUsage, resolveModelForProvider } from "../services/aiUsage.js";
+import { extractFirstJson, sha256Buffer } from "../services/pieceAnalyzer.js";
+import { attachCerfaToDossier } from "../services/cerfaAttachment.js";
 import Anthropic from "@anthropic-ai/sdk";
+import multer from "multer";
+import crypto from "crypto";
 import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { PDFDocument } from "pdf-lib";
+import { z } from "zod";
 import { refreshPluZones, pluEtagFor, filterZonesByInsee, PLU_CACHE_TTL_MS, type PluZonesGeoJson } from "../services/pluZones.js";
 
 const __dirname_mairie = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR_MAIRIE = path.resolve(__dirname_mairie, "../../uploads");
+
+// Multer en mémoire pour l'extraction OCR d'un CERFA — le buffer est envoyé
+// directement à Claude vision, on n'écrit jamais ce fichier sur disque.
+const ocrUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 25 * 1024 * 1024 },
+  fileFilter: (_req, file, cb) => {
+    const allowed = /pdf|jpe?g|png/i;
+    if (allowed.test(path.extname(file.originalname)) || allowed.test(file.mimetype)) {
+      cb(null, true);
+    } else {
+      cb(new Error("Format non supporté (PDF, JPEG, PNG uniquement)"));
+    }
+  },
+});
 
 // Anthropic limite chaque requête à ~100 pages de PDF. Les gros règlements PLU
 // (200+ pages) sont découpés en tronçons ≤ maxPages, avec un léger chevauchement
@@ -3782,5 +3802,249 @@ mairieRouter.patch("/dossiers/:id/consultations/:consultationId", async (req: Au
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Création d'un dossier au comptoir (mairie) ──
+// Saisie manuelle OU finalisation d'une extraction OCR. La pétitionnaire n'a
+// pas nécessairement de compte citoyen : on crée un utilisateur placeholder
+// (rôle citoyen, mot de passe aléatoire non utilisable) pour respecter la
+// FK dossiers.user_id. Le dossier est créé directement en statut "soumis"
+// (la mairie l'enregistre déjà au comptoir, donc plus de stade brouillon).
+const mairieCreateDossierSchema = z.object({
+  type: z.enum(["permis_de_construire", "declaration_prealable", "permis_amenager", "permis_demolir", "permis_lotir", "certificat_urbanisme"]),
+  petitionnaire_nom: z.string().trim().min(1, "Pétitionnaire requis"),
+  petitionnaire_prenom: z.string().trim().optional(),
+  petitionnaire_email: z.string().trim().email().optional().or(z.literal("")),
+  adresse: z.string().trim().optional(),
+  commune: z.string().trim().optional(),
+  code_postal: z.string().trim().optional(),
+  parcelle: z.string().trim().optional(),
+  surface_plancher: z.string().trim().optional(),
+  description: z.string().trim().optional(),
+  date_depot: z.string().trim().optional(),
+  instructeur_id: z.string().uuid().optional().or(z.literal("")),
+  metadata: z.record(z.unknown()).optional(),
+});
+
+mairieRouter.post("/dossiers", async (req: AuthRequest, res) => {
+  try {
+    const data = mairieCreateDossierSchema.parse(req.body);
+
+    // Découpage nom complet « Marie DUPONT » → prenom + nom si non fourni.
+    let prenom = data.petitionnaire_prenom?.trim() || "";
+    let nom = data.petitionnaire_nom.trim();
+    if (!prenom) {
+      const parts = nom.split(/\s+/);
+      if (parts.length >= 2) {
+        prenom = parts[0]!;
+        nom = parts.slice(1).join(" ");
+      } else {
+        prenom = "—";
+      }
+    }
+
+    // Email cible : fourni ou synthétique. Le synthétique reste unique grâce
+    // au crypto.randomUUID() ; un échec d'unicité (rarissime) provoque un 500
+    // que l'opérateur pourra rejouer.
+    const providedEmail = data.petitionnaire_email?.trim().toLowerCase();
+    let petitionnaireUserId: string;
+    if (providedEmail) {
+      const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, providedEmail)).limit(1);
+      if (existing) {
+        petitionnaireUserId = existing.id;
+      } else {
+        const { default: bcrypt } = await import("bcryptjs");
+        const hash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
+        const [created] = await db.insert(users).values({
+          email: providedEmail,
+          password_hash: hash,
+          prenom,
+          nom,
+          role: "citoyen",
+          commune: data.commune ?? req.user?.commune ?? null,
+        }).returning({ id: users.id });
+        petitionnaireUserId = created!.id;
+      }
+    } else {
+      const { default: bcrypt } = await import("bcryptjs");
+      const hash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
+      const syntheticEmail = `dossier-${crypto.randomUUID()}@placeholder.heureka.local`;
+      const [created] = await db.insert(users).values({
+        email: syntheticEmail,
+        password_hash: hash,
+        prenom,
+        nom,
+        role: "citoyen",
+        commune: data.commune ?? req.user?.commune ?? null,
+      }).returning({ id: users.id });
+      petitionnaireUserId = created!.id;
+    }
+
+    // TODO PLAT'AU : remplacer ce numéro local par celui retourné par
+    // l'API PLAT'AU (réservation de numéro national de dossier) une fois le
+    // raccordement effectué. En attendant on garde le format historique
+    // DOS-<base36 timestamp>-<hex aléatoire> aligné avec la route citoyen.
+    const numero = `DOS-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString("hex").toUpperCase()}`;
+    const depotDate = data.date_depot ? new Date(data.date_depot) : new Date();
+    const validDepot = Number.isFinite(depotDate.getTime()) ? depotDate : new Date();
+
+    const instructeurId = data.instructeur_id && data.instructeur_id !== "" ? data.instructeur_id : null;
+
+    const [dossier] = await db.insert(dossiers).values({
+      numero,
+      type: data.type,
+      status: "soumis",
+      user_id: petitionnaireUserId,
+      instructeur_id: instructeurId,
+      adresse: data.adresse ?? null,
+      commune: data.commune ?? req.user?.commune ?? null,
+      code_postal: data.code_postal ?? null,
+      parcelle: data.parcelle ?? null,
+      surface_plancher: data.surface_plancher ?? null,
+      description: data.description ?? null,
+      metadata: data.metadata ?? {},
+      date_depot: validDepot,
+    }).returning();
+
+    // Génération + attachement CERFA prérempli (best-effort, comme côté citoyen).
+    attachCerfaToDossier(dossier!.id).catch((err) => {
+      console.error("[mairie/dossiers] attachCerfaToDossier:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+    });
+
+    res.status(201).json(dossier);
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Données invalides", details: err.errors });
+    }
+    console.error("[mairie/dossiers]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Extraction OCR d'un CERFA pour pré-remplir le formulaire de création ──
+// L'opérateur uploade un CERFA scanné ; on appelle Claude vision avec un prompt
+// dédié aux métadonnées administratives (type, pétitionnaire, adresse, parcelle,
+// surfaces). Le résultat n'est PAS persisté : l'opérateur peut le corriger avant
+// de cliquer « Créer le dossier ».
+const OCR_CERFA_SYSTEM = `Tu es un agent d'instruction expérimenté qui dépouille un CERFA d'urbanisme scanné (Permis de construire, Déclaration préalable, Permis d'aménager, Permis de démolir, Certificat d'urbanisme).
+
+Ta mission : LIRE ce qui est explicitement écrit ou coché sur le formulaire pour pré-remplir le formulaire d'enregistrement au comptoir. Tu N'INVENTES JAMAIS de valeur.
+
+CHAMPS À EXTRAIRE :
+- type : déduis du numéro CERFA en haut du formulaire — 13406 = permis_de_construire ; 13703 = declaration_prealable ; 13409 = permis_amenager ; 13405 = permis_demolir ; 13410 = certificat_urbanisme. Sinon, lis le titre du formulaire.
+- numero_cerfa : le numéro complet visible (ex. "13406*08").
+- petitionnaire_prenom + petitionnaire_nom : rubrique « Identité du demandeur ». Si une raison sociale est cochée (entreprise), mets la raison sociale dans petitionnaire_nom et laisse prenom vide.
+- petitionnaire_email : si visible.
+- siret : si une entreprise est déclarée et le SIRET est lisible.
+- adresse : adresse du terrain / projet (« 12 rue des Lilas »). Pas l'adresse personnelle du demandeur.
+- code_postal + commune : du terrain.
+- parcelle : références cadastrales (section + numéro, ex. « AB 142 »). Si plusieurs, concatène séparées par « , ».
+- surface_plancher : surface de plancher créée en m² (chiffre seul, ex. "95").
+- description : courte phrase libre décrivant le projet si une zone « description du projet » est remplie.
+
+RÈGLES :
+- Toute valeur non visiblement écrite → null.
+- Pas de markdown, pas de préambule, juste du JSON valide :
+
+{
+  "type": "permis_de_construire"|"declaration_prealable"|"permis_amenager"|"permis_demolir"|"certificat_urbanisme"|null,
+  "numero_cerfa": "13406*08"|null,
+  "petitionnaire_prenom": "Jean"|null,
+  "petitionnaire_nom": "DUPONT"|null,
+  "petitionnaire_email": "jean.dupont@example.com"|null,
+  "siret": "12345678900012"|null,
+  "adresse": "12 rue des Lilas"|null,
+  "code_postal": "37510"|null,
+  "commune": "Ballan-Miré"|null,
+  "parcelle": "AB 142"|null,
+  "surface_plancher": "95"|null,
+  "description": "..."|null,
+  "confidence": 0.0
+}`;
+
+function ocrSniff(buf: Buffer): "pdf" | "jpeg" | "png" | null {
+  if (buf.length < 12) return null;
+  if (buf.subarray(0, 1024).includes("%PDF")) return "pdf";
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "jpeg";
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "png";
+  return null;
+}
+
+function ocrSingle(req: AuthRequest, res: import("express").Response, next: import("express").NextFunction) {
+  ocrUpload.single("file")(req, res, (err) => {
+    if (err) {
+      const message = err instanceof Error ? err.message : "Fichier invalide";
+      return res.status(400).json({ error: message });
+    }
+    next();
+  });
+}
+
+mairieRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
+  try {
+    if (!req.file) return res.status(400).json({ error: "Fichier requis" });
+    const sniffed = ocrSniff(req.file.buffer);
+    if (!sniffed) {
+      return res.status(400).json({ error: "Format binaire non supporté (PDF, JPEG, PNG)" });
+    }
+
+    const buf = req.file.buffer;
+    const base64 = buf.toString("base64");
+    const fileHash = sha256Buffer(buf);
+    const communeIdForTrace = await resolveCommuneIdFromUser(req);
+
+    const documentBlock = sniffed === "pdf"
+      ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: base64 } }
+      : { type: "image" as const, source: { type: "base64" as const, media_type: (sniffed === "jpeg" ? "image/jpeg" : "image/png") as "image/jpeg" | "image/png", data: base64 } };
+
+    const client = anthropicClient({ maxRetries: 2, timeout: 90_000 });
+    const msg = await callClaude(
+      { purpose: "ocr_cerfa_admin", dossierId: null, communeId: communeIdForTrace, userId: req.user?.id ?? null, fileHash },
+      {
+        model: "claude-sonnet-4-6",
+        max_tokens: 1500,
+        system: OCR_CERFA_SYSTEM,
+        messages: [{
+          role: "user",
+          content: [
+            documentBlock,
+            { type: "text", text: "Extrais les métadonnées administratives de ce CERFA." },
+          ],
+        }],
+      },
+      client,
+    );
+
+    const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
+    const parsed = extractFirstJson(text) as Record<string, unknown> | null;
+    if (!parsed) {
+      return res.status(422).json({ error: "Extraction IA non concluante" });
+    }
+
+    const validTypes = new Set(["permis_de_construire", "declaration_prealable", "permis_amenager", "permis_demolir", "permis_lotir", "certificat_urbanisme"]);
+    const str = (v: unknown): string | null => typeof v === "string" && v.trim() ? v.trim() : null;
+    const typeRaw = str(parsed.type);
+    const type = typeRaw && validTypes.has(typeRaw) ? typeRaw : null;
+    const conf = typeof parsed.confidence === "number" ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5;
+
+    res.json({
+      type,
+      numero_cerfa: str(parsed.numero_cerfa),
+      petitionnaire_prenom: str(parsed.petitionnaire_prenom),
+      petitionnaire_nom: str(parsed.petitionnaire_nom),
+      petitionnaire_email: str(parsed.petitionnaire_email),
+      siret: str(parsed.siret),
+      adresse: str(parsed.adresse),
+      code_postal: str(parsed.code_postal),
+      commune: str(parsed.commune),
+      parcelle: str(parsed.parcelle),
+      surface_plancher: str(parsed.surface_plancher),
+      description: str(parsed.description),
+      confidence: conf,
+    });
+  } catch (err) {
+    console.error("[mairie/ocr-cerfa]", err);
+    res.status(500).json({ error: "Erreur serveur lors de l'extraction OCR" });
   }
 });
