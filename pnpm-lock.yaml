@@ -39,6 +39,9 @@ importers:
       '@heureka-v1/ingestion':
         specifier: workspace:*
         version: link:../../packages/ingestion
+      '@heureka-v1/regulatory-engine':
+        specifier: workspace:*
+        version: link:../../packages/regulatory-engine
       '@heureka-v1/shared':
         specifier: workspace:*
         version: link:../../packages/shared
