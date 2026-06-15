@@ -1,2 +1,10 @@
+# Force-include poppler-utils dans l'image Railway pour que pdftoppm soit
+# disponible au runtime — utilisé par apps/api/src/services/aiUsage.ts
+# (conversion PDF → PNG avant envoi à Pixtral, qui n'accepte pas le PDF natif).
+#
+# La syntaxe `['...']` étend les packages auto-détectés par Nixpacks
+# (nodejs, pnpm, etc.) au lieu de les écraser — sans elle, le build casse
+# parce qu'on perd npm/pnpm.
 [phases.setup]
-nixPkgs = ["nodejs_20", "pnpm", "poppler_utils"]
+nixPkgs = ['...', 'poppler_utils']
+aptPkgs = ['...', 'poppler-utils']
