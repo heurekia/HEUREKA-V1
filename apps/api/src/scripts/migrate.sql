@@ -176,3 +176,19 @@ CREATE INDEX IF NOT EXISTS idx_pieces_jointes_user_id ON dossier_pieces_jointes(
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_instruction_events_dossier_id ON instruction_events(dossier_id);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_dossier_id ON calendar_events(dossier_id);
+
+-- Documentation Favoris (onglet Documentation contextuelle pendant l'instruction)
+CREATE TABLE IF NOT EXISTS documentation_favoris (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reference_id text NOT NULL,
+  reference_type text NOT NULL,
+  titre text NOT NULL,
+  source text,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS documentation_favoris_user_ref_uniq
+  ON documentation_favoris(dossier_id, user_id, reference_id);
+CREATE INDEX IF NOT EXISTS idx_documentation_favoris_dossier_id
+  ON documentation_favoris(dossier_id);

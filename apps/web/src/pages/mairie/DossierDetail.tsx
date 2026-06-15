@@ -1,13 +1,16 @@
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useParams, Link } from "react-router-dom";
 import { api } from "../../lib/api";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
 import { Badge, statusLabels } from "../../components/ui/badge";
 import { Button } from "../../components/ui/button";
 import { RegulatoryChecklist } from "../../components/RegulatoryChecklist";
+import { DocumentationPanel } from "../../components/DocumentationPanel";
+import { PieceViewer, PieceViewerFullscreen, type PieceLite } from "../../components/PieceViewer";
 import {
   ArrowLeft, FileText, User, MessageSquare, AlertTriangle, CheckCircle,
   RefreshCw, ChevronDown, ChevronRight, ShieldCheck, ShieldAlert, ShieldX,
+  FolderOpen,
 } from "lucide-react";
 
 type PieceScore = "conforme" | "acceptable" | "incomplet" | "non_conforme";
@@ -334,21 +337,108 @@ function ConformitePanel({ dossierId }: { dossierId: string }) {
   );
 }
 
+// ── Liste des pièces du dossier — sélection de la pièce active ───────────────
+//
+// Rendue compacte volontairement : ne consomme pas de place pour qu'on garde
+// l'essentiel à l'écran (visualiseur + documentation). Le filtre sur les
+// pièces déjà validées vs en attente d'examen est volontairement absent : c'est
+// une vue d'instruction, pas un dashboard.
+function PiecesList({
+  pieces,
+  selectedId,
+  onSelect,
+}: {
+  pieces: PieceLite[];
+  selectedId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  return (
+    <Card className="border-gray-200/80">
+      <CardHeader>
+        <h3 className="font-semibold text-[#000020] flex items-center gap-2">
+          <FolderOpen className="w-4 h-4 text-heureka-500" />
+          Pièces déposées ({pieces.length})
+        </h3>
+      </CardHeader>
+      <CardContent className="p-2">
+        {pieces.length === 0 ? (
+          <p className="text-sm text-gray-400 p-4 text-center">Aucune pièce déposée.</p>
+        ) : (
+          <ul className="max-h-[520px] overflow-y-auto">
+            {pieces.map((p) => {
+              const active = p.id === selectedId;
+              return (
+                <li key={p.id}>
+                  <button
+                    type="button"
+                    onClick={() => onSelect(p.id)}
+                    className={`w-full text-left px-3 py-2 rounded-md transition-colors ${
+                      active ? "bg-heureka-50 ring-1 ring-heureka-500/40" : "hover:bg-gray-50"
+                    }`}
+                    aria-current={active ? "true" : undefined}
+                  >
+                    <div className="flex items-center gap-2">
+                      {p.code_piece && (
+                        <span className="font-mono text-[11px] text-gray-500 shrink-0">{p.code_piece}</span>
+                      )}
+                      <span className="text-sm text-[#000020] truncate flex-1" title={p.nom}>{p.nom}</span>
+                      {p.instructeur_status === "valide" && <Badge variant="success">✓</Badge>}
+                      {p.instructeur_status === "rejete" && <Badge variant="danger">!</Badge>}
+                      {p.instructeur_status === "complement_demande" && <Badge variant="warning">?</Badge>}
+                    </div>
+                  </button>
+                </li>
+              );
+            })}
+          </ul>
+        )}
+      </CardContent>
+    </Card>
+  );
+}
+
 export function MairieDossierDetail() {
   const { id } = useParams();
   const [dossier, setDossier] = useState<any>(null);
   const [loading, setLoading] = useState(true);
+  const [pieces, setPieces] = useState<PieceLite[]>([]);
+  const [selectedPieceId, setSelectedPieceId] = useState<string | null>(null);
+  const [fullscreen, setFullscreen] = useState(false);
+  // Bascule entre la vue « Instruction » (pièces / viewer / documentation) et
+  // la vue « Synthèse » (informations + conformité + checklist réglementaire).
+  // Conserver les deux pour ne pas régresser sur les écrans existants.
+  const [view, setView] = useState<"instruction" | "synthese">("instruction");
 
   useEffect(() => {
+    if (!id) return;
     api.get<any>(`/mairie/dossiers/${id}`).then(setDossier).catch(console.error).finally(() => setLoading(false));
   }, [id]);
+
+  useEffect(() => {
+    if (!id) return;
+    api.get<PieceLite[]>(`/mairie/dossiers/${id}/pieces`)
+      .then((list) => {
+        setPieces(list);
+        // Sélectionne la première pièce examinable par défaut.
+        if (list.length > 0 && !selectedPieceId) setSelectedPieceId(list[0]!.id);
+      })
+      .catch(console.error);
+    // selectedPieceId est intentionnellement omis : on ne veut pas resélectionner
+    // quand l'utilisateur change manuellement de pièce.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  const selectedPiece = useMemo(
+    () => pieces.find((p) => p.id === selectedPieceId) ?? null,
+    [pieces, selectedPieceId],
+  );
 
   if (loading) return <div className="text-center py-12 text-gray-400">Chargement...</div>;
   if (!dossier) return <div className="text-center py-12 text-gray-400">Dossier non trouvé</div>;
 
   return (
     <div>
-      <div className="flex items-center gap-4 mb-6">
+      <div className="flex items-center gap-4 mb-4">
         <Link to="/mairie/dossiers" className="text-gray-400 hover:text-gray-600 transition-colors">
           <ArrowLeft className="w-5 h-5" />
         </Link>
@@ -361,102 +451,147 @@ export function MairieDossierDetail() {
         </Badge>
       </div>
 
-      <div className="grid lg:grid-cols-3 gap-6">
-        <div className="lg:col-span-2 space-y-6">
-          <Card className="border-gray-200/80">
-            <CardHeader>
-              <h3 className="font-semibold text-[#000020] flex items-center gap-2">
-                <FileText className="w-4 h-4 text-heureka-500" />
-                Informations
-              </h3>
-            </CardHeader>
-            <CardContent>
-              <dl className="grid grid-cols-2 gap-x-6 gap-y-4">
-                <div>
-                  <dt className="text-xs text-gray-500 uppercase tracking-wide">Adresse</dt>
-                  <dd className="font-medium text-[#000020] mt-0.5">{dossier.adresse ?? "-"}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-gray-500 uppercase tracking-wide">Parcelle</dt>
-                  <dd className="font-medium text-[#000020] mt-0.5">{dossier.parcelle ?? "-"}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-gray-500 uppercase tracking-wide">Commune</dt>
-                  <dd className="font-medium text-[#000020] mt-0.5">{dossier.commune ?? "-"}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-gray-500 uppercase tracking-wide">Surface plancher</dt>
-                  <dd className="font-medium text-[#000020] mt-0.5">{dossier.surface_plancher ?? "-"}</dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-gray-500 uppercase tracking-wide">Date dépôt</dt>
-                  <dd className="font-medium text-[#000020] mt-0.5">
-                    {dossier.date_depot ? new Date(dossier.date_depot).toLocaleDateString("fr-FR") : "-"}
-                  </dd>
-                </div>
-                <div>
-                  <dt className="text-xs text-gray-500 uppercase tracking-wide">Date limite instruction</dt>
-                  <dd className="font-medium text-[#000020] mt-0.5">
-                    {dossier.date_limite_instruction ? new Date(dossier.date_limite_instruction).toLocaleDateString("fr-FR") : "-"}
-                  </dd>
-                </div>
-              </dl>
-            </CardContent>
-          </Card>
-
-          <ConformitePanel dossierId={id!} />
-
-          <RegulatoryChecklist dossierId={id!} />
-        </div>
-
-        <div className="space-y-6">
-          <Card className="border-gray-200/80">
-            <CardHeader>
-              <h3 className="font-semibold text-[#000020] flex items-center gap-2">
-                <User className="w-4 h-4 text-heureka-500" />
-                Demandeur
-              </h3>
-            </CardHeader>
-            <CardContent>
-              {dossier.demandeur ? (
-                <div>
-                  <p className="font-medium text-[#000020]">{dossier.demandeur.prenom} {dossier.demandeur.nom}</p>
-                  <p className="text-sm text-gray-500 mt-0.5">{dossier.demandeur.email}</p>
-                </div>
-              ) : (
-                <p className="text-gray-400 text-sm">Non disponible</p>
-              )}
-            </CardContent>
-          </Card>
-
-          <Card className="border-gray-200/80">
-            <CardHeader>
-              <h3 className="font-semibold text-[#000020] flex items-center gap-2">
-                <AlertTriangle className="w-4 h-4 text-heureka-500" />
-                Actions
-              </h3>
-            </CardHeader>
-            <CardContent className="space-y-3">
-              <Button className="w-full gap-2">
-                <CheckCircle className="w-4 h-4" />
-                Changer le statut
-              </Button>
-              <Button variant="outline" className="w-full gap-2">
-                <User className="w-4 h-4" />
-                Assigner un instructeur
-              </Button>
-              <Button variant="outline" className="w-full gap-2">
-                <MessageSquare className="w-4 h-4" />
-                Voir la messagerie
-              </Button>
-              <Button variant="danger" className="w-full gap-2">
-                <AlertTriangle className="w-4 h-4" />
-                Refuser le dossier
-              </Button>
-            </CardContent>
-          </Card>
-        </div>
+      {/* Switch de vue — onglets « Instruction » / « Synthèse ». */}
+      <div className="mb-5 inline-flex rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
+        <button
+          type="button"
+          onClick={() => setView("instruction")}
+          className={`px-4 py-1.5 text-sm font-medium ${
+            view === "instruction" ? "bg-heureka-500 text-white" : "text-gray-600 hover:bg-gray-50"
+          }`}
+        >
+          Instruction
+        </button>
+        <button
+          type="button"
+          onClick={() => setView("synthese")}
+          className={`px-4 py-1.5 text-sm font-medium ${
+            view === "synthese" ? "bg-heureka-500 text-white" : "text-gray-600 hover:bg-gray-50"
+          }`}
+        >
+          Synthèse
+        </button>
       </div>
+
+      {view === "instruction" ? (
+        <div className="grid lg:grid-cols-12 gap-4">
+          {/* Colonne 1 — Liste des pièces */}
+          <div className="lg:col-span-3">
+            <PiecesList pieces={pieces} selectedId={selectedPieceId} onSelect={setSelectedPieceId} />
+          </div>
+
+          {/* Colonne 2 — Visualiseur de la pièce */}
+          <div className="lg:col-span-6 min-h-[560px]">
+            <PieceViewer piece={selectedPiece} onExpand={() => setFullscreen(true)} />
+          </div>
+
+          {/* Colonne 3 — Documentation contextuelle */}
+          <div className="lg:col-span-3 space-y-4">
+            <DocumentationPanel dossierId={id!} pieceId={selectedPieceId} />
+          </div>
+        </div>
+      ) : (
+        <div className="grid lg:grid-cols-3 gap-6">
+          <div className="lg:col-span-2 space-y-6">
+            <Card className="border-gray-200/80">
+              <CardHeader>
+                <h3 className="font-semibold text-[#000020] flex items-center gap-2">
+                  <FileText className="w-4 h-4 text-heureka-500" />
+                  Informations
+                </h3>
+              </CardHeader>
+              <CardContent>
+                <dl className="grid grid-cols-2 gap-x-6 gap-y-4">
+                  <div>
+                    <dt className="text-xs text-gray-500 uppercase tracking-wide">Adresse</dt>
+                    <dd className="font-medium text-[#000020] mt-0.5">{dossier.adresse ?? "-"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-gray-500 uppercase tracking-wide">Parcelle</dt>
+                    <dd className="font-medium text-[#000020] mt-0.5">{dossier.parcelle ?? "-"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-gray-500 uppercase tracking-wide">Commune</dt>
+                    <dd className="font-medium text-[#000020] mt-0.5">{dossier.commune ?? "-"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-gray-500 uppercase tracking-wide">Surface plancher</dt>
+                    <dd className="font-medium text-[#000020] mt-0.5">{dossier.surface_plancher ?? "-"}</dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-gray-500 uppercase tracking-wide">Date dépôt</dt>
+                    <dd className="font-medium text-[#000020] mt-0.5">
+                      {dossier.date_depot ? new Date(dossier.date_depot).toLocaleDateString("fr-FR") : "-"}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-xs text-gray-500 uppercase tracking-wide">Date limite instruction</dt>
+                    <dd className="font-medium text-[#000020] mt-0.5">
+                      {dossier.date_limite_instruction ? new Date(dossier.date_limite_instruction).toLocaleDateString("fr-FR") : "-"}
+                    </dd>
+                  </div>
+                </dl>
+              </CardContent>
+            </Card>
+
+            <ConformitePanel dossierId={id!} />
+
+            <RegulatoryChecklist dossierId={id!} />
+          </div>
+
+          <div className="space-y-6">
+            <Card className="border-gray-200/80">
+              <CardHeader>
+                <h3 className="font-semibold text-[#000020] flex items-center gap-2">
+                  <User className="w-4 h-4 text-heureka-500" />
+                  Demandeur
+                </h3>
+              </CardHeader>
+              <CardContent>
+                {dossier.demandeur ? (
+                  <div>
+                    <p className="font-medium text-[#000020]">{dossier.demandeur.prenom} {dossier.demandeur.nom}</p>
+                    <p className="text-sm text-gray-500 mt-0.5">{dossier.demandeur.email}</p>
+                  </div>
+                ) : (
+                  <p className="text-gray-400 text-sm">Non disponible</p>
+                )}
+              </CardContent>
+            </Card>
+
+            <Card className="border-gray-200/80">
+              <CardHeader>
+                <h3 className="font-semibold text-[#000020] flex items-center gap-2">
+                  <AlertTriangle className="w-4 h-4 text-heureka-500" />
+                  Actions
+                </h3>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <Button className="w-full gap-2">
+                  <CheckCircle className="w-4 h-4" />
+                  Changer le statut
+                </Button>
+                <Button variant="outline" className="w-full gap-2">
+                  <User className="w-4 h-4" />
+                  Assigner un instructeur
+                </Button>
+                <Button variant="outline" className="w-full gap-2">
+                  <MessageSquare className="w-4 h-4" />
+                  Voir la messagerie
+                </Button>
+                <Button variant="danger" className="w-full gap-2">
+                  <AlertTriangle className="w-4 h-4" />
+                  Refuser le dossier
+                </Button>
+              </CardContent>
+            </Card>
+          </div>
+        </div>
+      )}
+
+      {fullscreen && (
+        <PieceViewerFullscreen piece={selectedPiece} onClose={() => setFullscreen(false)} />
+      )}
     </div>
   );
 }
