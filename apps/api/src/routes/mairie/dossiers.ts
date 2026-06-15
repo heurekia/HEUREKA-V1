@@ -10,7 +10,7 @@ import multer from "multer";
 import crypto from "crypto";
 import path from "path";
 import { z } from "zod";
-import { callClaude, anthropicClient } from "../../services/aiUsage.js";
+import { callAi } from "../../services/aiUsage.js";
 import { extractFirstJson, sha256Buffer } from "../../services/pieceAnalyzer.js";
 import { attachCerfaToDossier } from "../../services/cerfaAttachment.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
@@ -671,11 +671,10 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
       ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: base64 } }
       : { type: "image" as const, source: { type: "base64" as const, media_type: (sniffed === "jpeg" ? "image/jpeg" : "image/png") as "image/jpeg" | "image/png", data: base64 } };
 
-    const client = anthropicClient({ maxRetries: 2, timeout: 90_000 });
-    const msg = await callClaude(
+    const msg = await callAi(
       { purpose: "ocr_cerfa_admin", dossierId: null, communeId: communeIdForTrace, userId: req.user?.id ?? null, fileHash },
       {
-        model: "claude-sonnet-4-6",
+        model: "ai-smart",
         max_tokens: 1500,
         system: OCR_CERFA_SYSTEM,
         messages: [{
@@ -686,7 +685,6 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
           ],
         }],
       },
-      client,
     );
 
     const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";

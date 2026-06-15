@@ -1,154 +1,189 @@
-import Anthropic from "@anthropic-ai/sdk";
-import { AnthropicBedrock } from "@anthropic-ai/bedrock-sdk";
-import fs from "fs";
+/**
+ * Inférence IA — Mistral La Plateforme (direct, Paris, France).
+ *
+ * Décision juin 2026 : on bascule l'intégralité des appels IA de HEUREKA
+ * (citoyen + mairie) sur Mistral La Plateforme en accès direct. Raisons :
+ *   - Vision requise (CERFA, plans, photos) → Pixtral, non disponible sur
+ *     AWS Bedrock à ce jour.
+ *   - Souveraineté : entité Mistral SA Paris, droit français applicable.
+ *   - Latence (~15 ms depuis Tours) et tarif natif EUR.
+ *
+ * Cette refonte retire entièrement les chemins Anthropic + Bedrock :
+ * variables d'env (AI_PROVIDER, AWS_*), SDK (@anthropic-ai/sdk, @anthropic-ai/
+ * bedrock-sdk), types Claude. Le tracking ai_usage_events reste identique
+ * — seul le `model` stocké change (pixtral-large-latest plutôt que claude-*).
+ */
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { db } from "../db.js";
 import { ai_usage_events } from "@heureka-v1/db";
 import { maybeNotify } from "./aiAlerts.js";
 
-// ── RGPD : choix du fournisseur d'inférence ─────────────────────────────────
-// AI_PROVIDER=bedrock  → utilise AWS Bedrock (Anthropic Claude hébergé en UE).
-//   • Supprime juridiquement le transfert hors UE (art. 44 RGPD).
-//   • Demande AWS_REGION (par défaut eu-central-1 / Francfort) + credentials
-//     AWS standards (AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY, …).
-// AI_PROVIDER=anthropic (défaut) → API Anthropic directe (États-Unis, sous DPA + SCC).
-const AI_PROVIDER = (process.env.AI_PROVIDER ?? "anthropic").toLowerCase();
-const USE_BEDROCK = AI_PROVIDER === "bedrock";
-const BEDROCK_REGION = process.env.AWS_REGION ?? "eu-central-1";
+const MISTRAL_API_BASE = process.env.MISTRAL_API_BASE ?? "https://api.mistral.ai/v1";
 
-// Bedrock utilise des "inference profile IDs" préfixés par la région
-// (eu.* = profil cross-region UE qui route entre Francfort / Irlande / Paris
-// pour la disponibilité, sans transfert hors UE).
-// IDs confirmés depuis la console Bedrock eu-central-1 (Francfort) :
-//   - Haiku 4.5 garde le suffixe -v1:0
-//   - Sonnet 4.6 N'A PAS le suffixe -v1:0 (différence de convention AWS sur
-//     les modèles les plus récents). À re-vérifier dans la console à chaque
-//     ajout de modèle, AWS change parfois la convention.
-// Si un modèle n'a pas encore d'équivalent Bedrock, on échoue explicitement
-// plutôt que de basculer silencieusement sur la mauvaise région.
-const BEDROCK_MODEL_MAP: Record<string, string> = {
-  "claude-haiku-4-5-20251001": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-  "claude-haiku-4-5":          "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
-  "claude-sonnet-4-6":          "eu.anthropic.claude-sonnet-4-6",
-  "claude-sonnet-4-5":          "eu.anthropic.claude-sonnet-4-5",
-  "claude-opus-4-8":             "eu.anthropic.claude-opus-4-8",
-  "claude-opus-4-7":             "eu.anthropic.claude-opus-4-7",
+// ── Tarifs Mistral La Plateforme (EUR par million de tokens) ────────────────
+// Mistral facture en EUR-natif, pas de conversion USD→EUR. Aucun équivalent
+// prompt caching à ce jour côté Mistral → cache_*_input_tokens toujours à 0
+// dans ai_usage_events.
+interface MistralPricing { input_eur: number; output_eur: number; }
+const MISTRAL_PRICING: Record<string, MistralPricing> = {
+  "pixtral-12b-2409":     { input_eur: 0.15, output_eur: 0.15 },
+  "pixtral-large-latest": { input_eur: 2.0,  output_eur: 6.0 },
+  "mistral-large-latest": { input_eur: 1.8,  output_eur: 5.4 },
+  "mistral-small-latest": { input_eur: 0.2,  output_eur: 0.6 },
+};
+const DEFAULT_PRICING: MistralPricing = MISTRAL_PRICING["pixtral-large-latest"]!;
+
+// ── Noms abstraits d'usage (côté appelants) ─────────────────────────────────
+// Les services métier déclarent leur besoin par un nom abstrait (`ai-fast`
+// pour les tâches simples, `ai-smart` pour les analyses complexes) ; on
+// résout ici vers le modèle Mistral réel. Permet de retuner finement le
+// catalogue post-benchmark sans toucher au code applicatif.
+const MODEL_MAP: Record<string, string> = {
+  "ai-fast":  "pixtral-large-latest",
+  "ai-smart": "pixtral-large-latest",
 };
 
-// Mapping inverse : depuis un modelId Bedrock vu dans la réponse, retrouver
-// le nom canonique Anthropic pour rester cohérent dans les tarifs et les
-// logs ai_usage_events.
-function canonicalModelName(modelId: string): string {
-  if (!USE_BEDROCK) return modelId;
-  for (const [canon, bedrock] of Object.entries(BEDROCK_MODEL_MAP)) {
-    if (bedrock === modelId) return canon;
+function resolveModel(canonical: string): string {
+  // Si l'appelant fournit déjà un id Mistral natif, on le respecte tel quel.
+  return MODEL_MAP[canonical] ?? canonical;
+}
+
+function computeCostEur(model: string, prompt_tokens: number, completion_tokens: number): number {
+  const p = MISTRAL_PRICING[model] ?? DEFAULT_PRICING;
+  const eur = (prompt_tokens * p.input_eur + completion_tokens * p.output_eur) / 1_000_000;
+  return Math.round(eur * 1_000_000) / 1_000_000;
+}
+
+function getMistralKey(): string {
+  const k = process.env.MISTRAL_API_KEY;
+  if (!k) throw new Error("MISTRAL_API_KEY non configurée");
+  return k;
+}
+
+export function aiProviderInfo(): { provider: string; region: string } {
+  return { provider: "mistral", region: "fr-paris" };
+}
+
+// ── Types AiRequest (format interne, indépendant du SDK Mistral) ────────────
+
+export type AiContentBlock =
+  | { type: "text"; text: string }
+  | { type: "image"; source: { type: "base64"; media_type: string; data: string } }
+  | { type: "document"; source: { type: "base64"; media_type: string; data: string } };
+
+export interface AiToolDefinition {
+  type: "function";
+  function: {
+    name: string;
+    description?: string;
+    parameters: Record<string, unknown>;
+  };
+}
+
+export interface AiRequest {
+  /** Nom abstrait ("ai-fast" | "ai-smart") ou id Mistral natif. */
+  model: string;
+  max_tokens: number;
+  temperature?: number;
+  system?: string;
+  messages: Array<{
+    role: "user" | "assistant";
+    content: string | AiContentBlock[];
+  }>;
+  /** Function calling (format OpenAI-compatible). */
+  tools?: AiToolDefinition[];
+  tool_choice?: "auto" | "none" | "any" | { type: "function"; function: { name: string } };
+}
+
+export type AiResponseBlock =
+  | { type: "text"; text: string }
+  | { type: "tool_use"; id: string; name: string; input: Record<string, unknown> };
+
+export interface AiMessage {
+  content: AiResponseBlock[];
+  stop_reason: string | null;
+  usage: { input_tokens: number; output_tokens: number };
+  model: string;
+}
+
+export interface CallAiContext {
+  purpose: string;
+  dossierId?: string | null;
+  communeId?: string | null;
+  userId?: string | null;
+  /** SHA-256 hex du fichier envoyé à l'IA, tracé dans ai_usage_events.file_hash. */
+  fileHash?: string | null;
+}
+
+// ── Conversion AiRequest → payload Mistral chat.completions ─────────────────
+
+interface MistralChatTextBlock { type: "text"; text: string; }
+interface MistralChatImageBlock { type: "image_url"; image_url: { url: string }; }
+type MistralChatBlock = MistralChatTextBlock | MistralChatImageBlock;
+interface MistralChatMessage {
+  role: "system" | "user" | "assistant";
+  content: string | MistralChatBlock[];
+}
+
+function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
+  const dir = mkdtempSync(path.join(tmpdir(), "heureka-ai-"));
+  try {
+    const pdfPath = path.join(dir, "in.pdf");
+    const outPrefix = path.join(dir, "out");
+    writeFileSync(pdfPath, pdf);
+    execFileSync("pdftoppm", ["-png", "-r", "200", "-f", "1", "-l", "1", pdfPath, outPrefix], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    return readFileSync(`${outPrefix}-1.png`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
-  return modelId;
 }
 
-function bedrockModelId(canonical: string): string {
-  const mapped = BEDROCK_MODEL_MAP[canonical];
-  if (!mapped) {
-    throw new Error(`[aiUsage] Aucun mapping Bedrock pour le modèle "${canonical}". Mettez à jour BEDROCK_MODEL_MAP.`);
+function translateMessages(request: AiRequest): MistralChatMessage[] {
+  const out: MistralChatMessage[] = [];
+  if (request.system) {
+    out.push({ role: "system", content: request.system });
   }
-  return mapped;
-}
-
-// Pour les appels streaming qui appellent client.messages.stream() directement
-// (sans passer par callClaude). On garde le nom canonique dans le code applicatif
-// et on traduit ici juste avant l'envoi à Bedrock — sinon Bedrock répond
-// « 400 The provided model identifier is invalid ».
-export function resolveModelForProvider(canonical: string): string {
-  return USE_BEDROCK ? bedrockModelId(canonical) : canonical;
-}
-
-// ── Tarifs Anthropic (USD par million de tokens) ────────────────────────────
-// Mis à jour à partir des prix publics. Si un modèle inconnu est utilisé, on
-// retombe sur les tarifs Sonnet pour ne pas sous-estimer le coût.
-interface ModelPricing {
-  input: number;          // USD / 1M tokens
-  output: number;         // USD / 1M tokens
-  cache_read: number;     // USD / 1M tokens
-  cache_creation: number; // USD / 1M tokens (cache 5 min)
-}
-
-const PRICING: Record<string, ModelPricing> = {
-  // Haiku 4.5
-  "claude-haiku-4-5-20251001": { input: 1.0, output: 5.0, cache_read: 0.1, cache_creation: 1.25 },
-  "claude-haiku-4-5":          { input: 1.0, output: 5.0, cache_read: 0.1, cache_creation: 1.25 },
-  // Sonnet 4.6 / 4.5 / 4
-  "claude-sonnet-4-6":          { input: 3.0, output: 15.0, cache_read: 0.3, cache_creation: 3.75 },
-  "claude-sonnet-4-5":          { input: 3.0, output: 15.0, cache_read: 0.3, cache_creation: 3.75 },
-  // Opus 4.x (fallback large)
-  "claude-opus-4-8":             { input: 15.0, output: 75.0, cache_read: 1.5, cache_creation: 18.75 },
-  "claude-opus-4-7":             { input: 15.0, output: 75.0, cache_read: 1.5, cache_creation: 18.75 },
-};
-
-const DEFAULT_PRICING: ModelPricing = PRICING["claude-sonnet-4-6"]!;
-
-// Conversion USD → EUR. Surchargeable par AI_USD_TO_EUR si besoin.
-const USD_TO_EUR = Number(process.env.AI_USD_TO_EUR ?? "0.93");
-
-export function computeCostEur(
-  model: string,
-  usage: { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number },
-): number {
-  const p = PRICING[model] ?? DEFAULT_PRICING;
-  const inT = usage.input_tokens ?? 0;
-  const outT = usage.output_tokens ?? 0;
-  const cReadT = usage.cache_read_input_tokens ?? 0;
-  const cCreateT = usage.cache_creation_input_tokens ?? 0;
-  const usd =
-    (inT * p.input + outT * p.output + cReadT * p.cache_read + cCreateT * p.cache_creation) / 1_000_000;
-  return Math.round(usd * USD_TO_EUR * 1_000_000) / 1_000_000;
-}
-
-// ── Clé API Anthropic ───────────────────────────────────────────────────────
-// Mêmes sources que dans pieceAnalyzer.ts (env, puis fichier session).
-// N'est lue que quand AI_PROVIDER!=bedrock — sur Bedrock, ce sont les
-// credentials AWS standards (AWS_ACCESS_KEY_ID, …) qui sont utilisés.
-function getAnthropicKey(): string {
-  if (process.env.ANTHROPIC_API_KEY) return process.env.ANTHROPIC_API_KEY;
-  const candidates = [
-    process.env.CLAUDE_SESSION_INGRESS_TOKEN_FILE,
-    "/home/claude/.claude/remote/.session_ingress_token",
-  ];
-  for (const p of candidates) {
-    if (!p) continue;
-    try { return fs.readFileSync(p, "utf8").trim(); } catch { /* try next */ }
+  for (const m of request.messages) {
+    if (typeof m.content === "string") {
+      out.push({ role: m.role, content: m.content });
+      continue;
+    }
+    const blocks: MistralChatBlock[] = [];
+    for (const b of m.content) {
+      if (b.type === "text") {
+        blocks.push({ type: "text", text: b.text });
+      } else if (b.type === "image") {
+        blocks.push({
+          type: "image_url",
+          image_url: { url: `data:${b.source.media_type};base64,${b.source.data}` },
+        });
+      } else if (b.type === "document") {
+        if (b.source.media_type === "application/pdf") {
+          // Pixtral n'accepte pas le PDF natif → conversion première page
+          // via pdftoppm (poppler-utils). Pour les PDF multi-pages, prévoir
+          // un découpage côté appelant (cf. splitPdfBase64 dans mairie/admin).
+          const png = convertPdfFirstPageToPng(Buffer.from(b.source.data, "base64"));
+          blocks.push({
+            type: "image_url",
+            image_url: { url: `data:image/png;base64,${png.toString("base64")}` },
+          });
+        } else {
+          // Format document non visuellement rendu (rare) → signaler en texte.
+          blocks.push({ type: "text", text: `[document ${b.source.media_type} non rendu visuellement]` });
+        }
+      }
+    }
+    out.push({ role: m.role, content: blocks });
   }
-  throw new Error("ANTHROPIC_API_KEY non configurée");
+  return out;
 }
 
-let _client: Anthropic | null = null;
-function newClient(opts?: { maxRetries?: number; timeout?: number }): Anthropic {
-  if (USE_BEDROCK) {
-    // AnthropicBedrock étend Anthropic — même API messages.create(). Les
-    // credentials AWS sont lus depuis l'environnement standard (AWS_ACCESS_KEY_ID,
-    // AWS_SECRET_ACCESS_KEY, AWS_SESSION_TOKEN, AWS_PROFILE, IAM role…).
-    return new AnthropicBedrock({ awsRegion: BEDROCK_REGION, ...opts }) as unknown as Anthropic;
-  }
-  return new Anthropic({ apiKey: getAnthropicKey(), ...opts });
-}
-
-export function anthropicClient(opts?: { maxRetries?: number; timeout?: number }): Anthropic {
-  // Permet de surcharger maxRetries/timeout par appel sans recréer un client à
-  // chaque fois pour le cas par défaut.
-  if (opts) return newClient(opts);
-  if (!_client) _client = newClient();
-  return _client;
-}
-
-// Étiquette informationnelle pour les logs au boot (cf. probe).
-export function aiProviderInfo(): { provider: string; region?: string } {
-  return USE_BEDROCK
-    ? { provider: "bedrock", region: BEDROCK_REGION }
-    : { provider: "anthropic" };
-}
-
-// ── Probe de démarrage ──────────────────────────────────────────────────────
-// Vérifie au boot que la table `ai_usage_events` existe ET porte les colonnes
-// attendues (commune_id, en particulier). Loggue UN message clair plutôt que
-// de laisser le serveur insérer dans le vide pendant des semaines.
+// ── Boot probe ──────────────────────────────────────────────────────────────
 const REQUIRED_COLUMNS = [
   "id", "dossier_id", "commune_id", "user_id", "purpose", "model",
   "input_tokens", "output_tokens", "cache_read_input_tokens",
@@ -172,139 +207,33 @@ export async function probeAiUsageTable(): Promise<void> {
       return;
     }
     console.log("[aiUsage] ✅ Table ai_usage_events OK, suivi des coûts actif.");
-    const info = aiProviderInfo();
-    if (info.provider === "bedrock") {
-      console.log(`[aiUsage] 🇪🇺 Fournisseur d'inférence : AWS Bedrock (région ${info.region}). Aucun transfert hors UE (RGPD art. 44).`);
-    } else {
-      console.log("[aiUsage] 🇺🇸 Fournisseur d'inférence : Anthropic API directe (USA, sous DPA + SCC). Pour basculer en UE : AI_PROVIDER=bedrock.");
-    }
+    console.log("[aiUsage] 🇫🇷 Fournisseur d'inférence : Mistral La Plateforme (fr-paris). Souveraineté française, vision native (Pixtral).");
   } catch (err) {
     console.error("[aiUsage] probe échoué:", err instanceof Error ? err.message : err);
   }
 }
 
-// ── Wrapper de tracking ─────────────────────────────────────────────────────
+// ── Helpers de tracking (factorisés entre callAi et streamAi) ───────────────
 
-export interface CallClaudeContext {
-  purpose: string;
-  dossierId?: string | null;
-  communeId?: string | null;
-  userId?: string | null;
-  // RGPD : SHA-256 hex du fichier envoyé à l'IA (pour les appels qui
-  // intègrent un contenu utilisateur). Tracé en clair dans
-  // `ai_usage_events.file_hash` pour audit.
-  fileHash?: string | null;
-}
-
-/**
- * Appelle `client.messages.create(request)` en mesurant la durée, en lisant
- * `msg.usage` retourné par l'API et en persistant un événement
- * `ai_usage_events` avec le coût en EUR. La persistance est best-effort : une
- * erreur d'écriture en base ne fait pas échouer la requête métier.
- */
-export async function callClaude(
-  ctx: CallClaudeContext,
-  request: Anthropic.MessageCreateParamsNonStreaming,
-  client?: Anthropic,
-): Promise<Anthropic.Message> {
-  const c = client ?? anthropicClient();
-  // RGPD : si l'on est sur Bedrock UE, traduire le modèle canonique en
-  // inference profile Bedrock. Le code applicatif continue d'utiliser les
-  // noms Anthropic canoniques partout — la conversion est centralisée ici.
-  const finalRequest = USE_BEDROCK
-    ? { ...request, model: bedrockModelId(request.model) }
-    : request;
-  const canonicalModel = request.model;
-
-  const startedAt = Date.now();
-  const msg = await c.messages.create(finalRequest);
-  const durationMs = Date.now() - startedAt;
-
-  const usage = msg.usage ?? { input_tokens: 0, output_tokens: 0 };
-  const cacheRead = (usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0;
-  const cacheCreate = (usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0;
-  const cost = computeCostEur(canonicalModel, {
-    input_tokens: usage.input_tokens ?? 0,
-    output_tokens: usage.output_tokens ?? 0,
-    cache_read_input_tokens: cacheRead,
-    cache_creation_input_tokens: cacheCreate,
-  });
-
-  void db.insert(ai_usage_events).values({
-    dossier_id: ctx.dossierId ?? null,
-    commune_id: ctx.communeId ?? null,
-    user_id: ctx.userId ?? null,
-    purpose: ctx.purpose,
-    // On stocke TOUJOURS le nom canonique (cohérence des tarifs + des
-    // tableaux de bord d'admin, qu'on soit sur Anthropic direct ou Bedrock).
-    model: canonicalModel,
-    input_tokens: usage.input_tokens ?? 0,
-    output_tokens: usage.output_tokens ?? 0,
-    cache_read_input_tokens: cacheRead,
-    cache_creation_input_tokens: cacheCreate,
-    cost_eur: cost,
-    duration_ms: durationMs,
-    file_hash: ctx.fileHash ?? null,
-  }).then(() => {
-    // Alertes Slack en arrière-plan (non bloquant).
-    void maybeNotify({
-      purpose: ctx.purpose,
-      model: request.model,
-      cost_eur: cost,
-      dossier_id: ctx.dossierId ?? null,
-      commune_id: ctx.communeId ?? null,
-    });
-  }).catch((err) => {
-    // Bien visible : on a payé l'appel mais on a perdu la trace. Cas typique :
-    // migration `ai_usage_events` non appliquée ou colonne manquante.
-    console.error(
-      `[aiUsage] ⚠️  INSERT ÉCHOUÉ — événement payant non tracé (purpose=${ctx.purpose}, model=${request.model}, cost=${cost}€). Vérifier la migration ai_usage_events.`,
-      err instanceof Error ? err.message : err,
-    );
-  });
-
-  return msg;
-}
-
-/**
- * Variante streaming : tracking idempotent à partir du `finalMessage` d'un
- * stream Anthropic. Utilisée par les routes SSE (structure-article,
- * structure-zone) qui doivent forwarder les deltas vers le client en
- * heartbeats pour éviter les 502 passerelle — voir mairie.ts.
- *
- * Appel best-effort comme `callClaude` : une erreur d'écriture en DB ne
- * fait pas échouer la requête métier.
- */
-export function trackClaudeStreamUsage(
-  ctx: CallClaudeContext,
-  finalMessage: Anthropic.Message,
-  startedAt: number,
+function trackUsage(
+  ctx: CallAiContext,
+  model: string,
+  promptTokens: number,
+  completionTokens: number,
+  durationMs: number,
+  label: "call" | "stream",
 ): void {
-  const durationMs = Date.now() - startedAt;
-  const usage = finalMessage.usage ?? { input_tokens: 0, output_tokens: 0 };
-  const cacheRead = (usage as { cache_read_input_tokens?: number }).cache_read_input_tokens ?? 0;
-  const cacheCreate = (usage as { cache_creation_input_tokens?: number }).cache_creation_input_tokens ?? 0;
-  // Si on est sur Bedrock, le finalMessage.model contient l'inference profile
-  // (eu.anthropic.claude-…) ; on le retraduit en nom canonique pour cohérence
-  // des tarifs et des dashboards.
-  const model = canonicalModelName(finalMessage.model);
-  const cost = computeCostEur(model, {
-    input_tokens: usage.input_tokens ?? 0,
-    output_tokens: usage.output_tokens ?? 0,
-    cache_read_input_tokens: cacheRead,
-    cache_creation_input_tokens: cacheCreate,
-  });
-
+  const cost = computeCostEur(model, promptTokens, completionTokens);
   void db.insert(ai_usage_events).values({
     dossier_id: ctx.dossierId ?? null,
     commune_id: ctx.communeId ?? null,
     user_id: ctx.userId ?? null,
     purpose: ctx.purpose,
     model,
-    input_tokens: usage.input_tokens ?? 0,
-    output_tokens: usage.output_tokens ?? 0,
-    cache_read_input_tokens: cacheRead,
-    cache_creation_input_tokens: cacheCreate,
+    input_tokens: promptTokens,
+    output_tokens: completionTokens,
+    cache_read_input_tokens: 0,
+    cache_creation_input_tokens: 0,
     cost_eur: cost,
     duration_ms: durationMs,
     file_hash: ctx.fileHash ?? null,
@@ -318,8 +247,232 @@ export function trackClaudeStreamUsage(
     });
   }).catch((err) => {
     console.error(
-      `[aiUsage] ⚠️  INSERT ÉCHOUÉ (stream) — événement payant non tracé (purpose=${ctx.purpose}, model=${model}, cost=${cost}€).`,
+      `[aiUsage] ⚠️  INSERT ÉCHOUÉ (${label}) — événement payant non tracé (purpose=${ctx.purpose}, model=${model}, cost=${cost}€).`,
       err instanceof Error ? err.message : err,
     );
   });
+}
+
+// ── callAi (non-streaming) ──────────────────────────────────────────────────
+interface MistralChatResponse {
+  id?: string;
+  model?: string;
+  choices?: Array<{
+    message?: {
+      role?: string;
+      content?: string | null;
+      tool_calls?: Array<{
+        id?: string;
+        function?: { name?: string; arguments?: string };
+      }>;
+    };
+    finish_reason?: string;
+  }>;
+  usage?: { prompt_tokens?: number; completion_tokens?: number; total_tokens?: number };
+}
+
+/**
+ * Appelle Mistral chat completions et trace l'usage dans ai_usage_events.
+ * Best-effort sur l'écriture DB : une erreur d'insert ne fait pas échouer
+ * la requête métier (mais loggue un warning clair).
+ */
+export async function callAi(ctx: CallAiContext, request: AiRequest): Promise<AiMessage> {
+  const mistralModel = resolveModel(request.model);
+  const body: Record<string, unknown> = {
+    model: mistralModel,
+    max_tokens: request.max_tokens,
+    messages: translateMessages(request),
+  };
+  if (request.temperature !== undefined) body.temperature = request.temperature;
+  // Mistral ne supporte pas response_format=json_object SIMULTANÉMENT avec
+  // des tools — on privilégie tools si fourni, sinon mode JSON strict.
+  if (request.tools && request.tools.length > 0) {
+    body.tools = request.tools;
+    if (request.tool_choice !== undefined) body.tool_choice = request.tool_choice;
+  } else {
+    body.response_format = { type: "json_object" };
+  }
+
+  const startedAt = Date.now();
+  const res = await fetch(`${MISTRAL_API_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${getMistralKey()}`,
+      "Accept": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  const durationMs = Date.now() - startedAt;
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`Mistral HTTP ${res.status} : ${txt.slice(0, 300)}`);
+  }
+  const data = await res.json() as MistralChatResponse;
+  const choice = data.choices?.[0];
+  const text = choice?.message?.content ?? "";
+  const toolCalls = choice?.message?.tool_calls ?? [];
+  const promptTokens = data.usage?.prompt_tokens ?? 0;
+  const completionTokens = data.usage?.completion_tokens ?? 0;
+
+  trackUsage(ctx, mistralModel, promptTokens, completionTokens, durationMs, "call");
+
+  const content: AiResponseBlock[] = [];
+  if (text) content.push({ type: "text", text });
+  for (const tc of toolCalls) {
+    if (!tc.function?.name) continue;
+    let input: Record<string, unknown> = {};
+    try { input = JSON.parse(tc.function.arguments ?? "{}") as Record<string, unknown>; }
+    catch { /* arguments mal formés : on remonte un input vide plutôt qu'une erreur */ }
+    content.push({
+      type: "tool_use",
+      id: tc.id ?? `tool_${Date.now()}`,
+      name: tc.function.name,
+      input,
+    });
+  }
+
+  return {
+    content,
+    stop_reason: choice?.finish_reason ?? null,
+    usage: { input_tokens: promptTokens, output_tokens: completionTokens },
+    model: mistralModel,
+  };
+}
+
+// ── streamAi (streaming SSE) ────────────────────────────────────────────────
+
+export interface AiStreamEvent {
+  type: "content_block_delta";
+  delta: { type: "text_delta"; text: string };
+}
+
+export interface AiStreamFinalMessage {
+  content: Array<{ type: "text"; text: string }>;
+  stop_reason: string | null;
+  usage: { input_tokens: number; output_tokens: number };
+  model: string;
+}
+
+export interface AiStream {
+  [Symbol.asyncIterator](): AsyncIterator<AiStreamEvent>;
+  finalMessage(): Promise<AiStreamFinalMessage>;
+}
+
+/**
+ * Streaming SSE Mistral. Renvoie un objet qui s'itère comme un stream
+ * Anthropic (event.type === "content_block_delta") pour minimiser la
+ * réécriture des routes mairie/reglementation. Le tracking ai_usage_events
+ * est déclenché automatiquement à `finalMessage()`.
+ */
+export async function streamAi(ctx: CallAiContext, request: AiRequest): Promise<AiStream> {
+  const mistralModel = resolveModel(request.model);
+  const body: Record<string, unknown> = {
+    model: mistralModel,
+    max_tokens: request.max_tokens,
+    stream: true,
+    messages: translateMessages(request),
+  };
+  if (request.temperature !== undefined) body.temperature = request.temperature;
+  if (request.tools && request.tools.length > 0) {
+    body.tools = request.tools;
+    if (request.tool_choice !== undefined) body.tool_choice = request.tool_choice;
+  }
+
+  const startedAt = Date.now();
+  const res = await fetch(`${MISTRAL_API_BASE}/chat/completions`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      "Authorization": `Bearer ${getMistralKey()}`,
+      "Accept": "text/event-stream",
+    },
+    body: JSON.stringify(body),
+  });
+  if (!res.ok || !res.body) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`Mistral HTTP ${res.status} (stream) : ${txt.slice(0, 300)}`);
+  }
+
+  let accumulated = "";
+  let stopReason: string | null = null;
+  let promptTokens = 0;
+  let completionTokens = 0;
+  let tracked = false;
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+
+  // Generator unique partagé entre l'itération et finalMessage() — sinon le
+  // body fetch ne pourrait pas être lu deux fois.
+  async function* parseStream(): AsyncGenerator<AiStreamEvent, void, void> {
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      let idx: number;
+      while ((idx = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, idx);
+        buf = buf.slice(idx + 2);
+        for (const line of block.split("\n")) {
+          if (!line.startsWith("data:")) continue;
+          const data = line.slice(5).trim();
+          if (data === "[DONE]") return;
+          if (!data) continue;
+          try {
+            const json = JSON.parse(data) as {
+              choices?: Array<{ delta?: { content?: string }; finish_reason?: string }>;
+              usage?: { prompt_tokens?: number; completion_tokens?: number };
+            };
+            const delta = json.choices?.[0]?.delta?.content;
+            if (typeof delta === "string" && delta.length > 0) {
+              accumulated += delta;
+              yield { type: "content_block_delta", delta: { type: "text_delta", text: delta } };
+            }
+            const fr = json.choices?.[0]?.finish_reason;
+            if (fr) stopReason = fr;
+            if (json.usage) {
+              promptTokens = json.usage.prompt_tokens ?? promptTokens;
+              completionTokens = json.usage.completion_tokens ?? completionTokens;
+            }
+          } catch {
+            // Ligne SSE non-JSON (heartbeat, commentaire) — ignorer silencieusement.
+          }
+        }
+      }
+    }
+  }
+
+  let cached: AsyncGenerator<AiStreamEvent, void, void> | null = null;
+  const getIter = () => {
+    if (!cached) cached = parseStream();
+    return cached;
+  };
+
+  const ensureTracked = () => {
+    if (tracked) return;
+    tracked = true;
+    trackUsage(ctx, mistralModel, promptTokens, completionTokens, Date.now() - startedAt, "stream");
+  };
+
+  return {
+    [Symbol.asyncIterator](): AsyncIterator<AiStreamEvent> {
+      return getIter();
+    },
+    async finalMessage(): Promise<AiStreamFinalMessage> {
+      // Si l'appelant n'a pas drainé l'itérateur, on le draine ici pour
+      // récupérer le finish_reason + l'usage du dernier chunk.
+      const it = getIter();
+      // eslint-disable-next-line no-empty
+      while (!(await it.next()).done) {}
+      ensureTracked();
+      return {
+        content: [{ type: "text", text: accumulated }],
+        stop_reason: stopReason,
+        usage: { input_tokens: promptTokens, output_tokens: completionTokens },
+        model: mistralModel,
+      };
+    },
+  };
 }

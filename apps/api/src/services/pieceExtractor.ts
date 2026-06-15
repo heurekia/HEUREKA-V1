@@ -1,6 +1,6 @@
 import fs from "fs";
 import { extractFirstJson, sanitizePieceName, sha256Buffer } from "./pieceAnalyzer.js";
-import { anthropicClient, callClaude } from "./aiUsage.js";
+import { callAi } from "./aiUsage.js";
 
 /**
  * Extraction structurée d'une pièce du dossier d'urbanisme.
@@ -341,12 +341,11 @@ export async function extractPiece(
     hint,
   ].filter(Boolean).join("\n");
 
-  const client = anthropicClient({ maxRetries: 2, timeout: 90_000 });
-  const msg = await callClaude(
+  const msg = await callAi(
     { purpose: "piece_extract", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId, fileHash },
     {
-      // Sonnet 4.6 : meilleure vision pour les plans cotés et les CERFA scannés.
-      model: "claude-sonnet-4-6",
+      // ai-smart : modèle vision premium pour les plans cotés et les CERFA scannés.
+      model: "ai-smart",
       max_tokens: 2500,
       system: SYSTEM_PROMPT,
       messages: [{
@@ -357,7 +356,6 @@ export async function extractPiece(
         ],
       }],
     },
-    client,
   );
 
   const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";

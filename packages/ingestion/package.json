@@ -18,8 +18,6 @@
     "benchmark:llm": "tsx src/benchmark/cli.ts"
   },
   "dependencies": {
-    "@anthropic-ai/bedrock-sdk": "^0.24.0",
-    "@anthropic-ai/sdk": "^0.97.0",
     "@heureka-v1/db": "workspace:*",
     "drizzle-orm": "^0.45.2",
     "tsx": "^4.19.4",

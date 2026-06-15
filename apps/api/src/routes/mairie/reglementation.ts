@@ -4,8 +4,7 @@ import { communes, zones, zone_regulatory_rules, document_segments, document_seg
 import { eq, desc, and, sql, ilike, inArray } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
-import Anthropic from "@anthropic-ai/sdk";
-import { anthropicClient, trackClaudeStreamUsage, resolveModelForProvider } from "../../services/aiUsage.js";
+import { streamAi, type AiContentBlock } from "../../services/aiUsage.js";
 import { parseLooseArray } from "../../services/jsonExtract.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 
@@ -237,10 +236,10 @@ reglementationRouter.post("/reglementation/structure-article", requireRole("mair
   const hasImage = typeof image_base64 === "string" && image_base64.length > 0;
   if ((!text || text.trim().length < 5) && !hasImage) return res.status(400).json({ error: "Texte de l'article ou image requis" });
 
-  // Image (tableau / croquis) → vision : Sonnet lit mieux les tableaux complexes.
-  const userContent: Anthropic.ContentBlockParam[] = [];
+  // Image (tableau / croquis) → vision Pixtral.
+  const userContent: AiContentBlock[] = [];
   if (hasImage) {
-    const media = (["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image_media_type ?? "") ? image_media_type : "image/png") as "image/png" | "image/jpeg" | "image/webp" | "image/gif";
+    const media = ["image/png", "image/jpeg", "image/webp", "image/gif"].includes(image_media_type ?? "") ? image_media_type! : "image/png";
     userContent.push({ type: "image", source: { type: "base64", media_type: media, data: image_base64! } });
   }
   const prefix = `${zone_code ? `Zone ${zone_code}. ` : ""}${article_number ? `Article ${article_number}. ` : ""}`;
@@ -260,14 +259,14 @@ reglementationRouter.post("/reglementation/structure-article", requireRole("mair
   try {
     send({ type: "started" });
 
-    const client = anthropicClient({ maxRetries: 3, timeout: 120_000 });
     const communeId = await resolveCommuneIdFromUser(req);
-    const startedAt = Date.now();
 
     let accumulated = "";
     let lastHeartbeat = Date.now();
-    const stream = client.messages.stream({
-      model: resolveModelForProvider("claude-sonnet-4-6"),
+    const stream = await streamAi(
+      { purpose: "plu_article_structure", userId: req.user?.id ?? null, communeId },
+      {
+      model: "ai-smart",
       max_tokens: 6000,
       system: `Tu es un expert en droit de l'urbanisme français. On te donne le TEXTE d'UN article de règlement PLU (souvent long, avec sous-sections) ET/OU une IMAGE (tableau ou croquis).
 
@@ -310,7 +309,8 @@ AUTRES RÈGLES :
 - N'invente AUCUNE valeur. Articles 5 et 14 → "sans objet" (loi ALUR) ET citizen_relevant=false.
 - VERSION CITOYEN ("citizen_title" + "citizen_summary") : OBLIGATOIRE par sous-règle, COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme. Phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol » → dis « la surface que votre maison occupe au sol ». Ne recopie PAS les exceptions juridiques dans citizen_summary (elles restent dans "exceptions").`,
       messages: [{ role: "user", content: userContent }],
-    });
+      },
+    );
 
     // Forward des deltas de texte en heartbeats : la passerelle voit du
     // trafic, le client peut afficher une progression réelle. On limite à un
@@ -325,14 +325,9 @@ AUTRES RÈGLES :
       }
     }
 
+    // Tracking ai_usage_events automatique lors de finalMessage().
     const finalMessage = await stream.finalMessage();
-    // Tracking coûts IA (best-effort, n'échoue jamais la requête métier).
-    trackClaudeStreamUsage(
-      { purpose: "plu_article_structure", userId: req.user?.id ?? null, communeId },
-      finalMessage,
-      startedAt,
-    );
-    const raw = accumulated || (finalMessage.content[0]?.type === "text" ? finalMessage.content[0].text : "[]");
+    const raw = accumulated || (finalMessage.content[0]?.text ?? "[]");
     const stopReason = finalMessage.stop_reason;
 
     // Parsing tolérant : si la réponse est tronquée (max_tokens), on récupère les
@@ -422,14 +417,14 @@ reglementationRouter.post("/reglementation/structure-zone", requireRole("mairie"
   try {
     send({ type: "started" });
 
-    const client = anthropicClient({ maxRetries: 2, timeout: 180_000 });
     const communeId = await resolveCommuneIdFromUser(req);
-    const startedAt = Date.now();
 
     let accumulated = "";
     let lastHeartbeat = Date.now();
-    const stream = client.messages.stream({
-      model: resolveModelForProvider("claude-sonnet-4-6"),
+    const stream = await streamAi(
+      { purpose: "plu_zone_structure", userId: req.user?.id ?? null, communeId },
+      {
+      model: "ai-smart",
       // Un règlement complet (14 articles × plusieurs sous-règles citoyen+mairie)
       // dépasse facilement 6 k tokens et provoquait des sorties tronquées. Avec
       // 16 k on couvre les zones les plus chargées sans surcoût significatif
@@ -472,7 +467,8 @@ RÈGLES DE STRUCTURATION :
 - N'invente AUCUNE valeur. Reste fidèle au texte fourni.
 - La version « citoyen » doit être COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme : phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol », dis « la surface que votre maison occupe au sol ».`,
       messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}.\n\n` : ""}${text}` }],
-    });
+      },
+    );
 
     // Forward des deltas en heartbeats : passerelle alive + progression visible.
     for await (const event of stream) {
@@ -485,16 +481,12 @@ RÈGLES DE STRUCTURATION :
       }
     }
 
+    // Tracking ai_usage_events automatique lors de finalMessage().
     const finalMessage = await stream.finalMessage();
-    trackClaudeStreamUsage(
-      { purpose: "plu_zone_structure", userId: req.user?.id ?? null, communeId },
-      finalMessage,
-      startedAt,
-    );
-    const raw = accumulated || (finalMessage.content[0]?.type === "text" ? finalMessage.content[0].text : "");
+    const raw = accumulated || (finalMessage.content[0]?.text ?? "");
     const stopReason = finalMessage.stop_reason;
     const arr = parseLooseArray(raw);
-    // Trace de débogage utile : Claude a parlé mais on n'extrait rien.
+    // Trace de débogage utile : le modèle a parlé mais on n'extrait rien.
     // Pointe à coup sûr vers un nouveau format de sortie (wrapper inconnu,
     // fence non standard…) — le snippet permet d'adapter le parseur.
     if (arr.length === 0 && raw.trim().length > 10) {

@@ -7,7 +7,7 @@
 import { runIngestion } from "./engine/pipeline.ts";
 import { loadSegments } from "./db/loader.ts";
 import { structureSegments } from "./structure/structurer.ts";
-import { anthropicLlm } from "./structure/anthropic-llm.ts";
+import { mistralLlm } from "./structure/mistral-llm.ts";
 import { loadRules } from "./db/rules-loader.ts";
 
 function arg(flag: string): string | undefined {
@@ -46,12 +46,12 @@ async function main() {
   }
   if (files) console.log(`\n📄 ${files.json}\n   ${files.csv}\n   ${files.reportPath}`);
 
-  // --rules : structuration par article (agent Claude) → tables citoyennes
-  // (zones + zone_regulatory_rules, statut brouillon). Le LLM ne voit que le
-  // texte COURT des articles d'une zone, jamais le PDF entier.
+  // --rules : structuration par article (agent Mistral Pixtral Large) → tables
+  // citoyennes (zones + zone_regulatory_rules, statut brouillon). Le LLM ne voit
+  // que le texte COURT des articles d'une zone, jamais le PDF entier.
   if (flag("--rules")) {
-    console.log(`\n🤖 Structuration des règles par article (Claude)…`);
-    const zoneRules = await structureSegments(segments, anthropicLlm(), {
+    console.log(`\n🤖 Structuration des règles par article (Mistral)…`);
+    const zoneRules = await structureSegments(segments, mistralLlm(), {
       onZone: (zone, count) => console.log(`   ${zone} → ${count} règles`),
     });
     const res = await loadRules(insee, commune, zoneRules, { zipCode: arg("--zip") });

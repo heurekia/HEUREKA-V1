@@ -2322,7 +2322,7 @@ function Conformite() {
     {
       icone: "🤖",
       titre: "Analyse IA des pièces déposées",
-      sous_titre: "Encadrement du recours à un LLM tiers (Anthropic) sur le contenu des dossiers",
+      sous_titre: "Encadrement du recours à un LLM tiers (Mistral La Plateforme) sur le contenu des dossiers",
       couleur: "#4F46E5",
       bg: "#EEF2FF",
       mesures: [
@@ -2435,15 +2435,15 @@ function Conformite() {
           code_ref: "NouvelleDemandeWizard.tsx · step 7",
         },
         {
-          titre: "DPA avec Anthropic (sous-traitant LLM)",
-          description: "Checklist opérationnelle prête à exécuter (docs/security/dpa-anthropic-checklist.md) : DPA + SCC 2021/914 module 2 + Zero Data Retention + TIA + procédure d'incident. Reste l'acte de signature à la mise en production.",
-          reference: "RGPD art. 28 + 44-46",
+          titre: "DPA avec Mistral AI (sous-traitant LLM)",
+          description: "Sous-traitant Mistral AI (SAS française, Paris) — DPA disponible sur la console Mistral. Hébergement et inférence en UE (France), aucun transfert hors UE → pas de SCC requises. Reste l'acte de signature avec la collectivité avant mise en production.",
+          reference: "RGPD art. 28",
           statut: "doc",
-          code_ref: "docs/security/dpa-anthropic-checklist.md",
+          code_ref: "docs/security/dpa-mistral-checklist.md",
         },
         {
           titre: "Mentions légales & politique de confidentialité",
-          description: "Pages publiques /mentions-legales et /politique-confidentialite : responsable de traitement (collectivité), sous-traitants détaillés (Railway, Anthropic, Resend) avec localisation des données, section dédiée à l'analyse IA (sous-traitant, données transmises, rétention 30j, décision humaine art. 22), droits des personnes avec pointeurs vers les actions de l'espace Profil, transferts hors UE encadrés par SCC. Liens visibles depuis les footers public et connecté.",
+          description: "Pages publiques /mentions-legales et /politique-confidentialite : responsable de traitement (collectivité), sous-traitants détaillés (Railway, Mistral AI, Resend) avec localisation des données, section dédiée à l'analyse IA (sous-traitant, données transmises, rétention 30j, décision humaine art. 22), droits des personnes avec pointeurs vers les actions de l'espace Profil. Tous les sous-traitants IA hébergent en UE (Mistral AI Paris). Liens visibles depuis les footers public et connecté.",
           reference: "RGPD art. 13-14",
           statut: "actif",
           code_ref: "MentionsLegales.tsx + PolitiqueConfidentialite.tsx",
@@ -2485,11 +2485,11 @@ function Conformite() {
           statut: "doc",
         },
         {
-          titre: "LLM Anthropic via région UE (Bedrock Francfort) — opt-in",
-          description: "Bascule disponible via la variable d'environnement AI_PROVIDER=bedrock (région AWS_REGION par défaut eu-central-1 / Francfort). Utilise les inference profiles cross-region eu.anthropic.* qui restent dans l'UE. Mapping centralisé dans aiUsage.ts : le code applicatif reste sur les noms canoniques. Activable au déploiement sans changement de code.",
-          reference: "RGPD art. 44",
+          titre: "LLM Mistral La Plateforme — hébergement en France",
+          description: "Tous les appels IA (analyse de pièces, extraction, verdicts de conformité, structuration PLU) passent par Mistral La Plateforme, entité française (Mistral AI SAS, Paris) hébergeant l'inférence en France. Aucun transfert hors UE, droit français applicable. Modèle vision Pixtral Large pour les pièces, format chat completions OpenAI-compatible.",
+          reference: "RGPD art. 28 + souveraineté numérique",
           statut: "actif",
-          code_ref: "aiUsage.ts · BEDROCK_MODEL_MAP",
+          code_ref: "aiUsage.ts · MISTRAL_API_BASE",
         },
         {
           titre: "Purge automatique des logs d'audit (12 mois)",
@@ -4285,7 +4285,7 @@ function CoutsIA() {
         <div>
           <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Coûts IA</h1>
           <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>
-            Suivi du coût des appels Claude par dossier et par usage métier.
+            Suivi du coût des appels Mistral par dossier et par usage métier.
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>

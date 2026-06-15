@@ -4,8 +4,7 @@ import { dossiers, users, communes, zones, zone_regulatory_rules } from "@heurek
 import { eq, sql, ilike, inArray } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
-import Anthropic from "@anthropic-ai/sdk";
-import { callClaude, anthropicClient } from "../../services/aiUsage.js";
+import { callAi, type AiToolDefinition } from "../../services/aiUsage.js";
 import {
   computeInstructionDelay,
   applyMonthsToDate,
@@ -287,32 +286,35 @@ type PluRuleInput = {
   external_doc_name?: string | null;
 };
 
-const PLU_SAVE_RULE_TOOL: Anthropic.Tool = {
-  name: "save_rule",
-  description: "Enregistre une règle réglementaire extraite d'un article du PLU.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      article_number: { type: "integer", description: "Numéro de l'article. Null si non numéroté." },
-      article_title: { type: "string", description: "Titre exact de l'article." },
-      topic: {
-        type: "string",
-        enum: ["destinations","terrain_min","recul_voie","recul_limite","recul_batiments","emprise_sol","hauteur","aspect","stationnement","espaces_verts","cos","general"],
-        description: "Catégorie réglementaire.",
+const PLU_SAVE_RULE_TOOL: AiToolDefinition = {
+  type: "function",
+  function: {
+    name: "save_rule",
+    description: "Enregistre une règle réglementaire extraite d'un article du PLU.",
+    parameters: {
+      type: "object",
+      properties: {
+        article_number: { type: "integer", description: "Numéro de l'article. Null si non numéroté." },
+        article_title: { type: "string", description: "Titre exact de l'article." },
+        topic: {
+          type: "string",
+          enum: ["destinations","terrain_min","recul_voie","recul_limite","recul_batiments","emprise_sol","hauteur","aspect","stationnement","espaces_verts","cos","general"],
+          description: "Catégorie réglementaire.",
+        },
+        rule_text: { type: "string", description: "Texte fidèle de la règle." },
+        not_regulated: { type: "boolean", description: "True si article dit 'sans objet' ou 'non réglementé'." },
+        value_min: { type: "number", description: "Valeur minimale numérique. Omettre si absent." },
+        value_max: { type: "number", description: "Valeur maximale numérique. Omettre si absent." },
+        value_exact: { type: "number", description: "Valeur unique exacte. Omettre si absent." },
+        unit: { type: "string", enum: ["m","%","m²","places"], description: "Unité. Omettre si pas de valeur numérique." },
+        conditions: { type: "string", description: "Conditions ou exceptions. Omettre si aucune." },
+        summary: { type: "string", description: "Résumé en 10 mots maximum." },
+        needs_vision: { type: "boolean", description: "True si la valeur numérique principale est dans un schéma graphique du document." },
+        needs_external_doc: { type: "boolean", description: "True si la règle renvoie explicitement à un document externe (PPRI, PLH, cahier des charges ZAC, servitude…)." },
+        external_doc_name: { type: "string", description: "Nom du document externe référencé (ex: 'PPRI', 'PLH', 'cahier des charges ZAC'). Remplir si needs_external_doc = true." },
       },
-      rule_text: { type: "string", description: "Texte fidèle de la règle." },
-      not_regulated: { type: "boolean", description: "True si article dit 'sans objet' ou 'non réglementé'." },
-      value_min: { type: "number", description: "Valeur minimale numérique. Omettre si absent." },
-      value_max: { type: "number", description: "Valeur maximale numérique. Omettre si absent." },
-      value_exact: { type: "number", description: "Valeur unique exacte. Omettre si absent." },
-      unit: { type: "string", enum: ["m","%","m²","places"], description: "Unité. Omettre si pas de valeur numérique." },
-      conditions: { type: "string", description: "Conditions ou exceptions. Omettre si aucune." },
-      summary: { type: "string", description: "Résumé en 10 mots maximum." },
-      needs_vision: { type: "boolean", description: "True si la valeur numérique principale est dans un schéma graphique du document." },
-      needs_external_doc: { type: "boolean", description: "True si la règle renvoie explicitement à un document externe (PPRI, PLH, cahier des charges ZAC, servitude…)." },
-      external_doc_name: { type: "string", description: "Nom du document externe référencé (ex: 'PPRI', 'PLH', 'cahier des charges ZAC'). Remplir si needs_external_doc = true." },
+      required: ["article_number","article_title","topic","rule_text","not_regulated","summary","needs_vision","needs_external_doc"],
     },
-    required: ["article_number","article_title","topic","rule_text","not_regulated","summary","needs_vision","needs_external_doc"],
   },
 };
 
@@ -342,10 +344,6 @@ adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
   };
 
   try {
-    // maxRetries : le SDK réessaie (backoff) sur 429 / 5xx / 529 ; timeout pour
-    // ne jamais pendre indéfiniment sur un tronçon PDF lourd.
-    const client = anthropicClient({ maxRetries: 3, timeout: 120_000 });
-
     // Upsert commune
     let commune = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
     if (!commune) {
@@ -367,12 +365,12 @@ adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     send({ type: "phase", message: "Préparation du document…" });
     const chunks = await splitPdfBase64(pdf_base64);
 
-    // cache_control marque chaque tronçon pour le prompt caching (réutilisé par
-    // les appels d'extraction portant sur le même tronçon).
+    // Mistral Pixtral n'accepte pas le PDF nativement ; la conversion 1re page
+    // PDF→PNG est faite côté aiUsage.ts (helper pdftoppm). Pas d'équivalent au
+    // prompt caching Anthropic — chaque tronçon est ré-analysé from scratch.
     const pdfDocFor = (b64: string) => ({
       type: "document" as const,
       source: { type: "base64" as const, media_type: "application/pdf" as const, data: b64 },
-      cache_control: { type: "ephemeral" as const },
     });
 
     // Phase 1 — Détection des zones, tronçon par tronçon (chaque zone est rattachée
@@ -380,10 +378,10 @@ adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     send({ type: "phase", message: chunks.length > 1 ? `Détection des zones (${chunks.length} parties)…` : "Détection des zones…" });
     const detectChunk = async (c: number) => {
      try {
-      const zoneMsg = await callClaude(
+      const zoneMsg = await callAi(
         { purpose: "plu_zone_detect", userId: req.user?.id ?? null, communeId: commune.id },
         {
-          model: "claude-sonnet-4-6",
+          model: "ai-smart",
           max_tokens: 2000,
           messages: [{
             role: "user",
@@ -404,7 +402,6 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
             ],
           }],
         },
-        client,
       );
       const raw = zoneMsg.content[0]?.type === "text" ? zoneMsg.content[0].text : "[]";
       const found = JSON.parse(raw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
@@ -440,13 +437,13 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
     // Phase 2 — Règles par zone, extraites depuis le tronçon contenant la zone.
     const extractZone = async (zoneDef: { code: string; label: string; type: string; chunk: number }) => {
      try {
-      const ruleMsg = await callClaude(
+      const ruleMsg = await callAi(
         { purpose: "plu_rule_extract", userId: req.user?.id ?? null, communeId: commune.id },
         {
-          model: "claude-sonnet-4-6",
+          model: "ai-smart",
           max_tokens: 4000,
           tools: [PLU_SAVE_RULE_TOOL],
-          tool_choice: { type: "any" },
+          tool_choice: "any",
           messages: [{
             role: "user",
             content: [
@@ -470,11 +467,10 @@ Correspondance article → topic :
             ],
           }],
         },
-        client,
       );
 
       const rules: PluRuleInput[] = ruleMsg.content
-        .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
+        .filter((b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use")
         .map(b => b.input as PluRuleInput);
       const visionCount = rules.filter(r => r.needs_vision || r.needs_external_doc).length;
 
