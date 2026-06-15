@@ -1,6 +1,7 @@
 import { Router } from "express";
 import { requireAuth, requireRole, type AuthRequest } from "../../middlewares/auth.js";
 import { enforceDossierAccess } from "../../middlewares/dossierAccess.js";
+import { auditMutations } from "../../middlewares/auditMutations.js";
 import { dashboardRouter } from "./dashboard.js";
 import { dossiersRouter } from "./dossiers.js";
 import { piecesRouter } from "./pieces.js";
@@ -17,6 +18,17 @@ import { consultationsRouter } from "./consultations.js";
 export const mairieRouter = Router();
 mairieRouter.use(requireAuth);
 mairieRouter.use(requireRole("mairie", "instructeur", "admin"));
+// Traçabilité super admin : toute mutation mairie (statut dossier, courriers,
+// PLU, templates…) est journalisée dans audit_logs avec route + body filtré.
+// Les routes "marquer lu/non-lu" sont ignorées (bruyantes, sans valeur d'audit).
+mairieRouter.use(auditMutations({
+  actor: "mairie",
+  ignorePaths: new Set([
+    "/conversations/:dossierId/read",
+    "/conversations/:dossierId/unread",
+    "/service-conversations/:consultationId/read",
+  ]),
+}));
 mairieRouter.use("/dossiers/:id", enforceDossierAccess);
 mairieRouter.use("/conversations/:dossierId", (req, res, next) => {
   (req.params as Record<string, string>).id = req.params["dossierId"] as string;

@@ -53,6 +53,14 @@ function bedrockModelId(canonical: string): string {
   return mapped;
 }
 
+// Pour les appels streaming qui appellent client.messages.stream() directement
+// (sans passer par callClaude). On garde le nom canonique dans le code applicatif
+// et on traduit ici juste avant l'envoi à Bedrock — sinon Bedrock répond
+// « 400 The provided model identifier is invalid ».
+export function resolveModelForProvider(canonical: string): string {
+  return USE_BEDROCK ? bedrockModelId(canonical) : canonical;
+}
+
 // ── Tarifs Anthropic (USD par million de tokens) ────────────────────────────
 // Mis à jour à partir des prix publics. Si un modèle inconnu est utilisé, on
 // retombe sur les tarifs Sonnet pour ne pas sous-estimer le coût.

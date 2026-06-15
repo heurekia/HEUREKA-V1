@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
@@ -3770,7 +3770,11 @@ function ServicesAnnexes() {
 interface AuditEntry {
   id: string;
   email: string | null;
+  role: string | null;
   action: string;
+  target_type: string | null;
+  target_id: string | null;
+  metadata: Record<string, unknown> | null;
   ip: string | null;
   user_agent: string | null;
   created_at: string;
@@ -3796,6 +3800,22 @@ const ACTION_STYLES: Record<string, { label: string; color: string; bg: string }
   admin_role_created:   { label: "Rôle créé",         color: "#4F46E5", bg: "#EEF2FF" },
   admin_role_updated:   { label: "Rôle modifié",      color: "#7C3AED", bg: "#F3E8FF" },
   admin_role_deleted:   { label: "Rôle supprimé",     color: "#B45309", bg: "#FEF3C7" },
+  address_search: { label: "Recherche adresse",   color: "#0EA5E9", bg: "#E0F2FE" },
+  mairie_request: { label: "Action mairie",       color: "#7C3AED", bg: "#F3E8FF" },
+  citoyen_request:{ label: "Action citoyen",      color: "#0284C7", bg: "#E0F2FE" },
+};
+
+const ROLE_OPTIONS = [
+  { value: "",          label: "Tous les rôles" },
+  { value: "citoyen",   label: "Citoyens" },
+  { value: "mairie",    label: "Mairie (mairie + instructeur)" },
+  { value: "admin",     label: "Admin" },
+  { value: "anonyme",   label: "Visiteur non connecté" },
+];
+
+// Map HTTP method → couleur pour la pastille methode dans la colonne "Détail".
+const METHOD_COLORS: Record<string, string> = {
+  GET: "#0284C7", POST: "#16A34A", PATCH: "#D97706", PUT: "#7C3AED", DELETE: "#DC2626",
 };
 
 const SINCE_OPTIONS = [
@@ -3806,20 +3826,67 @@ const SINCE_OPTIONS = [
   { label: "Tout",              value: () => "" },
 ];
 
+// Rend un détail synthétique par ligne d'audit : on privilégie l'info la plus
+// parlante du contexte (adresse cherchée, route mairie + méthode, etc.).
+function AuditDetail({ entry }: { entry: AuditEntry }) {
+  const meta = entry.metadata ?? null;
+  // Recherche d'adresse → la query/coords sont l'info clé.
+  if (entry.action === "address_search") {
+    const q = (meta?.["query"] as string | null) ?? null;
+    const coords = meta?.["coords"] as { lat?: number; lng?: number } | null;
+    const result = meta?.["result"] as { commune?: string | null; zone?: string | null; insee?: string | null } | null;
+    return (
+      <div style={{ fontSize: 13, color: C.text }}>
+        <div style={{ fontWeight: 500 }}>{q ?? (coords ? `${coords.lat?.toFixed(5)}, ${coords.lng?.toFixed(5)}` : "—")}</div>
+        {result && (result.commune || result.zone) && (
+          <div style={{ fontSize: 12, color: C.textMuted }}>
+            {result.commune ?? "?"}{result.insee ? ` (${result.insee})` : ""}{result.zone ? ` — zone ${result.zone}` : ""}
+          </div>
+        )}
+      </div>
+    );
+  }
+  // Mutation mairie / citoyen → route + méthode + cible.
+  if (entry.action === "mairie_request" || entry.action === "citoyen_request") {
+    const method = (meta?.["method"] as string | null) ?? "?";
+    const route = (meta?.["route"] as string | null) ?? "?";
+    const status = meta?.["status"] as number | null;
+    return (
+      <div style={{ fontSize: 13, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ display: "inline-block", padding: "1px 7px", borderRadius: 4, background: (METHOD_COLORS[method] ?? "#6B7280") + "22", color: METHOD_COLORS[method] ?? "#6B7280", fontSize: 11, fontWeight: 700, fontFamily: "monospace" }}>
+          {method}
+        </span>
+        <span style={{ fontFamily: "monospace", fontSize: 12 }}>{route}</span>
+        {status !== null && status !== undefined && (
+          <span style={{ fontSize: 11, color: status >= 400 ? "#DC2626" : C.textMuted }}>→ {status}</span>
+        )}
+      </div>
+    );
+  }
+  // Actions d'admin avec email (cible utilisateur).
+  if (entry.target_type === "dossier" && entry.target_id) {
+    return <div style={{ fontSize: 12, color: C.textMuted, fontFamily: "monospace" }}>dossier {entry.target_id.slice(0, 8)}…</div>;
+  }
+  return <div style={{ fontSize: 12, color: C.textMuted }}>—</div>;
+}
+
 function AuditLogs() {
   const [rows, setRows] = useState<AuditEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [actionFilter, setActionFilter] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
   const [sinceIdx, setSinceIdx] = useState(1); // default: 30 days
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const load = async (p: number, action: string, idx: number) => {
+  const load = async (p: number, action: string, role: string, idx: number) => {
     setLoading(true);
     try {
       const since = SINCE_OPTIONS[idx]!.value();
       const qs = new URLSearchParams({ page: String(p) });
       if (action) qs.set("action", action);
+      if (role) qs.set("role", role);
       if (since) qs.set("since", since);
       const data = await api.get<{ rows: AuditEntry[]; total: number; page: number; limit: number }>(`/admin/audit-logs?${qs}`);
       setRows(data.rows);
@@ -3828,7 +3895,7 @@ function AuditLogs() {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(page, actionFilter, sinceIdx); }, [page, actionFilter, sinceIdx]);
+  useEffect(() => { load(page, actionFilter, roleFilter, sinceIdx); }, [page, actionFilter, roleFilter, sinceIdx]);
 
   const totalPages = Math.ceil(total / 50);
 
@@ -3850,12 +3917,21 @@ function AuditLogs() {
         <div style={{ marginBottom: 24 }}>
           <h1 style={{ fontSize: 24, fontWeight: 800, color: C.text, margin: "0 0 4px" }}>Audit sécurité</h1>
           <p style={{ fontSize: 14, color: C.textMuted, margin: 0 }}>
-            Journal des connexions et actions sensibles — conservé 12 mois (CCSC §4.14) — {total} entrées
+            Journal des connexions, actions mairie et recherches d'adresses citoyens — conservé 12 mois (CCSC §4.14) — IP partiellement masquée (RGPD) — {total} entrées
           </p>
         </div>
 
         {/* Filters */}
         <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+          <select
+            value={roleFilter}
+            onChange={e => { setRoleFilter(e.target.value); setPage(1); }}
+            style={{ padding: "7px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.text, background: "white", cursor: "pointer" }}
+          >
+            {ROLE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
           <select
             value={actionFilter}
             onChange={e => { setActionFilter(e.target.value); setPage(1); }}
@@ -3880,33 +3956,62 @@ function AuditLogs() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: C.bg }}>
-                {["Date", "Action", "Utilisateur", "Adresse IP", "Navigateur"].map(h => (
-                  <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: C.textMuted, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>
+                {["Date", "Action", "Détail", "Utilisateur", "IP", "Navigateur", ""].map((h, i) => (
+                  <th key={i} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: C.textMuted, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={5} style={{ padding: 32, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Chargement…</td></tr>
+                <tr><td colSpan={7} style={{ padding: 32, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Chargement…</td></tr>
               ) : rows.length === 0 ? (
-                <tr><td colSpan={5} style={{ padding: 32, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Aucune entrée pour ces filtres</td></tr>
+                <tr><td colSpan={7} style={{ padding: 32, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Aucune entrée pour ces filtres</td></tr>
               ) : rows.map((r, i) => {
                 const style = ACTION_STYLES[r.action] ?? { label: r.action, color: "#6B7280", bg: "#F3F4F6" };
+                const expanded = expandedId === r.id;
+                const hasDetails = r.metadata && Object.keys(r.metadata).length > 0;
                 return (
-                  <tr key={r.id} style={{ borderBottom: i < rows.length - 1 ? `1px solid ${C.border}` : "none", background: i % 2 === 0 ? "white" : "#FAFAFA" }}>
-                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDate(r.created_at)}</td>
-                    <td style={{ padding: "10px 16px" }}>
-                      <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 20, background: style.bg, color: style.color, fontSize: 12, fontWeight: 700 }}>
-                        {style.label}
-                      </span>
-                    </td>
-                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.text }}>
-                      <div style={{ fontWeight: 500 }}>{r.user_prenom && r.user_nom ? `${r.user_prenom} ${r.user_nom}` : "—"}</div>
-                      <div style={{ fontSize: 12, color: C.textMuted }}>{r.email ?? "—"}</div>
-                    </td>
-                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted, fontFamily: "monospace" }}>{r.ip ?? "—"}</td>
-                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted }}>{truncateUA(r.user_agent)}</td>
-                  </tr>
+                  <Fragment key={r.id}>
+                    <tr style={{ borderBottom: !expanded && i < rows.length - 1 ? `1px solid ${C.border}` : "none", background: i % 2 === 0 ? "white" : "#FAFAFA" }}>
+                      <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDate(r.created_at)}</td>
+                      <td style={{ padding: "10px 16px" }}>
+                        <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 20, background: style.bg, color: style.color, fontSize: 12, fontWeight: 700 }}>
+                          {style.label}
+                        </span>
+                        {r.role && (
+                          <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2, textTransform: "capitalize" }}>{r.role}</div>
+                        )}
+                      </td>
+                      <td style={{ padding: "10px 16px", maxWidth: 380, overflow: "hidden" }}>
+                        <AuditDetail entry={r} />
+                      </td>
+                      <td style={{ padding: "10px 16px", fontSize: 13, color: C.text }}>
+                        <div style={{ fontWeight: 500 }}>{r.user_prenom && r.user_nom ? `${r.user_prenom} ${r.user_nom}` : "—"}</div>
+                        <div style={{ fontSize: 12, color: C.textMuted }}>{r.email ?? "—"}</div>
+                      </td>
+                      <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted, fontFamily: "monospace" }}>{r.ip ?? "—"}</td>
+                      <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted }}>{truncateUA(r.user_agent)}</td>
+                      <td style={{ padding: "10px 16px", fontSize: 12 }}>
+                        {hasDetails && (
+                          <button
+                            onClick={() => setExpandedId(expanded ? null : r.id)}
+                            style={{ padding: "4px 8px", background: "transparent", border: `1px solid ${C.border}`, borderRadius: 6, color: C.textMuted, cursor: "pointer", fontSize: 11 }}
+                          >
+                            {expanded ? "Replier" : "JSON"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {expanded && hasDetails && (
+                      <tr style={{ borderBottom: i < rows.length - 1 ? `1px solid ${C.border}` : "none", background: "#FAFAFA" }}>
+                        <td colSpan={7} style={{ padding: "12px 16px" }}>
+                          <pre style={{ margin: 0, fontSize: 11, fontFamily: "monospace", color: C.text, background: "white", padding: 12, borderRadius: 6, border: `1px solid ${C.border}`, maxHeight: 320, overflow: "auto" }}>
+                            {JSON.stringify(r.metadata, null, 2)}
+                          </pre>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>

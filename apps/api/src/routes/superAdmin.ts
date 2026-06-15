@@ -839,6 +839,25 @@ superAdminRouter.get("/insee-lookup", async (req, res) => {
 });
 
 // ─── Audit Logs ──────────────────────────────────────────────────────────────
+
+// Masque le dernier octet d'une IPv4 (192.168.1.42 → 192.168.1.x) et tronque
+// la partie hôte d'une IPv6 (RGPD : pas besoin d'identifier finement). L'IP
+// complète reste en base pour usage forensic (CCSC §4.14).
+function maskIp(ip: string | null): string | null {
+  if (!ip) return null;
+  // Strip "::ffff:" préfixe IPv6-mapped IPv4
+  const clean = ip.replace(/^::ffff:/, "");
+  // IPv4
+  const v4 = clean.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
+  if (v4) return `${v4[1]}.x`;
+  // IPv6 — on garde les 4 premiers groupes (préfixe réseau /64)
+  if (clean.includes(":")) {
+    const parts = clean.split(":");
+    return parts.slice(0, 4).join(":") + "::x";
+  }
+  return clean;
+}
+
 superAdminRouter.get("/audit-logs", async (req, res) => {
   try {
     const page = Math.max(1, Number(req.query.page ?? 1));
@@ -847,6 +866,15 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
     const action = typeof req.query.action === "string" && req.query.action.length > 0
       ? req.query.action
       : undefined;
+    const role = typeof req.query.role === "string" && req.query.role.length > 0
+      ? req.query.role
+      : undefined;
+    const targetType = typeof req.query.target_type === "string" && req.query.target_type.length > 0
+      ? req.query.target_type
+      : undefined;
+    const targetId = typeof req.query.target_id === "string" && req.query.target_id.length > 0
+      ? req.query.target_id
+      : undefined;
     const sinceRaw = typeof req.query.since === "string" && req.query.since.length > 0
       ? req.query.since
       : undefined;
@@ -854,6 +882,18 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
 
     const conditions = [];
     if (action) conditions.push(eq(audit_logs.action, action));
+    if (role) {
+      // "mairie" du point de vue super admin couvre mairie + instructeur (les
+      // deux rôles qui agissent depuis l'interface mairie). "admin" reste
+      // distinct pour identifier les opérations super-admin.
+      if (role === "mairie") {
+        conditions.push(inArray(audit_logs.role, ["mairie", "instructeur"]));
+      } else {
+        conditions.push(eq(audit_logs.role, role));
+      }
+    }
+    if (targetType) conditions.push(eq(audit_logs.target_type, targetType));
+    if (targetId) conditions.push(eq(audit_logs.target_id, targetId));
     if (sinceDate && !Number.isNaN(sinceDate.getTime())) {
       conditions.push(gte(audit_logs.created_at, sinceDate));
     }
@@ -864,7 +904,11 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
         id: audit_logs.id,
         user_id: audit_logs.user_id,
         email: audit_logs.email,
+        role: audit_logs.role,
         action: audit_logs.action,
+        target_type: audit_logs.target_type,
+        target_id: audit_logs.target_id,
+        metadata: audit_logs.metadata,
         ip: audit_logs.ip,
         user_agent: audit_logs.user_agent,
         created_at: audit_logs.created_at,
@@ -880,7 +924,11 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
       db.select({ count: count() }).from(audit_logs).where(where),
     ]);
 
-    res.json({ rows, total: Number(total?.count ?? 0), page, limit });
+    // RGPD : on masque le dernier octet de l'IP côté API avant exposition à
+    // l'admin. La valeur brute reste en base pour usage forensic.
+    const sanitized = rows.map((r) => ({ ...r, ip: maskIp(r.ip) }));
+
+    res.json({ rows: sanitized, total: Number(total?.count ?? 0), page, limit });
   } catch (err) {
     console.error("[audit-logs] query failed:", err);
     res.status(500).json({ error: "Erreur serveur" });

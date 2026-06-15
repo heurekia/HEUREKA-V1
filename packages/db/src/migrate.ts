@@ -629,6 +629,21 @@ CREATE INDEX IF NOT EXISTS idx_ai_usage_events_file_hash ON ai_usage_events(file
 -- la purge et la recherche par date.
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at_purge ON audit_logs(created_at);
 
+-- ── Traçabilité étendue : actions mairie + recherches d'adresses citoyens ──
+-- role : rôle au moment de l'action (snapshot — l'utilisateur peut être
+--        supprimé ou changer de rôle ensuite).
+-- target_type/target_id : cible métier (ex: "dossier" + uuid) pour pouvoir
+--        retrouver toutes les actions sur un objet donné.
+-- metadata : contexte JSON spécifique à l'action (route, body filtré,
+--        adresse cherchée, code INSEE, etc.). Champs sensibles strippés
+--        côté service (audit.ts) avant insert.
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS role text;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_type text;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_id text;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS metadata jsonb;
+CREATE INDEX IF NOT EXISTS idx_audit_logs_role ON audit_logs(role);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_target ON audit_logs(target_type, target_id);
+
 -- ── Annotations chunk-level sur documents indexés (Phase 1 niveau B) ──
 -- Une annotation valide est INJECTÉE à côté du chunk lors du search RAG.
 -- Permet à l'instructeur de "patcher" un PDF sans le réécrire : corrections
