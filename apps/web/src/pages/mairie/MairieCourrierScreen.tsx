@@ -996,12 +996,12 @@ function BlockEditor({ block, isEditing, onStartEdit, onContentChange, onEndEdit
   const ref = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (ref.current) ref.current.innerHTML = block.html;
+    if (ref.current) ref.current.innerHTML = DOMPurify.sanitize(block.html);
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Only reset DOM from state when not editing (prevents overwriting in-progress text)
   useEffect(() => {
-    if (!isEditing && ref.current) ref.current.innerHTML = block.html;
+    if (!isEditing && ref.current) ref.current.innerHTML = DOMPurify.sanitize(block.html);
   }, [block.html, isEditing]);
 
   const justifyContent = block.verticalAlign === "middle" ? "center" : block.verticalAlign === "bottom" ? "flex-end" : "flex-start";

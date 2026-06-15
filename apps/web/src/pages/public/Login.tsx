@@ -5,6 +5,7 @@ import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
 import { Seo } from "../../components/Seo";
+import { sanitizeNextParam } from "../../router/guards";
 
 export function Login() {
   const [email, setEmail] = useState("");
@@ -14,7 +15,7 @@ export function Login() {
   const { login } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
-  const next = searchParams.get("next");
+  const next = sanitizeNextParam(searchParams.get("next"));
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();

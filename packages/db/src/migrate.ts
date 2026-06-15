@@ -693,6 +693,92 @@ CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_user ON dossier_pieces_joi
 CREATE INDEX IF NOT EXISTS idx_dossiers_commune_created ON dossiers(commune, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dossiers_user_created ON dossiers(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_dossiers_instructeur_created ON dossiers(instructeur_id, created_at DESC);
+
+-- ── Moteur réglementaire (palier 1) ──
+-- Faits d'instruction : on sépare ce que le citoyen a déclaré, ce qui a été
+-- extrait des pièces par l'IA, ce que l'instructeur a saisi/validé, et ce qui
+-- vient d'une source externe (cadastre, GPU, etc.). Le moteur ne consomme que
+-- les faits dont la 'confidence' et l'origine sont compatibles avec la règle
+-- évaluée — un fait 'citizen_declaration' non vérifié ne doit jamais fonder
+-- un verdict bloquant.
+CREATE TABLE IF NOT EXISTS dossier_facts (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  key text NOT NULL,
+  value jsonb NOT NULL,
+  unit text,
+  source text NOT NULL,
+  source_ref jsonb,
+  confidence double precision,
+  validated_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  validated_at timestamp,
+  superseded_at timestamp,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dossier_facts_dossier ON dossier_facts(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_dossier_facts_key ON dossier_facts(dossier_id, key);
+-- Un seul fait "actif" par (dossier, clé) : superseded_at IS NULL ⇒ canonique.
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_dossier_facts_active_key
+  ON dossier_facts(dossier_id, key) WHERE superseded_at IS NULL;
+
+-- Analyse réglementaire : un run du moteur sur un dossier à un instant T.
+-- On historise plusieurs analyses (une à la soumission, une à la complétude,
+-- une en cours d'instruction…). engine_version + ruleset_version garantissent
+-- la reproductibilité juridique : on doit pouvoir rejouer la même analyse des
+-- mois après si le PLU a changé entre-temps. context_snapshot fige le
+-- InstructionContext utilisé (faits, zones, applicabilité).
+CREATE TABLE IF NOT EXISTS regulatory_analyses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  status text NOT NULL DEFAULT 'running',
+  engine_version text NOT NULL,
+  ruleset_version text,
+  context_snapshot jsonb,
+  summary jsonb,
+  triggered_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  validated_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  validated_at timestamp,
+  started_at timestamp NOT NULL DEFAULT now(),
+  finished_at timestamp,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_regulatory_analyses_dossier ON regulatory_analyses(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_regulatory_analyses_status ON regulatory_analyses(status);
+
+-- Constat réglementaire unitaire produit par une analyse.
+-- status (conforme | non_conforme | incertain | non_applicable) et severity
+-- (bloquant | prescription | alerte | info) sont les axes que l'UI doit
+-- afficher distinctement. instructor_decision capture la boucle humaine
+-- (accepté | corrigé | ignoré) — c'est cette colonne qui alimente le futur
+-- mécanisme d'apprentissage et l'audit.
+CREATE TABLE IF NOT EXISTS regulatory_findings (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  analysis_id uuid NOT NULL REFERENCES regulatory_analyses(id) ON DELETE CASCADE,
+  dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  topic text NOT NULL,
+  status text NOT NULL,
+  severity text NOT NULL DEFAULT 'info',
+  title text NOT NULL,
+  explanation text,
+  legal_basis jsonb NOT NULL DEFAULT '[]'::jsonb,
+  source_refs jsonb NOT NULL DEFAULT '[]'::jsonb,
+  facts_used jsonb NOT NULL DEFAULT '[]'::jsonb,
+  missing_facts jsonb NOT NULL DEFAULT '[]'::jsonb,
+  recommended_action jsonb,
+  citizen_summary text,
+  rule_id uuid REFERENCES zone_regulatory_rules(id) ON DELETE SET NULL,
+  instructor_decision text,
+  instructor_comment text,
+  instructor_decided_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  instructor_decided_at timestamp,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_regulatory_findings_analysis ON regulatory_findings(analysis_id);
+CREATE INDEX IF NOT EXISTS idx_regulatory_findings_dossier ON regulatory_findings(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_regulatory_findings_status ON regulatory_findings(dossier_id, status);
+CREATE INDEX IF NOT EXISTS idx_regulatory_findings_topic ON regulatory_findings(dossier_id, topic);
 `;
 
 async function main() {

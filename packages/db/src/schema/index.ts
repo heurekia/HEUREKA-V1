@@ -31,3 +31,6 @@ export * from "./documentSegments.js";
 export * from "./documentSegmentAnnotations.js";
 export * from "./aiUsageEvents.js";
 export * from "./aiAlertConfig.js";
+export * from "./dossier_facts.js";
+export * from "./regulatory_analyses.js";
+export * from "./regulatory_findings.js";

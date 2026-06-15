@@ -336,7 +336,19 @@ superAdminRouter.post("/users", async (req, res) => {
         password_hash,
         role_config_id: role_config_id ?? null,
       })
-      .returning();
+      // Projection explicite : ne jamais renvoyer password_hash au client
+      .returning({
+        id: users.id,
+        email: users.email,
+        prenom: users.prenom,
+        nom: users.nom,
+        role: users.role,
+        commune: users.commune,
+        commune_insee: users.commune_insee,
+        telephone: users.telephone,
+        role_config_id: users.role_config_id,
+        created_at: users.created_at,
+      });
 
     // Insert commune relationships
     if (communeIds && communeIds.length > 0) {
@@ -420,7 +432,19 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
       .update(users)
       .set({ role, prenom, nom, commune, commune_insee, telephone, role_config_id, updated_at: new Date() })
       .where(eq(users.id, id))
-      .returning();
+      // Projection explicite : ne jamais renvoyer password_hash au client
+      .returning({
+        id: users.id,
+        email: users.email,
+        prenom: users.prenom,
+        nom: users.nom,
+        role: users.role,
+        commune: users.commune,
+        commune_insee: users.commune_insee,
+        telephone: users.telephone,
+        role_config_id: users.role_config_id,
+        created_at: users.created_at,
+      });
 
     if (!updated) return res.status(404).json({ error: "Utilisateur introuvable" });
     await logAudit(req, "admin_user_updated", { email: updated.email });

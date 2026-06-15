@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { rateLimit } from "express-rate-limit";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import { gpuDebug } from "../services/gpuDebug.js";
 import { getOrFetchArticle, parseArticleRef } from "../services/legifrance.js";
@@ -6,12 +7,16 @@ import { requireAuth, requireRole } from "../middlewares/auth.js";
 
 export const publicRouter = Router();
 
+// Endpoint anonyme et coûteux (GPU, géocodage, règles DB) : limite par IP
+// pour éviter l'abus/DoS tout en restant confortable pour un usage normal.
+const analyseLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, legacyHeaders: false });
+
 /**
  * GET /public/analyse?q=<adresse ou ref cadastrale>
  * Accept: "12 rue du Commerce, Ballan-Miré" OR "37018000AB0050"
  * Returns full ParcelAnalysis including GPU zone, risks, DB rules, buildability.
  */
-publicRouter.get("/analyse", async (req, res) => {
+publicRouter.get("/analyse", analyseLimiter, async (req, res) => {
   try {
     const q = ((req.query.q as string | undefined) ?? "").trim();
     const lat = req.query.lat !== undefined ? parseFloat(req.query.lat as string) : undefined;
@@ -58,7 +63,7 @@ publicRouter.get("/debug/gpu", requireAuth, requireRole("admin"), async (req, re
  * GET /public/analyse-parcelle/:parcelle
  * Legacy endpoint — kept for backwards compatibility, proxies to analyseParcel.
  */
-publicRouter.get("/analyse-parcelle/:parcelle", async (req, res) => {
+publicRouter.get("/analyse-parcelle/:parcelle", analyseLimiter, async (req, res) => {
   try {
     const analysis = await analyseParcel(req.params.parcelle as string);
     res.json(analysis);

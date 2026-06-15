@@ -36,6 +36,22 @@ const upload = multer({
   },
 });
 
+// Le fileFilter ci-dessus ne voit que l'extension et le MIME déclarés par le
+// client (falsifiables). On vérifie donc aussi la signature binaire réelle
+// du contenu avant toute écriture en storage.
+function sniffFileType(buf: Buffer): "pdf" | "jpeg" | "png" | "gif" | "webp" | "tiff" | null {
+  if (buf.length < 12) return null;
+  // Les lecteurs PDF tolèrent un préambule avant "%PDF" (limité à 1 Ko ici).
+  if (buf.subarray(0, 1024).includes("%PDF")) return "pdf";
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return "jpeg";
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return "png";
+  if (buf.subarray(0, 4).toString("latin1") === "GIF8") return "gif";
+  if (buf.subarray(0, 4).toString("latin1") === "RIFF" && buf.subarray(8, 12).toString("latin1") === "WEBP") return "webp";
+  if (buf[0] === 0x49 && buf[1] === 0x49 && buf[2] === 0x2a && buf[3] === 0x00) return "tiff";
+  if (buf[0] === 0x4d && buf[1] === 0x4d && buf[2] === 0x00 && buf[3] === 0x2a) return "tiff";
+  return null;
+}
+
 const NATURE_LABELS: Record<string, string> = {
   maison_neuve: "Construction d'une maison neuve",
   agrandissement: "Agrandissement d'une construction existante",
@@ -819,6 +835,10 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
     : null;
   try {
     if (!req.file || !fileKey) return res.status(400).json({ error: "Fichier requis" });
+
+    if (sniffFileType(req.file.buffer) === null) {
+      return res.status(400).json({ error: "Le contenu du fichier ne correspond pas à un format supporté (PDF, JPEG, PNG, GIF, WEBP, TIFF)" });
+    }
 
     // Verify dossier belongs to user
     const [dossier] = await db
