@@ -8,7 +8,7 @@ import { fileURLToPath } from "url";
 import { publicRouter } from "./routes/public.js";
 import { authRouter } from "./routes/auth.js";
 import { dossiersRouter } from "./routes/dossiers.js";
-import { mairieRouter } from "./routes/mairie.js";
+import { mairieRouter } from "./routes/mairie/index.js";
 import { calibrationRouter } from "./routes/calibration.js";
 import { calendrierRouter } from "./routes/calendrier.js";
 import { notificationsRouter } from "./routes/notifications.js";
