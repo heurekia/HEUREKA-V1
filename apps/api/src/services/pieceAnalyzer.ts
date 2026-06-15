@@ -1,6 +1,6 @@
 import fs from "fs";
 import crypto from "crypto";
-import { callClaude } from "./aiUsage.js";
+import { callAi } from "./aiUsage.js";
 
 // ── RGPD : minimisation du nom de pièce ──────────────────────────────────────
 // Le nom passé au LLM peut contenir le NOM du citoyen (« Plan de masse -
@@ -327,10 +327,10 @@ export async function analyzePiece(
     ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: base64 } }
     : { type: "image" as const, source: { type: "base64" as const, media_type: mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: base64 } };
 
-  const msg = await callClaude(
+  const msg = await callAi(
     { purpose: "piece_analyze", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId, fileHash },
     {
-      model: "claude-haiku-4-5-20251001",
+      model: "ai-fast",
       max_tokens: useRegulatory ? 1500 : 500,
       system,
       messages: [{

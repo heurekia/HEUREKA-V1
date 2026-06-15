@@ -6,7 +6,7 @@ import { eq, desc, and, ilike, gt, sql, isNull } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import { auditMutations } from "../middlewares/auditMutations.js";
 import crypto from "crypto";
-import { callClaude } from "../services/aiUsage.js";
+import { callAi } from "../services/aiUsage.js";
 import path from "path";
 import multer from "multer";
 import { classifyPermit } from "../services/classificationEngine.js";
@@ -179,10 +179,10 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
           det.architecte_requis ? "Architecte obligatoire : oui (surface totale > 150 m²)" : null,
         ].filter(Boolean).join("\n");
 
-        const msg = await callClaude(
+        const msg = await callAi(
           { purpose: "procedure_explain", userId: req.user?.id ?? null },
           {
-            model: "claude-haiku-4-5-20251001",
+            model: "ai-fast",
             max_tokens: 800,
             system: `Tu es conseiller en urbanisme expert. La procédure a déjà été déterminée — tu n'as pas à la remettre en question.
 
