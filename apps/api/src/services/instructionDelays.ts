@@ -162,18 +162,27 @@ export function computeInstructionDelay(
   breakdown.push({ label: baseLabel, mois: baseMois, article: baseArt });
 
   // ── 2. Extensions automatiques (R.423-24 / 25 / 26) ──
-  // Patrimoine — ABF / sites / réserves / parcs nationaux : +1 mois
-  // On regroupe pour ne pas additionner deux fois la même cause patrimoniale.
+  // Patrimoine — ABF / SPR / sites / réserves : +1 mois
+  // Classification SUP officielle (cf. documentationEngine.ts SUP_LABELS) :
+  //   AC1 = Monuments historiques (avis ABF — L.621-* code du patrimoine)
+  //   AC2 = Sites classés ou inscrits (L.341-1 code de l'environnement)
+  //   AC3 = Réserves naturelles
+  //   AC4 = Sites patrimoniaux remarquables / AVAP / ZPPAUP (avis ABF —
+  //         L.632-1 code du patrimoine)
+  // Une seule extension patrimoine est ajoutée pour éviter d'empiler deux
+  // fois la même cause (ex. parcelle en AC1 + AC4 = un seul +1 mois ABF).
   const hasABF = hasServitude(sup, "AC1");
   const hasSiteClasse = hasServitude(sup, "AC2");
   const hasReserveNat = hasServitude(sup, "AC3");
-  const hasParcNat = hasServitude(sup, "AC4");
+  const hasSPR = hasServitude(sup, "AC4");
   if (hasABF) {
     breakdown.push({ label: "Périmètre ABF (Monuments Historiques)", mois: 1, article: "R.423-24 b)" });
+  } else if (hasSPR) {
+    breakdown.push({ label: "Site patrimonial remarquable (SPR/AVAP)", mois: 1, article: "R.423-24 b)" });
   } else if (hasSiteClasse) {
     breakdown.push({ label: "Site classé ou inscrit", mois: 1, article: "R.423-24 c)" });
-  } else if (hasReserveNat || hasParcNat) {
-    breakdown.push({ label: "Réserve naturelle / parc national", mois: 1, article: "R.423-24 d)" });
+  } else if (hasReserveNat) {
+    breakdown.push({ label: "Réserve naturelle", mois: 1, article: "R.423-24 d)" });
   }
 
   if (metadata?.secteurSauvegarde) {
