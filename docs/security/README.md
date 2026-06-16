@@ -11,12 +11,13 @@ Ce dossier documente l'architecture de sécurité, les exigences de conformité 
 | [aipd.md](./aipd.md) | Analyse d'Impact relative à la Protection des Données — RGPD art. 35 |
 | [registre-traitements.md](./registre-traitements.md) | Fiches de registre des traitements pré-remplies — RGPD art. 30 |
 | [dpa-mistral-checklist.md](./dpa-mistral-checklist.md) | Checklist opérationnelle de la sous-traitance LLM Mistral AI |
+| [dossier-exploitation.md](./dossier-exploitation.md) | Procédures d'exploitation : hébergement VPS OVH, sauvegardes 3-2-1, restauration, mise à jour, incidents |
 | [benchmark-llm.md](./benchmark-llm.md) | Méthodologie de comparaison des fournisseurs d'inférence LLM (souveraineté / qualité / coût) — harnais dans `packages/ingestion/src/benchmark/` |
 | [todo.md](./todo.md) | Chantiers de sécurité par priorité |
 
 ## Périmètre
 
 - Application : HEUREKA V1 (gestion des autorisations d'urbanisme)
-- Hébergeur : Railway.app
+- Hébergeur : VPS OVH 🇫🇷 (Postgres + nginx + Node sur la même machine) ; sauvegardes hors-site sur OVH Object Storage. Détails : [`dossier-exploitation.md`](./dossier-exploitation.md).
 - Référentiels : PGSSI, CCSC, Annexe Technique n°2 et n°4 (DSI Tours Métropole)
 - RGPD : Données personnelles de citoyens et agents publics

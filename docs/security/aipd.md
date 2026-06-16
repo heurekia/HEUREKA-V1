@@ -48,7 +48,7 @@ Ces résultats sont stockés en base et présentés au pétitionnaire (au dépô
 | Responsable de traitement | La collectivité destinataire du dossier (commune ou EPCI) |
 | Sous-traitant principal | HEUREKIA SAS (éditeur de la plateforme) |
 | Sous-traitant ultérieur | Mistral AI SAS (Paris, France) — modèle Pixtral Large, DPA art. 28, pas de transfert hors UE |
-| Sous-traitant ultérieur | Railway Corporation (hébergement, données en UE) |
+| Sous-traitant ultérieur | OVH SAS (hébergement VPS + Object Storage, datacenters France) |
 | Sous-traitant ultérieur | Resend (e-mails transactionnels) |
 
 ### 1.5. Cycle de vie
@@ -107,7 +107,7 @@ Ces résultats sont stockés en base et présentés au pétitionnaire (au dépô
 | Risque | Probabilité | Gravité | Mesures |
 |--------|-------------|---------|---------|
 | Fuite des fichiers depuis Mistral (datacenters France) | Faible | Modérée | DPA art. 28 + politique no-training/no-retention contractuelle |
-| Fuite depuis Railway (hébergeur UE) | Faible | Élevée | Chiffrement au repos, sauvegardes, DPA, accès journalisés |
+| Fuite depuis le VPS OVH (Gravelines 🇫🇷) | Faible | Élevée | Chiffrement disque LUKS, sauvegardes 3-2-1 chiffrées GPG (cf. [dossier-exploitation.md](./dossier-exploitation.md)), accès SSH par clés uniquement, audit_logs applicatif, DPA OVH |
 | Vol de session côté navigateur | Faible | Modérée | Cookie HttpOnly / Secure / SameSite=Strict, CSP stricte |
 | Injection SQL | Très faible | Élevée | Drizzle ORM paramétré |
 | Exfiltration via XSS | Très faible | Modérée | CSP `script-src 'self'`, Helmet |
@@ -124,7 +124,7 @@ Ces résultats sont stockés en base et présentés au pétitionnaire (au dépô
 | Risque | Probabilité | Gravité | Mesures |
 |--------|-------------|---------|---------|
 | Indisponibilité Mistral | Modérée | Faible | Le dépôt reste possible sans analyse (opt-out fonctionnel) |
-| Indisponibilité Railway | Faible | Modérée | Sauvegardes PostgreSQL automatiques, plan de reprise documenté |
+| Indisponibilité VPS OVH | Faible | Modérée | Sauvegardes 3-2-1 chiffrées (quotidien Postgres + uploads, miroir OVH Object Storage) — RPO 24h, RTO 4h. Procédure de reprise documentée dans [`dossier-exploitation.md`](./dossier-exploitation.md). |
 
 ### 3.4. Risques spécifiques IA
 

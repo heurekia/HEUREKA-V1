@@ -20,7 +20,7 @@ Fiches pré-remplies pour la collectivité responsable de traitement utilisant H
 | **Représentant** | Maire / Président d'EPCI |
 | **DPD** | `[À COMPLÉTER : email DPD collectivité]` |
 | **Sous-traitant principal** | HEUREKIA SAS, `[adresse]`, contact : `dpd@heurekia-urba.fr` |
-| **Sous-traitants ultérieurs** | Railway Corporation (hébergement UE), Mistral AI SAS (analyse IA, Paris), Resend (e-mails) |
+| **Sous-traitants ultérieurs** | OVH SAS (hébergement VPS + sauvegardes Object Storage, datacenters France), Mistral AI SAS (analyse IA, Paris), Resend (e-mails — bascule Brevo prévue) |
 | **Finalités** | Dépôt, instruction et décision sur les autorisations d'urbanisme (PC, DP, PA, PD, CU) ; communication avec le pétitionnaire ; consultation des services annexes ; archivage légal |
 | **Base légale** | Mission d'intérêt public (RGPD art. 6-1-e — Code de l'urbanisme L.421-1 et suivants) |
 | **Catégories de personnes concernées** | Pétitionnaires (citoyens, professionnels), agents instructeurs, élus signataires, agents de services consultés (ABF, SDIS, etc.) |
@@ -62,7 +62,7 @@ Fiches pré-remplies pour la collectivité responsable de traitement utilisant H
 |-------|---------|
 | **Nom du traitement** | Création et gestion des comptes utilisateurs |
 | **Responsable de traitement** | `[À COMPLÉTER : nom + adresse de la collectivité]` (citoyens) — HEUREKIA SAS (comptes mairie/instructeur/admin selon contrat) |
-| **Sous-traitants** | Railway (hébergement UE), Resend (envoi e-mails activation / réinitialisation) |
+| **Sous-traitants** | OVH SAS (hébergement VPS 🇫🇷), Resend (envoi e-mails activation / réinitialisation, bascule Brevo prévue) |
 | **Finalités** | Authentification, gestion des rôles et permissions, communication avec les utilisateurs |
 | **Base légale** | Exécution du contrat / mesures précontractuelles (art. 6-1-b) |
 | **Catégories de personnes concernées** | Citoyens pétitionnaires, agents de mairie, instructeurs, agents de services externes, administrateurs |

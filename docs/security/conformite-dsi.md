@@ -28,8 +28,7 @@ Analyse d'impact des 5 documents techniques fournis par la DSI.
 **Source :** Annexe Technique n°2 §4.12  
 **Exigence :** Serveurs en France ou UE.
 
-**État :** Railway.app utilise AWS. Vérifier la région (eu-west-1 = Irlande = UE mais pas France).  
-Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
+**État :** ✅ VPS **OVH** (🇫🇷, datacenters Gravelines / Roubaix / Strasbourg). Sauvegardes sur OVH Object Storage (🇫🇷). Conforme à l'exigence "serveurs en France".
 
 ---
 
@@ -97,8 +96,12 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 
 ### 8. Sauvegardes 3-2-1 documentées
 **Source :** CCSC Art. 11.6  
-**État :** Railway propose des backups PostgreSQL automatiques.  
-**Reste :** Formaliser la politique dans le Dossier d'Exploitation + vérifier fréquence et rétention.
+**État :** ✅ Process complet livré (juin 2026, post-bascule VPS OVH) :
+- Scripts `infra/backup/` : `pg_dump` quotidien + tar `uploads/` + config nginx/systemd, chiffrement GPG AES-256.
+- 3 copies : VPS + arborescence locale `/var/backups/heureka/` + mirror OVH Object Storage (S3, Gravelines 🇫🇷).
+- Rétention : 7 quotidiennes / 4 hebdomadaires / 6 mensuelles.
+- Vérification automatique hebdomadaire (`verify.sh`) : restore test dans une base jetable.
+- Procédures opérationnelles (localiser, consulter, dupliquer, restaurer) documentées dans [`dossier-exploitation.md`](./dossier-exploitation.md).
 
 ### 9. Dépendances npm à jour
 **Source :** CCSC Art. 5  
@@ -117,7 +120,7 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 ### 11. Certificat SSL OV minimum
 **Source :** Annexe Technique n°2 §4.9  
 **Exigence :** OV (Organization Validation) minimum.  
-**État :** Railway utilise Let's Encrypt (DV). À négocier avec le DSI ou migrer vers un certificat OV commercial.
+**État :** Le VPS OVH expose un certificat Let's Encrypt (DV) via nginx + certbot. À négocier avec le DSI ou migrer vers un certificat OV commercial (CertEurope, DigiCert, Sectigo).
 
 ### 12. Export de données en formats ouverts
 **Source :** Annexe Technique n°2 §4.15  
@@ -132,7 +135,7 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 |----------|-------------|---------------|
 | **DTC** | Dossier Technique de Conception | Non |
 | **PAS** | Plan d'Assurance Sécurité | Oui (Annexe 3) |
-| **Dossier d'Exploitation** | Procédures backup/restore/mise à jour | Non |
+| **Dossier d'Exploitation** | Procédures backup/restore/mise à jour | ✅ [`dossier-exploitation.md`](./dossier-exploitation.md) |
 | **Cahier de Recette** | Scénarios de test et critères d'acceptance | Non |
 
 ---
@@ -141,7 +144,7 @@ Si France obligatoire : migration vers OVH/Scaleway/3DS Outscale.
 
 | Point | Référence |
 |-------|-----------|
-| HTTPS en production | Railway |
+| HTTPS en production | nginx + Let's Encrypt sur VPS OVH |
 | Mots de passe hashés (bcrypt) | auth.ts |
 | Compression gzip | app.ts |
 | Cache headers corrects | app.ts |

@@ -56,7 +56,7 @@ Liste opérationnelle des points à valider avant la mise en production officiel
 - [ ] `MISTRAL_API_KEY` : clé API d'organisation entreprise (jamais une clé personnelle).
 - [ ] `MISTRAL_API_BASE` : laissé par défaut (`https://api.mistral.ai/v1`) sauf si proxy entreprise documenté.
 
-> Toutes les variables `ANTHROPIC_*`, `AWS_*` (pour l'IA) et `AI_PROVIDER` du précédent setup peuvent être retirées de Railway (cf. PR #117).
+> Toutes les variables `ANTHROPIC_*`, `AWS_*` (pour l'IA) et `AI_PROVIDER` du précédent setup ont été retirées de l'environnement applicatif (cf. PR #117, bascule VPS OVH).
 
 ### Surveillance
 
