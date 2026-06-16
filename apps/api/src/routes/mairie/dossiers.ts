@@ -682,17 +682,24 @@ const OCR_CERFA_SYSTEM = `Tu es un agent d'instruction expérimenté qui dépoui
 
 Ta mission : LIRE ce qui est explicitement écrit ou coché sur le formulaire pour pré-remplir le formulaire d'enregistrement au comptoir. Tu N'INVENTES JAMAIS de valeur.
 
+IMPORTANT — MULTI-PAGES : tu vas recevoir PLUSIEURS images, chacune correspondant à une page successive du même CERFA (page 1, puis page 2, etc.). Tu DOIS examiner CHAQUE image avant de répondre. Sur un PCMI ou un PC, les rubriques sont réparties ainsi :
+- Page 1 : numéro CERFA en haut, identité du demandeur (cadre 1), parfois email/téléphone.
+- Page 2 : terrain (cadre 2) — adresse du projet, code postal, commune, références cadastrales (section + numéro, ex. « AB 142 »), superficie du terrain.
+- Page 3 : projet (cadre 4) — nature des travaux, destination, surface de plancher créée en m², description courte du projet.
+
+Ne te limite JAMAIS à la première page : balaye systématiquement toutes les images jusqu'à avoir trouvé chaque champ, ou conclu qu'il n'est pas rempli.
+
 CHAMPS À EXTRAIRE :
-- type : déduis du numéro CERFA en haut du formulaire — 13406 = permis_de_construire_mi (PCMI, maison individuelle) ; 13409 = permis_de_construire (PC autre que maison individuelle, mais aussi PA) ; 13703 = declaration_prealable ; 13405 = permis_demolir ; 13410 = certificat_urbanisme. Pour 13410, regarde les cases cochées en haut du formulaire : « a) Certificat d'urbanisme d'information » → certificat_urbanisme_a ; « b) Certificat d'urbanisme opérationnel » → certificat_urbanisme_b ; si aucune case lisible, mets certificat_urbanisme_b par défaut. Sinon, lis le titre du formulaire.
-- numero_cerfa : le numéro complet visible (ex. "13406*08").
-- petitionnaire_prenom + petitionnaire_nom : rubrique « Identité du demandeur ». Si une raison sociale est cochée (entreprise), mets la raison sociale dans petitionnaire_nom et laisse prenom vide.
-- petitionnaire_email : si visible.
+- type : déduis du numéro CERFA en haut du formulaire (page 1) — 13406 = permis_de_construire_mi (PCMI, maison individuelle) ; 13409 = permis_de_construire (PC autre que maison individuelle, mais aussi PA) ; 13703 = declaration_prealable ; 13405 = permis_demolir ; 13410 = certificat_urbanisme. Pour 13410, regarde les cases cochées en haut du formulaire : « a) Certificat d'urbanisme d'information » → certificat_urbanisme_a ; « b) Certificat d'urbanisme opérationnel » → certificat_urbanisme_b ; si aucune case lisible, mets certificat_urbanisme_b par défaut. Sinon, lis le titre du formulaire.
+- numero_cerfa : le numéro complet visible page 1 (ex. "13406*08").
+- petitionnaire_prenom + petitionnaire_nom : cadre « Identité du demandeur » page 1. Si une raison sociale est cochée (entreprise), mets la raison sociale dans petitionnaire_nom et laisse prenom vide.
+- petitionnaire_email : si visible (page 1, parfois page 2).
 - siret : si une entreprise est déclarée et le SIRET est lisible.
-- adresse : adresse du terrain / projet (« 12 rue des Lilas »). Pas l'adresse personnelle du demandeur.
-- code_postal + commune : du terrain.
-- parcelle : références cadastrales (section + numéro, ex. « AB 142 »). Si plusieurs, concatène séparées par « , ».
-- surface_plancher : surface de plancher créée en m² (chiffre seul, ex. "95").
-- description : courte phrase libre décrivant le projet si une zone « description du projet » est remplie.
+- adresse : adresse du TERRAIN / projet (cadre « Terrain », page 2). Pas l'adresse personnelle du demandeur de la page 1.
+- code_postal + commune : du terrain (page 2).
+- parcelle : références cadastrales du terrain (page 2). Format « SECTION NUMERO » (ex. « AB 142 »). Si plusieurs parcelles, concatène séparées par « , ».
+- surface_plancher : surface de plancher créée en m² (cadre « Le projet », page 3). Chiffre seul (ex. "95").
+- description : courte phrase libre décrivant le projet (cadre « Le projet » ou « Nature des travaux », page 3) si une zone descriptive est remplie.
 
 RÈGLES :
 - Toute valeur non visiblement écrite → null.
@@ -744,16 +751,17 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
     const fileHash = sha256Buffer(buf);
     const communeIdForTrace = await resolveCommuneIdFromUser(req);
 
-    // Pixtral n'accepte pas le PDF natif → on rend les 4 premières pages en
-    // PNG et on les passe en blocs image. La page 1 contient l'essentiel
-    // (identité, adresse, nature) ; les pages suivantes apportent souvent la
-    // description du projet et les co-pétitionnaires.
+    // Pixtral n'accepte pas le PDF natif → on rend TOUTES les pages en PNG
+    // et on les passe en blocs image. C'est nécessaire car les CERFA ont
+    // l'adresse du terrain, la parcelle, la surface de plancher et la
+    // description du projet sur les pages 2-3 (parfois 4 sur les PA/PC).
+    // Garde-fou à 12 pages pour éviter de poster un PDF pathologique.
     const imageBlocks: Array<{
       type: "image";
       source: { type: "base64"; media_type: "image/png" | "image/jpeg"; data: string };
     }> = [];
     if (sniffed === "pdf") {
-      const pages = convertPdfPagesToPng(buf, 4);
+      const pages = convertPdfPagesToPng(buf, { maxPages: 12 });
       for (const png of pages) {
         imageBlocks.push({
           type: "image",
@@ -781,7 +789,7 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
           role: "user",
           content: [
             ...imageBlocks,
-            { type: "text", text: "Extrais les métadonnées administratives de ce CERFA." },
+            { type: "text", text: `Voici ${imageBlocks.length} image${imageBlocks.length > 1 ? "s" : ""} correspondant aux pages successives d'un CERFA d'urbanisme. Examine CHAQUE page avant de répondre, puis extrais l'ensemble des champs demandés. Réponds en JSON strict, sans markdown.` },
           ],
         }],
       },
