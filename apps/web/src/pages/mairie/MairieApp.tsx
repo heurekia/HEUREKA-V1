@@ -4,6 +4,7 @@ import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/Ma
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
+import { RegulatoryChecklist } from "../../components/RegulatoryChecklist";
 import {
   STATUS_LABELS as DOSSIER_STATUS_LABELS,
   primaryNextAction as primaryNextActionFor,
@@ -8249,6 +8250,11 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         })()}
 
         {/* ── CONFORMITÉ IA ── */}
+        {activeTab === "Conformité IA" && (
+          <div style={{ marginBottom: 20 }}>
+            <RegulatoryChecklist dossierId={dossier.id} />
+          </div>
+        )}
         {activeTab === "Conformité IA" && (() => {
           const report = conformite?.report ?? null;
           const status = conformite?.status ?? "absent";

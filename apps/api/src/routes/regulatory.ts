@@ -7,6 +7,7 @@ import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
 import { runAnalysis } from "@heureka-v1/regulatory-engine";
 import { syncDossierFactsFromPieces } from "../services/dossierFacts.js";
+import { EDITABLE_FACT_KEYS, isEditableKey } from "../services/dossierFactsAllowlist.js";
 
 export const regulatoryRouter = Router();
 regulatoryRouter.use(requireAuth);
@@ -230,6 +231,138 @@ regulatoryRouter.get(
       }
       console.error("[regulatory] history failed:", err);
       res.status(500).json({ error: "Lecture de l'historique impossible" });
+    }
+  },
+);
+
+// ── PUT /api/regulatory/dossier/:dossierId/facts/:key ──────────────
+// Pose ou remplace un fait par une saisie instructeur. Le fait précédent
+// (s'il existe) est marqué superseded_at — l'historique n'est jamais
+// écrasé. Le nouveau fait porte source='instructor_entry', confidence=1,
+// validated_by=user, validated_at=now : c'est ce qui le protège contre
+// l'écrasement par la sync automatique au prochain upload de pièce.
+const FactPutSchema = z.object({
+  value: z.unknown(),
+  unit: z.string().max(20).optional(),
+  comment: z.string().max(2000).optional(),
+});
+
+regulatoryRouter.put(
+  "/dossier/:dossierId/facts/:key",
+  requireRole(...INSTRUCTOR_ROLES),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const dossierId = z.string().uuid().parse(req.params.dossierId);
+      const owned = await loadOwnedDossier(req, res, dossierId);
+      if (!owned) return;
+
+      const key = req.params.key as string;
+      if (!isEditableKey(key)) {
+        return res.status(400).json({
+          error: `Clé "${key}" non éditable.`,
+          editable_keys: Object.keys(EDITABLE_FACT_KEYS),
+        });
+      }
+      const body = FactPutSchema.parse(req.body);
+      const spec = EDITABLE_FACT_KEYS[key]!;
+      const valueCheck = spec.schema.safeParse(body.value);
+      if (!valueCheck.success) {
+        return res.status(400).json({
+          error: `Valeur invalide pour "${key}". ${spec.hint}`,
+          details: valueCheck.error.issues,
+        });
+      }
+
+      const dossier_facts_mod = await import("@heureka-v1/db");
+      const { dossier_facts: dfTable } = dossier_facts_mod;
+      const now = new Date();
+
+      // Superseder l'éventuel fait actif.
+      await db
+        .update(dfTable)
+        .set({ superseded_at: now, updated_at: now })
+        .where(and(eq(dfTable.dossier_id, dossierId), eq(dfTable.key, key), isNull(dfTable.superseded_at)));
+
+      const [inserted] = await db
+        .insert(dfTable)
+        .values({
+          dossier_id: dossierId,
+          key,
+          value: valueCheck.data as object,
+          unit: body.unit ?? spec.defaultUnit ?? null,
+          source: "instructor_entry",
+          source_ref: { kind: "instructor_override", comment: body.comment ?? null } as object,
+          confidence: 1,
+          validated_by: req.user!.id,
+          validated_at: now,
+        })
+        .returning();
+
+      res.json({ fact: inserted });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ error: "Requête invalide", details: err.issues });
+      }
+      console.error("[regulatory] put fact failed:", err);
+      res.status(500).json({ error: "Mise à jour du fait impossible" });
+    }
+  },
+);
+
+// ── DELETE /api/regulatory/dossier/:dossierId/facts/:key ────────────
+// Annule une saisie instructeur précédente. Marque l'override en
+// superseded_at sans rien réinsérer — la prochaine sync (depuis pièces
+// ou metadata) repeuplera la clé avec la valeur auto-extraite si elle
+// existe. Ne touche PAS aux faits non-instructor (on ne supprime jamais
+// une extraction automatique par cette route — seule la sync le fait).
+regulatoryRouter.delete(
+  "/dossier/:dossierId/facts/:key",
+  requireRole(...INSTRUCTOR_ROLES),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const dossierId = z.string().uuid().parse(req.params.dossierId);
+      const owned = await loadOwnedDossier(req, res, dossierId);
+      if (!owned) return;
+
+      const key = req.params.key as string;
+      if (!isEditableKey(key)) {
+        return res.status(400).json({ error: `Clé "${key}" non éditable.` });
+      }
+
+      const dossier_facts_mod = await import("@heureka-v1/db");
+      const { dossier_facts: dfTable } = dossier_facts_mod;
+      const now = new Date();
+
+      // Seul un instructor_entry actif peut être "retiré". Une extraction
+      // auto n'est jamais supprimée par cette route — on remonte 404.
+      const [active] = await db
+        .select({ id: dfTable.id, source: dfTable.source })
+        .from(dfTable)
+        .where(and(eq(dfTable.dossier_id, dossierId), eq(dfTable.key, key), isNull(dfTable.superseded_at)))
+        .limit(1);
+      if (!active || active.source !== "instructor_entry") {
+        return res.status(404).json({ error: "Aucune saisie instructeur à annuler sur cette clé." });
+      }
+
+      await db
+        .update(dfTable)
+        .set({ superseded_at: now, updated_at: now })
+        .where(eq(dfTable.id, active.id));
+
+      // Re-sync best-effort pour repeupler avec l'auto si disponible.
+      try {
+        await syncDossierFactsFromPieces(dossierId);
+      } catch (e) {
+        console.warn("[regulatory] post-revert sync failed:", e);
+      }
+
+      res.json({ ok: true });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ error: "Requête invalide" });
+      }
+      console.error("[regulatory] delete fact failed:", err);
+      res.status(500).json({ error: "Annulation du fait impossible" });
     }
   },
 );
