@@ -129,25 +129,34 @@ interface MistralChatMessage {
 }
 
 function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
-  return convertPdfPagesToPng(pdf, 1)[0]!;
+  return convertPdfPagesToPng(pdf, { maxPages: 1, dpi: 200 })[0]!;
 }
 
-// Rend les `maxPages` premières pages d'un PDF en PNGs via pdftoppm. Utilisé
-// par les callers qui veulent envoyer plusieurs pages à Pixtral (qui n'accepte
-// pas le PDF natif) — typiquement l'OCR CERFA, où des champs utiles peuvent
-// se trouver en page 2+ (description du projet, déclarant·e morale…).
-export function convertPdfPagesToPng(pdf: Buffer, maxPages = 4): Buffer[] {
+// Rend les pages d'un PDF en PNGs via pdftoppm. Utilisé par les callers qui
+// veulent envoyer plusieurs pages à Pixtral (qui n'accepte pas le PDF natif)
+// — typiquement l'OCR CERFA, où des champs utiles se trouvent en pages 2-3
+// (terrain, parcelle, surface de plancher, description du projet).
+//
+// `maxPages` non défini → toutes les pages du PDF (limite implicite via le
+// garde-fou côté appelant). `dpi` 150 par défaut : lisible pour l'OCR sans
+// faire exploser la taille du payload Mistral sur un CERFA multi-pages.
+export function convertPdfPagesToPng(
+  pdf: Buffer,
+  opts: { maxPages?: number; dpi?: number } = {},
+): Buffer[] {
+  const dpi = opts.dpi ?? 150;
   const dir = mkdtempSync(path.join(tmpdir(), "heureka-ai-"));
   try {
     const pdfPath = path.join(dir, "in.pdf");
     const outPrefix = path.join(dir, "out");
     writeFileSync(pdfPath, pdf);
     try {
-      execFileSync(
-        "pdftoppm",
-        ["-png", "-r", "200", "-f", "1", "-l", String(Math.max(1, maxPages)), pdfPath, outPrefix],
-        { stdio: ["ignore", "ignore", "pipe"] },
-      );
+      const args = ["-png", "-r", String(dpi), "-f", "1"];
+      if (opts.maxPages && opts.maxPages > 0) {
+        args.push("-l", String(opts.maxPages));
+      }
+      args.push(pdfPath, outPrefix);
+      execFileSync("pdftoppm", args, { stdio: ["ignore", "ignore", "pipe"] });
     } catch (err) {
       // ENOENT = binaire absent → message actionnable plutôt que stack
       // trace cryptique. Le déploiement Railway installe poppler-utils via
