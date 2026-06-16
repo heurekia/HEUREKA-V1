@@ -14,7 +14,7 @@
  * — seul le `model` stocké change (pixtral-large-latest plutôt que claude-*).
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { db } from "../db.js";
@@ -162,17 +162,19 @@ export function convertPdfPagesToPng(pdf: Buffer, maxPages = 4): Buffer[] {
       }
       throw err;
     }
-    // pdftoppm numérote out-1.png, out-2.png… On lit séquentiellement tant
-    // que le fichier existe (le PDF peut avoir moins de pages que maxPages).
-    const out: Buffer[] = [];
-    for (let i = 1; i <= maxPages; i++) {
-      const p = `${outPrefix}-${i}.png`;
-      try {
-        out.push(readFileSync(p));
-      } catch {
-        break;
-      }
-    }
+    // Le format des noms de fichiers produits par pdftoppm dépend de la
+    // version : `out-1.png`, `out-01.png`, voire `out.png` lorsqu'une seule
+    // page est demandée sur certaines builds. On liste simplement le dossier
+    // pour rester robuste, et on trie pour garder l'ordre des pages.
+    const out = readdirSync(dir)
+      .filter((n) => n.toLowerCase().endsWith(".png"))
+      .sort((a, b) => {
+        // Tri naturel sur les numéros de page incrustés dans le nom.
+        const na = parseInt(a.match(/(\d+)\.png$/i)?.[1] ?? "0", 10);
+        const nb = parseInt(b.match(/(\d+)\.png$/i)?.[1] ?? "0", 10);
+        return na - nb;
+      })
+      .map((n) => readFileSync(path.join(dir, n)));
     if (out.length === 0) {
       throw new Error("pdftoppm n'a produit aucune page");
     }
