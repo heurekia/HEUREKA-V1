@@ -605,7 +605,7 @@ const OCR_CERFA_SYSTEM = `Tu es un agent d'instruction expérimenté qui dépoui
 Ta mission : LIRE ce qui est explicitement écrit ou coché sur le formulaire pour pré-remplir le formulaire d'enregistrement au comptoir. Tu N'INVENTES JAMAIS de valeur.
 
 CHAMPS À EXTRAIRE :
-- type : déduis du numéro CERFA en haut du formulaire — 13406 = permis_de_construire ; 13703 = declaration_prealable ; 13409 = permis_amenager ; 13405 = permis_demolir ; 13410 = certificat_urbanisme. Sinon, lis le titre du formulaire.
+- type : déduis du numéro CERFA en haut du formulaire — 13406 = permis_de_construire_mi (PCMI, maison individuelle) ; 13409 = permis_de_construire (PC autre que maison individuelle, mais aussi PA) ; 13703 = declaration_prealable ; 13405 = permis_demolir ; 13410 = certificat_urbanisme. Pour 13410, regarde les cases cochées en haut du formulaire : « a) Certificat d'urbanisme d'information » → certificat_urbanisme_a ; « b) Certificat d'urbanisme opérationnel » → certificat_urbanisme_b ; si aucune case lisible, mets certificat_urbanisme_b par défaut. Sinon, lis le titre du formulaire.
 - numero_cerfa : le numéro complet visible (ex. "13406*08").
 - petitionnaire_prenom + petitionnaire_nom : rubrique « Identité du demandeur ». Si une raison sociale est cochée (entreprise), mets la raison sociale dans petitionnaire_nom et laisse prenom vide.
 - petitionnaire_email : si visible.
@@ -621,7 +621,7 @@ RÈGLES :
 - Pas de markdown, pas de préambule, juste du JSON valide :
 
 {
-  "type": "permis_de_construire"|"declaration_prealable"|"permis_amenager"|"permis_demolir"|"certificat_urbanisme"|null,
+  "type": "permis_de_construire"|"permis_de_construire_mi"|"declaration_prealable"|"permis_amenager"|"permis_demolir"|"certificat_urbanisme_a"|"certificat_urbanisme_b"|null,
   "numero_cerfa": "13406*08"|null,
   "petitionnaire_prenom": "Jean"|null,
   "petitionnaire_nom": "DUPONT"|null,
@@ -693,15 +693,39 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
       return res.status(422).json({ error: "Extraction IA non concluante" });
     }
 
-    const validTypes = new Set(["permis_de_construire", "declaration_prealable", "permis_amenager", "permis_demolir", "permis_lotir", "certificat_urbanisme"]);
+    const validTypes = new Set([
+      "permis_de_construire",
+      "permis_de_construire_mi",
+      "declaration_prealable",
+      "permis_amenager",
+      "permis_demolir",
+      "permis_lotir",
+      "certificat_urbanisme",
+      "certificat_urbanisme_a",
+      "certificat_urbanisme_b",
+    ]);
     const str = (v: unknown): string | null => typeof v === "string" && v.trim() ? v.trim() : null;
-    const typeRaw = str(parsed.type);
+    const numeroCerfa = str(parsed.numero_cerfa);
+    let typeRaw = str(parsed.type);
+
+    // Sécurité : si le numéro CERFA est lu mais que l'IA n'a pas affiné le type
+    // (cas typique : elle renvoie l'ancien "permis_de_construire" ou
+    // "certificat_urbanisme" générique), on aligne sur le numéro qui fait foi.
+    // 13406 = PCMI, 13409 = PC standard, 13410 = CUb par défaut (CUa nécessite
+    // une case cochée, déjà gérée par le prompt).
+    if (numeroCerfa) {
+      const num = numeroCerfa.match(/\d{5}/)?.[0];
+      if (num === "13406") typeRaw = "permis_de_construire_mi";
+      else if (num === "13409" && typeRaw !== "permis_amenager") typeRaw = "permis_de_construire";
+      else if (num === "13410" && typeRaw !== "certificat_urbanisme_a") typeRaw = "certificat_urbanisme_b";
+    }
+
     const type = typeRaw && validTypes.has(typeRaw) ? typeRaw : null;
     const conf = typeof parsed.confidence === "number" ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5;
 
     res.json({
       type,
-      numero_cerfa: str(parsed.numero_cerfa),
+      numero_cerfa: numeroCerfa,
       petitionnaire_prenom: str(parsed.petitionnaire_prenom),
       petitionnaire_nom: str(parsed.petitionnaire_nom),
       petitionnaire_email: str(parsed.petitionnaire_email),

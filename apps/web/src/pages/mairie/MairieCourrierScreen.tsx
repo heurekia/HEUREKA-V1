@@ -48,9 +48,13 @@ const CATEGORY_CONFIG: Record<string, { label: string; color: string; bg: string
 };
 
 const TYPE_LABEL: Record<string, string> = {
-  permis_de_construire: "Permis de construire", declaration_prealable: "Déclaration préalable",
+  permis_de_construire: "Permis de construire",
+  permis_de_construire_mi: "Permis de construire (MI)",
+  declaration_prealable: "Déclaration préalable",
   permis_amenager: "Permis d'aménager", permis_demolir: "Permis de démolir",
   permis_lotir: "Permis de lotir", certificat_urbanisme: "Certificat d'urbanisme",
+  certificat_urbanisme_a: "Certificat d'urbanisme (informatif)",
+  certificat_urbanisme_b: "Certificat d'urbanisme (opérationnel)",
 };
 const fmtDate = (d: string | null | undefined) => d ? new Date(d).toLocaleDateString("fr-FR") : "—";
 

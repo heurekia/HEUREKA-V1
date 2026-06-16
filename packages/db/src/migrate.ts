@@ -212,6 +212,13 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS role_config_id uuid REFERENCES role_p
 -- Services annexes (ABF, SDIS, DDT, etc.)
 ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'service_externe';
 
+-- Typologies de procédures fines (PCMI vs PC, CUa vs CUb).
+-- Ajout idempotent : les valeurs legacy ('permis_de_construire',
+-- 'certificat_urbanisme') restent valides pour les dossiers déjà créés.
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'permis_de_construire_mi';
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'certificat_urbanisme_a';
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'certificat_urbanisme_b';
+
 CREATE TABLE IF NOT EXISTS external_services (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   name text NOT NULL,
@@ -796,11 +803,35 @@ CREATE INDEX IF NOT EXISTS idx_regulatory_findings_status ON regulatory_findings
 CREATE INDEX IF NOT EXISTS idx_regulatory_findings_topic ON regulatory_findings(dossier_id, topic);
 `;
 
+// Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
+// d'une valeur d'enum tout juste ajoutée dans la même transaction. On reclasse
+// les dossiers historiquement créés en `permis_de_construire` vers PCMI quand
+// les natures stockées dans `metadata` indiquent une maison individuelle, et
+// les `certificat_urbanisme` génériques vers CUa/CUb selon le metadata.
+const BACKFILL_DOSSIER_TYPES = `
+UPDATE dossiers
+SET type = 'permis_de_construire_mi'
+WHERE type = 'permis_de_construire'
+  AND metadata ? 'natures'
+  AND (metadata->'natures') @> '["maison_neuve"]'::jsonb;
+
+UPDATE dossiers
+SET type = 'certificat_urbanisme_a'
+WHERE type = 'certificat_urbanisme'
+  AND metadata->>'certificatType' = 'a';
+
+UPDATE dossiers
+SET type = 'certificat_urbanisme_b'
+WHERE type = 'certificat_urbanisme'
+  AND (metadata->>'certificatType' IS DISTINCT FROM 'a');
+`;
+
 async function main() {
   const client = postgres(connectionString, { max: 1, onnotice: () => {} });
   try {
     console.log("Running migrations...");
     await client.unsafe(SQL);
+    await client.unsafe(BACKFILL_DOSSIER_TYPES);
     console.log("Migrations complete.");
   } finally {
     await client.end();

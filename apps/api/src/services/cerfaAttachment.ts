@@ -21,11 +21,15 @@ function generatorFor(dossierType: string, metadata: Record<string, unknown>): n
   filename: string;
   generate: (input: { user: { nom: string; prenom: string; email: string; telephone: string | null }; dossier: { adresse: string | null; commune: string | null; code_postal: string | null; parcelle: string | null; description: string | null; surface_plancher: string | null }; cerfa: CerfaPcmiData }) => Promise<Buffer>;
 } {
-  // PCMI = permis_de_construire pour une maison individuelle (≤ 1 logement,
-  // pas de SCI, pas d'immeuble collectif). On élargira si besoin avec un
-  // critère plus fin sur metadata.natures.
+  // PCMI = permis de construire pour une maison individuelle. Depuis l'ajout
+  // du type `permis_de_construire_mi` au niveau dossier, celui-ci suffit à
+  // déclencher la génération PCMI. On garde l'ancienne heuristique
+  // (`permis_de_construire` + nature `maison_neuve`) pour les brouillons
+  // antérieurs à la migration qui n'auraient pas encore été reclassés.
   const natures = (metadata?.natures as string[] | undefined) ?? [];
-  if (dossierType === "permis_de_construire" && natures.includes("maison_neuve")) {
+  const isPcmi = dossierType === "permis_de_construire_mi"
+    || (dossierType === "permis_de_construire" && natures.includes("maison_neuve"));
+  if (isPcmi) {
     return {
       code: PCMI_PIECE_CODE,
       filename: "CERFA-13406-16-PCMI.pdf",

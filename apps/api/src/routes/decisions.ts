@@ -57,9 +57,10 @@ export const decisionsRouter = Router();
 decisionsRouter.use(requireAuth);
 
 const RECOURS_MOIS: Record<string, number> = {
-  permis_de_construire: 2, declaration_prealable: 2,
+  permis_de_construire: 2, permis_de_construire_mi: 2,
+  declaration_prealable: 2,
   permis_amenager: 2, permis_demolir: 2, permis_lotir: 2,
-  certificat_urbanisme: 2,
+  certificat_urbanisme: 2, certificat_urbanisme_a: 2, certificat_urbanisme_b: 2,
 };
 
 function addMonths(date: Date, months: number): string {

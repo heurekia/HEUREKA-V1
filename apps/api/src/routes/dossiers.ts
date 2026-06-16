@@ -105,6 +105,7 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       description,
       certificatType,
       hasVoirieCommune,
+      existingIsMaisonIndividuelle,
     } = req.body as {
       nature?: string;
       natures?: string[];
@@ -115,6 +116,7 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       description?: string;
       certificatType?: "a" | "b";
       hasVoirieCommune?: boolean;
+      existingIsMaisonIndividuelle?: boolean;
     };
 
     const naturesToUse: string[] = naturesArr ?? (nature ? [nature] : []);
@@ -133,6 +135,7 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       amenagementType,
       certificatType,
       hasVoirieCommune,
+      existingIsMaisonIndividuelle,
     });
 
     // ── 2. Pièces requises (déterministe) ─────────────────────────────────────

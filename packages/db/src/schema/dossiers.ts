@@ -2,12 +2,15 @@ import { pgTable, text, timestamp, boolean, jsonb, pgEnum, uuid } from "drizzle-
 import { users } from "./users.js";
 
 export const dossierTypeEnum = pgEnum("dossier_type", [
-  "permis_de_construire",
+  "permis_de_construire",       // PC (autre que maison individuelle)
+  "permis_de_construire_mi",    // PCMI (maison individuelle et annexes)
   "declaration_prealable",
   "permis_amenager",
   "permis_demolir",
   "permis_lotir",
-  "certificat_urbanisme",
+  "certificat_urbanisme",       // legacy — équivaut à CUb
+  "certificat_urbanisme_a",     // CUa (informatif)
+  "certificat_urbanisme_b",     // CUb (opérationnel)
 ]);
 
 export const dossierStatusEnum = pgEnum("dossier_status", [
