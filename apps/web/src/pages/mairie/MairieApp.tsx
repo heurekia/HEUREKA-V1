@@ -7832,30 +7832,10 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
                   {/* Carte */}
                   <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
-                    <div style={{ padding: "14px 18px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                      <div style={SH as React.CSSProperties & { display: string; alignItems: string; gap: number; marginBottom: number }}>
-                        <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
+                    <div style={{ padding: "14px 18px 10px" }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", display: "flex", alignItems: "center", gap: 8 }}>
+                        <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block", flexShrink: 0 }} />
                         Vue parcellaire
-                      </div>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" as const }}>
-                        {/* Sources techniques (data_sources) masquées de l'UI :
-                            elles restent dans la réponse API pour traçabilité et
-                            analyses internes mais ne sont plus affichées ici. */}
-                        {/* Click-to-identify parcel button */}
-                        <button
-                          onClick={() => {
-                            setClickingParcel(v => !v);
-                          }}
-                          style={{
-                            padding: "4px 10px", borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: "pointer",
-                            border: clickingParcel ? "1.5px solid #4F46E5" : "1.5px solid #C7D2FE",
-                            background: clickingParcel ? "#EEF2FF" : "white",
-                            color: clickingParcel ? "#4F46E5" : "#64748b",
-                          }}
-                          title="Cliquez sur la carte pour identifier la parcelle"
-                        >
-                          {clickingParcel ? "✕ Annuler" : "📍 Localiser sur la carte"}
-                        </button>
                       </div>
                     </div>
                     {clickingParcel && (
