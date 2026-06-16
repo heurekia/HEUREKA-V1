@@ -7646,16 +7646,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     <span style={{ fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
                   </div>
                 ))}
-                <div style={{ marginTop: 20, padding: "14px 16px", background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", borderRadius: 12, border: "1px solid #C7D2FE" }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", marginBottom: 6, letterSpacing: "0.04em" }}>SCORE DE CONFORMITÉ IA</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ flex: 1, height: 7, background: "#C7D2FE", borderRadius: 4, overflow: "hidden" }}>
-                      <div style={{ width: "78%", height: "100%", background: "linear-gradient(90deg,#4F46E5,#818CF8)", borderRadius: 4 }} />
-                    </div>
-                    <span style={{ fontSize: 16, fontWeight: 800, color: "#4F46E5" }}>78%</span>
-                  </div>
-                  <div style={{ fontSize: 11, color: "#6366F1", marginTop: 5 }}>6 règles conformes · 1 vigilance · 1 non vérifiable</div>
-                </div>
               </div>
               {/* Mini map */}
               <div style={{ ...CARD, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" as const }}>
