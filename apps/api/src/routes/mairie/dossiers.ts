@@ -357,6 +357,82 @@ dossiersRouter.patch("/dossiers/:id/status", async (req: AuthRequest, res) => {
   }
 });
 
+// Correction du type d'autorisation d'un dossier déjà créé. Utile quand
+// l'extraction OCR du CERFA a renvoyé un type générique (ex. PC au lieu de
+// PCMI) et qu'on souhaite reclassifier sans avoir à recréer le dossier.
+// Effets de bord : recalcul de la date limite d'instruction, journalisation
+// dans instruction_events, régénération best-effort du CERFA prérempli.
+const ALLOWED_DOSSIER_TYPES = new Set([
+  "permis_de_construire",
+  "permis_de_construire_mi",
+  "declaration_prealable",
+  "permis_amenager",
+  "permis_demolir",
+  "permis_lotir",
+  "certificat_urbanisme",
+  "certificat_urbanisme_a",
+  "certificat_urbanisme_b",
+]);
+
+dossiersRouter.patch("/dossiers/:id/type", requireRole("mairie", "admin", "instructeur"), async (req: AuthRequest, res) => {
+  try {
+    const { type, reason } = (req.body ?? {}) as { type?: string; reason?: string | null };
+    if (!type || !ALLOWED_DOSSIER_TYPES.has(type)) {
+      return res.status(400).json({ error: "Type invalide" });
+    }
+    const dossierId = req.params.id as string;
+    const [before] = await db.select().from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+    if (!before) return res.status(404).json({ error: "Dossier non trouvé" });
+    if (before.type === type) return res.json(before);
+
+    const patch: Record<string, unknown> = {
+      type: type as typeof before.type,
+      updated_at: new Date(),
+    };
+
+    // Recalcul du délai légal : le nouveau type peut décaler la deadline
+    // (ex. PC 3 mois → PCMI 2 mois, ou CUa 1 mois → CUb 2 mois).
+    const startDate = before.date_completude ?? before.date_depot;
+    if (startDate) {
+      const meta = (before.metadata as DeadlineMetadata | null) ?? null;
+      const servitudes = (meta as { servitudes?: DeadlineServitude[] } | null)?.servitudes ?? null;
+      const calc = computeInstructionDelay(type, meta, servitudes);
+      patch.date_limite_instruction = applyMonthsToDate(new Date(startDate), calc.total_mois);
+      patch.metadata = {
+        ...((before.metadata as Record<string, unknown>) ?? {}),
+        delai: {
+          total_mois: calc.total_mois,
+          breakdown: calc.breakdown,
+          base_date: new Date(startDate).toISOString(),
+          base_date_source: before.date_completude ? "completude" : "depot",
+          computed_at: new Date().toISOString(),
+        },
+      };
+    }
+
+    await db.update(dossiers).set(patch).where(eq(dossiers.id, dossierId));
+    await db.insert(instruction_events).values({
+      dossier_id: dossierId,
+      type: "type_changed",
+      user_id: req.user?.id ?? null,
+      description: `Type d'autorisation : ${before.type} → ${type}`,
+      metadata: { previous_type: before.type, new_type: type, reason: reason ?? null },
+    });
+
+    // Régénération du CERFA prérempli en best-effort : si le nouveau type
+    // déclenche un générateur (ex. PCMI) on remplace la pièce existante.
+    void attachCerfaToDossier(dossierId).catch((err) => {
+      console.warn("[mairie/dossiers/type] CERFA regen failed:", err);
+    });
+
+    const [updated] = await db.select().from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+    res.json(updated);
+  } catch (err) {
+    console.error("[mairie/dossiers/type]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 dossiersRouter.patch("/dossiers/:id/deadline", async (req: AuthRequest, res) => {
   try {
     const body = (req.body ?? {}) as {
