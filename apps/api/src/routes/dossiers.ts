@@ -18,7 +18,7 @@ import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../ser
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
 import { syncDossierFactsFromPieces } from "../services/dossierFacts.js";
 import { autoReopenAfterCitizenUpload } from "../services/dossierWorkflow.js";
-import { computeInstructionDelay } from "../services/instructionDelays.js";
+import { computeInstructionDelay, applyMonthsToDate } from "../services/instructionDelays.js";
 import { getStorageProvider } from "../services/storage.js";
 import { attachCerfaToDossier } from "../services/cerfaAttachment.js";
 
@@ -379,13 +379,35 @@ dossiersRouter.post("/:id/soumettre", async (req: AuthRequest, res) => {
       return res.status(422).json({ error: "Dossier incomplet", manquantes });
     }
 
+    const depotDate = new Date();
+    const dossierMeta = (dossier.metadata as Record<string, unknown> | null) ?? {};
+    const dossierServitudes = (dossierMeta as { servitudes?: Array<{ categorie?: string; libelle?: string }> }).servitudes ?? null;
+    const delaiCalc = computeInstructionDelay(
+      dossier.type,
+      dossierMeta as { natures?: string[]; certificatType?: "a" | "b" },
+      dossierServitudes,
+    );
+    const dateLimite = applyMonthsToDate(depotDate, delaiCalc.total_mois);
+    const metadataWithDelai = {
+      ...dossierMeta,
+      delai: {
+        total_mois: delaiCalc.total_mois,
+        breakdown: delaiCalc.breakdown,
+        base_date: depotDate.toISOString(),
+        base_date_source: "depot",
+        computed_at: depotDate.toISOString(),
+      },
+    };
+
     const [updated] = await db
       .update(dossiers)
       .set({
         status: "soumis",
-        date_depot: new Date(),
+        date_depot: depotDate,
+        date_limite_instruction: dateLimite,
+        metadata: metadataWithDelai,
         conformite_status: "pending",
-        updated_at: new Date(),
+        updated_at: depotDate,
       })
       .where(eq(dossiers.id, req.params.id as string))
       .returning();

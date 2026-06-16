@@ -224,12 +224,39 @@ dossiersRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
 
 dossiersRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
   try {
-    const [dossier] = await db
+    let [dossier] = await db
       .select()
       .from(dossiers)
       .where(eq(dossiers.id, req.params.id as string))
       .limit(1);
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    // Backfill paresseux : les dossiers antérieurs au calcul automatique à la
+    // création peuvent avoir une date_limite_instruction NULL. On la calcule
+    // depuis la date de complétude si elle existe, sinon depuis le dépôt.
+    if (!dossier.date_limite_instruction && (dossier.date_completude || dossier.date_depot)) {
+      const baseDate = dossier.date_completude ?? dossier.date_depot!;
+      const baseSource = dossier.date_completude ? "completude" : "depot";
+      const meta = (dossier.metadata as DeadlineMetadata | null) ?? null;
+      const servitudes = (meta as { servitudes?: DeadlineServitude[] } | null)?.servitudes ?? null;
+      const calc = computeInstructionDelay(dossier.type, meta, servitudes);
+      const dateLimite = applyMonthsToDate(new Date(baseDate), calc.total_mois);
+      const newMeta = {
+        ...((dossier.metadata as Record<string, unknown>) ?? {}),
+        delai: {
+          total_mois: calc.total_mois,
+          breakdown: calc.breakdown,
+          base_date: new Date(baseDate).toISOString(),
+          base_date_source: baseSource,
+          computed_at: new Date().toISOString(),
+        },
+      };
+      await db
+        .update(dossiers)
+        .set({ date_limite_instruction: dateLimite, metadata: newMeta, updated_at: new Date() })
+        .where(eq(dossiers.id, dossier.id));
+      dossier = { ...dossier, date_limite_instruction: dateLimite, metadata: newMeta };
+    }
     const [demandeur] = await db
       .select({ id: users.id, prenom: users.prenom, nom: users.nom, email: users.email })
       .from(users)
@@ -652,6 +679,25 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
 
     const instructeurId = data.instructeur_id && data.instructeur_id !== "" ? data.instructeur_id : null;
 
+    // Calcul de l'échéance dès la création : base juridique = date de dépôt
+    // (R.423-23) tant que la complétude n'est pas prononcée. Sera recalculée
+    // depuis date_completude lors de l'auto-bascule en instruction.
+    const rawMeta = (data.metadata ?? {}) as Record<string, unknown>;
+    const deadlineMeta = rawMeta as DeadlineMetadata;
+    const servitudes = (rawMeta as { servitudes?: DeadlineServitude[] }).servitudes ?? null;
+    const delaiCalc = computeInstructionDelay(data.type, deadlineMeta, servitudes);
+    const dateLimite = applyMonthsToDate(validDepot, delaiCalc.total_mois);
+    const metadataWithDelai: Record<string, unknown> = {
+      ...rawMeta,
+      delai: {
+        total_mois: delaiCalc.total_mois,
+        breakdown: delaiCalc.breakdown,
+        base_date: validDepot.toISOString(),
+        base_date_source: "depot",
+        computed_at: new Date().toISOString(),
+      },
+    };
+
     const [dossier] = await db.insert(dossiers).values({
       numero,
       type: data.type,
@@ -664,8 +710,9 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
       parcelle: data.parcelle ?? null,
       surface_plancher: data.surface_plancher ?? null,
       description: data.description ?? null,
-      metadata: data.metadata ?? {},
+      metadata: metadataWithDelai,
       date_depot: validDepot,
+      date_limite_instruction: dateLimite,
     }).returning();
 
     // Génération + attachement CERFA prérempli (best-effort, comme côté citoyen).
