@@ -1,0 +1,44 @@
+name: Deploy to OVH VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+
+          script: |
+            set -e
+
+            cd /home/ubuntu/heurekia
+
+            git fetch origin main
+            git reset --hard origin/main
+
+            pnpm install --frozen-lockfile
+
+            pnpm build
+
+            pnpm --filter @heureka-v1/db migrate || true
+
+            pm2 restart heurekia-api --update-env
+            pm2 save
+
+            curl -fsS https://app.heurekia.com/api/health
