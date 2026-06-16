@@ -20,7 +20,7 @@ Fiches pré-remplies pour la collectivité responsable de traitement utilisant H
 | **Représentant** | Maire / Président d'EPCI |
 | **DPD** | `[À COMPLÉTER : email DPD collectivité]` |
 | **Sous-traitant principal** | HEUREKIA SAS, `[adresse]`, contact : `dpd@heurekia-urba.fr` |
-| **Sous-traitants ultérieurs** | Railway Corporation (hébergement UE), Anthropic PBC (analyse IA), Resend (e-mails) |
+| **Sous-traitants ultérieurs** | Railway Corporation (hébergement UE), Mistral AI SAS (analyse IA, Paris), Resend (e-mails) |
 | **Finalités** | Dépôt, instruction et décision sur les autorisations d'urbanisme (PC, DP, PA, PD, CU) ; communication avec le pétitionnaire ; consultation des services annexes ; archivage légal |
 | **Base légale** | Mission d'intérêt public (RGPD art. 6-1-e — Code de l'urbanisme L.421-1 et suivants) |
 | **Catégories de personnes concernées** | Pétitionnaires (citoyens, professionnels), agents instructeurs, élus signataires, agents de services consultés (ABF, SDIS, etc.) |
@@ -41,15 +41,15 @@ Fiches pré-remplies pour la collectivité responsable de traitement utilisant H
 | **Nom du traitement** | Analyse automatisée par intelligence artificielle des pièces d'urbanisme |
 | **Responsable de traitement** | `[À COMPLÉTER : nom + adresse de la collectivité]` |
 | **Sous-traitant principal** | HEUREKIA SAS — exploite la plateforme et l'orchestration des appels IA |
-| **Sous-traitant ultérieur** | **Anthropic PBC**, 548 Market St PMB 90375, San Francisco, CA 94104, USA — modèle Claude. Encadré par DPA + clauses contractuelles types (SCC, décision UE 2021/914). |
+| **Sous-traitant ultérieur** | **Mistral AI SAS**, Paris, France — modèle Pixtral Large via Mistral La Plateforme. Encadré par DPA art. 28. Inférence en France métropolitaine, **aucun transfert hors UE**. |
 | **Finalités** | (1) Vérification automatisée de la complétude et de la lisibilité des pièces déposées. (2) Extraction structurée des valeurs cotées (recul, hauteur NGF, surface). (3) Détection préliminaire de non-conformités PLU. **Aucune décision automatisée au sens de l'art. 22 RGPD.** |
 | **Base légale** | Mission d'intérêt public (art. 6-1-e) + consentement explicite et révocable du pétitionnaire (art. 6-1-a) — case à cocher au dépôt avec opt-out. |
 | **Catégories de personnes concernées** | Pétitionnaires ayant accepté l'analyse IA (consentement par défaut, révocable) |
 | **Catégories de données transmises au LLM** | Contenu binaire du fichier (pièce justificative), zone PLU, nature des travaux, surface, commune. **Pas d'identité directe** : nom de fichier sanitizé, parcelle cadastrale tronquée, aucun nom/prénom/e-mail/adresse postale transmis. |
-| **Destinataires** | Anthropic PBC (traitement éphémère pour produire la réponse), serveurs HEUREKA pour stockage du résultat, agents instructeurs de la collectivité. |
-| **Transferts hors UE** | Si `AI_PROVIDER=anthropic` (défaut) : transfert vers les États-Unis encadré par DPA + SCC. Si `AI_PROVIDER=bedrock` : aucun transfert hors UE (inférence sur AWS Bedrock région eu-central-1 / Francfort). |
-| **Garanties pour les transferts** | DPA Anthropic + SCC (clauses 2021/914), option Zero Data Retention (suppression de la rétention 30 j côté Anthropic). |
-| **Durée de conservation** | Résultats stockés en base : pour la durée du dossier (10 ans). Empreinte SHA-256 + métadonnées (modèle, coût, durée) : pour la durée du dossier. **Côté Anthropic : 30 jours maximum (logs anti-abus), désactivable contractuellement.** |
+| **Destinataires** | Mistral AI SAS (traitement éphémère pour produire la réponse), serveurs HEUREKA pour stockage du résultat, agents instructeurs de la collectivité. |
+| **Transferts hors UE** | **Aucun.** Inférence en France (Mistral AI SAS Paris). Art. 44 RGPD non engagé. |
+| **Garanties** | DPA art. 28 Mistral AI, politique no-training / no-retention contractuelle pour le compte entreprise (à formaliser au DPA). |
+| **Durée de conservation** | Résultats stockés en base : pour la durée du dossier (10 ans). Empreinte SHA-256 + métadonnées (modèle, coût, durée) : pour la durée du dossier. **Côté Mistral : politique de rétention à formaliser au DPA (cible : 0 rétention pour les comptes entreprise).** |
 | **Mesures de sécurité spécifiques** | Minimisation (sanitizePieceName, maskParcelle), trace SHA-256 (ai_usage_events.file_hash), trace par pièce (ai_processed), trace par dossier (ai_consent + ai_consent_at), décision finale humaine, journal complet des appels (date, modèle, coût, empreinte). |
 | **Procédure d'exercice des droits** | Droit d'opposition au dépôt (case à cocher décochable) ; droit d'accès via l'export JSON enrichi avec le journal des appels IA ; droit à une intervention humaine (art. 22) toujours garanti par défaut. |
 | **AIPD** | Conduite — voir `docs/security/aipd.md`. |

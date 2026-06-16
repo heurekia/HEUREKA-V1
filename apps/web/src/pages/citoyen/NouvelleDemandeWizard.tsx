@@ -1534,15 +1534,18 @@ export function NouvelleDemandeWizard() {
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <input
                         type="number"
-                        min={1}
+                        min={0}
                         max={9999}
+                        step="0.01"
+                        inputMode="decimal"
                         value={surfaceStr}
                         placeholder="Autre valeur…"
                         onChange={(e) => {
-                          setSurfaceStr(e.target.value);
-                          const v = parseInt(e.target.value, 10);
+                          const raw = e.target.value.replace(",", ".");
+                          setSurfaceStr(raw);
+                          const v = parseFloat(raw);
                           if (!isNaN(v) && v > 0) setSurface(v);
-                          else if (e.target.value === "") setSurface(0);
+                          else if (raw === "") setSurface(0);
                         }}
                         onBlur={() => { if (surface > 0) setSurfaceStr(String(surface)); }}
                         style={{ ...inputStyle, fontSize: 18, fontWeight: 700, color: surface > 0 ? "#4F46E5" : undefined, borderColor: surface > 0 ? "#C7D2FE" : "#E2E8F0" }}
@@ -1571,7 +1574,10 @@ export function NouvelleDemandeWizard() {
                     </p>
                     <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
                       <input type="number" value={empriseExistante}
-                        onChange={(e) => setEmpriseExistante(e.target.value)}
+                        min={0}
+                        step="0.01"
+                        inputMode="decimal"
+                        onChange={(e) => setEmpriseExistante(e.target.value.replace(",", "."))}
                         placeholder="Ex : 80"
                         style={{ ...inputStyle, fontSize: 16, fontWeight: 600 }}
                         onFocus={(e) => (e.target.style.borderColor = "#4F46E5")}
@@ -1579,23 +1585,27 @@ export function NouvelleDemandeWizard() {
                       <span style={{ fontSize: 18, color: "#64748b", fontWeight: 700, flexShrink: 0 }}>m²</span>
                     </div>
                     {/* Running total */}
-                    {surface > 0 && empriseExistante && Number(empriseExistante) > 0 && (
-                      <div style={{
-                        marginTop: 10,
-                        padding: "10px 16px",
-                        background: (surface + Number(empriseExistante)) > 150 ? "#FEF3C7" : "#F0FDF4",
-                        border: `1px solid ${(surface + Number(empriseExistante)) > 150 ? "#FDE68A" : "#86EFAC"}`,
-                        borderRadius: 10,
-                        fontSize: 13,
-                        color: (surface + Number(empriseExistante)) > 150 ? "#92400E" : "#15803D",
-                        fontWeight: 600,
-                      }}>
-                        {(surface + Number(empriseExistante)) > 150
-                          ? `⚠ Total : ${surface + Number(empriseExistante)} m² — architecte obligatoire (> 150 m²)`
-                          : `✓ Total : ${surface + Number(empriseExistante)} m²`
-                        }
-                      </div>
-                    )}
+                    {surface > 0 && empriseExistante && Number(empriseExistante) > 0 && (() => {
+                      const total = Math.round((surface + Number(empriseExistante)) * 100) / 100;
+                      const over = total > 150;
+                      return (
+                        <div style={{
+                          marginTop: 10,
+                          padding: "10px 16px",
+                          background: over ? "#FEF3C7" : "#F0FDF4",
+                          border: `1px solid ${over ? "#FDE68A" : "#86EFAC"}`,
+                          borderRadius: 10,
+                          fontSize: 13,
+                          color: over ? "#92400E" : "#15803D",
+                          fontWeight: 600,
+                        }}>
+                          {over
+                            ? `⚠ Total : ${total} m² — architecte obligatoire (> 150 m²)`
+                            : `✓ Total : ${total} m²`
+                          }
+                        </div>
+                      );
+                    })()}
                   </div>
                 )}
 

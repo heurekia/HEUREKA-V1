@@ -19,9 +19,11 @@ export const piecesRouter = Router();
 // Plus permissif que le ocrUpload de dossiers.ts : on accepte aussi GIF/WEBP/
 // TIFF (photos lointaines, scans en TIFF). Le sniff binaire en handler
 // rejette les contenus qui ne correspondent pas à leur extension annoncée.
+// Limite 60 Mo : alignée avec le message UI (MairieApp ~ "60 Mo") — couvre
+// les scans haute résolution des pièces lourdes (plan masse, notice).
 const pieceUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 },
+  limits: { fileSize: 60 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowed = /pdf|jpe?g|png|gif|webp|tiff?/i;
     if (allowed.test(path.extname(file.originalname)) || allowed.test(file.mimetype)) {

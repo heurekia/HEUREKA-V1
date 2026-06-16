@@ -1,7 +1,6 @@
 import { Router } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import fs from "node:fs";
 import { db } from "../db.js";
 import { dossier_pieces_jointes, dossiers } from "@heureka-v1/db";
 import { eq, like } from "drizzle-orm";
@@ -68,24 +67,49 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
 
     const provider = getStorageProvider();
 
-    if (provider.name === "s3") {
-      // Redirection vers une URL signée à courte durée — le navigateur
-      // récupère le fichier directement depuis le bucket.
-      const signed = await provider.getDownloadUrl(key, 300);
-      return res.redirect(302, signed);
-    }
-
-    // Provider local : on stream depuis le disque.
+    // Garde-fou path traversal pour le provider local — sans effet sur S3 mais
+    // utile en defense-in-depth si l'on revient à un disque local.
     const filePath = path.join(UPLOADS_DIR, key);
     if (!filePath.startsWith(UPLOADS_DIR + path.sep)) {
       return res.status(400).json({ error: "Chemin invalide" });
     }
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Fichier absent du disque" });
 
-    res.setHeader("Content-Type", piece.type || "application/octet-stream");
+    // On stream le fichier en proxy à travers l'API, quel que soit le provider.
+    // Pas de redirection 302 vers une URL signée S3 : ces URL expirent au bout
+    // de quelques minutes et peuvent être mises en cache par le navigateur ou
+    // un CDN intermédiaire, ce qui fait disparaître la preview après quelques
+    // heures. En streamant ici, l'URL exposée au front reste /api/uploads/<key>
+    // et l'authentification est revérifiée à chaque accès.
+    let streamRes;
+    try {
+      streamRes = await provider.getStream(key);
+    } catch (err) {
+      const code = (err as { name?: string; code?: string }).name
+        ?? (err as { code?: string }).code;
+      if (code === "NoSuchKey" || code === "NotFound" || code === "ENOENT") {
+        return res.status(404).json({ error: "Fichier absent du stockage" });
+      }
+      throw err;
+    }
+
+    res.setHeader(
+      "Content-Type",
+      streamRes.contentType || piece.type || "application/octet-stream",
+    );
+    if (typeof streamRes.contentLength === "number") {
+      res.setHeader("Content-Length", String(streamRes.contentLength));
+    }
     res.setHeader("Cache-Control", "private, no-store");
-    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(piece.nom || key)}"`);
-    fs.createReadStream(filePath).pipe(res);
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(piece.nom || key)}"`,
+    );
+    streamRes.stream.on("error", (e) => {
+      console.error("[uploads] stream error", e);
+      if (!res.headersSent) res.status(500).end();
+      else res.destroy(e);
+    });
+    streamRes.stream.pipe(res);
   } catch (err) {
     console.error("[uploads]", err);
     res.status(500).json({ error: "Erreur serveur" });

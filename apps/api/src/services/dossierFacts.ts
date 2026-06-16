@@ -1,5 +1,5 @@
 import { db } from "../db.js";
-import { dossier_pieces_jointes, dossier_facts } from "@heureka-v1/db";
+import { dossier_pieces_jointes, dossier_facts, dossiers } from "@heureka-v1/db";
 import { and, eq, isNull } from "drizzle-orm";
 import type { PieceExtraction } from "./pieceExtractor.js";
 
@@ -253,23 +253,209 @@ export async function applyDossierFacts(
   return report;
 }
 
-// Sync complet à partir des pièces du dossier. Best-effort : si une pièce
-// n'a pas d'extraction (IA non lancée, refus du citoyen, échec…), elle est
-// simplement ignorée — pas d'erreur, juste rien à ajouter.
-export async function syncDossierFactsFromPieces(dossierId: string): Promise<SyncReport> {
+// ─── Mapping dossier → faits ─────────────────────────────────────────
+//
+// Ce que le wizard et l'enrichissement parcellaire produisent : natures
+// de travaux déclarées, surface plancher, et — si la commune a été
+// résolue par parcelAnalysis — zonage PLU, risques, servitudes. Ces
+// dernières sont notées external_data (issues du GPU / IGN, pas
+// d'une saisie utilisateur) ; les natures restent citizen_declaration.
+
+export interface DossierForFacts {
+  id: string;
+  parcelle: string | null;
+  commune: string | null;
+  surface_plancher: string | null;
+  metadata: unknown;
+}
+
+// Natures du wizard → tags d'applicabilité du moteur. Volontairement
+// défensif : seules les natures connues produisent un tag, les autres
+// ne créent pas d'entrée (ni vrai ni faux — la convention "absence ≠
+// négation" est verrouillée dans le moteur côté applicability_tags).
+const NATURE_TO_TAG: Record<string, string> = {
+  agrandissement: "extension",
+  petite_construction: "annexe",
+  demolition: "demolition",
+  changement_destination: "changement_destination",
+  modification_aspect: "ravalement",
+  surelevation: "surelevation",
+};
+
+export function extractFactsFromDossier(dossier: DossierForFacts): FactCandidate[] {
+  const out: FactCandidate[] = [];
+  const dossierRef = (field: string): FactSourceRef => ({
+    piece_id: dossier.id, // on garde un ID — au sens "source attachée au dossier"
+    field,
+    piece_type: "dossier",
+    nom_piece: null,
+  });
+  const meta = (dossier.metadata ?? {}) as Record<string, unknown>;
+
+  // ── Natures de travaux (wizard) ─────────────────────────────────────
+  const natures = readStringArray(meta.natures);
+  if (natures.length > 0) {
+    out.push({
+      key: "nature_travaux",
+      value: natures,
+      source: "citizen_declaration",
+      source_ref: dossierRef("metadata.natures"),
+      confidence: 1,
+      priority: 100,
+    });
+    // Booléens dérivés — exploités par les tags d'applicabilité.
+    for (const n of natures) {
+      const tag = NATURE_TO_TAG[n];
+      if (tag) {
+        out.push({
+          key: tag,
+          value: true,
+          source: "citizen_declaration",
+          source_ref: dossierRef(`metadata.natures[${n}]`),
+          confidence: 1,
+          priority: 100,
+        });
+      }
+    }
+  }
+
+  // ── Surface plancher déclarée au wizard ────────────────────────────
+  // Priorité 40 → sous le CERFA (50) qui a la même origine déclarative
+  // mais est plus structuré. Sert de fallback si le CERFA n'a pas été
+  // extrait ou ne porte pas la valeur.
+  const sp = parseNumberLoose(dossier.surface_plancher);
+  if (sp != null) {
+    out.push({
+      key: "surface_plancher_apres",
+      value: sp,
+      unit: "m2",
+      source: "citizen_declaration",
+      source_ref: dossierRef("surface_plancher"),
+      confidence: 0.7,
+      priority: 40,
+    });
+  }
+
+  // ── Référence parcellaire ──────────────────────────────────────────
+  if (dossier.parcelle && dossier.parcelle.trim() !== "") {
+    out.push({
+      key: "parcelle_ref",
+      value: dossier.parcelle.trim(),
+      source: "citizen_declaration",
+      source_ref: dossierRef("parcelle"),
+      confidence: 1,
+      priority: 80,
+    });
+  }
+
+  // ── Analyse parcellaire mise en cache dans metadata ────────────────
+  // Quand le wizard a tourné parcelAnalysis et stocké le résultat, on a
+  // une mine d'or : zonage_plu, risques, servitudes. Source =
+  // external_data car ça vient du GPU / IGN, pas de l'utilisateur.
+  const analysis = readObject(meta.parcel_analysis);
+  if (analysis) {
+    const pluZone = readObject(analysis.plu_zone);
+    const zoneCode = pluZone?.zone_code;
+    if (typeof zoneCode === "string" && zoneCode.trim() !== "") {
+      out.push({
+        key: "zonage_plu",
+        value: [zoneCode.trim()],
+        source: "external_data",
+        source_ref: dossierRef("metadata.parcel_analysis.plu_zone.zone_code"),
+        confidence: 1,
+        priority: 100,
+      });
+    }
+    const risks = readObject(analysis.risks);
+    if (risks) {
+      const flagged: string[] = [];
+      if (typeof risks.flood_risk === "string" && ["fort", "moyen"].includes(risks.flood_risk)) flagged.push("inondation");
+      if (typeof risks.clay_risk === "string" && ["fort", "moyen"].includes(risks.clay_risk)) flagged.push("retrait_gonflement_argiles");
+      if (typeof risks.landslide_risk === "string" && ["fort", "moyen"].includes(risks.landslide_risk)) flagged.push("mouvement_terrain");
+      if (flagged.length > 0) {
+        out.push({
+          key: "risques",
+          value: flagged,
+          source: "external_data",
+          source_ref: dossierRef("metadata.parcel_analysis.risks"),
+          confidence: 0.9,
+          priority: 100,
+        });
+      }
+    }
+    // Servitudes : flag ABF si une SUP de catégorie AC1, AC2, AC3 (Monument
+    // historique, Sites inscrits/classés) est présente.
+    const sups = [...readArray(analysis.sup_surf), ...readArray(analysis.sup_lin)];
+    const abfCategories = new Set(["AC1", "AC2", "AC3", "AC4"]);
+    const hasAbf = sups.some((s) => {
+      const o = readObject(s);
+      return o && typeof o.categorie === "string" && abfCategories.has(o.categorie);
+    });
+    if (hasAbf) {
+      out.push({
+        key: "secteur_abf",
+        value: true,
+        source: "external_data",
+        source_ref: dossierRef("metadata.parcel_analysis.sup_*"),
+        confidence: 1,
+        priority: 100,
+      });
+    }
+    const sectorList = sups
+      .map((s) => readObject(s)?.categorie)
+      .filter((c): c is string => typeof c === "string" && c.trim() !== "");
+    if (sectorList.length > 0) {
+      out.push({
+        key: "servitudes",
+        value: [...new Set(sectorList)],
+        source: "external_data",
+        source_ref: dossierRef("metadata.parcel_analysis.sup_*"),
+        confidence: 1,
+        priority: 100,
+      });
+    }
+  }
+
+  return out;
+}
+
+// Sync complet : dossier + pièces. Best-effort sur chaque source. Quand
+// une pièce n'a pas d'extraction (IA non lancée, refus citoyen…), elle
+// est simplement ignorée.
+export async function syncDossierFacts(dossierId: string): Promise<SyncReport> {
+  const [dossier] = await db
+    .select({
+      id: dossiers.id,
+      parcelle: dossiers.parcelle,
+      commune: dossiers.commune,
+      surface_plancher: dossiers.surface_plancher,
+      metadata: dossiers.metadata,
+    })
+    .from(dossiers)
+    .where(eq(dossiers.id, dossierId))
+    .limit(1);
+
+  const candidates: FactCandidate[] = [];
+  if (dossier) {
+    candidates.push(...extractFactsFromDossier(dossier as DossierForFacts));
+  }
+
   const pieces = await db
     .select({ id: dossier_pieces_jointes.id, nom: dossier_pieces_jointes.nom, extraction_ia: dossier_pieces_jointes.extraction_ia })
     .from(dossier_pieces_jointes)
     .where(eq(dossier_pieces_jointes.dossier_id, dossierId));
-
-  const candidates: FactCandidate[] = [];
   for (const p of pieces) {
     const piece: PieceForFacts = { id: p.id, nom: p.nom, extraction_ia: p.extraction_ia as PieceExtraction | null };
     candidates.push(...extractFactsFromPiece(piece));
   }
+
   const desired = resolveDossierFacts(candidates);
   return applyDossierFacts(dossierId, desired);
 }
+
+// Alias conservé pour les appelants existants ; pointe sur la sync
+// complète qui inclut désormais aussi le dossier lui-même.
+export const syncDossierFactsFromPieces = syncDossierFacts;
 
 // ─── Helpers ─────────────────────────────────────────────────────────
 
@@ -322,4 +508,34 @@ function jsonEqual(a: unknown, b: unknown): boolean {
   // tableaux courts qu'on stocke en jsonb. Pas adapté aux objets profonds
   // avec ordre de clés indéfini — pas un usage actuel.
   return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// ─── Lecture defensive de metadata jsonb ─────────────────────────────
+// metadata est `unknown` à l'usage — on ne fait jamais confiance à la
+// forme. Si la valeur n'est pas dans le type attendu, on renvoie une
+// version vide et le caller s'adapte.
+
+function readStringArray(v: unknown): string[] {
+  if (!Array.isArray(v)) return [];
+  return v.filter((x): x is string => typeof x === "string" && x.trim() !== "");
+}
+
+function readObject(v: unknown): Record<string, unknown> | null {
+  return v && typeof v === "object" && !Array.isArray(v) ? (v as Record<string, unknown>) : null;
+}
+
+function readArray(v: unknown): unknown[] {
+  return Array.isArray(v) ? v : [];
+}
+
+function parseNumberLoose(v: unknown): number | null {
+  if (v == null) return null;
+  if (typeof v === "number" && Number.isFinite(v)) return v;
+  if (typeof v === "string") {
+    const trimmed = v.trim().replace(",", ".");
+    if (trimmed === "") return null;
+    const n = Number(trimmed);
+    return Number.isFinite(n) ? n : null;
+  }
+  return null;
 }

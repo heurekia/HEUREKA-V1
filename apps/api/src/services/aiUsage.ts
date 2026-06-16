@@ -14,7 +14,7 @@
  * — seul le `model` stocké change (pixtral-large-latest plutôt que claude-*).
  */
 import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { db } from "../db.js";
@@ -129,15 +129,25 @@ interface MistralChatMessage {
 }
 
 function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
+  return convertPdfPagesToPng(pdf, 1)[0]!;
+}
+
+// Rend les `maxPages` premières pages d'un PDF en PNGs via pdftoppm. Utilisé
+// par les callers qui veulent envoyer plusieurs pages à Pixtral (qui n'accepte
+// pas le PDF natif) — typiquement l'OCR CERFA, où des champs utiles peuvent
+// se trouver en page 2+ (description du projet, déclarant·e morale…).
+export function convertPdfPagesToPng(pdf: Buffer, maxPages = 4): Buffer[] {
   const dir = mkdtempSync(path.join(tmpdir(), "heureka-ai-"));
   try {
     const pdfPath = path.join(dir, "in.pdf");
     const outPrefix = path.join(dir, "out");
     writeFileSync(pdfPath, pdf);
     try {
-      execFileSync("pdftoppm", ["-png", "-r", "200", "-f", "1", "-l", "1", pdfPath, outPrefix], {
-        stdio: ["ignore", "ignore", "pipe"],
-      });
+      execFileSync(
+        "pdftoppm",
+        ["-png", "-r", "200", "-f", "1", "-l", String(Math.max(1, maxPages)), pdfPath, outPrefix],
+        { stdio: ["ignore", "ignore", "pipe"] },
+      );
     } catch (err) {
       // ENOENT = binaire absent → message actionnable plutôt que stack
       // trace cryptique. Le déploiement Railway installe poppler-utils via
@@ -152,7 +162,23 @@ function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
       }
       throw err;
     }
-    return readFileSync(`${outPrefix}-1.png`);
+    // Le format des noms de fichiers produits par pdftoppm dépend de la
+    // version : `out-1.png`, `out-01.png`, voire `out.png` lorsqu'une seule
+    // page est demandée sur certaines builds. On liste simplement le dossier
+    // pour rester robuste, et on trie pour garder l'ordre des pages.
+    const out = readdirSync(dir)
+      .filter((n) => n.toLowerCase().endsWith(".png"))
+      .sort((a, b) => {
+        // Tri naturel sur les numéros de page incrustés dans le nom.
+        const na = parseInt(a.match(/(\d+)\.png$/i)?.[1] ?? "0", 10);
+        const nb = parseInt(b.match(/(\d+)\.png$/i)?.[1] ?? "0", 10);
+        return na - nb;
+      })
+      .map((n) => readFileSync(path.join(dir, n)));
+    if (out.length === 0) {
+      throw new Error("pdftoppm n'a produit aucune page");
+    }
+    return out;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
