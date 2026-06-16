@@ -7,7 +7,36 @@
 | Périmètre | Backend `apps/api`, frontend `apps/web`, packages `db` / `ingestion` / `regulatory-engine` / `shared` |
 | Lecteurs cibles | DSI, DPD, équipe technique, auditeurs sécurité |
 
-> Document de synthèse couvrant l'architecture, les tables de la base, les appels externes, les briques fonctionnelles, la redirection des fronts, les tâches planifiées, les pipelines de traitement et les aspects sécurité. Compagnon de `docs/plan-deploiement.md` (roadmap souveraineté) et de `docs/security/*` (registre RGPD, AIPD, conformité DSI).
+> Document de synthèse couvrant l'architecture, les tables de la base, les appels externes, les briques fonctionnelles, la redirection des fronts, les tâches planifiées, les pipelines de traitement, la sécurité, les tests, la CI/CD, l'observabilité, le multi-tenant, l'IA et le workflow métier. Compagnon de `docs/plan-deploiement.md` (roadmap souveraineté) et de `docs/security/*` (registre RGPD, AIPD, conformité DSI).
+
+### Sommaire
+
+1. Vue d'ensemble
+2. Topologie monorepo
+3. Base de données (38 tables Drizzle)
+4. Appels externes (15 services)
+5. Briques fonctionnelles
+6. Redirection des fronts
+7. Tâches planifiées (cron)
+8. Traitement — Pipelines
+9. Sécurité
+10. Variables d'environnement
+11. Déploiement & exploitation
+12. Tests & qualité
+13. CI/CD (GitHub Actions, VPS OVH + PM2)
+14. Observabilité & exploitation (logs, monitoring, SLO, runbook)
+15. Schéma d'architecture & ERD
+16. Multi-tenant & isolation par commune
+17. Modèle d'erreurs API & frontend
+18. Gestion d'état frontend
+19. Accessibilité
+20. SEO & métadonnées
+21. IA : MODEL_MAP, pricing & benchmark
+22. Workflow métier — Machine d'états
+23. Internationalisation
+24. Licences
+25. Setup environnement de développement
+26. Points d'attention & dette technique
 
 ---
 
@@ -531,7 +560,528 @@ Aucun secret n'est commit. `.env.example` documente les clés sans valeur.
 
 ---
 
-## 12. Points d'attention & dette technique
+## 12. Tests & qualité
+
+### 12.1 Stack de test
+
+- **Framework** : Vitest (config dans `apps/api/vitest.config.ts`, `packages/ingestion/vitest.config.ts`).
+- **Couverture actuelle** : **30 fichiers de tests** (`*.test.ts`), majoritairement unitaires.
+- **TypeScript strict** : `tsc --noEmit` joué en CI sur `apps/api` et `apps/web`.
+
+### 12.2 Périmètre testé
+
+| Zone | Fichiers de tests notables |
+|---|---|
+| Services API | `pieceAnalyzer.test.ts`, `pieceRequest.test.ts`, `dossierWorkflow.test.ts`, `cerfaPcmiFiller.test.ts`, `buildability.test.ts`, `zoneRules.test.ts`, `classificationEngine.test.ts`, `parcelAnalysis.test.ts`, `audit.test.ts`, `dossierFacts.test.ts`, `jsonExtract.test.ts`, `documentationEngine.test.ts`, `dossierConformity.test.ts`, `storage.test.ts` |
+| Moteur réglementaire | `regulatory-engine/orchestrator/runEvaluation.test.ts`, `applicability/engine.test.ts`, et un fichier par évaluateur métier : `recul_voie`, `stationnement`, `hauteur`, `emprise`, … |
+| Ingestion | Tests Vitest dans `packages/ingestion/` (parsing PDF, structuration LLM mockée) |
+
+### 12.3 Stratégie de mocking
+
+- Appels Mistral et PISTE **mockés** via `vi.mock()` — pas de tokens consommés en CI.
+- Drizzle ORM : tests de services purs avec données injectées (pas de PostgreSQL en CI).
+- Tests d'intégration end-to-end : à étendre (manque actuellement de tests « API → base réelle »).
+
+### 12.4 Commandes
+
+```bash
+pnpm install --frozen-lockfile
+cd apps/api && pnpm test               # tests unitaires API
+cd apps/web && pnpm typecheck          # typecheck strict front
+pnpm --filter @heureka-v1/regulatory-engine test
+```
+
+---
+
+## 13. CI/CD
+
+### 13.1 GitHub Actions
+
+Deux workflows dans `.github/workflows/` :
+
+#### 13.1.1 `ci.yml` — Validation à chaque PR / push sur `main`
+
+| Job | Description |
+|---|---|
+| **security-audit** | `pnpm audit --prod` (exclut les `devDependencies` — vulnérabilités drizzle-kit/esbuild non bloquantes en dev) |
+| **typecheck** | `tsc --noEmit` sur `apps/api` puis `apps/web` |
+| **tests** | `pnpm test` côté API (Vitest) |
+| **build** | `vite build` (web) + `tsc` (api) — garantit qu'un build casserait pas en prod |
+
+Runtime : Node 22, pnpm cache activé.
+
+#### 13.1.2 `deploy.yml` — Déploiement production
+
+- **Cible réelle** : **VPS OVH 🇫🇷** via SSH + PM2 (et non Railway comme indiqué dans `plan-deploiement.md` qui décrit l'état initial).
+- **Déclencheurs** : push sur `main`, ou dispatch manuel.
+- **Concurrency group** `deploy-production` avec `cancel-in-progress: true` (un déploiement en chasse un autre).
+- **Étapes** sur le VPS :
+  1. `git fetch origin main && git reset --hard origin/main`
+  2. `pnpm install --frozen-lockfile`
+  3. `pnpm build`
+  4. `pnpm --filter @heureka-v1/db migrate` (best-effort, `|| true`)
+  5. `pm2 restart heurekia-api --update-env && pm2 save`
+  6. **Healthcheck actif** : `curl https://app.heurekia.com/api/health` toutes les 3 s × 20 tentatives (60 s max). Si KO → `pm2 logs --lines 50` et exit 1.
+- **Secrets GH Actions** : `VPS_HOST`, `VPS_USER`, `VPS_SSH_KEY`, `VPS_PORT`.
+
+### 13.2 État réel vs documenté
+
+> **Écart à corriger** : le `plan-deploiement.md` (juin 2026) décrit Railway comme hébergeur courant, mais le workflow `deploy.yml` cible déjà un VPS OVH. À aligner — soit le déploiement OVH est récent (post-plan), soit le plan doit être mis à jour pour décrire la stack actuelle (OVH + PM2) avant la cible Clever Cloud.
+
+### 13.3 Conventions & qualité de code
+
+| Outil | Configuration |
+|---|---|
+| **Prettier** 3.8.1 | Formatage (config à la racine) |
+| **TypeScript** 5.9.2 strict | `tsconfig.base.json` partagé |
+| **ESLint** | À vérifier (non détecté en racine) — recommandation : ajouter |
+| **Husky / lint-staged** | Non configurés — recommandation : pre-commit hook `pnpm test` + Prettier |
+
+### 13.4 Stratégie de release
+
+- **Trunk-based** : `main` est la branche déployable.
+- **PR review** obligatoire avant merge (process GitHub, pas de protection branch configurée visible).
+- **Hotfix** : commit direct sur `main` → déploiement auto (le workflow `deploy.yml` se déclenche).
+- **Rollback** : `git revert` + push sur `main` → re-déploiement. Pas de mécanisme de blue-green ou de bascule de version (PM2 redémarre en place).
+
+---
+
+## 14. Observabilité & exploitation
+
+### 14.1 Logs
+
+- **Format actuel** : `console.log` / `console.error` non structuré, préfixé par contexte (`[cron]`, `[shutdown]`, `[aiUsage]`, etc.).
+- **Captés par PM2** sur le VPS, accessibles via `pm2 logs heurekia-api`.
+- **Recommandation tech** : passer à un logger structuré (pino) avec :
+  - request-id par requête HTTP,
+  - redaction automatique des champs sensibles (`password`, `token`, `Authorization`),
+  - niveaux (`debug` / `info` / `warn` / `error`),
+  - sortie JSON pour ingestion outil tiers.
+
+### 14.2 Monitoring & alerting
+
+| Domaine | État actuel | Cible recommandée |
+|---|---|---|
+| Erreurs applicatives | `console.error` only | **Sentry** (mentionné dans `plan-deploiement.md`) — frontend + backend, source maps en prod |
+| Métriques applicatives | Aucune | Métriques Prometheus / OpenTelemetry exposées sur `/metrics`, scrapping Grafana |
+| Disponibilité externe | Healthcheck GH Actions post-deploy uniquement | Uptime monitor (UptimeRobot / Better Stack) sur `/api/health` |
+| Coûts IA | ✅ Alertes Slack par appel + journalier (`ai_alert_config`) | OK |
+| Quotas Mistral / PISTE | Aucun suivi | Alerter sur quota approaching depuis headers de réponse |
+
+### 14.3 SLO / SLA cibles (à formaliser)
+
+| Indicateur | Cible suggérée |
+|---|---|
+| Disponibilité API | 99,5 % hors fenêtres de maintenance (~3 h 30 / mois) |
+| Latence p95 API (hors IA) | < 500 ms |
+| Latence p95 analyse IA pièce | < 30 s (Pixtral Large + PDF→PNG) |
+| RPO (perte max accepté) | 24 h (backup quotidien) |
+| RTO (temps de restauration) | 4 h |
+
+### 14.4 Runbook — Procédures d'incident
+
+| Incident | Symptômes | Action |
+|---|---|---|
+| **Mistral indisponible** | 503 / timeout sur `api.mistral.ai` ; tous les `purpose=*` échouent | Dégradation gracieuse automatique côté wizard (analyse marquée indisponible). Si > 1 h : message d'information sur le bandeau. Pas de fallback Anthropic (chemins retirés). |
+| **IGN GPU 503** | `/api/mairie/parcelle/:parcelle` lent ou KO | Cache `gpu_parcel_cache` 30 j absorbe. Si cache vide pour la parcelle : afficher message et bouton « réessayer ». Aucune action ops requise (SLA IGN faible connu). |
+| **PostgreSQL saturé** | Latence requêtes élevée, erreurs `too many connections` | Vérifier pool Drizzle (`postgres` driver). Scaler add-on. Identifier requêtes lentes via `pg_stat_statements`. |
+| **S3 indisponible** | Upload pièce KO | StorageProvider remonte l'erreur — le citoyen voit un message. Vérifier credentials Cellar / statut provider. |
+| **Quota Mistral atteint** | 429 sur Mistral | Alerte Slack `daily_threshold_eur` déjà déclenchée en amont. Lever quota côté console Mistral, ou bridage temporaire des `purpose` non critiques. |
+| **PISTE token expiré** | 401 sur articles légaux | Le client refresh automatiquement. Si KO persistant : régénérer le couple `PISTE_CLIENT_ID/SECRET` dans la console PISTE. |
+| **Déploiement healthcheck KO** | GH Action `deploy.yml` exit 1 | `pm2 logs heurekia-api --lines 100` sur le VPS, `pm2 restart`, vérifier `DATABASE_URL` & migrations. |
+| **Cron raté** | Pas de log `[cron]` dans la fenêtre attendue | Vérifier que le process API est up (PM2). Forcer la purge manuellement via script ad-hoc. |
+| **Compte verrouillé / rate-limit citoyen** | Login refusé `429 Too Many Requests` | Attendre la fenêtre (10/15 min). Admin peut effacer la clé IP côté `express-rate-limit` (in-memory : suffit de redémarrer le process). |
+
+### 14.5 Backup & restore
+
+| Élément | Politique actuelle | À formaliser (CCSC §11.6) |
+|---|---|---|
+| PostgreSQL | Backups Railway / Clever Cloud automatiques (fréquence non documentée ici) | Documenter fréquence (quotidienne ?), rétention (30 j ?), procédure de `pg_restore` testée |
+| Fichiers (S3 Cellar) | Versioning S3 à activer côté provider | Politique de réplication multi-AZ, lifecycle (archives froides après N mois) |
+| Code & secrets | GitHub + variables d'env hébergeur (chiffrées) | Politique 3-2-1 explicite |
+
+---
+
+## 15. Schéma d'architecture & ERD
+
+### 15.1 Flux d'une requête citoyen typique
+
+```
+┌─────────────┐  HTTPS+cookie  ┌──────────────┐
+│ Navigateur  │ ─────────────► │  apps/web    │
+│ www.…       │                │  React SPA   │
+└─────────────┘                └──────┬───────┘
+                                       │ fetch /api/...
+                                       ▼
+                              ┌──────────────────┐
+                              │  apps/api        │
+                              │  Express + JWT   │
+                              └─┬────────┬───────┘
+                                │        │
+        ┌───────────────────────┘        └──────────────────────┐
+        │                                                       │
+        ▼                                                       ▼
+┌──────────────┐    ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│ PostgreSQL   │    │ Mistral 🇫🇷 │  │ IGN / BAN /  │  │ Stockage     │
+│ + pgvector   │    │ Pixtral      │  │ Légifrance / │  │ S3 (Cellar)  │
+│              │    │              │  │ Géorisques   │  │ ou disque    │
+└──────────────┘    └──────────────┘  └──────────────┘  └──────────────┘
+```
+
+### 15.2 ERD simplifié — dossier d'urbanisme
+
+```
+users ──┐                                              ┌── decisions
+        │                                              │      └── decision_events
+        ├──< dossiers ──┬──< dossier_pieces_jointes    │
+        │       │       │                              │
+        │       │       ├──< dossier_messages          │
+        │       │       │                              │
+        │       │       ├──< dossier_facts ────────────┘
+        │       │       │
+        │       │       ├──< dossier_courriers
+        │       │       │
+        │       │       ├──< dossier_consultations >── external_services
+        │       │       │
+        │       │       ├──< instruction_events
+        │       │       │
+        │       │       └──< regulatory_analyses ──< regulatory_findings ──> zone_regulatory_rules
+        │       │
+        │       └──> communes ──< zones ──< zone_regulatory_rules
+        │                  │
+        │                  ├──< commune_documents
+        │                  ├──< signataires
+        │                  └──> epci
+        │
+        ├──< user_communes >── communes
+        ├──< user_absences
+        ├──< user_delegations
+        ├──< user_availability
+        ├──< audit_logs       (FK SET NULL)
+        ├──< ai_usage_events  (FK SET NULL)
+        └──< notifications
+```
+
+### 15.3 Indexes & performance
+
+Indexes confirmés :
+- `users.email` unique.
+- `dossiers.numero` unique.
+- `dossier_facts (dossier_id, key) WHERE superseded_at IS NULL` — index unique partiel (garantit un seul fait actif par clé).
+- `document_segments` : indexes sur `insee`, `doc_type`, `parent_code` (et un IVFFlat sur `embedding` pour pgvector — à vérifier en migration).
+- `audit_logs` : index sur `created_at` pour la purge cron rapide.
+
+À auditer :
+- Index sur `dossiers.user_id`, `dossiers.instructeur_id`, `dossiers.commune_insee` (filtres fréquents en list mairie).
+- Index sur `dossier_pieces_jointes.dossier_id`, `dossier_messages.dossier_id`.
+- Stratégie de pagination : keyset (`created_at < cursor`) plutôt qu'offset pour les listes longues.
+
+### 15.4 Migrations Drizzle
+
+```bash
+# Dev : générer la migration SQL
+cd packages/db && pnpm drizzle-kit generate
+
+# Revue manuelle du fichier SQL produit (impératif sur migrations destructives)
+git diff packages/db/migrations/
+
+# Application (auto en pre-deploy Railway / step deploy.yml VPS)
+pnpm --filter @heureka-v1/db migrate
+```
+
+Règles :
+- Migrations **idempotentes** (utilisation systématique de `IF NOT EXISTS`).
+- Migrations destructives (`DROP COLUMN`, `DROP TABLE`) : précédées d'une migration de neutralisation déployée 1 release plus tôt.
+- Aucune rétro-action automatique : `drizzle-kit migrate` joue les fichiers manquants dans l'ordre.
+
+---
+
+## 16. Multi-tenant & isolation par commune
+
+HEUREKA est **multi-tenant logique** : une seule base, plusieurs collectivités, isolation par contrôle d'accès applicatif.
+
+### 16.1 Mécanismes d'isolation
+
+| Couche | Mécanisme |
+|---|---|
+| Authentification | `users.commune_insee` (mono) + `user_communes` (multi-affectation pour mutualisations EPCI) |
+| Routes mairie | Middleware `enforceDossierAccess` : refuse `dossier_id` si la `commune_insee` du dossier n'est pas dans les communes de l'agent |
+| Listes | Chaque `GET /api/mairie/dossiers` filtre côté SQL par `commune_insee IN (...)` |
+| Données ref (PLU, signataires, courrier templates) | Cloisonnées par `commune_id` |
+| Stockage S3 | Préfixe par `commune_insee/dossier_id/` (à confirmer dans `storage.ts`) |
+| Admin global | Rôle `admin` (HEUREKIA SAS) — accès cross-commune pour exploitation |
+
+### 16.2 Mutualisation EPCI
+
+- `dossiers.instruction_mutualisee` (sur la commune) permet l'instruction par un service mutualisé d'EPCI.
+- `epci` + `epci_id` sur `communes` permettent de regrouper logiquement.
+
+### 16.3 Risques résiduels
+
+- **Cross-tenant data leak** : risque structurel d'une base partagée. Atténué par revue de code sur les routes mairie, mais une vulnérabilité oubliée exposerait tous les tenants. Recommandation à terme : audit pen-test ciblé sur l'isolation.
+
+---
+
+## 17. Modèle d'erreurs API & frontend
+
+### 17.1 Format de réponse erreur
+
+```json
+{
+  "error": {
+    "code": "DOSSIER_NOT_FOUND" | "VALIDATION_ERROR" | "FORBIDDEN" | ...,
+    "message": "Message lisible côté utilisateur",
+    "details": { ... }   // Optionnel (issues Zod, etc.)
+  }
+}
+```
+
+Status HTTP : 400 (validation), 401 (non authentifié), 403 (rôle/scope), 404 (introuvable), 409 (conflit workflow), 429 (rate-limit), 500 (erreur serveur).
+
+### 17.2 Côté front
+
+- **Error Boundary React** englobe les routes pour capturer les exceptions de rendu.
+- **Toasts** affichent les `error.message` côté formulaires.
+- **Pages d'erreur dédiées** : 404, 403 (accès refusé), 500 (incident).
+
+### 17.3 Versioning API
+
+- **Pas de préfixe `/v1`** actuellement — l'API est consommée uniquement par le front interne, le couplage est fort.
+- En cas d'ouverture future (mobile / partenaires), prévoir un versioning `/api/v1/...` et une politique de breaking changes documentée.
+
+---
+
+## 18. Gestion d'état frontend
+
+### 18.1 Stack
+
+- **Pas de state manager dédié** (ni Redux, ni Zustand, ni TanStack Query, ni SWR).
+- État global : **React Context** (`useAuth`, etc.).
+- État local : `useState` / `useReducer`.
+- Fetch : `fetch()` natif encapsulé dans des hooks custom (`hooks/`).
+- Cache HTTP : reposera sur les headers du navigateur (pas de cache applicatif).
+
+### 18.2 Trade-offs
+
+- **Pro** : stack légère, pas de boilerplate, courbe d'apprentissage faible.
+- **Contre** : pas de cache requête côté client → certaines pages rechargent les mêmes données. **Recommandation** : intégrer TanStack Query (`@tanstack/react-query`) sur les listes les plus consultées (dashboard, list dossiers mairie).
+
+### 18.3 Bundle & performance
+
+- **Build Vite 6** avec code splitting automatique par route (React Router 7 lazy routes — à confirmer).
+- **Lazy loading** : à vérifier sur les pages mairie lourdes (carte Leaflet, éditeur TipTap).
+- **Recommandation** : `vite build --report` + audit Lighthouse régulier.
+
+---
+
+## 19. Accessibilité
+
+| Standard | État | Action |
+|---|---|---|
+| **RGAA niveau AA** (obligation légale collectivités) | ⚠️ **Non audité** | Audit avec axe-core ou Tanaguru |
+| Navigation clavier | À vérifier composant par composant | Tests manuels + Storybook a11y |
+| Contraste | Tailwind palette utilisée — à vérifier au cas par cas | Lint avec `@tailwindcss/forms` + audit |
+| Attributs ARIA | Présents par défaut (`lucide-react`, `tiptap`) — à compléter sur composants custom | Revue UX |
+| Lecteur d'écran | Non testé | Test NVDA / VoiceOver |
+
+> Annexe Technique n°2 §4.7 + §2.1 de la DSI Tours : **AA exigé** avant mise en production officielle.
+
+---
+
+## 20. SEO & métadonnées
+
+- **`react-helmet-async`** pour `<title>` et meta par page.
+- **Pas de SSR** : SPA pure Vite → SEO limité côté `www.heurekia.com`.
+- **Recommandation** : ajouter `sitemap.xml` et `robots.txt` côté `www`, désindexer `app.heurekia.com` (`X-Robots-Tag: noindex`).
+
+---
+
+## 21. IA : MODEL_MAP, pricing & benchmark
+
+### 21.1 MODEL_MAP (résolution abstraite → modèle)
+
+`apps/api/src/services/aiUsage.ts` :
+
+```ts
+const MODEL_MAP: Record<string, string> = {
+  "ai-fast":  "pixtral-large-latest",   // À repointer vers pixtral-12b post-benchmark si F1 ≥ 0,80
+  "ai-smart": "pixtral-large-latest",
+};
+```
+
+Les services métier déclarent un usage abstrait (`ai-fast` / `ai-smart`) ; on résout vers le modèle Mistral réel. Permet de re-tuner sans toucher au code applicatif.
+
+### 21.2 Pricing Mistral (EUR par million de tokens)
+
+| Modèle | Input | Output | Usage typique |
+|---|---|---|---|
+| `pixtral-12b-2409` | 0,15 | 0,15 | Tâches simples (à valider via benchmark) |
+| `pixtral-large-latest` | 2,00 | 6,00 | **Tout actuellement** (vision PDF/photos) |
+| `mistral-large-latest` | 1,80 | 5,40 | Tâches textuelles complexes |
+| `mistral-small-latest` | 0,20 | 0,60 | Classification, extraction simple |
+
+Source : `MISTRAL_PRICING` dans `aiUsage.ts`. Facturation EUR natif (pas de conversion USD).
+
+### 21.3 Budget IA projeté
+
+Volume cible : **1 000 pièces / mois × ~3 appels Pixtral Large** (analyse + extract + verdicts) = **~3 000 appels / mois**.
+
+| Hypothèse | Coût mensuel |
+|---|---|
+| 1 500 tokens input + 500 tokens output par appel × 3 000 | (1 500 × 2 + 500 × 6) / 1M × 3 000 = **~18 € / mois** |
+| Si pic à 5 000 appels | ~30 € / mois |
+| Si on bascule `ai-fast` vers Pixtral 12B (50 % du volume) | **~10 € / mois** |
+
+À comparer avec : ~50 €/mois historique Anthropic Claude (cf. `plan-deploiement.md`).
+
+### 21.4 Benchmark LLM
+
+- **Harnais** : `packages/ingestion/src/benchmark/cli.ts` (commande `pnpm --filter @heureka-v1/ingestion benchmark:llm`).
+- **Fixtures** : 15-30 pièces anonymisées dans `packages/ingestion/benchmark-fixtures/pieces/` + `manifest.json` (vérités-terrain).
+- **Métriques** : F1, precision, recall, latence par modèle.
+- **Critères de décision** :
+  - F1 Pixtral Large ≥ 0,80 ⇒ confirmation Mistral, documenter au DPD.
+  - F1 Pixtral 12B ≥ 0,80 sur `ai-fast` ⇒ repointer pour économie ×10.
+  - F1 < 0,75 ⇒ itération prompts, ou bascule Mistral Medium 3 vision (à venir).
+
+### 21.5 Versioning des prompts
+
+- **Pas de versioning explicite** des prompts aujourd'hui (in-code, `pieceAnalyzer.ts` / `pieceExtractor.ts`).
+- Traçabilité partielle via `ai_usage_events.model` (modèle utilisé au moment de l'appel).
+- **Recommandation** : extraire les prompts dans un fichier dédié versionné (ex: `prompts/v1/piece_analyze.md`) et stocker le `prompt_version` dans `ai_usage_events` pour reproduire un résultat *a posteriori*.
+
+---
+
+## 22. Workflow métier — Machine d'états
+
+### 22.1 Cycle de vie d'un dossier
+
+```
+       (citoyen crée)
+            │
+            ▼
+       ┌─────────┐ (purge auto > 180 j) ┌─────────┐
+       │BROUILLON│ ────────────────────▶│ SUPPRIMÉ│
+       └────┬────┘                      └─────────┘
+            │ soumettre
+            ▼
+       ┌─────────┐
+       │  SOUMIS │
+       └────┬────┘
+            │ assignation instructeur
+            ▼
+       ┌────────────────┐
+       │PRE_INSTRUCTION │
+       └────┬───────┬───┘
+            │       │ pièces manquantes → courrier
+            │       ▼
+            │  ┌──────────┐  citoyen complète
+            │  │INCOMPLET │ ─────────────────▶ SOUMIS
+            │  └──────────┘
+            ▼
+       ┌──────────────┐
+       │EN_INSTRUCTION│
+       └────┬─────────┘
+            │ décision rédigée
+            ▼
+       ┌──────────────────┐
+       │DECISION_EN_COURS │
+       └────┬─────────────┘
+            │ signature
+            ▼
+       ┌────────────┬─────────┬──────────────────────┐
+       │  ACCEPTÉ   │ REFUSÉ  │ ACCORD_PRESCRIPTION  │
+       └────────────┴─────────┴──────────────────────┘
+```
+
+### 22.2 Délais légaux (Code de l'urbanisme)
+
+| Type | Délai d'instruction de base | Majorations possibles |
+|---|---|---|
+| Déclaration préalable (DP) | 1 mois | +1 mois (ABF, secteur protégé) |
+| Permis de construire maison individuelle (PCMI) | 2 mois | +1 mois (ABF), +2 mois (ZPPAUP/SUP) |
+| Permis de construire (PC) | 3 mois | +1 à +6 mois selon consultations |
+| Permis d'aménager (PA) | 3 mois | +1 à +5 mois |
+| Certificat d'urbanisme (CU) — opérationnel | 2 mois | — |
+| Permis de démolir (PD) | 2 mois | +1 mois (ABF) |
+
+Calcul dans `apps/api/src/services/instructionDelays.ts`. Le statut **tacite** (`dossiers.is_tacite = true`) est positionné par le moteur si la date limite est dépassée sans décision.
+
+### 22.3 Workflow de signature
+
+```
+brouillon ──▶ soumis_signature ──▶ signé ──▶ notifié ──▶ archivé
+                     │
+                     └─▶ revision_necessaire (motif_refus_signature)
+```
+
+- `signataires` : table des maires/adjoints habilités par commune.
+- `decision_events` : journal d'audit (créé, soumis, signé, refusé, notifié).
+- Signature électronique : à formaliser (actuellement signature manuscrite scannée stockée sur le profil signataire).
+
+---
+
+## 23. Internationalisation
+
+- **Français uniquement** actuellement (plateforme strictement francilienne).
+- Pas d'`i18n` framework (`react-intl`, `i18next`) côté front.
+- Tous les strings en dur dans les composants.
+- **Recommandation** : à laisser en l'état tant que le périmètre reste France métropolitaine.
+
+---
+
+## 24. Licences
+
+| Élément | Licence |
+|---|---|
+| Code HEUREKA V1 | À formaliser (propriétaire HEUREKIA SAS) |
+| Dépendances npm | Audit `pnpm licenses list` recommandé en CI |
+| `legal_mentions` (cache Légifrance) | **Licence Ouverte Etalab v2.0** — re-publication autorisée |
+| Données IGN GPU | Licence Ouverte Etalab v2.0 |
+| Données BAN | Licence Ouverte Etalab v2.0 |
+
+---
+
+## 25. Setup environnement de développement
+
+```bash
+# Pré-requis : Node 22, pnpm 9+, PostgreSQL 15+ avec pgvector, poppler-utils
+
+# 1. Clone & install
+git clone <repo>
+cd HEUREKA-V1
+pnpm install
+
+# 2. Copier .env
+cp apps/api/.env.example apps/api/.env
+# Éditer : DATABASE_URL, JWT_SECRET, MISTRAL_API_KEY, PISTE_*
+
+# 3. Base de données
+createdb heureka_dev
+psql heureka_dev -c "CREATE EXTENSION vector;"
+pnpm --filter @heureka-v1/db migrate
+
+# 4. Seeds (articles légaux, commune de test)
+pnpm --filter @heureka-v1/api seed:legal-articles
+
+# 5. Démarrer
+pnpm --filter @heureka-v1/api dev   # API sur :3001
+pnpm --filter @heureka-v1/web dev   # Web sur :5173
+```
+
+### 25.1 Variables minimales pour dev local
+
+| Variable | Valeur dev |
+|---|---|
+| `DATABASE_URL` | `postgres://postgres:postgres@localhost:5432/heureka_dev` |
+| `JWT_SECRET` | n'importe quelle chaîne aléatoire |
+| `MISTRAL_API_KEY` | clé Mistral perso (compte free tier) |
+| `STORAGE_PROVIDER` | `local` |
+| `NODE_ENV` | `development` |
+
+---
+
+## 26. Points d'attention & dette technique
 
 1. **SSO Entra ID** (DSI Tours) : à arbitrer (agents seulement ou citoyens inclus ?). Impact architectural majeur si étendu aux citoyens.
 2. **Stockage S3** : migration en cours (Phase 1). Cohabitation `local`/`s3` à gérer pendant la transition (champ `dossier_pieces_jointes.url`).
