@@ -1,0 +1,14 @@
+# /etc/cron.d/heureka-backup
+# Installé par install-cron.sh — ne pas éditer à la main.
+SHELL=/bin/bash
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MAILTO=root
+BACKUP_DIR=__BACKUP_DIR__
+
+# m   h dom mon dow user  command
+00   2 *   *   *   root  $BACKUP_DIR/backup-postgres.sh   >> /var/backups/heureka/logs/cron.log 2>&1
+15   2 *   *   *   root  $BACKUP_DIR/backup-uploads.sh    >> /var/backups/heureka/logs/cron.log 2>&1
+30   2 *   *   0   root  $BACKUP_DIR/backup-config.sh     >> /var/backups/heureka/logs/cron.log 2>&1
+45   2 *   *   *   root  $BACKUP_DIR/rotate.sh            >> /var/backups/heureka/logs/cron.log 2>&1
+00   3 *   *   *   root  $BACKUP_DIR/sync-offsite.sh      >> /var/backups/heureka/logs/cron.log 2>&1
+00   4 *   *   0   root  $BACKUP_DIR/verify.sh            >> /var/backups/heureka/logs/cron.log 2>&1

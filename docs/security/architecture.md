@@ -14,7 +14,7 @@
 
 | Mécanisme | Description |
 |-----------|-------------|
-| **HTTPS** | Forcé par Railway en production |
+| **HTTPS** | Forcé par nginx (`return 301`) sur le VPS OVH ; certificat Let's Encrypt renouvelé automatiquement par certbot |
 | **HSTS** | Activé via Helmet (max-age=15552000) |
 | **Compression gzip** | Activé via `compression` middleware |
 

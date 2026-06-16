@@ -14,8 +14,7 @@
 - [ ] **Clarifier SSO Azure AD avec DSI** — l'obligation s'applique-t-elle aux agents uniquement ?
   - Si oui : intégrer `@azure/msal-node` pour les rôles mairie/instructeur/admin
   - Si tous : refonte architecturale majeure
-- [ ] **Vérifier région Railway** — documenter que le datacenter est en UE (Irlande eu-west-1)
-  - Si France obligatoire : migration OVH/Scaleway
+- [x] **Hébergement souverain** — Migration Railway → **VPS OVH 🇫🇷** effectuée (juin 2026). Postgres + nginx + app sur le VPS, sauvegardes vers OVH Object Storage.
 
 ## 🟠 À faire — Important
 
@@ -25,7 +24,7 @@
 - [ ] **RGPD** — Contact DPD dans le pied de page
 - [x] **Purge audit_logs** — cronjob quotidien 02:00, supprime les entrées > 12 mois
 - [ ] **pnpm audit** — intégrer dans CI (GitHub Actions)
-- [ ] **Rétention sauvegardes** — documenter la politique Railway dans le Dossier d'Exploitation
+- [x] **Sauvegardes 3-2-1** — Scripts `infra/backup/` (pg_dump + tar uploads + mirror OVH Object Storage), rétention 7j/4sem/6mois, vérification hebdo automatique. Politique documentée dans [`dossier-exploitation.md`](./dossier-exploitation.md).
 
 ## 🟡 À faire — Moyen
 
@@ -38,7 +37,7 @@
 
 - [ ] **DTC** — Dossier Technique de Conception (architecture, flux, config serveur)
 - [ ] **PAS** — Plan d'Assurance Sécurité (remplir le modèle de l'Annexe Technique n°3)
-- [ ] **Dossier d'Exploitation** — Procédures backup, restore, mise à jour, gestion incidents
+- [x] **Dossier d'Exploitation** — [`docs/security/dossier-exploitation.md`](./dossier-exploitation.md) (backup, restore, mise à jour, gestion incidents)
 - [ ] **Cahier de Recette** — Scénarios de test, critères d'acceptance
 
 ## Notes
