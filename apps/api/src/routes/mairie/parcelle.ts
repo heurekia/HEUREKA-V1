@@ -5,6 +5,12 @@ import { eq, desc, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireAuth } from "../../middlewares/auth.js";
 import { analyseParcel } from "../../services/parcelAnalysis.js";
+import {
+  computeInstructionDelay,
+  applyMonthsToDate,
+  type DeadlineMetadata,
+  type DeadlineServitude,
+} from "../../services/instructionDelays.js";
 import { refreshPluZones, pluEtagFor, filterZonesByInsee, PLU_CACHE_TTL_MS, type PluZonesGeoJson } from "../../services/pluZones.js";
 
 export const parcelleRouter = Router();
@@ -84,7 +90,7 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
     // Always fetch the dossier — we need commune info for the INSEE lookup even when
     // an address override is provided via ?q=, to constrain BAN to the right commune.
     const [dossier] = await db
-      .select({ parcelle: dossiers.parcelle, adresse: dossiers.adresse, commune: dossiers.commune })
+      .select()
       .from(dossiers)
       .where(eq(dossiers.id, req.params.id as string))
       .limit(1);
@@ -149,6 +155,59 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
     const coords = !isNaN(latParam) && !isNaN(lngParam) ? { lat: latParam, lng: lngParam } : undefined;
 
     const analysis = await analyseParcel(query, { citycode, zoneOverride, coords });
+
+    // Persiste les servitudes dans le metadata du dossier et recalcule
+    // date_limite_instruction : une SUP AC1/AC2/AC3/AC4 (ABF, site classé,
+    // réserve, parc national) ajoute +1 mois au délai légal (R.423-24 b/c/d).
+    // Sans persistance, le calcul d'échéance au dépôt ne voit pas ces
+    // extensions et sous-estime la deadline.
+    try {
+      const servitudes: DeadlineServitude[] = (analysis.servitudes ?? []).map((s) => ({
+        categorie: s.categorie,
+        libelle: s.libelle,
+      }));
+      const prevMeta = (dossier.metadata as Record<string, unknown> | null) ?? {};
+      const prevServitudes = Array.isArray((prevMeta as { servitudes?: unknown }).servitudes)
+        ? ((prevMeta as { servitudes: DeadlineServitude[] }).servitudes)
+        : [];
+      const servitudesChanged =
+        prevServitudes.length !== servitudes.length ||
+        prevServitudes.some((p, i) => p.categorie !== servitudes[i]?.categorie);
+
+      if (servitudesChanged || !dossier.date_limite_instruction) {
+        const newMeta: Record<string, unknown> = {
+          ...prevMeta,
+          servitudes,
+          parcel_analysis: analysis,
+        };
+
+        const baseDate = dossier.date_completude ?? dossier.date_depot;
+        const patch: Record<string, unknown> = { metadata: newMeta, updated_at: new Date() };
+
+        if (baseDate) {
+          const calc = computeInstructionDelay(
+            dossier.type,
+            newMeta as DeadlineMetadata,
+            servitudes,
+          );
+          patch.date_limite_instruction = applyMonthsToDate(new Date(baseDate), calc.total_mois);
+          newMeta.delai = {
+            total_mois: calc.total_mois,
+            breakdown: calc.breakdown,
+            base_date: new Date(baseDate).toISOString(),
+            base_date_source: dossier.date_completude ? "completude" : "depot",
+            computed_at: new Date().toISOString(),
+          };
+        }
+
+        await db.update(dossiers).set(patch).where(eq(dossiers.id, dossier.id));
+      }
+    } catch (persistErr) {
+      // Best-effort : un échec de persistance ne doit pas masquer le résultat
+      // d'analyse à l'opérateur. La prochaine ouverture re-tentera.
+      console.error("[mairie/parcelle] persist servitudes:", persistErr);
+    }
+
     res.json(analysis);
   } catch (err) {
     console.error(err);
