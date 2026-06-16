@@ -1,6 +1,8 @@
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "../../lib/utils";
+import { api } from "../../lib/api";
 
 const subNav = [
   { to: "/mairie/statistiques", label: "Vue d'ensemble" },
@@ -9,17 +11,23 @@ const subNav = [
   { to: "/mairie/statistiques/services", label: "Services consultés" },
 ];
 
-const types = [
-  { type: "permis_de_construire", count: 86, pct: 100 },
-  { type: "declaration_prealable", count: 52, pct: 60 },
-  { type: "permis_amenager", count: 18, pct: 21 },
-  { type: "permis_demolir", count: 7, pct: 8 },
-  { type: "certificat_urbanisme", count: 34, pct: 40 },
-];
+type TypeRow = { type: string; count: number };
 
 export function StatistiquesTypes() {
   const loc = useLocation();
-  const maxCount = Math.max(...types.map(t => t.count));
+  const [types, setTypes] = useState<TypeRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api
+      .get<{ par_type: TypeRow[] }>("/mairie/stats")
+      .then((d) => setTypes(d.par_type ?? []))
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
+  const maxCount = types.length ? Math.max(...types.map((t) => t.count)) : 1;
+
   return (
     <div>
       <div className="mb-6">
@@ -36,19 +44,25 @@ export function StatistiquesTypes() {
           <Card className="border-gray-200/80">
             <CardHeader><h3 className="font-semibold text-[#000020]">Répartition par type</h3></CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                {types.map((t) => (
-                  <div key={t.type} className="space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm font-medium text-[#000020] capitalize">{t.type.replace(/_/g, " ")}</span>
-                      <span className="text-sm font-semibold text-gray-700">{t.count}</span>
+              {loading ? (
+                <div className="text-center py-8 text-gray-400">Chargement...</div>
+              ) : types.length === 0 ? (
+                <div className="text-center py-8 text-gray-400">Aucun dossier</div>
+              ) : (
+                <div className="space-y-4">
+                  {types.map((t) => (
+                    <div key={t.type} className="space-y-1.5">
+                      <div className="flex items-center justify-between">
+                        <span className="text-sm font-medium text-[#000020] capitalize">{t.type.replace(/_/g, " ")}</span>
+                        <span className="text-sm font-semibold text-gray-700">{t.count}</span>
+                      </div>
+                      <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
+                        <div className="bg-heureka-500 h-2.5 rounded-full" style={{ width: `${(t.count / maxCount) * 100}%` }} />
+                      </div>
                     </div>
-                    <div className="w-full bg-gray-100 rounded-full h-2.5 overflow-hidden">
-                      <div className="bg-heureka-500 h-2.5 rounded-full" style={{ width: `${(t.count / maxCount) * 100}%` }} />
-                    </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>

@@ -64,7 +64,9 @@ export function Statistiques() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-gray-500">Délai moyen</p>
-                    <p className="text-3xl font-bold text-heureka-600 mt-1">--</p>
+                    <p className="text-3xl font-bold text-heureka-600 mt-1">
+                      {stats?.delai_moyen != null ? `${stats.delai_moyen}j` : "--"}
+                    </p>
                   </div>
                   <Clock className="w-8 h-8 text-amber-300" />
                 </div>
@@ -75,7 +77,9 @@ export function Statistiques() {
                 <div className="flex items-center justify-between">
                   <div>
                     <p className="text-sm text-gray-500">Conformité moyenne</p>
-                    <p className="text-3xl font-bold text-green-600 mt-1">--</p>
+                    <p className="text-3xl font-bold text-green-600 mt-1">
+                      {stats?.conformite_moyenne != null ? `${stats.conformite_moyenne}%` : "--"}
+                    </p>
                   </div>
                   <TrendingUp className="w-8 h-8 text-green-300" />
                 </div>
