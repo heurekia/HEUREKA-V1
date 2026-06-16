@@ -42,12 +42,15 @@ jobs:
             pm2 save
 
             for i in {1..20}; do
-  if curl -fsS https://app.heurekia.com/api/health; then
-    exit 0
-  fi
-  sleep 3
-done
+              if curl -fsS https://app.heurekia.com/api/health; then
+                echo "Healthcheck OK"
+                exit 0
+              fi
 
-echo "Healthcheck failed after 60 seconds"
-pm2 logs heurekia-api --lines 50 --nostream
-exit 1
+              echo "Waiting for application startup..."
+              sleep 3
+            done
+
+            echo "Healthcheck failed after 60 seconds"
+            pm2 logs heurekia-api --lines 50 --nostream
+            exit 1
