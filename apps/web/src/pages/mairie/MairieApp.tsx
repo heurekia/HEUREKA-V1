@@ -7630,22 +7630,24 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               </div>
               {/* Avancement */}
-              <div style={CARD}>
+              <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
                 <SecTitle>Avancement du dossier</SecTitle>
-                {[
-                  { label: "Dépôt", done: true },
-                  { label: "Complétude", done: true },
-                  { label: "Instruction", done: ["en_instruction","decision_en_cours","accepte","refuse","accord_prescription"].includes(dossier.status) },
-                  { label: "Consultations", done: false },
-                  { label: "Décision", done: ["accepte","refuse","accord_prescription"].includes(dossier.status) },
-                ].map((step, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: i < 4 ? 14 : 0 }}>
-                    <div style={{ width: 28, height: 28, borderRadius: "50%", background: step.done ? "linear-gradient(135deg,#4F46E5,#6366F1)" : "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: step.done ? "0 2px 6px rgba(79,70,229,0.3)" : "none" }}>
-                      {step.done ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <span style={{ fontSize: 11, color: "#CBD5E1", fontWeight: 700 }}>{i + 1}</span>}
+                <div style={{ flex: 1, display: "flex", flexDirection: "column" as const, justifyContent: "center" }}>
+                  {[
+                    { label: "Dépôt", done: true },
+                    { label: "Complétude", done: true },
+                    { label: "Instruction", done: ["en_instruction","decision_en_cours","accepte","refuse","accord_prescription"].includes(dossier.status) },
+                    { label: "Consultations", done: false },
+                    { label: "Décision", done: ["accepte","refuse","accord_prescription"].includes(dossier.status) },
+                  ].map((step, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: i < 4 ? 14 : 0 }}>
+                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: step.done ? "linear-gradient(135deg,#4F46E5,#6366F1)" : "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: step.done ? "0 2px 6px rgba(79,70,229,0.3)" : "none" }}>
+                        {step.done ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <span style={{ fontSize: 11, color: "#CBD5E1", fontWeight: 700 }}>{i + 1}</span>}
+                      </div>
+                      <span style={{ fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
                     </div>
-                    <span style={{ fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
-                  </div>
-                ))}
+                  ))}
+                </div>
               </div>
               {/* Mini map */}
               <div style={{ ...CARD, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" as const }}>
