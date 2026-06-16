@@ -9186,6 +9186,11 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({})) as { error?: string };
+        // 413 = Payload Too Large (proxy ou multer 60 Mo). Inutile d'afficher
+        // un code HTTP brut au déposant : on traduit en message actionnable.
+        if (res.status === 413) {
+          throw new Error("Fichier trop volumineux pour l'extraction (limite ~60 Mo).");
+        }
         throw new Error(body.error ?? `Erreur ${res.status}`);
       }
       const data = await res.json() as OcrExtraction;

@@ -129,15 +129,25 @@ interface MistralChatMessage {
 }
 
 function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
+  return convertPdfPagesToPng(pdf, 1)[0]!;
+}
+
+// Rend les `maxPages` premières pages d'un PDF en PNGs via pdftoppm. Utilisé
+// par les callers qui veulent envoyer plusieurs pages à Pixtral (qui n'accepte
+// pas le PDF natif) — typiquement l'OCR CERFA, où des champs utiles peuvent
+// se trouver en page 2+ (description du projet, déclarant·e morale…).
+export function convertPdfPagesToPng(pdf: Buffer, maxPages = 4): Buffer[] {
   const dir = mkdtempSync(path.join(tmpdir(), "heureka-ai-"));
   try {
     const pdfPath = path.join(dir, "in.pdf");
     const outPrefix = path.join(dir, "out");
     writeFileSync(pdfPath, pdf);
     try {
-      execFileSync("pdftoppm", ["-png", "-r", "200", "-f", "1", "-l", "1", pdfPath, outPrefix], {
-        stdio: ["ignore", "ignore", "pipe"],
-      });
+      execFileSync(
+        "pdftoppm",
+        ["-png", "-r", "200", "-f", "1", "-l", String(Math.max(1, maxPages)), pdfPath, outPrefix],
+        { stdio: ["ignore", "ignore", "pipe"] },
+      );
     } catch (err) {
       // ENOENT = binaire absent → message actionnable plutôt que stack
       // trace cryptique. Le déploiement Railway installe poppler-utils via
@@ -152,7 +162,21 @@ function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
       }
       throw err;
     }
-    return readFileSync(`${outPrefix}-1.png`);
+    // pdftoppm numérote out-1.png, out-2.png… On lit séquentiellement tant
+    // que le fichier existe (le PDF peut avoir moins de pages que maxPages).
+    const out: Buffer[] = [];
+    for (let i = 1; i <= maxPages; i++) {
+      const p = `${outPrefix}-${i}.png`;
+      try {
+        out.push(readFileSync(p));
+      } catch {
+        break;
+      }
+    }
+    if (out.length === 0) {
+      throw new Error("pdftoppm n'a produit aucune page");
+    }
+    return out;
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
