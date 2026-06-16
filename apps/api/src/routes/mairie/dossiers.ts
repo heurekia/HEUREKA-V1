@@ -10,7 +10,7 @@ import multer from "multer";
 import crypto from "crypto";
 import path from "path";
 import { z } from "zod";
-import { callAi } from "../../services/aiUsage.js";
+import { callAi, convertPdfPagesToPng } from "../../services/aiUsage.js";
 import { extractFirstJson, sha256Buffer } from "../../services/pieceAnalyzer.js";
 import { attachCerfaToDossier } from "../../services/cerfaAttachment.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
@@ -36,10 +36,12 @@ import {
 } from "@heureka-v1/shared";
 
 // Multer en mémoire pour l'extraction OCR d'un CERFA — le buffer est envoyé
-// directement à Claude vision, on n'écrit jamais ce fichier sur disque.
+// directement à Pixtral (Mistral) via callAi, on n'écrit jamais ce fichier
+// sur disque. Limite 60 Mo : alignée avec la limite "60 Mo" annoncée côté UI
+// (MairieApp), couvre les CERFA scannés en haute résolution (≈ 20–40 Mo).
 const ocrUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 25 * 1024 * 1024 },
+  limits: { fileSize: 60 * 1024 * 1024 },
   fileFilter: (_req, file, cb) => {
     const allowed = /pdf|jpe?g|png/i;
     if (allowed.test(path.extname(file.originalname)) || allowed.test(file.mimetype)) {
@@ -739,13 +741,35 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
     }
 
     const buf = req.file.buffer;
-    const base64 = buf.toString("base64");
     const fileHash = sha256Buffer(buf);
     const communeIdForTrace = await resolveCommuneIdFromUser(req);
 
-    const documentBlock = sniffed === "pdf"
-      ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: base64 } }
-      : { type: "image" as const, source: { type: "base64" as const, media_type: (sniffed === "jpeg" ? "image/jpeg" : "image/png") as "image/jpeg" | "image/png", data: base64 } };
+    // Pixtral n'accepte pas le PDF natif → on rend les 4 premières pages en
+    // PNG et on les passe en blocs image. La page 1 contient l'essentiel
+    // (identité, adresse, nature) ; les pages suivantes apportent souvent la
+    // description du projet et les co-pétitionnaires.
+    const imageBlocks: Array<{
+      type: "image";
+      source: { type: "base64"; media_type: "image/png" | "image/jpeg"; data: string };
+    }> = [];
+    if (sniffed === "pdf") {
+      const pages = convertPdfPagesToPng(buf, 4);
+      for (const png of pages) {
+        imageBlocks.push({
+          type: "image",
+          source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
+        });
+      }
+    } else {
+      imageBlocks.push({
+        type: "image",
+        source: {
+          type: "base64",
+          media_type: sniffed === "jpeg" ? "image/jpeg" : "image/png",
+          data: buf.toString("base64"),
+        },
+      });
+    }
 
     const msg = await callAi(
       { purpose: "ocr_cerfa_admin", dossierId: null, communeId: communeIdForTrace, userId: req.user?.id ?? null, fileHash },
@@ -756,7 +780,7 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
         messages: [{
           role: "user",
           content: [
-            documentBlock,
+            ...imageBlocks,
             { type: "text", text: "Extrais les métadonnées administratives de ce CERFA." },
           ],
         }],
