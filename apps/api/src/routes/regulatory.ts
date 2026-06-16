@@ -1,8 +1,8 @@
 import { Router, type Response } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
-import { dossiers, regulatory_analyses, regulatory_findings } from "@heureka-v1/db";
-import { eq, and, desc } from "drizzle-orm";
+import { dossiers, regulatory_analyses, regulatory_findings, dossier_facts } from "@heureka-v1/db";
+import { eq, and, desc, isNull } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
 import { runAnalysis } from "@heureka-v1/regulatory-engine";
@@ -102,7 +102,27 @@ regulatoryRouter.get(
         .where(eq(regulatory_findings.analysis_id, analysis.id))
         .orderBy(desc(regulatory_findings.severity), desc(regulatory_findings.created_at));
 
-      res.json({ analysis, findings });
+      // Faits actifs : on les renvoie avec l'analyse pour que l'UI puisse
+      // afficher la provenance de chaque verdict sans aller-retour. La
+      // colonne pdf_content / OCR brut N'EST PAS exposée ici — seulement
+      // les métadonnées de fait (valeur, source, source_ref, confidence).
+      const facts = await db
+        .select({
+          id: dossier_facts.id,
+          key: dossier_facts.key,
+          value: dossier_facts.value,
+          unit: dossier_facts.unit,
+          source: dossier_facts.source,
+          source_ref: dossier_facts.source_ref,
+          confidence: dossier_facts.confidence,
+          validated_by: dossier_facts.validated_by,
+          validated_at: dossier_facts.validated_at,
+          created_at: dossier_facts.created_at,
+        })
+        .from(dossier_facts)
+        .where(and(eq(dossier_facts.dossier_id, dossierId), isNull(dossier_facts.superseded_at)));
+
+      res.json({ analysis, findings, facts });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({ error: "dossierId invalide" });

@@ -74,9 +74,86 @@ interface RegulatoryAnalysis {
   created_at: string;
 }
 
+interface DossierFact {
+  id: string;
+  key: string;
+  value: unknown;
+  unit: string | null;
+  source: "citizen_declaration" | "document_extraction" | "instructor_entry" | "external_data";
+  source_ref: {
+    piece_id?: string;
+    piece_type?: string;
+    nom_piece?: string | null;
+    field?: string;
+  } | null;
+  confidence: number | null;
+  validated_by: string | null;
+  validated_at: string | null;
+  created_at: string;
+}
+
 interface LatestResponse {
   analysis: RegulatoryAnalysis;
   findings: RegulatoryFinding[];
+  facts: DossierFact[];
+}
+
+const FACT_SOURCE_BADGE: Record<DossierFact["source"], { label: string; variant: "default" | "success" | "warning" | "danger" | "info" | "purple" }> = {
+  citizen_declaration: { label: "Déclaration citoyen", variant: "warning" },
+  document_extraction: { label: "Pièce", variant: "purple" },
+  instructor_entry: { label: "Saisie instructeur", variant: "success" },
+  external_data: { label: "Donnée externe", variant: "info" },
+};
+
+const FACT_LABELS: Record<string, string> = {
+  hauteur: "Hauteur",
+  emprise: "Emprise au sol",
+  surface_terrain: "Surface du terrain",
+  surface_plancher_apres: "Surface plancher (projet)",
+  recul_voie: "Recul à la voie",
+  reculs_limites: "Reculs aux limites",
+  stationnement: "Places de stationnement",
+  destination_apres: "Destination après projet",
+  nb_logements: "Nombre de logements",
+  zonage_plu: "Zonage PLU",
+  secteur_abf: "Périmètre ABF",
+  risques: "Risques",
+  servitudes: "Servitudes",
+  nature_travaux: "Nature des travaux",
+  parcelle_ref: "Référence parcellaire",
+  extension: "Extension",
+  surelevation: "Surélévation",
+  demolition: "Démolition",
+  annexe: "Annexe",
+  changement_destination: "Changement de destination",
+  ravalement: "Modification d'aspect",
+};
+
+function factLabel(key: string): string {
+  return FACT_LABELS[key] ?? key;
+}
+
+function formatFactValue(fact: DossierFact): string {
+  const v = fact.value;
+  if (v == null) return "—";
+  if (typeof v === "boolean") return v ? "Oui" : "Non";
+  if (Array.isArray(v)) return v.map((x) => String(x)).join(", ");
+  if (typeof v === "number") {
+    const rounded = Math.round(v * 100) / 100;
+    const isInt = Number.isInteger(rounded);
+    const num = isInt ? String(rounded) : rounded.toFixed(2).replace(".", ",");
+    return fact.unit ? `${num} ${fact.unit === "m2" ? "m²" : fact.unit}` : num;
+  }
+  if (typeof v === "string") return v;
+  return JSON.stringify(v);
+}
+
+function factSourceCaption(fact: DossierFact): string | null {
+  const ref = fact.source_ref;
+  if (!ref) return null;
+  if (ref.nom_piece) return ref.nom_piece;
+  if (ref.field) return ref.field;
+  return null;
 }
 
 // ─── Présentation ─────────────────────────────────────────────────────
@@ -193,6 +270,13 @@ export function RegulatoryChecklist({ dossierId }: Props) {
     return map;
   }, [data]);
 
+  // Lookup pour résoudre `facts_used: string[]` → DossierFact[].
+  const factsByKey = useMemo(() => {
+    const map = new Map<string, DossierFact>();
+    for (const f of data?.facts ?? []) map.set(f.key, f);
+    return map;
+  }, [data]);
+
   if (loading) {
     return (
       <Card>
@@ -257,7 +341,12 @@ export function RegulatoryChecklist({ dossierId }: Props) {
                 </CardHeader>
                 <CardContent className="space-y-3">
                   {findings.map((f) => (
-                    <FindingRow key={f.id} finding={f} onDecision={onDecision} />
+                    <FindingRow
+                      key={f.id}
+                      finding={f}
+                      factsByKey={factsByKey}
+                      onDecision={onDecision}
+                    />
                   ))}
                 </CardContent>
               </Card>
@@ -313,13 +402,22 @@ function Summary({ summary }: { summary: NonNullable<RegulatoryAnalysis["summary
 
 function FindingRow({
   finding,
+  factsByKey,
   onDecision,
 }: {
   finding: RegulatoryFinding;
+  factsByKey: Map<string, DossierFact>;
   onDecision: (f: RegulatoryFinding, d: InstructorDecision, comment?: string) => void;
 }) {
+  const [factsOpen, setFactsOpen] = useState(false);
   const statusBadge = STATUS_BADGE[finding.status];
   const decided = finding.instructor_decision;
+  const resolvedFactsUsed = finding.facts_used
+    .map((k) => factsByKey.get(k))
+    .filter((f): f is DossierFact => f != null);
+  // Faits référencés par la règle mais absents de la base — on les affiche
+  // tels quels pour ne pas masquer un trou de mapping.
+  const unresolvedFactsUsed = finding.facts_used.filter((k) => !factsByKey.has(k));
   return (
     <div className="rounded-lg border border-gray-200 p-4">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -345,7 +443,8 @@ function FindingRow({
       ) : null}
       {finding.missing_facts.length > 0 ? (
         <p className="mt-2 text-sm text-gray-600">
-          Éléments manquants : {finding.missing_facts.join(", ")}
+          Éléments manquants :{" "}
+          {finding.missing_facts.map((k) => factLabel(k)).join(", ")}
         </p>
       ) : null}
       {finding.legal_basis.length > 0 ? (
@@ -364,7 +463,55 @@ function FindingRow({
           ) : null}
         </div>
       ) : null}
+      {finding.facts_used.length > 0 ? (
+        <div className="mt-3">
+          <button
+            type="button"
+            className="text-xs font-medium text-heureka-600 hover:underline"
+            onClick={() => setFactsOpen((v) => !v)}
+          >
+            {factsOpen ? "Masquer les faits utilisés" : `Faits utilisés (${finding.facts_used.length})`}
+          </button>
+          {factsOpen ? (
+            <div className="mt-2 space-y-2">
+              {resolvedFactsUsed.map((f) => (
+                <FactRow key={f.id} fact={f} />
+              ))}
+              {unresolvedFactsUsed.map((k) => (
+                <div key={k} className="rounded-md border border-yellow-200 bg-yellow-50 p-2 text-xs text-yellow-900">
+                  Fait <code className="font-mono">{k}</code> référencé par le verdict mais introuvable dans le dossier (synchronisation manquante ?).
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
       <DecisionBar finding={finding} onDecision={onDecision} />
+    </div>
+  );
+}
+
+function FactRow({ fact }: { fact: DossierFact }) {
+  const badge = FACT_SOURCE_BADGE[fact.source];
+  const caption = factSourceCaption(fact);
+  return (
+    <div className="rounded-md bg-gray-50 p-2 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div className="flex items-center gap-2">
+          <span className="font-medium text-gray-900">{factLabel(fact.key)}</span>
+          <span className="text-gray-700">= {formatFactValue(fact)}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {fact.validated_at ? (
+            <Badge variant="success" className="text-[10px]">Validé instructeur</Badge>
+          ) : null}
+          <Badge variant={badge.variant} className="text-[10px]">{badge.label}</Badge>
+          {fact.confidence != null ? (
+            <span className="text-gray-500">{Math.round(fact.confidence * 100)} %</span>
+          ) : null}
+        </div>
+      </div>
+      {caption ? <div className="mt-1 text-gray-500">Source : {caption}</div> : null}
     </div>
   );
 }
