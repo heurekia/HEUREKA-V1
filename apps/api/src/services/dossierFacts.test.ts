@@ -1,6 +1,22 @@
 import { describe, it, expect } from "vitest";
-import { extractFactsFromPiece, resolveDossierFacts, type PieceForFacts } from "./dossierFacts.ts";
+import {
+  extractFactsFromDossier,
+  extractFactsFromPiece,
+  resolveDossierFacts,
+  type DossierForFacts,
+  type PieceForFacts,
+} from "./dossierFacts.ts";
 import type { PieceExtraction } from "./pieceExtractor.ts";
+
+function dossier(overrides: Partial<DossierForFacts> = {}): DossierForFacts {
+  return {
+    id: overrides.id ?? "d-uuid",
+    parcelle: overrides.parcelle ?? null,
+    commune: overrides.commune ?? null,
+    surface_plancher: overrides.surface_plancher ?? null,
+    metadata: overrides.metadata ?? null,
+  };
+}
 
 function piece(id: string, nom: string, ext: Partial<PieceExtraction> & { piece_type: PieceExtraction["piece_type"] }): PieceForFacts {
   return {
@@ -146,7 +162,7 @@ describe("resolveDossierFacts", () => {
     expect(resolved.find((f) => f.key === "hauteur")!.value).toBe(8.4);
   });
 
-  it("keeps facts for keys emitted by only one piece", () => {
+  it("keeps facts for keys emitted by only one piece (smoke test)", () => {
     const candidates = [
       ...extractFactsFromPiece(
         piece("p1", "cerfa.pdf", {
@@ -163,5 +179,116 @@ describe("resolveDossierFacts", () => {
     expect(keys).toContain("destination_apres");
     expect(keys).toContain("nb_logements");
     expect(keys).toContain("recul_voie");
+  });
+});
+
+describe("extractFactsFromDossier", () => {
+  it("emits nothing when metadata is empty", () => {
+    expect(extractFactsFromDossier(dossier({}))).toEqual([]);
+  });
+
+  it("maps natures to nature_travaux + derived boolean tags (citizen_declaration)", () => {
+    const facts = extractFactsFromDossier(
+      dossier({ metadata: { natures: ["agrandissement", "demolition"] } }),
+    );
+    const byKey = new Map(facts.map((f) => [f.key, f]));
+    expect(byKey.get("nature_travaux")?.value).toEqual(["agrandissement", "demolition"]);
+    expect(byKey.get("extension")?.value).toBe(true);
+    expect(byKey.get("demolition")?.value).toBe(true);
+    // 'demolition' nature → 'demolition' tag (1:1) and not 'extension'
+    expect(byKey.get("annexe")).toBeUndefined();
+    for (const f of facts) {
+      expect(f.source).toBe("citizen_declaration");
+    }
+  });
+
+  it("does NOT emit a tag for unknown natures (no silent default)", () => {
+    const facts = extractFactsFromDossier(
+      dossier({ metadata: { natures: ["maison_neuve", "certificat"] } }),
+    );
+    // Only nature_travaux is emitted; no derived boolean tag because
+    // neither nature has a mapping (maison_neuve is the baseline).
+    const keys = facts.map((f) => f.key);
+    expect(keys).toEqual(["nature_travaux"]);
+  });
+
+  it("emits surface_plancher_apres at priority 40 (below CERFA's 50)", () => {
+    const facts = extractFactsFromDossier(dossier({ surface_plancher: "120" }));
+    const sp = facts.find((f) => f.key === "surface_plancher_apres");
+    expect(sp?.value).toBe(120);
+    expect(sp?.priority).toBe(40);
+    expect(sp?.source).toBe("citizen_declaration");
+  });
+
+  it("tolerates French decimals on surface_plancher", () => {
+    const facts = extractFactsFromDossier(dossier({ surface_plancher: "82,5" }));
+    expect(facts.find((f) => f.key === "surface_plancher_apres")?.value).toBe(82.5);
+  });
+
+  it("ignores unparseable surface_plancher", () => {
+    const facts = extractFactsFromDossier(dossier({ surface_plancher: "n.c." }));
+    expect(facts.find((f) => f.key === "surface_plancher_apres")).toBeUndefined();
+  });
+
+  it("emits zonage_plu from metadata.parcel_analysis as external_data with full confidence", () => {
+    const facts = extractFactsFromDossier(
+      dossier({ metadata: { parcel_analysis: { plu_zone: { zone_code: "UA" } } } }),
+    );
+    const zone = facts.find((f) => f.key === "zonage_plu");
+    expect(zone?.value).toEqual(["UA"]);
+    expect(zone?.source).toBe("external_data");
+    expect(zone?.confidence).toBe(1);
+  });
+
+  it("emits flagged risques only when fort/moyen, never silent defaults", () => {
+    const facts = extractFactsFromDossier(
+      dossier({
+        metadata: {
+          parcel_analysis: {
+            risks: { flood_risk: "fort", clay_risk: "faible", landslide_risk: "moyen", seismic_zone: "2" },
+          },
+        },
+      }),
+    );
+    const risques = facts.find((f) => f.key === "risques")!;
+    expect(risques.value).toEqual(["inondation", "mouvement_terrain"]);
+  });
+
+  it("flags secteur_abf when a SUP of AC* category is present", () => {
+    const facts = extractFactsFromDossier(
+      dossier({
+        metadata: {
+          parcel_analysis: {
+            sup_surf: [{ categorie: "AC1", libelle: "Monument historique" }],
+            sup_lin: [],
+          },
+        },
+      }),
+    );
+    expect(facts.find((f) => f.key === "secteur_abf")?.value).toBe(true);
+    expect(facts.find((f) => f.key === "servitudes")?.value).toEqual(["AC1"]);
+  });
+
+  it("does NOT flag secteur_abf for unrelated SUP categories", () => {
+    const facts = extractFactsFromDossier(
+      dossier({
+        metadata: {
+          parcel_analysis: { sup_surf: [{ categorie: "PT2" }], sup_lin: [] },
+        },
+      }),
+    );
+    expect(facts.find((f) => f.key === "secteur_abf")).toBeUndefined();
+  });
+
+  it("survives totally malformed metadata without throwing (defensive)", () => {
+    const facts = extractFactsFromDossier(
+      dossier({
+        metadata: {
+          natures: "not-an-array",
+          parcel_analysis: 42,
+        },
+      } as never),
+    );
+    expect(facts).toEqual([]);
   });
 });
