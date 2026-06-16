@@ -9121,6 +9121,30 @@ type StagedFile = {
   error?: string | null;
 };
 
+// Hoistés hors du composant : redéfinis à chaque render, React voyait un nouveau
+// type → unmount/remount complet du sous-arbre à chaque setState, ce qui faisait
+// "fermer" la modale (clic accidentel sur le backdrop pendant la reconstruction
+// du DOM, perte du focus, flickering).
+function NouveauDossierOverlay({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div style={{ background: "white", borderRadius: 16, width: 580, maxWidth: "92vw", boxShadow: "0 20px 60px rgba(0,0,0,0.22)", maxHeight: "90vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
+        {children}
+      </div>
+    </div>
+  );
+}
+
+function NouveauDossierModalHeader({ title, back, onClose }: { title: string; back?: () => void; onClose: () => void }) {
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "18px 24px", borderBottom: "1px solid #E2E8F0" }}>
+      {back && <button onClick={back} style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18, lineHeight: 1, padding: 0 }}>←</button>}
+      <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", flex: 1 }}>{title}</div>
+      <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 20, color: "#94a3b8", lineHeight: 1 }}>×</button>
+    </div>
+  );
+}
+
 function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commune: string }) {
   const routerNavigate = useNavigate();
   const [mode, setMode] = useState<"choose" | "manual" | "ocr">("choose");
@@ -9351,27 +9375,12 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
     }
   };
 
-  const Overlay = ({ children }: { children: React.ReactNode }) => (
-    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
-      <div style={{ background: "white", borderRadius: 16, width: 580, maxWidth: "92vw", boxShadow: "0 20px 60px rgba(0,0,0,0.22)", maxHeight: "90vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
-        {children}
-      </div>
-    </div>
-  );
-
-  const ModalHeader = ({ title, back }: { title: string; back?: () => void }) => (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "18px 24px", borderBottom: "1px solid #E2E8F0" }}>
-      {back && <button onClick={back} style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18, lineHeight: 1, padding: 0 }}>←</button>}
-      <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", flex: 1 }}>{title}</div>
-      <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 20, color: "#94a3b8", lineHeight: 1 }}>×</button>
-    </div>
-  );
 
   const inputStyle = { width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const, background: "white" };
 
   if (mode === "choose") return (
-    <Overlay>
-      <ModalHeader title="Nouveau dossier" />
+    <NouveauDossierOverlay onClose={onClose}>
+      <NouveauDossierModalHeader title="Nouveau dossier" onClose={onClose} />
       <div style={{ padding: "24px", display: "flex", flexDirection: "column" as const, gap: 12 }}>
         <p style={{ fontSize: 13, color: "#64748b", margin: 0 }}>Choisissez le mode de saisie du dossier.</p>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 4 }}>
@@ -9389,7 +9398,7 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
           </button>
         </div>
       </div>
-    </Overlay>
+    </NouveauDossierOverlay>
   );
 
   const formFields = (
@@ -9507,8 +9516,8 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
   );
 
   if (mode === "ocr") return (
-    <Overlay>
-      <ModalHeader title="Reconnaissance OCR" back={() => { setMode("choose"); setStagedFiles([]); setCerfaDone(false); setOcrError(null); setOcrNumero(null); }} />
+    <NouveauDossierOverlay onClose={onClose}>
+      <NouveauDossierModalHeader title="Reconnaissance OCR" onClose={onClose} back={() => { setMode("choose"); setStagedFiles([]); setCerfaDone(false); setOcrError(null); setOcrNumero(null); }} />
       <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
         {stagedFiles.length === 0 ? (
           <>
@@ -9555,15 +9564,15 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
         )}
       </div>
       {stagedFiles.length > 0 && footer}
-    </Overlay>
+    </NouveauDossierOverlay>
   );
 
   return (
-    <Overlay>
-      <ModalHeader title="Nouveau dossier — Saisie manuelle" back={() => setMode("choose")} />
+    <NouveauDossierOverlay onClose={onClose}>
+      <NouveauDossierModalHeader title="Nouveau dossier — Saisie manuelle" onClose={onClose} back={() => setMode("choose")} />
       <div style={{ padding: "20px 24px" }}>{formFields}</div>
       {footer}
-    </Overlay>
+    </NouveauDossierOverlay>
   );
 }
 

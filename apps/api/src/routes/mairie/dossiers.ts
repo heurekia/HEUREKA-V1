@@ -563,7 +563,17 @@ dossiersRouter.post("/dossiers/:id/take-charge", async (req: AuthRequest, res) =
 // FK dossiers.user_id. Le dossier est créé directement en statut "soumis"
 // (la mairie l'enregistre déjà au comptoir, donc plus de stade brouillon).
 const mairieCreateDossierSchema = z.object({
-  type: z.enum(["permis_de_construire", "declaration_prealable", "permis_amenager", "permis_demolir", "permis_lotir", "certificat_urbanisme"]),
+  type: z.enum([
+    "permis_de_construire",
+    "permis_de_construire_mi",
+    "declaration_prealable",
+    "permis_amenager",
+    "permis_demolir",
+    "permis_lotir",
+    "certificat_urbanisme",
+    "certificat_urbanisme_a",
+    "certificat_urbanisme_b",
+  ]),
   petitionnaire_nom: z.string().trim().min(1, "Pétitionnaire requis"),
   petitionnaire_prenom: z.string().trim().optional(),
   petitionnaire_email: z.string().trim().email().optional().or(z.literal("")),
