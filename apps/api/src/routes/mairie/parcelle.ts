@@ -157,8 +157,8 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
     const analysis = await analyseParcel(query, { citycode, zoneOverride, coords });
 
     // Persiste les servitudes dans le metadata du dossier et recalcule
-    // date_limite_instruction : une SUP AC1/AC2/AC3/AC4 (ABF, site classé,
-    // réserve, parc national) ajoute +1 mois au délai légal (R.423-24 b/c/d).
+    // date_limite_instruction : une SUP AC1/AC2/AC3/AC4 (ABF, SPR, site classé,
+    // réserve) ajoute +1 mois au délai légal (R.423-24 b/c/d).
     // Sans persistance, le calcul d'échéance au dépôt ne voit pas ces
     // extensions et sous-estime la deadline.
     try {
@@ -174,14 +174,31 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
         prevServitudes.length !== servitudes.length ||
         prevServitudes.some((p, i) => p.categorie !== servitudes[i]?.categorie);
 
-      if (servitudesChanged || !dossier.date_limite_instruction) {
+      const baseDate = dossier.date_completude ?? dossier.date_depot;
+      let breakdownStale = false;
+      if (baseDate) {
+        const calcCurrent = computeInstructionDelay(
+          dossier.type,
+          prevMeta as DeadlineMetadata,
+          servitudes,
+        );
+        const prevDelai = (prevMeta as { delai?: { breakdown?: Array<{ label?: string; article?: string }> } }).delai;
+        const prevBreakdown = prevDelai?.breakdown ?? [];
+        breakdownStale =
+          prevBreakdown.length !== calcCurrent.breakdown.length ||
+          prevBreakdown.some((b, i) =>
+            b.label !== calcCurrent.breakdown[i]?.label ||
+            b.article !== calcCurrent.breakdown[i]?.article,
+          );
+      }
+
+      if (servitudesChanged || !dossier.date_limite_instruction || breakdownStale) {
         const newMeta: Record<string, unknown> = {
           ...prevMeta,
           servitudes,
           parcel_analysis: analysis,
         };
 
-        const baseDate = dossier.date_completude ?? dossier.date_depot;
         const patch: Record<string, unknown> = { metadata: newMeta, updated_at: new Date() };
 
         if (baseDate) {
