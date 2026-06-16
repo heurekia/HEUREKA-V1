@@ -1,7 +1,9 @@
+import { useEffect, useState } from "react";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "../../lib/utils";
 import { Badge } from "../../components/ui/badge";
+import { api } from "../../lib/api";
 
 const subNav = [
   { to: "/mairie/statistiques", label: "Vue d'ensemble" },
@@ -10,16 +12,21 @@ const subNav = [
   { to: "/mairie/statistiques/services", label: "Services consultés" },
 ];
 
-const services = [
-  { name: "DDT 37", consults: 48, avg: "4.2j" },
-  { name: "CAUE", consults: 32, avg: "3.8j" },
-  { name: "ABF", consults: 28, avg: "5.1j" },
-  { name: "ARS", consults: 15, avg: "6.3j" },
-  { name: "SDIS", consults: 12, avg: "2.5j" },
-];
+type ServiceRow = { name: string; consults: number; avg_jours: number | null };
 
 export function StatistiquesServices() {
   const loc = useLocation();
+  const [services, setServices] = useState<ServiceRow[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    api
+      .get<ServiceRow[]>("/mairie/stats/services")
+      .then((d) => setServices(d ?? []))
+      .catch(console.error)
+      .finally(() => setLoading(false));
+  }, []);
+
   return (
     <div>
       <div className="mb-6">
@@ -36,17 +43,25 @@ export function StatistiquesServices() {
           <Card className="border-gray-200/80">
             <CardHeader><h3 className="font-semibold text-[#000020]">Services consultés</h3></CardHeader>
             <CardContent>
-              <div className="space-y-4">
-                {services.map((s) => (
-                  <div key={s.name} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
-                    <span className="font-medium text-[#000020]">{s.name}</span>
-                    <div className="flex items-center gap-6">
-                      <span className="text-sm text-gray-500">{s.consults} consultations</span>
-                      <Badge variant="info">{s.avg} délai moyen</Badge>
+              {loading ? (
+                <div className="text-center py-8 text-gray-400">Chargement...</div>
+              ) : services.length === 0 ? (
+                <div className="text-center py-8 text-gray-400">Aucune consultation</div>
+              ) : (
+                <div className="space-y-4">
+                  {services.map((s) => (
+                    <div key={s.name} className="flex items-center justify-between py-2 border-b border-gray-100 last:border-0">
+                      <span className="font-medium text-[#000020]">{s.name}</span>
+                      <div className="flex items-center gap-6">
+                        <span className="text-sm text-gray-500">{s.consults} consultation{s.consults > 1 ? "s" : ""}</span>
+                        {s.avg_jours != null && (
+                          <Badge variant="info">{s.avg_jours}j délai moyen</Badge>
+                        )}
+                      </div>
                     </div>
-                  </div>
-                ))}
-              </div>
+                  ))}
+                </div>
+              )}
             </CardContent>
           </Card>
         </div>
