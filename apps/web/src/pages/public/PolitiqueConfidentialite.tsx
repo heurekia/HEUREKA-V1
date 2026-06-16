@@ -20,7 +20,7 @@ export function PolitiqueConfidentialite() {
         </p>
         <p className="text-sm text-gray-600 mt-2">
           Contact technique HEUREKIA / DPD plateforme :{" "}
-          <a href="mailto:dpd@heurekia-urba.fr" className="text-heureka-500 hover:underline">dpd@heurekia-urba.fr</a>
+          <a href="mailto:dpd@heurekia.com" className="text-heureka-500 hover:underline">dpd@heurekia.com</a>
         </p>
       </section>
 
@@ -164,7 +164,7 @@ export function PolitiqueConfidentialite() {
         </ul>
         <p className="text-sm text-gray-600 mt-3">
           Pour exercer ces droits, contactez en priorité le DPD de la commune destinataire de votre dossier,
-          ou à défaut <a href="mailto:dpd@heurekia-urba.fr" className="text-heureka-500 hover:underline">dpd@heurekia-urba.fr</a>.
+          ou à défaut <a href="mailto:dpd@heurekia.com" className="text-heureka-500 hover:underline">dpd@heurekia.com</a>.
           En cas de réclamation non résolue, vous pouvez saisir la <strong>CNIL</strong> (
           <a href="https://www.cnil.fr" target="_blank" rel="noopener noreferrer" className="text-heureka-500 hover:underline">www.cnil.fr</a>).
         </p>
