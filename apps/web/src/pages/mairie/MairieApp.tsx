@@ -235,7 +235,7 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, sig
                     <div style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>Aucun résultat</div>
                   )}
                   {filtered.map(c => (
-                    <button key={c} onClick={() => { setCommune(c); setShowDrop(false); setSearch(""); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" as const, fontSize: 12, color: c === commune ? "#818cf8" : "#94a3b8", fontWeight: c === commune ? 600 : 400 }}>
+                    <button key={c} onClick={() => { const changed = c !== commune; setCommune(c); setShowDrop(false); setSearch(""); if (changed) setActive("Tableau de bord"); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" as const, fontSize: 12, color: c === commune ? "#818cf8" : "#94a3b8", fontWeight: c === commune ? 600 : 400 }}>
                       <BuildingIcon size={12} />
                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c}</span>
                       {c === commune && <span style={{ color: "#818cf8", flexShrink: 0 }}>✓</span>}
@@ -7646,16 +7646,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     <span style={{ fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
                   </div>
                 ))}
-                <div style={{ marginTop: 20, padding: "14px 16px", background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", borderRadius: 12, border: "1px solid #C7D2FE" }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", marginBottom: 6, letterSpacing: "0.04em" }}>SCORE DE CONFORMITÉ IA</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ flex: 1, height: 7, background: "#C7D2FE", borderRadius: 4, overflow: "hidden" }}>
-                      <div style={{ width: "78%", height: "100%", background: "linear-gradient(90deg,#4F46E5,#818CF8)", borderRadius: 4 }} />
-                    </div>
-                    <span style={{ fontSize: 16, fontWeight: 800, color: "#4F46E5" }}>78%</span>
-                  </div>
-                  <div style={{ fontSize: 11, color: "#6366F1", marginTop: 5 }}>6 règles conformes · 1 vigilance · 1 non vérifiable</div>
-                </div>
               </div>
               {/* Mini map */}
               <div style={{ ...CARD, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" as const }}>
