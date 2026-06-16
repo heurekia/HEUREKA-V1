@@ -751,17 +751,18 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
     const fileHash = sha256Buffer(buf);
     const communeIdForTrace = await resolveCommuneIdFromUser(req);
 
-    // Pixtral n'accepte pas le PDF natif → on rend TOUTES les pages en PNG
+    // Pixtral n'accepte pas le PDF natif → on rend les pages utiles en PNG
     // et on les passe en blocs image. C'est nécessaire car les CERFA ont
     // l'adresse du terrain, la parcelle, la surface de plancher et la
     // description du projet sur les pages 2-3 (parfois 4 sur les PA/PC).
-    // Garde-fou à 12 pages pour éviter de poster un PDF pathologique.
+    // Plafond à 8 pages : limite dure côté Mistral (code 3051 "Total number
+    // of images exceeds the maximum allowed of 8").
     const imageBlocks: Array<{
       type: "image";
       source: { type: "base64"; media_type: "image/png" | "image/jpeg"; data: string };
     }> = [];
     if (sniffed === "pdf") {
-      const pages = convertPdfPagesToPng(buf, { maxPages: 12 });
+      const pages = convertPdfPagesToPng(buf, { maxPages: 8 });
       for (const png of pages) {
         imageBlocks.push({
           type: "image",
