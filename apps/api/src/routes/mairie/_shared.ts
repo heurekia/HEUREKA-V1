@@ -55,11 +55,14 @@ export async function resolveCommuneIdFromUser(req: AuthRequest): Promise<string
 // Le tableau ci-dessous reste pour le retour "rules_defaut" de l'admin.
 export const DELAI_INSTRUCTION_MOIS_DEFAUT: Record<string, number> = {
   permis_de_construire: 3,
+  permis_de_construire_mi: 2,
   declaration_prealable: 1,
   permis_amenager: 3,
   permis_demolir: 2,
   permis_lotir: 3,
   certificat_urbanisme: 2,
+  certificat_urbanisme_a: 1,
+  certificat_urbanisme_b: 2,
 };
 
 // Façade legacy (call sites internes encore présents). Préférer computeInstructionDelay

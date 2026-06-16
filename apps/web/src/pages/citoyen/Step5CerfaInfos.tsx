@@ -253,7 +253,8 @@ export function Step5CerfaInfos({
   onPrev,
   onNext,
 }: Props) {
-  const isPCMI = classification?.type === "permis_de_construire" && natures.includes("maison_neuve");
+  const isPCMI = classification?.type === "permis_de_construire_mi"
+    || (classification?.type === "permis_de_construire" && natures.includes("maison_neuve"));
   const isExtension = natures.includes("agrandissement");
   const isDemolition = natures.includes("demolition");
   const isChangementDest = natures.includes("changement_destination");

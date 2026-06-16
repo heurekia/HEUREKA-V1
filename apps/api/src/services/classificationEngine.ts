@@ -4,10 +4,12 @@
 
 export type AuthType =
   | "declaration_prealable"
-  | "permis_de_construire"
+  | "permis_de_construire"          // PC (autre que maison individuelle)
+  | "permis_de_construire_mi"       // PCMI (maison individuelle)
   | "permis_amenager"
   | "permis_demolir"
-  | "certificat_urbanisme"
+  | "certificat_urbanisme_a"        // CUa (informatif)
+  | "certificat_urbanisme_b"        // CUb (opérationnel)
   | "aucune_autorisation";
 
 export type AuthSubtype =
@@ -28,6 +30,10 @@ export interface ClassificationInput {
   amenagementType?: string;    // "piscine" | "cloture" | "terrasse" | "autre"
   certificatType?: "a" | "b"; // CUa informatif vs CUb opérationnel
   hasVoirieCommune?: boolean;  // division terrain : voirie/réseaux communs → PA
+  // Pour un agrandissement / petite construction au-delà des seuils DP :
+  // précise si le bâtiment existant est une maison individuelle, ce qui
+  // bascule le PC vers un PCMI (CERFA 13406 au lieu de 13409).
+  existingIsMaisonIndividuelle?: boolean;
 }
 
 export interface ClassificationResult {
@@ -81,6 +87,7 @@ export function classifyPermit(input: ClassificationInput): ClassificationResult
     amenagementType,
     certificatType,
     hasVoirieCommune = false,
+    existingIsMaisonIndividuelle = false,
   } = input;
 
   const inZoneU         = isZoneU(zone);
@@ -110,7 +117,7 @@ export function classifyPermit(input: ClassificationInput): ClassificationResult
   if (natures.includes("certificat") && natures.length === 1) {
     const isCUb = certificatType === "b" || certificatType === undefined; // défaut CUb si non précisé
     return build(
-      "certificat_urbanisme",
+      isCUb ? "certificat_urbanisme_b" : "certificat_urbanisme_a",
       isCUb ? "cu_b" : "cu_a",
       isCUb ? "Certificat d'Urbanisme opérationnel (CUb)" : "Certificat d'Urbanisme informatif (CUa)",
       isCUb ? "CUb" : "CUa",
@@ -180,7 +187,7 @@ export function classifyPermit(input: ClassificationInput): ClassificationResult
     if (hasDemolition) articles.push("R421-28 CU"); // PC vaut permis démolir
     if (architecteReq) articles.push("R431-2 CU");
     return build(
-      "permis_de_construire",
+      "permis_de_construire_mi",
       "pcmi",
       architecteReq
         ? "Permis de Construire (architecte obligatoire)"
@@ -312,17 +319,19 @@ export function classifyPermit(input: ClassificationInput): ClassificationResult
     }
 
     // Au-delà des seuils → PC
-    // Extension d'une maison individuelle → PCMI
+    // Extension d'une maison individuelle → PCMI (le citoyen a confirmé que le
+    //   bâtiment existant est une maison individuelle).
     // Autre bâtiment → PC standard
+    const isPCMI = isMaisonNeuve || existingIsMaisonIndividuelle;
     const articles = ["R421-1 CU", "R421-14 CU"];
     if (hasDemolition) articles.push("R421-28 CU");
     if (architecteReq) articles.push("R431-2 CU");
     return build(
-      "permis_de_construire",
-      isMaisonNeuve ? "pcmi" : "pc",
+      isPCMI ? "permis_de_construire_mi" : "permis_de_construire",
+      isPCMI ? "pcmi" : "pc",
       architecteReq ? "Permis de Construire (architecte obligatoire)" : "Permis de Construire",
-      isMaisonNeuve ? "PCMI" : "PC",
-      isMaisonNeuve ? CERFA.pcmi : CERFA.pc,
+      isPCMI ? "PCMI" : "PC",
+      isPCMI ? CERFA.pcmi : CERFA.pc,
       articles,
       delay("2 à 3 mois"),
       architecteReq,

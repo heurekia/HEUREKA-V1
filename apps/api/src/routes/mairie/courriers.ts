@@ -252,10 +252,13 @@ courriersRouter.get("/legal-mentions", async (req: AuthRequest, res) => {
     // Map full dossier type name to short code
     const TYPE_SHORT: Record<string, string> = {
       permis_de_construire: "PC",
+      permis_de_construire_mi: "PCMI",
       declaration_prealable: "DP",
       permis_amenager: "PA",
       permis_demolir: "PD",
       certificat_urbanisme: "CU",
+      certificat_urbanisme_a: "CUa",
+      certificat_urbanisme_b: "CUb",
     };
     const dossierShort = TYPE_SHORT[dossierType] ?? dossierType.toUpperCase();
 

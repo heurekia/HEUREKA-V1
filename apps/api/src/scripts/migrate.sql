@@ -8,9 +8,12 @@ EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 DO $$ BEGIN
-  CREATE TYPE dossier_type AS ENUM ('permis_de_construire', 'declaration_prealable', 'permis_amenager', 'permis_demolir', 'permis_lotir', 'certificat_urbanisme');
+  CREATE TYPE dossier_type AS ENUM ('permis_de_construire', 'permis_de_construire_mi', 'declaration_prealable', 'permis_amenager', 'permis_demolir', 'permis_lotir', 'certificat_urbanisme', 'certificat_urbanisme_a', 'certificat_urbanisme_b');
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'permis_de_construire_mi';
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'certificat_urbanisme_a';
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'certificat_urbanisme_b';
 
 DO $$ BEGIN
   CREATE TYPE dossier_status AS ENUM ('brouillon', 'soumis', 'pre_instruction', 'incomplet', 'en_instruction', 'decision_en_cours', 'accepte', 'refuse', 'accord_prescription');

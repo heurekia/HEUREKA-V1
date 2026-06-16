@@ -412,6 +412,10 @@ export function NouvelleDemandeWizard() {
   const [amenagementType, setAmenagementType] = useState("");
   const [certificatType, setCertificatType] = useState<"a" | "b">("b");
   const [hasVoirieCommune, setHasVoirieCommune] = useState<boolean | null>(null);
+  // Pour un agrandissement / petite construction au-delà des seuils DP, on
+  // demande au citoyen si le bâtiment existant est une maison individuelle :
+  // si oui, on bascule du PC standard vers le PCMI (CERFA 13406).
+  const [existingIsMaisonIndividuelle, setExistingIsMaisonIndividuelle] = useState<boolean | null>(null);
 
   // Step 4 – Classification
   const [classifying, setClassifying] = useState(false);
@@ -693,6 +697,7 @@ export function NouvelleDemandeWizard() {
     setClassifying(true);
     setStep(4);
     try {
+      const askedMaisonExistante = natures.some((n) => n === "agrandissement" || n === "petite_construction");
       const result = await api.post<Classification>("/dossiers/classify", {
         natures,
         surface: natures.some((n) => n !== "certificat") && surface > 0 ? surface : undefined,
@@ -702,6 +707,7 @@ export function NouvelleDemandeWizard() {
         description: description || undefined,
         certificatType: natures.includes("certificat") ? certificatType : undefined,
         hasVoirieCommune: natures.includes("division_terrain") ? (hasVoirieCommune ?? false) : undefined,
+        existingIsMaisonIndividuelle: askedMaisonExistante ? (existingIsMaisonIndividuelle ?? false) : undefined,
       });
       setClassification(result);
     } catch {
@@ -738,7 +744,7 @@ export function NouvelleDemandeWizard() {
     } finally {
       setClassifying(false);
     }
-  }, [natures, surface, parcel, empriseExistante, amenagementType, description, certificatType, hasVoirieCommune]);
+  }, [natures, surface, parcel, empriseExistante, amenagementType, description, certificatType, hasVoirieCommune, existingIsMaisonIndividuelle]);
 
   // ── Refetch des pièces du dossier (CERFA prérempli inclus) ─────────────────
   // Appelé après création / PATCH pour récupérer le CERFA généré automatiquement
@@ -1632,6 +1638,40 @@ export function NouvelleDemandeWizard() {
                           }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: certificatType === val ? "#4F46E5" : "#0F172A", marginBottom: 4 }}>{label}</div>
                           <div style={{ fontSize: 11, color: certificatType === val ? "#6366F1" : "#94a3b8", lineHeight: 1.4 }}>{desc}</div>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+
+                {/* ── Sous-question PCMI : extension d'une maison individuelle ──
+                    Si le bâtiment existant est une maison individuelle, on bascule
+                    le PC vers un PCMI (CERFA 13406 au lieu de 13409) dès que les
+                    seuils DP sont dépassés. Question pertinente pour agrandissement
+                    et petite construction (annexe). */}
+                {(natures.includes("agrandissement") || natures.includes("petite_construction")) && (
+                  <div style={{ marginBottom: 24 }}>
+                    <label style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", display: "block", marginBottom: 10 }}>
+                      Le bâtiment existant est-il une maison individuelle ?
+                    </label>
+                    <p style={{ fontSize: 12, color: "#64748b", marginBottom: 10, marginTop: -4 }}>
+                      Maison individuelle = habitation indépendante (≤ 2 logements), hors immeuble collectif, hors bâtiment professionnel.
+                    </p>
+                    <div style={{ display: "flex", gap: 10 }}>
+                      {([
+                        [true, "🏠 Oui — Maison individuelle", "→ Procédure PCMI le cas échéant"],
+                        [false, "🏢 Non — Autre bâtiment", "→ Procédure PC standard le cas échéant"],
+                      ] as [boolean, string, string][]).map(([val, label, sub]) => (
+                        <button key={String(val)} onClick={() => setExistingIsMaisonIndividuelle(val)}
+                          style={{
+                            flex: 1, padding: "14px 12px",
+                            border: `2px solid ${existingIsMaisonIndividuelle === val ? (val ? "#4F46E5" : "#64748b") : "#E2E8F0"}`,
+                            borderRadius: 12,
+                            background: existingIsMaisonIndividuelle === val ? (val ? "#EEF2FF" : "#F1F5F9") : "white",
+                            textAlign: "left", cursor: "pointer", transition: "all 0.15s",
+                          }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: existingIsMaisonIndividuelle === val ? (val ? "#4F46E5" : "#374151") : "#0F172A", marginBottom: 4 }}>{label}</div>
+                          <div style={{ fontSize: 11, color: "#94a3b8" }}>{sub}</div>
                         </button>
                       ))}
                     </div>

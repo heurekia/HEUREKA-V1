@@ -65,11 +65,14 @@ interface PiecesACompleterResponse {
 
 const TYPE_LABELS: Record<string, string> = {
   permis_de_construire: "Permis de construire",
+  permis_de_construire_mi: "Permis de construire (Maison individuelle)",
   declaration_prealable: "Déclaration Préalable",
   permis_amenager: "Permis d'aménager",
   permis_demolir: "Permis de démolir",
   permis_lotir: "Permis de lotir",
   certificat_urbanisme: "Certificat d'urbanisme",
+  certificat_urbanisme_a: "Certificat d'urbanisme (informatif)",
+  certificat_urbanisme_b: "Certificat d'urbanisme (opérationnel)",
 };
 
 const STATUS_PIPELINE = [

@@ -295,9 +295,12 @@ export function getPiecesForType(
   let pieces: Piece[];
   switch (type) {
     case "declaration_prealable": pieces = PIECES_DP; break;
-    case "permis_de_construire": pieces = PIECES_PC; break;
+    case "permis_de_construire":
+    case "permis_de_construire_mi": pieces = PIECES_PC; break;
     case "permis_demolir": pieces = PIECES_DEMOLIR; break;
-    case "certificat_urbanisme": pieces = PIECES_CU; break;
+    case "certificat_urbanisme":
+    case "certificat_urbanisme_a":
+    case "certificat_urbanisme_b": pieces = PIECES_CU; break;
     default: pieces = PIECES_DP;
   }
 

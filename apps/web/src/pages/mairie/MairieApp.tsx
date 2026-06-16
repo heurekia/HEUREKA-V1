@@ -510,12 +510,15 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const TYPE_LABEL: Record<string, string> = {
-  permis_de_construire: "Permis de construire",
+  permis_de_construire: "Permis de construire (PC)",
+  permis_de_construire_mi: "Permis de construire — Maison individuelle (PCMI)",
   declaration_prealable: "Déclaration préalable",
   permis_amenager: "Permis d'aménager",
   permis_demolir: "Permis de démolir",
   permis_lotir: "Permis de lotir",
   certificat_urbanisme: "Certificat d'urbanisme",
+  certificat_urbanisme_a: "Certificat d'urbanisme informatif (CUa)",
+  certificat_urbanisme_b: "Certificat d'urbanisme opérationnel (CUb)",
 };
 
 function fmtDate(d: string | Date | null | undefined): string {
@@ -2859,8 +2862,10 @@ function CalendrierScreen({ commune }: { commune: string }) {
     accepte: "Accepté", refuse: "Refusé", accord_prescription: "Accord", brouillon: "Brouillon",
   };
   const TYPE_SHORT: Record<string, string> = {
-    permis_de_construire: "PC", declaration_prealable: "DP", permis_amenager: "PA",
-    permis_demolir: "PD", permis_lotir: "PL", certificat_urbanisme: "CU",
+    permis_de_construire: "PC", permis_de_construire_mi: "PCMI",
+    declaration_prealable: "DP", permis_amenager: "PA",
+    permis_demolir: "PD", permis_lotir: "PL",
+    certificat_urbanisme: "CU", certificat_urbanisme_a: "CUa", certificat_urbanisme_b: "CUb",
   };
 
   type DossierRow = {
@@ -6102,23 +6107,29 @@ type SignataireRow = {
   user: { id: string; prenom: string; nom: string; email: string } | null;
 };
 
+const PC_DECISION_OPTIONS = [
+  { key: "accord", label: "Accord", sub: "Autorisation accordée" },
+  { key: "accord_prescription", label: "Accord avec prescriptions", sub: "Sous conditions" },
+  { key: "refus", label: "Refus", sub: "Opposition au projet" },
+  { key: "sursis_a_statuer", label: "Sursis à statuer", sub: "Décision différée" },
+];
+const CU_DECISION_OPTIONS = [
+  { key: "cu_positif", label: "CU positif", sub: "Faisabilité confirmée" },
+  { key: "cu_negatif", label: "CU négatif", sub: "Faisabilité impossible" },
+];
+
 const DECISION_OPTIONS: Record<string, Array<{ key: string; label: string; sub: string }>> = {
-  permis_de_construire: [
-    { key: "accord", label: "Accord", sub: "Autorisation accordée" },
-    { key: "accord_prescription", label: "Accord avec prescriptions", sub: "Sous conditions" },
-    { key: "refus", label: "Refus", sub: "Opposition au projet" },
-    { key: "sursis_a_statuer", label: "Sursis à statuer", sub: "Décision différée" },
-  ],
+  permis_de_construire: PC_DECISION_OPTIONS,
+  permis_de_construire_mi: PC_DECISION_OPTIONS,
   declaration_prealable: [
     { key: "non_opposition", label: "Non-opposition", sub: "Travaux autorisés" },
     { key: "non_opposition_prescription", label: "Non-opposition avec prescriptions", sub: "Sous réserves" },
     { key: "opposition", label: "Opposition", sub: "Travaux refusés" },
     { key: "pieces_complementaires", label: "Demande de pièces", sub: "Pièces manquantes" },
   ],
-  certificat_urbanisme: [
-    { key: "cu_positif", label: "CU positif", sub: "Faisabilité confirmée" },
-    { key: "cu_negatif", label: "CU négatif", sub: "Faisabilité impossible" },
-  ],
+  certificat_urbanisme: CU_DECISION_OPTIONS,
+  certificat_urbanisme_a: CU_DECISION_OPTIONS,
+  certificat_urbanisme_b: CU_DECISION_OPTIONS,
   permis_amenager: [
     { key: "accord", label: "Accord", sub: "Autorisation accordée" },
     { key: "accord_prescription", label: "Accord avec prescriptions", sub: "Sous conditions" },
@@ -8975,7 +8986,16 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 }
 
 
-type NouveauDossierType = "permis_de_construire" | "declaration_prealable" | "permis_amenager" | "permis_demolir" | "permis_lotir" | "certificat_urbanisme";
+type NouveauDossierType =
+  | "permis_de_construire"
+  | "permis_de_construire_mi"
+  | "declaration_prealable"
+  | "permis_amenager"
+  | "permis_demolir"
+  | "permis_lotir"
+  | "certificat_urbanisme"
+  | "certificat_urbanisme_a"
+  | "certificat_urbanisme_b";
 
 type NouveauDossierForm = {
   type: NouveauDossierType;
@@ -8993,11 +9013,13 @@ type NouveauDossierForm = {
 };
 
 const DOSSIER_TYPE_OPTIONS: { value: NouveauDossierType; label: string }[] = [
-  { value: "permis_de_construire", label: "Permis de construire" },
-  { value: "declaration_prealable", label: "Déclaration préalable" },
-  { value: "permis_amenager", label: "Permis d'aménager" },
-  { value: "permis_demolir", label: "Permis de démolir" },
-  { value: "certificat_urbanisme", label: "Certificat d'urbanisme" },
+  { value: "permis_de_construire_mi", label: "Permis de construire — Maison individuelle (PCMI)" },
+  { value: "permis_de_construire", label: "Permis de construire (PC)" },
+  { value: "declaration_prealable", label: "Déclaration préalable (DP)" },
+  { value: "permis_amenager", label: "Permis d'aménager (PA)" },
+  { value: "permis_demolir", label: "Permis de démolir (PD)" },
+  { value: "certificat_urbanisme_a", label: "Certificat d'urbanisme informatif (CUa)" },
+  { value: "certificat_urbanisme_b", label: "Certificat d'urbanisme opérationnel (CUb)" },
 ];
 
 type OcrExtraction = {
