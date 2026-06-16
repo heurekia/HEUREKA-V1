@@ -1,7 +1,7 @@
 import { Router, type Response } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
-import { dossiers, regulatory_analyses, regulatory_findings, dossier_facts } from "@heureka-v1/db";
+import { dossiers, regulatory_analyses, regulatory_findings, dossier_facts, zone_regulatory_rules, zones, communes } from "@heureka-v1/db";
 import { eq, and, desc, isNull } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
@@ -231,6 +231,61 @@ regulatoryRouter.get(
       }
       console.error("[regulatory] history failed:", err);
       res.status(500).json({ error: "Lecture de l'historique impossible" });
+    }
+  },
+);
+
+// ── GET /api/regulatory/rules/:ruleId ──────────────────────────────
+// Renvoie le detail d'une regle PLU validee (article complet + zone +
+// commune). Pas de filtrage par scope commune sur cette route : une
+// regle est publique au sens "n'importe quel instructeur authentifie
+// peut lire le PLU" — ce sont les documents qui contiennent ces regles
+// qui sont publiquement accessibles par ailleurs. Le filtrage par scope
+// se fait sur les dossiers, pas sur les regles elles-memes.
+regulatoryRouter.get(
+  "/rules/:ruleId",
+  requireRole(...INSTRUCTOR_ROLES),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      const ruleId = z.string().uuid().parse(req.params.ruleId);
+      const [row] = await db
+        .select({
+          rule_id: zone_regulatory_rules.id,
+          article_number: zone_regulatory_rules.article_number,
+          article_title: zone_regulatory_rules.article_title,
+          topic: zone_regulatory_rules.topic,
+          sub_theme: zone_regulatory_rules.sub_theme,
+          rule_text: zone_regulatory_rules.rule_text,
+          summary: zone_regulatory_rules.summary,
+          conditions: zone_regulatory_rules.conditions,
+          exceptions: zone_regulatory_rules.exceptions,
+          value_min: zone_regulatory_rules.value_min,
+          value_max: zone_regulatory_rules.value_max,
+          value_exact: zone_regulatory_rules.value_exact,
+          unit: zone_regulatory_rules.unit,
+          applies_if: zone_regulatory_rules.applies_if,
+          citizen_title: zone_regulatory_rules.citizen_title,
+          citizen_summary: zone_regulatory_rules.citizen_summary,
+          instructor_note: zone_regulatory_rules.instructor_note,
+          validation_status: zone_regulatory_rules.validation_status,
+          zone_code: zones.zone_code,
+          zone_label: zones.zone_label,
+          commune_name: communes.name,
+          commune_insee: communes.insee_code,
+        })
+        .from(zone_regulatory_rules)
+        .innerJoin(zones, eq(zones.id, zone_regulatory_rules.zone_id))
+        .innerJoin(communes, eq(communes.id, zones.commune_id))
+        .where(eq(zone_regulatory_rules.id, ruleId))
+        .limit(1);
+      if (!row) return res.status(404).json({ error: "Règle introuvable" });
+      res.json({ rule: row });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ error: "ruleId invalide" });
+      }
+      console.error("[regulatory] get rule failed:", err);
+      res.status(500).json({ error: "Lecture de la règle impossible" });
     }
   },
 );

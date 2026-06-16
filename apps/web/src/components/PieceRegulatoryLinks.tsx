@@ -3,13 +3,14 @@ import { api } from "../lib/api";
 
 // Lit l'analyse régulatoire courante du dossier, croise les facts actifs
 // avec leur source (source_ref.piece_id), et affiche pour UNE pièce les
-// règles PLU qu'elle aide a évaluer + le verdict du moteur sur chacune.
+// règles PLU qu'elle aide à évaluer + le verdict du moteur sur chacune.
 //
-// Pourquoi ce composant existe : l'instructeur qui examine un PDF veut
-// savoir "quelles règles cette pièce alimente, et le projet y répond-il
-// ?". Sans cette vue, il devrait basculer entre l'onglet Documents et
-// l'onglet Conformité IA en se rappelant mentalement quel plan
-// référence quelle règle.
+// Design : un ligne dense par règle (lisible d'un coup d'œil), click
+// pour déplier le détail de la règle (article complet, exceptions,
+// résumé citoyen), et un bouton "Reporter dans l'annotation" qui injecte
+// un bullet structuré dans le textarea d'annotation de la pièce — la
+// primitive d'annotation existe déjà côté DossierDetailScreen, on
+// branche dessus via un callback.
 
 type FindingStatus = "conforme" | "non_conforme" | "incertain" | "non_applicable";
 type FindingSeverity = "bloquant" | "prescription" | "alerte" | "info";
@@ -22,7 +23,7 @@ interface RegulatoryFinding {
   title: string;
   explanation: string | null;
   facts_used: string[];
-  missing_facts: string[];
+  rule_id: string | null;
 }
 
 interface DossierFact {
@@ -36,11 +37,35 @@ interface LatestResponse {
   facts: DossierFact[];
 }
 
-const STATUS_COLORS: Record<FindingStatus, { bg: string; border: string; color: string; label: string; icon: string }> = {
-  conforme:       { bg: "#F0FDF4", border: "#BBF7D0", color: "#15803D", label: "Conforme",       icon: "✓" },
-  non_conforme:   { bg: "#FEE2E2", border: "#FECACA", color: "#DC2626", label: "Non conforme",   icon: "✗" },
-  incertain:      { bg: "#FEF3C7", border: "#FDE68A", color: "#92400E", label: "Incertain",      icon: "?" },
-  non_applicable: { bg: "#F1F5F9", border: "#E2E8F0", color: "#64748B", label: "Non applicable", icon: "—" },
+interface RuleDetail {
+  rule_id: string;
+  article_number: number | null;
+  article_title: string | null;
+  topic: string;
+  sub_theme: string | null;
+  rule_text: string;
+  summary: string | null;
+  conditions: string | null;
+  exceptions: string | null;
+  value_min: number | null;
+  value_max: number | null;
+  value_exact: number | null;
+  unit: string | null;
+  applies_if: string[];
+  citizen_title: string | null;
+  citizen_summary: string | null;
+  instructor_note: string | null;
+  zone_code: string;
+  zone_label: string | null;
+  commune_name: string;
+  commune_insee: string;
+}
+
+const STATUS_TOKEN: Record<FindingStatus, { dot: string; color: string; label: string }> = {
+  conforme:       { dot: "#16A34A", color: "#15803D", label: "Conforme" },
+  non_conforme:   { dot: "#DC2626", color: "#DC2626", label: "Non conforme" },
+  incertain:      { dot: "#D97706", color: "#92400E", label: "Incertain" },
+  non_applicable: { dot: "#94A3B8", color: "#64748B", label: "Non applicable" },
 };
 
 const TOPIC_LABELS: Record<string, string> = {
@@ -60,9 +85,11 @@ function topicLabel(topic: string): string {
 interface Props {
   dossierId: string;
   pieceId: string;
+  /** Injecte un bloc texte à la fin de l'annotation libre de la pièce. */
+  onAppendToNote?: (text: string) => void;
 }
 
-export function PieceRegulatoryLinks({ dossierId, pieceId }: Props) {
+export function PieceRegulatoryLinks({ dossierId, pieceId, onAppendToNote }: Props) {
   const [data, setData] = useState<LatestResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -86,8 +113,6 @@ export function PieceRegulatoryLinks({ dossierId, pieceId }: Props) {
     void load();
   }, [load]);
 
-  // Pour la pièce courante, trouver les findings qui consomment au moins
-  // un fait extrait de cette pièce.
   const linkedFindings = useMemo(() => {
     if (!data) return [];
     const keysFromThisPiece = new Set(
@@ -98,71 +123,154 @@ export function PieceRegulatoryLinks({ dossierId, pieceId }: Props) {
   }, [data, pieceId]);
 
   if (loading) {
-    return (
-      <div style={{ marginTop: 10, fontSize: 11, color: "#94a3b8", fontStyle: "italic" }}>
-        Chargement des règles concernées…
-      </div>
-    );
+    return <Hint>Chargement des règles concernées…</Hint>;
   }
-
   if (error) {
-    return (
-      <div style={{ marginTop: 10, fontSize: 11, color: "#DC2626" }}>
-        Impossible de charger les règles : {error}
-      </div>
-    );
+    return <Hint tone="danger">Règles indisponibles : {error}</Hint>;
   }
-
   if (!data) {
-    return (
-      <div style={{ marginTop: 10, fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
-        Pas d'analyse réglementaire — lancez-la depuis l'onglet "Conformité IA" pour voir les règles
-        que cette pièce alimente.
-      </div>
-    );
+    return <Hint>Pas d'analyse — lancez-la dans l'onglet Conformité IA pour relier cette pièce aux règles.</Hint>;
   }
-
   if (linkedFindings.length === 0) {
-    return (
-      <div style={{ marginTop: 10, fontSize: 11, color: "#94a3b8", lineHeight: 1.5 }}>
-        Aucune règle PLU n'est encore connectée à cette pièce. Re-lancez l'extraction puis l'analyse
-        si la pièce porte des cotes (hauteur, emprise, recul…).
-      </div>
-    );
+    return <Hint>Aucune règle PLU n'est encore reliée à cette pièce.</Hint>;
   }
 
   return (
     <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px solid #E2E8F0" }}>
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ fontSize: 12, fontWeight: 700, color: "#374151" }}>
-          Règles PLU alimentées par cette pièce
-        </div>
-        <span style={{ fontSize: 11, color: "#94a3b8" }}>{linkedFindings.length} règle{linkedFindings.length > 1 ? "s" : ""}</span>
+      <div style={{ fontSize: 12, fontWeight: 700, color: "#374151", marginBottom: 8 }}>
+        Règles PLU alimentées par cette pièce
+        <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: "#94a3b8" }}>
+          ({linkedFindings.length})
+        </span>
       </div>
-      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+      <div style={{ display: "flex", flexDirection: "column" }}>
         {linkedFindings.map((f) => (
-          <FindingMiniRow key={f.id} finding={f} />
+          <FindingLine key={f.id} finding={f} onAppendToNote={onAppendToNote} />
         ))}
       </div>
     </div>
   );
 }
 
-function FindingMiniRow({ finding }: { finding: RegulatoryFinding }) {
-  const s = STATUS_COLORS[finding.status];
+function FindingLine({
+  finding,
+  onAppendToNote,
+}: {
+  finding: RegulatoryFinding;
+  onAppendToNote?: (text: string) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const [rule, setRule] = useState<RuleDetail | null>(null);
+  const [ruleLoading, setRuleLoading] = useState(false);
+  const [ruleError, setRuleError] = useState<string | null>(null);
+  const token = STATUS_TOKEN[finding.status];
+
+  const toggle = useCallback(() => {
+    setExpanded((v) => !v);
+    if (!rule && !ruleLoading && finding.rule_id) {
+      setRuleLoading(true);
+      api.get<{ rule: RuleDetail }>(`/regulatory/rules/${finding.rule_id}`)
+        .then((r) => setRule(r.rule))
+        .catch((e) => setRuleError((e as Error).message))
+        .finally(() => setRuleLoading(false));
+    }
+  }, [rule, ruleLoading, finding.rule_id]);
+
+  const reportToNote = useCallback((e: React.MouseEvent) => {
+    e.stopPropagation();
+    if (!onAppendToNote) return;
+    const article = rule?.article_number != null ? `Art. ${rule.article_number} zone ${rule.zone_code}` : topicLabel(finding.topic);
+    const line = `• ${article} — ${token.label.toLowerCase()} : ${finding.title}`;
+    onAppendToNote(line);
+  }, [onAppendToNote, rule, finding, token]);
+
   return (
-    <div style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 10px", background: s.bg, border: `1px solid ${s.border}`, borderRadius: 7 }}>
-      <span style={{ fontSize: 13, fontWeight: 700, color: s.color, lineHeight: 1.2, minWidth: 14 }}>{s.icon}</span>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 2 }}>
-          <span style={{ fontSize: 11, fontWeight: 700, color: s.color, textTransform: "uppercase", letterSpacing: "0.04em" }}>{s.label}</span>
-          <span style={{ fontSize: 10.5, color: "#64748b" }}>· {topicLabel(finding.topic)}</span>
+    <div style={{ borderTop: "1px solid #F1F5F9" }}>
+      <button
+        type="button"
+        onClick={toggle}
+        style={{
+          width: "100%",
+          background: "transparent",
+          border: "none",
+          padding: "8px 0",
+          textAlign: "left" as const,
+          cursor: "pointer",
+          display: "flex",
+          alignItems: "center",
+          gap: 10,
+        }}
+      >
+        <span aria-hidden style={{ width: 8, height: 8, borderRadius: 4, background: token.dot, flexShrink: 0 }} />
+        <span style={{ fontSize: 11, fontWeight: 700, color: token.color, textTransform: "uppercase", letterSpacing: "0.04em", width: 95, flexShrink: 0 }}>
+          {token.label}
+        </span>
+        <span style={{ fontSize: 11.5, color: "#64748b", width: 110, flexShrink: 0 }}>
+          {topicLabel(finding.topic)}
+        </span>
+        <span style={{ fontSize: 12, color: "#1f2937", flex: 1, lineHeight: 1.4 }}>
+          {finding.title}
+        </span>
+        <span aria-hidden style={{ fontSize: 11, color: "#94a3b8", transform: expanded ? "rotate(90deg)" : "none", transition: "transform 0.15s" }}>
+          ›
+        </span>
+      </button>
+      {expanded && (
+        <div style={{ padding: "4px 0 12px 18px", display: "flex", flexDirection: "column", gap: 8 }}>
+          {finding.explanation && (
+            <div style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.5 }}>{finding.explanation}</div>
+          )}
+          {ruleLoading && <Hint>Chargement de l'article…</Hint>}
+          {ruleError && <Hint tone="danger">Article indisponible : {ruleError}</Hint>}
+          {rule && (
+            <div style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 7, padding: "9px 11px" }}>
+              <div style={{ fontWeight: 700, color: "#1f2937", marginBottom: 4 }}>
+                {rule.article_number != null ? `Article ${rule.article_number}` : "PLU"}
+                {rule.article_title ? ` — ${rule.article_title}` : ""}
+                <span style={{ marginLeft: 6, fontWeight: 500, color: "#64748b" }}>· Zone {rule.zone_code} · {rule.commune_name}</span>
+              </div>
+              <div style={{ whiteSpace: "pre-wrap" as const, color: "#334155" }}>{rule.rule_text}</div>
+              {rule.exceptions && (
+                <div style={{ marginTop: 6, fontSize: 11, color: "#7c2d12" }}>
+                  <strong>Exceptions :</strong> {rule.exceptions}
+                </div>
+              )}
+              {rule.instructor_note && (
+                <div style={{ marginTop: 6, fontSize: 11, color: "#4338CA", fontStyle: "italic" }}>
+                  Note instructeur : {rule.instructor_note}
+                </div>
+              )}
+            </div>
+          )}
+          {onAppendToNote && (
+            <div>
+              <button
+                type="button"
+                onClick={reportToNote}
+                style={{
+                  border: "1px solid #C7D2FE",
+                  background: "white",
+                  color: "#4F46E5",
+                  borderRadius: 6,
+                  padding: "4px 10px",
+                  fontSize: 11,
+                  fontWeight: 600,
+                  cursor: "pointer",
+                }}
+              >
+                ✎ Reporter dans l'annotation
+              </button>
+            </div>
+          )}
         </div>
-        <div style={{ fontSize: 12, fontWeight: 600, color: "#1f2937", lineHeight: 1.35 }}>{finding.title}</div>
-        {finding.explanation ? (
-          <div style={{ fontSize: 11, color: "#475569", marginTop: 3, lineHeight: 1.4 }}>{finding.explanation}</div>
-        ) : null}
-      </div>
+      )}
     </div>
+  );
+}
+
+function Hint({ children, tone = "default" }: { children: React.ReactNode; tone?: "default" | "danger" }) {
+  const color = tone === "danger" ? "#DC2626" : "#94a3b8";
+  return (
+    <div style={{ marginTop: 10, fontSize: 11, color, lineHeight: 1.5 }}>{children}</div>
   );
 }

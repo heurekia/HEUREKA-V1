@@ -8710,7 +8710,20 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           Pas d'extraction disponible. Lance l'extraction pour récupérer les valeurs cotées (recul, hauteur, surfaces…).
                         </div>
                       )}
-                      <PieceRegulatoryLinks dossierId={dossier.id} pieceId={sel.id} />
+                      <PieceRegulatoryLinks
+                        dossierId={dossier.id}
+                        pieceId={sel.id}
+                        onAppendToNote={(line) => {
+                          // Append à la fin du brouillon courant (ou de la
+                          // note persistée s'il n'y a pas de brouillon).
+                          // L'instructeur peut ensuite cliquer "Enregistrer".
+                          const current = annotationDrafts[sel.id] !== undefined
+                            ? annotationDrafts[sel.id]!
+                            : (sel.instructeur_note ?? "");
+                          const next = current.trim() ? `${current.trim()}\n${line}` : line;
+                          setAnnotationDraft(sel.id, next);
+                        }}
+                      />
                     </div>
                   );
                 })()}
