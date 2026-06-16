@@ -6820,6 +6820,28 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [addrSaving, setAddrSaving] = useState(false);
   const [liveAdresse, setLiveAdresse] = useState(dossier.adresse);
   const [liveCommune, setLiveCommune] = useState(dossier.commune ?? null);
+  // Édition inline du type de dossier — utile quand l'OCR a renvoyé un type
+  // générique (ex. PC au lieu de PCMI) ou pour corriger une erreur de saisie.
+  const [liveType, setLiveType] = useState<string>(dossier.type);
+  const [showTypeEditor, setShowTypeEditor] = useState(false);
+  const [typeSaving, setTypeSaving] = useState(false);
+  const saveType = useCallback(async (next: string) => {
+    if (next === liveType) {
+      setShowTypeEditor(false);
+      return;
+    }
+    setTypeSaving(true);
+    try {
+      await api.patch(`/mairie/dossiers/${dossier.id}/type`, { type: next });
+      setLiveType(next);
+      setShowTypeEditor(false);
+      alert("Type d'autorisation mis à jour. Le délai d'instruction a été recalculé.");
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Échec de la mise à jour du type");
+    } finally {
+      setTypeSaving(false);
+    }
+  }, [dossier.id, liveType]);
   const [clickingParcel, setClickingParcel] = useState(false);
   const [clickedCoords, setClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
 
@@ -7119,7 +7141,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     ? Math.ceil((new Date(dossier.echeance.split("/").reverse().join("-")).getTime() - Date.now()) / 86400000)
     : null;
 
-  const typeLabel = TYPE_LABEL[dossier.type] ?? dossier.type;
+  const typeLabel = TYPE_LABEL[liveType] ?? liveType;
 
   // ── Workflow d'instruction (statut + assignation) ──
   // Source de vérité côté serveur : la machine à états partagée. On reflète ici
@@ -7624,7 +7646,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       ?? (parcelLoading ? "Identification…" : "—");
                     return [
                       ["Pétitionnaire", dossier.petitionnaire],
-                      ["Type de dossier", typeLabel],
                       ["Adresse", liveAdresse ?? "—"],
                       ["Commune", `${liveCommune ?? "—"}${dossier.code_postal ? ` (${dossier.code_postal})` : ""}`],
                       ["Parcelle", parcelleLabel],
@@ -7632,12 +7653,57 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       ["Date de dépôt", dossier.date_depot ? fmtDate(dossier.date_depot) : "—"],
                       ["Échéance", dossier.echeance],
                     ];
-                  })().map(([l, v]) => (
-                    <div key={l}>
-                      <div style={LABEL_ST}>{l}</div>
-                      <div style={VALUE_ST}>{v}</div>
-                    </div>
-                  ))}
+                  })().reduce<React.ReactNode[]>((acc, [l, v], idx) => {
+                    acc.push(
+                      <div key={l}>
+                        <div style={LABEL_ST}>{l}</div>
+                        <div style={VALUE_ST}>{v}</div>
+                      </div>,
+                    );
+                    // Le type de dossier est inséré juste après le pétitionnaire,
+                    // avec un éditeur inline qui appelle PATCH /mairie/dossiers/:id/type.
+                    if (idx === 0) {
+                      acc.push(
+                        <div key="type-row">
+                          <div style={{ ...LABEL_ST, display: "flex", alignItems: "center", gap: 8 }}>
+                            <span>Type de dossier</span>
+                            <button
+                              onClick={() => setShowTypeEditor(v2 => !v2)}
+                              disabled={typeSaving}
+                              style={{
+                                padding: "1px 6px", fontSize: 10,
+                                color: showTypeEditor ? "#4F46E5" : "#94a3b8",
+                                background: showTypeEditor ? "#EEF2FF" : "none",
+                                border: "1px solid " + (showTypeEditor ? "#4F46E5" : "#E2E8F0"),
+                                borderRadius: 4, cursor: typeSaving ? "wait" : "pointer", fontWeight: 500,
+                              }}>
+                              {showTypeEditor ? "Annuler" : "Modifier"}
+                            </button>
+                          </div>
+                          {showTypeEditor ? (
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                              <select
+                                defaultValue={liveType}
+                                disabled={typeSaving}
+                                onChange={(e) => { void saveType(e.target.value); }}
+                                style={{
+                                  flex: 1, padding: "7px 8px", border: "1px solid #E2E8F0",
+                                  borderRadius: 8, fontSize: 12, background: "white",
+                                }}>
+                                {DOSSIER_TYPE_OPTIONS.map(opt => (
+                                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                ))}
+                              </select>
+                              {typeSaving && <span style={{ fontSize: 11, color: "#94a3b8" }}>Enregistrement…</span>}
+                            </div>
+                          ) : (
+                            <div style={VALUE_ST}>{typeLabel}</div>
+                          )}
+                        </div>,
+                      );
+                    }
+                    return acc;
+                  }, [])}
                 </div>
               </div>
               {/* Avancement */}
