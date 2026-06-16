@@ -54,6 +54,14 @@ export interface PutInput {
   mime: string;
 }
 
+/** Descripteur d'un flux de lecture — utilisé par la route /api/uploads
+ *  pour streamer le fichier sans exposer d'URL S3 expirante au navigateur. */
+export interface StoredStream {
+  stream: Readable;
+  contentType?: string;
+  contentLength?: number;
+}
+
 export interface StorageProvider {
   /** Identifiant du provider, pour logs et probes. */
   readonly name: "local" | "s3";
@@ -64,6 +72,11 @@ export interface StorageProvider {
   /** Récupère le contenu binaire d'un fichier — utilisé par les services
    *  d'analyse IA qui doivent passer le buffer au LLM. */
   getBuffer(key: string): Promise<Buffer>;
+
+  /** Ouvre un flux de lecture sur le fichier — utilisé par la route Express
+   *  qui sert les pièces jointes en proxy (pas de redirection vers une URL
+   *  signée qui expirerait dans le cache navigateur). */
+  getStream(key: string): Promise<StoredStream>;
 
   /** Génère une URL signée (temporaire) pour téléchargement direct par le
    *  navigateur. Sur le provider "local", retourne simplement l'URL publique
@@ -112,6 +125,15 @@ export class LocalStorageProvider implements StorageProvider {
 
   async getBuffer(key: string): Promise<Buffer> {
     return fs.promises.readFile(path.join(this.dir, key));
+  }
+
+  async getStream(key: string): Promise<StoredStream> {
+    const filePath = path.join(this.dir, key);
+    const stat = await fs.promises.stat(filePath);
+    return {
+      stream: fs.createReadStream(filePath),
+      contentLength: stat.size,
+    };
   }
 
   async getDownloadUrl(key: string): Promise<string> {
@@ -209,6 +231,19 @@ export class S3StorageProvider implements StorageProvider {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
     }
     return Buffer.concat(chunks);
+  }
+
+  async getStream(key: string): Promise<StoredStream> {
+    const res = await this.client.send(new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+    }));
+    if (!res.Body) throw new Error(`Body vide pour ${key}`);
+    return {
+      stream: res.Body as Readable,
+      contentType: res.ContentType,
+      contentLength: typeof res.ContentLength === "number" ? res.ContentLength : undefined,
+    };
   }
 
   async getDownloadUrl(key: string, expiresInSeconds = 900): Promise<string> {

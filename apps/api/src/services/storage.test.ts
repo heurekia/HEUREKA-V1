@@ -37,6 +37,18 @@ describe("LocalStorageProvider", () => {
     expect(buf.equals(payload)).toBe(true);
   });
 
+  it("ouvre un flux lisible avec la taille du fichier", async () => {
+    const payload = Buffer.from("flux binaire d'un plan");
+    await provider.put({ key: "flux.pdf", body: payload, mime: "application/pdf" });
+    const { stream, contentLength } = await provider.getStream("flux.pdf");
+    expect(contentLength).toBe(payload.length);
+    const chunks: Buffer[] = [];
+    for await (const chunk of stream) {
+      chunks.push(chunk as Buffer);
+    }
+    expect(Buffer.concat(chunks).equals(payload)).toBe(true);
+  });
+
   it("retourne l'URL publique pour téléchargement (pas de signature en local)", async () => {
     const url = await provider.getDownloadUrl("plan.pdf");
     expect(url).toBe("/api/uploads/plan.pdf");
