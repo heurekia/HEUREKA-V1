@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossiers, dossier_consultations, notifications } from "@heureka-v1/db";
+import { dossiers, dossier_consultations, notifications, users } from "@heureka-v1/db";
 import { eq, desc, sql } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 
@@ -43,47 +43,102 @@ dashboardRouter.get("/dashboard", async (req: AuthRequest, res) => {
   }
 });
 
-// ── Statistiques ──
-dashboardRouter.get("/stats", async (_req: AuthRequest, res) => {
+// ── Délais légaux d'instruction par type (en jours) ──
+// Référence : code de l'urbanisme R*423-23 et suivants.
+const DELAIS_LEGAUX_JOURS: Record<string, number> = {
+  permis_de_construire: 90,
+  permis_de_construire_mi: 60,
+  declaration_prealable: 30,
+  permis_amenager: 90,
+  permis_demolir: 60,
+  permis_lotir: 90,
+  certificat_urbanisme: 60,
+  certificat_urbanisme_a: 30,
+  certificat_urbanisme_b: 60,
+};
+
+const STATUTS_DECIDES = ["accepte", "refuse", "accord_prescription"] as const;
+
+// ── Statistiques : vue d'ensemble + types ──
+dashboardRouter.get("/stats", async (req: AuthRequest, res) => {
   try {
-    const total = await db.select({ count: sql<number>`count(*)` }).from(dossiers);
-    const parType = await db
-      .select({ type: dossiers.type, count: sql<number>`count(*)` })
+    const commune = req.query.commune as string | undefined;
+    const cf = commune ? sql`commune ILIKE ${commune}` : sql`1=1`;
+
+    // KPIs agrégés
+    const kpiRow = await db
+      .select({
+        traites: sql<number>`count(*) filter (where status IN ('accepte','refuse','accord_prescription'))`,
+        acceptes: sql<number>`count(*) filter (where status = 'accepte')`,
+        delai_moyen: sql<number>`avg(extract(epoch from (date_delivrance - date_depot)) / 86400) filter (where date_depot IS NOT NULL AND date_delivrance IS NOT NULL)`,
+        en_retard: sql<number>`count(*) filter (where status NOT IN ('accepte','refuse','accord_prescription','brouillon') AND date_limite_instruction IS NOT NULL AND date_limite_instruction < now())`,
+        total: sql<number>`count(*)`,
+      })
       .from(dossiers)
-      .groupBy(dossiers.type);
+      .where(cf);
+
+    const k = kpiRow[0];
+    const traites = Number(k?.traites ?? 0);
+    const acceptes = Number(k?.acceptes ?? 0);
+    const tauxAcceptation = traites > 0 ? Math.round((acceptes / traites) * 100) : null;
+    const total = Number(k?.total ?? 0);
+    const enRetard = Number(k?.en_retard ?? 0);
+
+    // Par mois (12 derniers mois glissants)
     const parMois = await db
       .select({
         mois: sql<string>`to_char(date_depot, 'YYYY-MM')`,
         count: sql<number>`count(*)`,
       })
       .from(dossiers)
-      .where(sql`date_depot IS NOT NULL`)
+      .where(sql`date_depot IS NOT NULL AND date_depot >= now() - interval '12 months' AND (${cf})`)
       .groupBy(sql`1`)
       .orderBy(sql`1`);
 
-    const delaiAgg = await db
+    // Par type — count + accepted + refused + délai moyen
+    const parType = await db
       .select({
-        avg: sql<number>`avg(extract(epoch from (date_delivrance - date_depot)) / 86400)`,
+        type: dossiers.type,
+        count: sql<number>`count(*)`,
+        acceptes: sql<number>`count(*) filter (where status = 'accepte')`,
+        refuses: sql<number>`count(*) filter (where status = 'refuse')`,
+        delai_moyen: sql<number>`avg(extract(epoch from (date_delivrance - date_depot)) / 86400) filter (where date_depot IS NOT NULL AND date_delivrance IS NOT NULL)`,
       })
       .from(dossiers)
-      .where(sql`date_depot IS NOT NULL AND date_delivrance IS NOT NULL`);
+      .where(cf)
+      .groupBy(dossiers.type);
 
-    const conformiteAgg = await db
-      .select({
-        avg: sql<number>`avg((conformite_analysis->>'score_pct')::numeric)`,
-      })
+    // Résultats des décisions
+    const decisions = await db
+      .select({ status: dossiers.status, count: sql<number>`count(*)` })
       .from(dossiers)
-      .where(sql`conformite_analysis ? 'score_pct'`);
-
-    const delaiMoyen = delaiAgg[0]?.avg != null ? Math.round(Number(delaiAgg[0].avg)) : null;
-    const conformiteMoyenne = conformiteAgg[0]?.avg != null ? Math.round(Number(conformiteAgg[0].avg)) : null;
+      .where(sql`status IN ('accepte','refuse','accord_prescription') AND (${cf})`)
+      .groupBy(dossiers.status);
+    const totalDecisions = decisions.reduce((sum, d) => sum + Number(d.count), 0);
 
     res.json({
-      total: Number(total[0]?.count ?? 0),
-      par_type: parType.map((r) => ({ type: r.type, count: Number(r.count) })),
+      kpis: {
+        traites,
+        acceptes,
+        delai_moyen: k?.delai_moyen != null ? Math.round(Number(k.delai_moyen)) : null,
+        taux_acceptation: tauxAcceptation,
+        en_retard: enRetard,
+        en_retard_pct: total > 0 ? Math.round((enRetard / total) * 100) : null,
+        total,
+      },
       par_mois: parMois.map((r) => ({ mois: r.mois, count: Number(r.count) })),
-      delai_moyen: delaiMoyen,
-      conformite_moyenne: conformiteMoyenne,
+      par_type: parType.map((r) => ({
+        type: r.type,
+        count: Number(r.count),
+        acceptes: Number(r.acceptes),
+        refuses: Number(r.refuses),
+        delai_moyen: r.delai_moyen != null ? Math.round(Number(r.delai_moyen)) : null,
+      })),
+      resultats_decisions: decisions.map((d) => ({
+        status: d.status,
+        count: Number(d.count),
+        pct: totalDecisions > 0 ? Math.round((Number(d.count) / totalDecisions) * 100) : 0,
+      })),
     });
   } catch (err) {
     console.error(err);
@@ -92,42 +147,77 @@ dashboardRouter.get("/stats", async (_req: AuthRequest, res) => {
 });
 
 // ── Statistiques : délais d'instruction ──
-dashboardRouter.get("/stats/delais", async (_req: AuthRequest, res) => {
+dashboardRouter.get("/stats/delais", async (req: AuthRequest, res) => {
   try {
-    const globalAgg = await db
+    const commune = req.query.commune as string | undefined;
+    const cf = commune ? sql`commune ILIKE ${commune}` : sql`1=1`;
+
+    // Délai moyen actuel par type
+    const parType = await db
       .select({
-        avg: sql<number>`avg(extract(epoch from (date_delivrance - date_depot)) / 86400)`,
-        total: sql<number>`count(*)`,
-        sous_2_mois: sql<number>`count(*) filter (where (date_delivrance - date_depot) <= interval '60 days')`,
-        hors_delai: sql<number>`count(*) filter (where date_limite_instruction IS NOT NULL AND date_delivrance > date_limite_instruction)`,
+        type: dossiers.type,
+        delai_moyen: sql<number>`avg(extract(epoch from (date_delivrance - date_depot)) / 86400)`,
       })
       .from(dossiers)
-      .where(sql`date_depot IS NOT NULL AND date_delivrance IS NOT NULL`);
+      .where(sql`date_depot IS NOT NULL AND date_delivrance IS NOT NULL AND (${cf})`)
+      .groupBy(dossiers.type);
 
-    const row = globalAgg[0];
-    const total = Number(row?.total ?? 0);
-    const delaiMoyen = row?.avg != null ? Math.round(Number(row.avg)) : null;
-    const sous2MoisPct = total > 0 ? Math.round((Number(row?.sous_2_mois ?? 0) / total) * 100) : null;
-    const horsDelaiPct = total > 0 ? Math.round((Number(row?.hors_delai ?? 0) / total) * 100) : null;
-
+    // Évolution sur 6 mois
     const evolution = await db
       .select({
         mois: sql<string>`to_char(date_delivrance, 'YYYY-MM')`,
-        avg: sql<number>`avg(extract(epoch from (date_delivrance - date_depot)) / 86400)`,
+        delai_moyen: sql<number>`avg(extract(epoch from (date_delivrance - date_depot)) / 86400)`,
       })
       .from(dossiers)
-      .where(sql`date_depot IS NOT NULL AND date_delivrance IS NOT NULL`)
+      .where(sql`date_depot IS NOT NULL AND date_delivrance IS NOT NULL AND date_delivrance >= now() - interval '6 months' AND (${cf})`)
       .groupBy(sql`1`)
       .orderBy(sql`1`);
 
+    // Dossiers en retard avec pétitionnaire
+    const enRetard = await db
+      .select({
+        id: dossiers.id,
+        numero: dossiers.numero,
+        type: dossiers.type,
+        status: dossiers.status,
+        date_depot: dossiers.date_depot,
+        date_limite: dossiers.date_limite_instruction,
+        prenom: users.prenom,
+        nom: users.nom,
+      })
+      .from(dossiers)
+      .leftJoin(users, eq(users.id, dossiers.user_id))
+      .where(
+        sql`status NOT IN ('accepte','refuse','accord_prescription','brouillon') AND date_limite_instruction IS NOT NULL AND date_limite_instruction < now() AND (${cf})`,
+      )
+      .orderBy(desc(sql`now() - date_limite_instruction`))
+      .limit(20);
+
     res.json({
-      delai_moyen: delaiMoyen,
-      sous_2_mois_pct: sous2MoisPct,
-      hors_delai_pct: horsDelaiPct,
+      delai_par_type: parType.map((r) => ({
+        type: r.type,
+        delai_moyen: r.delai_moyen != null ? Math.round(Number(r.delai_moyen)) : null,
+        delai_legal: DELAIS_LEGAUX_JOURS[r.type] ?? null,
+      })),
       evolution: evolution.map((r) => ({
         mois: r.mois,
-        delai_moyen: r.avg != null ? Math.round(Number(r.avg)) : 0,
+        delai_moyen: r.delai_moyen != null ? Math.round(Number(r.delai_moyen)) : 0,
       })),
+      en_retard: enRetard.map((r) => {
+        const legal = DELAIS_LEGAUX_JOURS[r.type] ?? null;
+        const ecoule = r.date_depot ? Math.floor((Date.now() - new Date(r.date_depot).getTime()) / 86400000) : null;
+        const depassement = legal != null && ecoule != null ? ecoule - legal : null;
+        return {
+          id: r.id,
+          numero: r.numero,
+          type: r.type,
+          petitionnaire: [r.prenom, r.nom].filter(Boolean).join(" ") || null,
+          delai_legal: legal,
+          delai_ecoule: ecoule,
+          depassement,
+          status: r.status,
+        };
+      }),
     });
   } catch (err) {
     console.error(err);
@@ -136,24 +226,39 @@ dashboardRouter.get("/stats/delais", async (_req: AuthRequest, res) => {
 });
 
 // ── Statistiques : services consultés ──
-dashboardRouter.get("/stats/services", async (_req: AuthRequest, res) => {
+dashboardRouter.get("/stats/services", async (req: AuthRequest, res) => {
   try {
+    const commune = req.query.commune as string | undefined;
+    const cf = commune
+      ? sql`exists(select 1 from dossiers d where d.id = dossier_consultations.dossier_id and d.commune ILIKE ${commune})`
+      : sql`1=1`;
+
     const rows = await db
       .select({
         service: dossier_consultations.service_name,
-        consults: sql<number>`count(*)`,
-        avg_jours: sql<number>`avg(extract(epoch from (date_reponse - date_envoi)) / 86400) filter (where date_reponse IS NOT NULL)`,
+        consultations: sql<number>`count(*)`,
+        retours: sql<number>`count(*) filter (where date_reponse IS NOT NULL)`,
+        en_attente: sql<number>`count(*) filter (where date_reponse IS NULL AND status = 'en_attente')`,
+        delai_retour_moy: sql<number>`avg(extract(epoch from (date_reponse - date_envoi)) / 86400) filter (where date_reponse IS NOT NULL)`,
       })
       .from(dossier_consultations)
+      .where(cf)
       .groupBy(dossier_consultations.service_name)
       .orderBy(sql`count(*) desc`);
 
     res.json(
-      rows.map((r) => ({
-        name: r.service,
-        consults: Number(r.consults),
-        avg_jours: r.avg_jours != null ? Number(Number(r.avg_jours).toFixed(1)) : null,
-      })),
+      rows.map((r) => {
+        const consultations = Number(r.consultations);
+        const retours = Number(r.retours);
+        return {
+          name: r.service,
+          consultations,
+          retours,
+          en_attente: Number(r.en_attente),
+          delai_retour_moy: r.delai_retour_moy != null ? Math.round(Number(r.delai_retour_moy)) : null,
+          taux_reponse: consultations > 0 ? Math.round((retours / consultations) * 100) : 0,
+        };
+      }),
     );
   } catch (err) {
     console.error(err);
