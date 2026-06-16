@@ -5,6 +5,7 @@ import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 import { RegulatoryChecklist } from "../../components/RegulatoryChecklist";
+import { PieceRegulatoryLinks } from "../../components/PieceRegulatoryLinks";
 import {
   STATUS_LABELS as DOSSIER_STATUS_LABELS,
   primaryNextAction as primaryNextActionFor,
@@ -8843,6 +8844,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           Pas d'extraction disponible. Lance l'extraction pour récupérer les valeurs cotées (recul, hauteur, surfaces…).
                         </div>
                       )}
+                      <PieceRegulatoryLinks dossierId={dossier.id} pieceId={sel.id} />
                     </div>
                   );
                 })()}
