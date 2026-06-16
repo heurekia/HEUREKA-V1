@@ -2,23 +2,23 @@
 
 | Champ | Valeur |
 |-------|--------|
-| Version | 1.0 |
+| Version | 2.0 (post-bascule Mistral) |
 | Date | Juin 2026 |
 | Auteur | Équipe technique HEUREKIA |
-| Statut | En cours d'exécution (Phase 0/1) |
+| Statut | LLM 🇫🇷 livré (PR #117). Hébergement/stockage/email : en cours. |
 
 ## 1. Contexte et objectif
 
-HEUREKA est actuellement hébergé sur **Railway** (PaaS américain sur AWS) avec analyse IA via **Anthropic AWS Bedrock Francfort**. La conformité RGPD est atteinte (niveau 2 = données en UE, sous-traitants US sous DPA + SCC). Plusieurs DSI clientes — en particulier Tours Métropole — peuvent demander un niveau de souveraineté supérieur (niveau 3 = entreprises européennes).
+HEUREKA est actuellement hébergé sur **Railway** (PaaS américain sur AWS) avec analyse IA via **Mistral La Plateforme** (Pixtral Large, datacenters France). La brique LLM est désormais entièrement souveraine 🇫🇷. Reste à terminer la migration souveraine de l'hébergement applicatif, du stockage des fichiers et de l'email transactionnel.
 
 Ce plan décrit la migration progressive vers une stack pleinement européenne, **sans interruption de service**, avec des phases indépendantes qu'on peut activer ou suspendre selon les arbitrages DSI / DPD / budget.
 
-## 2. État actuel (Niveau 2)
+## 2. État actuel (post-Mistral, juin 2026)
 
 | Brique | Fournisseur | Société | Données |
 |---|---|---|---|
 | Hébergement app + DB | Railway (sur AWS) | 🇺🇸 | 🇪🇺 Irlande |
-| LLM | Anthropic via Bedrock | 🇺🇸 | 🇪🇺 Francfort |
+| **LLM** | **Mistral La Plateforme** | **🇫🇷 Paris** | **🇫🇷 France** |
 | Email transactionnel | Resend | 🇺🇸 | 🇪🇺/🇺🇸 |
 | Stockage fichiers | Disque local Railway | éphémère | 🇪🇺 |
 | Fond de carte | CartoCDN | 🇺🇸 | n/a |
@@ -32,7 +32,7 @@ Ce plan décrit la migration progressive vers une stack pleinement européenne, 
 |---|---|---|
 | Hébergement app + DB | Clever Cloud | 🇫🇷 Paris/Nantes |
 | Stockage fichiers | Cellar (Clever Cloud, S3-compatible) | 🇫🇷 |
-| LLM | Anthropic Bedrock UE OU Mistral La Plateforme (selon benchmark) | 🇺🇸/🇪🇺 ou 🇫🇷 |
+| LLM | Mistral La Plateforme ✅ déjà en prod | 🇫🇷 Paris |
 | Email transactionnel | Brevo (ex-Sendinblue) | 🇫🇷 |
 | Fond de carte | IGN data.geopf.fr/wmts | 🇫🇷 |
 | Certificat SSL | CertEurope OV | 🇫🇷 |
@@ -43,24 +43,27 @@ Ce plan décrit la migration progressive vers une stack pleinement européenne, 
 
 ## 4. Phases détaillées
 
-### Phase 0 — Stabilisation Bedrock (en cours, ~1 jour)
+### Phase 0 — Bascule LLM vers Mistral La Plateforme ✅ LIVRÉ (PR #117)
 
-**Objectif** : confirmer que l'analyse IA via Bedrock Francfort fonctionne de bout en bout.
+**Objectif initial** (annulé) : stabiliser Bedrock UE.
+**Décision juin 2026** : on saute Bedrock UE et on bascule directement sur Mistral La Plateforme (Paris). Raisons : Pixtral indispensable pour la vision, indisponible sur Bedrock ; souveraineté française réelle (Mistral SAS Paris, droit français) plutôt que UE-via-AWS.
 
-**Pré-requis** :
-- ✅ Compte AWS créé, IAM user `heureka-bedrock-prod` avec policy `HeurekaBedrockInvoke`
-- ✅ Variables Railway : `AI_PROVIDER=bedrock`, `AWS_REGION=eu-central-1`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-- ✅ Correction `BEDROCK_MODEL_MAP` (commit `c43f8ea`)
-- ✅ Logging explicite des erreurs `analyzePiece` / `extractPiece` (commit `a5094d9`)
+**Statut** :
+- ✅ Refonte `aiUsage.ts` Mistral-only — `callAi()` + `streamAi()` + tracking `ai_usage_events`
+- ✅ Portage des 8 call sites (citoyen + mairie + scripts CLI)
+- ✅ Suppression `@anthropic-ai/sdk` + `@anthropic-ai/bedrock-sdk` + chemins Bedrock
+- ✅ Variable Railway `MISTRAL_API_KEY` déployée
+- ✅ Variables `ANTHROPIC_*`, `AWS_*` (pour l'IA), `AI_PROVIDER`, `AI_USD_TO_EUR` à retirer de Railway une fois le boot validé
 
 **Critère de validation** :
-- 1 dépôt de pièce test → bandeau de score `Conforme/Acceptable/...` affiché dans le wizard
-- Ligne `[aiUsage] 🇪🇺 Fournisseur d'inférence : AWS Bedrock` au boot Railway
-- Entrée `ai_usage_events` avec `cost_eur > 0` et `file_hash` non null
+- 1 dépôt de pièce test → bandeau de score `Conforme/Acceptable/…` affiché dans le wizard
+- Ligne `[aiUsage] 🇫🇷 Fournisseur d'inférence : Mistral La Plateforme (fr-paris)` au boot Railway
+- Entrée `ai_usage_events` avec `model = pixtral-large-latest`, `cost_eur > 0`, `file_hash` non null
+- Conversion automatique PDF → PNG via `pdftoppm` (paquet `poppler-utils` requis sur le runtime Railway)
 
-**Rollback** : retirer `AI_PROVIDER=bedrock` dans Railway → l'app retombe sur Anthropic API directe (US). Aucun risque applicatif.
+**Rollback** : non. Les chemins Anthropic sont supprimés. En cas de panne Mistral prolongée, désactivation de l'analyse IA côté wizard (équivalent au cas où le pétitionnaire refuse l'analyse).
 
-**Garde-fou facturation** : budget AWS 100 €/mois avec alerte à 50 % et 80 %.
+**Garde-fou facturation** : seuils par appel et journalier dans `ai_alert_config` (page admin Coûts IA), alerte Slack.
 
 ---
 
@@ -111,7 +114,7 @@ Ce plan décrit la migration progressive vers une stack pleinement européenne, 
 2. **Migration PostgreSQL** :
    - `pg_dump` depuis Railway → `pg_restore` sur Clever Cloud (downtime ~10-30 min selon volume)
    - Vérifier que l'extension `pgvector` est activée sur l'instance Clever (sinon contacter le support, c'est dispo)
-3. **Variables d'environnement** : recopier toutes les variables Railway dans Clever Cloud (`JWT_SECRET`, `DATABASE_URL` → fournie par l'add-on, `AI_PROVIDER`, `AWS_*`, `MISTRAL_API_KEY` si applicable, `S3_*` Cellar, `RESEND_API_KEY` ou `BREVO_API_KEY`).
+3. **Variables d'environnement** : recopier toutes les variables Railway dans Clever Cloud (`JWT_SECRET`, `DATABASE_URL` → fournie par l'add-on, `MISTRAL_API_KEY`, `S3_*` Cellar, `RESEND_API_KEY` ou `BREVO_API_KEY`).
 4. **Cron jobs** : `node-cron` continue de tourner dans le process API — pas de changement nécessaire. Optionnellement basculer vers le scheduler natif Clever Cloud pour la résilience.
 5. **DNS** : repointer `app.heurekia.com` (CNAME) vers Clever Cloud. TTL bas (300s) à mettre 24h avant pour rollback rapide.
 6. **Bascule** : déploiement Clever Cloud en parallèle de Railway, vérification du fonctionnement → bascule DNS → surveillance 24h → arrêt Railway.
@@ -170,55 +173,42 @@ Ce plan décrit la migration progressive vers une stack pleinement européenne, 
 
 ---
 
-### Phase 4 — Benchmark LLM + décision Mistral (1 semaine)
+### Phase 4 — Benchmark de validation Mistral (1 semaine, post-livraison)
 
-**Objectif** : décider si on bascule l'analyse IA d'Anthropic Bedrock à Mistral La Plateforme (🇫🇷), ou si on reste sur Bedrock UE (suffisant pour la majorité des collectivités).
+**Objectif** (mis à jour) : la bascule Mistral est déjà livrée. Cette phase devient une **phase de validation a posteriori** sur des fixtures réelles, pour confirmer que Pixtral Large tient les seuils de qualité et de coût attendus, et pour potentiellement descendre certains usages vers Pixtral 12B (économies de coût).
 
 **Pré-requis** :
-- Compte Mistral La Plateforme + `MISTRAL_API_KEY`
-- 15 à 30 pièces réelles **anonymisées** déposées dans `packages/ingestion/benchmark-fixtures/pieces/`
-- `manifest.json` complété avec les vérités-terrain (cf. README du dossier)
+- ✅ `MISTRAL_API_KEY` déployée (Railway + dev)
+- 15 à 30 pièces réelles **anonymisées** dans `packages/ingestion/benchmark-fixtures/pieces/`
+- `manifest.json` complété avec les vérités-terrain (cf. `RUN-BENCHMARK.md`)
 
 **Exécution** :
 ```bash
-ANTHROPIC_API_KEY=...
 MISTRAL_API_KEY=...
 pnpm --filter @heureka-v1/ingestion benchmark:llm \
-  --providers anthropic,mistral \
+  --mistral-models pixtral-large,pixtral-12b \
   --out docs/security/benchmark-llm-resultats-2026-06.md
 ```
 
-**Critères de décision** (cf. `docs/security/benchmark-llm.md`) :
-- Si **F1 Pixtral ≥ 80 % du F1 Claude** sur les fixtures → bascule recommandée vers Mistral.
-- Si **F1 Pixtral < 80 % du F1 Claude** → rester sur Bedrock UE et documenter le choix au DPD avec le rapport de benchmark.
-
-**Si bascule Mistral** :
-1. Ajouter un provider `MistralProvider` côté production (déjà implémenté côté benchmark, à porter dans `aiUsage.ts` selon le même switch que Bedrock).
-2. Adapter les prompts si nécessaire (Pixtral peut être plus rigide sur la sortie JSON).
-3. Convertir les PDF en PNG côté serveur (Pixtral n'accepte pas le PDF nativement → utiliser `unpdf` déjà présent dans les dépendances).
-4. Mettre à jour `BEDROCK_MODEL_MAP` → `LLM_PROVIDER=mistral` + `MISTRAL_MODEL=pixtral-large-latest`.
-5. Mettre à jour le bandeau de consentement citoyen + politique de confidentialité + registre art. 30 + AIPD pour refléter le changement de sous-traitant.
+**Critères de décision** :
+- Si **F1 Pixtral Large ≥ 0,80** sur les fixtures → décision Mistral confirmée, documenter au DPD avec le rapport.
+- Si **F1 Pixtral Large < 0,75** → escalade : itérer sur les prompts, ré-évaluer le choix de modèle (Mistral Medium 3 vision quand disponible).
+- Si **F1 Pixtral 12B ≥ 0,80** sur les usages simples (`ai-fast`) → repointer `ai-fast` vers Pixtral 12B dans `MODEL_MAP` (économies x10 sur ces appels).
 
 ---
 
 ### Phase 5 — Finalisation DPA + signatures juridiques
 
-**Objectif** : verrouiller juridiquement les sous-traitants choisis.
+**Objectif** : verrouiller juridiquement les sous-traitants.
 
-**Selon décision Phase 4** :
+**LLM (décidé)** :
+- ✅ Mistral La Plateforme retenu (cf. Phase 0)
+- [ ] Signer le DPA Mistral AI (procédure dans `docs/security/dpa-mistral-checklist.md`)
+- [x] Localisation 🇫🇷 Paris des datacenters confirmée
+- [x] Aucun TIA nécessaire (pas de transfert hors UE)
+- [x] Fiche n°2 du registre art. 30 mise à jour
 
-**Si Anthropic Bedrock retenu** :
-- Signer le DPA Anthropic (procédure dans `docs/security/dpa-anthropic-checklist.md`)
-- Activer le Zero Data Retention contractuellement
-- Documenter le Transfer Impact Assessment (TIA) post-Schrems II
-
-**Si Mistral retenu** :
-- Signer le DPA Mistral (formulaire standard)
-- Confirmer la localisation 🇫🇷 Paris des datacenters
-- Aucun TIA nécessaire (pas de transfert hors UE)
-- Mettre à jour la fiche n°2 du registre art. 30
-
-**Dans tous les cas** :
+**Autres sous-traitants** :
 - DPA Brevo
 - DPA Clever Cloud
 - DPA CertEurope (si OV)
@@ -261,7 +251,7 @@ pnpm --filter @heureka-v1/ingestion benchmark:llm \
 ## 5. Calendrier global
 
 ```
-Sem 1  │ [Phase 0] Stabilisation Bedrock ✓
+Sem 1  │ [Phase 0] Bascule LLM Mistral La Plateforme ✓ (PR #117)
        │ [Phase 1] Stockage objet S3 — refactor + tests
 Sem 2  │ [Phase 1] Migration des fichiers existants vers Cellar
        │ [Phase 3] Brevo (email) — 1/2 j
@@ -269,9 +259,9 @@ Sem 2  │ [Phase 1] Migration des fichiers existants vers Cellar
 Sem 3  │ [Phase 2] Provisionnement Clever Cloud + PostgreSQL
        │ [Phase 2] Bascule DNS + surveillance 48h
        │ [Phase 3] Commande certificat OV CertEurope
-Sem 4  │ [Phase 4] Benchmark LLM (fixtures + Mistral)
+Sem 4  │ [Phase 4] Benchmark de validation Mistral (fixtures réelles)
        │ [Phase 3] Installation cert OV
-Sem 5  │ [Phase 5] Signatures DPA (Anthropic OU Mistral, Brevo, Clever)
+Sem 5  │ [Phase 5] Signatures DPA (Mistral, Brevo, Clever)
 Sem 6+ │ [Phase 6] AIPD signée + registre déposé par chaque commune
        │ — Production officielle —
 Après  │ [Phase 7] SecNumCloud si demandé
@@ -283,7 +273,7 @@ Après  │ [Phase 7] SecNumCloud si demandé
 |---|---|---|---|---|
 | Hébergement + DB | ~40 € | ~80 € (double-run) | ~55 € | ~500 € |
 | Stockage fichiers | inclus | ~5 € | ~5 € | inclus |
-| LLM (volume 1k pièces/mois) | ~50 € (Anthropic direct) | ~50 € (Bedrock) | 50-120 € (Bedrock ou Mistral) | 3-5 k€ (GPU dédié) |
+| LLM (volume 1k pièces/mois) | ~50 € (Anthropic direct, historique) | ~30-60 € (Mistral Pixtral Large) | ~30-60 € (Mistral) | 3-5 k€ (GPU dédié) |
 | Email | ~20 € (Resend) | ~20 € | ~15 € (Brevo) | ~15 € |
 | SSL | gratuit (Let's Encrypt) | gratuit | ~12 €/mois (OV CertEurope) | ~12 € |
 | **Total** | **~110 €** | **~155 €** | **~140 €** | **~3,5-5,5 k€** |
@@ -292,10 +282,10 @@ Après  │ [Phase 7] SecNumCloud si demandé
 
 | Risque | Probabilité | Impact | Mitigation |
 |---|---|---|---|
-| Indisponibilité Bedrock (Phase 0) | Faible | Moyen | Dégradation gracieuse : skip analyse, instructeur prévient |
+| Indisponibilité Mistral La Plateforme | Faible | Moyen | Dégradation gracieuse : skip analyse, instructeur prévient |
 | Perte de fichiers pendant migration vers Cellar (Phase 1) | Faible | Élevé | Script `migrate-uploads-to-s3` idempotent + vérification d'intégrité par taille avant suppression |
 | Downtime PostgreSQL pendant dump/restore (Phase 2) | Certaine | Faible | Fenêtre de maintenance annoncée (créneau nuit), durée ~15-30 min |
-| Qualité Mistral insuffisante (Phase 4) | Modérée | Faible | Décision rationnelle basée sur le benchmark, fallback Bedrock |
+| Qualité Pixtral Large insuffisante sur certains cas (Phase 4 validation) | Modérée | Faible | Itération sur les prompts, bascule vers Mistral Medium 3 vision quand disponible, ou Llama Vision via Scaleway en dernier recours |
 | Refus DPD d'une commune (Phase 6) | Faible | Bloquant local | AIPD pré-rédigée argumentée + démonstration en visio |
 | Évolution de la doctrine étatique vers SecNumCloud obligatoire | Modérée à 2-3 ans | Élevé | Architecture déjà préparée (LLM derrière abstraction, stockage S3 portable, app dockerisable) |
 
@@ -303,9 +293,9 @@ Après  │ [Phase 7] SecNumCloud si demandé
 
 | Sujet | Pour | Quand |
 |---|---|---|
-| Validation Phase 0 (Bedrock fonctionnel) | Toi | Maintenant |
+| Validation Phase 0 (Mistral fonctionnel en prod) | Toi | Au merge PR #117 |
 | Lancement Phase 1 (stockage S3) | Toi | Sous 48h |
-| Critère de décision LLM (seuil F1 Mistral) | Toi + DPD collectivité | Avant Phase 4 |
+| Seuil F1 de validation Mistral | Toi + DPD collectivité | Avant Phase 4 (benchmark) |
 | Fournisseur SSL OV (CertEurope vs GlobalSign FR) | Toi | Sous 1 semaine |
 | Engagement Phase 7 (SecNumCloud) | DSI cliente | Sur demande formelle uniquement |
 | Designation du DPD HEUREKIA SAS officiel | Toi (interne) | Avant la prod officielle |
@@ -314,11 +304,11 @@ Après  │ [Phase 7] SecNumCloud si demandé
 
 La plateforme est **officiellement déployable en production pour les communes** lorsque :
 
-- ✅ Phase 0 : Bedrock fonctionnel et stable depuis 7 jours
+- ✅ Phase 0 : Mistral La Plateforme fonctionnel et stable depuis 7 jours
 - ✅ Phase 1 : fichiers sur Cellar, anciens fichiers migrés
 - ✅ Phase 2 : Clever Cloud + PostgreSQL stables depuis 7 jours
 - ✅ Phase 3 : Brevo + IGN + SSL OV en place
-- ✅ Phase 5 : DPA signé avec le LLM retenu (Anthropic OU Mistral)
+- ✅ Phase 5 : DPA Mistral AI signé
 - ✅ Phase 6 : AIPD signée par au moins la première commune cliente
 - ✅ Page admin Conformité affiche ≥ 90 % des mesures en "Actif"
 - ✅ Le benchmark LLM est documenté et joint à l'AIPD

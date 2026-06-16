@@ -8,12 +8,16 @@ L'arbitrage souveraineté / qualité / coût ne peut pas se faire à la lecture 
 
 ## Providers candidats
 
-| Provider | Souveraineté | Qualité attendue (vision multimodale) | Effort d'intégration |
+> **Contexte (juin 2026) :** HEUREKA est en production sur **Mistral La Plateforme**
+> (Pixtral Large). Le benchmark sert désormais à comparer des variantes Mistral
+> (Pixtral 12B vs Pixtral Large vs futurs modèles) et, ponctuellement, à
+> challenger Mistral face à d'autres providers UE si un cas d'usage le justifie.
+
+| Provider | Souveraineté | Qualité (vision multimodale) | Effort d'intégration |
 |---|---|---|---|
-| Anthropic Claude (API directe US) | 🇺🇸 USA + DPA + SCC | ⭐⭐⭐⭐⭐ référence | Aucun (déjà en prod) |
-| Anthropic via AWS Bedrock Francfort | 🇪🇺 UE | ⭐⭐⭐⭐⭐ identique | ✅ déjà implémenté (`AI_PROVIDER=bedrock`) |
-| Anthropic via Google Vertex Paris | 🇪🇺 UE | ⭐⭐⭐⭐⭐ identique | ~20 lignes (à ajouter) |
-| Mistral Pixtral Large | 🇫🇷 France | ⭐⭐⭐⭐ à valider | ✅ déjà implémenté |
+| **Mistral Pixtral Large** (en prod) | 🇫🇷 France (Paris) | ⭐⭐⭐⭐ référence actuelle | ✅ déjà implémenté |
+| Mistral Pixtral 12B | 🇫🇷 France | ⭐⭐⭐ low-cost | ✅ déjà implémenté |
+| Mistral Medium 3 (vision, à venir) | 🇫🇷 France | ⭐⭐⭐⭐⭐ attendue | ~10 lignes |
 | Llama Vision via Scaleway | 🇫🇷 France | ⭐⭐⭐ à valider | ~30 lignes (à ajouter) |
 
 ## Métriques mesurées
@@ -57,26 +61,22 @@ L'arbitrage souveraineté / qualité / coût ne peut pas se faire à la lecture 
 
 ```bash
 # Smoke test sur 3 fixtures pour vérifier que tout fonctionne
-ANTHROPIC_API_KEY=sk-ant-... \
 MISTRAL_API_KEY=... \
 pnpm --filter @heureka-v1/ingestion benchmark:llm --limit 3
 
-# Run complet
-ANTHROPIC_API_KEY=sk-ant-... \
+# Run complet (Pixtral Large par défaut)
 MISTRAL_API_KEY=... \
 pnpm --filter @heureka-v1/ingestion benchmark:llm \
-  --providers anthropic,mistral \
   --out docs/security/benchmark-llm-resultats-2026-06.md
 
-# Benchmark Anthropic seul en mode Bedrock UE
-AI_PROVIDER=bedrock \
-AWS_REGION=eu-central-1 \
-AWS_ACCESS_KEY_ID=AKIA... \
-AWS_SECRET_ACCESS_KEY=... \
+# Comparaison Pixtral Large vs Pixtral 12B (qualité vs coût)
+MISTRAL_API_KEY=... \
 pnpm --filter @heureka-v1/ingestion benchmark:llm \
-  --providers anthropic \
-  --out docs/security/benchmark-llm-bedrock-2026-06.md
+  --mistral-models pixtral-large,pixtral-12b \
+  --out docs/security/benchmark-llm-pixtral-comparison.md
 ```
+
+Cf. `packages/ingestion/benchmark-fixtures/RUN-BENCHMARK.md` pour le guide pas-à-pas (anonymisation, golden, lecture du rapport, Go/No-Go).
 
 ### Lecture des résultats
 
@@ -101,7 +101,7 @@ Inspirées des règles de la CNIL sur le choix d'un sous-traitant :
 | Fréquence | Action |
 |---|---|
 | Avant chaque bascule de provider | Benchmark complet |
-| À chaque nouveau modèle (Claude 5, Pixtral 2, …) | Benchmark partiel sur le nouveau modèle uniquement |
+| À chaque nouveau modèle (Pixtral 2, Mistral Medium 3 vision, …) | Benchmark partiel sur le nouveau modèle uniquement |
 | Annuelle | Benchmark complet pour la revue d'AIPD |
 | Sur demande DSI / DPD | Benchmark à la volée pour audit |
 
@@ -110,7 +110,7 @@ Inspirées des règles de la CNIL sur le choix d'un sous-traitant :
 - **Taille d'échantillon** : 15-30 fixtures restent peu pour des conclusions statistiquement robustes. Les tendances de fond se voient, mais pas les écarts fins.
 - **Représentativité** : choisir des fixtures vraiment représentatives de la production. Une seule mairie / un seul style de plans pénalise la généralisation.
 - **Drift** : les modèles évoluent silencieusement (mise à jour, A/B testing côté provider). Re-benchmarker au minimum annuellement.
-- **Coût caché** : ce harnais ne mesure pas le coût de réécriture des prompts pour s'adapter à un nouveau modèle. Pour Mistral Pixtral notamment, les prompts Claude doivent souvent être adaptés.
+- **Coût caché** : ce harnais ne mesure pas le coût de réécriture des prompts pour s'adapter à un nouveau modèle. Les prompts actuels ont été ajustés pour Pixtral Large — toute bascule vers un autre modèle (Mistral Medium 3, Llama Vision, …) demandera une nouvelle passe d'ajustement et un re-benchmark.
 
 ## Sécurité du benchmark
 

@@ -6,7 +6,7 @@ import { communes } from "./communes.js";
 // Trace fine de chaque appel LLM facturable : permet de calculer le coût IA
 // par dossier, par commune, par modèle, par usage métier (analyse de pièce,
 // extraction, verdicts règle-par-règle, ingestion PLU, structuration d'article…).
-// Inséré par le wrapper `callClaude()` dans apps/api/src/services/aiUsage.ts.
+// Inséré par les wrappers `callAi()` / `streamAi()` dans apps/api/src/services/aiUsage.ts.
 export const ai_usage_events = pgTable("ai_usage_events", {
   id: uuid("id").primaryKey().defaultRandom(),
   dossier_id: uuid("dossier_id").references(() => dossiers.id, { onDelete: "set null" }),
