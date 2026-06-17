@@ -2078,7 +2078,15 @@ export function NouvelleDemandeWizard() {
 
           {/* ───── STEP 7 : Documents (upload actif + analyse IA) ───── */}
           {step === 7 && (() => {
-            const pieces = classification?.pieces_requises ?? [];
+            // Affichage : les pièces OBLIGATOIRES d'abord, puis les FACULTATIVES.
+            // Les annexes libres ont leur propre encart plus bas — elles ne sont
+            // donc pas mélangées à cette liste. On stabilise l'ordre relatif par
+            // code (PC1, PC2, …) pour éviter les sauts visuels d'un rendu à l'autre.
+            const piecesRaw = classification?.pieces_requises ?? [];
+            const pieces = [...piecesRaw].sort((a, b) => {
+              if (a.requis !== b.requis) return a.requis ? -1 : 1;
+              return a.code.localeCompare(b.code, "fr", { numeric: true });
+            });
             const required = pieces.filter((p) => p.requis);
             const uploadedRequired = required.filter((p) => (uploadedPieces[p.code]?.length ?? 0) > 0).length;
             const annexes = uploadedPieces[ANNEXE_KEY] ?? [];

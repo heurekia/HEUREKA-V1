@@ -11,10 +11,12 @@ import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js"
 import { getStorageProvider } from "./storage.js";
 import {
   analyzePiece,
+  analyzePieceGroup,
   type PieceAnalysis,
   type PieceScore,
   type PieceContext,
   type RegulatoryRuleHint,
+  type PieceGroupDoc,
 } from "./pieceAnalyzer.js";
 import { loadZoneRulesWithInheritance } from "./zoneRules.js";
 import {
@@ -349,9 +351,48 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
     // 7. Construit l'index des pièces attendues par code (pour récupérer l'aide)
     const attenduesParCode = new Map(piecesAttendues.map((p) => [p.code, p]));
 
-    // 8. Analyse pièce par pièce
-    const piecesAnalyses = await mapWithConcurrency(piecesDeposees, MAX_PARALLEL, async (p) => {
+    // 8. Regroupement par emplacement (code_piece)
+    //
+    // Le citoyen peut déposer plusieurs fichiers dans la même case (ex : PC5 —
+    // un PDF par façade). On veut que l'IA évalue chaque emplacement COMME UN
+    // TOUT : l'info présente sur "Plan façade Sud" ne doit pas faire signaler
+    // comme manquante l'info qui figure sur "Plan façade Ouest" du même lot.
+    //
+    // Les fichiers sans code_piece (annexes libres) sont analysés
+    // individuellement (clé interne unique par pièce pour préserver le
+    // comportement existant).
+    interface PieceGroup {
+      key: string;                 // identifiant du regroupement
+      code_piece: string;          // code "officiel" du slot, "" si annexe libre
+      pieces: typeof piecesDeposees;
+    }
+    const groupsByKey = new Map<string, PieceGroup>();
+    for (const p of piecesDeposees) {
       const code = p.code_piece ?? "";
+      // Annexes sans code : chaque fichier reste son propre "lot" — pas de
+      // regroupement arbitraire qui mélangerait des documents sans rapport.
+      const key = code ? `code:${code}` : `lone:${p.id}`;
+      let g = groupsByKey.get(key);
+      if (!g) {
+        g = { key, code_piece: code, pieces: [] };
+        groupsByKey.set(key, g);
+      }
+      g.pieces.push(p);
+    }
+    const groups = Array.from(groupsByKey.values());
+
+    // Lit un buffer depuis le StorageProvider (avec fallback disque legacy).
+    const storage = getStorageProvider();
+    const readBuffer = async (url: string): Promise<Buffer | null> => {
+      try { return await storage.getBuffer(storage.keyFromUrl(url)); } catch {}
+      const diskPath = urlToDiskPath(url);
+      if (!diskPath) return null;
+      try { return await (await import("node:fs")).promises.readFile(diskPath); } catch { return null; }
+    };
+
+    // 9. Analyse par groupe, puis mapping du résultat à chaque pièce du groupe
+    const piecesAnalysesNested = await mapWithConcurrency(groups, MAX_PARALLEL, async (group) => {
+      const code = group.code_piece;
       const attendue = code ? attenduesParCode.get(code) : undefined;
       const reglesPiece = filterRulesForPiece(rules, code);
       const ctx: PieceContext = {
@@ -365,24 +406,77 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
         hasABF: piecesCtx.hasABF,
         regles: reglesPiece,
       };
-      // Lecture du fichier via StorageProvider (local OU S3). On retombe sur
-      // le chemin disque pour les très anciens enregistrements si jamais
-      // l'URL est cassée.
-      const storage = getStorageProvider();
-      let pieceBuffer: Buffer | null = null;
-      try {
-        pieceBuffer = await storage.getBuffer(storage.keyFromUrl(p.url));
-      } catch {
-        // Fallback legacy : tente le chemin disque historique.
-        const diskPath = urlToDiskPath(p.url);
-        if (diskPath) {
-          try { pieceBuffer = await import("node:fs").then((fs) => fs.promises.readFile(diskPath)); }
-          catch { pieceBuffer = null; }
-        }
+
+      // Charge tous les fichiers du groupe. Les fichiers introuvables ressortent
+      // en non_conforme individuellement et ne polluent pas l'analyse du lot.
+      const loaded: Array<{ p: typeof piecesDeposees[number]; buf: Buffer | null }> = [];
+      for (const p of group.pieces) {
+        loaded.push({ p, buf: await readBuffer(p.url) });
       }
-      let result: ConformitePieceReport;
-      if (!pieceBuffer) {
-        result = {
+      const available = loaded.filter((x) => x.buf !== null) as Array<{ p: typeof piecesDeposees[number]; buf: Buffer }>;
+      const missing = loaded.filter((x) => x.buf === null);
+
+      // Cas dégradé : aucun fichier lisible.
+      if (available.length === 0) {
+        return loaded.map(({ p }) => ({
+          piece_id: p.id,
+          code_piece: p.code_piece,
+          nom: p.nom,
+          score: "non_conforme" as PieceScore,
+          commentaire: "Fichier non localisable sur le serveur.",
+          suggestions: ["Re-déposer la pièce."],
+          non_conformites: undefined,
+          reglementaire: false,
+          error: "FILE_NOT_FOUND",
+        } satisfies ConformitePieceReport));
+      }
+
+      let groupAnalysis: PieceAnalysis;
+      let analysisError: string | null = null;
+      try {
+        const docs: PieceGroupDoc[] = available.map(({ p, buf }) => ({
+          buf,
+          mimeType: p.type,
+          nom: p.nom,
+        }));
+        groupAnalysis = await analyzePieceGroup(docs, code, ctx, { dossierId, communeId: resolvedCommuneId });
+      } catch (err) {
+        analysisError = err instanceof Error ? err.message : String(err);
+        groupAnalysis = {
+          score: "acceptable",
+          commentaire: "Analyse automatique indisponible — vérification manuelle requise.",
+          suggestions: [],
+          reglementaire: false,
+        };
+      }
+
+      // Persiste l'analyse de groupe sur CHAQUE pièce du lot : l'UI dépôt
+      // (citoyen ET mairie) montre la même conclusion à tous les fichiers du
+      // même emplacement, ce qui reflète bien que l'évaluation est collective.
+      if (!analysisError) {
+        await Promise.all(available.map(({ p }) =>
+          db.update(dossier_pieces_jointes)
+            .set({ analyse_ia: groupAnalysis })
+            .where(eq(dossier_pieces_jointes.id, p.id)),
+        ));
+      }
+
+      const reports: ConformitePieceReport[] = [];
+      for (const { p } of available) {
+        reports.push({
+          piece_id: p.id,
+          code_piece: p.code_piece,
+          nom: p.nom,
+          score: groupAnalysis.score,
+          commentaire: groupAnalysis.commentaire,
+          suggestions: groupAnalysis.suggestions,
+          non_conformites: groupAnalysis.non_conformites,
+          reglementaire: groupAnalysis.reglementaire ?? false,
+          ...(analysisError ? { error: analysisError.slice(0, 200) } : {}),
+        });
+      }
+      for (const { p } of missing) {
+        reports.push({
           piece_id: p.id,
           code_piece: p.code_piece,
           nom: p.nom,
@@ -392,42 +486,11 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
           non_conformites: undefined,
           reglementaire: false,
           error: "FILE_NOT_FOUND",
-        };
-      } else {
-        try {
-          const analysis = await analyzePiece(pieceBuffer, p.type, p.nom, code, ctx, { dossierId, communeId: resolvedCommuneId });
-          result = {
-            piece_id: p.id,
-            code_piece: p.code_piece,
-            nom: p.nom,
-            score: analysis.score,
-            commentaire: analysis.commentaire,
-            suggestions: analysis.suggestions,
-            non_conformites: analysis.non_conformites,
-            reglementaire: analysis.reglementaire ?? false,
-          };
-          // Persiste l'analyse mise à jour sur la pièce (utilisable côté UI dépôt aussi)
-          await db
-            .update(dossier_pieces_jointes)
-            .set({ analyse_ia: analysis })
-            .where(eq(dossier_pieces_jointes.id, p.id));
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          result = {
-            piece_id: p.id,
-            code_piece: p.code_piece,
-            nom: p.nom,
-            score: "acceptable",
-            commentaire: "Analyse automatique indisponible — vérification manuelle requise.",
-            suggestions: [],
-            non_conformites: undefined,
-            reglementaire: false,
-            error: msg.slice(0, 200),
-          };
-        }
+        });
       }
-      return result;
+      return reports;
     });
+    const piecesAnalyses = piecesAnalysesNested.flat();
 
     // 9. Score global
     const scores = piecesAnalyses.map((p) => p.score);
