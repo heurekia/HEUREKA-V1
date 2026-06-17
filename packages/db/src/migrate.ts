@@ -437,6 +437,16 @@ CREATE INDEX IF NOT EXISTS idx_decision_events_decision_id ON decision_events(de
 -- Cache GPU zones PLU par commune (survit aux redémarrages serveur)
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_zones_geojson jsonb;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_zones_cached_at timestamp;
+-- Partition GPU "gagnante" pour la commune (DU_<INSEE>, <SIREN>_PLUI, etc.).
+-- Persistée pour court-circuiter la découverte par point dans le flux par adresse,
+-- où le /document GPU est fragile sur un Point (voirie, bord de commune,
+-- conventions de nommage hétérogènes).
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_partition text;
+-- Raison stable d'indisponibilité du PLU pour cette commune :
+--   'rnu' : commune en RNU, pas de PLU à chercher
+--   'not_in_gpu' : aucune partition trouvée côté Géoportail (commune sans PLU déposé)
+--   NULL : PLU disponible ou statut inconnu (échec transient sans diagnostic)
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_unavailable_reason text;
 
 -- Référentiel documentaire par commune (PPRI, OAP, PEB, etc.)
 CREATE TABLE IF NOT EXISTS commune_documents (

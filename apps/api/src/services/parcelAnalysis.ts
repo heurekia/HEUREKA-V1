@@ -21,6 +21,7 @@ import { eq, and, ilike, sql } from "drizzle-orm";
 import { calculateBuildability, type BuildabilityInput } from "./buildability.js";
 import { computeBuiltFootprintM2 } from "./buildingFootprint.js";
 import { loadZoneRulesWithInheritance, pickMostSpecificRule } from "./zoneRules.js";
+import { getCommunePluContext, findZoneAtPoint, type PluCommuneContext } from "./pluZones.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -1263,14 +1264,33 @@ export async function analyseParcel(
       gpuPayload = cached.payload;
       gpuFromCache = true;
     } else {
-      // Try live GPU API
-      const { pluPartition, scotName } = await getGpuDocuments(lat, lng);
-      const gpuPartition = pluPartition ?? (code_insee ? `DU_${code_insee}` : undefined);
-      const gpuAvailable = pluPartition !== null || await findPluZone(lat, lng, gpuPartition).then(z => z !== null).catch(() => false);
+      // ── Partition resolution (multi-source, never gives up early) ──────────
+      // (1) Tente la découverte par point — chemin rapide quand ça marche.
+      // (2) Sinon, demande au cache commune (peuplé par refreshPluZones) qui
+      //     gère lui-même les 5 conventions de nommage + EPCI SIREN.
+      // (3) Sinon, fallback historique sur DU_<INSEE> en dernier recours.
+      const { pluPartition: pointPartition, scotName } = await getGpuDocuments(lat, lng);
+      let communeCtx: PluCommuneContext | null = null;
+      let resolvedPartition: string | null = pointPartition;
+      if (!resolvedPartition && code_insee) {
+        communeCtx = await getCommunePluContext(code_insee);
+        resolvedPartition = communeCtx.partition;
+      }
+      const gpuPartition = resolvedPartition ?? (code_insee ? `DU_${code_insee}` : undefined);
+      const gpuAvailable = resolvedPartition !== null || await findPluZone(lat, lng, gpuPartition).then(z => z !== null).catch(() => false);
 
       if (gpuAvailable || !cached) {
         // GPU is responding — fetch all data
-        const zone = await findPluZone(lat, lng, gpuPartition);
+        let zone = await findPluZone(lat, lng, gpuPartition);
+        // Fallback ultime : si /zone-urba ne trouve rien au point (point sur
+        // voirie, bord de zone), on cherche localement dans les zones cachées
+        // de la commune. Point-in-polygon déterministe, gratuit, immunisé
+        // contre les bizarreries du filtre spatial GPU.
+        if (!zone && code_insee) {
+          if (!communeCtx) communeCtx = await getCommunePluContext(code_insee);
+          const local = findZoneAtPoint(communeCtx.zones, lat, lng);
+          if (local) zone = local;
+        }
         const parcelGeom = result.parcel?.geometry ?? null;
 
         const [municipality, prescriptions, informations] = await Promise.all([
@@ -1290,7 +1310,7 @@ export async function analyseParcel(
           generateurs = Object.fromEntries(genMap.entries());
         }
 
-        gpuPayload = { pluPartition, scotName, zone_urba: zone, municipality, prescriptions, informations, sup_surf: supSurf, sup_lin: supLin, generateurs };
+        gpuPayload = { pluPartition: resolvedPartition, scotName, zone_urba: zone, municipality, prescriptions, informations, sup_surf: supSurf, sup_lin: supLin, generateurs };
 
         // Only cache a COMPLETE payload. A null municipality while a zone exists
         // signals a transient GPU failure on the supplementary layers (commune,
@@ -1298,7 +1318,7 @@ export async function analyseParcel(
         // with empty data served as "fresh". In that case we still display what we
         // have, but skip the write so the next request retries live.
         const gpuComplete = municipality !== null;
-        if ((zone || pluPartition) && gpuComplete) {
+        if ((zone || resolvedPartition) && gpuComplete) {
           writeGpuCache(cacheKey, result.parcel?.parcelle_id, gpuPayload);
         } else if (!gpuComplete) {
           result.warnings.push(
