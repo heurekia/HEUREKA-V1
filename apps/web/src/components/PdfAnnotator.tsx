@@ -18,7 +18,19 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 
 // Mémoïsé en constante module pour éviter qu'à chaque rerender, pdfjs
 // recharge tout (Document compare options par référence d'objet).
-const PDF_OPTIONS = { withCredentials: true } as const;
+//
+//  - withCredentials : cookies envoyés (cf. fix précédent /api/uploads).
+//  - disableRange / disableStream : pdfjs demande par défaut les pages en
+//    byte ranges progressives. Nos routes (/api/uploads, /api/mairie/
+//    documents/:id/pdf) streament le fichier d'un bloc sans répondre aux
+//    Range headers, ce qui surface en "Missing PDF". On force le téléchar-
+//    gement complet en une seule requête : c'est moins « progressif »
+//    mais robuste et nos PDFs PLU/PPRI/pièces tiennent < 20 Mo.
+const PDF_OPTIONS = {
+  withCredentials: true,
+  disableRange: true,
+  disableStream: true,
+} as const;
 
 type AnnotationKind = "correction" | "precision" | "jurisprudence" | "note_perso";
 type AnnotationVisibility = "private" | "shared";
