@@ -123,6 +123,7 @@ export function RegulatoryDocViewer({ communeName, selectedDocId, onSelectDoc, p
             key={selected.id}
             fileUrl={`/api/mairie/documents/${selected.id}/pdf`}
             initialPage={typeof page === "number" && page > 0 ? page : 1}
+            documentId={selected.id}
           />
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-gray-400 p-8">
