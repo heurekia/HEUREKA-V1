@@ -443,7 +443,10 @@ export async function syncDossierFacts(dossierId: string): Promise<SyncReport> {
   const pieces = await db
     .select({ id: dossier_pieces_jointes.id, nom: dossier_pieces_jointes.nom, extraction_ia: dossier_pieces_jointes.extraction_ia })
     .from(dossier_pieces_jointes)
-    .where(eq(dossier_pieces_jointes.dossier_id, dossierId));
+    .where(and(
+      eq(dossier_pieces_jointes.dossier_id, dossierId),
+      isNull(dossier_pieces_jointes.archived_at),
+    ));
   for (const p of pieces) {
     const piece: PieceForFacts = { id: p.id, nom: p.nom, extraction_ia: p.extraction_ia as PieceExtraction | null };
     candidates.push(...extractFactsFromPiece(piece));

@@ -21,6 +21,10 @@ export interface PieceLite {
   type: string;
   code_piece: string | null;
   instructeur_status: string | null;
+  // Renseigné quand la pièce a été remplacée par un nouveau dépôt suite à une
+  // demande de complément. Sert à afficher un bandeau "version archivée" dans
+  // le viewer et à filtrer les listes principales côté UI.
+  archived_at?: string | null;
 }
 
 interface Props {
@@ -85,6 +89,11 @@ export function PieceViewer({ piece, onExpand }: Props) {
 
   return (
     <div className="flex flex-col h-full min-h-[420px] rounded-xl border border-gray-200 bg-white overflow-hidden">
+      {piece.archived_at && (
+        <div className="px-3 py-1.5 text-[11px] bg-amber-50 border-b border-amber-200 text-amber-900">
+          Version archivée — cette pièce a été remplacée par un nouveau dépôt suite à une demande de complément.
+        </div>
+      )}
       {/* Barre d'outils du viewer */}
       <div className="flex items-center justify-between gap-3 px-3 py-2 border-b border-gray-200 bg-gray-50">
         <div className="flex items-center gap-2 min-w-0 flex-1">

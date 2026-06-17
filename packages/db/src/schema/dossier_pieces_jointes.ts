@@ -25,5 +25,11 @@ export const dossier_pieces_jointes = pgTable("dossier_pieces_jointes", {
   // RGPD : trace par pièce de l'exécution effective d'une analyse IA.
   // false = le citoyen a refusé OU le format n'est pas analysable.
   ai_processed: boolean("ai_processed").notNull().default(false),
+  // Versioning : quand l'instructeur demande un complément sur une pièce et
+  // que le pétitionnaire en redépose une nouvelle pour le même slot, l'ancienne
+  // est archivée (jamais supprimée — audit RGPD). archived_by_piece_id pointe
+  // sur la pièce qui l'a remplacée, pour reconstruire la chronologie.
+  archived_at: timestamp("archived_at"),
+  archived_by_piece_id: uuid("archived_by_piece_id"),
   uploaded_at: timestamp("uploaded_at").notNull().defaultNow(),
 });

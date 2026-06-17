@@ -339,48 +339,159 @@ function ConformitePanel({ dossierId }: { dossierId: string }) {
 
 // ── Liste des pièces du dossier — sélection de la pièce active ───────────────
 //
-// Rendue compacte volontairement : ne consomme pas de place pour qu'on garde
-// l'essentiel à l'écran (visualiseur + documentation). Le filtre sur les
-// pièces déjà validées vs en attente d'examen est volontairement absent : c'est
-// une vue d'instruction, pas un dashboard.
+// Pour éviter le bruit visuel quand l'instruction avance, les pièces sont
+// rangées dans quatre sections dépliantes selon le statut posé par
+// l'instructeur (à examiner / acceptées / refusées / compléments demandés).
+// Par défaut "à examiner" et "compléments demandés" sont ouverts (état chaud
+// de l'instruction), les autres pliées. À l'intérieur de chaque section, on
+// garde le regroupement par rubrique (PC1, PC2, …) pour préserver la lecture
+// "bordereau" : on n'ajoute jamais d'organisation sans en justifier l'utilité.
+//
+// Les pièces archivées (anciennes versions remplacées suite à un complément)
+// sont chargées à la demande via le bouton dédié en pied de liste.
+
+type PieceStatusKey = "a_examiner" | "valide" | "complement_demande" | "rejete";
+
+const STATUS_SECTIONS: ReadonlyArray<{
+  key: PieceStatusKey;
+  label: string;
+  variant: "default" | "success" | "warning" | "danger";
+  defaultOpen: boolean;
+}> = [
+  { key: "a_examiner",         label: "À examiner",          variant: "default", defaultOpen: true },
+  { key: "complement_demande", label: "Compléments demandés", variant: "warning", defaultOpen: true },
+  { key: "valide",             label: "Acceptées",            variant: "success", defaultOpen: false },
+  { key: "rejete",             label: "Refusées",             variant: "danger",  defaultOpen: false },
+];
+
+function statusKeyOf(p: PieceLite): PieceStatusKey {
+  switch (p.instructeur_status) {
+    case "valide": return "valide";
+    case "rejete": return "rejete";
+    case "complement_demande": return "complement_demande";
+    default: return "a_examiner";
+  }
+}
+
+interface SlotGroup {
+  code: string | null;
+  label: string;
+  files: PieceLite[];
+}
+
+// Regroupement par emplacement (code_piece). Tri : codifiées d'abord (PC1, …),
+// annexes libres ensuite. À l'intérieur d'un groupe, ordre d'origine (desc par
+// date d'upload côté API).
+function groupBySlot(pieces: PieceLite[]): SlotGroup[] {
+  const map = new Map<string, SlotGroup>();
+  for (const p of pieces) {
+    const code = p.code_piece && p.code_piece.length > 0 ? p.code_piece : null;
+    const key = code ?? `__annexe_${p.id}__`;
+    let g = map.get(key);
+    if (!g) {
+      const dash = p.nom.indexOf(" - ");
+      const label = code
+        ? (dash > 0 ? p.nom.slice(0, dash).trim() : p.nom)
+        : (dash > 0 ? p.nom.slice(dash + 3).trim() : p.nom);
+      g = { code, label, files: [] };
+      map.set(key, g);
+    }
+    g.files.push(p);
+  }
+  return Array.from(map.values()).sort((a, b) => {
+    if ((a.code === null) !== (b.code === null)) return a.code === null ? 1 : -1;
+    return (a.code ?? "").localeCompare(b.code ?? "", "fr", { numeric: true });
+  });
+}
+
 function PiecesList({
   pieces,
   selectedId,
   onSelect,
+  archived,
+  archivedLoading,
+  onLoadArchived,
 }: {
   pieces: PieceLite[];
   selectedId: string | null;
   onSelect: (id: string) => void;
+  archived: PieceLite[] | null;
+  archivedLoading: boolean;
+  onLoadArchived: () => void;
 }) {
-  // Regroupement par emplacement (code_piece). Permet à l'instructeur de voir
-  // d'un coup d'œil tous les fichiers déposés dans le MÊME case du bordereau —
-  // par ex. un PDF par façade dans PC5. Tri : codifiées d'abord (PC1, PC2, …),
-  // annexes libres ensuite. À l'intérieur d'un groupe, ordre d'origine (qui est
-  // l'ordre desc par date d'upload renvoyé par l'API).
-  const groups = (() => {
-    const map = new Map<string, { code: string | null; label: string; files: PieceLite[] }>();
-    for (const p of pieces) {
-      const code = p.code_piece && p.code_piece.length > 0 ? p.code_piece : null;
-      const key = code ?? `__annexe_${p.id}__`;
-      let g = map.get(key);
-      if (!g) {
-        // Libellé du slot : extrait du nom métier "Libellé - fichier.pdf".
-        // Pour les annexes libres : on garde le nom complet (pas de séparateur
-        // " - " : c'est un fichier isolé).
-        const dash = p.nom.indexOf(" - ");
-        const label = code
-          ? (dash > 0 ? p.nom.slice(0, dash).trim() : p.nom)
-          : (dash > 0 ? p.nom.slice(dash + 3).trim() : p.nom);
-        g = { code, label, files: [] };
-        map.set(key, g);
-      }
-      g.files.push(p);
-    }
-    return Array.from(map.values()).sort((a, b) => {
-      if ((a.code === null) !== (b.code === null)) return a.code === null ? 1 : -1;
-      return (a.code ?? "").localeCompare(b.code ?? "", "fr", { numeric: true });
-    });
-  })();
+  const [open, setOpen] = useState<Record<PieceStatusKey, boolean>>(() => {
+    const init = {} as Record<PieceStatusKey, boolean>;
+    for (const s of STATUS_SECTIONS) init[s.key] = s.defaultOpen;
+    return init;
+  });
+  const [showArchived, setShowArchived] = useState(false);
+
+  // Partition par statut puis groupage par slot — on évite ainsi le double
+  // recalcul à chaque toggle de section.
+  const byStatus = useMemo(() => {
+    const buckets: Record<PieceStatusKey, PieceLite[]> = {
+      a_examiner: [], valide: [], complement_demande: [], rejete: [],
+    };
+    for (const p of pieces) buckets[statusKeyOf(p)].push(p);
+    const out = {} as Record<PieceStatusKey, SlotGroup[]>;
+    for (const k of Object.keys(buckets) as PieceStatusKey[]) out[k] = groupBySlot(buckets[k]);
+    return out;
+  }, [pieces]);
+
+  const archivedGroups = useMemo(
+    () => (archived && archived.length > 0 ? groupBySlot(archived) : []),
+    [archived],
+  );
+
+  const renderSlot = (g: SlotGroup, opts?: { archived?: boolean }) => (
+    <div key={(opts?.archived ? "a:" : "") + (g.code ?? g.files[0]!.id)}>
+      {/* En-tête de groupe : code + libellé du slot */}
+      <div className="flex items-center gap-2 px-2 py-1">
+        {g.code ? (
+          <span className="font-mono text-[10px] font-bold text-heureka-700 bg-heureka-50 border border-heureka-200 rounded px-1.5 py-0.5 shrink-0">
+            {g.code}
+          </span>
+        ) : (
+          <span className="font-mono text-[10px] font-bold text-gray-500 bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5 shrink-0">
+            ANNEXE
+          </span>
+        )}
+        <span className="text-[11px] font-semibold text-gray-600 truncate" title={g.label}>
+          {g.label}
+        </span>
+        {g.files.length > 1 && (
+          <span className="text-[10px] text-gray-400 shrink-0">· {g.files.length} fichiers</span>
+        )}
+      </div>
+      <ul>
+        {g.files.map((p) => {
+          const active = p.id === selectedId;
+          const dash = p.nom.indexOf(" - ");
+          const filename = dash > 0 ? p.nom.slice(dash + 3).trim() : p.nom;
+          return (
+            <li key={p.id}>
+              <button
+                type="button"
+                onClick={() => onSelect(p.id)}
+                className={`w-full text-left pl-5 pr-3 py-1.5 rounded-md transition-colors ${
+                  active ? "bg-heureka-50 ring-1 ring-heureka-500/40" : "hover:bg-gray-50"
+                } ${opts?.archived ? "opacity-60" : ""}`}
+                aria-current={active ? "true" : undefined}
+              >
+                <div className="flex items-center gap-2">
+                  <span className="text-sm text-[#000020] truncate flex-1" title={filename}>{filename}</span>
+                  {opts?.archived && <span className="text-[10px] text-gray-400 italic shrink-0">archivée</span>}
+                  {!opts?.archived && p.instructeur_status === "valide" && <Badge variant="success">✓</Badge>}
+                  {!opts?.archived && p.instructeur_status === "rejete" && <Badge variant="danger">!</Badge>}
+                  {!opts?.archived && p.instructeur_status === "complement_demande" && <Badge variant="warning">?</Badge>}
+                </div>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
+    </div>
+  );
 
   return (
     <Card className="border-gray-200/80">
@@ -394,57 +505,72 @@ function PiecesList({
         {pieces.length === 0 ? (
           <p className="text-sm text-gray-400 p-4 text-center">Aucune pièce déposée.</p>
         ) : (
-          <div className="max-h-[520px] overflow-y-auto space-y-2">
-            {groups.map((g) => (
-              <div key={g.code ?? g.files[0]!.id}>
-                {/* En-tête de groupe : code + libellé du slot */}
-                <div className="flex items-center gap-2 px-2 py-1">
-                  {g.code ? (
-                    <span className="font-mono text-[10px] font-bold text-heureka-700 bg-heureka-50 border border-heureka-200 rounded px-1.5 py-0.5 shrink-0">
-                      {g.code}
+          <div className="max-h-[520px] overflow-y-auto">
+            {STATUS_SECTIONS.map((s) => {
+              const groups = byStatus[s.key];
+              const count = groups.reduce((n, g) => n + g.files.length, 0);
+              const isOpen = open[s.key];
+              return (
+                <div key={s.key} className="border-b border-gray-100 last:border-b-0">
+                  <button
+                    type="button"
+                    onClick={() => setOpen((prev) => ({ ...prev, [s.key]: !prev[s.key] }))}
+                    className="w-full flex items-center gap-2 px-2 py-2 hover:bg-gray-50 text-left"
+                    aria-expanded={isOpen}
+                  >
+                    {isOpen ? (
+                      <ChevronDown className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                    ) : (
+                      <ChevronRight className="w-3.5 h-3.5 text-gray-400 shrink-0" />
+                    )}
+                    <Badge variant={s.variant}>{s.label}</Badge>
+                    <span className="text-[11px] text-gray-500 ml-auto tabular-nums">
+                      {count}
                     </span>
-                  ) : (
-                    <span className="font-mono text-[10px] font-bold text-gray-500 bg-gray-100 border border-gray-200 rounded px-1.5 py-0.5 shrink-0">
-                      ANNEXE
-                    </span>
-                  )}
-                  <span className="text-[11px] font-semibold text-gray-600 truncate" title={g.label}>
-                    {g.label}
-                  </span>
-                  {g.files.length > 1 && (
-                    <span className="text-[10px] text-gray-400 shrink-0">· {g.files.length} fichiers</span>
+                  </button>
+                  {isOpen && (
+                    count === 0 ? (
+                      <p className="text-[11px] text-gray-400 italic px-7 pb-2">Aucune pièce dans cette section.</p>
+                    ) : (
+                      <div className="pb-2 space-y-2">{groups.map((g) => renderSlot(g))}</div>
+                    )
                   )}
                 </div>
-                <ul>
-                  {g.files.map((p) => {
-                    const active = p.id === selectedId;
-                    // Affiche le nom de fichier d'origine (après " - "), pas
-                    // la rubrique : déjà visible dans l'en-tête de groupe.
-                    const dash = p.nom.indexOf(" - ");
-                    const filename = dash > 0 ? p.nom.slice(dash + 3).trim() : p.nom;
-                    return (
-                      <li key={p.id}>
-                        <button
-                          type="button"
-                          onClick={() => onSelect(p.id)}
-                          className={`w-full text-left pl-5 pr-3 py-1.5 rounded-md transition-colors ${
-                            active ? "bg-heureka-50 ring-1 ring-heureka-500/40" : "hover:bg-gray-50"
-                          }`}
-                          aria-current={active ? "true" : undefined}
-                        >
-                          <div className="flex items-center gap-2">
-                            <span className="text-sm text-[#000020] truncate flex-1" title={filename}>{filename}</span>
-                            {p.instructeur_status === "valide" && <Badge variant="success">✓</Badge>}
-                            {p.instructeur_status === "rejete" && <Badge variant="danger">!</Badge>}
-                            {p.instructeur_status === "complement_demande" && <Badge variant="warning">?</Badge>}
-                          </div>
-                        </button>
-                      </li>
-                    );
-                  })}
-                </ul>
-              </div>
-            ))}
+              );
+            })}
+
+            {/* Versions archivées — anciennes pièces remplacées par un nouvel
+                import après une demande de complément. Cachées par défaut. */}
+            <div className="pt-2">
+              <button
+                type="button"
+                onClick={() => {
+                  if (!showArchived && archived === null) onLoadArchived();
+                  setShowArchived((v) => !v);
+                }}
+                className="w-full flex items-center gap-2 px-2 py-1.5 text-[11px] text-gray-500 hover:bg-gray-50 rounded-md"
+              >
+                {showArchived ? (
+                  <ChevronDown className="w-3 h-3 text-gray-400" />
+                ) : (
+                  <ChevronRight className="w-3 h-3 text-gray-400" />
+                )}
+                <span>
+                  {archivedLoading
+                    ? "Chargement des versions précédentes…"
+                    : archived === null
+                      ? "Afficher les versions précédentes"
+                      : archived.length === 0
+                        ? "Aucune version précédente"
+                        : `Versions précédentes (${archived.length})`}
+                </span>
+              </button>
+              {showArchived && archivedGroups.length > 0 && (
+                <div className="mt-1 space-y-2 border-t border-dashed border-gray-200 pt-2">
+                  {archivedGroups.map((g) => renderSlot(g, { archived: true }))}
+                </div>
+              )}
+            </div>
           </div>
         )}
       </CardContent>
@@ -457,6 +583,10 @@ export function MairieDossierDetail() {
   const [dossier, setDossier] = useState<any>(null);
   const [loading, setLoading] = useState(true);
   const [pieces, setPieces] = useState<PieceLite[]>([]);
+  // Versions archivées — chargées à la demande seulement. null = non encore
+  // demandé, [] = chargé mais vide.
+  const [archivedPieces, setArchivedPieces] = useState<PieceLite[] | null>(null);
+  const [archivedLoading, setArchivedLoading] = useState(false);
   const [selectedPieceId, setSelectedPieceId] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   // Bascule entre la vue « Instruction » (pièces / viewer / documentation) et
@@ -483,9 +613,29 @@ export function MairieDossierDetail() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [id]);
 
+  const loadArchived = useCallback(() => {
+    if (!id || archivedLoading || archivedPieces !== null) return;
+    setArchivedLoading(true);
+    api.get<PieceLite[]>(`/mairie/dossiers/${id}/pieces?include_archived=1`)
+      .then((all) => {
+        // L'API renvoie tout (archivées + actives) ; on ne retient que les
+        // archivées pour ne pas dupliquer la liste principale.
+        setArchivedPieces(all.filter((p) => !!p.archived_at));
+      })
+      .catch((e) => {
+        console.error(e);
+        setArchivedPieces([]);
+      })
+      .finally(() => setArchivedLoading(false));
+  }, [id, archivedLoading, archivedPieces]);
+
+  // L'utilisateur peut sélectionner une pièce active OU une archivée (pour
+  // consulter une ancienne version dans le viewer). On cherche dans les deux.
   const selectedPiece = useMemo(
-    () => pieces.find((p) => p.id === selectedPieceId) ?? null,
-    [pieces, selectedPieceId],
+    () => pieces.find((p) => p.id === selectedPieceId)
+      ?? archivedPieces?.find((p) => p.id === selectedPieceId)
+      ?? null,
+    [pieces, archivedPieces, selectedPieceId],
   );
 
   if (loading) return <div className="text-center py-12 text-gray-400">Chargement...</div>;
@@ -532,7 +682,14 @@ export function MairieDossierDetail() {
         <div className="grid lg:grid-cols-12 gap-4">
           {/* Colonne 1 — Liste des pièces */}
           <div className="lg:col-span-3">
-            <PiecesList pieces={pieces} selectedId={selectedPieceId} onSelect={setSelectedPieceId} />
+            <PiecesList
+              pieces={pieces}
+              selectedId={selectedPieceId}
+              onSelect={setSelectedPieceId}
+              archived={archivedPieces}
+              archivedLoading={archivedLoading}
+              onLoadArchived={loadArchived}
+            />
           </div>
 
           {/* Colonne 2 — Visualiseur de la pièce */}

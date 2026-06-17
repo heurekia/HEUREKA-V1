@@ -1,6 +1,6 @@
 import path from "path";
 import { fileURLToPath } from "url";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   dossiers,
@@ -313,11 +313,15 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
     const piecesCtx = buildPiecesContext(natures, surface, servitudes, undefined, situational);
     const piecesAttendues = getPiecesForType(dossier.type, piecesCtx).filter((p) => p.requis);
 
-    // 4. Pièces déposées
+    // 4. Pièces déposées (hors archives — une pièce remplacée suite à une
+    // demande de complément ne doit plus peser dans le décompte).
     const piecesDeposees = await db
       .select()
       .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.dossier_id, dossierId));
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossierId),
+        isNull(dossier_pieces_jointes.archived_at),
+      ));
     const piecesParCode = new Map<string, typeof piecesDeposees[number]>();
     for (const p of piecesDeposees) if (p.code_piece) piecesParCode.set(p.code_piece, p);
 
