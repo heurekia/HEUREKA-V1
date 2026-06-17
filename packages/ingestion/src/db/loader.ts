@@ -1,5 +1,5 @@
 /**
- * Loader — upserts Segments into document_segments with their voyage-3 embedding.
+ * Loader — upserts Segments into document_segments with their Mistral embedding.
  * Idempotent on `id` (re-running replaces a segment in place). pgvector + the
  * table must exist (run `pnpm --filter @heureka-v1/db migrate` first).
  */
@@ -18,7 +18,7 @@ export async function loadSegments(segments: Segment[], opts: { batchSize?: numb
 
   for (let i = 0; i < segments.length; i += batchSize) {
     const batch = segments.slice(i, i + batchSize);
-    const embeddings = await embedTexts(batch.map((s) => s.embedding_text), "document");
+    const embeddings = await embedTexts(batch.map((s) => s.embedding_text));
 
     const rows = batch.map((s, j) => ({
       id: s.id,

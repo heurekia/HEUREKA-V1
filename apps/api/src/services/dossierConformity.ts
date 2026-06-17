@@ -577,7 +577,7 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
         // sont sémantiquement proches du contexte du dossier (zone + nature).
         // Plus précis et moins coûteux que d'envoyer les PDFs entiers ;
         // intègre aussi les annotations chunk-level validées. Best-effort :
-        // une panne Voyage ne bloque pas le verdict.
+        // une panne Mistral ne bloque pas le verdict.
         let regulatoryHits: VerdictRegulatoryHit[] = [];
         if (communeInsee) {
           try {

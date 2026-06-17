@@ -122,7 +122,7 @@ Ce plan décrit la suite de la migration, avec des phases indépendantes qu'on p
 - Frontend Vite buildé et servi par nginx
 - Sauvegardes 3-2-1 chiffrées GPG vers OVH Object Storage (cf. `infra/backup/`)
 
-**Variables d'environnement déployées** : `JWT_SECRET`, `DATABASE_URL`, `MISTRAL_API_KEY`, `RESEND_API_KEY` (en attente de bascule Brevo), `PISTE_CLIENT_ID/SECRET`, `VOYAGE_API_KEY`. Stockées dans `/opt/heureka/apps/api/.env` (mode 600, propriétaire root).
+**Variables d'environnement déployées** : `JWT_SECRET`, `DATABASE_URL`, `MISTRAL_API_KEY` (mutualisée inférence LLM + embeddings RAG depuis la bascule Voyage → Mistral), `RESEND_API_KEY` (en attente de bascule Brevo), `PISTE_CLIENT_ID/SECRET`. Stockées dans `/opt/heureka/apps/api/.env` (mode 600, propriétaire root).
 
 **Budget effectif** :
 - VPS OVH `VPS Comfort` (4 vCPU, 8 Go RAM, 160 Go SSD) : ~12 €/mois

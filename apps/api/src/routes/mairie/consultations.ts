@@ -86,7 +86,7 @@ consultationsRouter.post("/documents", async (req: AuthRequest, res) => {
     res.json(doc);
 
     // Indexation RAG en arrière-plan : on a déjà répondu au client. Si ça
-    // échoue (Voyage HS, PDF illisible…), on log et on met le statut en
+    // échoue (Mistral HS, PDF illisible…), on log et on met le statut en
     // "indexing_error" — le doc reste dans la liste avec un badge clair.
     if (pdf_base64 && doc) {
       void (async () => {

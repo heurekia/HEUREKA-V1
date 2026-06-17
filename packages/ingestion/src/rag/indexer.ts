@@ -52,7 +52,7 @@ const SEGMENT_ID = (sourceId: string, chunkIndex: number) =>
  * Indexe un document complet. Effectue dans cet ordre :
  *  1. chunk_pages (pure)
  *  2. delete des anciens segments de ce source_id (idempotence)
- *  3. embed Voyage-3 par lots
+ *  3. embed Mistral `mistral-embed` par lots
  *  4. upsert pgvector
  */
 export async function indexDocument(p: IndexParams): Promise<IndexResult> {
@@ -71,10 +71,7 @@ export async function indexDocument(p: IndexParams): Promise<IndexResult> {
   await deleteIndexFor(p.source_id);
 
   // Embeddings par lots (le batcher interne de embedTexts gère MAX_BATCH=128).
-  const embeddings = await embedTexts(
-    chunks.map((c) => c.text),
-    "document",
-  );
+  const embeddings = await embedTexts(chunks.map((c) => c.text));
 
   const rows = chunks.map((c, j) => ({
     id: SEGMENT_ID(p.source_id, c.index),

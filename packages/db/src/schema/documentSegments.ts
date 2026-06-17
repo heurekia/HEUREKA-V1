@@ -2,7 +2,7 @@ import { pgTable, text, integer, jsonb, timestamp, vector, index } from "drizzle
 
 // Segments réglementaires issus du moteur d'ingestion (@heureka-v1/ingestion).
 // Une ligne = un Segment (zone ou article). `id` = "{insee}_{doc}_{code}" → upsert
-// idempotent. `embedding` = vecteur voyage-3 (1024 dims) pour la recherche pgvector.
+// idempotent. `embedding` = vecteur Mistral `mistral-embed` (1024 dims) pour la recherche pgvector.
 export const document_segments = pgTable(
   "document_segments",
   {
