@@ -3,6 +3,11 @@ import { integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 export const commune_documents = pgTable("commune_documents", {
   id: uuid("id").primaryKey().defaultRandom(),
   commune_id: uuid("commune_id").notNull(),
+  // Porteur du document. Exactement l'un des deux est renseigné (CHECK SQL).
+  // Permet de rattacher un PLUi à un EPCI tout en gardant la commune comme
+  // porteur par défaut des documents communaux historiques.
+  porteur_commune_id: uuid("porteur_commune_id"),
+  porteur_epci_id: uuid("porteur_epci_id"),
   type: text("type").notNull(), // plu | ppri | oap | peb | pprt | plh | zac | autre
   name: text("name").notNull(),
   original_filename: text("original_filename").notNull(),

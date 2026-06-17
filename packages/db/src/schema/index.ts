@@ -26,6 +26,7 @@ export * from "./decisions.js";
 export * from "./signataires.js";
 export * from "./decisionEvents.js";
 export * from "./communeDocuments.js";
+export * from "./documentCommunes.js";
 export * from "./gpuCache.js";
 export * from "./dossierConsultations.js";
 export * from "./documentSegments.js";
