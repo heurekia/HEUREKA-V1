@@ -2265,6 +2265,17 @@ interface LegalMentionRow {
   fetched_at?: string;
 }
 
+interface MissingArticleRow {
+  id: string;
+  code_key: string;     // CU / CCH / CE
+  article_ref: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  miss_count: number;
+  resolved_at: string | null;
+  resolution: "created" | "dismissed" | null;
+}
+
 // Map LEGITEXT id → clé courte (CU/CCH/CE) pour l'affichage et le filtrage.
 // Doit rester aligné avec apps/api/src/services/legifrance.ts → resolveCode.
 const CODE_KEY_BY_LEGITEXT: Record<string, "CU" | "CCH" | "CE"> = {
@@ -2651,6 +2662,136 @@ function Conformite() {
   );
 }
 
+// ── Articles manquants ──────────────────────────────────────────────────────
+// Liste les références d'articles que les utilisateurs ont cliquées mais que
+// Légifrance n'a pas pu nous renvoyer (référence erronée, code non supporté,
+// API en panne…). L'admin peut soit créer l'article via l'API Légifrance
+// (re-tentative), soit ignorer la demande (faux positif).
+function MissingArticlesPanel({ onCreated }: { onCreated?: (row: LegalMentionRow) => void }) {
+  const [misses, setMisses] = useState<MissingArticleRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actingId, setActingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const rows = await api.get<MissingArticleRow[]>("/admin/legal-mentions/missing");
+      setMisses(rows);
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const handleCreate = async (m: MissingArticleRow) => {
+    setActingId(m.id);
+    setError(null);
+    try {
+      const resp = await api.post<{ miss: MissingArticleRow; article: LegalMentionRow | null }>(
+        `/admin/legal-mentions/missing/${m.id}/create`, {},
+      );
+      setMisses(prev => prev.filter(x => x.id !== m.id));
+      if (resp.article && onCreated) onCreated(resp.article);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Création échouée");
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const handleDismiss = async (m: MissingArticleRow) => {
+    setActingId(m.id);
+    setError(null);
+    try {
+      await api.post(`/admin/legal-mentions/missing/${m.id}/dismiss`, {});
+      setMisses(prev => prev.filter(x => x.id !== m.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Action échouée");
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  // Tant qu'il n'y a aucune demande en attente, on garde la section discrète
+  // (un simple badge "tout est OK"). Elle apparaît dès qu'une référence cassée
+  // est cliquée par un utilisateur.
+  if (loading) {
+    return (
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Spinner size={16} /><span style={{ fontSize: 13, color: C.textMuted }}>Chargement des demandes…</span>
+        </div>
+      </div>
+    );
+  }
+
+  const headerStyle: React.CSSProperties = { display: "flex", alignItems: "flex-start", gap: 16, marginBottom: misses.length === 0 ? 0 : 16 };
+  const iconBg = misses.length === 0 ? "#ECFDF5" : "#FEF3C7";
+  const iconColor = misses.length === 0 ? "#059669" : "#B45309";
+
+  return (
+    <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
+      <div style={headerStyle}>
+        <div style={{ width: 48, height: 48, background: iconBg, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0, color: iconColor }}>
+          {misses.length === 0 ? "✓" : "⚠"}
+        </div>
+        <div style={{ flex: 1 }}>
+          <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.text }}>
+            Articles manquants{misses.length > 0 ? ` (${misses.length})` : ""}
+          </h3>
+          <p style={{ margin: 0, fontSize: 13, color: C.textMuted }}>
+            {misses.length === 0
+              ? "Aucune demande en attente. Les articles cliqués dans le site qui ne sont pas en base apparaîtront ici pour création via Légifrance."
+              : "Références cliquées par les utilisateurs et introuvables côté Légifrance. Crée-les pour qu'elles ouvrent leur texte officiel, ou ignore-les si la référence est erronée."}
+          </p>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ marginTop: 12, padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#7F1D1D" }}>
+          {error}
+        </div>
+      )}
+
+      {misses.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {misses.map(m => (
+            <div key={m.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 14px", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ padding: "2px 7px", background: "#1E293B", color: "white", borderRadius: 4, fontSize: 10, fontWeight: 700, letterSpacing: 0.3 }}>{m.code_key}</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>Art. {m.article_ref}</span>
+                  {m.miss_count > 1 && (
+                    <span style={{ padding: "1px 8px", background: "#FEF3C7", color: "#92400E", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
+                      cliqué {m.miss_count}×
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11.5, color: C.textMuted, marginTop: 2 }}>
+                  Dernière demande : {new Date(m.last_seen_at).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => void handleCreate(m)} disabled={actingId === m.id}
+                  style={{ padding: "6px 12px", background: actingId === m.id ? "#C7D2FE" : "#4F46E5", color: "white", border: "none", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: actingId === m.id ? "default" : "pointer" }}>
+                  {actingId === m.id ? "Création…" : "Créer via Légifrance"}
+                </button>
+                <button onClick={() => void handleDismiss(m)} disabled={actingId === m.id}
+                  style={{ padding: "6px 12px", background: "white", color: C.textMuted, border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: actingId === m.id ? "default" : "pointer" }}>
+                  Ignorer
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Configuration() {
   const [articles, setArticles] = useState<LegalMentionRow[]>([]);
   const [loading, setLoading] = useState(true);
@@ -2826,6 +2967,11 @@ function Configuration() {
         <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Configuration</h1>
         <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Paramètres avancés de la plateforme</p>
       </div>
+
+      {/* ── Demandes d'articles manquants (issues des clics utilisateurs) ── */}
+      <MissingArticlesPanel
+        onCreated={(row) => setArticles(prev => [...prev.filter(a => a.id !== row.id), row].sort((a, b) => a.article_ref.localeCompare(b.article_ref)))}
+      />
 
       {/* ── Articles juridiques (Code de l'urbanisme + CCH + CE) ── */}
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>

@@ -18,6 +18,7 @@ export * from "./courrierTemplates.js";
 export * from "./dossierCourriers.js";
 export * from "./userCommunes.js";
 export * from "./legalMentions.js";
+export * from "./legalMentionsMisses.js";
 export * from "./userAvailability.js";
 export * from "./userAbsences.js";
 export * from "./userDelegations.js";

@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, ai_usage_events, ai_alert_config } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, lt, inArray } from "drizzle-orm";
@@ -1117,6 +1117,102 @@ superAdminRouter.post("/legal-mentions", async (req, res) => {
 superAdminRouter.delete("/legal-mentions/:id", async (req, res) => {
   try {
     await db.delete(legal_mentions).where(eq(legal_mentions.id, req.params.id));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Articles manquants ───────────────────────────────────────────────────────
+// Quand l'utilisateur clique sur une référence d'article que Légifrance ne
+// renvoie pas, on enregistre la demande pour que l'admin la traite.
+
+// Liste les demandes non résolues, triées par fréquence puis date récente —
+// les références les plus cliquées remontent en haut.
+superAdminRouter.get("/legal-mentions/missing", async (req, res) => {
+  try {
+    const includeResolved = String(req.query.include_resolved ?? "") === "1";
+    const rows = await db
+      .select()
+      .from(legal_mentions_misses)
+      .where(includeResolved ? sql`TRUE` : isNull(legal_mentions_misses.resolved_at))
+      .orderBy(desc(legal_mentions_misses.miss_count), desc(legal_mentions_misses.last_seen_at));
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Tente la création de l'article via Légifrance. Si succès : l'article est
+// ajouté à `legal_mentions` et la demande est marquée "created". Si Légifrance
+// renvoie 404 sur cette référence : on renvoie une erreur ciblée pour que
+// l'admin sache que la référence est probablement mal orthographiée.
+superAdminRouter.post("/legal-mentions/missing/:id/create", async (req: any, res) => {
+  try {
+    const [miss] = await db
+      .select()
+      .from(legal_mentions_misses)
+      .where(eq(legal_mentions_misses.id, req.params.id))
+      .limit(1);
+    if (!miss) return res.status(404).json({ error: "Demande introuvable" });
+
+    const fresh = await refreshArticle(miss.code_key, miss.article_ref);
+    if (!fresh) {
+      return res.status(404).json({
+        error: `Article ${miss.article_ref} introuvable côté Légifrance — vérifie la référence (peut-être renumérotée, abrogée, ou hors champ ${miss.code_key}).`,
+      });
+    }
+
+    const [updated] = await db
+      .update(legal_mentions_misses)
+      .set({
+        resolved_at: new Date(),
+        resolved_by: req.user?.id ?? null,
+        resolution: "created",
+      })
+      .where(eq(legal_mentions_misses.id, req.params.id))
+      .returning();
+
+    // Renvoie aussi l'article fraîchement créé pour que le front puisse
+    // l'ajouter à sa liste sans reload.
+    const [article] = await db
+      .select()
+      .from(legal_mentions)
+      .where(and(eq(legal_mentions.code, resolveCode(miss.code_key)!.id), eq(legal_mentions.article_ref, miss.article_ref)))
+      .limit(1);
+
+    res.json({ miss: updated, article });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Marque la demande comme non pertinente (référence erronée, faux positif…).
+superAdminRouter.post("/legal-mentions/missing/:id/dismiss", async (req: any, res) => {
+  try {
+    const [updated] = await db
+      .update(legal_mentions_misses)
+      .set({
+        resolved_at: new Date(),
+        resolved_by: req.user?.id ?? null,
+        resolution: "dismissed",
+      })
+      .where(eq(legal_mentions_misses.id, req.params.id))
+      .returning();
+    if (!updated) return res.status(404).json({ error: "Demande introuvable" });
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.delete("/legal-mentions/missing/:id", async (req, res) => {
+  try {
+    await db.delete(legal_mentions_misses).where(eq(legal_mentions_misses.id, req.params.id));
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
