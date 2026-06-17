@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { Library, FileText } from "lucide-react";
 import { api } from "../lib/api";
+import { PdfAnnotator } from "./PdfAnnotator";
 
 /**
  * Second viewer du mode Comparer : affiche un document réglementaire de la
@@ -113,16 +114,15 @@ export function RegulatoryDocViewer({ communeName, selectedDocId, onSelectDoc, p
         )}
       </div>
 
-      {/* Corps — iframe vers le PDF streamé inline */}
-      <div className="flex-1 bg-gray-100">
+      {/* Corps — PdfAnnotator (react-pdf + couches text/annotation) */}
+      <div className="flex-1 bg-gray-100 min-h-0">
         {selected ? (
-          <iframe
-            // key inclut la page pour forcer le re-render quand on saute
-            // depuis une autre citation sur le même document.
-            key={`${selected.id}-${page ?? "_"}`}
-            src={`/api/mairie/documents/${selected.id}/pdf#toolbar=1&navpanes=0${page ? `&page=${page}` : ""}`}
-            title={selected.name}
-            className="w-full h-full border-0"
+          <PdfAnnotator
+            // key inclut le doc pour réinitialiser l'état (page courante)
+            // quand l'instructeur change de document.
+            key={selected.id}
+            fileUrl={`/api/mairie/documents/${selected.id}/pdf`}
+            initialPage={typeof page === "number" && page > 0 ? page : 1}
           />
         ) : (
           <div className="flex flex-col items-center justify-center h-full text-gray-400 p-8">
