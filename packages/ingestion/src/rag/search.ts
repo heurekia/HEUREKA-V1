@@ -49,9 +49,9 @@ export interface SearchHit {
 export async function searchSegments(p: SearchParams): Promise<SearchHit[]> {
   const topK = p.top_k ?? 5;
 
-  // 1. Embedding de la requête (input_type "query" — important : Voyage-3
-  // a deux espaces différents pour les documents et les requêtes).
-  const [queryEmbedding] = await embedTexts([p.query], "query");
+  // 1. Embedding de la requête. Mistral n'a qu'un seul espace (pas de
+  // dual-space document/query comme Voyage), même fonction des deux côtés.
+  const [queryEmbedding] = await embedTexts([p.query]);
   if (!queryEmbedding) return [];
 
   // 2. Recherche cosine en SQL. L'opérateur <=> de pgvector renvoie la

@@ -58,7 +58,7 @@ HEUREKA est une plateforme d'instruction des autorisations d'urbanisme (PC, DP, 
 | Cartographie | data.geopf.fr (IGN) + CartoCDN (fond) + Leaflet côté front | IGN 🇫🇷, CartoCDN 🇺🇸 (retrait planifié Phase 3.2) |
 | Référentiels publics | data.gouv.fr (BAN), geo.api.gouv.fr, IGN GPU/Cadastre, RNB, Géorisques | France 🇫🇷 |
 | Code légal | PISTE / Légifrance (DILA) | France 🇫🇷 (OAuth2) |
-| Embeddings RAG | Voyage AI — `voyage-3` (1024 dim) | États-Unis (à requalifier si SecNumCloud) |
+| Embeddings RAG | Mistral — `mistral-embed` (1024 dim) | Datacenters Mistral AI SAS 🇫🇷 Paris (mutualisé avec l'inférence LLM) |
 
 ---
 
@@ -207,7 +207,7 @@ HEUREKA-V1/
 | **Nominatim (OSM)** | 🇩🇪 | `https://nominatim.openstreetmap.org/search?…` | Aucune | Fallback géocodage adresse | — | `parcelAnalysis.ts` |
 | **data.geopf.fr (IGN Open Data)** | 🇫🇷 | `/wmts` (tuiles) · `/wfs` | Aucune | Fond de carte Leaflet, requêtes spatiales. **Whitelisté CSP** | — | Front `MapLeaflet.tsx` |
 | **Resend** | 🇺🇸 | `https://api.resend.com/emails` | Bearer `RESEND_API_KEY` | Email transactionnel (activation, reset, notifications). **À remplacer par Brevo Phase 3.1** | `RESEND_API_KEY`, `SMTP_FROM` | `apps/api/src/services/mailer.ts` |
-| **Voyage AI (embeddings)** | 🇺🇸 | `https://api.voyageai.com/v1/embeddings` (modèle `voyage-3`, 1024 dim) | Bearer | Génération embeddings RAG pour `document_segments` | `VOYAGE_API_KEY` | `packages/ingestion/src/db/embedder.ts` |
+| **Mistral (embeddings)** | 🇫🇷 | `https://api.mistral.ai/v1/embeddings` (modèle `mistral-embed`, 1024 dim) | Bearer | Génération embeddings RAG pour `document_segments`. Même clé que l'inférence LLM. | `MISTRAL_API_KEY` | `packages/ingestion/src/db/embedder.ts` |
 | **S3-compatible (OVH Object Storage en priorité, Cellar / Scaleway / AWS S3 compatibles)** | 🇫🇷 | `S3_ENDPOINT` | Access key | Stockage objet pièces jointes — codé, activable au besoin (aujourd'hui : `STORAGE_PROVIDER=local` sur le VPS, sauvegardes via `infra/backup/`) | `STORAGE_PROVIDER`, `S3_ENDPOINT`, `S3_BUCKET`, `S3_REGION`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | `apps/api/src/services/storage.ts` |
 | **CartoCDN** | 🇺🇸 | `https://*.basemaps.cartocdn.com` | — | Fond de carte (à retirer Phase 3.2 au profit IGN WMTS) | — | Front `MapLeaflet.tsx` |
 | **Slack (webhook)** | 🇺🇸 | URL en base (`ai_alert_config.slack_webhook_url`) | Token dans l'URL | Alertes coût IA (par appel / journalier) | — | `apps/api/src/services/aiAlerts.ts` |
@@ -253,7 +253,7 @@ Schémas Drizzle (38 fichiers), migrations SQL générées (`drizzle-kit`), clie
 CLI `pnpm --filter @heureka-v1/ingestion ingest` :
 1. Parsing PDF (PDFKit / `unpdf`), découpage en segments métier.
 2. Optionnel `--rules` : structuration articles via Pixtral Large → insert `zone_regulatory_rules` en `validation_status = 'brouillon'` (validation humaine obligatoire avant consommation par le moteur).
-3. Optionnel `--load` : embeddings `voyage-3` → `document_segments` (pgvector).
+3. Optionnel `--load` : embeddings `mistral-embed` → `document_segments` (pgvector).
 4. Sous-module `benchmark/` : harnais comparatif LLM (cf. `docs/security/benchmark-llm.md`).
 
 ### 5.5 `packages/regulatory-engine`
@@ -378,7 +378,7 @@ pnpm --filter @heureka-v1/ingestion ingest \
 
 1. Parsing PDF, segmentation logique (zone → article).
 2. Pixtral Large structure chaque article → `zone_regulatory_rules` en **`validation_status = 'brouillon'`** (safe-by-default).
-3. Embeddings `voyage-3` → `document_segments` (pgvector).
+3. Embeddings `mistral-embed` → `document_segments` (pgvector).
 4. Validation humaine côté mairie/admin → bascule `validation_status = 'valide'` → consommé par le moteur.
 
 ### 8.4 Garde-fous IA
@@ -479,7 +479,7 @@ Helmet, CORS whitelist `FRONTEND_URLS`, compression gzip, body JSON limité à 5
 | Email | `RESEND_API_KEY` (→ `BREVO_API_KEY`) | Idem |
 | Stockage objet (si activé) | `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_BUCKET` | Idem |
 | Sauvegardes | `GPG_PASSPHRASE_FILE` (cf. `/etc/heureka/backup.env`), credentials rclone OVH | `/etc/heureka/` mode 700 root |
-| RAG | `VOYAGE_API_KEY` | `/opt/heureka/apps/api/.env` |
+| RAG | `MISTRAL_API_KEY` (mutualisée avec l'inférence LLM) | `/opt/heureka/apps/api/.env` |
 
 Aucun secret n'est commit. `.env.example` documente les clés sans valeur. Le fichier `.env` du VPS et `/etc/heureka/backup.env` sont en mode 600 (root) et inclus dans `backup-config.sh` pour la sauvegarde.
 
@@ -536,7 +536,7 @@ Aucun secret n'est commit. `.env.example` documente les clés sans valeur. Le fi
 | `PISTE_OAUTH_URL` | non | sandbox | OAuth PISTE |
 | `RESEND_API_KEY` | oui (prod) | — | Email (→ `BREVO_API_KEY`) |
 | `SMTP_FROM` | non | `Heurekia <notifications@mail.heurekia.com>` | Adresse expéditeur |
-| `VOYAGE_API_KEY` | oui (ingestion) | — | Embeddings RAG |
+| _(VOYAGE_API_KEY supprimée — embeddings via `MISTRAL_API_KEY`)_ | — | — | — |
 | `FRONTEND_URL` | non | `https://app.heurekia.com` | URL base |
 | `FRONTEND_URLS` | non | `FRONTEND_URL` | Whitelist CORS |
 | `STORAGE_PROVIDER` | non | `local` | `local` ou `s3` |
@@ -1098,7 +1098,7 @@ pnpm --filter @heureka-v1/web dev   # Web sur :5173
 1. **SSO Entra ID** (DSI Tours) : à arbitrer (agents seulement ou citoyens inclus ?). Impact architectural majeur si étendu aux citoyens.
 2. **Stockage S3** : migration en cours (Phase 1). Cohabitation `local`/`s3` à gérer pendant la transition (champ `dossier_pieces_jointes.url`).
 3. **Scheduler in-process** : à externaliser le jour où on scale horizontalement, pour éviter doublons d'exécution.
-4. **Voyage AI (embeddings)** : sous-traitant américain — à requalifier si exigence SecNumCloud (Phase 7).
+4. _Bascule Voyage AI (US) → Mistral (`mistral-embed`, 🇫🇷)_ : effectuée. Plus de sous-traitant US sur le périmètre embeddings ; un seul DPA fournisseur IA à maintenir.
 5. **CartoCDN** : à retirer (Phase 3.2) au profit du WMTS IGN pour cohérence souveraineté + CSP.
 6. **`pnpm audit`** : à intégrer en CI (GitHub Actions).
 7. **Accessibilité RGAA AA** : audit non réalisé.

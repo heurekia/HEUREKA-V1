@@ -58,7 +58,7 @@ async function main() {
     console.log(`✓ ${res.zones} zones · ${res.rules} règles écrites (brouillon) dans zone_regulatory_rules.`);
   }
 
-  // --load : pousse les segments + embeddings (voyage-3) dans pgvector.
+  // --load : pousse les segments + embeddings (mistral-embed) dans pgvector.
   if (flag("--load")) {
     console.log(`\n🔗 Chargement en base (pgvector)…`);
     const { upserted } = await loadSegments(segments);

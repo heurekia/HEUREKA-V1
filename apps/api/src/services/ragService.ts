@@ -8,8 +8,8 @@
  *  - searchInCommune : enrobage léger de searchSegments pour la commune
  *    courante.
  *
- * Le coût Voyage-3 est négligeable (~0,06 $/M tokens) : indexer un PLU de
- * 200 pages coûte ~0,005 $ une fois. À comparer aux ~0,3 $/dossier qu'on
+ * Le coût Mistral `mistral-embed` est négligeable : indexer un PLU de
+ * 200 pages coûte ~0,005 € une fois. À comparer aux ~0,3 €/dossier qu'on
  * paierait à envoyer le PDF complet à chaque verdict.
  */
 import { extractText as extractPdfText } from "unpdf";
