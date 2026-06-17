@@ -40,7 +40,7 @@ for pm2_user in ${PM2_USERS:-root}; do
     log "PM2 dump pour $pm2_user copié"
   fi
 done
-for eco in /opt/heureka/ecosystem.config.{js,cjs,json}; do
+for eco in "${APP_DIR}"/ecosystem.config.{js,cjs,json}; do
   [[ -f "$eco" ]] && cp "$eco" "$stage/pm2/"
 done
 

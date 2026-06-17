@@ -481,14 +481,14 @@ Helmet, CORS whitelist `FRONTEND_URLS`, compression gzip, body JSON limité à 5
 
 | Catégorie | Variables | Stockage |
 |---|---|---|
-| Crypto | `JWT_SECRET` | `/opt/heureka/apps/api/.env` sur le VPS (mode 600, root) ; secrets GitHub Actions pour le déploiement |
+| Crypto | `JWT_SECRET` | `/home/ubuntu/heurekia/apps/api/.env` sur le VPS (mode 600) ; secrets GitHub Actions pour le déploiement |
 | Base | `DATABASE_URL` | Idem (loopback Postgres local sur le VPS) |
 | LLM | `MISTRAL_API_KEY` | Idem |
 | Code légal | `PISTE_CLIENT_ID`, `PISTE_CLIENT_SECRET` | Idem |
 | Email | `RESEND_API_KEY` (→ `BREVO_API_KEY`) | Idem |
 | Stockage objet (si activé) | `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_ENDPOINT`, `S3_BUCKET` | Idem |
 | Sauvegardes | `GPG_PASSPHRASE_FILE` (cf. `/etc/heureka/backup.env`), credentials rclone OVH | `/etc/heureka/` mode 700 root |
-| RAG | `MISTRAL_API_KEY` (mutualisée avec l'inférence LLM) | `/opt/heureka/apps/api/.env` |
+| RAG | `MISTRAL_API_KEY` (mutualisée avec l'inférence LLM) | `/home/ubuntu/heurekia/apps/api/.env` |
 
 Aucun secret n'est commit. `.env.example` documente les clés sans valeur. Le fichier `.env` du VPS et `/etc/heureka/backup.env` sont en mode 600 (root) et inclus dans `backup-config.sh` pour la sauvegarde.
 

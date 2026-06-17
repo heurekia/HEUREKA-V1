@@ -43,7 +43,7 @@ fi
 # ─── 2. Application & uploads ───────────────────────────────────────────────
 echo
 bold "2. Application HEUREKA"
-APP_CANDIDATES=(/opt/heureka /srv/heureka /home/heureka/app /var/www/heureka)
+APP_CANDIDATES=(/home/ubuntu/heurekia /opt/heureka /srv/heureka /home/heureka/app /var/www/heureka)
 for d in "${APP_CANDIDATES[@]}"; do
   if [[ -d "$d" ]]; then
     ok "Dossier app détecté : $d"
@@ -55,12 +55,13 @@ done
 
 echo
 echo "  Fichiers .env trouvés :"
-find /opt /srv /home/heureka /var/www -maxdepth 5 -name '.env' -type f 2>/dev/null | head -10 | sed 's/^/    /'
+find /opt /srv /home/heureka /home/ubuntu /var/www -maxdepth 5 -name '.env' -type f 2>/dev/null | head -10 | sed 's/^/    /'
 
 echo
 echo "  Recherche du dossier uploads :"
 UPLOAD_CANDIDATES=(
   /var/lib/heureka/uploads
+  /home/ubuntu/heurekia/apps/api/uploads
   /opt/heureka/apps/api/uploads
   /srv/heureka/apps/api/uploads
   /home/heureka/app/apps/api/uploads
