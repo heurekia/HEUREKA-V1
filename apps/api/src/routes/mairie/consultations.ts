@@ -206,6 +206,34 @@ consultationsRouter.delete("/documents/:id", async (req: AuthRequest, res) => {
   }
 });
 
+// Streaming inline du PDF d'un document réglementaire. Utilisé par le mode
+// Comparer du viewer d'instruction qui charge un PLU / PPRI / OAP à côté de
+// la pièce du pétitionnaire. Content-Disposition inline pour que le viewer
+// navigateur le rende sans déclencher de téléchargement.
+consultationsRouter.get("/documents/:id/pdf", async (req: AuthRequest, res) => {
+  try {
+    const documentId = req.params.id as string;
+    const [doc] = await db
+      .select({
+        pdf_content: commune_documents.pdf_content,
+        original_filename: commune_documents.original_filename,
+      })
+      .from(commune_documents)
+      .where(eq(commune_documents.id, documentId))
+      .limit(1);
+    if (!doc || !doc.pdf_content) return res.status(404).json({ error: "PDF indisponible" });
+
+    const buffer = Buffer.from(doc.pdf_content, "base64");
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(doc.original_filename)}"`);
+    res.setHeader("Cache-Control", "private, max-age=3600");
+    res.send(buffer);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // Documents thématiques de la commune du dossier, retournés avec leur synthèse
 // pour servir de support à l'instruction (l'outil les consulte avant d'analyser
 // la conformité d'une demande).

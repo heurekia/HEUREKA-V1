@@ -7,10 +7,13 @@ import { Button } from "../../components/ui/button";
 import { RegulatoryChecklist } from "../../components/RegulatoryChecklist";
 import { DocumentationPanel } from "../../components/DocumentationPanel";
 import { PieceViewer, PieceViewerFullscreen, type PieceLite } from "../../components/PieceViewer";
+import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
+import { ResizableSplit } from "../../components/ResizableSplit";
+import { useInstructionViewMode } from "../../hooks/useInstructionViewMode";
 import {
   ArrowLeft, FileText, User, MessageSquare, AlertTriangle, CheckCircle,
   RefreshCw, ChevronDown, ChevronRight, ShieldCheck, ShieldAlert, ShieldX,
-  FolderOpen,
+  FolderOpen, LayoutGrid, Columns2, BookOpen, Paperclip, Library,
 } from "lucide-react";
 
 type PieceScore = "conforme" | "acceptable" | "incomplet" | "non_conforme";
@@ -593,6 +596,13 @@ export function MairieDossierDetail() {
   // la vue « Synthèse » (informations + conformité + checklist réglementaire).
   // Conserver les deux pour ne pas régresser sur les écrans existants.
   const [view, setView] = useState<"instruction" | "synthese">("instruction");
+  // Mode d'affichage de l'Instruction : aperçu (3 col.) · comparer (2 viewers
+  // côte à côte) · lecture (1 viewer plein écran, sidebars en bandes).
+  // Persisté en localStorage par instructeur.
+  const [viewMode, setViewMode] = useInstructionViewMode();
+  // Document réglementaire affiché dans le second viewer en mode Comparer.
+  // null = pas encore choisi → le RegulatoryDocViewer auto-sélectionne le PLU.
+  const [regulatoryDocId, setRegulatoryDocId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!id) return;
@@ -656,52 +666,149 @@ export function MairieDossierDetail() {
         </Badge>
       </div>
 
-      {/* Switch de vue — onglets « Instruction » / « Synthèse ». */}
-      <div className="mb-5 inline-flex rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
-        <button
-          type="button"
-          onClick={() => setView("instruction")}
-          className={`px-4 py-1.5 text-sm font-medium ${
-            view === "instruction" ? "bg-heureka-500 text-white" : "text-gray-600 hover:bg-gray-50"
-          }`}
-        >
-          Instruction
-        </button>
-        <button
-          type="button"
-          onClick={() => setView("synthese")}
-          className={`px-4 py-1.5 text-sm font-medium ${
-            view === "synthese" ? "bg-heureka-500 text-white" : "text-gray-600 hover:bg-gray-50"
-          }`}
-        >
-          Synthèse
-        </button>
+      {/* Switch de vue — onglets « Instruction » / « Synthèse » + mode d'affichage. */}
+      <div className="mb-5 flex flex-wrap items-center gap-3">
+        <div className="inline-flex rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
+          <button
+            type="button"
+            onClick={() => setView("instruction")}
+            className={`px-4 py-1.5 text-sm font-medium ${
+              view === "instruction" ? "bg-heureka-500 text-white" : "text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            Instruction
+          </button>
+          <button
+            type="button"
+            onClick={() => setView("synthese")}
+            className={`px-4 py-1.5 text-sm font-medium ${
+              view === "synthese" ? "bg-heureka-500 text-white" : "text-gray-600 hover:bg-gray-50"
+            }`}
+          >
+            Synthèse
+          </button>
+        </div>
+
+        {view === "instruction" && (
+          <div className="inline-flex rounded-lg border border-gray-200 bg-white shadow-sm overflow-hidden">
+            <button
+              type="button"
+              onClick={() => setViewMode("apercu")}
+              className={`px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 ${
+                viewMode === "apercu" ? "bg-heureka-500 text-white" : "text-gray-600 hover:bg-gray-50"
+              }`}
+              title="Pièces · viewer · documentation"
+            >
+              <LayoutGrid className="w-3.5 h-3.5" /> Aperçu
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("compare")}
+              className={`px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 border-l border-gray-200 ${
+                viewMode === "compare" ? "bg-heureka-500 text-white" : "text-gray-600 hover:bg-gray-50"
+              }`}
+              title="Pièce et document réglementaire côte à côte"
+            >
+              <Columns2 className="w-3.5 h-3.5" /> Comparer
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewMode("lecture")}
+              className={`px-3 py-1.5 text-xs font-medium flex items-center gap-1.5 border-l border-gray-200 ${
+                viewMode === "lecture" ? "bg-heureka-500 text-white" : "text-gray-600 hover:bg-gray-50"
+              }`}
+              title="Document plein écran, sidebars escamotés"
+            >
+              <BookOpen className="w-3.5 h-3.5" /> Lecture
+            </button>
+          </div>
+        )}
       </div>
 
       {view === "instruction" ? (
-        <div className="grid lg:grid-cols-12 gap-4">
-          {/* Colonne 1 — Liste des pièces */}
-          <div className="lg:col-span-3">
-            <PiecesList
-              pieces={pieces}
-              selectedId={selectedPieceId}
-              onSelect={setSelectedPieceId}
-              archived={archivedPieces}
-              archivedLoading={archivedLoading}
-              onLoadArchived={loadArchived}
-            />
+        viewMode === "apercu" ? (
+          <div className="grid lg:grid-cols-12 gap-4">
+            {/* Colonne 1 — Liste des pièces */}
+            <div className="lg:col-span-3">
+              <PiecesList
+                pieces={pieces}
+                selectedId={selectedPieceId}
+                onSelect={setSelectedPieceId}
+                archived={archivedPieces}
+                archivedLoading={archivedLoading}
+                onLoadArchived={loadArchived}
+              />
+            </div>
+            {/* Colonne 2 — Visualiseur de la pièce */}
+            <div className="lg:col-span-6 min-h-[560px]">
+              <PieceViewer piece={selectedPiece} onExpand={() => setFullscreen(true)} />
+            </div>
+            {/* Colonne 3 — Documentation contextuelle */}
+            <div className="lg:col-span-3 space-y-4">
+              <DocumentationPanel dossierId={id!} pieceId={selectedPieceId} />
+            </div>
           </div>
-
-          {/* Colonne 2 — Visualiseur de la pièce */}
-          <div className="lg:col-span-6 min-h-[560px]">
-            <PieceViewer piece={selectedPiece} onExpand={() => setFullscreen(true)} />
+        ) : viewMode === "compare" ? (
+          <div className="flex gap-2 h-[calc(100vh-220px)] min-h-[600px]">
+            <div className="shrink-0 w-[220px] overflow-y-auto">
+              <PiecesList
+                pieces={pieces}
+                selectedId={selectedPieceId}
+                onSelect={setSelectedPieceId}
+                archived={archivedPieces}
+                archivedLoading={archivedLoading}
+                onLoadArchived={loadArchived}
+              />
+            </div>
+            <div className="flex-1 min-w-0">
+              <ResizableSplit
+                storageKey="heureka.compareSplitPct"
+                left={<PieceViewer piece={selectedPiece} onExpand={() => setFullscreen(true)} />}
+                right={
+                  <RegulatoryDocViewer
+                    communeName={dossier.commune ?? ""}
+                    selectedDocId={regulatoryDocId}
+                    onSelectDoc={setRegulatoryDocId}
+                  />
+                }
+              />
+            </div>
+            <button
+              type="button"
+              onClick={() => setViewMode("apercu")}
+              className="shrink-0 w-[44px] flex flex-col items-center justify-start gap-2 py-4 bg-gray-50 hover:bg-heureka-50 border border-gray-200 rounded-xl text-gray-500 hover:text-heureka-600 transition-colors"
+              title="Rouvrir le panneau Documentation"
+            >
+              <Library className="w-4 h-4" />
+              <span className="text-[10px] tracking-widest uppercase [writing-mode:vertical-rl] rotate-180">Doc</span>
+            </button>
           </div>
-
-          {/* Colonne 3 — Documentation contextuelle */}
-          <div className="lg:col-span-3 space-y-4">
-            <DocumentationPanel dossierId={id!} pieceId={selectedPieceId} />
+        ) : (
+          /* lecture — sidebars en bandes, un seul viewer plein écran sur fond papier */
+          <div className="flex gap-2 h-[calc(100vh-220px)] min-h-[600px]">
+            <button
+              type="button"
+              onClick={() => setViewMode("apercu")}
+              className="shrink-0 w-[44px] flex flex-col items-center justify-start gap-2 py-4 bg-gray-50 hover:bg-heureka-50 border border-gray-200 rounded-xl text-gray-500 hover:text-heureka-600 transition-colors"
+              title="Rouvrir le panneau Pièces"
+            >
+              <Paperclip className="w-4 h-4" />
+              <span className="text-[10px] tracking-widest uppercase [writing-mode:vertical-rl] rotate-180">Pièces ({pieces.length})</span>
+            </button>
+            <div className="flex-1 min-w-0 bg-[#faf8f3] rounded-xl border border-gray-200 overflow-hidden">
+              <PieceViewer piece={selectedPiece} onExpand={() => setFullscreen(true)} />
+            </div>
+            <button
+              type="button"
+              onClick={() => setViewMode("apercu")}
+              className="shrink-0 w-[44px] flex flex-col items-center justify-start gap-2 py-4 bg-gray-50 hover:bg-heureka-50 border border-gray-200 rounded-xl text-gray-500 hover:text-heureka-600 transition-colors"
+              title="Rouvrir le panneau Documentation"
+            >
+              <Library className="w-4 h-4" />
+              <span className="text-[10px] tracking-widest uppercase [writing-mode:vertical-rl] rotate-180">Doc</span>
+            </button>
           </div>
-        </div>
+        )
       ) : (
         <div className="grid lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 space-y-6">
