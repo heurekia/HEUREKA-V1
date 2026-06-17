@@ -8781,7 +8781,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               </div>
               )}
               {docsViewMode === "compare" ? (
-              <div style={{ ...CARD, padding: 0, display: "flex", flexDirection: "column" as const, height: 640, overflow: "hidden" }}>
+              <div style={{ ...CARD, padding: 0, minWidth: 0, display: "flex", flexDirection: "column" as const, height: 640, overflow: "hidden" }}>
                 <div style={{ flex: 1, minHeight: 0 }}>
                   <ResizableSplit
                     storageKey="heureka.docsCompareSplitPct"
@@ -8830,9 +8830,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               </div>
               ) : (
-              <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
+              <div style={{ ...CARD, minWidth: 0, display: "flex", flexDirection: "column" as const }}>
                 <SecTitle>{`Aperçu : ${sel?.nom ?? "—"}`}</SecTitle>
-                <div style={{ flex: 1, background: "#F8FAFC", borderRadius: 11, minHeight: 340, border: "1px solid #EAECF0", overflow: "hidden", position: "relative" as const, display: "flex", flexDirection: "column" as const }}>
+                <div style={{ flex: 1, minWidth: 0, background: "#F8FAFC", borderRadius: 11, minHeight: 340, border: "1px solid #EAECF0", overflow: "hidden", position: "relative" as const, display: "flex", flexDirection: "column" as const }}>
                   {sel ? (() => {
                     const t = (sel.type ?? "").toLowerCase();
                     const isImage = t.startsWith("image/");
