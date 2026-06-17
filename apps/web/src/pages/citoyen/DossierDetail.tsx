@@ -694,7 +694,10 @@ export function DossierDetail() {
             </CardContent>
           </Card>
 
-          {/* Pièces jointes */}
+          {/* Pièces jointes — groupées par emplacement de bordereau (code PC/DP).
+              Permet d'identifier à quelle case correspondent les fichiers déposés,
+              et de distinguer les annexes libres. Tri : codifiées d'abord (PC1, PC2,
+              …), annexes ensuite — pour rester aligné avec l'ordre de dépôt. */}
           <Card className="border-gray-200/80">
             <CardContent className="p-5">
               <h2 style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 16 }}>Documents joints</h2>
@@ -704,21 +707,86 @@ export function DossierDetail() {
                   Aucun document joint.<br />
                   <span style={{ fontSize: 12 }}>Vous pourrez en ajouter bientôt.</span>
                 </div>
-              ) : (
-                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                  {pieces.map((p) => (
-                    <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #E2E8F0", textDecoration: "none" }}>
-                      <span style={{ fontSize: 18 }}>📄</span>
-                      <div style={{ flex: 1, minWidth: 0 }}>
-                        <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-                          {p.nom}
+              ) : (() => {
+                // Regroupement par code_piece. Les annexes libres (sans code)
+                // sont rassemblées sous une rubrique dédiée placée en dernier.
+                const ANNEXE = "__ANNEXE__";
+                const groups = new Map<string, { code: string | null; label: string; files: Piece[] }>();
+                for (const p of pieces) {
+                  const code = p.code_piece && p.code_piece.length > 0 ? p.code_piece : null;
+                  const key = code ?? ANNEXE;
+                  let g = groups.get(key);
+                  if (!g) {
+                    // Étiquette : tente d'extraire le libellé déposé "Libellé - nom_fichier"
+                    // pour avoir un titre lisible (ex: "Plan des façades et toitures").
+                    const dash = p.nom.indexOf(" - ");
+                    const label = code
+                      ? (dash > 0 ? p.nom.slice(0, dash).trim() : `Pièce ${code}`)
+                      : "Annexes libres";
+                    g = { code, label, files: [] };
+                    groups.set(key, g);
+                  }
+                  g.files.push(p);
+                }
+                const ordered = Array.from(groups.values()).sort((a, b) => {
+                  // Annexes en dernier ; les emplacements codifiés triés par code.
+                  if ((a.code === null) !== (b.code === null)) return a.code === null ? 1 : -1;
+                  return (a.code ?? "").localeCompare(b.code ?? "", "fr", { numeric: true });
+                });
+                return (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+                    {ordered.map((g) => (
+                      <div key={g.code ?? "annexes"}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                          {g.code && (
+                            <span style={{
+                              fontFamily: "monospace",
+                              fontSize: 11,
+                              fontWeight: 700,
+                              color: "#4F46E5",
+                              background: "#EEF2FF",
+                              border: "1px solid #C7D2FE",
+                              borderRadius: 6,
+                              padding: "2px 7px",
+                              flexShrink: 0,
+                            }}>
+                              {g.code}
+                            </span>
+                          )}
+                          <span style={{ fontSize: 12, fontWeight: 700, color: "#0F172A" }}>
+                            {g.label}
+                          </span>
+                          {g.files.length > 1 && (
+                            <span style={{ fontSize: 11, color: "#64748b" }}>
+                              · {g.files.length} fichiers
+                            </span>
+                          )}
                         </div>
-                        <div style={{ fontSize: 11, color: "#94a3b8" }}>{formatDate(p.uploaded_at)}</div>
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                          {g.files.map((p) => {
+                            // Affiche le NOM DE FICHIER d'origine (après " - "),
+                            // pas la rubrique : on ne répète pas le libellé du
+                            // groupe sur chaque ligne pour éviter le doublon.
+                            const dash = p.nom.indexOf(" - ");
+                            const filename = dash > 0 ? p.nom.slice(dash + 3).trim() : p.nom;
+                            return (
+                              <a key={p.id} href={p.url} target="_blank" rel="noopener noreferrer" style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", background: "#F8FAFC", borderRadius: 8, border: "1px solid #E2E8F0", textDecoration: "none" }}>
+                                <span style={{ fontSize: 18 }}>📄</span>
+                                <div style={{ flex: 1, minWidth: 0 }}>
+                                  <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                    {filename}
+                                  </div>
+                                  <div style={{ fontSize: 11, color: "#94a3b8" }}>{formatDate(p.uploaded_at)}</div>
+                                </div>
+                              </a>
+                            );
+                          })}
+                        </div>
                       </div>
-                    </a>
-                  ))}
-                </div>
-              )}
+                    ))}
+                  </div>
+                );
+              })()}
             </CardContent>
           </Card>
         </div>
