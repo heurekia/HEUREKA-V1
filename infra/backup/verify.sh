@@ -21,6 +21,15 @@ log "Restore test depuis $(basename "$latest")"
 sudo -u postgres dropdb --if-exists "$VERIFY_DATABASE"
 sudo -u postgres createdb -O "$PG_USER" "$VERIFY_DATABASE"
 
+# Pré-création des extensions Postgres qui exigent les droits superuser
+# (pgvector typiquement) — sinon pg_restore échoue car PG_USER n'est pas
+# superuser. Les CREATE EXTENSION IF NOT EXISTS du dump deviendront alors
+# des no-ops sans vérif de privilège.
+for ext in ${PG_EXTENSIONS:-vector}; do
+  sudo -u postgres psql -d "$VERIFY_DATABASE" \
+       -c "CREATE EXTENSION IF NOT EXISTS $ext" >/dev/null
+done
+
 gpg_decrypt "$latest" \
   | gunzip \
   | pg_restore -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" \
