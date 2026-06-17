@@ -23,6 +23,7 @@
  * Sécurité : NE SUPPRIME PAS les fichiers locaux. Une seconde passe manuelle
  * de validation (ex : checksum, smoke test) est attendue avant nettoyage.
  */
+import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
