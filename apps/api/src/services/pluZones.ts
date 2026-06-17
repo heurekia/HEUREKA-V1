@@ -1,6 +1,15 @@
 // PLU zones fetched from the Géoportail de l'Urbanisme (apicarto.ign.fr/gpu).
 // Used by the /mairie/plu-zones route (on-demand) and the nightly cron
 // (background refresh of stale entries).
+//
+// This file is the canonical source of truth for PLU resolution by INSEE :
+//  - refreshPluZones        : multi-convention probe + persistence (heavy)
+//  - getCommunePluContext   : cache-aside read returning partition + zones
+//  - findZoneAtPoint        : pure point-in-polygon over cached zones (free)
+//
+// parcelAnalysis uses these to escape the fragility of point-based /document
+// lookups : a single robust commune-level resolve, then local hit-tests.
+import type { Geometry, Polygon, MultiPolygon, Feature } from "geojson";
 import { db } from "../db.js";
 import { communes } from "@heureka-v1/db";
 import { eq } from "drizzle-orm";
@@ -27,10 +36,17 @@ export type PluDiag = {
 };
 
 export type PluFetchResult =
-  | { ok: true; zones: PluZonesGeoJson; diag: PluDiag }
+  | { ok: true; zones: PluZonesGeoJson; partition: string; diag: PluDiag }
   | { ok: false; status: number; error: string; diag: PluDiag };
 
-type ZoneFeature = { properties?: { insee?: string; partition?: string; typezone?: string } };
+// Raison stable d'absence de PLU pour la commune. NULL = succès, ou échec
+// transient sans diagnostic clair.
+export type PluUnavailableReason = "not_in_gpu" | "gpu_error";
+
+type ZoneFeature = {
+  properties?: { insee?: string; partition?: string; typezone?: string; libelle?: string; libelong?: string; nomfic?: string; urba_etat?: string };
+  geometry?: Geometry;
+};
 
 // Garde uniquement les zones dont la propriété `insee` correspond à la commune.
 // Pour les PLUi, le filtre `geom` du GPU laisse passer les zones limitrophes
@@ -252,8 +268,16 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   if (!chosenPartition || !chosenZones) {
     console.warn(`[plu-zones] INSEE=${inseeCode} échec — candidats=${JSON.stringify(diag.candidates)} upstreamFailed=${diag.upstreamFailed}`);
     if (diag.upstreamFailed) {
+      // Erreur transient : on ne marque PAS unavailable_reason (laisse retenter).
       return { ok: false, status: 502, error: "Le Géoportail de l'Urbanisme est temporairement indisponible. Réessayez dans quelques instants.", diag };
     }
+    // Diagnostic stable : aucune partition n'a fonctionné alors que le GPU répondait.
+    // On grave cet état pour court-circuiter les futures tentatives jusqu'au prochain
+    // refresh (cron nocturne ou ?refresh=1 manuel).
+    await db.update(communes)
+      .set({ plu_unavailable_reason: "not_in_gpu", plu_zones_cached_at: new Date() })
+      .where(eq(communes.insee_code, inseeCode))
+      .catch((e: unknown) => console.error("[plu-zones DB persist]", e));
     return { ok: false, status: 404, error: "Aucune zone PLU disponible pour cette commune sur le Géoportail de l'Urbanisme", diag };
   }
 
@@ -262,17 +286,164 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
 
   const cleaned = filterZonesByInsee(chosenZones, inseeCode);
 
-  // Persistance en base (await pour que la fraîcheur soit garantie au retour)
+  // Persistance en base (await pour que la fraîcheur soit garantie au retour).
+  // On stocke aussi la partition gagnante : `parcelAnalysis` la réutilise pour
+  // ses sous-requêtes (zone-urba, prescription-surf, info-surf) sans refaire
+  // la découverte point par point — c'est cette persistance qui ferme le mode
+  // d'échec "PLU existe mais convention de nommage non-standard".
   await db.update(communes)
-    .set({ plu_zones_geojson: cleaned, plu_zones_cached_at: new Date() })
+    .set({
+      plu_zones_geojson: cleaned,
+      plu_zones_cached_at: new Date(),
+      plu_partition: chosenPartition,
+      plu_unavailable_reason: null,
+    })
     .where(eq(communes.insee_code, inseeCode))
     .catch((e: unknown) => console.error("[plu-zones DB persist]", e));
 
-  return { ok: true, zones: cleaned, diag };
+  return { ok: true, zones: cleaned, partition: chosenPartition, diag };
 }
 
 // ETag faible basé sur l'horodatage du cache DB — suffisant pour 304.
 export function pluEtagFor(inseeCode: string, cachedAt: Date | null): string | null {
   if (!cachedAt) return null;
   return `W/"plu-${inseeCode}-${cachedAt.getTime()}"`;
+}
+
+// ── Point-in-polygon : trouve la zone PLU contenant un point ─────────────────
+// Pure helper, déterministe, immunisé contre les bizarreries spatiales de l'IGN.
+// Utilisé comme :
+//  - chemin nominal pour parcelAnalysis quand le cache commune est frais
+//    (1 appel DB + hit-test local au lieu de N appels GPU)
+//  - fallback ultime quand /zone-urba?geom=Point renvoie 0 feature alors
+//    qu'on sait qu'une zone existe (cas du point géocodé sur voirie)
+
+// Ray-casting sur un ring (anneau extérieur ou trou). Coordonnées GeoJSON [lng, lat].
+function pointInRing(lng: number, lat: number, ring: number[][]): boolean {
+  let inside = false;
+  for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) {
+    const a = ring[i]!, b = ring[j]!;
+    const xi = a[0]!, yi = a[1]!;
+    const xj = b[0]!, yj = b[1]!;
+    // Demi-droite horizontale vers +∞ : compte les croisements avec [a,b].
+    const crosses = ((yi > lat) !== (yj > lat)) &&
+      (lng < (xj - xi) * (lat - yi) / (yj - yi) + xi);
+    if (crosses) inside = !inside;
+  }
+  return inside;
+}
+
+// Un Polygon vaut « contenant » si le point est dans le ring extérieur ET dans
+// AUCUN trou. Un MultiPolygon : au moins un sous-Polygon le contient.
+function pointInPolygonGeom(lng: number, lat: number, geom: Polygon | MultiPolygon): boolean {
+  const polys: number[][][][] = geom.type === "Polygon" ? [geom.coordinates] : geom.coordinates;
+  for (const poly of polys) {
+    const outer = poly[0];
+    if (!outer || !pointInRing(lng, lat, outer)) continue;
+    let inHole = false;
+    for (let h = 1; h < poly.length; h++) {
+      if (pointInRing(lng, lat, poly[h]!)) { inHole = true; break; }
+    }
+    if (!inHole) return true;
+  }
+  return false;
+}
+
+export type ZoneAtPoint = {
+  zone_code: string;
+  zone_label: string;
+  zone_type: string;   // "U" | "AU" | "A" | "N" — première lettre de typezone
+  plu_nom?: string;
+  plu_etat?: string;
+  geometry: Geometry;
+};
+
+// Cherche la première feature du GeoJSON dont la géométrie contient (lat, lng).
+// Renvoie null si aucune zone ne couvre le point (zone non zonée, ou point
+// strictement hors commune).
+export function findZoneAtPoint(zones: PluZonesGeoJson | null | undefined, lat: number, lng: number): ZoneAtPoint | null {
+  const feats = (zones?.features ?? []) as Array<Feature & { properties?: ZoneFeature["properties"] }>;
+  for (const f of feats) {
+    const g = f.geometry;
+    if (!g || (g.type !== "Polygon" && g.type !== "MultiPolygon")) continue;
+    if (!pointInPolygonGeom(lng, lat, g as Polygon | MultiPolygon)) continue;
+    const p = f.properties ?? {};
+    const code = p.libelle ?? "";
+    const type = (p.typezone ?? "U").charAt(0) || "U";
+    return {
+      zone_code: code,
+      zone_label: p.libelong || code,
+      zone_type: type,
+      plu_nom: p.nomfic,
+      plu_etat: p.urba_etat,
+      geometry: g,
+    };
+  }
+  return null;
+}
+
+// ── Contexte PLU d'une commune (cache-aside, robuste) ────────────────────────
+// Source de vérité unique pour parcelAnalysis : renvoie partition + zones +
+// raison d'indisponibilité, en rafraîchissant uniquement quand nécessaire.
+//
+//   - cache frais (< PLU_REFRESH_AFTER_MS) → renvoyé tel quel
+//   - cache stale (> seuil) ou absent     → refreshPluZones synchrone
+//   - GPU KO + cache stale présent        → on retourne le stale + flag
+//   - jamais de cache + GPU KO            → null partition + reason="gpu_error"
+//
+// Conséquence : si refreshPluZones a réussi UNE FOIS (cron ou requête /plu-zones),
+// tous les appels suivants servent depuis le cache, gratuits et déterministes.
+
+export type PluCommuneContext = {
+  partition: string | null;
+  zones: PluZonesGeoJson | null;
+  unavailableReason: PluUnavailableReason | null;
+  stale: boolean;
+};
+
+export async function getCommunePluContext(inseeCode: string): Promise<PluCommuneContext> {
+  const [row] = await db.select({
+    plu_zones_geojson: communes.plu_zones_geojson,
+    plu_zones_cached_at: communes.plu_zones_cached_at,
+    plu_partition: communes.plu_partition,
+    plu_unavailable_reason: communes.plu_unavailable_reason,
+  }).from(communes).where(eq(communes.insee_code, inseeCode)).limit(1);
+
+  const cachedAt = row?.plu_zones_cached_at ?? null;
+  const ageMs = cachedAt ? Date.now() - cachedAt.getTime() : Infinity;
+  const fresh = ageMs < PLU_REFRESH_AFTER_MS;
+
+  if (row && fresh) {
+    return {
+      partition: row.plu_partition ?? null,
+      zones: (row.plu_zones_geojson as PluZonesGeoJson | null) ?? null,
+      unavailableReason: (row.plu_unavailable_reason as PluUnavailableReason | null) ?? null,
+      stale: false,
+    };
+  }
+
+  // Cache stale ou inexistant → tente un refresh.
+  const result = await refreshPluZones(inseeCode);
+  if (result.ok) {
+    return { partition: result.partition, zones: result.zones, unavailableReason: null, stale: false };
+  }
+
+  // Échec du refresh : si on a un cache (même stale), on le sert avec le flag.
+  if (row?.plu_zones_geojson) {
+    return {
+      partition: row.plu_partition ?? null,
+      zones: row.plu_zones_geojson as PluZonesGeoJson,
+      unavailableReason: (row.plu_unavailable_reason as PluUnavailableReason | null) ?? null,
+      stale: true,
+    };
+  }
+
+  // Distinction : 404 GPU = pas de PLU pour cette commune (refresh aura déjà
+  // gravé "not_in_gpu") ; 502 = GPU temporairement KO.
+  return {
+    partition: null,
+    zones: null,
+    unavailableReason: result.status === 404 ? "not_in_gpu" : "gpu_error",
+    stale: false,
+  };
 }
