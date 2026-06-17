@@ -12,7 +12,7 @@ Ce README couvre uniquement l'installation et l'usage quotidien des scripts.
 
 ```bash
 # 1. Cloner le repo et se placer ici
-cd /opt/heureka/infra/backup
+cd /home/ubuntu/heurekia/infra/backup
 
 # 2. Découvrir l'environnement local (Postgres, uploads, app)
 sudo ./discover.sh
