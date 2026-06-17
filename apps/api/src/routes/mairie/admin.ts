@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../../db.js";
 import { dossiers, users, communes, zones, zone_regulatory_rules } from "@heureka-v1/db";
-import { eq, sql, ilike, inArray } from "drizzle-orm";
+import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
 import { callAi, type AiToolDefinition } from "../../services/aiUsage.js";
@@ -111,7 +111,7 @@ adminRouter.get("/admin/users", async (req: AuthRequest, res) => {
       role: users.role, commune: users.commune, telephone: users.telephone,
       role_config_id: users.role_config_id,
       created_at: users.created_at,
-    }).from(users).where(ilike(users.commune, communeName));
+    }).from(users).where(and(ilike(users.commune, communeName), ne(users.role, "citoyen")));
     res.json(rows);
   } catch (err) {
     console.error(err);
