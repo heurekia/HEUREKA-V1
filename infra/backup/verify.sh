@@ -36,8 +36,12 @@ gpg_decrypt "$latest" \
                -d "$VERIFY_DATABASE" \
                --no-owner --no-acl --no-comments --exit-on-error
 
-count_prod=$(sudo -u postgres psql -tAc "SELECT count(*) FROM $PG_DATABASE.public.dossiers" 2>/dev/null || echo "?")
-count_test=$(sudo -u postgres psql -tAc "SELECT count(*) FROM $VERIFY_DATABASE.public.dossiers")
+count_prod=$(sudo -u postgres psql -d "$PG_DATABASE" -tAc \
+              "SELECT count(*) FROM public.dossiers" 2>/dev/null \
+              | tr -d '[:space:]' || echo "?")
+count_test=$(sudo -u postgres psql -d "$VERIFY_DATABASE" -tAc \
+              "SELECT count(*) FROM public.dossiers" \
+              | tr -d '[:space:]')
 
 log "Dossiers (prod) : $count_prod"
 log "Dossiers (test) : $count_test"
