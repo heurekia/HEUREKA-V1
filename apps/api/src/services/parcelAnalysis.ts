@@ -901,7 +901,9 @@ const GPU_CACHE_TTL_MS = 30 * 24 * 60 * 60 * 1000; // 30 days
 // This busts all old cache entries (they become misses) without a DB migration.
 // v4: bust entries that may have been poisoned with an incomplete payload
 //     (zone present but prescriptions/commune empty after a transient GPU failure).
-const GPU_CACHE_VERSION = 4;
+// v5: bust entries that may have been written with a PLUi zone wrongly rejected
+//     (or accepted) due to the old loose `^(\d{5})` INSEE-vs-SIREN regex.
+const GPU_CACHE_VERSION = 5;
 
 function gpuCacheKey(parcelle_id: string | undefined, lat: number, lng: number): string {
   const base = parcelle_id ?? `${lat.toFixed(4)},${lng.toFixed(4)}`;
@@ -1282,10 +1284,32 @@ export async function analyseParcel(
       if (gpuAvailable || !cached) {
         // GPU is responding — fetch all data
         let zone = await findPluZone(lat, lng, gpuPartition);
+
+        // ── Validation INSEE ↔ zone ─────────────────────────────────────────
+        // Le PLU COMMUNAL nomme ses fichiers <INSEE>_PLU_<date>.<ext>. Si le
+        // préfixe pointe vers une AUTRE commune, c'est une réponse parasite du
+        // GPU (cas typique : Tours, dont la BBox déborde sur Parçay-Meslay).
+        //
+        // Mais un PLUi nomme ses fichiers <SIREN>_PLUI / <SIREN>_reglement —
+        // un SIREN à 9 chiffres dont les 5 premiers ressemblent à un INSEE
+        // étranger (ex: SIREN 200030385 → faux INSEE "20003" pour une commune
+        // de Loir-et-Cher). Le regex doit donc EXIGER `_PLU(_|.|$)` après le
+        // bloc 5 chiffres pour ne rejeter QUE de vrais PLU communaux.
+        const inseeMismatch = (z: PluZoneResult): boolean => {
+          if (!code_insee || !z.plu_nom) return false;
+          const m = z.plu_nom.match(/^(\d{5})_PLU(?:_|\.|$)/);
+          return m !== null && m[1] !== code_insee;
+        };
+        if (zone && inseeMismatch(zone)) {
+          console.warn(`[parcel] zone GPU (${zone.plu_nom}) rejetée pour ${code_insee} — fallback cache commune`);
+          zone = null;
+        }
+
         // Fallback ultime : si /zone-urba ne trouve rien au point (point sur
-        // voirie, bord de zone), on cherche localement dans les zones cachées
-        // de la commune. Point-in-polygon déterministe, gratuit, immunisé
-        // contre les bizarreries du filtre spatial GPU.
+        // voirie, bord de zone, ou zone rejetée à raison ci-dessus), on cherche
+        // localement dans les zones cachées de la commune. Point-in-polygon
+        // déterministe, gratuit, immunisé contre les bizarreries du filtre
+        // spatial GPU et contre les conventions de nommage non-standard.
         if (!zone && code_insee) {
           if (!communeCtx) communeCtx = await getCommunePluContext(code_insee);
           const local = findZoneAtPoint(communeCtx.zones, lat, lng);
@@ -1340,7 +1364,14 @@ export async function analyseParcel(
 
       const zone = gpuPayload.zone_urba;
       if (zone) {
-        const pluInsee = zone.plu_nom?.match(/^(\d{5})/)?.[1];
+        // La validation INSEE ↔ PLU est faite en amont (phase fetch), donc une
+        // zone présente ici est, par construction, celle de la bonne commune.
+        // Sécurité legacy : pour les caches v3- déjà persistés avec une
+        // mauvaise zone (regex prefix faussement attentif au SIREN), on rejoue
+        // une vérification stricte — pattern <INSEE>_PLU obligatoire pour
+        // rejeter, jamais sur du SIREN de PLUi.
+        const m = zone.plu_nom?.match(/^(\d{5})_PLU(?:_|\.|$)/);
+        const pluInsee = m?.[1];
         if (pluInsee && code_insee && pluInsee !== code_insee) {
           result.warnings.push(`Zone PLU GPU (${zone.plu_nom}) appartient à la commune ${pluInsee}, différente de ${code_insee}. Zone ignorée.`);
         } else {
