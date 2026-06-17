@@ -104,6 +104,14 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
       "Content-Disposition",
       `inline; filename="${encodeURIComponent(piece.nom || key)}"`,
     );
+    // Helmet pose globalement `Content-Security-Policy: frame-ancestors 'none'`
+    // et `X-Frame-Options: SAMEORIGIN`. Le frame-ancestors 'none' interdit
+    // l'embed du PDF dans l'<iframe> du PieceViewer — y compris depuis notre
+    // propre SPA — d'où l'aperçu inline vide alors que "Ouvrir dans un nouvel
+    // onglet" fonctionne (navigation top-level, pas un frame). On relâche à
+    // 'self' pour ce flux : embed autorisé depuis nos pages, refusé pour les
+    // tiers (anti-clickjacking conservé).
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
     streamRes.stream.on("error", (e) => {
       console.error("[uploads] stream error", e);
       if (!res.headersSent) res.status(500).end();
