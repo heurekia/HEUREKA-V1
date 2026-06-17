@@ -33,7 +33,8 @@ done
 gpg_decrypt "$latest" \
   | gunzip \
   | pg_restore -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" \
-               -d "$VERIFY_DATABASE" --no-owner --no-acl --exit-on-error
+               -d "$VERIFY_DATABASE" \
+               --no-owner --no-acl --no-comments --exit-on-error
 
 count_prod=$(sudo -u postgres psql -tAc "SELECT count(*) FROM $PG_DATABASE.public.dossiers" 2>/dev/null || echo "?")
 count_test=$(sudo -u postgres psql -tAc "SELECT count(*) FROM $VERIFY_DATABASE.public.dossiers")

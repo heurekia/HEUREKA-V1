@@ -57,7 +57,8 @@ done
 gpg_decrypt "$src" \
   | gunzip \
   | pg_restore -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" \
-               -d "$target_db" --no-owner --no-acl --exit-on-error
+               -d "$target_db" \
+               --no-owner --no-acl --no-comments --exit-on-error
 
 log "Restauration terminée dans '$target_db'"
 echo

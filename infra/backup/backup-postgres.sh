@@ -13,6 +13,14 @@ dest="$dest_dir/heureka-$(today).sql.gz.gpg"
 
 log "Dump $PG_DATABASE → $dest"
 
+# Exclut les extensions superuser-only (pgvector typiquement). Elles seront
+# pré-créées au restore par verify.sh / restore-postgres.sh comme user
+# postgres, ce qui évite les erreurs "permission denied" et "must be owner".
+exclude_args=()
+for ext in ${PG_EXTENSIONS:-vector}; do
+  exclude_args+=(--exclude-extension="$ext")
+done
+
 # pg_dump en format custom (-Fc) : plus compact et permet le restore sélectif.
 # Le mot de passe est lu depuis ~/.pgpass (mode 600) — voir backup.env.example.
 PGPASSWORD="${PGPASSWORD:-}" \
@@ -20,6 +28,7 @@ PGPASSWORD="${PGPASSWORD:-}" \
     -h "$PG_HOST" -p "$PG_PORT" \
     -U "$PG_USER" -d "$PG_DATABASE" \
     -Fc --no-owner --no-acl \
+    "${exclude_args[@]}" \
   | gzip -9 \
   | gpg_encrypt "$dest"
 
