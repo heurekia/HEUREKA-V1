@@ -8,11 +8,12 @@ import multer from "multer";
 import crypto from "crypto";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { autoAdvanceIfAllPiecesValid } from "../../services/dossierWorkflow.js";
-import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../../services/pieceExtractor.js";
-import { analyzePiece } from "../../services/pieceAnalyzer.js";
+import { extractPiece, expectedTypeFromCode } from "../../services/pieceExtractor.js";
 import { getStorageProvider } from "../../services/storage.js";
 import { archivePreviousComplementDemande } from "../../services/pieceArchive.js";
+import { queuePieceOcr, notifyIfAlreadyComplete } from "../../services/pieceOcrQueue.js";
 import { resolveCommuneIdFromUser, UPLOADS_DIR_MAIRIE } from "./_shared.js";
+import { sql } from "drizzle-orm";
 
 export const piecesRouter = Router();
 
@@ -175,6 +176,13 @@ piecesRouter.patch("/dossiers/:id/pieces/:pieceId/annotation", async (req: AuthR
 // propriétaire du dossier (le placeholder pétitionnaire le cas échéant), et
 // les analyses IA tournent sans demander de consentement explicite : c'est
 // l'opérateur mairie qui a sciemment numérisé et déposé le document.
+//
+// Performance : l'OCR (analyzePiece + extractPiece) est délégué à un worker
+// en arrière-plan via queuePieceOcr — la route rend la main immédiatement
+// après la persistance de la pièce pour ne pas laisser l'agent attendre
+// devant le pétitionnaire. La notification "dossier prêt" est envoyée à
+// l'instructeur quand toutes les pièces ont été traitées ET que l'agent a
+// finalisé sa session via POST /finalize-upload-session.
 piecesRouter.post("/dossiers/:id/pieces/upload", pieceUploadSingle, async (req: AuthRequest, res) => {
   const storage = getStorageProvider();
   const fileKey = req.file
@@ -214,6 +222,7 @@ piecesRouter.post("/dossiers/:id/pieces/upload", pieceUploadSingle, async (req: 
         type: req.file.mimetype,
         taille: req.file.size,
         code_piece: code_piece || null,
+        ocr_status: "pending",
       })
       .returning();
 
@@ -234,43 +243,98 @@ piecesRouter.post("/dossiers/:id/pieces/upload", pieceUploadSingle, async (req: 
       }
     }
 
-    // Analyses IA en parallèle, best-effort : un échec ne bloque pas
-    // l'upload (la pièce est déjà persistée, l'instructeur pourra rejouer
-    // l'extraction via POST /pieces/:pieceId/extract).
-    const communeIdForTrace = await resolveCommuneIdFromUser(req);
-    const trace = { dossierId, userId: req.user?.id ?? null, communeId: communeIdForTrace };
-    const expected = expectedTypeFromCode(code_piece);
-    const fileBuffer = req.file.buffer;
-    const mimeType = req.file.mimetype;
-    const [analyse_ia, extraction_ia] = await Promise.all([
-      analyzePiece(fileBuffer, mimeType, nom_piece, code_piece, undefined, trace).catch((err) => {
-        console.error("[mairie/pieces/upload] analyzePiece:", err instanceof Error ? `${err.name}: ${err.message}` : err);
-        return null;
-      }),
-      extractPiece(fileBuffer, mimeType, { expected_type: expected, nom_piece, code_piece }, trace).catch((err) => {
-        console.error("[mairie/pieces/upload] extractPiece:", err instanceof Error ? `${err.name}: ${err.message}` : err);
-        return null as PieceExtraction | null;
-      }),
-    ]);
-
-    if (analyse_ia || extraction_ia) {
-      await db
-        .update(dossier_pieces_jointes)
-        .set({
-          analyse_ia: analyse_ia ?? null,
-          extraction_ia: extraction_ia ?? null,
-          ai_processed: analyse_ia !== null || extraction_ia !== null,
-        })
-        .where(eq(dossier_pieces_jointes.id, piece!.id));
+    // Démarre une nouvelle session d'upload : si l'agent rajoute des pièces
+    // après une finalisation précédente, on remet le compteur à zéro pour que
+    // la prochaine notification reparte sur du frais.
+    try {
+      await db.execute(sql`
+        UPDATE dossiers
+           SET metadata = (coalesce(metadata, '{}'::jsonb))
+                          - 'mairie_pieces_upload_finalized'
+                          - 'mairie_pieces_ocr_notified_at'
+         WHERE id = ${dossierId}
+      `);
+    } catch (e) {
+      console.warn("[mairie/pieces/upload] reset session metadata:", e);
     }
 
-    res.status(201).json({ ...piece, analyse_ia, extraction_ia, ai_processed: analyse_ia !== null || extraction_ia !== null });
+    // OCR asynchrone : on délègue au worker et on rend la main tout de suite.
+    // L'agent verra dans l'UI l'état "analyse en cours" et recevra la
+    // notification "dossier prêt" quand toutes les pièces seront traitées.
+    if (piece) {
+      const communeIdForTrace = await resolveCommuneIdFromUser(req);
+      queuePieceOcr({
+        pieceId: piece.id,
+        dossierId,
+        fileBuffer: req.file.buffer,
+        mimeType: req.file.mimetype,
+        nom_piece,
+        code_piece,
+        trace: { dossierId, userId: req.user?.id ?? null, communeId: communeIdForTrace },
+      });
+    }
+
+    res.status(201).json({ ...piece, analyse_ia: null, extraction_ia: null, ai_processed: false, ocr_status: "pending" });
   } catch (err) {
     if (fileKey) {
       try { await storage.remove(fileKey); } catch { /* ignore */ }
     }
     console.error("[mairie/pieces/upload]", err);
     res.status(500).json({ error: "Erreur upload" });
+  }
+});
+
+// Marque la fin de la session d'upload côté agent. Tant que cet appel n'a pas
+// eu lieu, aucune notification "dossier prêt" n'est envoyée : ça évite que la
+// cloche sonne entre la pièce 1 (déjà OCRisée) et la pièce 2 (pas encore
+// uploadée par l'agent). Si toutes les pièces sont déjà passées par le
+// worker au moment de l'appel, la notification part immédiatement.
+piecesRouter.post("/dossiers/:id/pieces/finalize-upload-session", async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const dossier = (req as AuthRequest & { dossier?: { id: string; user_id: string } }).dossier;
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    await db.execute(sql`
+      UPDATE dossiers
+         SET metadata = jsonb_set(
+               coalesce(metadata, '{}'::jsonb),
+               '{mairie_pieces_upload_finalized}',
+               'true'::jsonb,
+               true
+             )
+       WHERE id = ${dossierId}
+    `);
+
+    // Si l'OCR de toutes les pièces est déjà terminé, on notifie tout de
+    // suite. Sinon, c'est le worker qui déclenchera la notification à la fin
+    // de la dernière pièce.
+    await notifyIfAlreadyComplete(dossierId);
+
+    // Renvoie un statut synthétique pour l'UI : combien de pièces sont encore
+    // en cours d'analyse, combien sont prêtes. L'agent peut afficher un
+    // récapitulatif "X/Y pièces analysées — vous serez notifié à la fin".
+    const counts = await db
+      .select({ status: dossier_pieces_jointes.ocr_status, id: dossier_pieces_jointes.id })
+      .from(dossier_pieces_jointes)
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossierId),
+        isNull(dossier_pieces_jointes.archived_at),
+      ));
+    const summary = counts.reduce(
+      (acc, r) => {
+        const k = (r.status ?? "pending") as keyof typeof acc;
+        if (k in acc) acc[k] += 1;
+        return acc;
+      },
+      { pending: 0, processing: 0, done: 0, failed: 0, skipped: 0 },
+    );
+    const total = counts.length;
+    const remaining = summary.pending + summary.processing;
+    res.json({ total, remaining, summary });
+  } catch (err) {
+    console.error("[mairie/pieces/finalize-upload-session]", err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 

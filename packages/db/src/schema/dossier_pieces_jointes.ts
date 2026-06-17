@@ -25,6 +25,16 @@ export const dossier_pieces_jointes = pgTable("dossier_pieces_jointes", {
   // RGPD : trace par pièce de l'exécution effective d'une analyse IA.
   // false = le citoyen a refusé OU le format n'est pas analysable.
   ai_processed: boolean("ai_processed").notNull().default(false),
+  // Cycle de vie de l'OCR / analyse IA exécutée en arrière-plan après l'upload
+  // au comptoir mairie. Valeurs : pending|processing|done|failed|skipped.
+  // pending = inséré, en attente de prise en charge par le worker.
+  // processing = en cours d'analyse.
+  // done = OCR terminé avec succès (analyse_ia ou extraction_ia non null).
+  // failed = OCR tenté mais sans résultat exploitable.
+  // skipped = pas d'analyse (consentement refusé / format non supporté).
+  ocr_status: text("ocr_status").notNull().default("pending"),
+  ocr_started_at: timestamp("ocr_started_at"),
+  ocr_completed_at: timestamp("ocr_completed_at"),
   // Versioning : quand l'instructeur demande un complément sur une pièce et
   // que le pétitionnaire en redépose une nouvelle pour le même slot, l'ancienne
   // est archivée (jamais supprimée — audit RGPD). archived_by_piece_id pointe

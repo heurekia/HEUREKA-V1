@@ -9456,6 +9456,12 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
       // garde un feedback de progression simple. Une erreur sur une pièce
       // n'empêche pas les suivantes : le dossier est déjà créé, l'opérateur
       // pourra rejouer l'ajout depuis l'écran du dossier.
+      //
+      // Note : depuis le passage de l'OCR en asynchrone côté back, chaque
+      // upload retourne en quelques centaines de ms (le temps d'écrire le
+      // fichier en stockage et la ligne en DB). L'analyse IA tourne ensuite
+      // en arrière-plan et l'instructeur est notifié quand toutes les pièces
+      // sont analysées — voir finalize-upload-session ci-dessous.
       if (stagedFiles.length > 0) {
         setUploadProgress({ done: 0, total: stagedFiles.length });
         let done = 0;
@@ -9487,6 +9493,19 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
           // Best-effort : on prévient mais on continue vers le détail du dossier
           // pour que l'opérateur voie l'état réel et rejoue les uploads ratés.
           console.warn("[NouveauDossier] uploads en échec :", errors);
+        }
+
+        // Signale au back que l'agent a fini de déposer les pièces. Tant que
+        // cet appel n'a pas eu lieu, la notification "dossier prêt" reste
+        // bloquée — ça évite le faux positif quand l'OCR de la pièce 1 finit
+        // avant que la pièce 2 ne soit uploadée.
+        try {
+          await api.post(`/mairie/dossiers/${created.id}/pieces/finalize-upload-session`, {});
+        } catch (err) {
+          // Best-effort : l'instructeur recevra quand même la notification au
+          // prochain événement sur le dossier, et l'agent voit l'état réel
+          // sur l'écran du dossier.
+          console.warn("[NouveauDossier] finalize-upload-session:", err);
         }
       }
 
@@ -9593,7 +9612,7 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
   );
 
   const submitLabel = submitting
-    ? (uploadProgress ? `Pièces ${uploadProgress.done}/${uploadProgress.total}…` : "Création…")
+    ? (uploadProgress ? `Dépôt ${uploadProgress.done}/${uploadProgress.total}…` : "Création…")
     : (mode === "ocr" && stagedFiles.length > 0 ? `Créer le dossier (${stagedFiles.length} pièce${stagedFiles.length > 1 ? "s" : ""})` : "Créer le dossier");
 
   const footer = (
@@ -9644,6 +9663,23 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
     <NouveauDossierOverlay onClose={onClose}>
       <NouveauDossierModalHeader title="Reconnaissance OCR" onClose={onClose} back={() => { setMode("choose"); setStagedFiles([]); setCerfaDone(false); setOcrError(null); setOcrNumero(null); }} />
       <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
+        {stagedFiles.length > 0 && !submitting && (
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 8, padding: "10px 14px" }}>
+            <span style={{ fontSize: 16 }}>⚡</span>
+            <div style={{ fontSize: 12.5, color: "#075985", lineHeight: 1.5 }}>
+              Le dépôt prend quelques secondes — l'analyse OCR des pièces tourne ensuite en arrière-plan.
+              <strong> L'instructeur reçoit une notification dès que le dossier est entièrement constitué.</strong>
+            </div>
+          </div>
+        )}
+        {submitting && uploadProgress && uploadProgress.done >= uploadProgress.total && uploadProgress.total > 0 && (
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 8, padding: "10px 14px" }}>
+            <span style={{ fontSize: 16 }}>✅</span>
+            <div style={{ fontSize: 12.5, color: "#065F46", lineHeight: 1.5 }}>
+              Pièces déposées. L'analyse OCR se poursuit en arrière-plan — vous (ou l'instructeur assigné) recevrez une notification dès que tout est prêt.
+            </div>
+          </div>
+        )}
         {stagedFiles.length === 0 ? (
           <>
             <label style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", border: "2px dashed #CBD5E1", borderRadius: 12, padding: "40px 24px", cursor: "pointer", gap: 10, background: "#F8FAFC" }}>
