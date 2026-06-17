@@ -21,9 +21,11 @@
     "dompurify": "^3.4.9",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.488.0",
+    "pdfjs-dist": "^4",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-helmet-async": "^3.0.0",
+    "react-pdf": "^9",
     "react-rnd": "^10.5.3",
     "react-router-dom": "^7.6.2",
     "recharts": "^2.15.3"

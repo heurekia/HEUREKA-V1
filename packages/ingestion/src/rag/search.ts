@@ -104,6 +104,12 @@ export async function searchSegments(p: SearchParams): Promise<SearchHit[]> {
         eq(document_segment_annotations.visibility, "shared"),
       ));
     for (const a of annRows) {
+      // 3.C.3 : les annotations PDF-level (segment_id null) ne sont pas
+      // routées au LLM via ce path — un matching texte/page sera ajouté
+      // plus tard pour les retrouver à côté du bon chunk. Le filtre
+      // inArray ci-dessus exclut déjà ces lignes côté SQL ; ce guard sert
+      // de garde-fou côté TS et reflète l'intention.
+      if (!a.segment_id) continue;
       const arr = annotationsBySegment.get(a.segment_id) ?? [];
       arr.push({
         id: a.id,
