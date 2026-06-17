@@ -48,6 +48,12 @@ log "Restauration → base temporaire '$target_db'"
 
 sudo -u postgres createdb -O "$PG_USER" "$target_db"
 
+# Pré-création des extensions qui exigent superuser (cf. commentaire verify.sh).
+for ext in ${PG_EXTENSIONS:-vector}; do
+  sudo -u postgres psql -d "$target_db" \
+       -c "CREATE EXTENSION IF NOT EXISTS $ext" >/dev/null
+done
+
 gpg_decrypt "$src" \
   | gunzip \
   | pg_restore -h "$PG_HOST" -p "$PG_PORT" -U "$PG_USER" \
