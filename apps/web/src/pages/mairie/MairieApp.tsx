@@ -6888,6 +6888,21 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   // Document réglementaire affiché en mode Comparer (sélection mémorisée
   // tant qu'on reste sur le dossier — réinitialisé entre dossiers).
   const [docsRegulatoryDocId, setDocsRegulatoryDocId] = useState<string | null>(null);
+  // Hints transmis au RegulatoryDocViewer quand on arrive depuis une citation
+  // de verdict (onglet Conformité IA). docType : auto-sélection PLU/PPRI/OAP…
+  // page : ouvre directement à la bonne page via fragment #page=N.
+  const [docsRegulatoryDocTypeHint, setDocsRegulatoryDocTypeHint] = useState<string | null>(null);
+  const [docsRegulatoryDocPage, setDocsRegulatoryDocPage] = useState<number | null>(null);
+
+  // Handler de jump depuis une citation de verdict. Bascule l'onglet, le mode
+  // d'affichage, et nourrit les hints du RegulatoryDocViewer.
+  const jumpFromCitation = useCallback((ref: { doc_type?: string; page?: number }) => {
+    if (!ref.doc_type) return;
+    setActiveTab("Documents");
+    setDocsViewMode("compare");
+    setDocsRegulatoryDocTypeHint(ref.doc_type);
+    setDocsRegulatoryDocPage(typeof ref.page === "number" ? ref.page : null);
+  }, [setDocsViewMode]);
   // Mode d'ouverture de la modale courrier : null = fermée, "general" = bouton
   // historique, "pieces_complementaires" = entrée dédiée depuis le bandeau
   // workflow. Le mode pilote le panneau de sélection des pièces et le bouton
@@ -7096,6 +7111,10 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     instructeur_note: string | null;
     instructeur_status_at: string | null;
     uploaded_at: string;
+    // Statut du pipeline OCR — sert à signaler à l'instructeur qu'un
+    // document est en cours de traitement ou que l'extraction a échoué
+    // (sinon il croit que l'IA a "rien dit", alors qu'elle n'a rien pu lire).
+    ocr_status?: "pending" | "processing" | "done" | "failed" | "skipped" | null;
   };
   const [documents, setDocuments] = useState<DossierPiece[] | null>(null);
   const [documentsLoading, setDocumentsLoading] = useState(false);
@@ -8437,7 +8456,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         {/* ── CONFORMITÉ IA ── */}
         {activeTab === "Conformité IA" && (
           <div style={{ marginBottom: 20 }}>
-            <RegulatoryChecklist dossierId={dossier.id} />
+            <RegulatoryChecklist dossierId={dossier.id} onJumpToCitation={jumpFromCitation} />
           </div>
         )}
         {activeTab === "Conformité IA" && (() => {
@@ -8737,6 +8756,17 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                               {inst && (
                                 <span style={{ fontSize: 10.5, fontWeight: 700, color: inst.color, background: inst.bg, borderRadius: 5, padding: "1px 6px", border: `1px solid ${inst.border}` }}>{inst.label}</span>
                               )}
+                              {/* Badges de traitement IA — n'apparaissent que lors d'anomalies ou
+                                  d'attentes. Quand tout est OK le `status.label` ci-dessus suffit. */}
+                              {(doc.ocr_status === "processing" || doc.ocr_status === "pending") && (
+                                <span title="OCR en cours sur ce document" style={{ fontSize: 10.5, fontWeight: 700, color: "#C2410C", background: "#FFF7ED", borderRadius: 5, padding: "1px 6px", border: "1px solid #FED7AA" }}>↻ OCR</span>
+                              )}
+                              {doc.ocr_status === "failed" && (
+                                <span title="OCR échoué — l'IA ne peut pas lire ce document" style={{ fontSize: 10.5, fontWeight: 700, color: "#DC2626", background: "#FEE2E2", borderRadius: 5, padding: "1px 6px", border: "1px solid #FECACA" }}>⚠ OCR</span>
+                              )}
+                              {(doc.ocr_status === "done" || doc.ocr_status === "skipped") && !doc.analyse_ia && (
+                                <span title="OCR terminé, analyse IA en cours ou non lancée" style={{ fontSize: 10.5, fontWeight: 700, color: "#C2410C", background: "#FFF7ED", borderRadius: 5, padding: "1px 6px", border: "1px solid #FED7AA" }}>↻ IA</span>
+                              )}
                               {hasNote && (
                                 <span title="Annotation présente" style={{ fontSize: 10.5, color: "#4F46E5" }}>📝</span>
                               )}
@@ -8779,7 +8809,15 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         <RegulatoryDocViewer
                           communeName={dossier.commune ?? ""}
                           selectedDocId={docsRegulatoryDocId}
-                          onSelectDoc={setDocsRegulatoryDocId}
+                          onSelectDoc={(id) => {
+                            setDocsRegulatoryDocId(id);
+                            // Sélection manuelle : on lâche le hint pour ne pas
+                            // re-basculer automatiquement à chaque rerender.
+                            setDocsRegulatoryDocTypeHint(null);
+                            setDocsRegulatoryDocPage(null);
+                          }}
+                          preferredDocType={docsRegulatoryDocTypeHint}
+                          page={docsRegulatoryDocPage}
                         />
                       </div>
                     }
