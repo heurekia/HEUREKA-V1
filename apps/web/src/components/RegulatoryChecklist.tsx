@@ -191,9 +191,13 @@ function topicLabel(topic: string): string {
 
 interface Props {
   dossierId: string;
+  /** Handler appelé quand l'instructeur clique sur une citation de fondement
+   *  pour ouvrir le passage dans le viewer (onglet Documents · mode Comparer).
+   *  Si non fourni, les fondements restent en texte simple (compat existant). */
+  onJumpToCitation?: (ref: SourceRef) => void;
 }
 
-export function RegulatoryChecklist({ dossierId }: Props) {
+export function RegulatoryChecklist({ dossierId, onJumpToCitation }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<LatestResponse | null>(null);
@@ -346,6 +350,7 @@ export function RegulatoryChecklist({ dossierId }: Props) {
                       finding={f}
                       factsByKey={factsByKey}
                       onDecision={onDecision}
+                      onJumpToCitation={onJumpToCitation}
                     />
                   ))}
                 </CardContent>
@@ -404,10 +409,12 @@ function FindingRow({
   finding,
   factsByKey,
   onDecision,
+  onJumpToCitation,
 }: {
   finding: RegulatoryFinding;
   factsByKey: Map<string, DossierFact>;
   onDecision: (f: RegulatoryFinding, d: InstructorDecision, comment?: string) => void;
+  onJumpToCitation?: (ref: SourceRef) => void;
 }) {
   const [factsOpen, setFactsOpen] = useState(false);
   const statusBadge = STATUS_BADGE[finding.status];
@@ -448,12 +455,37 @@ function FindingRow({
         </p>
       ) : null}
       {finding.legal_basis.length > 0 ? (
-        <p className="mt-2 text-xs text-gray-500">
-          Fondement :{" "}
-          {finding.legal_basis
-            .map((s) => (s.type === "zone_rule" ? s.article ?? "Règle PLU" : s.ref ?? s.type))
-            .join(" · ")}
-        </p>
+        <div className="mt-2 text-xs text-gray-500 flex items-center flex-wrap gap-1">
+          <span>Fondement :</span>
+          {finding.legal_basis.map((s, i) => {
+            const label = s.type === "zone_rule"
+              ? (s.article ?? "Règle PLU")
+              : s.type === "document_segment"
+                ? `${s.doc_type ?? "Doc"}${s.page != null ? ` p.${s.page}` : ""}`
+                : (s.ref ?? s.type);
+            // Cliquable uniquement pour les segments de document indexé — le
+            // parent sait alors basculer sur l'onglet Documents · Comparer.
+            const clickable = onJumpToCitation && s.type === "document_segment" && !!s.doc_type;
+            const sep = i > 0 ? <span key={`sep-${i}`} className="text-gray-300">·</span> : null;
+            return (
+              <span key={i} className="inline-flex items-center gap-1">
+                {sep}
+                {clickable ? (
+                  <button
+                    type="button"
+                    onClick={() => onJumpToCitation!(s)}
+                    title={s.quote ? `« ${s.quote.slice(0, 140)}${s.quote.length > 140 ? "…" : ""} »` : "Ouvrir le passage cité"}
+                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-heureka-50 text-heureka-700 hover:bg-heureka-100 transition-colors cursor-pointer"
+                  >
+                    📖 {label}
+                  </button>
+                ) : (
+                  <span>{label}</span>
+                )}
+              </span>
+            );
+          })}
+        </div>
       ) : null}
       {finding.recommended_action ? (
         <div className="mt-3 rounded-md bg-gray-50 p-3 text-sm">

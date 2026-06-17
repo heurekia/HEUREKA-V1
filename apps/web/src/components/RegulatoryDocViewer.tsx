@@ -30,9 +30,16 @@ interface Props {
   /** Mémorisé entre changements de mode pour ne pas perdre le doc en cours. */
   selectedDocId: string | null;
   onSelectDoc: (id: string | null) => void;
+  /** Quand on arrive depuis une citation de verdict, on peut suggérer le
+   *  type de document (PLU / PPRI / OAP…) pour qu'on auto-sélectionne le
+   *  bon plutôt que le PLU par défaut. Le hint l'emporte sur le défaut PLU. */
+  preferredDocType?: string | null;
+  /** Page sur laquelle ouvrir le PDF. Utilisé pour pointer directement sur
+   *  un passage cité (fragment #page=N pris en charge par le viewer natif). */
+  page?: number | null;
 }
 
-export function RegulatoryDocViewer({ communeName, selectedDocId, onSelectDoc }: Props) {
+export function RegulatoryDocViewer({ communeName, selectedDocId, onSelectDoc, preferredDocType, page }: Props) {
   const [docs, setDocs] = useState<CommuneDoc[]>([]);
   const [loading, setLoading] = useState(true);
 
@@ -55,6 +62,16 @@ export function RegulatoryDocViewer({ communeName, selectedDocId, onSelectDoc }:
     // selectedDocId/onSelectDoc volontairement hors deps : on initialise une fois.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [communeName]);
+
+  // Quand le composant reçoit un type hint (ex: arrivée depuis citation PLU),
+  // on bascule sur un doc de ce type s'il en existe un et qu'il diffère du
+  // doc courant. Ré-évalué à chaque changement de hint.
+  useEffect(() => {
+    if (!preferredDocType || docs.length === 0) return;
+    const wanted = docs.find((d) => d.type.toLowerCase() === preferredDocType.toLowerCase());
+    if (wanted && wanted.id !== selectedDocId) onSelectDoc(wanted.id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [preferredDocType, docs]);
 
   const selected = useMemo(() => docs.find((d) => d.id === selectedDocId) ?? null, [docs, selectedDocId]);
 
@@ -100,8 +117,10 @@ export function RegulatoryDocViewer({ communeName, selectedDocId, onSelectDoc }:
       <div className="flex-1 bg-gray-100">
         {selected ? (
           <iframe
-            key={selected.id}
-            src={`/api/mairie/documents/${selected.id}/pdf#toolbar=1&navpanes=0`}
+            // key inclut la page pour forcer le re-render quand on saute
+            // depuis une autre citation sur le même document.
+            key={`${selected.id}-${page ?? "_"}`}
+            src={`/api/mairie/documents/${selected.id}/pdf#toolbar=1&navpanes=0${page ? `&page=${page}` : ""}`}
             title={selected.name}
             className="w-full h-full border-0"
           />
