@@ -18,6 +18,7 @@
  *
  * Doit voir MISTRAL_API_KEY et DATABASE_URL dans son env.
  */
+import "dotenv/config";
 import { eq, and, isNotNull } from "drizzle-orm";
 import { db } from "../db.js";
 import { commune_documents, communes } from "@heureka-v1/db";
