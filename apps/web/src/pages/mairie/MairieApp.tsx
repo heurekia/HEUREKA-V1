@@ -762,6 +762,9 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   const [apiDossiers, setApiDossiers] = useState<ApiDossier[]>([]);
   const [loading, setLoading] = useState(true);
   const [showColPicker, setShowColPicker] = useState(false);
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [rowActionBusy, setRowActionBusy] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   type ColKey = "petitionnaire" | "adresse" | "type" | "statut" | "date_depot" | "echeance" | "instructeur";
   const ALL_COLS: { key: ColKey; label: string }[] = [
@@ -811,7 +814,7 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
           .catch(() => {})
           .finally(() => setLoading(false));
       });
-  }, [commune, scope]);
+  }, [commune, scope, refreshKey]);
 
   const allRows = apiDossiers.map(d => ({
     id: d.id,
@@ -1015,8 +1018,60 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
                     {r.instructeur ?? "Non assigné"}
                   </td>
                 )}
-                <td style={{ padding: "12px 16px" }}>
-                  <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }} onClick={e => e.stopPropagation()}><DotsIcon /></button>
+                <td style={{ padding: "12px 16px", position: "relative" }}>
+                  <button
+                    style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4, borderRadius: 4 }}
+                    onClick={e => { e.stopPropagation(); setMenuOpenId(prev => prev === r.id ? null : r.id); }}
+                    aria-label="Actions du dossier"
+                  >
+                    <DotsIcon />
+                  </button>
+                  {menuOpenId === r.id && (
+                    <>
+                      <div
+                        onClick={e => { e.stopPropagation(); setMenuOpenId(null); }}
+                        style={{ position: "fixed", inset: 0, zIndex: 98 }}
+                      />
+                      <div
+                        onClick={e => e.stopPropagation()}
+                        style={{ position: "absolute", right: 12, top: 38, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, padding: 4, zIndex: 99, minWidth: 200, boxShadow: "0 8px 24px rgba(0,0,0,0.10)" }}
+                      >
+                        <button
+                          onClick={async () => {
+                            try { await navigator.clipboard.writeText(r.numero); } catch {}
+                            setMenuOpenId(null);
+                          }}
+                          style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: "8px 10px", fontSize: 13, color: "#374151", cursor: "pointer", borderRadius: 6 }}
+                          onMouseEnter={e => (e.currentTarget.style.background = "#F1F5F9")}
+                          onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                        >
+                          Copier le N° de dossier
+                        </button>
+                        {isSupervisor && r.instructeur && (
+                          <button
+                            disabled={rowActionBusy}
+                            onClick={async () => {
+                              setRowActionBusy(true);
+                              try {
+                                await api.delete(`/mairie/dossiers/${r.id}/assign`);
+                                setRefreshKey(k => k + 1);
+                              } catch (err) {
+                                alert(err instanceof Error ? err.message : "Désassignation impossible");
+                              } finally {
+                                setRowActionBusy(false);
+                                setMenuOpenId(null);
+                              }
+                            }}
+                            style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: "8px 10px", fontSize: 13, color: "#B91C1C", cursor: rowActionBusy ? "wait" : "pointer", borderRadius: 6, opacity: rowActionBusy ? 0.6 : 1 }}
+                            onMouseEnter={e => (e.currentTarget.style.background = "#FEF2F2")}
+                            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                          >
+                            Désassigner l'instructeur
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
