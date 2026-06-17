@@ -711,6 +711,20 @@ BEGIN
 END
 $$;
 
+-- Phase 3.C.3 : annotations PDF-level (vs chunk-level historique).
+--   - segment_id devient nullable (les annotations PDF n'en ont pas, elles
+--     pointent directement vers le document + page + rectangle de
+--     surlignage).
+--   - Nouvelles colonnes : page, quote, highlight_rects.
+ALTER TABLE document_segment_annotations
+  ALTER COLUMN segment_id DROP NOT NULL;
+ALTER TABLE document_segment_annotations
+  ADD COLUMN IF NOT EXISTS page integer,
+  ADD COLUMN IF NOT EXISTS quote text,
+  ADD COLUMN IF NOT EXISTS highlight_rects jsonb NOT NULL DEFAULT '[]';
+CREATE INDEX IF NOT EXISTS idx_segment_annotations_source_page
+  ON document_segment_annotations(source_id, page);
+
 -- ── Délégations de portefeuille en cas d'absence ──
 -- Chaîne ordonnée de délégués configurée par l'instructeur lui-même.
 -- Utilisée par le moteur d'attribution et un job quotidien pour rediriger

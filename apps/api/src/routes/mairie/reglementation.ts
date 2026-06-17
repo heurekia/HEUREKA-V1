@@ -605,6 +605,10 @@ reglementationRouter.get("/documents/:docId/segments", requireRole("mairie", "in
       : [];
     const annsBySegment = new Map<string, typeof annsRows>();
     for (const a of annsRows) {
+      // Cette vue n'agrège que les annotations chunk-level. Les annotations
+      // PDF-level (segment_id null, 3.C.3) sont récupérées séparément côté UI
+      // via GET /documents/:docId/annotations.
+      if (!a.segment_id) continue;
       const arr = annsBySegment.get(a.segment_id) ?? [];
       arr.push(a);
       annsBySegment.set(a.segment_id, arr);
@@ -620,8 +624,50 @@ reglementationRouter.get("/documents/:docId/segments", requireRole("mairie", "in
   }
 });
 
+// POST /mairie/documents/:docId/annotations — créer une annotation PDF-level
+// (3.C.3). Pas de segment_id : la position visuelle est portée par page +
+// quote + highlight_rects. Le RAG matchera ensuite par chevauchement texte
+// au moment du search pour réinjecter l'annotation à côté du bon chunk.
+reglementationRouter.post("/documents/:docId/annotations", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const docId = req.params.docId as string;
+    const { kind, note, applies_if, visibility, page, quote, highlight_rects } = req.body as {
+      kind?: string; note?: string; applies_if?: string[]; visibility?: string;
+      page?: number; quote?: string; highlight_rects?: unknown[];
+    };
+
+    if (!note || !note.trim()) return res.status(400).json({ error: "note requise" });
+    if (typeof page !== "number" || !Number.isFinite(page) || page < 1) {
+      return res.status(400).json({ error: "page (>= 1) requise" });
+    }
+    const finalKind = kind && ANNOTATION_KINDS_SET.has(kind) ? kind : "note_perso";
+    const finalVisibility = visibility && VISIBILITIES_SET.has(visibility) ? visibility : "private";
+    const rects = Array.isArray(highlight_rects) ? highlight_rects : [];
+
+    const [created] = await db.insert(document_segment_annotations).values({
+      segment_id: null,
+      source_id: docId,
+      kind: finalKind,
+      note: note.trim(),
+      applies_if: Array.isArray(applies_if) ? applies_if : [],
+      visibility: finalVisibility,
+      validation_status: "brouillon",
+      author_user_id: req.user?.id ?? null,
+      page,
+      quote: typeof quote === "string" ? quote.slice(0, 2000) : null,
+      highlight_rects: rects,
+    }).returning();
+
+    res.status(201).json(created);
+  } catch (err) {
+    console.error("[annotations:create-pdf]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // GET /mairie/documents/:docId/annotations — liste toutes les annotations
-// d'un document (tous statuts). Sert au panneau de validation côté UI.
+// d'un document (tous statuts). Sert au panneau de validation côté UI et
+// à la restauration des surlignages dans le viewer PDF.
 reglementationRouter.get("/documents/:docId/annotations", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const docId = req.params.docId as string;

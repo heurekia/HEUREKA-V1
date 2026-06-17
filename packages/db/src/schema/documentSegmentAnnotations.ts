@@ -1,7 +1,17 @@
-import { pgTable, text, timestamp, uuid, jsonb, index } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, uuid, jsonb, integer, index } from "drizzle-orm/pg-core";
 
 /**
- * Annotations chunk-level sur les documents réglementaires indexés.
+ * Annotations sur les documents réglementaires indexés.
+ *
+ * Deux modes d'attachement, non-exclusifs :
+ *
+ *  - **Chunk-level (historique)** : `segment_id` pointe vers un chunk RAG.
+ *    Utilisé par les anciens flux. L'IA reçoit l'annotation à côté du
+ *    chunk au moment du search.
+ *  - **PDF-level (3.C.3)** : `segment_id` est null, `source_id` (= document)
+ *    + `page` + `quote` + `highlight_rects` portent la position visuelle
+ *    de la surlignée dans le PDF. Le RAG matche par chevauchement texte
+ *    au moment du search pour associer à un chunk.
  *
  * Permet à un instructeur d'attacher une note précise à un passage du PDF
  * (correction d'erreur d'édition, jurisprudence locale, cas particulier,
@@ -27,10 +37,22 @@ export const document_segment_annotations = pgTable(
   "document_segment_annotations",
   {
     id: uuid("id").primaryKey().defaultRandom(),
-    /** FK vers document_segments.id — cascade delete si le segment disparaît (re-indexation). */
-    segment_id: text("segment_id").notNull(),
-    /** Source du segment (= commune_documents.id). Permet de lister toutes les annotations d'un document sans jointure. */
+    /** Nullable depuis 3.C.3 : les annotations PDF-level sont attachées au
+     *  document entier + page, pas à un chunk RAG précis. */
+    segment_id: text("segment_id"),
+    /** Source du segment (= commune_documents.id). Permet de lister toutes les annotations d'un document sans jointure.
+     *  Pour les annotations PDF-level, c'est le seul lien vers le document. */
     source_id: text("source_id").notNull(),
+    /** Page du PDF où vit la surlignée (PDF-level uniquement). */
+    page: integer("page"),
+    /** Texte cité (PDF-level). Sert au RAG pour retrouver le chunk associé
+     *  et aux fallbacks visuels si les coordonnées deviennent invalides
+     *  (PDF réuploadé / réindexé). */
+    quote: text("quote"),
+    /** Rectangles de surlignage dans le PDF (PDF-level). Format :
+     *  `[{page, x, y, w, h, color?}]` avec coordonnées en pourcentage de
+     *  la page (0-100) pour rester robuste au zoom. */
+    highlight_rects: jsonb("highlight_rects").notNull().default([]),
     /**
      * Catégorie d'annotation, sert à l'affichage différencié côté UI ET à
      * l'IA (qui reçoit "[CORRECTION INSTRUCTEUR]" vs "[PRÉCISION]") :
@@ -73,3 +95,13 @@ export const ANNOTATION_KINDS: ReadonlyArray<AnnotationKind> = [
 
 export type AnnotationVisibility = "private" | "shared";
 export const ANNOTATION_VISIBILITIES: ReadonlyArray<AnnotationVisibility> = ["private", "shared"];
+
+/** Rectangle de surlignage dans le PDF — coordonnées en pourcentage de la
+ *  page pour rester robuste au zoom et au redimensionnement du viewer. */
+export interface HighlightRect {
+  page: number;
+  x: number;       // 0-100 (%)
+  y: number;       // 0-100 (%)
+  width: number;   // 0-100 (%)
+  height: number;  // 0-100 (%)
+}
