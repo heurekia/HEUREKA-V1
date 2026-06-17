@@ -576,6 +576,7 @@ reglementationRouter.get("/documents/search", requireRole("mairie", "instructeur
 // ── Annotations chunk-level (Phase 1 niveau B) ──────────────────────────────
 const ANNOTATION_KINDS_SET = new Set(ANNOTATION_KINDS as readonly string[]);
 const VALID_STATUSES_SET = new Set(["brouillon", "valide", "rejete"]);
+const VISIBILITIES_SET = new Set(["private", "shared"]);
 
 // GET /mairie/documents/:docId/segments — liste les chunks indexés d'un
 // document avec leur métadonnée + annotations. Sert au visualiseur côté UI
@@ -640,10 +641,14 @@ reglementationRouter.get("/documents/:docId/annotations", requireRole("mairie", 
 reglementationRouter.post("/segments/:segmentId/annotations", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const segmentId = req.params.segmentId as string;
-    const { kind, note, applies_if } = req.body as { kind?: string; note?: string; applies_if?: string[] };
+    const { kind, note, applies_if, visibility } = req.body as {
+      kind?: string; note?: string; applies_if?: string[]; visibility?: string;
+    };
 
     if (!note || !note.trim()) return res.status(400).json({ error: "note requise" });
-    const finalKind = kind && ANNOTATION_KINDS_SET.has(kind) ? kind : "precision";
+    const finalKind = kind && ANNOTATION_KINDS_SET.has(kind) ? kind : "note_perso";
+    // Défaut 'private' = opt-in explicite pour partager à l'IA.
+    const finalVisibility = visibility && VISIBILITIES_SET.has(visibility) ? visibility : "private";
 
     // Récupère le segment pour reporter source_id (= commune_documents.id).
     const [seg] = await db.select({ id: document_segments.id, metadata: document_segments.metadata })
@@ -659,6 +664,7 @@ reglementationRouter.post("/segments/:segmentId/annotations", requireRole("mairi
       kind: finalKind,
       note: note.trim(),
       applies_if: Array.isArray(applies_if) ? applies_if : [],
+      visibility: finalVisibility,
       validation_status: "brouillon",
       author_user_id: req.user?.id ?? null,
     }).returning();
@@ -675,15 +681,16 @@ reglementationRouter.post("/segments/:segmentId/annotations", requireRole("mairi
 reglementationRouter.patch("/annotations/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
-    const { note, kind, applies_if, validation_status } = req.body as {
+    const { note, kind, applies_if, validation_status, visibility } = req.body as {
       note?: string; kind?: string; applies_if?: string[];
       validation_status?: "brouillon" | "valide" | "rejete";
+      visibility?: "private" | "shared";
     };
 
     const patch: {
       note?: string; kind?: string; applies_if?: string[];
       validation_status?: string; validated_by?: string | null; validated_at?: Date | null;
-      updated_at: Date;
+      visibility?: string; updated_at: Date;
     } = { updated_at: new Date() };
 
     const noteChanged = note !== undefined;
@@ -698,6 +705,10 @@ reglementationRouter.patch("/annotations/:id", requireRole("mairie", "instructeu
     if (applies_if !== undefined) {
       if (!Array.isArray(applies_if)) return res.status(400).json({ error: "applies_if doit être un tableau" });
       patch.applies_if = applies_if;
+    }
+    if (visibility !== undefined) {
+      if (!VISIBILITIES_SET.has(visibility)) return res.status(400).json({ error: "visibility invalide" });
+      patch.visibility = visibility;
     }
 
     if (validation_status) {
