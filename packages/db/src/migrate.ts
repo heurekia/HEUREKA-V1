@@ -626,6 +626,24 @@ ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS archived_at timestam
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS archived_by_piece_id uuid;
 CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_archived ON dossier_pieces_jointes(dossier_id, archived_at);
 
+-- ── OCR asynchrone côté comptoir mairie ──────────────────────────────────────
+-- L'analyse IA/OCR des pièces déposées est désormais exécutée en arrière-plan
+-- pour rendre la main à l'agent immédiatement après l'upload. ocr_status pilote
+-- ce cycle de vie et permet à la notification "dossier prêt" de savoir quand
+-- toutes les pièces sont passées par le worker.
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS ocr_status text NOT NULL DEFAULT 'pending';
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS ocr_started_at timestamp;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS ocr_completed_at timestamp;
+-- Backfill : les pièces déjà uploadées (avant ce passage en asynchrone) sont
+-- considérées comme traitées si ai_processed est vrai, sinon comme "skipped"
+-- pour ne pas bloquer indéfiniment d'éventuelles notifications futures.
+UPDATE dossier_pieces_jointes
+   SET ocr_status = CASE WHEN ai_processed THEN 'done' ELSE 'skipped' END,
+       ocr_completed_at = uploaded_at
+ WHERE ocr_status = 'pending' AND uploaded_at < now() - interval '5 minutes';
+CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_ocr_status
+  ON dossier_pieces_jointes(dossier_id, ocr_status);
+
 -- ── RGPD : empreinte du fichier envoyé à l'IA (sans stocker le contenu) ──
 -- SHA-256 hexadécimal calculé côté serveur AVANT envoi. Permet de prouver
 -- qu'un fichier donné a (ou n'a pas) été soumis à l'IA, sans dupliquer le
