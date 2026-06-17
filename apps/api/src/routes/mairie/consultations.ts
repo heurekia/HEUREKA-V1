@@ -65,6 +65,7 @@ consultationsRouter.post("/documents", async (req: AuthRequest, res) => {
 
     const [doc] = await db.insert(commune_documents).values({
       commune_id: commune.id,
+      porteur_commune_id: commune.id,
       type,
       name,
       original_filename,
