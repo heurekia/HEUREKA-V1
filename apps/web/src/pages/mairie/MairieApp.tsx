@@ -3552,6 +3552,7 @@ function StatistiquesScreen({ commune }: { commune: string }) {
 // ── Référentiel documentaire ───────────────────────────────────────────────────
 
 const DOC_TYPES: { value: string; label: string; color: string }[] = [
+  { value: "plu",   label: "PLU",   color: "#1E40AF" },
   { value: "ppri",  label: "PPRI",  color: "#EF4444" },
   { value: "oap",   label: "OAP",   color: "#8B5CF6" },
   { value: "peb",   label: "PEB",   color: "#F59E0B" },
@@ -3825,7 +3826,7 @@ function DocumentsPanel({ commune }: { commune: string }) {
         <div>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Documents réglementaires</div>
           <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
-            PPRI, OAP, PEB, PLH, ZAC et autres plans réglementaires de {commune}
+            PLU, PPRI, OAP, PEB, PLH, ZAC et autres plans réglementaires de {commune}
           </div>
         </div>
         {!showForm && (

@@ -3,7 +3,7 @@ import { integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 export const commune_documents = pgTable("commune_documents", {
   id: uuid("id").primaryKey().defaultRandom(),
   commune_id: uuid("commune_id").notNull(),
-  type: text("type").notNull(), // ppri | oap | peb | pprt | plh | zac | autre
+  type: text("type").notNull(), // plu | ppri | oap | peb | pprt | plh | zac | autre
   name: text("name").notNull(),
   original_filename: text("original_filename").notNull(),
   file_size: integer("file_size"),
