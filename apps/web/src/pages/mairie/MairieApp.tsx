@@ -8,6 +8,7 @@ import { RegulatoryChecklist } from "../../components/RegulatoryChecklist";
 import { PieceRegulatoryLinks } from "../../components/PieceRegulatoryLinks";
 import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
 import { ResizableSplit } from "../../components/ResizableSplit";
+import { PdfAnnotator } from "../../components/PdfAnnotator";
 import { useInstructionViewMode } from "../../hooks/useInstructionViewMode";
 import { linkifyArticles } from "../../utils/linkifyArticles";
 import {
@@ -8789,17 +8790,21 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         <div style={{ padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 12, fontWeight: 600, color: "#1E293B", background: "white" }}>
                           {sel?.nom ?? "Sélectionne une pièce à gauche"}
                         </div>
-                        <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#0F172A0A" }}>
+                        <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "stretch", justifyContent: "stretch", background: "#0F172A0A" }}>
                           {sel ? (
                             (sel.type ?? "").toLowerCase().startsWith("image/") ? (
-                              <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                                <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                              </div>
                             ) : (sel.type === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf")) ? (
-                              <iframe src={sel.url} title={sel.nom} style={{ width: "100%", height: "100%", border: "none", background: "white" }} />
+                              <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+                                <PdfAnnotator key={sel.id} fileUrl={sel.url} />
+                              </div>
                             ) : (
-                              <div style={{ color: "#94a3b8", fontSize: 12, padding: 24, textAlign: "center" }}>Aperçu indisponible pour ce format</div>
+                              <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, padding: 24, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}>Aperçu indisponible pour ce format</div>
                             )
                           ) : (
-                            <div style={{ color: "#94a3b8", fontSize: 12 }}>Sélectionne une pièce à gauche.</div>
+                            <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>Sélectionne une pièce à gauche.</div>
                           )}
                         </div>
                       </div>
@@ -8834,15 +8839,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     const isPdf = t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf");
                     return (
                       <>
-                        <div style={{ flex: 1, minHeight: 340, background: "#0F172A0A", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <div style={{ flex: 1, minHeight: 340, background: "#0F172A0A", display: "flex", alignItems: isImage ? "center" : "stretch", justifyContent: isImage ? "center" : "stretch" }}>
                           {isImage ? (
                             <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: 520, objectFit: "contain", display: "block" }} />
                           ) : isPdf ? (
-                            <iframe
-                              src={sel.url}
-                              title={sel.nom}
-                              style={{ width: "100%", height: 560, border: "none", background: "white" }}
-                            />
+                            <div style={{ flex: 1, minWidth: 0, minHeight: 560 }}>
+                              <PdfAnnotator key={sel.id} fileUrl={sel.url} />
+                            </div>
                           ) : (
                             <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 12, padding: 32, textAlign: "center" as const }}>
                               <div style={{ width: 64, height: 80, background: "white", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", border: "1px solid #E2E8F0" }}>
