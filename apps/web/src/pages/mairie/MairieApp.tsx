@@ -6,6 +6,9 @@ import { useAuth } from "../../hooks/useAuth";
 import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 import { RegulatoryChecklist } from "../../components/RegulatoryChecklist";
 import { PieceRegulatoryLinks } from "../../components/PieceRegulatoryLinks";
+import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
+import { ResizableSplit } from "../../components/ResizableSplit";
+import { useInstructionViewMode } from "../../hooks/useInstructionViewMode";
 import { linkifyArticles } from "../../utils/linkifyArticles";
 import {
   STATUS_LABELS as DOSSIER_STATUS_LABELS,
@@ -6878,6 +6881,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 }) {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<DetailTab>("Résumé");
+  // Onglet Documents : mode d'affichage côté instructeur — aperçu (3 col.),
+  // comparer (pièce ↔ document réglementaire), lecture (plein écran).
+  // Persisté en localStorage entre dossiers (préférence utilisateur).
+  const [docsViewMode, setDocsViewMode] = useInstructionViewMode();
+  // Document réglementaire affiché en mode Comparer (sélection mémorisée
+  // tant qu'on reste sur le dossier — réinitialisé entre dossiers).
+  const [docsRegulatoryDocId, setDocsRegulatoryDocId] = useState<string | null>(null);
   // Mode d'ouverture de la modale courrier : null = fermée, "general" = bouton
   // historique, "pieces_complementaires" = entrée dédiée depuis le bandeau
   // workflow. Le mode pilote le panneau de sélection des pièces et le bouton
@@ -8638,8 +8648,53 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             return { label: "Déposé", bg: "#EFF6FF", color: "#1D4ED8", border: "#BFDBFE" };
           };
 
+          // Sélecteur de mode d'affichage — persisté par instructeur.
+          // apercu  : 3 colonnes historiques · compare : pièce ↔ doc règlementaire (split)
+          // lecture : pièce plein écran, panneaux escamotés en bandes
+          const gridTemplate =
+            docsViewMode === "compare" ? "240px 1fr 260px" :
+            docsViewMode === "lecture" ? "44px 1fr 44px" :
+            "280px 1fr 260px";
+          const stripeStyle: React.CSSProperties = {
+            background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 9,
+            display: "flex", flexDirection: "column", alignItems: "center",
+            justifyContent: "flex-start", padding: "14px 0", gap: 8,
+            cursor: "pointer", color: "#64748b",
+          };
+          const ModeBtn = ({ value, label, icon, title }: { value: "apercu" | "compare" | "lecture"; label: string; icon: string; title: string }) => (
+            <button
+              type="button"
+              onClick={() => setDocsViewMode(value)}
+              title={title}
+              style={{
+                padding: "5px 12px", border: "none",
+                borderLeft: value !== "apercu" ? "1px solid #E2E8F0" : "none",
+                background: docsViewMode === value ? "#4F46E5" : "white",
+                color: docsViewMode === value ? "white" : "#475569",
+                fontSize: 12, fontWeight: 600, cursor: "pointer",
+                display: "inline-flex", alignItems: "center", gap: 5,
+              }}
+            >
+              <span style={{ fontSize: 13 }}>{icon}</span>{label}
+            </button>
+          );
+
           return (
-            <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 260px", gap: 16 }}>
+            <>
+              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+                <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden", background: "white", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+                  <ModeBtn value="apercu"  label="Aperçu"   icon="⊞" title="Pièces · viewer · annotation" />
+                  <ModeBtn value="compare" label="Comparer" icon="❘❘" title="Pièce et document réglementaire côte à côte" />
+                  <ModeBtn value="lecture" label="Lecture"  icon="📖" title="Pièce plein écran, panneaux escamotés" />
+                </div>
+              </div>
+            <div style={{ display: "grid", gridTemplateColumns: gridTemplate, gap: 16, alignItems: "start" }}>
+              {docsViewMode === "lecture" ? (
+                <div style={stripeStyle} onClick={() => setDocsViewMode("apercu")} title="Rouvrir le panneau Pièces">
+                  <span style={{ fontSize: 14 }}>📎</span>
+                  <span style={{ fontSize: 10, letterSpacing: "0.08em", writingMode: "vertical-rl", transform: "rotate(180deg)", textTransform: "uppercase" }}>Pièces ({docs.length})</span>
+                </div>
+              ) : (
               <div style={CARD}>
                 <SecTitle>Pièces du dossier</SecTitle>
                 {documentsLoading ? (
@@ -8693,6 +8748,45 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   </div>
                 )}
               </div>
+              )}
+              {docsViewMode === "compare" ? (
+              <div style={{ ...CARD, padding: 0, display: "flex", flexDirection: "column" as const, height: 640, overflow: "hidden" }}>
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  <ResizableSplit
+                    storageKey="heureka.docsCompareSplitPct"
+                    left={
+                      <div style={{ height: "100%", background: "#F8FAFC", display: "flex", flexDirection: "column" }}>
+                        <div style={{ padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 12, fontWeight: 600, color: "#1E293B", background: "white" }}>
+                          {sel?.nom ?? "Sélectionne une pièce à gauche"}
+                        </div>
+                        <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center", background: "#0F172A0A" }}>
+                          {sel ? (
+                            (sel.type ?? "").toLowerCase().startsWith("image/") ? (
+                              <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                            ) : (sel.type === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf")) ? (
+                              <iframe src={sel.url} title={sel.nom} style={{ width: "100%", height: "100%", border: "none", background: "white" }} />
+                            ) : (
+                              <div style={{ color: "#94a3b8", fontSize: 12, padding: 24, textAlign: "center" }}>Aperçu indisponible pour ce format</div>
+                            )
+                          ) : (
+                            <div style={{ color: "#94a3b8", fontSize: 12 }}>Sélectionne une pièce à gauche.</div>
+                          )}
+                        </div>
+                      </div>
+                    }
+                    right={
+                      <div style={{ height: "100%" }}>
+                        <RegulatoryDocViewer
+                          communeName={dossier.commune ?? ""}
+                          selectedDocId={docsRegulatoryDocId}
+                          onSelectDoc={setDocsRegulatoryDocId}
+                        />
+                      </div>
+                    }
+                  />
+                </div>
+              </div>
+              ) : (
               <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
                 <SecTitle>{`Aperçu : ${sel?.nom ?? "—"}`}</SecTitle>
                 <div style={{ flex: 1, background: "#F8FAFC", borderRadius: 11, minHeight: 340, border: "1px solid #EAECF0", overflow: "hidden", position: "relative" as const, display: "flex", flexDirection: "column" as const }}>
@@ -8740,6 +8834,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   )}
                 </div>
               </div>
+              )}
+              {docsViewMode === "lecture" ? (
+                <div style={stripeStyle} onClick={() => setDocsViewMode("apercu")} title="Rouvrir le panneau Annotation">
+                  <span style={{ fontSize: 14 }}>📝</span>
+                  <span style={{ fontSize: 10, letterSpacing: "0.08em", writingMode: "vertical-rl", transform: "rotate(180deg)", textTransform: "uppercase" }}>Annotation</span>
+                </div>
+              ) : (
               <div style={CARD}>
                 {/* Annotation de l'instructeur — toujours en haut du panneau de droite */}
                 {sel && (() => {
@@ -8902,7 +9003,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   );
                 })()}
               </div>
+              )}
             </div>
+            </>
           );
         })()}
 
