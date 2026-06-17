@@ -79,9 +79,12 @@ export async function searchSegments(p: SearchParams): Promise<SearchHit[]> {
 
   const filtered = rows.filter((r) => p.max_distance === undefined || r.distance <= p.max_distance);
 
-  // 3. Récupération des annotations VALIDÉES pour les chunks retenus, en un
-  // seul SELECT. Les brouillons et rejets sont exclus côté DB : c'est la
-  // garantie juridique qu'aucune note non-relue n'arrive dans le prompt.
+  // 3. Récupération des annotations pour les chunks retenus, en un seul
+  // SELECT. Deux gates cumulatifs côté DB :
+  //   - validation_status = 'valide'  → gate juridique (relue par un humain)
+  //   - visibility = 'shared'         → consentement explicite de l'auteur
+  //                                     à alimenter l'IA (vs note de travail)
+  // Les `note_perso` privées ne contaminent jamais un verdict.
   const segmentIds = filtered.map((r) => r.id);
   const annotationsBySegment = new Map<string, AnnotationHit[]>();
   if (segmentIds.length > 0) {
@@ -98,6 +101,7 @@ export async function searchSegments(p: SearchParams): Promise<SearchHit[]> {
       .where(and(
         inArray(document_segment_annotations.segment_id, segmentIds),
         eq(document_segment_annotations.validation_status, "valide"),
+        eq(document_segment_annotations.visibility, "shared"),
       ));
     for (const a of annRows) {
       const arr = annotationsBySegment.get(a.segment_id) ?? [];

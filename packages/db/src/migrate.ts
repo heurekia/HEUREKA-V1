@@ -681,7 +681,7 @@ CREATE TABLE IF NOT EXISTS document_segment_annotations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   segment_id text NOT NULL,
   source_id text NOT NULL,
-  kind text NOT NULL DEFAULT 'precision',
+  kind text NOT NULL DEFAULT 'note_perso',
   note text NOT NULL,
   applies_if jsonb NOT NULL DEFAULT '[]',
   validation_status text NOT NULL DEFAULT 'brouillon',
@@ -693,6 +693,23 @@ CREATE TABLE IF NOT EXISTS document_segment_annotations (
 );
 CREATE INDEX IF NOT EXISTS idx_segment_annotations_segment ON document_segment_annotations(segment_id);
 CREATE INDEX IF NOT EXISTS idx_segment_annotations_source ON document_segment_annotations(source_id);
+
+-- Phase 3.B : visibilité private/shared. Les annotations existantes ont été
+-- créées sous l'ancien modèle "tout ce qui est validé alimente l'IA" : on
+-- les bascule en 'shared' pour préserver leur comportement. Les nouvelles
+-- annotations sont 'private' par défaut — l'instructeur opt-in.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'document_segment_annotations' AND column_name = 'visibility'
+  ) THEN
+    ALTER TABLE document_segment_annotations
+      ADD COLUMN visibility text NOT NULL DEFAULT 'private';
+    UPDATE document_segment_annotations SET visibility = 'shared';
+  END IF;
+END
+$$;
 
 -- ── Délégations de portefeuille en cas d'absence ──
 -- Chaîne ordonnée de délégués configurée par l'instructeur lui-même.

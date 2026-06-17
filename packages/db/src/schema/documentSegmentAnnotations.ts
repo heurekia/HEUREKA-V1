@@ -4,15 +4,19 @@ import { pgTable, text, timestamp, uuid, jsonb, index } from "drizzle-orm/pg-cor
  * Annotations chunk-level sur les documents réglementaires indexés.
  *
  * Permet à un instructeur d'attacher une note précise à un passage du PDF
- * (correction d'erreur d'édition, jurisprudence locale, cas particulier) qui
- * sera REMONTÉE AVEC le chunk au moment de la recherche RAG. L'IA voit donc
- * le texte du PDF + l'annotation humaine validée, et peut intégrer la nuance
- * dans son verdict.
+ * (correction d'erreur d'édition, jurisprudence locale, cas particulier,
+ * ou simple note de travail personnelle).
  *
- * Convention de validation_status alignée sur zone_regulatory_rules et
- * commune_documents : `brouillon | valide | rejete`. Une annotation
- * `brouillon` est INVISIBLE du search côté instruction — c'est le gate
- * juridique qui garantit qu'aucune note non-validée ne contamine un verdict.
+ * Deux gates contrôlent ce qui remonte à l'IA :
+ *
+ *  1. `visibility` — *contrôle utilisateur*. `private` (défaut) = note de
+ *     travail personnelle, jamais envoyée au LLM. `shared` = l'instructeur
+ *     accepte que sa note alimente les instructions futures.
+ *  2. `validation_status` — *gate juridique*. Une annotation `shared` reste
+ *     invisible du RAG tant qu'elle n'est pas explicitement validée.
+ *
+ * Une annotation est injectée à côté du chunk dans le prompt LLM
+ * UNIQUEMENT si `visibility = 'shared'` ET `validation_status = 'valide'`.
  *
  * `applies_if` est réservé pour l'extension future (Phase 1.5 niveau C) :
  * tags de contexte parcellaire (ex: "surelevation", "cloture_sur_rue") qui
@@ -34,11 +38,20 @@ export const document_segment_annotations = pgTable(
      *  - precision     : "cas particulier à connaître"
      *  - jurisprudence : "la commission a tranché ainsi" — précédent local
      *  - warning       : "attention spécifique"
+     *  - note_perso    : note de travail personnelle (par convention liée à
+     *    visibility=private, mais l'instructeur peut basculer la visibilité
+     *    à tout moment s'il souhaite finalement partager sa note)
      */
-    kind: text("kind").notNull().default("precision"),
+    kind: text("kind").notNull().default("note_perso"),
     note: text("note").notNull(),
     /** Tags conditionnels (Phase 1.5). Vide = toujours applicable. */
     applies_if: jsonb("applies_if").notNull().default([]),
+    /**
+     * Visibilité de l'annotation :
+     *  - private (défaut) : note de travail, invisible du LLM et des autres instructeurs
+     *  - shared           : alimente l'IA si validation_status = 'valide'
+     */
+    visibility: text("visibility").notNull().default("private"),
     /** Gate juridique. Une annotation 'brouillon' est invisible du RAG. */
     validation_status: text("validation_status").notNull().default("brouillon"),
     author_user_id: uuid("author_user_id"),
@@ -53,7 +66,10 @@ export const document_segment_annotations = pgTable(
   }),
 );
 
-export type AnnotationKind = "correction" | "precision" | "jurisprudence" | "warning";
+export type AnnotationKind = "correction" | "precision" | "jurisprudence" | "warning" | "note_perso";
 export const ANNOTATION_KINDS: ReadonlyArray<AnnotationKind> = [
-  "correction", "precision", "jurisprudence", "warning",
+  "correction", "precision", "jurisprudence", "warning", "note_perso",
 ];
+
+export type AnnotationVisibility = "private" | "shared";
+export const ANNOTATION_VISIBILITIES: ReadonlyArray<AnnotationVisibility> = ["private", "shared"];
