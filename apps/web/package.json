@@ -21,7 +21,7 @@
     "dompurify": "^3.4.9",
     "leaflet": "^1.9.4",
     "lucide-react": "^0.488.0",
-    "pdfjs-dist": "^4",
+    "pdfjs-dist": "4.8.69",
     "react": "^19.1.0",
     "react-dom": "^19.1.0",
     "react-helmet-async": "^3.0.0",
