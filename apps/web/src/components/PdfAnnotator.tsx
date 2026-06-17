@@ -16,6 +16,10 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
   import.meta.url,
 ).toString();
 
+// Mémoïsé en constante module pour éviter qu'à chaque rerender, pdfjs
+// recharge tout (Document compare options par référence d'objet).
+const PDF_OPTIONS = { withCredentials: true } as const;
+
 type AnnotationKind = "correction" | "precision" | "jurisprudence" | "note_perso";
 type AnnotationVisibility = "private" | "shared";
 
@@ -265,6 +269,11 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
         ) : (
           <Document
             file={fileUrl}
+            // withCredentials: true → cookies de session envoyés avec le fetch
+            // interne de pdfjs. Sans ça, les pièces du dossier servies par
+            // /api/uploads/:key (protégées par requireAuth) renvoient 401 et
+            // react-pdf surface "Unexpected server response (500)".
+            options={PDF_OPTIONS}
             onLoadSuccess={({ numPages }) => { setNumPages(numPages); setError(null); }}
             onLoadError={(err) => setError(err.message)}
             loading={<div className="text-sm text-gray-400 mt-12">Chargement du PDF…</div>}
