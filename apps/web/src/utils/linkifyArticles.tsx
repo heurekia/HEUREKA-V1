@@ -3,10 +3,13 @@ import { ArticleLink } from "../components/ArticleLink";
 
 // Détecte des références type :
 //   "art. R431-2 CU", "R421-17 a) CU", "R421-13 al.2 CU", "L410-1 CU",
-//   "R.423-24 b)" (variante avec point, code implicite = CU).
+//   "R.423-24 b)", "R.423-23 2°" (variantes avec point / sous-division,
+//   code implicite = CU).
 // Le suffixe code est optionnel : en l'absence, on retombe sur le Code de l'urbanisme,
 // le contexte applicatif étant l'urbanisme.
-const ARTICLE_RE = /(art\.?\s+)?([LRD])\.?(\d+-\d+)(\s+[a-z]\))?(\s+al\.\d+)?(?:\s+(CU|CCH|CE))?\b/gi;
+// `(?![a-z0-9])` (au lieu de `\b`) permet de capturer aussi les suffixes ") " et "° "
+// sans casser sur la fin de chaîne — `\b` échouait après ")" ou "°" en fin de texte.
+const ARTICLE_RE = /(art\.?\s+)?([LRD])\.?(\d+-\d+)(\s+(?:[a-z]\)|\d+°))?(\s+al\.\d+)?(?:\s+(CU|CCH|CE))?(?![a-z0-9])/gi;
 
 // Codes supportés côté front (doit rester aligné avec resolveCode côté API).
 const SUPPORTED = new Set(["CU", "CCH", "CE"]);

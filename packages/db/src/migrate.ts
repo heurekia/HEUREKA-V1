@@ -804,6 +804,27 @@ CREATE INDEX IF NOT EXISTS idx_regulatory_findings_analysis ON regulatory_findin
 CREATE INDEX IF NOT EXISTS idx_regulatory_findings_dossier ON regulatory_findings(dossier_id);
 CREATE INDEX IF NOT EXISTS idx_regulatory_findings_status ON regulatory_findings(dossier_id, status);
 CREATE INDEX IF NOT EXISTS idx_regulatory_findings_topic ON regulatory_findings(dossier_id, topic);
+
+-- ── Articles juridiques manquants ──────────────────────────────────────────
+-- Quand un utilisateur clique sur une référence d'article (R.421-1, L.123-2…)
+-- que ni notre cache ni Légifrance ne renvoient, on enregistre la demande pour
+-- que l'admin puisse soit créer l'article (via l'API Légifrance), soit la
+-- marquer comme non pertinente. Évite que des refs cassées renvoient
+-- silencieusement vers la homepage de legifrance.gouv.fr.
+CREATE TABLE IF NOT EXISTS legal_mentions_misses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code_key text NOT NULL,
+  article_ref text NOT NULL,
+  first_seen_at timestamp NOT NULL DEFAULT now(),
+  last_seen_at timestamp NOT NULL DEFAULT now(),
+  miss_count integer NOT NULL DEFAULT 1,
+  resolved_at timestamp,
+  resolved_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  resolution text,
+  CONSTRAINT legal_mentions_misses_code_ref UNIQUE (code_key, article_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_legal_mentions_misses_unresolved
+  ON legal_mentions_misses(last_seen_at DESC) WHERE resolved_at IS NULL;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

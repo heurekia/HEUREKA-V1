@@ -9,9 +9,9 @@
 //      n'avoir qu'une entrée par article — c'est `getArticleWithIdAndNum`
 //      qui se charge de retrouver la version en vigueur.
 
-import { eq, and } from "drizzle-orm";
+import { eq, and, sql } from "drizzle-orm";
 import { db } from "../db.js";
-import { legal_mentions } from "@heureka-v1/db";
+import { legal_mentions, legal_mentions_misses } from "@heureka-v1/db";
 import { pistePost } from "./pisteClient.js";
 
 export const CODE_URBANISME_ID   = "LEGITEXT000006074075";
@@ -345,8 +345,41 @@ export async function getOrFetchArticle(codeKey: string, num: string): Promise<L
     return await fetchAndCacheFromPiste(code.id, code.name, num);
   } catch (err) {
     console.warn(`[legifrance] fetch ${codeKey} ${num} échoué:`, (err as Error).message);
+    // Trace la demande pour l'admin (Configuration → Articles manquants).
+    // Best-effort : on n'échoue pas la requête utilisateur si l'insert rate.
+    void recordArticleMiss(codeKey, num).catch(() => {});
     return null;
   }
+}
+
+// Enregistre (ou incrémente) une demande d'article introuvable. Idempotent
+// par (code_key, article_ref) — la page admin déduplique automatiquement.
+export async function recordArticleMiss(codeKey: string, num: string): Promise<void> {
+  const code = resolveCode(codeKey);
+  if (!code) return;
+  const refUpper = num.trim().toUpperCase();
+  if (!refUpper) return;
+  await db
+    .insert(legal_mentions_misses)
+    .values({
+      code_key: codeKey.toUpperCase(),
+      article_ref: refUpper,
+      first_seen_at: new Date(),
+      last_seen_at: new Date(),
+      miss_count: 1,
+    })
+    .onConflictDoUpdate({
+      target: [legal_mentions_misses.code_key, legal_mentions_misses.article_ref],
+      set: {
+        last_seen_at: new Date(),
+        miss_count: sql`${legal_mentions_misses.miss_count} + 1`,
+        // Si la demande revient après avoir été marquée "dismissed", on la
+        // ré-ouvre pour que l'admin la revoie.
+        resolved_at: null,
+        resolved_by: null,
+        resolution: null,
+      },
+    });
 }
 
 // Force-refresh (utile pour seed/sync job).

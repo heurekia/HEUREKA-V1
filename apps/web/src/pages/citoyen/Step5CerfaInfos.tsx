@@ -10,6 +10,7 @@
 
 import { useState } from "react";
 import type { CSSProperties } from "react";
+import { linkifyArticles } from "../../utils/linkifyArticles";
 
 // ── Types partagés avec le wizard parent ───────────────────────────────────
 
@@ -705,7 +706,7 @@ export function Step5CerfaInfos({
               }}
             >
               Votre projet dépasse 150 m² de surface plancher : le recours à un architecte
-              est <strong>obligatoire</strong> (art. R.431-2 CU).
+              est <strong>obligatoire</strong> ({linkifyArticles("art. R.431-2 CU")}).
             </div>
           ) : (
             <Toggle

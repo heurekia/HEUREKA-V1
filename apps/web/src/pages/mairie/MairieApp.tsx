@@ -6,6 +6,7 @@ import { useAuth } from "../../hooks/useAuth";
 import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 import { RegulatoryChecklist } from "../../components/RegulatoryChecklist";
 import { PieceRegulatoryLinks } from "../../components/PieceRegulatoryLinks";
+import { linkifyArticles } from "../../utils/linkifyArticles";
 import {
   STATUS_LABELS as DOSSIER_STATUS_LABELS,
   primaryNextAction as primaryNextActionFor,
@@ -7507,7 +7508,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "5px 0", borderBottom: i < dossier.delai!.breakdown.length - 1 ? "1px dashed #F1F5F9" : "none" }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 12.5, color: "#0F172A", fontWeight: 500 }}>{b.label}</div>
-                        <div style={{ fontSize: 10.5, color: "#94a3b8" }}>{b.article}</div>
+                        <div style={{ fontSize: 10.5, color: "#94a3b8" }}>{linkifyArticles(b.article)}</div>
                       </div>
                       <div style={{ fontSize: 13, fontWeight: 700, color: "#4F46E5", flexShrink: 0, marginLeft: 8 }}>
                         {b.mois > 0 ? `+${b.mois}` : b.mois} mois
@@ -8535,7 +8536,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                             <span style={{ fontSize: 11.5, fontWeight: 700, color: meta.color, background: "white", border: `1px solid ${meta.border}`, borderRadius: 6, padding: "1px 8px" }}>
                               {meta.label}
                             </span>
-                            {v.article && <span style={{ fontSize: 11.5, fontWeight: 600, color: "#475569" }}>{v.article}</span>}
+                            {v.article && <span style={{ fontSize: 11.5, fontWeight: 600, color: "#475569" }}>{linkifyArticles(v.article)}</span>}
                             {v.sub_theme && <span style={{ fontSize: 11.5, color: "#64748b" }}>· {v.sub_theme}</span>}
                           </div>
                           <div style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>
