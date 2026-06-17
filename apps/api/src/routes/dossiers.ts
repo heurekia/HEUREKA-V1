@@ -21,6 +21,7 @@ import { autoReopenAfterCitizenUpload } from "../services/dossierWorkflow.js";
 import { computeInstructionDelay, applyMonthsToDate } from "../services/instructionDelays.js";
 import { getStorageProvider } from "../services/storage.js";
 import { attachCerfaToDossier } from "../services/cerfaAttachment.js";
+import { archivePreviousComplementDemande } from "../services/pieceArchive.js";
 
 // Multer stocke le fichier en MÉMOIRE (Buffer) plutôt que sur disque local.
 // On délègue l'écriture finale au StorageProvider (local OU S3), ce qui
@@ -372,7 +373,10 @@ dossiersRouter.post("/:id/soumettre", async (req: AuthRequest, res) => {
     const uploadedPieces = await db
       .select()
       .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.dossier_id, dossier.id));
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossier.id),
+        isNull(dossier_pieces_jointes.archived_at),
+      ));
     const uploadedCodes = new Set(uploadedPieces.map((p) => p.code_piece).filter(Boolean));
     const manquantes = piecesRequises.filter((p) => !uploadedCodes.has(p.code));
     if (manquantes.length > 0) {
@@ -445,7 +449,10 @@ dossiersRouter.get("/:id/completude", async (req: AuthRequest, res) => {
     const uploadedPieces = await db
       .select()
       .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.dossier_id, dossier.id));
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossier.id),
+        isNull(dossier_pieces_jointes.archived_at),
+      ));
     const uploadedCodes = new Set(uploadedPieces.map((p) => p.code_piece).filter(Boolean));
     const manquantes = piecesRequises.filter((p) => !uploadedCodes.has(p.code));
 
@@ -838,10 +845,15 @@ dossiersRouter.get("/:id/pieces", async (req: AuthRequest, res) => {
   try {
     const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    // Les versions archivées (remplacées suite à un complément) sont masquées
+    // côté citoyen — la pièce active est seule visible dans son espace.
     const pieces = await db
       .select()
       .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.dossier_id, req.params.id as string))
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, req.params.id as string),
+        isNull(dossier_pieces_jointes.archived_at),
+      ))
       .orderBy(desc(dossier_pieces_jointes.uploaded_at));
     res.json(pieces);
   } catch (err) {
@@ -919,6 +931,24 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
         code_piece: code_piece || null,
       })
       .returning();
+
+    // Si l'instructeur avait demandé un complément sur une pièce du même
+    // emplacement, on archive cette ancienne version : elle disparaît de la
+    // liste d'instruction principale (consultable via les versions précédentes
+    // de la rubrique). Best-effort — un échec ne doit pas annuler l'upload.
+    if (piece) {
+      try {
+        await archivePreviousComplementDemande({
+          dossier_id: req.params.id as string,
+          code_piece: code_piece || null,
+          new_piece_nom: nom_piece,
+          new_piece_id: piece.id,
+          user_id: req.user!.id,
+        });
+      } catch (e) {
+        console.warn("[pieces/upload] archivePreviousComplementDemande:", e);
+      }
+    }
 
     // RGPD : persiste le consentement au niveau du dossier (dernière valeur
     // explicite du pétitionnaire). Permet l'audit "ce dossier a-t-il été

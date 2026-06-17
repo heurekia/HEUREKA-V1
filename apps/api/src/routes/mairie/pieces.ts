@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../../db.js";
 import { dossier_pieces_jointes, instruction_events } from "@heureka-v1/db";
-import { eq, desc, and } from "drizzle-orm";
+import { eq, desc, and, isNull } from "drizzle-orm";
 import fs from "fs";
 import path from "path";
 import multer from "multer";
@@ -11,6 +11,7 @@ import { autoAdvanceIfAllPiecesValid } from "../../services/dossierWorkflow.js";
 import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../../services/pieceExtractor.js";
 import { analyzePiece } from "../../services/pieceAnalyzer.js";
 import { getStorageProvider } from "../../services/storage.js";
+import { archivePreviousComplementDemande } from "../../services/pieceArchive.js";
 import { resolveCommuneIdFromUser, UPLOADS_DIR_MAIRIE } from "./_shared.js";
 
 export const piecesRouter = Router();
@@ -58,10 +59,16 @@ function pieceUploadSingle(req: AuthRequest, res: import("express").Response, ne
 
 piecesRouter.get("/dossiers/:id/pieces", async (req: AuthRequest, res) => {
   try {
+    // Par défaut on masque les pièces archivées (remplacées suite à un
+    // complément). L'UI peut explicitement demander les versions précédentes
+    // via ?include_archived=1 pour reconstituer l'historique d'une rubrique.
+    const includeArchived = req.query.include_archived === "1" || req.query.include_archived === "true";
+    const conds = [eq(dossier_pieces_jointes.dossier_id, req.params.id as string)];
+    if (!includeArchived) conds.push(isNull(dossier_pieces_jointes.archived_at));
     const pieces = await db
       .select()
       .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.dossier_id, req.params.id as string))
+      .where(and(...conds))
       .orderBy(desc(dossier_pieces_jointes.uploaded_at));
     res.json(pieces);
   } catch (err) {
@@ -209,6 +216,23 @@ piecesRouter.post("/dossiers/:id/pieces/upload", pieceUploadSingle, async (req: 
         code_piece: code_piece || null,
       })
       .returning();
+
+    // Comptoir mairie : si l'agent redépose une pièce pour le compte du
+    // pétitionnaire en réponse à un complément demandé, on archive l'ancienne
+    // version pour la sortir de la liste d'instruction principale.
+    if (piece) {
+      try {
+        await archivePreviousComplementDemande({
+          dossier_id: dossierId,
+          code_piece: code_piece || null,
+          new_piece_nom: nom_piece,
+          new_piece_id: piece.id,
+          user_id: req.user?.id ?? null,
+        });
+      } catch (e) {
+        console.warn("[mairie/pieces/upload] archivePreviousComplementDemande:", e);
+      }
+    }
 
     // Analyses IA en parallèle, best-effort : un échec ne bloque pas
     // l'upload (la pièce est déjà persistée, l'instructeur pourra rejouer

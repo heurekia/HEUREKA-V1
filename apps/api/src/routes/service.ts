@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import { dossiers, users, dossier_messages, dossier_pieces_jointes, external_services, service_communes, communes, courrier_templates, dossier_consultations } from "@heureka-v1/db";
-import { eq, desc, ilike, inArray, and, or, notInArray } from "drizzle-orm";
+import { eq, desc, ilike, inArray, and, or, notInArray, isNull } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 
 export const serviceRouter = Router();
@@ -120,7 +120,13 @@ serviceRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
     const inScope = names.some(n => dossier.commune?.toLowerCase() === n.toLowerCase());
     if (!inScope) return res.status(403).json({ error: "Hors périmètre" });
 
-    const pieces = await db.select().from(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.dossier_id, dossierId));
+    const pieces = await db
+      .select()
+      .from(dossier_pieces_jointes)
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossierId),
+        isNull(dossier_pieces_jointes.archived_at),
+      ));
     res.json({ ...dossier, demandeur: [dossier.demandeur_prenom, dossier.demandeur_nom].filter(Boolean).join(" ") || "—", pieces });
   } catch (err) {
     console.error(err);

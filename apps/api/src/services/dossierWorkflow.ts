@@ -238,7 +238,7 @@ export function workflowErrorToHttp(err: WorkflowError): { status: number; body:
 // "INVALID_TRANSITION" est avalée (ce n'est pas une erreur métier).
 
 import { dossier_pieces_jointes, dossier_courriers } from "@heureka-v1/db";
-import { and } from "drizzle-orm";
+import { and, isNull } from "drizzle-orm";
 import { computeInstructionDelay, applyMonthsToDate, type DeadlineMetadata, type DeadlineServitude } from "./instructionDelays.js";
 
 export async function autoReopenAfterCitizenUpload(
@@ -294,12 +294,17 @@ export async function autoAdvanceIfAllPiecesValid(
       status: dossier_pieces_jointes.instructeur_status,
     })
     .from(dossier_pieces_jointes)
-    .where(eq(dossier_pieces_jointes.dossier_id, dossierId));
+    .where(and(
+      eq(dossier_pieces_jointes.dossier_id, dossierId),
+      isNull(dossier_pieces_jointes.archived_at),
+    ));
 
   // Garde-fous :
   //  - au moins une pièce déposée (évite l'auto-bascule sur dossier vide)
   //  - toutes les pièces sont explicitement "valide" (acceptable / null /
   //    rejete / complement_demande bloquent la bascule)
+  //  - pièces archivées exclues : leur statut figé ne doit plus peser dans
+  //    la décision de bascule.
   if (pieces.length === 0) return { transitioned: false };
   if (pieces.some((p) => p.status !== "valide")) return { transitioned: false };
 

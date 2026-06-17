@@ -622,6 +622,9 @@ ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS ai_consent boolean;
 ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS ai_consent_at timestamp;
 -- Trace par pièce : l'IA a-t-elle effectivement été appelée sur ce fichier ?
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS ai_processed boolean NOT NULL DEFAULT false;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS archived_at timestamp;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS archived_by_piece_id uuid;
+CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_archived ON dossier_pieces_jointes(dossier_id, archived_at);
 
 -- ── RGPD : empreinte du fichier envoyé à l'IA (sans stocker le contenu) ──
 -- SHA-256 hexadécimal calculé côté serveur AVANT envoi. Permet de prouver
