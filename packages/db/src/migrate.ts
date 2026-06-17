@@ -860,6 +860,47 @@ CREATE TABLE IF NOT EXISTS legal_mentions_misses (
 );
 CREATE INDEX IF NOT EXISTS idx_legal_mentions_misses_unresolved
   ON legal_mentions_misses(last_seen_at DESC) WHERE resolved_at IS NULL;
+
+-- ── Lot 1a — Préparation des documents intercommunaux (PLUi) ────────────────
+-- Additif strict : aucune table renommée, aucun consommateur impacté.
+-- Le Lot 1b suivra avec le rename commune_documents → regulatory_documents et
+-- la propagation aux 8 fichiers TS qui référencent le nom actuel.
+
+-- Porteur polymorphe : un document est désormais porté par une commune OU
+-- par un EPCI (cas PLUi). Exactement l'un des deux doit être renseigné.
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS porteur_commune_id uuid REFERENCES communes(id) ON DELETE CASCADE;
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS porteur_epci_id uuid REFERENCES epci(id) ON DELETE CASCADE;
+
+-- Backfill : les documents existants gardent leur commune comme porteur.
+UPDATE commune_documents
+SET porteur_commune_id = commune_id
+WHERE porteur_commune_id IS NULL AND porteur_epci_id IS NULL;
+
+-- Contrainte XOR posée APRÈS le backfill — sinon échec sur les lignes existantes.
+DO $$ BEGIN
+  ALTER TABLE commune_documents
+    ADD CONSTRAINT commune_documents_porteur_xor
+    CHECK ((porteur_commune_id IS NOT NULL) <> (porteur_epci_id IS NOT NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Rattachement N:N document → communes. Un PLUi y aura N lignes, un PLU
+-- strictement communal une seule. Remplacera commune_documents.commune_id
+-- comme source de vérité du périmètre d'applicabilité (Lots 3 & 4).
+CREATE TABLE IF NOT EXISTS document_communes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id uuid NOT NULL REFERENCES commune_documents(id) ON DELETE CASCADE,
+  commune_id uuid NOT NULL REFERENCES communes(id) ON DELETE CASCADE,
+  created_at timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT document_communes_unique UNIQUE (document_id, commune_id)
+);
+CREATE INDEX IF NOT EXISTS idx_document_communes_document ON document_communes(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_communes_commune ON document_communes(commune_id);
+
+-- Backfill 1:1 du périmètre existant. ON CONFLICT pour l'idempotence.
+INSERT INTO document_communes (document_id, commune_id)
+SELECT id, commune_id FROM commune_documents
+WHERE commune_id IS NOT NULL
+ON CONFLICT (document_id, commune_id) DO NOTHING;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
