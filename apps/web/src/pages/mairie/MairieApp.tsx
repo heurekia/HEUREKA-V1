@@ -6942,18 +6942,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       setDelaiSaving(false);
     }
   }, [dossier.id, completudeDraft]);
-  const recomputeDeadline = useCallback(async () => {
-    setDelaiSaving(true);
-    try {
-      await api.patch(`/mairie/dossiers/${dossier.id}/deadline`, { recompute: true });
-      alert("Délai recalculé. Rechargez la page pour voir la nouvelle échéance.");
-      setShowDelaiPopover(false);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Échec du recalcul");
-    } finally {
-      setDelaiSaving(false);
-    }
-  }, [dossier.id]);
   const [addressOverride, setAddressOverride] = useState<string | null>(null);
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [addrQuery, setAddrQuery] = useState("");
@@ -7542,11 +7530,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         Enregistrer
                       </button>
                     </div>
-                    <button onClick={() => void recomputeDeadline()}
-                      disabled={delaiSaving}
-                      style={{ border: "1px solid #C7D2FE", background: "#EEF2FF", color: "#4F46E5", borderRadius: 6, padding: "5px 12px", fontSize: 11.5, fontWeight: 600, cursor: delaiSaving ? "default" : "pointer", marginTop: 4 }}>
-                      Recalculer le délai
-                    </button>
                   </div>
                 </div>
               )}
