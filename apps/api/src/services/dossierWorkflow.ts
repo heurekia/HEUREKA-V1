@@ -237,7 +237,8 @@ export function workflowErrorToHttp(err: WorkflowError): { status: number; body:
 // effet de bord si le statut ne s'y prête pas. Toute exception WorkflowError
 // "INVALID_TRANSITION" est avalée (ce n'est pas une erreur métier).
 
-import { dossier_pieces_jointes } from "@heureka-v1/db";
+import { dossier_pieces_jointes, dossier_courriers } from "@heureka-v1/db";
+import { and } from "drizzle-orm";
 import { computeInstructionDelay, applyMonthsToDate, type DeadlineMetadata, type DeadlineServitude } from "./instructionDelays.js";
 
 export async function autoReopenAfterCitizenUpload(
@@ -249,6 +250,23 @@ export async function autoReopenAfterCitizenUpload(
     .from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
   if (!before) return { transitioned: false };
   if (before.status !== "incomplet") return { transitioned: false };
+
+  // Si un courrier "pieces_complementaires" existe, le passage à
+  // "pre_instruction" relève du flux explicite /resoumettre (déclenché par le
+  // bouton "Transmettre les compléments" côté citoyen), qui vérifie que TOUTES
+  // les pièces réclamées ont été redéposées avant de transiter. Auto-rouvrir
+  // dès le premier dépôt ferait échouer ce bouton avec « Le dossier n'est pas
+  // en attente de pièces complémentaires » dès le 2ᵉ upload.
+  const [courrier] = await db
+    .select({ id: dossier_courriers.id })
+    .from(dossier_courriers)
+    .where(and(
+      eq(dossier_courriers.dossier_id, dossierId),
+      eq(dossier_courriers.type, "pieces_complementaires"),
+    ))
+    .limit(1);
+  if (courrier) return { transitioned: false };
+
   try {
     const res = await changeDossierStatus(dossierId, "pre_instruction", actorId, {
       eventType: "auto_reexamen_complete",
