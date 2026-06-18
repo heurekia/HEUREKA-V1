@@ -81,7 +81,7 @@ const SAVE_RULE_TOOL: AiToolDefinition = {
     parameters: {
       type: "object",
       properties: {
-        article_number: { type: "integer", description: "Numéro de l'article (6, 7, 9, 10…). Null si l'article n'est pas numéroté." },
+        article_number: { type: "number", description: "Numéro de l'article, décimal autorisé pour les PLU modernisés (6, 7, 12.1, 12.2…). Null si l'article n'est pas numéroté." },
         article_title: { type: "string", description: "Titre exact de l'article tel qu'il apparaît dans le texte." },
         topic: {
           type: "string",
