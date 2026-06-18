@@ -1,3 +1,23 @@
+-- ============================================================================
+-- ⚠️  OBSOLÈTE — NE PAS UTILISER POUR INITIALISER UNE BASE
+-- ============================================================================
+--
+-- Snapshot historique du schéma à un instant donné. N'est PLUS la source de
+-- vérité : ce script ne contient PAS les colonnes ajoutées par les migrations
+-- successives (source_document_id, cases, applies_if, citizen_*, porteur_*,
+-- regulatory_documents, document_communes, etc.).
+--
+-- Initialiser une base avec ce fichier produit un schéma incomplet → l'app
+-- échoue à l'insertion (cf. incident OVH où source_document_id manquait dans
+-- zone_regulatory_rules).
+--
+-- SOURCE DE VÉRITÉ : packages/db/src/migrate.ts (lancé via `pnpm --filter
+-- @heureka-v1/db migrate`). Le script TypeScript est idempotent et applique
+-- TOUTES les évolutions du schéma dans l'ordre.
+--
+-- Ce fichier est conservé pour archive uniquement.
+-- ============================================================================
+
 -- HEUREKA V1 - Migration SQL
 -- Généré depuis les schémas Drizzle
 

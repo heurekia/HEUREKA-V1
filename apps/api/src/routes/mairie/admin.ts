@@ -500,6 +500,13 @@ Correspondance article → topic :
     // on insère le nouveau jeu dans une seule transaction. Une interruption
     // pendant l'extraction n'aura donc jamais détruit les données ; et si la
     // transaction échoue, elle est annulée (pas d'état partiel).
+    // num() : l'IA renvoie parfois "" au lieu de null pour les colonnes sans
+    // valeur. Postgres rejette "" sur double precision → l'INSERT crashait et
+    // toute la transaction d'extraction PLU était perdue. Aligné sur le helper
+    // de reglementation.ts:190.
+    const num = (v: unknown): number | null =>
+      v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null;
+
     send({ type: "phase", message: "Enregistrement…" });
     await db.transaction(async (tx) => {
       const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, commune.id));
@@ -525,9 +532,9 @@ Correspondance article → topic :
             article_title: rule.article_title ?? (rule.article_number ? `Article ${rule.article_number}` : ""),
             topic: rule.topic,
             rule_text: rule.rule_text,
-            value_min: rule.value_min ?? null,
-            value_max: rule.value_max ?? null,
-            value_exact: rule.value_exact ?? null,
+            value_min: num(rule.value_min),
+            value_max: num(rule.value_max),
+            value_exact: num(rule.value_exact),
             unit: rule.unit ?? null,
             conditions: rule.conditions ?? null,
             summary: rule.summary,
