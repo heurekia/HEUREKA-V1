@@ -1,6 +1,6 @@
 import path from "path";
 import { fileURLToPath } from "url";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   dossiers,
@@ -313,14 +313,19 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
     const piecesCtx = buildPiecesContext(natures, surface, servitudes, undefined, situational);
     const piecesAttendues = getPiecesForType(dossier.type, piecesCtx).filter((p) => p.requis);
 
-    // 4. Pièces déposées (hors archives — une pièce remplacée suite à une
-    // demande de complément ne doit plus peser dans le décompte).
+    // 4. Pièces déposées prises en compte par l'IA :
+    //   - hors archivées (remplacées suite à un complément, elles ne pèsent
+    //     plus dans le décompte) ;
+    //   - hors rejetées par l'instructeur (3.C.5a) — une pièce qu'il a
+    //     explicitement écartée ne doit pas pourrir l'analyse de son slot
+    //     ni induire en erreur le compte rendu.
     const piecesDeposees = await db
       .select()
       .from(dossier_pieces_jointes)
       .where(and(
         eq(dossier_pieces_jointes.dossier_id, dossierId),
         isNull(dossier_pieces_jointes.archived_at),
+        sql`(${dossier_pieces_jointes.instructeur_status} IS NULL OR ${dossier_pieces_jointes.instructeur_status} != 'rejete')`,
       ));
     const piecesParCode = new Map<string, typeof piecesDeposees[number]>();
     for (const p of piecesDeposees) if (p.code_piece) piecesParCode.set(p.code_piece, p);
