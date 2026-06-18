@@ -4,7 +4,7 @@ import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
 import {
   ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize2,
-  Highlighter, X, Eye, EyeOff,
+  Highlighter, X, Eye, EyeOff, ShieldCheck, FileDown,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -81,6 +81,11 @@ interface Props {
   /** Callback appelé après création réussie — permet au parent de refresh
    *  la liste des annotations affichées en surlignage (3.C.3d). */
   onAnnotationCreated?: () => void;
+  /** URL du fichier original déposé — quand fournie, on affiche un bouton
+   *  "Télécharger l'original" et un tag "Aperçu retraité" si la variante
+   *  servie est une version compat. Sert la transparence réglementaire
+   *  sur les pièces du dossier dont le rendu transite par pdftocairo. */
+  originalDownloadUrl?: string;
 }
 
 const KIND_LABELS: Record<AnnotationKind, string> = {
@@ -90,11 +95,16 @@ const KIND_LABELS: Record<AnnotationKind, string> = {
   note_perso: "Note perso",
 };
 
-export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotationCreated }: Props) {
+export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotationCreated, originalDownloadUrl }: Props) {
   const [numPages, setNumPages] = useState<number | null>(null);
   const [page, setPage] = useState(initialPage);
   const [scale, setScale] = useState(1.0);
   const [error, setError] = useState<string | null>(null);
+  // "compat" si la route /api/uploads sert la version re-encodée par
+  // pdftocairo (JPEG 2000 → JPEG), "original" sinon. Lu depuis le header
+  // X-Pdf-Variant via une requête HEAD légère au mount. Sert à afficher
+  // la transparence réglementaire dans la barre d'outils.
+  const [servedVariant, setServedVariant] = useState<"compat" | "original" | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
   // Annotation state
@@ -111,6 +121,23 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
   useEffect(() => {
     setPage(initialPage);
   }, [initialPage]);
+
+  // Détection variant (compat/original) — uniquement pour les fichiers
+  // qui ont un bouton "Télécharger l'original" (= pièces du dossier).
+  // Sans originalDownloadUrl on n'a rien à afficher, donc on évite la
+  // requête HEAD inutile.
+  useEffect(() => {
+    if (!originalDownloadUrl) { setServedVariant(null); return; }
+    let cancelled = false;
+    fetch(fileUrl, { method: "HEAD", credentials: "include" })
+      .then((r) => {
+        if (cancelled) return;
+        const v = r.headers.get("X-Pdf-Variant");
+        setServedVariant(v === "compat" ? "compat" : "original");
+      })
+      .catch(() => { if (!cancelled) setServedVariant(null); });
+    return () => { cancelled = true; };
+  }, [fileUrl, originalDownloadUrl]);
 
   // Saute à une page en réinitialisant le scroll en haut du conteneur.
   const goToPage = (p: number) => {
@@ -256,6 +283,18 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
           <ZoomIn className="w-4 h-4" />
         </button>
         <div className="ml-auto flex items-center gap-2">
+          {/* Tag de transparence réglementaire : visible UNIQUEMENT quand
+              une variante compat est servie. Permet à l'instructeur de
+              savoir au coup d'œil qu'il regarde une vue retraitée et que
+              le fichier original reste accessible. */}
+          {servedVariant === "compat" && originalDownloadUrl && (
+            <span
+              title="Le PDF affiché est une variante re-encodée pour le viewer (le JPEG 2000 d'origine empêche pdf.js de tout rendre). Le fichier déposé par le pétitionnaire est conservé tel quel et téléchargeable via le bouton ↓ ; il reste la référence officielle."
+              className="inline-flex items-center gap-1 px-2 py-0.5 bg-amber-50 border border-amber-200 text-amber-800 text-[10px] font-semibold rounded cursor-help"
+            >
+              <ShieldCheck className="w-3 h-3" /> Aperçu retraité
+            </span>
+          )}
           <input
             type="number"
             min={1}
@@ -265,6 +304,16 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
             className="w-14 px-1 py-0.5 text-xs border border-gray-200 rounded text-center"
             title="Aller à la page"
           />
+          {originalDownloadUrl && (
+            <a
+              href={`${originalDownloadUrl}${originalDownloadUrl.includes("?") ? "&" : "?"}variant=original`}
+              download
+              className="p-1 rounded hover:bg-gray-100 text-gray-500"
+              title="Télécharger le PDF original déposé (référence officielle)"
+            >
+              <FileDown className="w-4 h-4" />
+            </a>
+          )}
           <a
             href={fileUrl}
             target="_blank"

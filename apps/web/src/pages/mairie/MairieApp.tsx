@@ -8798,7 +8798,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                               </div>
                             ) : (sel.type === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf")) ? (
                               <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-                                <PdfAnnotator key={sel.id} fileUrl={sel.url} />
+                                <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
                               </div>
                             ) : (
                               <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, padding: 24, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}>Aperçu indisponible pour ce format</div>
@@ -8844,7 +8844,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                             <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: 520, objectFit: "contain", display: "block" }} />
                           ) : isPdf ? (
                             <div style={{ flex: 1, minWidth: 0, minHeight: 560 }}>
-                              <PdfAnnotator key={sel.id} fileUrl={sel.url} />
+                              <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
                             </div>
                           ) : (
                             <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 12, padding: 32, textAlign: "center" as const }}>
