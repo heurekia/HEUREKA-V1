@@ -12,6 +12,7 @@ import {
   type DeadlineServitude,
 } from "../../services/instructionDelays.js";
 import { refreshPluZones, pluEtagFor, filterZonesByInsee, PLU_CACHE_TTL_MS, type PluZonesGeoJson } from "../../services/pluZones.js";
+import { fetchSitadelHistory } from "../../services/sitadelHistory.js";
 
 export const parcelleRouter = Router();
 
@@ -228,6 +229,68 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
     res.json(analysis);
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Historique SITADEL/ADS ──────────────────────────────────────────────────
+// GET /mairie/dossiers/:id/sitadel-history[?scope=parcel|commune]
+// Récupère les autorisations d'urbanisme délivrées par le passé sur la même
+// parcelle (scope=parcel, défaut) ou sur la commune (scope=commune) via la
+// base ouverte SITADEL publiée par le SDES.
+//
+// On préfère l'INSEE + cadastre issus du parcel_analysis déjà persisté dans
+// le metadata du dossier (cf. endpoint analyse-parcelle ci-dessus). À défaut
+// on tente de reconstruire le cadastre depuis dossier.parcelle / commune.
+
+parcelleRouter.get("/dossiers/:id/sitadel-history", async (req: AuthRequest, res) => {
+  try {
+    const [dossier] = await db
+      .select()
+      .from(dossiers)
+      .where(eq(dossiers.id, req.params.id as string))
+      .limit(1);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    const scope = (req.query.scope as string | undefined) === "commune" ? "commune" : "parcel";
+    const meta = (dossier.metadata ?? {}) as Record<string, unknown>;
+    const pa = meta["parcel_analysis"] as
+      | { parcel?: { code_insee?: string; section?: string; numero?: string } }
+      | undefined;
+
+    // INSEE — priorité au cache analyse, sinon lookup nom commune.
+    let inseeCode: string | undefined = pa?.parcel?.code_insee;
+    if (!inseeCode && dossier.commune) {
+      const [communeRow] = await db
+        .select({ insee_code: communes.insee_code })
+        .from(communes)
+        .where(ilike(communes.name, dossier.commune))
+        .limit(1);
+      inseeCode = communeRow?.insee_code ?? undefined;
+    }
+    if (!inseeCode) {
+      return res.status(422).json({ error: "Code INSEE introuvable pour ce dossier." });
+    }
+
+    // Cadastre — section/numéro pour filtrer sur la parcelle.
+    const cadastre: Array<{ section: string; numero: string }> = [];
+    if (pa?.parcel?.section && pa?.parcel?.numero) {
+      cadastre.push({ section: pa.parcel.section, numero: pa.parcel.numero });
+    } else if (dossier.parcelle) {
+      // ex. "AB 142" ou "AB142" → { section: AB, numero: 142 }
+      const m = /^([A-Z]{1,2})\s*0*(\d{1,4})$/i.exec(dossier.parcelle.trim());
+      if (m && m[1] && m[2]) cadastre.push({ section: m[1].toUpperCase(), numero: m[2] });
+    }
+
+    const result = await fetchSitadelHistory({
+      insee_code: inseeCode,
+      cadastre,
+      parcelOnly: scope === "parcel" && cadastre.length > 0,
+    });
+
+    res.json(result);
+  } catch (err) {
+    console.error("[mairie/sitadel-history]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

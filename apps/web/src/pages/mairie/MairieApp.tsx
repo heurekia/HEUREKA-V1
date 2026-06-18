@@ -6320,14 +6320,18 @@ function decisionStepIndex(status: DecisionStatus): number {
   return 0;
 }
 
-const DETAIL_TABS = ["Résumé", "Parcelle", "Conformité IA", "Documents", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
+// "Terrain" remplace "Parcelle" : vue contextuelle (cadastre, contraintes
+// fortes, constructibilité synthétique, historique SITADEL/ADS). La carte
+// et le règlement détaillé migrent vers "Instruction", devenue l'espace de
+// preuve où l'instructeur confronte les pièces aux PDF réglementaires.
+const DETAIL_TABS = ["Résumé", "Terrain", "Conformité IA", "Instruction", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
 type DetailTab = typeof DETAIL_TABS[number];
 
 const TAB_ICONS: Record<string, React.ReactNode> = {
   "Résumé": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>,
-  "Parcelle": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>,
+  "Terrain": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>,
   "Conformité IA": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>,
-  "Documents": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
+  "Instruction": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
   "Consultations": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>,
   "Courriers": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>,
   "Chronologie": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
@@ -6899,7 +6903,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   // d'affichage, et nourrit les hints du RegulatoryDocViewer.
   const jumpFromCitation = useCallback((ref: { doc_type?: string; page?: number }) => {
     if (!ref.doc_type) return;
-    setActiveTab("Documents");
+    setActiveTab("Instruction");
     setDocsViewMode("compare");
     setDocsRegulatoryDocTypeHint(ref.doc_type);
     setDocsRegulatoryDocPage(typeof ref.page === "number" ? ref.page : null);
@@ -7123,7 +7127,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [extractingPieceId, setExtractingPieceId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (activeTab !== "Documents" || documents !== null) return;
+    if (activeTab !== "Instruction" || documents !== null) return;
     setDocumentsLoading(true);
     api.get<DossierPiece[]>(`/mairie/dossiers/${dossier.id}/pieces`)
       .then((data) => { setDocuments(data); setSelectedDoc(0); })
@@ -7245,7 +7249,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   }, [dossier.id]);
 
   // Documents thématiques de la commune (OAP, PPRI, …) avec leur synthèse.
-  // Chargés à l'ouverture de l'onglet Parcelle pour servir de support à l'instruction.
+  // Chargés à l'ouverture de l'onglet Instruction — c'est là qu'ils servent
+  // de support à la confrontation pièces ↔ règlement.
   type CommuneDocLite = {
     id: string;
     type: string;
@@ -7258,11 +7263,60 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   };
   const [communeDocs, setCommuneDocs] = useState<CommuneDocLite[] | null>(null);
   useEffect(() => {
-    if (activeTab !== "Parcelle" || communeDocs !== null) return;
+    if (activeTab !== "Instruction" || communeDocs !== null) return;
     api.get<CommuneDocLite[]>(`/mairie/dossiers/${dossier.id}/commune-documents`)
       .then(setCommuneDocs)
       .catch(() => setCommuneDocs([]));
   }, [activeTab, communeDocs, dossier.id]);
+
+  // Historique SITADEL/ADS — autorisations passées sur la parcelle.
+  // Chargé à l'ouverture de l'onglet Terrain. `scope=parcel` filtre sur la
+  // même section/numéro cadastral ; `scope=commune` ouvre à toute la commune
+  // si la parcelle n'a aucun historique.
+  type SitadelPermit = {
+    num_dau: string;
+    type_dau: string;
+    type_label: string;
+    etat: string;
+    etat_code: string;
+    date_autorisation: string | null;
+    date_doc: string | null;
+    date_daact: string | null;
+    an_depot: number | null;
+    adresse: string | null;
+    superficie_terrain: number | null;
+    cadastre: Array<{ section: string; numero: string }>;
+    nature_projet: string | null;
+    destination: string | null;
+    nb_logements: number | null;
+    surface_creee: number | null;
+    source: "logements" | "locaux" | "amenager" | "demolir";
+  };
+  type SitadelHistory = {
+    permits: SitadelPermit[];
+    total: number;
+    truncated: boolean;
+    sources_consulted: string[];
+    warnings: string[];
+  };
+  const [sitadelHistory, setSitadelHistory] = useState<SitadelHistory | null>(null);
+  const [sitadelLoading, setSitadelLoading] = useState(false);
+  const [sitadelScope, setSitadelScope] = useState<"parcel" | "commune">("parcel");
+  const [sitadelError, setSitadelError] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeTab !== "Terrain") return;
+    // Sur changement de scope, on relance ; sinon on respecte le cache.
+    if (sitadelHistory && sitadelHistory.permits.length >= 0 && !sitadelLoading) {
+      // pas de relance si déjà chargé pour ce scope
+    }
+    setSitadelLoading(true);
+    setSitadelError(null);
+    api.get<SitadelHistory>(`/mairie/dossiers/${dossier.id}/sitadel-history?scope=${sitadelScope}`)
+      .then((data) => setSitadelHistory(data))
+      .catch((e) => setSitadelError(e instanceof Error ? e.message : "Indisponible"))
+      .finally(() => setSitadelLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, dossier.id, sitadelScope]);
 
   const fetchConsultations = useCallback(() => {
     setConsultationsLoading(true);
@@ -7322,7 +7376,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
   // Pré-charge les pièces + le rapport conformité quand on entre dans le mode
   // "Demande de pièces complémentaires" — sinon le sélecteur s'ouvrirait sur
-  // une liste vide tant que l'instructeur n'a pas visité l'onglet Documents.
+  // une liste vide tant que l'instructeur n'a pas visité l'onglet Instruction.
   useEffect(() => {
     if (courrierMode !== "pieces_complementaires") return;
     if (documents === null && !documentsLoading) {
@@ -7944,12 +7998,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         )}
 
         {/* ── PARCELLE ── */}
-        {activeTab === "Parcelle" && (() => {
-          const TOPIC_LABEL: Record<string, string> = {
-            recul_voie: "Recul voirie", recul_limite: "Recul limites", emprise_sol: "Emprise au sol",
-            hauteur: "Hauteur max.", stationnement: "Stationnement", espaces_verts: "Espaces verts",
-            terrain_min: "Terrain min.",
-          };
+        {activeTab === "Terrain" && (() => {
+          // Écran Terrain — contexte décisionnel.
+          // Affiche le cadastre, les contraintes fortes (PLU/risques/SUP/prescriptions
+          // surfaciques), une constructibilité synthétique, et l'historique SITADEL/ADS
+          // de la parcelle. Le règlement détaillé et les PDF d'OAP/PPRI sont dans
+          // l'onglet Instruction — c'est là que se fait la confrontation pièce ↔ règle.
           const floodColor = (v: string) => v === "fort" ? { c: "#C2410C", bg: "#FFF7ED" } : v === "moyen" ? { c: "#C2410C", bg: "#FFF7ED" } : v === "faible" ? { c: "#B45309", bg: "#FFFBEB" } : { c: "#15803D", bg: "#F0FDF4" };
           const zoneColor = (t?: string) => t === "N" || t === "A" ? { c: "#15803D", bg: "#F0FDF4" } : { c: "#4F46E5", bg: "#EEF2FF" };
           const pa = parcelAnalysis;
@@ -7960,6 +8014,25 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               Analyse en cours…
               <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
             </div>
+          );
+
+          // CTA récurrent : tous les renvois vers le règlement complet, les
+          // citations et les PDF d'OAP/PPRI pointent vers l'onglet Instruction.
+          const goToInstruction = (docType?: string) => {
+            setActiveTab("Instruction");
+            if (docType) {
+              setDocsViewMode("compare");
+              setDocsRegulatoryDocTypeHint(docType);
+              setDocsRegulatoryDocPage(null);
+            }
+          };
+          const InstructionLink = ({ label, docType }: { label: string; docType?: string }) => (
+            <button
+              onClick={() => goToInstruction(docType)}
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "#4F46E5", background: "transparent", border: "none", padding: 0, cursor: "pointer" }}
+            >
+              {label} →
+            </button>
           );
 
           return (
@@ -7984,52 +8057,20 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               )}
 
-              <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14 }}>
-                {/* ── Colonne gauche ── */}
-                <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
-                  {/* Carte */}
-                  <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
-                    <div style={{ padding: "14px 18px 10px" }}>
-                      <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", display: "flex", alignItems: "center", gap: 8 }}>
-                        <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block", flexShrink: 0 }} />
-                        Vue parcellaire
-                      </div>
-                    </div>
-                    {clickingParcel && (
-                      <div style={{ margin: "0 14px 10px", padding: "8px 12px", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 8, fontSize: 12, color: "#4338CA", fontWeight: 600 }}>
-                        Cliquez au centre de la parcelle concernée — les limites cadastrales sont visibles sur le fond de carte.
-                      </div>
-                    )}
-                    {(() => {
-                      const pLat = pa?.address?.lat ?? (clickedCoords?.lat) ?? dossier.lat;
-                      const pLng = pa?.address?.lng ?? (clickedCoords?.lng) ?? dossier.lng;
-                      const hasCoords = pLat && pLng;
-                      return hasCoords ? (
-                        <MapLeaflet
-                          dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: pLat, lng: pLng }]}
-                          height={clickingParcel ? 380 : 300}
-                          commune={liveCommune ?? dossier.commune}
-                          clickMode={clickingParcel}
-                          parcelLayer={clickingParcel}
-                          onMapClick={(lat, lng) => {
-                            setClickedCoords({ lat, lng });
-                            setParcelAnalysis(null);
-                            setParcelError(null);
-                            setSelectedZone(null);
-                          }}
-                        />
-                      ) : (
-                        <div style={{ height: 300, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 10 }}>
-                          <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
-                          <span style={{ fontSize: 13, color: "#94a3b8" }}>Coordonnées non disponibles</span>
-                          <button onClick={() => setClickingParcel(true)} style={{ padding: "6px 14px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
-                            📍 Localiser sur la carte
-                          </button>
-                        </div>
-                      );
-                    })()}
-                  </div>
+              {/* Renvoi global vers Instruction — règles complètes, PDF, citations */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "10px 16px", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 10 }}>
+                <div style={{ fontSize: 12, color: "#3730A3", lineHeight: 1.5 }}>
+                  <strong style={{ fontWeight: 700 }}>Règlement, citations et PDF</strong> — l'espace de preuve et de comparaison est dans l'onglet Instruction.
+                </div>
+                <button
+                  onClick={() => goToInstruction()}
+                  style={{ flexShrink: 0, padding: "6px 14px", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 5px rgba(79,70,229,0.3)" }}
+                >Ouvrir l'Instruction →</button>
+              </div>
 
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                {/* ── Colonne gauche : contraintes + ABF + constructibilité ── */}
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
                   {/* Contraintes */}
                   <div style={CARD}>
                     <SecTitle>Contraintes réglementaires</SecTitle>
@@ -8142,11 +8183,18 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                                 {s.dessup}
                               </div>
                             )}
-                            {s.urlacte && (
-                              <a href={s.urlacte} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginLeft: 26, marginTop: 8, fontSize: 11, color: "#4F46E5", fontWeight: 600 }}>
-                                Voir l'acte officiel ↗
-                              </a>
-                            )}
+                            <div style={{ marginLeft: 26, marginTop: 8, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" as const }}>
+                              {s.urlacte && (
+                                <a href={s.urlacte} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#4F46E5", fontWeight: 600 }}>
+                                  Voir l'acte officiel ↗
+                                </a>
+                              )}
+                              {/* Toute citation du règlement ou du PDF passe par Instruction. */}
+                              <InstructionLink
+                                label="Confronter aux pièces dans Instruction"
+                                docType={s.categorie?.startsWith("PM1") ? "ppri" : s.categorie?.startsWith("PM2") ? "pprt" : undefined}
+                              />
+                            </div>
                           </div>
                         );
                       })}
@@ -8197,6 +8245,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                                 Texte réglementaire non publié dans le GPU — se référer au règlement de zone.
                               </div>
                             )}
+                            <div style={{ marginLeft: 26, marginTop: 6 }}>
+                              <InstructionLink
+                                label="Voir le règlement applicable dans Instruction"
+                                docType={p.typepsc === "18" ? "oap" : p.typepsc === "09" ? "ppri" : "plu"}
+                              />
+                            </div>
                           </div>
                         );
                       })}
@@ -8273,171 +8327,157 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     ))}
                   </div>
 
-                  {/* Synthèse PLU */}
+                  {/* Synthèse zone PLU — pointeur seulement, le règlement complet vit dans Instruction */}
                   <div style={CARD}>
-                    <SecTitle>Synthèse PLU applicable</SecTitle>
-                    {pa?.rules && pa.rules.length > 0 ? (() => {
-                      // Mêmes rubriques thématiques que la vue citoyen, mais on garde
-                      // ici la prose RÉELLE du règlement (rule_text), pas la
-                      // reformulation courte (citizen_summary).
-                      const RUBRIQUES: Array<{ key: string; icon: string; label: string; topics: string[] }> = [
-                        { key: "construire",   icon: "🏗️", label: "Constructibilité",       topics: ["emprise_sol", "hauteur", "cos", "terrain_min"] },
-                        { key: "implanter",    icon: "📐", label: "Implantation",            topics: ["recul_voie", "recul_limite", "recul_batiments"] },
-                        { key: "aspect",       icon: "🎨", label: "Aspect & matériaux",      topics: ["aspect"] },
-                        { key: "stationnement",icon: "🅿️", label: "Stationnement",           topics: ["stationnement"] },
-                        { key: "verts",        icon: "🌳", label: "Espaces verts",           topics: ["espaces_verts"] },
-                        { key: "acces",        icon: "🚗", label: "Accès & réseaux",         topics: ["desserte_voies", "desserte_reseaux"] },
-                        { key: "usages",       icon: "🚦", label: "Usages — interdits / conditionnels", topics: ["interdictions", "conditions", "destinations"] },
-                        { key: "autres",       icon: "📋", label: "Autres dispositions",     topics: ["general"] },
-                      ];
-                      const topicRub = (t: string) => RUBRIQUES.find(r => r.topics.includes(t))?.key ?? "autres";
-                      // On retire les règles marquées "excluded" (contexte parcelle qui ne
-                      // colle pas — ex. cloture_sur_rue sur une parcelle enclavée).
-                      const visible = pa.rules.filter(r => r.relevance !== "excluded");
-                      const rubs = RUBRIQUES
-                        .map(rub => ({ ...rub, rules: visible.filter(r => topicRub(r.topic) === rub.key) }))
-                        .filter(rub => rub.rules.length > 0);
-
-                      const valueChip = (rule: typeof pa.rules[number]) => {
-                        const v = rule.value_exact != null ? `${rule.value_exact}`
-                          : rule.value_max != null ? `≤ ${rule.value_max}`
-                          : rule.value_min != null ? `≥ ${rule.value_min}` : null;
-                        if (!v) return null;
+                    <SecTitle action={<InstructionLink label="Règlement complet" docType="plu" />}>
+                      Zone PLU
+                    </SecTitle>
+                    {(() => {
+                      const zc = pa?.plu_zone ?? (pa?.db_zone ? { zone_code: pa.db_zone.code, zone_label: pa.db_zone.label ?? pa.db_zone.code, zone_type: pa.db_zone.type ?? "U" } : null);
+                      if (!zc) {
                         return (
-                          <span style={{ display: "inline-block", padding: "2px 8px", fontSize: 11.5, fontWeight: 700, color: "#4F46E5", background: "#EEF2FF", borderRadius: 6, border: "1px solid #C7D2FE" }}>
-                            {v} {rule.unit ?? ""}
-                          </span>
-                        );
-                      };
-
-                      return (
-                        <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
-                          {rubs.map((rub, idx) => (
-                            <details key={rub.key} open={idx === 0} style={{ borderTop: idx > 0 ? "1px solid #F1F5F9" : "none" }}>
-                              <summary style={{ padding: "10px 4px", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, listStyle: "none" }}>
-                                <span style={{ fontSize: 18 }}>{rub.icon}</span>
-                                <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: "#0F172A" }}>{rub.label}</span>
-                                <span style={{ fontSize: 11, color: "#94a3b8", background: "#F1F5F9", borderRadius: 999, padding: "1px 8px", fontWeight: 600 }}>{rub.rules.length}</span>
-                              </summary>
-                              <div style={{ padding: "4px 4px 8px 28px", display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                                {rub.rules.map(rule => {
-                                  const header = [
-                                    rule.article_number != null ? `Art. ${rule.article_number}` : null,
-                                    rule.sub_theme ?? null,
-                                  ].filter(Boolean).join(" · ");
-                                  const chip = valueChip(rule);
-                                  return (
-                                    <div key={rule.id} style={{ paddingTop: 6, borderTop: "1px dashed #E2E8F0" }}>
-                                      {(header || chip) && (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" as const }}>
-                                          {header && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#475569" }}>{header}</span>}
-                                          {chip}
-                                          {rule.relevance === "conditional" && (
-                                            <span style={{ fontSize: 10.5, fontWeight: 700, color: "#92400E", background: "#FEF3C7", borderRadius: 6, padding: "1px 7px", border: "1px solid #FDE68A" }}>Selon projet</span>
-                                          )}
-                                        </div>
-                                      )}
-                                      <div style={{ fontSize: 12.5, color: "#0F172A", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>
-                                        {rule.rule_text}
-                                      </div>
-                                      {rule.cases && rule.cases.length > 0 && (
-                                        <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 11.5, color: "#374151", lineHeight: 1.5 }}>
-                                          {rule.cases.map((c, i) => (
-                                            <li key={i}>
-                                              {c.condition}
-                                              {c.value != null && (
-                                                <span style={{ fontWeight: 700, color: "#4F46E5" }}> — {c.value}{c.unit ?? ""}</span>
-                                              )}
-                                            </li>
-                                          ))}
-                                        </ul>
-                                      )}
-                                      {rule.conditions && (
-                                        <div style={{ marginTop: 4, fontSize: 11.5, color: "#475569", fontStyle: "italic", lineHeight: 1.5 }}>
-                                          Conditions : {rule.conditions}
-                                        </div>
-                                      )}
-                                      {rule.exceptions && (
-                                        <div style={{ marginTop: 4, fontSize: 11.5, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6, padding: "6px 8px", lineHeight: 1.5 }}>
-                                          <span style={{ fontWeight: 700 }}>Exceptions :</span> {rule.exceptions}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </details>
-                          ))}
-                        </div>
-                      );
-                    })() : pa ? (() => {
-                      const zc = pa.plu_zone?.zone_code ?? pa.db_zone?.code;
-                      return (
-                        <div style={{ fontSize: 12.5, color: "#64748b", padding: "8px 0", lineHeight: 1.55 }}>
-                          <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                            <span style={{ fontSize: 16, flexShrink: 0 }}>ℹ️</span>
-                            <div>
-                              <div style={{ fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Règles non chargées</div>
-                              {zc ? (
-                                <>La zone <code style={{ background: "#F1F5F9", padding: "1px 5px", borderRadius: 4, fontSize: 11.5, color: "#4F46E5", fontWeight: 600 }}>{zc}</code> n'a pas encore de règles indexées dans la base. Le règlement PDF est référencé ci-dessous — relancer l'ingestion du PLU depuis l'écran Paramètres &gt; Documents pour extraire les articles.</>
-                              ) : (
-                                "La zone PLU n'a pas pu être déterminée. Sélectionnez-la manuellement ci-dessus pour charger les règles."
-                              )}
-                            </div>
+                          <div style={{ fontSize: 12.5, color: "#94a3b8", padding: "8px 0" }}>
+                            Zone PLU non identifiée — voir les contraintes ci-contre.
                           </div>
+                        );
+                      }
+                      const ruleCount = pa?.rules?.filter((r) => r.relevance !== "excluded").length ?? 0;
+                      return (
+                        <div>
+                          <div style={{ fontSize: 18, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>
+                            {zc.zone_code}
+                          </div>
+                          <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.5, marginBottom: 12 }}>
+                            {zc.zone_label}
+                          </div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                            {ruleCount > 0 && (
+                              <span style={{ fontSize: 11.5, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 6, padding: "3px 9px" }}>
+                                {ruleCount} article{ruleCount > 1 ? "s" : ""} indexé{ruleCount > 1 ? "s" : ""}
+                              </span>
+                            )}
+                            <button
+                              onClick={() => goToInstruction("plu")}
+                              style={{ fontSize: 11.5, fontWeight: 600, color: "#3730A3", background: "white", border: "1px solid #C7D2FE", borderRadius: 6, padding: "3px 9px", cursor: "pointer" }}
+                            >
+                              Confronter aux pièces →
+                            </button>
+                          </div>
+                          {pa?.plu_zone?.plu_nom && (
+                            <div style={{ marginTop: 10, fontSize: 11, color: "#94a3b8", fontStyle: "italic" }}>
+                              Source GPU : {pa.plu_zone.plu_nom}
+                            </div>
+                          )}
                         </div>
                       );
-                    })() : (
-                      <div style={{ fontSize: 12.5, color: "#94a3b8", padding: "8px 0" }}>En attente de l'analyse…</div>
-                    )}
-                    {pa?.plu_zone?.plu_nom && (
-                      <div style={{ marginTop: 8, fontSize: 11, color: "#64748b", fontStyle: "italic" }}>
-                        Source GPU : {pa.plu_zone.plu_nom}
-                      </div>
-                    )}
+                    })()}
                   </div>
 
-                  {/* Documents thématiques de la commune (OAP, PPRI, …) */}
-                  {communeDocs && communeDocs.length > 0 && (() => {
-                    const docTypeMeta: Record<string, { label: string; color: string; icon: string }> = {
-                      ppri: { label: "PPRI", color: "#EF4444", icon: "🌊" },
-                      oap:  { label: "OAP",  color: "#8B5CF6", icon: "📐" },
-                      peb:  { label: "PEB",  color: "#F59E0B", icon: "✈️" },
-                      pprt: { label: "PPRT", color: "#EC4899", icon: "⚠️" },
-                      plh:  { label: "PLH",  color: "#10B981", icon: "🏘️" },
-                      zac:  { label: "ZAC",  color: "#3B82F6", icon: "🏗️" },
-                      autre:{ label: "Autre",color: "#64748B", icon: "📄" },
-                    };
-                    return (
-                      <div style={CARD}>
-                        <SecTitle>Documents d'instruction applicables</SecTitle>
-                        <div style={{ fontSize: 11.5, color: "#64748b", marginBottom: 12, marginTop: -10, lineHeight: 1.5 }}>
-                          Documents thématiques de la commune (OAP, PPRI…) et leur synthèse — l'outil s'en sert pour instruire ce dossier.
+                  {/* Historique SITADEL/ADS — autorisations passées sur la parcelle/commune */}
+                  <div style={CARD}>
+                    <SecTitle
+                      action={
+                        <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 7, overflow: "hidden", background: "white" }}>
+                          {(["parcel", "commune"] as const).map((s) => (
+                            <button
+                              key={s}
+                              onClick={() => { setSitadelScope(s); setSitadelHistory(null); }}
+                              style={{
+                                padding: "4px 11px",
+                                background: sitadelScope === s ? "#4F46E5" : "white",
+                                color: sitadelScope === s ? "white" : "#475569",
+                                border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer",
+                              }}
+                            >{s === "parcel" ? "Parcelle" : "Commune"}</button>
+                          ))}
                         </div>
-                        <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                          {communeDocs.map((d) => {
-                            const meta = docTypeMeta[d.type] ?? docTypeMeta.autre!;
+                      }
+                    >Historique SITADEL/ADS</SecTitle>
+                    <div style={{ fontSize: 11.5, color: "#64748b", marginBottom: 12, marginTop: -10, lineHeight: 1.5 }}>
+                      Autorisations d'urbanisme délivrées par le passé (PC, DP, PA, PD) — source : base ouverte SITADEL (SDES, data.gouv.fr).
+                    </div>
+                    {sitadelLoading ? (
+                      <div style={{ fontSize: 12, color: "#94a3b8", padding: "8px 0" }}>Chargement…</div>
+                    ) : sitadelError ? (
+                      <div style={{ fontSize: 12, color: "#991B1B", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "8px 10px" }}>
+                        Historique indisponible : {sitadelError}
+                      </div>
+                    ) : !sitadelHistory || sitadelHistory.permits.length === 0 ? (
+                      <div style={{ fontSize: 12, color: "#64748b", padding: "8px 0", lineHeight: 1.5 }}>
+                        Aucun permis trouvé dans SITADEL pour cette {sitadelScope === "parcel" ? "parcelle" : "commune"} depuis 2013.
+                        {sitadelScope === "parcel" && (
+                          <button
+                            onClick={() => { setSitadelScope("commune"); setSitadelHistory(null); }}
+                            style={{ marginLeft: 6, fontSize: 12, color: "#4F46E5", background: "none", border: "none", fontWeight: 600, cursor: "pointer", padding: 0 }}
+                          >Élargir à la commune →</button>
+                        )}
+                      </div>
+                    ) : (() => {
+                      const typeColor: Record<string, { c: string; bg: string }> = {
+                        PC: { c: "#4F46E5", bg: "#EEF2FF" },
+                        DP: { c: "#15803D", bg: "#F0FDF4" },
+                        PA: { c: "#C2410C", bg: "#FFF7ED" },
+                        PD: { c: "#DC2626", bg: "#FEF2F2" },
+                      };
+                      const etatColor: Record<string, string> = {
+                        "3": "#15803D", "5": "#15803D", "6": "#15803D",
+                        "4": "#DC2626", "7": "#DC2626", "8": "#94A3B8",
+                      };
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {sitadelHistory.permits.slice(0, 8).map((p) => {
+                            const tc = typeColor[p.type_dau] ?? { c: "#64748B", bg: "#F1F5F9" };
+                            const ec = etatColor[p.etat_code] ?? "#64748B";
+                            const date = p.date_autorisation
+                              ? new Date(p.date_autorisation).toLocaleDateString("fr-FR")
+                              : p.an_depot ? `Déposé ${p.an_depot}` : "—";
                             return (
-                              <div key={d.id} style={{ padding: "10px 12px", border: "1px solid #E2E8F0", borderRadius: 9, background: "#FAFBFC" }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: d.synthese ? 6 : 0 }}>
-                                  <span style={{ fontSize: 15 }}>{meta.icon}</span>
-                                  <span style={{ background: meta.color, color: "white", borderRadius: 5, padding: "1px 7px", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em" }}>{meta.label}</span>
-                                  <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{d.name}</span>
+                              <div key={`${p.source}-${p.num_dau}`} style={{ padding: "10px 12px", border: "1px solid #E2E8F0", borderRadius: 9, background: "#FAFBFC" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                                  <span style={{ fontSize: 10.5, fontWeight: 700, color: tc.c, background: tc.bg, borderRadius: 5, padding: "2px 7px", letterSpacing: "0.04em" }}>{p.type_dau}</span>
+                                  <span style={{ fontSize: 12, fontWeight: 600, color: "#0F172A", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+                                    {p.num_dau}
+                                  </span>
+                                  <span style={{ fontSize: 11, color: "#64748b", flexShrink: 0 }}>{date}</span>
                                 </div>
-                                {d.synthese ? (
-                                  <div style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55, whiteSpace: "pre-wrap" as const, marginLeft: 23 }}>{d.synthese}</div>
-                                ) : (
-                                  <div style={{ fontSize: 11, color: "#94a3b8", fontStyle: "italic", marginLeft: 23 }}>
-                                    Aucune synthèse rédigée — Paramètres &gt; Documents pour en ajouter une.
-                                  </div>
-                                )}
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "#475569", flexWrap: "wrap" as const }}>
+                                  <span style={{ color: ec, fontWeight: 600 }}>{p.etat || "—"}</span>
+                                  {p.cadastre.length > 0 && (
+                                    <>
+                                      <span style={{ color: "#CBD5E1" }}>·</span>
+                                      <span>{p.cadastre.map((c) => `${c.section} ${c.numero}`).join(", ")}</span>
+                                    </>
+                                  )}
+                                  {p.nb_logements != null && p.nb_logements > 0 && (
+                                    <>
+                                      <span style={{ color: "#CBD5E1" }}>·</span>
+                                      <span>{p.nb_logements} lgt</span>
+                                    </>
+                                  )}
+                                  {p.surface_creee != null && p.surface_creee > 0 && (
+                                    <>
+                                      <span style={{ color: "#CBD5E1" }}>·</span>
+                                      <span>{Math.round(p.surface_creee)} m²</span>
+                                    </>
+                                  )}
+                                </div>
                               </div>
                             );
                           })}
+                          {sitadelHistory.total > 8 && (
+                            <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "center" as const, paddingTop: 4 }}>
+                              {sitadelHistory.total - 8} autres autorisations non affichées.
+                            </div>
+                          )}
+                          {sitadelHistory.warnings.length > 0 && (
+                            <div style={{ fontSize: 10.5, color: "#92400E", marginTop: 4, fontStyle: "italic" }}>
+                              ⚠ {sitadelHistory.warnings.join(", ")}
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    );
-                  })()}
+                      );
+                    })()}
+                  </div>
 
                   {/* Résumé constructibilité */}
                   {pa?.buildability?.resultSummary && (
@@ -8644,7 +8684,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         })()}
 
         {/* ── DOCUMENTS ── */}
-        {activeTab === "Documents" && (() => {
+        {activeTab === "Instruction" && (() => {
           const docs = documents ?? [];
           const sel = docs[selectedDoc] ?? null;
 
@@ -8748,8 +8788,52 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             </button>
           );
 
+          // Documents thématiques de la commune (OAP, PPRI…) — renvoyés ici depuis
+          // l'écran Terrain : c'est dans l'Instruction qu'on les confronte aux pièces.
+          const communeDocPanel = communeDocs && communeDocs.length > 0 ? (() => {
+            const docTypeMeta: Record<string, { label: string; color: string; icon: string }> = {
+              ppri: { label: "PPRI", color: "#EF4444", icon: "🌊" },
+              oap:  { label: "OAP",  color: "#8B5CF6", icon: "📐" },
+              peb:  { label: "PEB",  color: "#F59E0B", icon: "✈️" },
+              pprt: { label: "PPRT", color: "#EC4899", icon: "⚠️" },
+              plh:  { label: "PLH",  color: "#10B981", icon: "🏘️" },
+              zac:  { label: "ZAC",  color: "#3B82F6", icon: "🏗️" },
+              autre:{ label: "Autre",color: "#64748B", icon: "📄" },
+            };
+            return (
+              <div style={{ ...CARD, marginBottom: 10 }}>
+                <SecTitle>Documents réglementaires applicables</SecTitle>
+                <div style={{ fontSize: 11.5, color: "#64748b", marginBottom: 12, marginTop: -10, lineHeight: 1.5 }}>
+                  Documents thématiques de la commune (OAP, PPRI…). Sélectionne-les dans le mode <strong>Comparer</strong> pour les afficher côte à côte avec une pièce.
+                </div>
+                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
+                  {communeDocs.map((d) => {
+                    const meta = docTypeMeta[d.type] ?? docTypeMeta.autre!;
+                    return (
+                      <button
+                        key={d.id}
+                        onClick={() => { setDocsViewMode("compare"); setDocsRegulatoryDocTypeHint(d.type); setDocsRegulatoryDocId(null); setDocsRegulatoryDocPage(null); }}
+                        style={{ textAlign: "left" as const, padding: "10px 12px", border: "1px solid #E2E8F0", borderRadius: 9, background: "#FAFBFC", cursor: "pointer" }}
+                      >
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: d.synthese ? 6 : 0 }}>
+                          <span style={{ fontSize: 15 }}>{meta.icon}</span>
+                          <span style={{ background: meta.color, color: "white", borderRadius: 5, padding: "1px 7px", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em" }}>{meta.label}</span>
+                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{d.name}</span>
+                        </div>
+                        {d.synthese && (
+                          <div style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55, whiteSpace: "pre-wrap" as const, marginLeft: 23 }}>{d.synthese}</div>
+                        )}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })() : null;
+
           return (
             <>
+              {communeDocPanel}
               <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
                 <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden", background: "white", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
                   <ModeBtn value="apercu"  label="Aperçu"   icon="⊞" title="Pièces · viewer · annotation" />
