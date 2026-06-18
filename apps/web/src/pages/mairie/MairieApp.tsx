@@ -10,6 +10,7 @@ import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
 import { ResizableSplit } from "../../components/ResizableSplit";
 import { PdfAnnotator } from "../../components/PdfAnnotator";
 import { useInstructionViewMode } from "../../hooks/useInstructionViewMode";
+import { useLocalStorageBool } from "../../hooks/useLocalStorageBool";
 import { linkifyArticles } from "../../utils/linkifyArticles";
 import {
   STATUS_LABELS as DOSSIER_STATUS_LABELS,
@@ -6898,6 +6899,20 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   // page : ouvre directement à la bonne page via fragment #page=N.
   const [docsRegulatoryDocTypeHint, setDocsRegulatoryDocTypeHint] = useState<string | null>(null);
   const [docsRegulatoryDocPage, setDocsRegulatoryDocPage] = useState<number | null>(null);
+  // Repli indépendant des bandeaux latéraux de l'onglet Instruction, disponible
+  // dans tous les modes (préférence persistée par instructeur).
+  const [docsLeftCollapsed, setDocsLeftCollapsed] = useLocalStorageBool("heureka.instrLeftCollapsed", false);
+  const [docsRightCollapsed, setDocsRightCollapsed] = useLocalStorageBool("heureka.instrRightCollapsed", false);
+  // Mode « grand écran » de la comparaison (overlay plein viewport). Volontairement
+  // non persisté : on ne veut pas rouvrir un dossier coincé en plein écran.
+  const [compareFullscreen, setCompareFullscreen] = useState(false);
+  // Échap quitte le grand écran.
+  useEffect(() => {
+    if (!compareFullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCompareFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [compareFullscreen]);
 
   // Handler de jump depuis une citation de verdict. Bascule l'onglet, le mode
   // d'affichage, et nourrit les hints du RegulatoryDocViewer.
@@ -8921,10 +8936,39 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           // Sélecteur de mode d'affichage — persisté par instructeur.
           // apercu  : 3 colonnes historiques · compare : pièce ↔ doc règlementaire (split)
           // lecture : pièce plein écran, panneaux escamotés en bandes
-          const gridTemplate =
-            docsViewMode === "compare" ? "240px 1fr 260px" :
-            docsViewMode === "lecture" ? "44px 1fr 44px" :
-            "280px 1fr 260px";
+          // Un bandeau passe en bande escamotée soit en mode Lecture (les deux),
+          // soit quand l'instructeur l'a explicitement replié (n'importe quel mode).
+          const leftIsStripe = docsViewMode === "lecture" || docsLeftCollapsed;
+          const rightIsStripe = docsViewMode === "lecture" || docsRightCollapsed;
+          const leftW = leftIsStripe ? "44px" : (docsViewMode === "compare" ? "240px" : "280px");
+          const rightW = rightIsStripe ? "44px" : "260px";
+          const gridTemplate = `${leftW} 1fr ${rightW}`;
+          // Déplier un bandeau : si on était en Lecture, on en sort en gardant
+          // l'autre bandeau replié pour préserver la sensation de focus.
+          const expandLeft = () => {
+            if (docsViewMode === "lecture") { setDocsViewMode("apercu"); setDocsRightCollapsed(true); }
+            setDocsLeftCollapsed(false);
+          };
+          const expandRight = () => {
+            if (docsViewMode === "lecture") { setDocsViewMode("apercu"); setDocsLeftCollapsed(true); }
+            setDocsRightCollapsed(false);
+          };
+          // Bouton « replier » discret posé dans l'en-tête d'un bandeau.
+          const CollapseBtn = ({ side, onClick }: { side: "left" | "right"; onClick: () => void }) => (
+            <button
+              type="button"
+              onClick={onClick}
+              title={`Replier le panneau ${side === "left" ? "de gauche" : "de droite"}`}
+              style={{
+                border: "1px solid #E2E8F0", background: "white", borderRadius: 6,
+                width: 22, height: 22, lineHeight: 1, cursor: "pointer", color: "#64748b",
+                fontSize: 12, fontWeight: 700, flexShrink: 0, padding: 0,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              {side === "left" ? "‹" : "›"}
+            </button>
+          );
           const stripeStyle: React.CSSProperties = {
             background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 9,
             display: "flex", flexDirection: "column", alignItems: "center",
@@ -8949,9 +8993,72 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             </button>
           );
 
+          // Split pièce ↔ document réglementaire. Défini une seule fois puis
+          // rendu soit dans la grille, soit dans l'overlay grand écran — jamais
+          // les deux (un seul PdfAnnotator monté à la fois).
+          const compareSplit = (
+            <ResizableSplit
+              storageKey="heureka.docsCompareSplitPct"
+              left={
+                <div style={{ height: "100%", background: "#F8FAFC", display: "flex", flexDirection: "column" }}>
+                  <div style={{ padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 12, fontWeight: 600, color: "#1E293B", background: "white" }}>
+                    {sel?.nom ?? "Sélectionne une pièce à gauche"}
+                  </div>
+                  <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "stretch", justifyContent: "stretch", background: "#0F172A0A" }}>
+                    {sel ? (
+                      (sel.type ?? "").toLowerCase().startsWith("image/") ? (
+                        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                        </div>
+                      ) : (sel.type === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf")) ? (
+                        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+                          <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
+                        </div>
+                      ) : (
+                        <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, padding: 24, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}>Aperçu indisponible pour ce format</div>
+                      )
+                    ) : (
+                      <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>Sélectionne une pièce à gauche.</div>
+                    )}
+                  </div>
+                </div>
+              }
+              right={
+                <div style={{ height: "100%" }}>
+                  <RegulatoryDocViewer
+                    communeName={dossier.commune ?? ""}
+                    selectedDocId={docsRegulatoryDocId}
+                    onSelectDoc={(id) => {
+                      setDocsRegulatoryDocId(id);
+                      setDocsRegulatoryDocTypeHint(null);
+                      setDocsRegulatoryDocPage(null);
+                    }}
+                    preferredDocType={docsRegulatoryDocTypeHint}
+                    page={docsRegulatoryDocPage}
+                  />
+                </div>
+              }
+            />
+          );
+
           return (
             <>
-              <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
+              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                {docsViewMode === "compare" && (
+                  <button
+                    type="button"
+                    onClick={() => setCompareFullscreen(true)}
+                    title="Ouvrir la comparaison en grand écran (Échap pour quitter)"
+                    style={{
+                      border: "1px solid #E2E8F0", background: "white", borderRadius: 8,
+                      padding: "5px 12px", fontSize: 12, fontWeight: 600, color: "#475569",
+                      cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                    }}
+                  >
+                    <span style={{ fontSize: 13 }}>⛶</span>Grand écran
+                  </button>
+                )}
                 <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden", background: "white", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
                   <ModeBtn value="apercu"  label="Aperçu"   icon="⊞" title="Pièces · viewer · annotation" />
                   <ModeBtn value="compare" label="Comparer" icon="❘❘" title="Pièce et document réglementaire côte à côte" />
@@ -8959,14 +9066,17 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               </div>
             <div style={{ display: "grid", gridTemplateColumns: gridTemplate, gap: 16, alignItems: "start" }}>
-              {docsViewMode === "lecture" ? (
-                <div style={stripeStyle} onClick={() => setDocsViewMode("apercu")} title="Rouvrir le panneau Pièces">
-                  <span style={{ fontSize: 14 }}>📎</span>
+              {leftIsStripe ? (
+                <div style={stripeStyle} onClick={expandLeft} title="Déplier le panneau Pièces">
+                  <span style={{ fontSize: 14 }}>›</span>
                   <span style={{ fontSize: 10, letterSpacing: "0.08em", writingMode: "vertical-rl", transform: "rotate(180deg)", textTransform: "uppercase" }}>Pièces ({docs.length})</span>
                 </div>
               ) : (
               <div style={{ ...CARD, maxHeight: "calc(100vh - 220px)", overflowY: "auto" as const }}>
-                <SecTitle>Pièces du dossier</SecTitle>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <SecTitle>Pièces du dossier</SecTitle>
+                  <CollapseBtn side="left" onClick={() => setDocsLeftCollapsed(true)} />
+                </div>
                 {documentsLoading ? (
                   <div style={{ textAlign: "center" as const, padding: "20px 0", fontSize: 12, color: "#64748b" }}>Chargement…</div>
                 ) : docs.length === 0 ? (
@@ -9059,52 +9169,24 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               </div>
               )}
               {docsViewMode === "compare" ? (
-              <div style={{ ...CARD, padding: 0, minWidth: 0, display: "flex", flexDirection: "column" as const, height: 640, overflow: "hidden" }}>
+              // Hauteur dynamique : la comparaison s'étire pour occuper toute la
+              // hauteur du cadre (au lieu d'un 640px figé). minHeight garde un
+              // viewer exploitable sur petit écran.
+              <div style={{ ...CARD, padding: 0, minWidth: 0, display: "flex", flexDirection: "column" as const, height: "calc(100vh - 210px)", minHeight: 460, overflow: "hidden" }}>
                 <div style={{ flex: 1, minHeight: 0 }}>
-                  <ResizableSplit
-                    storageKey="heureka.docsCompareSplitPct"
-                    left={
-                      <div style={{ height: "100%", background: "#F8FAFC", display: "flex", flexDirection: "column" }}>
-                        <div style={{ padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 12, fontWeight: 600, color: "#1E293B", background: "white" }}>
-                          {sel?.nom ?? "Sélectionne une pièce à gauche"}
-                        </div>
-                        <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "stretch", justifyContent: "stretch", background: "#0F172A0A" }}>
-                          {sel ? (
-                            (sel.type ?? "").toLowerCase().startsWith("image/") ? (
-                              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                                <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
-                              </div>
-                            ) : (sel.type === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf")) ? (
-                              <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-                                <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
-                              </div>
-                            ) : (
-                              <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, padding: 24, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}>Aperçu indisponible pour ce format</div>
-                            )
-                          ) : (
-                            <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>Sélectionne une pièce à gauche.</div>
-                          )}
-                        </div>
-                      </div>
-                    }
-                    right={
-                      <div style={{ height: "100%" }}>
-                        <RegulatoryDocViewer
-                          communeName={dossier.commune ?? ""}
-                          selectedDocId={docsRegulatoryDocId}
-                          onSelectDoc={(id) => {
-                            setDocsRegulatoryDocId(id);
-                            // Sélection manuelle : on lâche le hint pour ne pas
-                            // re-basculer automatiquement à chaque rerender.
-                            setDocsRegulatoryDocTypeHint(null);
-                            setDocsRegulatoryDocPage(null);
-                          }}
-                          preferredDocType={docsRegulatoryDocTypeHint}
-                          page={docsRegulatoryDocPage}
-                        />
-                      </div>
-                    }
-                  />
+                  {compareFullscreen ? (
+                    <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "#64748b", fontSize: 13 }}>
+                      <div style={{ fontSize: 34 }}>⛶</div>
+                      <div>Comparaison ouverte en grand écran</div>
+                      <button
+                        type="button"
+                        onClick={() => setCompareFullscreen(false)}
+                        style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, color: "#475569", cursor: "pointer" }}
+                      >
+                        Réduire
+                      </button>
+                    </div>
+                  ) : compareSplit}
                 </div>
               </div>
               ) : (
@@ -9154,13 +9236,16 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               </div>
               )}
-              {docsViewMode === "lecture" ? (
-                <div style={stripeStyle} onClick={() => setDocsViewMode("apercu")} title="Rouvrir le panneau Annotation">
-                  <span style={{ fontSize: 14 }}>📝</span>
+              {rightIsStripe ? (
+                <div style={stripeStyle} onClick={expandRight} title="Déplier le panneau Annotation">
+                  <span style={{ fontSize: 14 }}>‹</span>
                   <span style={{ fontSize: 10, letterSpacing: "0.08em", writingMode: "vertical-rl", transform: "rotate(180deg)", textTransform: "uppercase" }}>Annotation</span>
                 </div>
               ) : (
               <div style={CARD}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", marginBottom: 10 }}>
+                  <CollapseBtn side="right" onClick={() => setDocsRightCollapsed(true)} />
+                </div>
                 {/* Annotation de l'instructeur — toujours en haut du panneau de droite */}
                 {sel && (() => {
                   const draftKey = sel.id;
@@ -9324,6 +9409,37 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               </div>
               )}
             </div>
+            {/* Grand écran : overlay plein viewport réutilisant le même split.
+                Rendu hors de la grille pour un position:fixed propre. */}
+            {docsViewMode === "compare" && compareFullscreen && (
+              <div style={{ position: "fixed", inset: 0, zIndex: 2000, background: "white", display: "flex", flexDirection: "column" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid #E2E8F0", background: "#F8FAFC" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#1E293B", whiteSpace: "nowrap" }}>⛶ Comparaison — grand écran</span>
+                  {docs.length > 0 && (
+                    <select
+                      value={selectedDoc}
+                      onChange={(e) => setSelectedDoc(Number(e.target.value))}
+                      title="Pièce comparée"
+                      style={{ maxWidth: 360, fontSize: 12, padding: "5px 8px", borderRadius: 7, border: "1px solid #E2E8F0", background: "white", color: "#374151", cursor: "pointer" }}
+                    >
+                      {docs.map((doc, i) => (
+                        <option key={doc.id} value={i}>{doc.nom}</option>
+                      ))}
+                    </select>
+                  )}
+                  <div style={{ flex: 1 }} />
+                  <span style={{ fontSize: 11, color: "#94a3b8" }}>Échap pour quitter</span>
+                  <button
+                    type="button"
+                    onClick={() => setCompareFullscreen(false)}
+                    style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, color: "#475569", cursor: "pointer" }}
+                  >
+                    Quitter ✕
+                  </button>
+                </div>
+                <div style={{ flex: 1, minHeight: 0 }}>{compareSplit}</div>
+              </div>
+            )}
             </>
           );
         })()}
