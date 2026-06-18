@@ -1,9 +1,14 @@
 import { pgTable, text, timestamp, integer, doublePrecision, uuid, jsonb, boolean } from "drizzle-orm/pg-core";
 import { zones } from "./zones.js";
+import { regulatory_documents } from "./regulatoryDocuments.js";
 
 export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
   id: uuid("id").primaryKey().defaultRandom(),
   zone_id: uuid("zone_id").notNull().references(() => zones.id, { onDelete: "cascade" }),
+  // Document réglementaire d'origine (PLU communal, PLUi, PPRI…). Nullable :
+  // permet aux règles saisies manuellement sans source documentaire d'exister,
+  // et préserve la règle si son document est supprimé (ON DELETE SET NULL).
+  source_document_id: uuid("source_document_id").references(() => regulatory_documents.id, { onDelete: "set null" }),
   article_number: integer("article_number"),
   article_title: text("article_title"),
   topic: text("topic").notNull().default("general"),

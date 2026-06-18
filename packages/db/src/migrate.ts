@@ -946,6 +946,36 @@ DO $$ BEGIN
   END IF;
 END $$;
 ALTER INDEX IF EXISTS idx_commune_documents_commune_id RENAME TO idx_regulatory_documents_commune_id;
+
+-- ── Lot 2 — Traçabilité règle → document ───────────────────────────────────
+-- Une zone_regulatory_rule sait désormais de quel regulatory_document elle
+-- provient. Nullable au démarrage : permet le backfill puis les futures
+-- règles ajoutées manuellement par un instructeur sans document attaché.
+-- ON DELETE SET NULL : supprimer un document ne casse pas les règles qui
+-- en proviennent (purge contrôlée côté applicatif uniquement).
+ALTER TABLE zone_regulatory_rules
+  ADD COLUMN IF NOT EXISTS source_document_id uuid
+  REFERENCES regulatory_documents(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_zone_regulatory_rules_source_document
+  ON zone_regulatory_rules(source_document_id);
+
+-- Backfill : on rattache chaque règle au PLU le plus récent de la commune
+-- de sa zone. Couvre la quasi-totalité du corpus actuel (1 commune = 1 PLU).
+-- Les communes sans aucun document type='plu' restent à NULL — détectables
+-- via SELECT count(*) WHERE source_document_id IS NULL et à corriger
+-- manuellement (cas rares : règles saisies à la main sans ingestion).
+WITH plu_by_commune AS (
+  SELECT DISTINCT ON (commune_id) commune_id, id AS document_id
+  FROM regulatory_documents
+  WHERE type = 'plu' AND commune_id IS NOT NULL
+  ORDER BY commune_id, created_at DESC
+)
+UPDATE zone_regulatory_rules zrr
+SET source_document_id = pbc.document_id
+FROM zones z, plu_by_commune pbc
+WHERE zrr.zone_id = z.id
+  AND z.commune_id = pbc.commune_id
+  AND zrr.source_document_id IS NULL;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
