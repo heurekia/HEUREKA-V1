@@ -7223,12 +7223,37 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [conformite, setConformite] = useState<{ status: string; report: ConformiteReport | null; analyzed_at: string | null } | null>(null);
   const [conformiteLaunching, setConformiteLaunching] = useState(false);
 
+  // Conformité FINALE (3.C.5b) — déclenchée avant arrêté, considère
+  // uniquement les pièces validées. Indépendante de l'interim ci-dessus.
+  type ConformiteFinale = {
+    status: string;
+    report: ConformiteReport | null;
+    analyzed_at: string | null;
+    triggered_by: string | null;
+  };
+  type FinaleBlockers = {
+    pieces_sans_statut: Array<{ id: string; nom: string; code_piece: string | null }>;
+    pieces_complement_en_attente: Array<{ id: string; nom: string; code_piece: string | null }>;
+    aucune_piece_validee: boolean;
+  };
+  const [conformiteFinale, setConformiteFinale] = useState<ConformiteFinale | null>(null);
+  const [conformiteFinaleLaunching, setConformiteFinaleLaunching] = useState(false);
+  const [finaleBlockers, setFinaleBlockers] = useState<{ reason: string; blockers: FinaleBlockers } | null>(null);
+
   useEffect(() => {
     if (activeTab !== "Conformité IA" || conformite !== null) return;
     api.get<{ status: string; report: ConformiteReport | null; analyzed_at: string | null }>(`/mairie/dossiers/${dossier.id}/conformite`)
       .then(setConformite)
       .catch(() => setConformite({ status: "absent", report: null, analyzed_at: null }));
   }, [activeTab, conformite, dossier.id]);
+
+  // Charge la finale en parallèle de l'interim (1 GET en plus, OK).
+  useEffect(() => {
+    if (activeTab !== "Conformité IA" || conformiteFinale !== null) return;
+    api.get<ConformiteFinale>(`/mairie/dossiers/${dossier.id}/conformite/finale`)
+      .then(setConformiteFinale)
+      .catch(() => setConformiteFinale({ status: "absent", report: null, analyzed_at: null, triggered_by: null }));
+  }, [activeTab, conformiteFinale, dossier.id]);
 
   const launchConformite = useCallback(async () => {
     setConformiteLaunching(true);
@@ -7241,6 +7266,31 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       alert(msg);
     } finally {
       setConformiteLaunching(false);
+    }
+  }, [dossier.id]);
+
+  const launchConformiteFinale = useCallback(async () => {
+    setConformiteFinaleLaunching(true);
+    setFinaleBlockers(null);
+    try {
+      await api.post(`/mairie/dossiers/${dossier.id}/conformite/finale`, {}, { timeoutMs: 240_000 });
+      const fresh = await api.get<ConformiteFinale>(`/mairie/dossiers/${dossier.id}/conformite/finale`);
+      setConformiteFinale(fresh);
+    } catch (e) {
+      // L'API renvoie 422 + payload { error, blockers } quand les pré-conditions
+      // ne sont pas réunies (pièces sans statut, complément en attente, etc.).
+      // On extrait via le message JSON-sérialisé du client api.
+      const msg = e instanceof Error ? e.message : String(e);
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed?.blockers) {
+          setFinaleBlockers({ reason: parsed.error ?? "Pré-conditions non réunies", blockers: parsed.blockers });
+          return;
+        }
+      } catch { /* pas du JSON, on retombe sur alert */ }
+      alert(msg);
+    } finally {
+      setConformiteFinaleLaunching(false);
     }
   }, [dossier.id]);
 
@@ -8456,9 +8506,88 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
         {/* ── CONFORMITÉ IA ── */}
         {activeTab === "Conformité IA" && (
-          <div style={{ marginBottom: 20 }}>
-            <RegulatoryChecklist dossierId={dossier.id} onJumpToCitation={jumpFromCitation} />
-          </div>
+          <>
+            {/* Bloc Analyse finale avant arrêté (3.C.5c) — affiché en tête
+                de l'onglet pour que l'instructeur sache à tout moment où il
+                en est sur cette étape juridique. */}
+            <div style={{ marginBottom: 16, padding: 16, borderRadius: 12, border: "1.5px solid #C7D2FE", background: "linear-gradient(135deg, #F5F3FF 0%, #EFF6FF 100%)" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" as const }}>
+                <div style={{ flex: 1, minWidth: 240 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "#4F46E5", letterSpacing: "0.05em", textTransform: "uppercase" as const, marginBottom: 4 }}>
+                    🛡 Analyse finale avant arrêté
+                  </div>
+                  {conformiteFinale?.status === "done" && conformiteFinale.analyzed_at ? (
+                    <div style={{ fontSize: 12.5, color: "#312E81", lineHeight: 1.5 }}>
+                      Effectuée le <strong>{new Date(conformiteFinale.analyzed_at).toLocaleString("fr-FR")}</strong>.
+                      Cette analyse ne prend en compte que les pièces explicitement <strong>validées</strong> par l'instructeur, et sert d'ancrage juridique à la décision.
+                    </div>
+                  ) : conformiteFinale?.status === "failed" ? (
+                    <div style={{ fontSize: 12.5, color: "#DC2626", lineHeight: 1.5 }}>
+                      Une tentative précédente a échoué. Relance possible une fois les pièces examinées.
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12.5, color: "#312E81", lineHeight: 1.5 }}>
+                      À déclencher juste avant la délivrance de l'arrêté.
+                      L'analyse ne prendra en compte <strong>que les pièces validées</strong> (les pièces sans statut ou en complément demandé bloquent le lancement).
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => void launchConformiteFinale()}
+                  disabled={conformiteFinaleLaunching}
+                  style={{
+                    background: conformiteFinaleLaunching ? "#C7D2FE" : "#4F46E5",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 9,
+                    padding: "9px 16px",
+                    fontSize: 12.5,
+                    fontWeight: 700,
+                    cursor: conformiteFinaleLaunching ? "default" : "pointer",
+                    boxShadow: "0 2px 6px rgba(79,70,229,0.25)",
+                    whiteSpace: "nowrap" as const,
+                  }}
+                >
+                  {conformiteFinaleLaunching
+                    ? "Analyse en cours…"
+                    : conformiteFinale?.status === "done"
+                      ? "↻ Relancer l'analyse finale"
+                      : "Lancer l'analyse finale"}
+                </button>
+              </div>
+              {finaleBlockers && (
+                <div style={{ marginTop: 12, padding: 12, borderRadius: 9, background: "#FEF2F2", border: "1px solid #FECACA" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#991B1B", marginBottom: 6 }}>
+                    ⚠ {finaleBlockers.reason}
+                  </div>
+                  {finaleBlockers.blockers.pieces_sans_statut.length > 0 && (
+                    <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 4 }}>
+                      <strong>{finaleBlockers.blockers.pieces_sans_statut.length} pièce(s) à examiner :</strong>{" "}
+                      {finaleBlockers.blockers.pieces_sans_statut.slice(0, 5).map((p) => p.code_piece || p.nom).join(", ")}
+                      {finaleBlockers.blockers.pieces_sans_statut.length > 5 && ` (+${finaleBlockers.blockers.pieces_sans_statut.length - 5} autres)`}
+                    </div>
+                  )}
+                  {finaleBlockers.blockers.pieces_complement_en_attente.length > 0 && (
+                    <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 4 }}>
+                      <strong>{finaleBlockers.blockers.pieces_complement_en_attente.length} complément(s) en attente :</strong>{" "}
+                      {finaleBlockers.blockers.pieces_complement_en_attente.slice(0, 5).map((p) => p.code_piece || p.nom).join(", ")}
+                    </div>
+                  )}
+                  {finaleBlockers.blockers.aucune_piece_validee && (
+                    <div style={{ fontSize: 12, color: "#7F1D1D" }}>
+                      Aucune pièce n'a encore été validée. Au moins une validation explicite est requise.
+                    </div>
+                  )}
+                  <div style={{ fontSize: 11, color: "#991B1B", marginTop: 6, fontStyle: "italic" as const }}>
+                    Statue les pièces concernées dans l'onglet Documents, puis relance.
+                  </div>
+                </div>
+              )}
+            </div>
+            <div style={{ marginBottom: 20 }}>
+              <RegulatoryChecklist dossierId={dossier.id} onJumpToCitation={jumpFromCitation} />
+            </div>
+          </>
         )}
         {activeTab === "Conformité IA" && (() => {
           const report = conformite?.report ?? null;
