@@ -8647,6 +8647,55 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         {activeTab === "Documents" && (() => {
           const docs = documents ?? [];
           const sel = docs[selectedDoc] ?? null;
+
+          // ── Regroupement des pièces par catégorie (3.C.4) ────────────────
+          // Les pièces déposées partagent un préfixe de code (PC1, PC2,
+          // DP-ABF-NDA, etc.) qui dit à quelle pièce du Cerfa elles
+          // correspondent. On les groupe par catégorie pour que
+          // l'instructeur ait un panneau lisible : "PC2 — Plan de masse"
+          // regroupe les versions successives + un éventuel complément.
+          // L'index original dans le tableau plat `docs` est mémorisé pour
+          // que `setSelectedDoc(i)` continue de fonctionner avec la même
+          // sémantique.
+          const PIECE_CATEGORIES: Array<{ key: string; label: string; codes: string[] }> = [
+            { key: "cerfa", label: "Formulaire CERFA",                       codes: ["CERFA"] },
+            { key: "pc1",   label: "PC1 · Plan de situation",                codes: ["PC1", "DP1", "PD1", "CU1"] },
+            { key: "pc2",   label: "PC2 · Plan de masse",                    codes: ["PC2", "DP2", "PD2"] },
+            { key: "pc3",   label: "PC3 · Plan en coupe",                    codes: ["PC3", "DP3"] },
+            { key: "pc4",   label: "PC4 · Notice descriptive",               codes: ["PC4", "DP4", "PD4"] },
+            { key: "pc5",   label: "PC5 · Plans façades & toitures",         codes: ["PC5"] },
+            { key: "pc6",   label: "PC6 · Insertion paysagère",              codes: ["PC6", "DP6"] },
+            { key: "pc7",   label: "PC7 · Photographies de situation",       codes: ["PC7", "DP7"] },
+            { key: "pc8",   label: "PC8 · Photographie environnement large", codes: ["PC8"] },
+            { key: "pc9",   label: "PC9 · Document graphique d'insertion",   codes: ["PC9"] },
+            { key: "abf",   label: "ABF · Notice & avis",                    codes: ["DP-ABF-NDA", "DP-ABF-FTM", "PCABF"] },
+            { key: "annexe",label: "Annexes",                                codes: ["ANNEXE"] },
+            { key: "other", label: "Autres",                                 codes: [] },
+          ];
+
+          type GroupedItem = { doc: DossierPiece; origIndex: number };
+          const buckets = new Map<string, GroupedItem[]>();
+          PIECE_CATEGORIES.forEach((c) => buckets.set(c.key, []));
+          docs.forEach((doc, i) => {
+            const code = (doc.code_piece ?? "").toUpperCase();
+            // Premier prefix qui matche, "other" si rien.
+            const matched = PIECE_CATEGORIES.find((c) => c.codes.length > 0 && c.codes.some((p) => code.startsWith(p)));
+            buckets.get(matched?.key ?? "other")!.push({ doc, origIndex: i });
+          });
+
+          // Tri intra-groupe : statut d'instructeur (à examiner avant),
+          // puis date de dépôt décroissante (dernière version en haut).
+          const statusOrder: Record<string, number> = { "": 0, complement_demande: 1, valide: 2, rejete: 3 };
+          buckets.forEach((arr) => arr.sort((a, b) => {
+            const sa = statusOrder[a.doc.instructeur_status ?? ""] ?? 99;
+            const sb = statusOrder[b.doc.instructeur_status ?? ""] ?? 99;
+            if (sa !== sb) return sa - sb;
+            return new Date(b.doc.uploaded_at).getTime() - new Date(a.doc.uploaded_at).getTime();
+          }));
+
+          const grouped = PIECE_CATEGORIES
+            .map((c) => ({ key: c.key, label: c.label, items: buckets.get(c.key) ?? [] }))
+            .filter((g) => g.items.length > 0);
           const fmtSize = (n: number) => n < 1024 ? `${n} o` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} Ko` : `${(n / (1024 * 1024)).toFixed(1)} Mo`;
           const fmtUploaded = (iso: string) => {
             const d = new Date(iso);
@@ -8725,8 +8774,15 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     Aucune pièce déposée.
                   </div>
                 ) : (
-                  <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
-                    {docs.map((doc, i) => {
+                  <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+                    {grouped.map((group) => (
+                    <div key={group.key}>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", textTransform: "uppercase" as const, letterSpacing: "0.06em", margin: "2px 4px 6px", display: "flex", alignItems: "center", gap: 6 }}>
+                        <span>{group.label}</span>
+                        <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600 }}>({group.items.length})</span>
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
+                    {group.items.map(({ doc, origIndex: i }) => {
                       const ext = extOf(doc.type, doc.nom);
                       const status = scoreToStatus(doc.analyse_ia?.score);
                       const instMeta: Record<string, { label: string; bg: string; color: string; border: string }> = {
@@ -8776,6 +8832,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         </button>
                       );
                     })}
+                      </div>
+                    </div>
+                    ))}
                   </div>
                 )}
               </div>
