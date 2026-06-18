@@ -6903,7 +6903,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   // d'affichage, et nourrit les hints du RegulatoryDocViewer.
   const jumpFromCitation = useCallback((ref: { doc_type?: string; page?: number }) => {
     if (!ref.doc_type) return;
-    setActiveTab("Instruction");
+    // Pas de bascule automatique : on prépare le viewer pour quand
+    // l'utilisateur ouvrira l'onglet Instruction, sans le forcer.
     setDocsViewMode("compare");
     setDocsRegulatoryDocTypeHint(ref.doc_type);
     setDocsRegulatoryDocPage(typeof ref.page === "number" ? ref.page : null);
@@ -8948,52 +8949,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             </button>
           );
 
-          // Documents thématiques de la commune (OAP, PPRI…) — renvoyés ici depuis
-          // l'écran Terrain : c'est dans l'Instruction qu'on les confronte aux pièces.
-          const communeDocPanel = communeDocs && communeDocs.length > 0 ? (() => {
-            const docTypeMeta: Record<string, { label: string; color: string; icon: string }> = {
-              ppri: { label: "PPRI", color: "#EF4444", icon: "🌊" },
-              oap:  { label: "OAP",  color: "#8B5CF6", icon: "📐" },
-              peb:  { label: "PEB",  color: "#F59E0B", icon: "✈️" },
-              pprt: { label: "PPRT", color: "#EC4899", icon: "⚠️" },
-              plh:  { label: "PLH",  color: "#10B981", icon: "🏘️" },
-              zac:  { label: "ZAC",  color: "#3B82F6", icon: "🏗️" },
-              autre:{ label: "Autre",color: "#64748B", icon: "📄" },
-            };
-            return (
-              <div style={{ ...CARD, marginBottom: 10 }}>
-                <SecTitle>Documents réglementaires applicables</SecTitle>
-                <div style={{ fontSize: 11.5, color: "#64748b", marginBottom: 12, marginTop: -10, lineHeight: 1.5 }}>
-                  Documents thématiques de la commune (OAP, PPRI…). Sélectionne-les dans le mode <strong>Comparer</strong> pour les afficher côte à côte avec une pièce.
-                </div>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(260px, 1fr))", gap: 10 }}>
-                  {communeDocs.map((d) => {
-                    const meta = docTypeMeta[d.type] ?? docTypeMeta.autre!;
-                    return (
-                      <button
-                        key={d.id}
-                        onClick={() => { setDocsViewMode("compare"); setDocsRegulatoryDocTypeHint(d.type); setDocsRegulatoryDocId(null); setDocsRegulatoryDocPage(null); }}
-                        style={{ textAlign: "left" as const, padding: "10px 12px", border: "1px solid #E2E8F0", borderRadius: 9, background: "#FAFBFC", cursor: "pointer" }}
-                      >
-                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: d.synthese ? 6 : 0 }}>
-                          <span style={{ fontSize: 15 }}>{meta.icon}</span>
-                          <span style={{ background: meta.color, color: "white", borderRadius: 5, padding: "1px 7px", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em" }}>{meta.label}</span>
-                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{d.name}</span>
-                        </div>
-                        {d.synthese && (
-                          <div style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55, whiteSpace: "pre-wrap" as const, marginLeft: 23 }}>{d.synthese}</div>
-                        )}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            );
-          })() : null;
-
           return (
             <>
-              {communeDocPanel}
               <div style={{ display: "flex", justifyContent: "flex-end", marginBottom: 10 }}>
                 <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden", background: "white", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
                   <ModeBtn value="apercu"  label="Aperçu"   icon="⊞" title="Pièces · viewer · annotation" />
