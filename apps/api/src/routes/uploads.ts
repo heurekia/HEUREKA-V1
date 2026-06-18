@@ -86,17 +86,25 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
     // la sert en priorité au viewer. L'original reste accessible pour le
     // téléchargement, l'analyse IA, et comme filet de sécurité si la compat
     // s'avère défaillante.
+    //
+    // Garde-fou réglementaire : ?variant=original force la lecture du fichier
+    // déposé tel quel, sans passer par la version compat. Utilisé par le
+    // bouton "Télécharger l'original" du viewer et par toute future
+    // procédure d'audit (preuve de la pièce officielle).
+    const forceOriginal = String(req.query.variant ?? "").toLowerCase() === "original";
     const isPdf = key.toLowerCase().endsWith(".pdf");
-    const wantsCompat = isPdf && !key.includes(".compat.");
+    const wantsCompat = !forceOriginal && isPdf && !key.includes(".compat.");
     const tryKeys: string[] = wantsCompat
       ? [(await import("../services/pdfCompat.js")).compatKeyFor(key), key]
       : [key];
 
     let streamRes;
+    let servedKey: string | null = null;
     let lastErr: unknown = null;
     for (const k of tryKeys) {
       try {
         streamRes = await provider.getStream(k);
+        servedKey = k;
         break;
       } catch (err) {
         lastErr = err;
@@ -129,6 +137,12 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
       "Content-Disposition",
       `inline; filename="${encodeURIComponent(piece.nom || key)}"`,
     );
+    // Transparence sur la variante servie : le frontend peut afficher un
+    // tag visuel quand c'est le compat (et proposer le bouton "Télécharger
+    // l'original"). Header CORS-exposé pour être lisible côté JS.
+    const servedVariant = servedKey && servedKey.includes(".compat.") ? "compat" : "original";
+    res.setHeader("X-Pdf-Variant", servedVariant);
+    res.setHeader("Access-Control-Expose-Headers", "X-Pdf-Variant");
     // Helmet pose globalement `Content-Security-Policy: frame-ancestors 'none'`
     // et `X-Frame-Options: SAMEORIGIN`. Le frame-ancestors 'none' interdit
     // l'embed du PDF dans l'<iframe> du PieceViewer — y compris depuis notre

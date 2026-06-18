@@ -36,7 +36,15 @@ function keyFromUrl(url: string): string | null {
   return m ? m[1]! : null;
 }
 
-async function processOne(provider: ReturnType<typeof getStorageProvider>, row: Row): Promise<"converted" | "skipped_no_jpx" | "skipped_already" | "failed"> {
+function isNotFound(err: unknown): boolean {
+  const code = (err as { name?: string; code?: string }).name
+    ?? (err as { code?: string }).code
+    ?? (err as { message?: string }).message;
+  return code === "NoSuchKey" || code === "NotFound" || code === "ENOENT"
+    || typeof code === "string" && code.includes("specified key does not exist");
+}
+
+async function processOne(provider: ReturnType<typeof getStorageProvider>, row: Row): Promise<"converted" | "skipped_no_jpx" | "skipped_already" | "orphan" | "failed"> {
   const key = keyFromUrl(row.url);
   if (!key) return "failed";
   const compatKey = compatKeyFor(key);
@@ -46,13 +54,20 @@ async function processOne(provider: ReturnType<typeof getStorageProvider>, row: 
     await provider.getStream(compatKey);
     return "skipped_already";
   } catch (err) {
-    const code = (err as { name?: string; code?: string }).name
-      ?? (err as { code?: string }).code;
-    if (code !== "NoSuchKey" && code !== "NotFound" && code !== "ENOENT") throw err;
+    if (!isNotFound(err)) throw err;
   }
 
-  // Récupère l'original et regarde si JPX dedans.
-  const buf = await provider.getBuffer(key);
+  // Récupère l'original et regarde si JPX dedans. Si le fichier n'existe
+  // pas dans le storage, on considère que la ligne DB est orpheline
+  // (probablement un dossier de test dont le fichier n'a jamais été
+  // uploadé ou a été nettoyé). On ne fait pas échouer le batch pour ça.
+  let buf;
+  try {
+    buf = await provider.getBuffer(key);
+  } catch (err) {
+    if (isNotFound(err)) return "orphan";
+    throw err;
+  }
   if (!containsJpx(buf)) return "skipped_no_jpx";
 
   if (dryRun) {
@@ -78,7 +93,7 @@ async function main() {
 
   console.log(`[compat] ${rows.length} PDF candidat(s) à inspecter${dryRun ? " (DRY-RUN)" : ""}, concurrence=${concurrency}.`);
 
-  let converted = 0, skippedNoJpx = 0, skippedAlready = 0, failed = 0;
+  let converted = 0, skippedNoJpx = 0, skippedAlready = 0, orphan = 0, failed = 0;
   const queue = [...rows];
 
   async function worker() {
@@ -89,13 +104,11 @@ async function main() {
         if (r === "converted") converted++;
         else if (r === "skipped_no_jpx") skippedNoJpx++;
         else if (r === "skipped_already") skippedAlready++;
+        else if (r === "orphan") orphan++;
         else failed++;
       } catch (err) {
         failed++;
         console.error(`  ✗ ${row.nom} (${row.id}) :`, err instanceof Error ? err.message : err);
-        if (onlyFailed) {
-          // En mode --only-failed on ne fait rien d'autre, le compteur est déjà mis à jour.
-        }
       }
     }
   }
@@ -106,7 +119,10 @@ async function main() {
   console.log(`  converti(s)         : ${converted}`);
   console.log(`  passé(s) (pas JPX)  : ${skippedNoJpx}`);
   console.log(`  passé(s) (déjà fait): ${skippedAlready}`);
-  console.log(`  échec(s)            : ${failed}`);
+  console.log(`  orphelins (fichier absent du storage) : ${orphan}`);
+  console.log(`  échec(s) réel(s)    : ${failed}`);
+  // Les orphelins ne sont PAS un échec — c'est une incohérence DB ↔ storage
+  // qui mérite un nettoyage séparé mais ne doit pas faire planter le script.
   process.exit(failed > 0 ? 1 : 0);
 }
 
