@@ -7124,6 +7124,18 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [documents, setDocuments] = useState<DossierPiece[] | null>(null);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<number>(0);
+  // Catégories repliées dans l'onglet Documents (3.C.4 — affinage suite à
+  // dossiers avec 30+ pièces). Persisté entre les rerenders mais pas en
+  // localStorage : c'est un état de session, l'instructeur déplie ce qu'il
+  // veut regarder à un instant T sans contaminer ses autres dossiers.
+  const [collapsedDocCategories, setCollapsedDocCategories] = useState<Set<string>>(new Set());
+  const toggleDocCategory = useCallback((key: string) => {
+    setCollapsedDocCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
   const [extractingPieceId, setExtractingPieceId] = useState<string | null>(null);
 
   useEffect(() => {
@@ -8845,8 +8857,27 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           type GroupedItem = { doc: DossierPiece; origIndex: number };
           const buckets = new Map<string, GroupedItem[]>();
           PIECE_CATEGORIES.forEach((c) => buckets.set(c.key, []));
+
+          // Quand code_piece n'est pas peuplé (dépôt en annexe libre ou
+          // upload citoyen avant la généralisation des slots), on tente
+          // d'extraire un code depuis le nom du fichier. C'est ce qui
+          // permet de remettre PC2a.pdf dans la rubrique PC2 plutôt que
+          // dans Autres.
+          const extractCodeFromName = (nom: string): string => {
+            // "PC2", "PC2a", "PCMI 04", "DP3", "PD-4"…
+            const m = nom.match(/^(PC|DP|PD|CU|PCMI|DPMI)\s*0*(\d+)/i);
+            if (m) {
+              const prefix = m[1]!.toUpperCase().replace(/MI$/, "");
+              return `${prefix}${m[2]}`;
+            }
+            if (/^Annexe\s/i.test(nom)) return "ANNEXE";
+            if (/^cerfa[\s_-]/i.test(nom)) return "CERFA";
+            return "";
+          };
+
           docs.forEach((doc, i) => {
-            const code = (doc.code_piece ?? "").toUpperCase();
+            const codeBase = (doc.code_piece ?? "").toUpperCase();
+            const code = codeBase || extractCodeFromName(doc.nom);
             // Premier prefix qui matche, "other" si rien.
             const matched = PIECE_CATEGORIES.find((c) => c.codes.length > 0 && c.codes.some((p) => code.startsWith(p)));
             buckets.get(matched?.key ?? "other")!.push({ doc, origIndex: i });
@@ -8977,7 +9008,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   <span style={{ fontSize: 10, letterSpacing: "0.08em", writingMode: "vertical-rl", transform: "rotate(180deg)", textTransform: "uppercase" }}>Pièces ({docs.length})</span>
                 </div>
               ) : (
-              <div style={CARD}>
+              <div style={{ ...CARD, maxHeight: "calc(100vh - 220px)", overflowY: "auto" as const }}>
                 <SecTitle>Pièces du dossier</SecTitle>
                 {documentsLoading ? (
                   <div style={{ textAlign: "center" as const, padding: "20px 0", fontSize: 12, color: "#64748b" }}>Chargement…</div>
@@ -8988,12 +9019,28 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   </div>
                 ) : (
                   <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
-                    {grouped.map((group) => (
+                    {grouped.map((group) => {
+                    const isCollapsed = collapsedDocCategories.has(group.key);
+                    return (
                     <div key={group.key}>
-                      <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", textTransform: "uppercase" as const, letterSpacing: "0.06em", margin: "2px 4px 6px", display: "flex", alignItems: "center", gap: 6 }}>
+                      <button
+                        type="button"
+                        onClick={() => toggleDocCategory(group.key)}
+                        style={{
+                          width: "100%", textAlign: "left" as const, background: "transparent", border: "none",
+                          padding: "4px 4px 6px", cursor: "pointer",
+                          display: "flex", alignItems: "center", gap: 6,
+                          fontSize: 10.5, fontWeight: 700, color: "#475569",
+                          textTransform: "uppercase" as const, letterSpacing: "0.06em",
+                          fontFamily: "inherit",
+                        }}
+                        title={isCollapsed ? "Déplier la catégorie" : "Replier la catégorie"}
+                      >
+                        <span style={{ fontSize: 9, color: "#94a3b8", display: "inline-block", width: 8, transition: "transform 0.15s", transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}>▾</span>
                         <span>{group.label}</span>
                         <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600 }}>({group.items.length})</span>
-                      </div>
+                      </button>
+                      {!isCollapsed && (
                       <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
                     {group.items.map(({ doc, origIndex: i }) => {
                       const ext = extOf(doc.type, doc.nom);
@@ -9046,8 +9093,10 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       );
                     })}
                       </div>
+                      )}
                     </div>
-                    ))}
+                    );
+                    })}
                   </div>
                 )}
               </div>
