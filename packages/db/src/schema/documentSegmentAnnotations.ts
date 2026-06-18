@@ -40,7 +40,7 @@ export const document_segment_annotations = pgTable(
     /** Nullable depuis 3.C.3 : les annotations PDF-level sont attachées au
      *  document entier + page, pas à un chunk RAG précis. */
     segment_id: text("segment_id"),
-    /** Source du segment (= commune_documents.id). Permet de lister toutes les annotations d'un document sans jointure.
+    /** Source du segment (= regulatory_documents.id). Permet de lister toutes les annotations d'un document sans jointure.
      *  Pour les annotations PDF-level, c'est le seul lien vers le document. */
     source_id: text("source_id").notNull(),
     /** Page du PDF où vit la surlignée (PDF-level uniquement). */

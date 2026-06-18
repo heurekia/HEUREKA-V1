@@ -15,7 +15,7 @@ import { embedTexts } from "../db/embedder.ts";
 
 export interface IndexParams {
   /**
-   * Identifiant stable de la SOURCE (= un row commune_documents par exemple).
+   * Identifiant stable de la SOURCE (= un row regulatory_documents par exemple).
    * Sert à idempotenter : tous les chunks portent un id préfixé par ce
    * source_id, et on supprime d'abord tout ce qui était indexé sous ce
    * source_id avant de réinsérer.

@@ -169,7 +169,7 @@ HEUREKA-V1/
 | `epci` | `epci.ts` | Intercommunalités (CC/CA/MPM) |
 | `zones` | `zones.ts` | Zones PLU (UA, UB, N, A…) — `geometry` jsonb, `status` (draft/active) |
 | `zone_regulatory_rules` | `zone_regulatory_rules.ts` | Articles structurés — `article_number`, `topic`, `value_min/max/exact`, `unit`, `cases` jsonb (cas conditionnels), `applies_if` jsonb, `citizen_title` / `citizen_summary`, **`validation_status`** (brouillon ⇒ par défaut, *safe-by-default*) |
-| `commune_documents` | `communeDocuments.ts` | OAP, PPRI, PEB, schémas couleurs |
+| `regulatory_documents` | `regulatoryDocuments.ts` | OAP, PPRI, PEB, schémas couleurs |
 | `external_services` | `externalServices.ts` | Services consultés (DDE, SDIS, STAP, archéo…) |
 | `service_communes` | `serviceCommunes.ts` | Affectation service ↔ commune |
 
@@ -562,7 +562,7 @@ Aucun secret n'est commit. `.env.example` documente les clés sans valeur. Le fi
 
 | Script | Commande | Quand l'exécuter | Détail |
 |---|---|---|---|
-| **`reindex-rag.ts`** | `pnpm --filter @heureka-v1/api reindex-rag [--dry-run] [--commune <INSEE>] [--only-failed]` | Après changement d'embedder (Voyage → Mistral, juin 2026) ou après upgrade `mistral-embed`. **Étape obligatoire** : les vecteurs Voyage et Mistral vivent dans des espaces différents, les distances cosinus cross-provider sont incohérentes — sans cette passe, la recherche RAG retourne du bruit. | Itère sur `commune_documents`, ré-appelle `indexCommuneDocument()` (idempotent : purge les anciens segments par `source_id` avant ré-insertion). Options : `--dry-run` (inventaire seul, aucune écriture) ; `--commune <INSEE>` (bascule progressive PoC) ; `--only-failed` (rejouer les rows en `indexing_status = "indexing_error"` après un pic de rate-limit Mistral). Procédure complète (sauvegarde préalable, coût indicatif, statuts attendus) : [`dossier-exploitation.md`](./security/dossier-exploitation.md) §8.1. |
+| **`reindex-rag.ts`** | `pnpm --filter @heureka-v1/api reindex-rag [--dry-run] [--commune <INSEE>] [--only-failed]` | Après changement d'embedder (Voyage → Mistral, juin 2026) ou après upgrade `mistral-embed`. **Étape obligatoire** : les vecteurs Voyage et Mistral vivent dans des espaces différents, les distances cosinus cross-provider sont incohérentes — sans cette passe, la recherche RAG retourne du bruit. | Itère sur `regulatory_documents`, ré-appelle `indexCommuneDocument()` (idempotent : purge les anciens segments par `source_id` avant ré-insertion). Options : `--dry-run` (inventaire seul, aucune écriture) ; `--commune <INSEE>` (bascule progressive PoC) ; `--only-failed` (rejouer les rows en `indexing_status = "indexing_error"` après un pic de rate-limit Mistral). Procédure complète (sauvegarde préalable, coût indicatif, statuts attendus) : [`dossier-exploitation.md`](./security/dossier-exploitation.md) §8.1. |
 
 ### 11.2 Infrastructure
 
@@ -778,7 +778,7 @@ users ──┐                                              ┌── decisions
         │       │
         │       └──> communes ──< zones ──< zone_regulatory_rules
         │                  │
-        │                  ├──< commune_documents
+        │                  ├──< regulatory_documents
         │                  ├──< signataires
         │                  └──> epci
         │

@@ -25,7 +25,7 @@ export * from "./userDelegations.js";
 export * from "./decisions.js";
 export * from "./signataires.js";
 export * from "./decisionEvents.js";
-export * from "./communeDocuments.js";
+export * from "./regulatoryDocuments.js";
 export * from "./documentCommunes.js";
 export * from "./gpuCache.js";
 export * from "./dossierConsultations.js";

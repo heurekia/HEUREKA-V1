@@ -1,5 +1,5 @@
 import { pgTable, timestamp, uuid, unique, index } from "drizzle-orm/pg-core";
-import { commune_documents } from "./communeDocuments.js";
+import { regulatory_documents } from "./regulatoryDocuments.js";
 import { communes } from "./communes.js";
 
 // Rattachement N:N document → communes. Source de vérité du périmètre
@@ -7,7 +7,7 @@ import { communes } from "./communes.js";
 //  - PLU strictement communal → 1 ligne
 //  - PLUi (porteur EPCI)      → N lignes, une par commune membre couverte
 //
-// commune_documents.commune_id reste renseigné en Lot 1a pour rétro-compatibilité.
+// regulatory_documents.commune_id reste renseigné pour rétro-compatibilité.
 // À retirer une fois loadRules() et loadCandidateRuleIds() migrés (Lots 3 & 4).
 export const document_communes = pgTable(
   "document_communes",
@@ -15,7 +15,7 @@ export const document_communes = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     document_id: uuid("document_id")
       .notNull()
-      .references(() => commune_documents.id, { onDelete: "cascade" }),
+      .references(() => regulatory_documents.id, { onDelete: "cascade" }),
     commune_id: uuid("commune_id")
       .notNull()
       .references(() => communes.id, { onDelete: "cascade" }),

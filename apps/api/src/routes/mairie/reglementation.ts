@@ -696,7 +696,7 @@ reglementationRouter.post("/segments/:segmentId/annotations", requireRole("mairi
     // Défaut 'private' = opt-in explicite pour partager à l'IA.
     const finalVisibility = visibility && VISIBILITIES_SET.has(visibility) ? visibility : "private";
 
-    // Récupère le segment pour reporter source_id (= commune_documents.id).
+    // Récupère le segment pour reporter source_id (= regulatory_documents.id).
     const [seg] = await db.select({ id: document_segments.id, metadata: document_segments.metadata })
       .from(document_segments).where(eq(document_segments.id, segmentId)).limit(1);
     if (!seg) return res.status(404).json({ error: "Segment introuvable" });

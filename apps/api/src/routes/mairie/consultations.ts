@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossiers, communes, commune_documents, dossier_consultations, external_services, service_communes } from "@heureka-v1/db";
+import { dossiers, communes, regulatory_documents, dossier_consultations, external_services, service_communes } from "@heureka-v1/db";
 import { eq, desc, and, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 
@@ -18,23 +18,23 @@ consultationsRouter.get("/documents", async (req: AuthRequest, res) => {
     if (!commune) return res.json([]);
 
     const docs = await db.select({
-      id: commune_documents.id,
-      commune_id: commune_documents.commune_id,
-      type: commune_documents.type,
-      name: commune_documents.name,
-      original_filename: commune_documents.original_filename,
-      file_size: commune_documents.file_size,
-      synthese: commune_documents.synthese,
-      status: commune_documents.status,
-      validation_status: commune_documents.validation_status,
-      validated_by: commune_documents.validated_by,
-      validated_at: commune_documents.validated_at,
-      ingested_at: commune_documents.ingested_at,
-      created_at: commune_documents.created_at,
+      id: regulatory_documents.id,
+      commune_id: regulatory_documents.commune_id,
+      type: regulatory_documents.type,
+      name: regulatory_documents.name,
+      original_filename: regulatory_documents.original_filename,
+      file_size: regulatory_documents.file_size,
+      synthese: regulatory_documents.synthese,
+      status: regulatory_documents.status,
+      validation_status: regulatory_documents.validation_status,
+      validated_by: regulatory_documents.validated_by,
+      validated_at: regulatory_documents.validated_at,
+      ingested_at: regulatory_documents.ingested_at,
+      created_at: regulatory_documents.created_at,
     })
-      .from(commune_documents)
-      .where(eq(commune_documents.commune_id, commune.id))
-      .orderBy(commune_documents.type, commune_documents.created_at);
+      .from(regulatory_documents)
+      .where(eq(regulatory_documents.commune_id, commune.id))
+      .orderBy(regulatory_documents.type, regulatory_documents.created_at);
 
     res.json(docs);
   } catch (err) {
@@ -63,7 +63,7 @@ consultationsRouter.post("/documents", async (req: AuthRequest, res) => {
       .from(communes).where(ilike(communes.name, commune_name)).limit(1);
     if (!commune) return res.status(404).json({ error: "Commune introuvable" });
 
-    const [doc] = await db.insert(commune_documents).values({
+    const [doc] = await db.insert(regulatory_documents).values({
       commune_id: commune.id,
       porteur_commune_id: commune.id,
       type,
@@ -74,14 +74,14 @@ consultationsRouter.post("/documents", async (req: AuthRequest, res) => {
       synthese: synthese?.trim() || null,
       status: pdf_base64 ? "indexing" : "uploaded",
     }).returning({
-      id: commune_documents.id,
-      type: commune_documents.type,
-      name: commune_documents.name,
-      original_filename: commune_documents.original_filename,
-      file_size: commune_documents.file_size,
-      synthese: commune_documents.synthese,
-      status: commune_documents.status,
-      created_at: commune_documents.created_at,
+      id: regulatory_documents.id,
+      type: regulatory_documents.type,
+      name: regulatory_documents.name,
+      original_filename: regulatory_documents.original_filename,
+      file_size: regulatory_documents.file_size,
+      synthese: regulatory_documents.synthese,
+      status: regulatory_documents.status,
+      created_at: regulatory_documents.created_at,
     });
 
     res.json(doc);
@@ -102,14 +102,14 @@ consultationsRouter.post("/documents", async (req: AuthRequest, res) => {
             original_filename,
             pdf_base64,
           });
-          await db.update(commune_documents)
+          await db.update(regulatory_documents)
             .set({ status: result.chunks > 0 ? "indexed" : "indexing_empty", ingested_at: new Date(), updated_at: new Date() })
-            .where(eq(commune_documents.id, doc.id));
+            .where(eq(regulatory_documents.id, doc.id));
         } catch (err) {
           console.error(`[rag] indexation échouée pour doc=${doc.id}:`, err instanceof Error ? err.message : err);
-          await db.update(commune_documents)
+          await db.update(regulatory_documents)
             .set({ status: "indexing_error", updated_at: new Date() })
-            .where(eq(commune_documents.id, doc.id))
+            .where(eq(regulatory_documents.id, doc.id))
             .catch(() => { /* best-effort */ });
         }
       })();
@@ -168,17 +168,17 @@ consultationsRouter.patch("/documents/:id", async (req: AuthRequest, res) => {
       patch.validated_at = null;
     }
 
-    const [doc] = await db.update(commune_documents)
+    const [doc] = await db.update(regulatory_documents)
       .set(patch)
-      .where(eq(commune_documents.id, req.params.id as string))
+      .where(eq(regulatory_documents.id, req.params.id as string))
       .returning({
-        id: commune_documents.id,
-        type: commune_documents.type,
-        name: commune_documents.name,
-        synthese: commune_documents.synthese,
-        validation_status: commune_documents.validation_status,
-        validated_by: commune_documents.validated_by,
-        validated_at: commune_documents.validated_at,
+        id: regulatory_documents.id,
+        type: regulatory_documents.type,
+        name: regulatory_documents.name,
+        synthese: regulatory_documents.synthese,
+        validation_status: regulatory_documents.validation_status,
+        validated_by: regulatory_documents.validated_by,
+        validated_at: regulatory_documents.validated_at,
       });
     if (!doc) return res.status(404).json({ error: "Document introuvable" });
     res.json(doc);
@@ -199,7 +199,7 @@ consultationsRouter.delete("/documents/:id", async (req: AuthRequest, res) => {
     } catch (err) {
       console.error(`[rag] nettoyage index échoué pour doc=${documentId}:`, err instanceof Error ? err.message : err);
     }
-    await db.delete(commune_documents).where(eq(commune_documents.id, documentId));
+    await db.delete(regulatory_documents).where(eq(regulatory_documents.id, documentId));
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
@@ -216,11 +216,11 @@ consultationsRouter.get("/documents/:id/pdf", async (req: AuthRequest, res) => {
     const documentId = req.params.id as string;
     const [doc] = await db
       .select({
-        pdf_content: commune_documents.pdf_content,
-        original_filename: commune_documents.original_filename,
+        pdf_content: regulatory_documents.pdf_content,
+        original_filename: regulatory_documents.original_filename,
       })
-      .from(commune_documents)
-      .where(eq(commune_documents.id, documentId))
+      .from(regulatory_documents)
+      .where(eq(regulatory_documents.id, documentId))
       .limit(1);
     if (!doc || !doc.pdf_content) return res.status(404).json({ error: "PDF indisponible" });
 
@@ -249,20 +249,20 @@ consultationsRouter.get("/dossiers/:id/commune-documents", async (req: AuthReque
     if (!commune) return res.json([]);
 
     const docs = await db.select({
-      id: commune_documents.id,
-      type: commune_documents.type,
-      name: commune_documents.name,
-      original_filename: commune_documents.original_filename,
-      file_size: commune_documents.file_size,
-      synthese: commune_documents.synthese,
-      status: commune_documents.status,
-      validation_status: commune_documents.validation_status,
-      validated_at: commune_documents.validated_at,
-      created_at: commune_documents.created_at,
+      id: regulatory_documents.id,
+      type: regulatory_documents.type,
+      name: regulatory_documents.name,
+      original_filename: regulatory_documents.original_filename,
+      file_size: regulatory_documents.file_size,
+      synthese: regulatory_documents.synthese,
+      status: regulatory_documents.status,
+      validation_status: regulatory_documents.validation_status,
+      validated_at: regulatory_documents.validated_at,
+      created_at: regulatory_documents.created_at,
     })
-      .from(commune_documents)
-      .where(eq(commune_documents.commune_id, commune.id))
-      .orderBy(commune_documents.type, commune_documents.created_at);
+      .from(regulatory_documents)
+      .where(eq(regulatory_documents.commune_id, commune.id))
+      .orderBy(regulatory_documents.type, regulatory_documents.created_at);
     res.json(docs);
   } catch (err) {
     console.error(err);

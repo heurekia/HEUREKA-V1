@@ -64,7 +64,7 @@ La bascule vers Mistral s'est faite à dimension identique (1024 dims), donc
 Mistral vivent dans des espaces différents : un corpus indexé avec Voyage
 doit être **réindexé** avant d'être interrogé avec Mistral, sinon les
 distances cosine renvoient des résultats incohérents. Procédure : re-trigger
-`indexCommuneDocument()` sur chaque `commune_documents` après la bascule
+`indexCommuneDocument()` sur chaque `regulatory_documents` après la bascule
 (les `pdf_content` sont conservés en base à cette fin).
 
 ## API
@@ -90,7 +90,7 @@ page, source_id et metadata.
 ## Endpoints HTTP exposés (apps/api)
 
 - `POST /api/mairie/documents` — déclenche l'indexation en arrière-plan
-  après création du `commune_documents`. Statut `uploaded → indexing →
+  après création du `regulatory_documents`. Statut `uploaded → indexing →
   indexed | indexing_empty | indexing_error`.
 - `DELETE /api/mairie/documents/:id` — nettoie l'index avant suppression.
 - `GET /api/mairie/documents/search?q=...&insee=...&doc_types=PPRI,OAP&top_k=5` —
@@ -104,7 +104,7 @@ page, source_id et metadata.
   remontera dans le prompt à côté du chunk → l'IA peut intégrer la nuance
   dans son verdict.
 - **Intégration dans `ruleVerdicts`** : remplacer (ou compléter) l'injection
-  des `commune_documents.synthese` par `searchSegments()` filtré sur la
+  des `regulatory_documents.synthese` par `searchSegments()` filtré sur la
   zone PLU du dossier.
 - **Adapter `PLU_REGLEMENT`** : indexer aussi le règlement PLU lui-même
   pour les citations type "PLU Ballan, zone UB, art. 7, p. 42".

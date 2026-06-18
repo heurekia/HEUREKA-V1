@@ -4,7 +4,7 @@
  *  - extractPdfPages : tire le texte d'un PDF base64 page par page via unpdf
  *    (pur Node, pas de poppler ni de canvas natif → marche sur Railway).
  *  - indexCommuneDocument : extrait + chunk + embed + upsert dans
- *    document_segments. Idempotent par source_id (le commune_documents.id).
+ *    document_segments. Idempotent par source_id (le regulatory_documents.id).
  *  - searchInCommune : enrobage léger de searchSegments pour la commune
  *    courante.
  *
@@ -25,7 +25,7 @@ export async function extractPdfPages(base64: string): Promise<string[]> {
 }
 
 export interface IndexCommuneDocumentParams {
-  /** UUID du row commune_documents — utilisé comme source_id stable. */
+  /** UUID du row regulatory_documents — utilisé comme source_id stable. */
   document_id: string;
   insee: string;
   commune_name: string;
