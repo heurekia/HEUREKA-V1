@@ -50,7 +50,8 @@ export type CanonicalRuleCase = z.infer<typeof CanonicalRuleCaseSchema>;
 
 export const CanonicalRuleSchema = z.object({
   // Identité dans le règlement
-  article_number: z.number().int().nullable(),
+  // Décimal autorisé : les PLU modernisés numérotent en « 12.1 », « 12.2 »…
+  article_number: z.number().nullable(),
   article_title: z.string().default(""),
   sub_theme: z.string().nullable().default(null),
 

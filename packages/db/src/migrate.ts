@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS zones (
 CREATE TABLE IF NOT EXISTS zone_regulatory_rules (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   zone_id uuid NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
-  article_number integer,
+  article_number double precision,
   article_title text,
   topic text NOT NULL DEFAULT 'general',
   rule_text text NOT NULL,
@@ -546,6 +546,18 @@ ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS sub_theme text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_title text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_summary text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_relevant boolean NOT NULL DEFAULT true;
+
+-- article_number : integer → double precision. Les PLU modernisés numérotent
+-- en décimal (« 12.1 », « 12.2 »…) ; la colonne integer faisait planter
+-- l'ingestion (invalid input syntax for type integer: "12.2"). Gardé idempotent
+-- ET conditionnel pour éviter une réécriture de table à chaque déploiement.
+DO $$ BEGIN
+  IF (SELECT data_type FROM information_schema.columns
+        WHERE table_name = 'zone_regulatory_rules' AND column_name = 'article_number') = 'integer' THEN
+    ALTER TABLE zone_regulatory_rules
+      ALTER COLUMN article_number TYPE double precision USING article_number::double precision;
+  END IF;
+END $$;
 
 -- Synthèse textuelle des documents thématiques de commune (OAP, PPRI, …) sur
 -- laquelle l'outil d'instruction s'appuie quand un dossier tombe dans le

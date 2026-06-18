@@ -294,7 +294,7 @@ const PLU_SAVE_RULE_TOOL: AiToolDefinition = {
     parameters: {
       type: "object",
       properties: {
-        article_number: { type: "integer", description: "Numéro de l'article. Null si non numéroté." },
+        article_number: { type: "number", description: "Numéro de l'article, décimal autorisé pour les PLU modernisés (6, 12.1, 12.2…). Null si non numéroté." },
         article_title: { type: "string", description: "Titre exact de l'article." },
         topic: {
           type: "string",
