@@ -1,5 +1,5 @@
 /**
- * Script de ré-indexation RAG : ré-embedde tous les commune_documents qui
+ * Script de ré-indexation RAG : ré-embedde tous les regulatory_documents qui
  * ont un pdf_content stocké, vers le nouvel embedder Mistral.
  *
  * À exécuter UNE FOIS après la bascule Voyage AI → Mistral. Les vecteurs
@@ -21,7 +21,7 @@
 import "dotenv/config";
 import { eq, and, isNotNull } from "drizzle-orm";
 import { db } from "../db.js";
-import { commune_documents, communes } from "@heureka-v1/db";
+import { regulatory_documents, communes } from "@heureka-v1/db";
 import { indexCommuneDocument } from "../services/ragService.js";
 
 const args = process.argv.slice(2);
@@ -44,23 +44,23 @@ interface Row {
 }
 
 async function loadCorpus(): Promise<Row[]> {
-  const conditions = [isNotNull(commune_documents.pdf_content)];
-  if (onlyFailed) conditions.push(eq(commune_documents.status, "indexing_error"));
+  const conditions = [isNotNull(regulatory_documents.pdf_content)];
+  if (onlyFailed) conditions.push(eq(regulatory_documents.status, "indexing_error"));
   if (communeFilter) conditions.push(eq(communes.insee_code, communeFilter));
 
   const rows = await db
     .select({
-      id: commune_documents.id,
-      type: commune_documents.type,
-      name: commune_documents.name,
-      original_filename: commune_documents.original_filename,
-      pdf_content: commune_documents.pdf_content,
-      status: commune_documents.status,
+      id: regulatory_documents.id,
+      type: regulatory_documents.type,
+      name: regulatory_documents.name,
+      original_filename: regulatory_documents.original_filename,
+      pdf_content: regulatory_documents.pdf_content,
+      status: regulatory_documents.status,
       insee_code: communes.insee_code,
       commune_name: communes.name,
     })
-    .from(commune_documents)
-    .innerJoin(communes, eq(commune_documents.commune_id, communes.id))
+    .from(regulatory_documents)
+    .innerJoin(communes, eq(regulatory_documents.commune_id, communes.id))
     .where(and(...conditions));
 
   return rows.filter((r): r is Row => r.pdf_content !== null);
@@ -84,9 +84,9 @@ async function main() {
   for (const [i, r] of corpus.entries()) {
     const prefix = `[${i + 1}/${corpus.length}] ${r.commune_name} · ${r.type} · ${r.name}`;
     try {
-      await db.update(commune_documents)
+      await db.update(regulatory_documents)
         .set({ status: "indexing", updated_at: new Date() })
-        .where(eq(commune_documents.id, r.id));
+        .where(eq(regulatory_documents.id, r.id));
 
       const result = await indexCommuneDocument({
         document_id: r.id,
@@ -99,9 +99,9 @@ async function main() {
       });
 
       const nextStatus = result.chunks > 0 ? "indexed" : "indexing_empty";
-      await db.update(commune_documents)
+      await db.update(regulatory_documents)
         .set({ status: nextStatus, ingested_at: new Date(), updated_at: new Date() })
-        .where(eq(commune_documents.id, r.id));
+        .where(eq(regulatory_documents.id, r.id));
 
       if (result.chunks > 0) ok++; else empty++;
       console.log(`${prefix} → ${nextStatus} (${result.chunks} chunks, ${result.extracted_pages} pages)`);
@@ -109,9 +109,9 @@ async function main() {
       failed++;
       const msg = err instanceof Error ? err.message : String(err);
       console.error(`${prefix} → ERREUR : ${msg}`);
-      await db.update(commune_documents)
+      await db.update(regulatory_documents)
         .set({ status: "indexing_error", updated_at: new Date() })
-        .where(eq(commune_documents.id, r.id))
+        .where(eq(regulatory_documents.id, r.id))
         .catch(() => { /* best-effort */ });
     }
   }

@@ -32,7 +32,7 @@ import {
   communes,
   zones,
   zone_regulatory_rules,
-  commune_documents,
+  regulatory_documents,
   documentation_favoris,
 } from "@heureka-v1/db";
 import { eq, and, inArray, ilike, or } from "drizzle-orm";
@@ -443,15 +443,15 @@ export async function listApplicableReferences(
     if (commune) {
       const docs = await db
         .select({
-          id: commune_documents.id,
-          type: commune_documents.type,
-          name: commune_documents.name,
-          synthese: commune_documents.synthese,
+          id: regulatory_documents.id,
+          type: regulatory_documents.type,
+          name: regulatory_documents.name,
+          synthese: regulatory_documents.synthese,
         })
-        .from(commune_documents)
+        .from(regulatory_documents)
         .where(and(
-          eq(commune_documents.commune_id, commune.id),
-          eq(commune_documents.validation_status, "valide"),
+          eq(regulatory_documents.commune_id, commune.id),
+          eq(regulatory_documents.validation_status, "valide"),
         ));
 
       for (const d of docs) {
@@ -641,14 +641,14 @@ export async function getReferenceDetail(referenceId: string): Promise<Documenta
   if (kind === "doc") {
     const [row] = await db
       .select({
-        id: commune_documents.id,
-        type: commune_documents.type,
-        name: commune_documents.name,
-        synthese: commune_documents.synthese,
-        commune_id: commune_documents.commune_id,
+        id: regulatory_documents.id,
+        type: regulatory_documents.type,
+        name: regulatory_documents.name,
+        synthese: regulatory_documents.synthese,
+        commune_id: regulatory_documents.commune_id,
       })
-      .from(commune_documents)
-      .where(eq(commune_documents.id, id))
+      .from(regulatory_documents)
+      .where(eq(regulatory_documents.id, id))
       .limit(1);
     if (!row) return null;
     const [commune] = await db
@@ -726,18 +726,18 @@ export async function searchReferences(
 
   const docRows = await db
     .select({
-      id: commune_documents.id,
-      type: commune_documents.type,
-      name: commune_documents.name,
-      synthese: commune_documents.synthese,
+      id: regulatory_documents.id,
+      type: regulatory_documents.type,
+      name: regulatory_documents.name,
+      synthese: regulatory_documents.synthese,
     })
-    .from(commune_documents)
+    .from(regulatory_documents)
     .where(and(
-      eq(commune_documents.commune_id, commune.id),
-      eq(commune_documents.validation_status, "valide"),
+      eq(regulatory_documents.commune_id, commune.id),
+      eq(regulatory_documents.validation_status, "valide"),
       or(
-        ilike(commune_documents.name, pattern),
-        ilike(commune_documents.synthese, pattern),
+        ilike(regulatory_documents.name, pattern),
+        ilike(regulatory_documents.synthese, pattern),
       ),
     ))
     .limit(10);

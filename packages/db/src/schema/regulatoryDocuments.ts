@@ -1,6 +1,10 @@
 import { integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
-export const commune_documents = pgTable("commune_documents", {
+// Documents réglementaires rattachés à une commune OU à un EPCI (cas PLUi).
+// Renommé depuis commune_documents au Lot 1b : la table n'est plus strictement
+// « par commune » dès lors qu'un PLUi peut être porté par un groupement et
+// couvrir N communes membres via document_communes.
+export const regulatory_documents = pgTable("regulatory_documents", {
   id: uuid("id").primaryKey().defaultRandom(),
   commune_id: uuid("commune_id").notNull(),
   // Porteur du document. Exactement l'un des deux est renseigné (CHECK SQL).

@@ -925,6 +925,27 @@ INSERT INTO document_communes (document_id, commune_id)
 SELECT id, commune_id FROM commune_documents
 WHERE commune_id IS NOT NULL
 ON CONFLICT (document_id, commune_id) DO NOTHING;
+
+-- ── Lot 1b — Rename commune_documents → regulatory_documents ───────────────
+-- La table n'est plus strictement « par commune » : avec porteur_epci_id et
+-- document_communes elle décrit un document réglementaire générique. Le nom
+-- final s'aligne sur la sémantique. Idempotent : on ne renomme que si la
+-- table source existe encore.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'commune_documents' AND relkind = 'r') THEN
+    ALTER TABLE commune_documents RENAME TO regulatory_documents;
+  END IF;
+END $$;
+
+-- Renommage des objets dépendants (contrainte XOR, index, contrainte de FK
+-- portée par document_communes). Idempotent via IF EXISTS / NOT EXISTS.
+DO $$ BEGIN
+  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'commune_documents_porteur_xor') THEN
+    ALTER TABLE regulatory_documents
+      RENAME CONSTRAINT commune_documents_porteur_xor TO regulatory_documents_porteur_xor;
+  END IF;
+END $$;
+ALTER INDEX IF EXISTS idx_commune_documents_commune_id RENAME TO idx_regulatory_documents_commune_id;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

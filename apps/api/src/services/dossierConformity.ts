@@ -29,7 +29,7 @@ import {
 } from "./ruleVerdicts.js";
 import { ilike } from "drizzle-orm";
 // `and`, `eq` déjà importés en haut.
-import { communes, commune_documents } from "@heureka-v1/db";
+import { communes, regulatory_documents } from "@heureka-v1/db";
 import type { PieceExtraction } from "./pieceExtractor.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -559,15 +559,15 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
             // verdict d'instruction.
             const docs = await db
               .select({
-                id: commune_documents.id,
-                name: commune_documents.name,
-                type: commune_documents.type,
-                synthese: commune_documents.synthese,
+                id: regulatory_documents.id,
+                name: regulatory_documents.name,
+                type: regulatory_documents.type,
+                synthese: regulatory_documents.synthese,
               })
-              .from(commune_documents)
+              .from(regulatory_documents)
               .where(and(
-                eq(commune_documents.commune_id, comm.id),
-                eq(commune_documents.validation_status, "valide"),
+                eq(regulatory_documents.commune_id, comm.id),
+                eq(regulatory_documents.validation_status, "valide"),
               ));
             documentsCommune = docs;
           }
