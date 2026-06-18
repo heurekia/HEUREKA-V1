@@ -80,16 +80,41 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
     // un CDN intermédiaire, ce qui fait disparaître la preview après quelques
     // heures. En streamant ici, l'URL exposée au front reste /api/uploads/<key>
     // et l'authentification est revérifiée à chaque accès.
+    //
+    // PDF compat : si une variante "compat" (re-encodée par pdftocairo pour
+    // contourner le JPEG 2000 incompatible pdf.js) existe en stockage, on
+    // la sert en priorité au viewer. L'original reste accessible pour le
+    // téléchargement, l'analyse IA, et comme filet de sécurité si la compat
+    // s'avère défaillante.
+    const isPdf = key.toLowerCase().endsWith(".pdf");
+    const wantsCompat = isPdf && !key.includes(".compat.");
+    const tryKeys: string[] = wantsCompat
+      ? [(await import("../services/pdfCompat.js")).compatKeyFor(key), key]
+      : [key];
+
     let streamRes;
-    try {
-      streamRes = await provider.getStream(key);
-    } catch (err) {
-      const code = (err as { name?: string; code?: string }).name
-        ?? (err as { code?: string }).code;
+    let lastErr: unknown = null;
+    for (const k of tryKeys) {
+      try {
+        streamRes = await provider.getStream(k);
+        break;
+      } catch (err) {
+        lastErr = err;
+        const code = (err as { name?: string; code?: string }).name
+          ?? (err as { code?: string }).code;
+        if (code !== "NoSuchKey" && code !== "NotFound" && code !== "ENOENT") {
+          throw err;
+        }
+        // Sinon on essaie la clé suivante (typiquement l'original après l'échec compat).
+      }
+    }
+    if (!streamRes) {
+      const code = (lastErr as { name?: string; code?: string } | null)?.name
+        ?? (lastErr as { code?: string } | null)?.code;
       if (code === "NoSuchKey" || code === "NotFound" || code === "ENOENT") {
         return res.status(404).json({ error: "Fichier absent du stockage" });
       }
-      throw err;
+      throw lastErr ?? new Error("Stream introuvable");
     }
 
     res.setHeader(

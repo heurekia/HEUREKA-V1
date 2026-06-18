@@ -208,6 +208,22 @@ piecesRouter.post("/dossiers/:id/pieces/upload", pieceUploadSingle, async (req: 
       mime: req.file.mimetype,
     });
 
+    // Conversion compat PDF en arrière-plan si JPEG 2000 détecté
+    // (incompatible avec le décodeur pdf.js du viewer mairie).
+    const compatSourceBuffer = req.file.buffer;
+    const compatSourceMime = req.file.mimetype;
+    void (async () => {
+      try {
+        const { maybeBuildCompatPdf, compatKeyFor } = await import("../../services/pdfCompat.js");
+        const compatBuf = await maybeBuildCompatPdf(compatSourceBuffer, compatSourceMime);
+        if (!compatBuf) return;
+        await storage.put({ key: compatKeyFor(fileKey), body: compatBuf, mime: "application/pdf" });
+        console.log(`[pdf-compat] généré pour ${fileKey} (${compatBuf.length} octets)`);
+      } catch (err) {
+        console.warn(`[pdf-compat] échec pour ${fileKey} : ${err instanceof Error ? err.message : err}`);
+      }
+    })();
+
     const [piece] = await db
       .insert(dossier_pieces_jointes)
       .values({
