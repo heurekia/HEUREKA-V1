@@ -4,6 +4,7 @@
  *   pnpm ingest --file seeds/37261_reglement.pdf --adapter plu-reglement \
  *     --insee 37261 --commune "Tours" --version "M1_20220627"
  */
+import path from "node:path";
 import { runIngestion } from "./engine/pipeline.ts";
 import { loadSegments } from "./db/loader.ts";
 import { structureSegments } from "./structure/structurer.ts";
@@ -54,8 +55,19 @@ async function main() {
     const zoneRules = await structureSegments(segments, mistralLlm(), {
       onZone: (zone, count) => console.log(`   ${zone} → ${count} règles`),
     });
-    const res = await loadRules(insee, commune, zoneRules, { zipCode: arg("--zip") });
+    const res = await loadRules(insee, commune, zoneRules, {
+      zipCode: arg("--zip"),
+      document: {
+        // Cibler explicitement un document existant : utile pour re-ingérer
+        // depuis un upload réalisé via l'UI mairie.
+        id: arg("--doc-id"),
+        type: arg("--doc-type"),
+        name: arg("--doc-name"),
+        originalFilename: arg("--doc-filename") ?? path.basename(file),
+      },
+    });
     console.log(`✓ ${res.zones} zones · ${res.rules} règles écrites (brouillon) dans zone_regulatory_rules.`);
+    console.log(`  document=${res.document_id}`);
   }
 
   // --load : pousse les segments + embeddings (mistral-embed) dans pgvector.

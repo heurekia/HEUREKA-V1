@@ -976,6 +976,30 @@ FROM zones z, plu_by_commune pbc
 WHERE zrr.zone_id = z.id
   AND z.commune_id = pbc.commune_id
   AND zrr.source_document_id IS NULL;
+
+-- ── Lot 3 — Refactor loadRules() document-centric ──────────────────────────
+-- Les zones aussi connaissent leur document d'origine. Permet à terme qu'un
+-- PLUi crée des zones partagées entre N communes (à travers document_communes)
+-- et que la purge à l'ingestion soit indexée par document, pas par commune.
+ALTER TABLE zones
+  ADD COLUMN IF NOT EXISTS source_document_id uuid
+  REFERENCES regulatory_documents(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_zones_source_document
+  ON zones(source_document_id);
+
+-- Backfill : chaque zone hérite du PLU le plus récent de sa commune (même
+-- logique que pour zone_regulatory_rules en Lot 2).
+WITH plu_by_commune AS (
+  SELECT DISTINCT ON (commune_id) commune_id, id AS document_id
+  FROM regulatory_documents
+  WHERE type = 'plu' AND commune_id IS NOT NULL
+  ORDER BY commune_id, created_at DESC
+)
+UPDATE zones z
+SET source_document_id = pbc.document_id
+FROM plu_by_commune pbc
+WHERE z.commune_id = pbc.commune_id
+  AND z.source_document_id IS NULL;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
