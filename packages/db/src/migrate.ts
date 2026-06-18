@@ -928,19 +928,48 @@ ON CONFLICT (document_id, commune_id) DO NOTHING;
 
 -- ── Lot 1b — Rename commune_documents → regulatory_documents ───────────────
 -- La table n'est plus strictement « par commune » : avec porteur_epci_id et
--- document_communes elle décrit un document réglementaire générique. Le nom
--- final s'aligne sur la sémantique. Idempotent : on ne renomme que si la
--- table source existe encore.
+-- document_communes elle décrit un document réglementaire générique.
+--
+-- Idempotence sur ré-exécution (bug rencontré en prod OVH) :
+-- le CREATE TABLE IF NOT EXISTS commune_documents historique plus haut dans
+-- ce script (legacy DDL) re-crée systématiquement une coquille vide à chaque
+-- exécution, MÊME après le rename. Si on ne fait rien, la 2e exécution
+-- trouve les deux tables et le RENAME échoue (relation déjà existante).
+-- On nettoie la coquille vide ici, puis on renomme uniquement si nécessaire.
 DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'commune_documents' AND relkind = 'r') THEN
+  -- Cas 1 : les deux tables existent → ne peut arriver qu'après une 1re
+  -- exécution réussie. La vraie donnée vit dans regulatory_documents, la
+  -- coquille vide est dans commune_documents (recréée plus haut). On la
+  -- supprime — mais seulement si elle est effectivement vide (garde-fou
+  -- contre toute situation imprévue).
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'commune_documents' AND relkind = 'r')
+     AND EXISTS (SELECT 1 FROM pg_class WHERE relname = 'regulatory_documents' AND relkind = 'r') THEN
+    IF NOT EXISTS (SELECT 1 FROM commune_documents LIMIT 1) THEN
+      DROP TABLE commune_documents CASCADE;
+    ELSE
+      RAISE EXCEPTION 'commune_documents et regulatory_documents existent simultanément avec des données dans la première — examen manuel requis avant de continuer';
+    END IF;
+  END IF;
+
+  -- Cas 2 : seule commune_documents existe (1re exécution post-merge sur une
+  -- base déjà alignée jusqu'au Lot 1a). On renomme.
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'commune_documents' AND relkind = 'r')
+     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'regulatory_documents' AND relkind = 'r') THEN
     ALTER TABLE commune_documents RENAME TO regulatory_documents;
   END IF;
 END $$;
 
--- Renommage des objets dépendants (contrainte XOR, index, contrainte de FK
--- portée par document_communes). Idempotent via IF EXISTS / NOT EXISTS.
+-- Renommage des objets dépendants (contrainte XOR, index). Idempotent.
+-- On vérifie que la contrainte vit bien sur regulatory_documents avant de la
+-- renommer — évite de toucher une contrainte homonyme sur la coquille
+-- éphémère commune_documents recréée à chaque run et droppée juste au-dessus.
 DO $$ BEGIN
-  IF EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'commune_documents_porteur_xor') THEN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    WHERE c.conname = 'commune_documents_porteur_xor'
+      AND t.relname = 'regulatory_documents'
+  ) THEN
     ALTER TABLE regulatory_documents
       RENAME CONSTRAINT commune_documents_porteur_xor TO regulatory_documents_porteur_xor;
   END IF;
