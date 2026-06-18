@@ -44,12 +44,22 @@ export const dossiers = pgTable("dossiers", {
   date_limite_instruction: timestamp("date_limite_instruction"),
   date_delivrance: timestamp("date_delivrance"),
   is_tacite: boolean("is_tacite").notNull().default(false),
-  // Analyse de conformité du dossier (calculée à la soumission ou à la demande
-  // par la mairie). conformite_status : pending|running|done|failed. L'analyse
-  // détaillée (par pièce + synthèse réglementaire) est stockée en JSON.
+  // Analyse de conformité INTERIM (3.C.5) — recalculée à chaque changement
+  // d'état d'une pièce (upload, validation, rejet, complément). Reflète
+  // l'état de conformité courant. Filtre les pièces archivées et rejetées.
+  // conformite_status : pending|running|done|failed.
   conformite_analysis: jsonb("conformite_analysis"),
   conformite_status: text("conformite_status"),
   conformite_analyzed_at: timestamp("conformite_analyzed_at"),
+  // Analyse de conformité FINALE (3.C.5b) — déclenchée explicitement par
+  // l'instructeur juste avant la délivrance de l'arrêté. Ne prend en compte
+  // QUE les pièces explicitement validées par l'instructeur. Sert d'ancrage
+  // juridique à la décision. Possibilité de relance si l'état des pièces
+  // évolue entre deux passes (la valeur la plus récente est conservée).
+  conformite_final_analysis: jsonb("conformite_final_analysis"),
+  conformite_final_status: text("conformite_final_status"),
+  conformite_final_analyzed_at: timestamp("conformite_final_analyzed_at"),
+  conformite_final_triggered_by: uuid("conformite_final_triggered_by"),
   // RGPD : consentement explicite du citoyen à l'analyse IA de ses pièces.
   // NULL = non demandé (dossiers antérieurs). true/false = choix explicite.
   ai_consent: boolean("ai_consent"),
