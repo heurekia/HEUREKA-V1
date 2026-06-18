@@ -518,6 +518,15 @@ ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_analysis jsonb;
 ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_status text;
 ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_analyzed_at timestamp;
 
+-- Phase 3.C.5b : analyse de conformité FINALE — déclenchée explicitement par
+-- l'instructeur avant la délivrance de l'arrêté. Ne prend en compte que les
+-- pièces dont instructeur_status = 'valide'. Stockée séparément de l'analyse
+-- interim pour préserver l'historique et permettre la comparaison.
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_final_analysis jsonb;
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_final_status text;
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_final_analyzed_at timestamp;
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_final_triggered_by uuid REFERENCES users(id) ON DELETE SET NULL;
+
 -- Cas conditionnels structurés sur une règle (ex: 10 m sens unique / 13 m double sens)
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS cases jsonb DEFAULT '[]'::jsonb;
 -- Décomposition d'articles complexes en sous-règles + applicabilité

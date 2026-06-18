@@ -276,9 +276,33 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T,
  * Persiste le résultat dans `dossiers.conformite_analysis` et met à jour le statut
  * `conformite_status`. Sans pour autant changer le statut métier du dossier.
  */
-export async function runDossierConformityAnalysis(dossierId: string): Promise<ConformiteReport> {
+/**
+ * Erreur levée quand l'analyse finale est demandée mais que des pièces ne
+ * sont pas dans un état permettant la délivrance d'un arrêté (statut absent
+ * ou complément en attente). Sert au routeur à renvoyer un 422 structuré.
+ */
+export class ConformityFinalPreconditionError extends Error {
+  constructor(
+    public readonly reason: string,
+    public readonly blockers: {
+      pieces_sans_statut: Array<{ id: string; nom: string; code_piece: string | null }>;
+      pieces_complement_en_attente: Array<{ id: string; nom: string; code_piece: string | null }>;
+      aucune_piece_validee: boolean;
+    },
+  ) {
+    super(reason);
+    this.name = "ConformityFinalPreconditionError";
+  }
+}
+
+export async function runDossierConformityAnalysis(
+  dossierId: string,
+  opts?: { mode?: "interim" | "final"; triggeredBy?: string },
+): Promise<ConformiteReport> {
   const startedAt = Date.now();
   const warnings: string[] = [];
+  const mode = opts?.mode ?? "interim";
+  const isFinal = mode === "final";
 
   // 1. Charge le dossier
   const [dossier] = await db.select().from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
@@ -286,13 +310,49 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
     throw new Error("Dossier non trouvé");
   }
 
-  // 2. Verrou : refuse les exécutions concurrentes
-  if (dossier.conformite_status === "running") {
-    throw new Error("Une analyse est déjà en cours pour ce dossier");
+  // 1bis. Pré-conditions de l'analyse FINALE : l'instructeur ne peut la
+  // lancer que si toutes les pièces ont été examinées et qu'aucune n'est
+  // en attente de complément. Sinon il pourrait délivrer un arrêté basé
+  // sur un dossier dont une partie n'a pas été statuée. Garde-fou juridique.
+  if (isFinal) {
+    const allActives = await db
+      .select({
+        id: dossier_pieces_jointes.id,
+        nom: dossier_pieces_jointes.nom,
+        code_piece: dossier_pieces_jointes.code_piece,
+        instructeur_status: dossier_pieces_jointes.instructeur_status,
+      })
+      .from(dossier_pieces_jointes)
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossierId),
+        isNull(dossier_pieces_jointes.archived_at),
+      ));
+    const sansStatut = allActives.filter((p) => !p.instructeur_status).map(({ id, nom, code_piece }) => ({ id, nom, code_piece }));
+    const complementsEnAttente = allActives.filter((p) => p.instructeur_status === "complement_demande").map(({ id, nom, code_piece }) => ({ id, nom, code_piece }));
+    const validees = allActives.filter((p) => p.instructeur_status === "valide");
+    if (sansStatut.length > 0 || complementsEnAttente.length > 0 || validees.length === 0) {
+      const motifs: string[] = [];
+      if (sansStatut.length > 0) motifs.push(`${sansStatut.length} pièce(s) à examiner`);
+      if (complementsEnAttente.length > 0) motifs.push(`${complementsEnAttente.length} complément(s) en attente`);
+      if (validees.length === 0) motifs.push(`aucune pièce validée`);
+      throw new ConformityFinalPreconditionError(
+        `Analyse finale impossible : ${motifs.join(" · ")}.`,
+        { pieces_sans_statut: sansStatut, pieces_complement_en_attente: complementsEnAttente, aucune_piece_validee: validees.length === 0 },
+      );
+    }
+  }
+
+  // 2. Verrou : refuse les exécutions concurrentes (sur la colonne de statut
+  // correspondant au mode — on autorise une interim et une finale en parallèle
+  // si jamais ça arrivait, elles ne se marchent pas dessus).
+  const statusColumn = isFinal ? "conformite_final_status" : "conformite_status";
+  const currentStatus = isFinal ? dossier.conformite_final_status : dossier.conformite_status;
+  if (currentStatus === "running") {
+    throw new Error(`Une analyse ${isFinal ? "finale" : "interim"} est déjà en cours pour ce dossier`);
   }
   await db
     .update(dossiers)
-    .set({ conformite_status: "running", updated_at: new Date() })
+    .set({ [statusColumn]: "running", updated_at: new Date() })
     .where(eq(dossiers.id, dossierId));
 
   try {
@@ -316,16 +376,20 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
     // 4. Pièces déposées prises en compte par l'IA :
     //   - hors archivées (remplacées suite à un complément, elles ne pèsent
     //     plus dans le décompte) ;
-    //   - hors rejetées par l'instructeur (3.C.5a) — une pièce qu'il a
-    //     explicitement écartée ne doit pas pourrir l'analyse de son slot
-    //     ni induire en erreur le compte rendu.
+    //   - en mode INTERIM (3.C.5a) : hors rejetées — une pièce qu'instructeur
+    //     a explicitement écartée ne doit pas pourrir l'analyse de son slot.
+    //   - en mode FINAL (3.C.5b) : on ne garde QUE les pièces explicitement
+    //     validées par l'instructeur — c'est ce qui sert d'ancrage juridique
+    //     à la décision finale, donc rien ne doit y entrer par défaut.
     const piecesDeposees = await db
       .select()
       .from(dossier_pieces_jointes)
       .where(and(
         eq(dossier_pieces_jointes.dossier_id, dossierId),
         isNull(dossier_pieces_jointes.archived_at),
-        sql`(${dossier_pieces_jointes.instructeur_status} IS NULL OR ${dossier_pieces_jointes.instructeur_status} != 'rejete')`,
+        isFinal
+          ? eq(dossier_pieces_jointes.instructeur_status, "valide")
+          : sql`(${dossier_pieces_jointes.instructeur_status} IS NULL OR ${dossier_pieces_jointes.instructeur_status} != 'rejete')`,
       ));
     const piecesParCode = new Map<string, typeof piecesDeposees[number]>();
     for (const p of piecesDeposees) if (p.code_piece) piecesParCode.set(p.code_piece, p);
@@ -660,34 +724,58 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
       warnings,
     };
 
+    // Stockage : colonnes interim vs finale (3.C.5b). En mode finale on
+    // mémorise aussi le user_id qui a déclenché pour l'audit pré-arrêté.
+    const writePayload: Record<string, unknown> = isFinal
+      ? {
+          conformite_final_analysis: report,
+          conformite_final_status: "done",
+          conformite_final_analyzed_at: new Date(),
+          conformite_final_triggered_by: opts?.triggeredBy ?? null,
+          updated_at: new Date(),
+        }
+      : {
+          conformite_analysis: report,
+          conformite_status: "done",
+          conformite_analyzed_at: new Date(),
+          updated_at: new Date(),
+        };
     await db
       .update(dossiers)
-      .set({
-        conformite_analysis: report,
-        conformite_status: "done",
-        conformite_analyzed_at: new Date(),
-        updated_at: new Date(),
-      })
+      .set(writePayload as never)
       .where(eq(dossiers.id, dossierId));
-
     return report;
   } catch (err) {
+    // Idem au catch : on écrit sur la bonne colonne selon le mode.
+    const errorPayload: Record<string, unknown> = isFinal
+      ? {
+          conformite_final_status: "failed",
+          conformite_final_analyzed_at: new Date(),
+          conformite_final_analysis: {
+            schema_version: 1,
+            error: err instanceof Error ? err.message : String(err),
+            analyzed_at: new Date().toISOString(),
+          },
+          updated_at: new Date(),
+        }
+      : {
+          conformite_status: "failed",
+          conformite_analyzed_at: new Date(),
+          conformite_analysis: {
+            schema_version: 1,
+            error: err instanceof Error ? err.message : String(err),
+            analyzed_at: new Date().toISOString(),
+          },
+          updated_at: new Date(),
+        };
     await db
       .update(dossiers)
-      .set({
-        conformite_status: "failed",
-        conformite_analyzed_at: new Date(),
-        conformite_analysis: {
-          schema_version: 1,
-          error: err instanceof Error ? err.message : String(err),
-          analyzed_at: new Date().toISOString(),
-        },
-        updated_at: new Date(),
-      })
+      .set(errorPayload as never)
       .where(eq(dossiers.id, dossierId));
     throw err;
   }
 }
+
 
 /**
  * Lance l'analyse en tâche de fond, sans bloquer l'appelant. Retourne immédiatement.
