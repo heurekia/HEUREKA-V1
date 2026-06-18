@@ -19,17 +19,22 @@ pdfjs.GlobalWorkerOptions.workerSrc = new URL(
 // Mémoïsé en constante module pour éviter qu'à chaque rerender, pdfjs
 // recharge tout (Document compare options par référence d'objet).
 //
-//  - withCredentials : cookies envoyés (cf. fix précédent /api/uploads).
+//  - withCredentials : cookies envoyés (cf. fix /api/uploads).
 //  - disableRange / disableStream : pdfjs demande par défaut les pages en
-//    byte ranges progressives. Nos routes (/api/uploads, /api/mairie/
-//    documents/:id/pdf) streament le fichier d'un bloc sans répondre aux
-//    Range headers, ce qui surface en "Missing PDF". On force le téléchar-
-//    gement complet en une seule requête : c'est moins « progressif »
-//    mais robuste et nos PDFs PLU/PPRI/pièces tiennent < 20 Mo.
+//    byte ranges progressives. Nos routes streament le fichier d'un bloc
+//    sans répondre aux Range headers, ce qui surface en "Missing PDF".
+//  - useSystemFonts : permet à pdfjs d'utiliser les polices de l'OS quand
+//    le PDF embarque des fonts qu'il sait pas substituer — utile pour les
+//    plans d'architecte avec polices CAD propriétaires.
+//  - canvasMaxAreaInBytes : remonte le plafond de surface canvas (défaut
+//    ~67 Mpx). Sans ça, les calques raster haute résolution sur certains
+//    plans d'architecte sont silencieusement omis du rendu.
 const PDF_OPTIONS = {
   withCredentials: true,
   disableRange: true,
   disableStream: true,
+  useSystemFonts: true,
+  canvasMaxAreaInBytes: -1, // -1 = pas de limite
 } as const;
 
 type AnnotationKind = "correction" | "precision" | "jurisprudence" | "note_perso";
