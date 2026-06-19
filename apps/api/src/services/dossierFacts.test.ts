@@ -29,6 +29,8 @@ function piece(id: string, nom: string, ext: Partial<PieceExtraction> & { piece_
       echelle: ext.echelle ?? null,
       nord_visible: ext.nord_visible ?? null,
       legende_visible: ext.legende_visible ?? null,
+      graphics: ext.graphics ?? null,
+      parcelles_observees: ext.parcelles_observees ?? null,
       cerfa: ext.cerfa ?? null,
       plan_masse: ext.plan_masse ?? null,
       plan_coupe: ext.plan_coupe ?? null,

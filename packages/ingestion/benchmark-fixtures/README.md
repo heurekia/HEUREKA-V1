@@ -36,6 +36,25 @@ benchmark-fixtures/
 | 15-20 fixtures | Première décision technique |
 | 30+ fixtures | Décision contractuelle / DSI Tours / publication |
 
+## Scénarios de régression métier (Phase 8.2)
+
+Le `manifest.json` inclut des cas-types qui ciblent des défauts d'extraction
+historiquement observés. Les fichiers (PNG/PDF) ne sont **pas** versionnés —
+chaque équipe doit produire la pièce anonymisée correspondante avant de lancer
+le benchmark sur ces entrées.
+
+| Fixture | Régression ciblée |
+|---|---|
+| `plan-masse-rose-des-vents-01` | Le moteur ne détectait pas la **rose des vents** comme orientation présente (uniquement la flèche Nord). Phase 5 — `graphics.orientation.kind`. |
+| `plan-masse-parcelles-partielles-01` | **Multi-parcelles + qualificatif `partie`** (`AI 217 & AI 218p`) noyé dans un seul `text`. Phase 2.3 — `parcelles_observees`. |
+| `cerfa-commune-divergente-01` | **Cartouche divergent** (« VENDÔME » vs Ballan-Miré) écrasé silencieusement. Phase 3 — moteur de contradictions ; pour l'instant on mesure la non-correction via les `citations`. |
+| `pcmi-composite-2-3-01` | **Pièce composite** (plan de masse + plan de coupe sur la même page) tronquée à un seul type. Phase 4 — schéma multi-vues. |
+
+Ces fixtures servent de **golden de référence métier** : leur réussite sera
+mesurée champ par champ (cf. `benchmark/scoring.ts`), pas par un score OCR
+global. Quand un instructeur corrige une extraction en production, le delta
+correspondant doit alimenter une fixture anonymisée ici (boucle Phase 8).
+
 ## RGPD
 
 Les fixtures contiennent des plans potentiellement déposés par des citoyens.
