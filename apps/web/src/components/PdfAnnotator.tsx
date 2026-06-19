@@ -5,6 +5,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 import {
   ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize2,
   Highlighter, X, Eye, EyeOff, ShieldCheck, FileDown,
+  Hand, MousePointer2, RotateCcw, RotateCw, Undo2,
 } from "lucide-react";
 import { api } from "../lib/api";
 
@@ -107,6 +108,19 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
   const [servedVariant, setServedVariant] = useState<"compat" | "original" | null>(null);
   const containerRef = useRef<HTMLDivElement>(null);
 
+  // Mode d'interaction : "select" = sélection texte (annotations), "hand" =
+  // pan au clic-glissé (utile quand le PDF est zoomé / pivoté). Le mode hand
+  // suspend la capture de sélection pour ne pas créer d'annotations fantômes
+  // pendant qu'on déplace la vue.
+  const [tool, setTool] = useState<"select" | "hand">("select");
+  // Rotation de lecture, locale au visualiseur. N'altère ni le fichier
+  // stocké ni l'analyse OCR — c'est une commodité d'affichage pour les PDFs
+  // déposés en paysage ou tête-bêche.
+  const [rotation, setRotation] = useState<0 | 90 | 180 | 270>(0);
+  // État interne du drag en mode hand. Pas dans le state React (pas de
+  // rendu déclenché par le drag, on touche directement scrollLeft/Top).
+  const panRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
+
   // Annotation state
   const [selection, setSelection] = useState<CapturedSelection | null>(null);
   const [showForm, setShowForm] = useState(false);
@@ -160,11 +174,51 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
     if (prev != null) setScale(prev);
   };
 
+  // Rotation à droite / gauche par incréments de 90°. On normalise dans
+  // [0, 360) via le modulo signé pour ne jamais passer rotate={-90}.
+  const rotateRight = () => setRotation((r) => (((r + 90) % 360) as 0 | 90 | 180 | 270));
+  const rotateLeft = () => setRotation((r) => (((r + 270) % 360) as 0 | 90 | 180 | 270));
+  const resetRotation = () => setRotation(0);
+
+  // Drag-to-pan en mode hand. On capture sur le conteneur scrollable et on
+  // ajuste scrollLeft/scrollTop selon le delta souris. setPointerCapture
+  // garantit qu'on garde les events même si le curseur sort du conteneur
+  // pendant le drag.
+  const onPanStart = (e: React.PointerEvent<HTMLDivElement>) => {
+    if (tool !== "hand") return;
+    const el = containerRef.current;
+    if (!el) return;
+    panRef.current = {
+      startX: e.clientX,
+      startY: e.clientY,
+      scrollLeft: el.scrollLeft,
+      scrollTop: el.scrollTop,
+    };
+    el.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const onPanMove = (e: React.PointerEvent<HTMLDivElement>) => {
+    const pan = panRef.current;
+    const el = containerRef.current;
+    if (!pan || !el) return;
+    el.scrollLeft = pan.scrollLeft - (e.clientX - pan.startX);
+    el.scrollTop = pan.scrollTop - (e.clientY - pan.startY);
+  };
+  const onPanEnd = (e: React.PointerEvent<HTMLDivElement>) => {
+    const el = containerRef.current;
+    if (panRef.current && el && el.hasPointerCapture(e.pointerId)) {
+      el.releasePointerCapture(e.pointerId);
+    }
+    panRef.current = null;
+  };
+
   // Capture de la sélection texte. Déclenchée au mouseup global pour ne pas
   // rater le cas où l'utilisateur termine sa sélection en dehors de la page.
-  // Si pas de documentId → pas de capture (mode lecture).
+  // Si pas de documentId → pas de capture (mode lecture). En mode "hand" on
+  // ignore aussi : le drag pour scroller ne doit jamais créer d'annotation.
   useEffect(() => {
     if (!documentId) return;
+    if (tool !== "select") return;
     const handleMouseUp = () => {
       const sel = window.getSelection();
       if (!sel || sel.isCollapsed || sel.rangeCount === 0) return;
@@ -207,7 +261,7 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
     };
     document.addEventListener("mouseup", handleMouseUp);
     return () => document.removeEventListener("mouseup", handleMouseUp);
-  }, [documentId, page]);
+  }, [documentId, page, tool]);
 
   const openForm = () => {
     setFormKind("note_perso");
@@ -282,6 +336,46 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
         <button type="button" onClick={zoomIn} disabled={scale >= SCALES[SCALES.length - 1]!} className="p-1 rounded hover:bg-gray-100 disabled:opacity-30" title="Agrandir">
           <ZoomIn className="w-4 h-4" />
         </button>
+        <div className="w-px h-4 bg-gray-200 mx-1" />
+        {/* Toggle outil sélection / main. En mode main, le clic-glissé
+            déplace la vue (utile zoomé) et la sélection texte est suspendue. */}
+        <button
+          type="button"
+          onClick={() => setTool("select")}
+          className={`p-1 rounded ${tool === "select" ? "bg-heureka-100 text-heureka-700" : "hover:bg-gray-100"}`}
+          title="Outil sélection (annoter le texte)"
+          aria-pressed={tool === "select"}
+        >
+          <MousePointer2 className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onClick={() => { setTool("hand"); setSelection(null); }}
+          className={`p-1 rounded ${tool === "hand" ? "bg-heureka-100 text-heureka-700" : "hover:bg-gray-100"}`}
+          title="Outil main (déplacer la vue au clic-glissé)"
+          aria-pressed={tool === "hand"}
+        >
+          <Hand className="w-4 h-4" />
+        </button>
+        <div className="w-px h-4 bg-gray-200 mx-1" />
+        {/* Rotation de lecture : locale au visualiseur, ne modifie pas le PDF
+            stocké. Pour normaliser l'orientation côté analyse, il faudra une
+            action séparée "corriger l'orientation" (cf. roadmap). */}
+        <button type="button" onClick={rotateLeft} className="p-1 rounded hover:bg-gray-100" title="Pivoter à gauche">
+          <RotateCcw className="w-4 h-4" />
+        </button>
+        <button type="button" onClick={rotateRight} className="p-1 rounded hover:bg-gray-100" title="Pivoter à droite">
+          <RotateCw className="w-4 h-4" />
+        </button>
+        <button
+          type="button"
+          onClick={resetRotation}
+          disabled={rotation === 0}
+          className="p-1 rounded hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed"
+          title="Réinitialiser la rotation"
+        >
+          <Undo2 className="w-4 h-4" />
+        </button>
         <div className="ml-auto flex items-center gap-2">
           {/* Tag de transparence réglementaire : visible UNIQUEMENT quand
               une variante compat est servie. Permet à l'instructeur de
@@ -326,8 +420,18 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
         </div>
       </div>
 
-      {/* Zone d'affichage du PDF */}
-      <div ref={containerRef} className="flex-1 overflow-auto flex justify-center p-4">
+      {/* Zone d'affichage du PDF. En mode hand : curseur grab/grabbing,
+          user-select bloqué pour que le drag ne déclenche pas de sélection
+          texte fantôme sur la couche react-pdf__Text. */}
+      <div
+        ref={containerRef}
+        onPointerDown={onPanStart}
+        onPointerMove={onPanMove}
+        onPointerUp={onPanEnd}
+        onPointerCancel={onPanEnd}
+        className={`flex-1 overflow-auto flex justify-center p-4 ${tool === "hand" ? "cursor-grab active:cursor-grabbing select-none" : ""}`}
+        style={tool === "hand" ? { touchAction: "none" } : undefined}
+      >
         {error ? (
           <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded px-4 py-3 max-w-md self-start mt-8">
             Impossible d'ouvrir le PDF : {error}
@@ -348,6 +452,7 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
             <Page
               pageNumber={page}
               scale={scale}
+              rotate={rotation}
               renderAnnotationLayer={true}
               renderTextLayer={true}
               className="shadow-lg"
