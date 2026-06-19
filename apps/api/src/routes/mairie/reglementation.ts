@@ -565,7 +565,10 @@ reglementationRouter.get("/documents/search", requireRole("mairie", "instructeur
     if (!query || !insee) return res.status(400).json({ error: "q et insee requis" });
 
     const { searchInCommune } = await import("../../services/ragService.js");
-    const hits = await searchInCommune({ query, insee, doc_types, top_k });
+    const hits = await searchInCommune({
+      query, insee, doc_types, top_k,
+      tracking: { purpose: "rag_search_mairie", userId: req.user?.id ?? null },
+    });
     res.json({ query, insee, hits });
   } catch (err) {
     console.error("[rag-search]", err);

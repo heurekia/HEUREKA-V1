@@ -601,6 +601,45 @@ CREATE INDEX IF NOT EXISTS idx_ai_usage_events_commune ON ai_usage_events(commun
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_created_at ON ai_usage_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_purpose ON ai_usage_events(purpose);
 
+-- ── Grille tarifaire IA, éditable depuis le back-office ────────────────────
+-- Une ligne par modèle Mistral (chat ou embedding). Le service aiUsage lit
+-- cette table pour estimer le coût des nouveaux appels — les anciens
+-- événements gardent leur cost_eur historique (pas de recalcul rétroactif).
+-- "kind" ∈ {chat, embedding}. Pour kind=embedding, output_eur_per_m=0.
+-- Le tarif EFFECTIVEMENT appliqué est dupliqué sur ai_usage_events (colonnes
+-- input_rate_eur_per_m / output_rate_eur_per_m) pour pouvoir auditer un
+-- événement même après modification de la grille.
+CREATE TABLE IF NOT EXISTS ai_pricing (
+  model              text PRIMARY KEY,
+  kind               text NOT NULL DEFAULT 'chat',
+  input_eur_per_m    double precision NOT NULL,
+  output_eur_per_m   double precision NOT NULL DEFAULT 0,
+  note               text,
+  updated_by         uuid REFERENCES users(id) ON DELETE SET NULL,
+  updated_at         timestamp NOT NULL DEFAULT now()
+);
+
+-- Seed initial : grille au 2026-06 publiée par Mistral
+-- (cf. https://mistral.ai/pricing/). Conversion USD→EUR à 0.92 indicative ;
+-- l'admin peut écraser ces valeurs à tout moment depuis l'onglet Coûts IA.
+INSERT INTO ai_pricing (model, kind, input_eur_per_m, output_eur_per_m, note)
+VALUES
+  ('mistral-large-latest',  'chat',      1.80, 5.40, 'Mistral Large 2 — tarif legacy'),
+  ('mistral-large-3',       'chat',      0.46, 1.38, 'Mistral Large 3 ($0.5/$1.5 par M tokens, USD→EUR ~0.92)'),
+  ('mistral-small-latest',  'chat',      0.20, 0.60, 'Mistral Small 3'),
+  ('mistral-small-4',       'chat',      0.09, 0.28, 'Mistral Small 4 ($0.1/$0.3 par M tokens, USD→EUR ~0.92)'),
+  ('pixtral-large-latest',  'chat',      2.00, 6.00, 'Pixtral Large — vision'),
+  ('pixtral-12b-2409',      'chat',      0.15, 0.15, 'Pixtral 12B — vision compact'),
+  ('mistral-embed',         'embedding', 0.09, 0.00, '$0.1 par M tokens, USD→EUR ~0.92')
+ON CONFLICT (model) DO NOTHING;
+
+-- Tarif effectif appliqué à chaque événement (audit + réconciliation).
+-- NULLABLE pour les lignes historiques (avant déploiement de cette colonne).
+ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS input_rate_eur_per_m double precision;
+ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS output_rate_eur_per_m double precision;
+-- Endpoint Mistral utilisé : 'chat' (chat completions) | 'embedding' (embeddings).
+ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS endpoint text;
+
 -- ── Configuration alertes Slack sur les coûts IA (singleton id=1) ──
 CREATE TABLE IF NOT EXISTS ai_alert_config (
   id                      integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),

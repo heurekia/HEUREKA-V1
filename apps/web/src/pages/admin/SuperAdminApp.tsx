@@ -4391,6 +4391,229 @@ function AlertsCard() {
   );
 }
 
+interface AiPricingRow {
+  model: string;
+  kind: "chat" | "embedding";
+  input_eur_per_m: number;
+  output_eur_per_m: number;
+  note: string | null;
+  updated_at: string;
+}
+
+function PricingCard() {
+  const [rows, setRows] = useState<AiPricingRow[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [toast, setToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+
+  // Brouillon par modèle pour permettre l'édition contrôlée des champs.
+  const [drafts, setDrafts] = useState<Record<string, { input: string; output: string; note: string; kind: "chat" | "embedding" }>>({});
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.get<AiPricingRow[]>("/admin/ai-cost/pricing")
+      .then((data) => {
+        setRows(data);
+        const d: Record<string, { input: string; output: string; note: string; kind: "chat" | "embedding" }> = {};
+        for (const r of data) {
+          d[r.model] = {
+            input: String(r.input_eur_per_m),
+            output: String(r.output_eur_per_m),
+            note: r.note ?? "",
+            kind: r.kind,
+          };
+        }
+        setDrafts(d);
+      })
+      .catch(() => setToast({ kind: "err", msg: "Impossible de charger la grille tarifaire." }))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const save = async (model: string) => {
+    const d = drafts[model];
+    if (!d) return;
+    setSaving(model);
+    try {
+      await api.put<AiPricingRow>(`/admin/ai-cost/pricing/${encodeURIComponent(model)}`, {
+        kind: d.kind,
+        input_eur_per_m: Number(d.input),
+        output_eur_per_m: Number(d.output),
+        note: d.note.trim() || null,
+      });
+      setToast({ kind: "ok", msg: `Tarif ${model} mis à jour.` });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const del = async (model: string) => {
+    if (!confirm(`Retirer ${model} de la grille tarifaire ? (les anciens événements gardent leur coût)`)) return;
+    setSaving(model);
+    try {
+      await api.delete(`/admin/ai-cost/pricing/${encodeURIComponent(model)}`);
+      setToast({ kind: "ok", msg: `${model} retiré.` });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const addRow = async (form: { model: string; kind: "chat" | "embedding"; input: string; output: string; note: string }) => {
+    if (!form.model.trim()) {
+      setToast({ kind: "err", msg: "Identifiant Mistral requis (ex: pixtral-large-latest)." });
+      return;
+    }
+    setSaving(form.model);
+    try {
+      await api.put<AiPricingRow>(`/admin/ai-cost/pricing/${encodeURIComponent(form.model.trim())}`, {
+        kind: form.kind,
+        input_eur_per_m: Number(form.input),
+        output_eur_per_m: form.kind === "embedding" ? 0 : Number(form.output),
+        note: form.note.trim() || null,
+      });
+      setAdding(false);
+      setToast({ kind: "ok", msg: `Tarif ${form.model} ajouté.` });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 24 }}>
+      <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Tarifs Mistral (€ par million de tokens)</div>
+          <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>
+            Sert au calcul d'estimation. La facture réelle reste celle de la console <a href="https://console.mistral.ai/" target="_blank" rel="noreferrer" style={{ color: C.accent }}>Mistral</a> — pensez à recopier la grille publiée sur <a href="https://mistral.ai/pricing/" target="_blank" rel="noreferrer" style={{ color: C.accent }}>mistral.ai/pricing</a>.
+          </div>
+        </div>
+        <button onClick={() => setAdding((v) => !v)}
+          style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+          {adding ? "Annuler" : "+ Ajouter un modèle"}
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ padding: 30, textAlign: "center" }}><Spinner size={18} /></div>
+      ) : (
+        <>
+          {adding && <AddPricingRow onSubmit={addRow} saving={saving !== null} />}
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Modèle</th>
+                <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Type</th>
+                <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Input €/M</th>
+                <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Output €/M</th>
+                <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Note</th>
+                <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Mis à jour</th>
+                <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(rows ?? []).map((r) => {
+                const d = drafts[r.model] ?? { input: String(r.input_eur_per_m), output: String(r.output_eur_per_m), note: r.note ?? "", kind: r.kind };
+                const dirty = d.input !== String(r.input_eur_per_m) || d.output !== String(r.output_eur_per_m) || (d.note ?? "") !== (r.note ?? "") || d.kind !== r.kind;
+                return (
+                  <tr key={r.model} style={{ borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "10px 20px", color: C.text, fontFamily: "monospace", fontSize: 12 }}>{r.model}</td>
+                    <td style={{ padding: "10px 20px" }}>
+                      <select value={d.kind} onChange={(e) => setDrafts((s) => ({ ...s, [r.model]: { ...d, kind: e.target.value as "chat" | "embedding" } }))}
+                        style={{ padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}>
+                        <option value="chat">chat</option>
+                        <option value="embedding">embedding</option>
+                      </select>
+                    </td>
+                    <td style={{ padding: "10px 20px", textAlign: "right" }}>
+                      <input type="number" step="0.001" min="0" value={d.input}
+                        onChange={(e) => setDrafts((s) => ({ ...s, [r.model]: { ...d, input: e.target.value } }))}
+                        style={{ width: 80, padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, textAlign: "right" }} />
+                    </td>
+                    <td style={{ padding: "10px 20px", textAlign: "right" }}>
+                      <input type="number" step="0.001" min="0" value={d.output} disabled={d.kind === "embedding"}
+                        onChange={(e) => setDrafts((s) => ({ ...s, [r.model]: { ...d, output: e.target.value } }))}
+                        style={{ width: 80, padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, textAlign: "right", opacity: d.kind === "embedding" ? 0.4 : 1 }} />
+                    </td>
+                    <td style={{ padding: "10px 20px" }}>
+                      <input type="text" value={d.note} placeholder="ex: tarif officiel 2026-06"
+                        onChange={(e) => setDrafts((s) => ({ ...s, [r.model]: { ...d, note: e.target.value } }))}
+                        style={{ width: "100%", padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
+                    </td>
+                    <td style={{ padding: "10px 20px", color: C.textMuted, fontSize: 11, textAlign: "right" }}>{new Date(r.updated_at).toLocaleDateString("fr-FR")}</td>
+                    <td style={{ padding: "10px 20px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button onClick={() => save(r.model)} disabled={!dirty || saving === r.model}
+                        style={{ padding: "4px 10px", marginRight: 6, borderRadius: 6, border: "none", background: dirty ? C.accent : C.border, color: dirty ? "white" : C.textMuted, fontSize: 12, fontWeight: 600, cursor: dirty ? "pointer" : "default" }}>
+                        {saving === r.model ? "…" : "OK"}
+                      </button>
+                      <button onClick={() => del(r.model)} disabled={saving === r.model}
+                        title="Retirer de la grille"
+                        style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: "white", color: C.red, fontSize: 12, cursor: "pointer" }}>×</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {toast && (
+            <div style={{
+              margin: 12, padding: "8px 12px", borderRadius: 8, fontSize: 13,
+              background: toast.kind === "ok" ? C.greenBg : C.redBg,
+              border: `1px solid ${toast.kind === "ok" ? C.green : C.red}`,
+              color: toast.kind === "ok" ? C.green : C.red,
+            }}>{toast.msg}</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AddPricingRow({ onSubmit, saving }: { onSubmit: (f: { model: string; kind: "chat" | "embedding"; input: string; output: string; note: string }) => void; saving: boolean }) {
+  const [model, setModel] = useState("");
+  const [kind, setKind] = useState<"chat" | "embedding">("chat");
+  const [input, setInput] = useState("");
+  const [output, setOutput] = useState("");
+  const [note, setNote] = useState("");
+  return (
+    <div style={{ padding: "12px 20px", background: C.accentLight, borderBottom: `1px solid ${C.border}`, display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 2fr auto", gap: 8, alignItems: "center" }}>
+      <input type="text" placeholder="id Mistral (ex: mistral-large-3)" value={model} onChange={(e) => setModel(e.target.value)}
+        style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "monospace" }} />
+      <select value={kind} onChange={(e) => setKind(e.target.value as "chat" | "embedding")}
+        style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}>
+        <option value="chat">chat</option>
+        <option value="embedding">embedding</option>
+      </select>
+      <input type="number" step="0.001" min="0" placeholder="input €/M" value={input} onChange={(e) => setInput(e.target.value)}
+        style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, textAlign: "right" }} />
+      <input type="number" step="0.001" min="0" placeholder="output €/M" value={output} onChange={(e) => setOutput(e.target.value)} disabled={kind === "embedding"}
+        style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, textAlign: "right", opacity: kind === "embedding" ? 0.4 : 1 }} />
+      <input type="text" placeholder="note (source, version)" value={note} onChange={(e) => setNote(e.target.value)}
+        style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
+      <button onClick={() => onSubmit({ model, kind, input, output, note })} disabled={saving}
+        style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: C.accent, color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+        Ajouter
+      </button>
+    </div>
+  );
+}
+
 function CoutsIA() {
   const navigate = useNavigate();
   // Deux modes de filtre exclusifs : quick (boutons 7j/30j/Tout) ou custom
@@ -4429,9 +4652,9 @@ function CoutsIA() {
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24, gap: 16, flexWrap: "wrap" }}>
         <div>
-          <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Coûts IA</h1>
+          <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Coûts IA <span style={{ fontSize: 13, fontWeight: 600, color: C.textMuted, marginLeft: 8 }}>· estimés</span></h1>
           <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>
-            Suivi du coût des appels Mistral par dossier et par usage métier.
+            Estimation calculée à partir des tokens retournés par Mistral et de la grille tarifaire ci-dessous. La facture officielle reste celle de la <a href="https://console.mistral.ai/" target="_blank" rel="noreferrer" style={{ color: C.accent }}>console Mistral</a>.
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -4487,6 +4710,9 @@ function CoutsIA() {
         <>
           {/* Alertes Slack */}
           <AlertsCard />
+
+          {/* Tarifs Mistral éditables */}
+          <PricingCard />
 
           {/* Totaux */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>

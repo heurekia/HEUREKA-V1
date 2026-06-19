@@ -10,6 +10,7 @@ import { loadSegments } from "./db/loader.ts";
 import { structureSegments } from "./structure/structurer.ts";
 import { mistralLlm } from "./structure/mistral-llm.ts";
 import { loadRules } from "./db/rules-loader.ts";
+import { trackIngestionUsage } from "./db/usage-tracker.ts";
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -52,7 +53,16 @@ async function main() {
   // que le texte COURT des articles d'une zone, jamais le PDF entier.
   if (flag("--rules")) {
     console.log(`\n🤖 Structuration des règles par article (Mistral)…`);
-    const zoneRules = await structureSegments(segments, mistralLlm(), {
+    const zoneRules = await structureSegments(segments, mistralLlm({
+      onUsage: (u) => trackIngestionUsage({
+        purpose: "plu_structure_cli",
+        model: u.model,
+        endpoint: "chat",
+        input_tokens: u.prompt_tokens,
+        output_tokens: u.completion_tokens,
+        duration_ms: u.duration_ms,
+      }),
+    }), {
       onZone: (zone, count) => console.log(`   ${zone} → ${count} règles`),
     });
     const res = await loadRules(insee, commune, zoneRules, {
@@ -73,7 +83,18 @@ async function main() {
   // --load : pousse les segments + embeddings (mistral-embed) dans pgvector.
   if (flag("--load")) {
     console.log(`\n🔗 Chargement en base (pgvector)…`);
-    const { upserted } = await loadSegments(segments);
+    const { upserted } = await loadSegments(segments, {
+      embed_options: {
+        onUsage: (u) => trackIngestionUsage({
+          purpose: "plu_embed_cli",
+          model: u.model,
+          endpoint: "embedding",
+          input_tokens: u.prompt_tokens,
+          output_tokens: 0,
+          duration_ms: u.duration_ms,
+        }),
+      },
+    });
     console.log(`✓ ${upserted} segments chargés dans document_segments.`);
   }
 

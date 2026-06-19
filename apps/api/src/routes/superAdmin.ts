@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
+import { invalidatePricingCache } from "../services/aiUsage.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, lt, inArray } from "drizzle-orm";
 import crypto from "crypto";
@@ -1370,6 +1371,88 @@ superAdminRouter.post("/ai-cost/alerts/test", async (_req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Grille tarifaire IA (éditable depuis l'onglet Coûts IA) ───────────────
+// L'onglet affiche un coût ESTIMÉ : l'admin peut aligner la grille sur les
+// tarifs publiés par Mistral (cf. https://mistral.ai/pricing/) sans
+// redéploiement. Les anciens événements gardent leur cost_eur ; les nouveaux
+// utilisent la grille à jour. Le tarif effectivement appliqué à chaque
+// événement est gelé dans ai_usage_events.input_rate_eur_per_m / output_rate.
+superAdminRouter.get("/ai-cost/pricing", async (_req, res) => {
+  try {
+    const rows = await db.select().from(ai_pricing).orderBy(asc(ai_pricing.kind), asc(ai_pricing.model));
+    res.json(rows);
+  } catch (err) {
+    console.error("[ai-cost/pricing GET]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PUT /admin/ai-cost/pricing/:model — upsert d'un tarif. Le body accepte
+// input_eur_per_m, output_eur_per_m, kind ('chat'|'embedding'), note.
+superAdminRouter.put("/ai-cost/pricing/:model", async (req, res) => {
+  try {
+    const model = req.params.model.trim();
+    if (!model) return res.status(400).json({ error: "Modèle manquant" });
+    const body = (req.body ?? {}) as {
+      kind?: string;
+      input_eur_per_m?: number;
+      output_eur_per_m?: number;
+      note?: string | null;
+    };
+    const nonNeg = (v: unknown): number => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error("Tarif invalide (doit être un nombre ≥ 0)");
+      }
+      return n;
+    };
+    const kind = body.kind === "embedding" ? "embedding" : "chat";
+    const input = nonNeg(body.input_eur_per_m);
+    const output = kind === "embedding" ? 0 : nonNeg(body.output_eur_per_m);
+    const note = typeof body.note === "string" ? body.note.trim() || null : null;
+    const user = (req as { user?: { id?: string } }).user;
+
+    await db.insert(ai_pricing).values({
+      model,
+      kind,
+      input_eur_per_m: input,
+      output_eur_per_m: output,
+      note,
+      updated_by: user?.id ?? null,
+      updated_at: new Date(),
+    }).onConflictDoUpdate({
+      target: ai_pricing.model,
+      set: {
+        kind,
+        input_eur_per_m: input,
+        output_eur_per_m: output,
+        note,
+        updated_by: user?.id ?? null,
+        updated_at: new Date(),
+      },
+    });
+    invalidatePricingCache();
+    const [row] = await db.select().from(ai_pricing).where(eq(ai_pricing.model, model)).limit(1);
+    res.json(row);
+  } catch (err) {
+    console.error("[ai-cost/pricing PUT]", err);
+    res.status(400).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// DELETE /admin/ai-cost/pricing/:model — retire un modèle de la grille.
+// Le fallback en dur dans aiUsage.ts reprend le relais s'il est encore connu.
+superAdminRouter.delete("/ai-cost/pricing/:model", async (req, res) => {
+  try {
+    await db.delete(ai_pricing).where(eq(ai_pricing.model, req.params.model));
+    invalidatePricingCache();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[ai-cost/pricing DELETE]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

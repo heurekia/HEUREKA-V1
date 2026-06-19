@@ -37,7 +37,7 @@ const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
 
 // ── Mapping pièce → thèmes PLU vérifiables sur la pièce ──────────────────────
 // Pour chaque famille de pièce, on liste les "topics" de règles que ce document
-// peut effectivement servir à vérifier. Évite que Claude reçoive l'intégralité du
+// peut effectivement servir à vérifier. Évite que le LLM reçoive l'intégralité du
 // PLU pour une simple photographie. Les topics correspondent à
 // zone_regulatory_rules.topic et zone_regulatory_rules.sub_theme.
 const PIECE_TOPICS: Record<string, string[]> = {
@@ -246,9 +246,13 @@ export function buildSynthese(
 
 // ── Orchestrateur principal ──────────────────────────────────────────────────
 
-const MODEL_ID = "claude-haiku-4-5-20251001";
+// Modèle utilisé pour l'analyse de conformité. Référence symbolique côté
+// service `aiUsage` (résolue vers le modèle Mistral réel : pixtral-large par
+// défaut). Stocké tel quel dans le `model` du rapport ConformiteReport pour
+// l'audit ; n'est plus utilisé comme clé API.
+const MODEL_ID = "ai-smart";
 // Garde-fou : analyse séquentielle des pièces avec un petit niveau de parallélisme
-// pour ne pas saturer l'API Anthropic. Limite RPM Claude Haiku ~50/min.
+// pour ne pas saturer l'API Mistral. Quotas par défaut La Plateforme : ~5 req/s.
 const MAX_PARALLEL = 3;
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
@@ -658,7 +662,10 @@ export async function runDossierConformityAnalysis(
             ].filter(Boolean);
             const query = queryParts.join(" ").trim();
             if (query.length > 5) {
-              const hits = await searchInCommune({ query, insee: communeInsee, top_k: 6 });
+              const hits = await searchInCommune({
+                query, insee: communeInsee, top_k: 6,
+                tracking: { purpose: "rag_search_conformity", dossierId, communeId: resolvedCommuneId },
+              });
               regulatoryHits = hits.map((h) => ({
                 segment_id: h.segment_id,
                 doc_type: h.doc_type,

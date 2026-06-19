@@ -41,6 +41,7 @@ interface Row {
   status: string;
   insee_code: string;
   commune_name: string;
+  commune_id: string;
 }
 
 async function loadCorpus(): Promise<Row[]> {
@@ -58,6 +59,7 @@ async function loadCorpus(): Promise<Row[]> {
       status: regulatory_documents.status,
       insee_code: communes.insee_code,
       commune_name: communes.name,
+      commune_id: communes.id,
     })
     .from(regulatory_documents)
     .innerJoin(communes, eq(regulatory_documents.commune_id, communes.id))
@@ -96,6 +98,7 @@ async function main() {
         document_name: r.name,
         original_filename: r.original_filename,
         pdf_base64: r.pdf_content,
+        commune_id: r.commune_id,
       });
 
       const nextStatus = result.chunks > 0 ? "indexed" : "indexing_empty";

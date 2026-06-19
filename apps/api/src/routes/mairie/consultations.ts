@@ -101,6 +101,7 @@ consultationsRouter.post("/documents", async (req: AuthRequest, res) => {
             document_name: name,
             original_filename,
             pdf_base64,
+            commune_id: commune.id,
           });
           await db.update(regulatory_documents)
             .set({ status: result.chunks > 0 ? "indexed" : "indexing_empty", ingested_at: new Date(), updated_at: new Date() })
