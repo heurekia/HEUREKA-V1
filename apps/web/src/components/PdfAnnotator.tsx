@@ -136,6 +136,45 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
     setPage(initialPage);
   }, [initialPage]);
 
+  // Raccourcis clavier — actifs uniquement quand le focus n'est pas dans un
+  // champ texte (sinon "r" rentrerait dans la textarea de l'annotation).
+  //   r      : pivoter à droite     R / Shift+R : pivoter à gauche
+  //   0      : réinitialiser la rotation
+  //   h      : outil main           v : outil sélection
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const target = e.target as HTMLElement | null;
+      const tag = target?.tagName;
+      if (target?.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.ctrlKey || e.metaKey || e.altKey) return;
+      switch (e.key) {
+        case "r":
+          setRotation((r) => (((r + 90) % 360) as 0 | 90 | 180 | 270));
+          break;
+        case "R":
+          setRotation((r) => (((r + 270) % 360) as 0 | 90 | 180 | 270));
+          break;
+        case "0":
+          setRotation(0);
+          break;
+        case "h":
+        case "H":
+          setTool("hand");
+          setSelection(null);
+          break;
+        case "v":
+        case "V":
+          setTool("select");
+          break;
+        default:
+          return;
+      }
+      e.preventDefault();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+
   // Détection variant (compat/original) — uniquement pour les fichiers
   // qui ont un bouton "Télécharger l'original" (= pièces du dossier).
   // Sans originalDownloadUrl on n'a rien à afficher, donc on évite la
@@ -343,7 +382,7 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
           type="button"
           onClick={() => setTool("select")}
           className={`p-1 rounded ${tool === "select" ? "bg-heureka-100 text-heureka-700" : "hover:bg-gray-100"}`}
-          title="Outil sélection (annoter le texte)"
+          title="Outil sélection — annoter le texte (V)"
           aria-pressed={tool === "select"}
         >
           <MousePointer2 className="w-4 h-4" />
@@ -352,7 +391,7 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
           type="button"
           onClick={() => { setTool("hand"); setSelection(null); }}
           className={`p-1 rounded ${tool === "hand" ? "bg-heureka-100 text-heureka-700" : "hover:bg-gray-100"}`}
-          title="Outil main (déplacer la vue au clic-glissé)"
+          title="Outil main — déplacer la vue au clic-glissé (H)"
           aria-pressed={tool === "hand"}
         >
           <Hand className="w-4 h-4" />
@@ -361,10 +400,10 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
         {/* Rotation de lecture : locale au visualiseur, ne modifie pas le PDF
             stocké. Pour normaliser l'orientation côté analyse, il faudra une
             action séparée "corriger l'orientation" (cf. roadmap). */}
-        <button type="button" onClick={rotateLeft} className="p-1 rounded hover:bg-gray-100" title="Pivoter à gauche">
+        <button type="button" onClick={rotateLeft} className="p-1 rounded hover:bg-gray-100" title="Pivoter à gauche (Maj+R)">
           <RotateCcw className="w-4 h-4" />
         </button>
-        <button type="button" onClick={rotateRight} className="p-1 rounded hover:bg-gray-100" title="Pivoter à droite">
+        <button type="button" onClick={rotateRight} className="p-1 rounded hover:bg-gray-100" title="Pivoter à droite (R)">
           <RotateCw className="w-4 h-4" />
         </button>
         <button
@@ -372,10 +411,18 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
           onClick={resetRotation}
           disabled={rotation === 0}
           className="p-1 rounded hover:bg-gray-100 disabled:opacity-30 disabled:cursor-not-allowed"
-          title="Réinitialiser la rotation"
+          title="Réinitialiser la rotation (0)"
         >
           <Undo2 className="w-4 h-4" />
         </button>
+        {/* Indicateur d'angle — n'apparaît qu'en rotation non nulle pour ne
+            pas alourdir la barre en lecture standard. Tabular-nums évite que
+            le « ° » ne saute selon le chiffre affiché. */}
+        {rotation !== 0 && (
+          <span className="tabular-nums text-[10px] font-semibold text-heureka-700 bg-heureka-50 border border-heureka-200 rounded px-1.5 py-0.5">
+            {rotation}°
+          </span>
+        )}
         <div className="ml-auto flex items-center gap-2">
           {/* Tag de transparence réglementaire : visible UNIQUEMENT quand
               une variante compat est servie. Permet à l'instructeur de
