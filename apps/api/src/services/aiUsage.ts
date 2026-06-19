@@ -18,23 +18,68 @@ import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "n
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { db } from "../db.js";
-import { ai_usage_events } from "@heureka-v1/db";
+import { ai_usage_events, ai_pricing } from "@heureka-v1/db";
 import { maybeNotify } from "./aiAlerts.js";
 
 const MISTRAL_API_BASE = process.env.MISTRAL_API_BASE ?? "https://api.mistral.ai/v1";
 
 // ── Tarifs Mistral La Plateforme (EUR par million de tokens) ────────────────
-// Mistral facture en EUR-natif, pas de conversion USD→EUR. Aucun équivalent
-// prompt caching à ce jour côté Mistral → cache_*_input_tokens toujours à 0
-// dans ai_usage_events.
-interface MistralPricing { input_eur: number; output_eur: number; }
-const MISTRAL_PRICING: Record<string, MistralPricing> = {
-  "pixtral-12b-2409":     { input_eur: 0.15, output_eur: 0.15 },
-  "pixtral-large-latest": { input_eur: 2.0,  output_eur: 6.0 },
-  "mistral-large-latest": { input_eur: 1.8,  output_eur: 5.4 },
-  "mistral-small-latest": { input_eur: 0.2,  output_eur: 0.6 },
+// La grille est désormais lue depuis la table `ai_pricing`, éditable depuis
+// l'onglet "Coûts IA" du back-office. On garde un cache mémoire 60 s pour ne
+// pas requêter la DB à chaque appel LLM. Le fallback `DEFAULT_PRICING` n'est
+// utilisé que si (1) la DB n'a pas encore la ligne pour ce modèle ET (2) le
+// cache n'a jamais été chargé — typiquement au boot avant le premier appel.
+interface MistralPricing { input_eur: number; output_eur: number; kind: "chat" | "embedding"; }
+const FALLBACK_PRICING: Record<string, MistralPricing> = {
+  "pixtral-12b-2409":     { input_eur: 0.15, output_eur: 0.15, kind: "chat" },
+  "pixtral-large-latest": { input_eur: 2.0,  output_eur: 6.0,  kind: "chat" },
+  "mistral-large-latest": { input_eur: 1.8,  output_eur: 5.4,  kind: "chat" },
+  "mistral-large-3":      { input_eur: 0.46, output_eur: 1.38, kind: "chat" },
+  "mistral-small-latest": { input_eur: 0.2,  output_eur: 0.6,  kind: "chat" },
+  "mistral-small-4":      { input_eur: 0.09, output_eur: 0.28, kind: "chat" },
+  "mistral-embed":        { input_eur: 0.09, output_eur: 0,    kind: "embedding" },
 };
-const DEFAULT_PRICING: MistralPricing = MISTRAL_PRICING["pixtral-large-latest"]!;
+const DEFAULT_PRICING: MistralPricing = FALLBACK_PRICING["pixtral-large-latest"]!;
+
+// Cache mémoire de la grille tarifaire. Rafraîchi à la demande (TTL 60 s) ou
+// invalidé explicitement par la route PUT /admin/ai-cost/pricing.
+const PRICING_TTL_MS = 60_000;
+let pricingCache: { at: number; map: Record<string, MistralPricing> } | null = null;
+
+async function loadPricing(): Promise<Record<string, MistralPricing>> {
+  const now = Date.now();
+  if (pricingCache && now - pricingCache.at < PRICING_TTL_MS) return pricingCache.map;
+  try {
+    const rows = await db
+      .select({
+        model: ai_pricing.model,
+        kind: ai_pricing.kind,
+        input_eur_per_m: ai_pricing.input_eur_per_m,
+        output_eur_per_m: ai_pricing.output_eur_per_m,
+      })
+      .from(ai_pricing);
+    const map: Record<string, MistralPricing> = { ...FALLBACK_PRICING };
+    for (const r of rows) {
+      map[r.model] = {
+        input_eur: Number(r.input_eur_per_m),
+        output_eur: Number(r.output_eur_per_m),
+        kind: (r.kind === "embedding" ? "embedding" : "chat") as "chat" | "embedding",
+      };
+    }
+    pricingCache = { at: now, map };
+    return map;
+  } catch (err) {
+    // Si la DB est indisponible, on retombe sur la grille en dur — préférable
+    // à un cost_eur=0 qui maquillerait la facture estimée.
+    console.warn("[aiUsage] loadPricing fallback (DB unreachable):", err instanceof Error ? err.message : err);
+    return FALLBACK_PRICING;
+  }
+}
+
+/** Invalidation explicite du cache (après PUT /admin/ai-cost/pricing). */
+export function invalidatePricingCache(): void {
+  pricingCache = null;
+}
 
 // ── Noms abstraits d'usage (côté appelants) ─────────────────────────────────
 // Les services métier déclarent leur besoin par un nom abstrait (`ai-fast`
@@ -51,10 +96,21 @@ function resolveModel(canonical: string): string {
   return MODEL_MAP[canonical] ?? canonical;
 }
 
-function computeCostEur(model: string, prompt_tokens: number, completion_tokens: number): number {
-  const p = MISTRAL_PRICING[model] ?? DEFAULT_PRICING;
+interface PricedCost {
+  cost_eur: number;
+  input_eur_per_m: number;
+  output_eur_per_m: number;
+}
+
+async function computeCostEur(model: string, prompt_tokens: number, completion_tokens: number): Promise<PricedCost> {
+  const pricing = await loadPricing();
+  const p = pricing[model] ?? DEFAULT_PRICING;
   const eur = (prompt_tokens * p.input_eur + completion_tokens * p.output_eur) / 1_000_000;
-  return Math.round(eur * 1_000_000) / 1_000_000;
+  return {
+    cost_eur: Math.round(eur * 1_000_000) / 1_000_000,
+    input_eur_per_m: p.input_eur,
+    output_eur_per_m: p.output_eur,
+  };
 }
 
 function getMistralKey(): string {
@@ -271,36 +327,60 @@ function trackUsage(
   promptTokens: number,
   completionTokens: number,
   durationMs: number,
-  label: "call" | "stream",
+  label: "call" | "stream" | "embedding" | "external",
+  endpoint: "chat" | "embedding" = "chat",
 ): void {
-  const cost = computeCostEur(model, promptTokens, completionTokens);
-  void db.insert(ai_usage_events).values({
-    dossier_id: ctx.dossierId ?? null,
-    commune_id: ctx.communeId ?? null,
-    user_id: ctx.userId ?? null,
-    purpose: ctx.purpose,
-    model,
-    input_tokens: promptTokens,
-    output_tokens: completionTokens,
-    cache_read_input_tokens: 0,
-    cache_creation_input_tokens: 0,
-    cost_eur: cost,
-    duration_ms: durationMs,
-    file_hash: ctx.fileHash ?? null,
-  }).then(() => {
-    void maybeNotify({
-      purpose: ctx.purpose,
-      model,
-      cost_eur: cost,
-      dossier_id: ctx.dossierId ?? null,
-      commune_id: ctx.communeId ?? null,
-    });
-  }).catch((err) => {
-    console.error(
-      `[aiUsage] ⚠️  INSERT ÉCHOUÉ (${label}) — événement payant non tracé (purpose=${ctx.purpose}, model=${model}, cost=${cost}€).`,
-      err instanceof Error ? err.message : err,
-    );
-  });
+  void (async () => {
+    const priced = await computeCostEur(model, promptTokens, completionTokens);
+    try {
+      await db.insert(ai_usage_events).values({
+        dossier_id: ctx.dossierId ?? null,
+        commune_id: ctx.communeId ?? null,
+        user_id: ctx.userId ?? null,
+        purpose: ctx.purpose,
+        model,
+        input_tokens: promptTokens,
+        output_tokens: completionTokens,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cost_eur: priced.cost_eur,
+        input_rate_eur_per_m: priced.input_eur_per_m,
+        output_rate_eur_per_m: priced.output_eur_per_m,
+        endpoint,
+        duration_ms: durationMs,
+        file_hash: ctx.fileHash ?? null,
+      });
+      void maybeNotify({
+        purpose: ctx.purpose,
+        model,
+        cost_eur: priced.cost_eur,
+        dossier_id: ctx.dossierId ?? null,
+        commune_id: ctx.communeId ?? null,
+      });
+    } catch (err) {
+      console.error(
+        `[aiUsage] ⚠️  INSERT ÉCHOUÉ (${label}) — événement payant non tracé (purpose=${ctx.purpose}, model=${model}, cost=${priced.cost_eur}€).`,
+        err instanceof Error ? err.message : err,
+      );
+    }
+  })();
+}
+
+/**
+ * Wrapper de tracking pour les appels Mistral qui ne passent PAS par callAi/
+ * streamAi (embeddings, structuration via `mistralLlm()` côté ingestion, etc.).
+ * À appeler après une réponse HTTP réussie, avec les tokens retournés par
+ * Mistral et l'endpoint frappé (`chat` ou `embedding`).
+ */
+export function trackExternalMistralUsage(
+  ctx: CallAiContext,
+  model: string,
+  promptTokens: number,
+  completionTokens: number,
+  durationMs: number,
+  endpoint: "chat" | "embedding" = "chat",
+): void {
+  trackUsage(ctx, model, promptTokens, completionTokens, durationMs, "external", endpoint);
 }
 
 // ── callAi (non-streaming) ──────────────────────────────────────────────────

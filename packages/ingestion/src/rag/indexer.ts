@@ -11,7 +11,7 @@
 import { db, document_segments } from "@heureka-v1/db";
 import { sql, eq } from "drizzle-orm";
 import { chunkPages, type ChunkOptions } from "./chunker.ts";
-import { embedTexts } from "../db/embedder.ts";
+import { embedTexts, type EmbedOptions } from "../db/embedder.ts";
 
 export interface IndexParams {
   /**
@@ -36,6 +36,8 @@ export interface IndexParams {
   /** Métadonnées libres ajoutées à chaque segment (pour affichage / filtres). */
   extra_metadata?: Record<string, unknown>;
   chunk_options?: ChunkOptions;
+  /** Callback injecté par l'appelant pour tracer les embeddings dans ai_usage_events. */
+  embed_options?: EmbedOptions;
 }
 
 export interface IndexResult {
@@ -71,7 +73,7 @@ export async function indexDocument(p: IndexParams): Promise<IndexResult> {
   await deleteIndexFor(p.source_id);
 
   // Embeddings par lots (le batcher interne de embedTexts gère MAX_BATCH=128).
-  const embeddings = await embedTexts(chunks.map((c) => c.text));
+  const embeddings = await embedTexts(chunks.map((c) => c.text), p.embed_options);
 
   const rows = chunks.map((c, j) => ({
     id: SEGMENT_ID(p.source_id, c.index),

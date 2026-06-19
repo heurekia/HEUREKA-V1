@@ -22,6 +22,12 @@ export const ai_usage_events = pgTable("ai_usage_events", {
   cache_read_input_tokens: integer("cache_read_input_tokens").notNull().default(0),
   cache_creation_input_tokens: integer("cache_creation_input_tokens").notNull().default(0),
   cost_eur: doublePrecision("cost_eur").notNull().default(0),
+  // Tarif effectivement appliqué lors de l'estimation (snapshot de ai_pricing
+  // au moment de l'insert). Permet de réconcilier après édition de la grille.
+  input_rate_eur_per_m: doublePrecision("input_rate_eur_per_m"),
+  output_rate_eur_per_m: doublePrecision("output_rate_eur_per_m"),
+  // Endpoint Mistral : 'chat' ou 'embedding'.
+  endpoint: text("endpoint"),
   duration_ms: integer("duration_ms"),
   // RGPD : SHA-256 du fichier soumis à l'IA (NULL pour les appels sans
   // contenu utilisateur). Permet l'audit "tel fichier a-t-il été envoyé ?"

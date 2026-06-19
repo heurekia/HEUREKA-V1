@@ -8,7 +8,7 @@
  */
 import { db, document_segments, document_segment_annotations } from "@heureka-v1/db";
 import { sql, eq, and, inArray } from "drizzle-orm";
-import { embedTexts } from "../db/embedder.ts";
+import { embedTexts, type EmbedOptions } from "../db/embedder.ts";
 
 export interface SearchParams {
   query: string;
@@ -19,6 +19,8 @@ export interface SearchParams {
   top_k?: number;
   /** Distance cosine maximale (1 - similarité). 0 = identique, 1 = orthogonal. */
   max_distance?: number;
+  /** Callback injecté par l'appelant pour tracer l'embedding de la requête. */
+  embed_options?: EmbedOptions;
 }
 
 export interface AnnotationHit {
@@ -51,7 +53,7 @@ export async function searchSegments(p: SearchParams): Promise<SearchHit[]> {
 
   // 1. Embedding de la requête. Mistral n'a qu'un seul espace (pas de
   // dual-space document/query comme Voyage), même fonction des deux côtés.
-  const [queryEmbedding] = await embedTexts([p.query]);
+  const [queryEmbedding] = await embedTexts([p.query], p.embed_options);
   if (!queryEmbedding) return [];
 
   // 2. Recherche cosine en SQL. L'opérateur <=> de pgvector renvoie la

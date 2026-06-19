@@ -6,19 +6,22 @@
 import { db, document_segments } from "@heureka-v1/db";
 import { sql } from "drizzle-orm";
 import type { Segment } from "../adapters/interface.ts";
-import { embedTexts } from "./embedder.ts";
+import { embedTexts, type EmbedOptions } from "./embedder.ts";
 
 export interface LoadResult {
   upserted: number;
 }
 
-export async function loadSegments(segments: Segment[], opts: { batchSize?: number } = {}): Promise<LoadResult> {
+export async function loadSegments(
+  segments: Segment[],
+  opts: { batchSize?: number; embed_options?: EmbedOptions } = {},
+): Promise<LoadResult> {
   const batchSize = opts.batchSize ?? 64;
   let upserted = 0;
 
   for (let i = 0; i < segments.length; i += batchSize) {
     const batch = segments.slice(i, i + batchSize);
-    const embeddings = await embedTexts(batch.map((s) => s.embedding_text));
+    const embeddings = await embedTexts(batch.map((s) => s.embedding_text), opts.embed_options);
 
     const rows = batch.map((s, j) => ({
       id: s.id,
