@@ -24,6 +24,12 @@ describe("parseRules", () => {
     expect(rules[0]!.cases[1]).toEqual({ condition: "voie à double sens", value: 13, unit: "m", kind: "condition" });
   });
 
+  it("tronque article_number décimal en entier (ex: 12.2 → 12)", () => {
+    const raw = `[{"article_number":12.2,"article_title":"Stationnement","topic":"stationnement","rule_text":"1 place / logement.","summary":"1 place"}]`;
+    const rules = parseRules(raw);
+    expect(rules[0]!.article_number).toBe(12);
+  });
+
   it("renvoie [] si pas de JSON exploitable", () => {
     expect(parseRules("désolé je ne sais pas")).toEqual([]);
     expect(parseRules("[oups")).toEqual([]);

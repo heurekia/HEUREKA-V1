@@ -57,6 +57,20 @@ const looseNumber = z.preprocess(
   (v) => (typeof v === "number" && Number.isFinite(v) ? v : null),
   z.number().nullable(),
 );
+// Le LLM renvoie parfois "12.2" pour désigner l'article 12 §2 : la colonne
+// `article_number` est entière (grille R.123-9, 1–14), donc on tronque la
+// partie décimale. Le détail (sous-section) survit via `article_title` / `sub_theme`.
+const looseArticleNumber = z.preprocess(
+  (v) => {
+    if (typeof v === "number" && Number.isFinite(v)) return Math.trunc(v);
+    if (typeof v === "string") {
+      const n = parseInt(v, 10);
+      return Number.isFinite(n) ? n : null;
+    }
+    return null;
+  },
+  z.number().int().nullable(),
+);
 const looseString = z.preprocess(
   (v) => (typeof v === "string" && v.trim() ? v.trim() : null),
   z.string().nullable(),
@@ -71,7 +85,7 @@ const ruleCaseSchema = z.object({
 
 export const structuredRuleSchema = z
   .object({
-    article_number: looseNumber,
+    article_number: looseArticleNumber,
     article_title: looseString.transform((v) => v ?? ""),
     topic: looseString.transform((v) => v ?? "general"),
     rule_text: looseString.transform((v) => v ?? ""),
