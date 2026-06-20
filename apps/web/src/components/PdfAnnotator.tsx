@@ -115,8 +115,21 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
   const [tool, setTool] = useState<"select" | "hand">("select");
   // Rotation de lecture, locale au visualiseur. N'altère ni le fichier
   // stocké ni l'analyse OCR — c'est une commodité d'affichage pour les PDFs
-  // déposés en paysage ou tête-bêche.
-  const [rotation, setRotation] = useState<0 | 90 | 180 | 270>(0);
+  // déposés en paysage ou tête-bêche. Persistée par utilisateur via
+  // localStorage : préférence de vue, distincte de l'orientation canonique
+  // du fichier qui, elle, est détectée à l'ingestion.
+  const persistenceKey = documentId ?? null;
+  const ROTATION_STORAGE_PREFIX = "heureka:pdfviewer:rotation:";
+  const [rotation, setRotation] = useState<0 | 90 | 180 | 270>(() => {
+    if (typeof window === "undefined" || !persistenceKey) return 0;
+    try {
+      const raw = window.localStorage.getItem(ROTATION_STORAGE_PREFIX + persistenceKey);
+      const n = raw ? parseInt(raw, 10) : 0;
+      return (n === 90 || n === 180 || n === 270 ? n : 0) as 0 | 90 | 180 | 270;
+    } catch {
+      return 0;
+    }
+  });
   // État interne du drag en mode hand. Pas dans le state React (pas de
   // rendu déclenché par le drag, on touche directement scrollLeft/Top).
   const panRef = useRef<{ startX: number; startY: number; scrollLeft: number; scrollTop: number } | null>(null);
@@ -218,6 +231,21 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
   const rotateRight = () => setRotation((r) => (((r + 90) % 360) as 0 | 90 | 180 | 270));
   const rotateLeft = () => setRotation((r) => (((r + 270) % 360) as 0 | 90 | 180 | 270));
   const resetRotation = () => setRotation(0);
+
+  // Persist la rotation côté navigateur. On retire la clé quand on revient
+  // à 0 plutôt que d'écrire "0" pour éviter d'encombrer localStorage avec
+  // une entrée par document jamais pivoté.
+  useEffect(() => {
+    if (typeof window === "undefined" || !persistenceKey) return;
+    try {
+      const key = ROTATION_STORAGE_PREFIX + persistenceKey;
+      if (rotation === 0) window.localStorage.removeItem(key);
+      else window.localStorage.setItem(key, String(rotation));
+    } catch {
+      // Quota plein ou storage désactivé (Safari privé) : on dégrade
+      // silencieusement, la rotation reste fonctionnelle en mémoire.
+    }
+  }, [persistenceKey, rotation]);
 
   // Drag-to-pan en mode hand. On capture sur le conteneur scrollable et on
   // ajuste scrollLeft/scrollTop selon le delta souris. setPointerCapture
