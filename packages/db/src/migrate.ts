@@ -652,6 +652,13 @@ ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS output_rate_eur_per_m doubl
 -- Endpoint Mistral utilisé : 'chat' (chat completions) | 'embedding' (embeddings).
 ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS endpoint text;
 
+-- Purge des événements résiduels Anthropic/Claude (bascule juin 2026 vers
+-- Mistral). Leur cost_eur était calculé sur la grille Claude → polluait les
+-- agrégats de l'onglet "Coûts IA · estimés", qui ne suit désormais que Mistral.
+-- Idempotent : aucun nouvel événement ne peut atterrir avec ce model_pattern
+-- depuis le retrait du MODEL_ID = "claude-haiku..." côté code applicatif.
+DELETE FROM ai_usage_events WHERE model LIKE 'claude-%';
+
 -- ── Configuration alertes Slack sur les coûts IA (singleton id=1) ──
 CREATE TABLE IF NOT EXISTS ai_alert_config (
   id                      integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),
