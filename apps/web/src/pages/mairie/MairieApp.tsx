@@ -4167,7 +4167,10 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
         const msg = (parsed as { error?: string } | null)?.error ?? txt ?? `HTTP ${r.status}`;
         const err = new Error(msg) as Error & { status?: number; transient?: boolean };
         err.status = r.status;
-        err.transient = (parsed as { transient?: boolean } | null)?.transient === true;
+        // 502/503/504 (Bad Gateway / unavailable / Gateway timeout) sont des
+        // erreurs proxy/nginx transitoires : on relancera le batch.
+        err.transient = (parsed as { transient?: boolean } | null)?.transient === true
+          || r.status === 502 || r.status === 503 || r.status === 504;
         throw err;
       }
       return parsed as T;
@@ -4205,7 +4208,9 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
           if (i >= queue.length) return;
           if (firstError) return;
           const item = queue[i]!;
-          // Retry transitoire 1 fois sur 503 (rate limit Mistral).
+          // Retry transitoire jusqu'à 3 tentatives sur 502/503/504 + rate
+          // limit Mistral, avec backoff exponentiel (1,5 s → 3 s → 6 s).
+          // Les batches sont idempotents côté serveur (pas d'état partiel).
           let attempt = 0;
           while (true) {
             try {
@@ -4229,7 +4234,11 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
               break;
             } catch (e) {
               const err = e as Error & { transient?: boolean };
-              if (err.transient && attempt < 1) { attempt++; await new Promise(r => setTimeout(r, 1500)); continue; }
+              if (err.transient && attempt < 3) {
+                await new Promise((r) => setTimeout(r, 1500 * Math.pow(2, attempt)));
+                attempt++;
+                continue;
+              }
               firstError = err;
               return;
             }

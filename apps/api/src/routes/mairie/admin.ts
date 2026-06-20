@@ -701,7 +701,10 @@ function gcIngestJobs() {
 }
 
 function renderPagesAsBlocksFor(pdfBuffer: Buffer, firstPage: number, maxPages: number): AiContentBlock[] {
-  const pngs = convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 150 });
+  // DPI 130 : compromis taille payload Mistral / lisibilité tableaux. À 150 le
+  // payload (8 × ~350 KB base64) faisait dépasser le proxy nginx (504) sur
+  // les batches lents — 130 réduit ~25 % le poids et la latence Pixtral.
+  const pngs = convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 130 });
   return pngs.map<AiContentBlock>((png) => ({
     type: "image",
     source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
@@ -777,7 +780,11 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
     }
 
     const zoneRanges = partitionPagesByZone(toc, totalPages);
-    const PAGE_BATCH = 8;
+    // PAGE_BATCH = 4 : un appel Pixtral avec 8 images dépassait régulièrement
+    // les 60 s du proxy nginx (504 Gateway Time-out). À 4 images la requête
+    // tient en 20-30 s. On a 2x plus de batches mais le client orchestre
+    // CONCURRENCY=4 → le temps total reste équivalent.
+    const PAGE_BATCH = 4;
     const zones_out = zoneRanges.map((z) => ({
       code: z.code, label: z.label, type: z.type,
       startPage: z.startPage, endPage: z.endPage,
