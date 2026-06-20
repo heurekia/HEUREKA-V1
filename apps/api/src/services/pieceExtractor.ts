@@ -167,11 +167,27 @@ export interface PieceExtraction {
   missing_elements: string[];
 
   // Citations textuelles vues sur le document (pour traçabilité).
-  // Ex: ["recul voie 4.20 m", "H égout = 6.80 m / NGF 105.10"]
-  citations: string[];
+  // Phase 1 : chaque citation peut désormais porter une page et une bbox pour
+  // ouvrir la pièce sur la zone surlignée côté UI. Format historique
+  // (string[]) toléré en entrée et converti automatiquement.
+  citations: CitationRef[];
+
+  // Nombre de pages du document — alimente la sélection d'une vue par page
+  // côté UI et le futur refactor multi-vues (Phase 4). null si non lisible.
+  page_count?: number | null;
 
   // Note libre pour le cas où le modèle a un doute sur l'identification.
   notes: string | null;
+}
+
+// Phase 1 — Une citation pointe vers un emplacement précis dans la pièce.
+// `bbox` est exprimée dans le repère NORMALISÉ de la page (0..1 en x et y)
+// pour que l'UI puisse rendre l'annotation quelle que soit la résolution.
+export interface CitationRef {
+  text: string;
+  page?: number | null;
+  bbox?: [number, number, number, number] | null;  // [x0, y0, x1, y1]
+  confidence?: number | null;
 }
 
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
@@ -213,7 +229,10 @@ RÈGLE D'OR — N'INVENTE RIEN :
 - plan de façade : "matériau de toiture non précisé", "teintes non précisées".
 - CERFA : "surface plancher créée non renseignée", "destination non renseignée", "nb logements non renseigné" — UNIQUEMENT si attendu pour le projet.
 
-ÉTAPE 4 — "citations" : liste les extraits textuels EXACTS que tu as lus pour appuyer chaque valeur extraite. Ex: ["recul voie 4.20 m", "H égout = 6.80 m / NGF 105.10", "SP créée : 95 m²"]. Sans citation, pas de valeur.
+ÉTAPE 4 — "citations" : liste les extraits textuels EXACTS que tu as lus pour appuyer chaque valeur extraite. Sans citation, pas de valeur. Deux formats acceptés :
+- string brut (rétro-compat) : "recul voie 4.20 m"
+- objet enrichi (préféré quand tu peux situer la mention) : { "text": "recul voie 4.20 m", "page": 1 }
+Mélange autorisé dans la même liste. Tu peux aussi renseigner "page_count" (nombre total de pages du document) à la racine de la sortie.
 
 ÉTAPE 5 — Si l'identification de type est incertaine (< 0.7), mets confidence_type bas et explique dans "notes".
 
@@ -260,7 +279,8 @@ SORTIE — UNIQUEMENT du JSON valide, sans markdown, sans préambule :
   "notice": null | { "description_projet": "...", "insertion_paysagere": "...", "materiaux_decrits": [...] },
   "photo": null | { "contexte_decrit": "...", "point_vue": "..." },
   "missing_elements": ["échelle absente", "orientation absente"],
-  "citations": ["recul voie 4.20 m"],
+  "citations": ["recul voie 4.20 m", { "text": "H égout = 6.80 m", "page": 2 }],
+  "page_count": 3,
   "notes": null
 }`;
 
@@ -414,6 +434,41 @@ function normalizeQualificatif(v: unknown): "entiere" | "partie" {
   return "entiere";
 }
 
+// Phase 1 — Citations enrichies (page + bbox).
+// Rétro-compatible : si le LLM renvoie un string[], chaque entrée est
+// convertie en `{text: ...}` sans page ni bbox. Si une entrée est un objet
+// mais sans `text`, elle est ignorée silencieusement.
+function parseBbox(v: unknown): [number, number, number, number] | null {
+  if (!Array.isArray(v) || v.length !== 4) return null;
+  const nums = v.map((x) => (typeof x === "number" && Number.isFinite(x) ? x : null));
+  if (nums.some((x) => x === null)) return null;
+  return nums as [number, number, number, number];
+}
+
+function parseCitations(v: unknown): CitationRef[] {
+  if (!Array.isArray(v)) return [];
+  const out: CitationRef[] = [];
+  for (const item of v) {
+    if (typeof item === "string") {
+      const t = item.trim();
+      if (t) out.push({ text: t });
+      continue;
+    }
+    if (item && typeof item === "object") {
+      const o = item as Record<string, unknown>;
+      const text = s(o.text);
+      if (!text) continue;
+      out.push({
+        text,
+        page: n(o.page),
+        bbox: parseBbox(o.bbox),
+        confidence: n(o.confidence),
+      });
+    }
+  }
+  return out;
+}
+
 function parseParcellesObservees(v: unknown): ParcelleObservee[] | null {
   if (!Array.isArray(v)) return null;
   const out: ParcelleObservee[] = [];
@@ -452,6 +507,7 @@ export function parseExtraction(raw: string): PieceExtraction {
       parcelles_observees: null,
       missing_elements: ["Extraction IA non concluante."],
       citations: [],
+      page_count: null,
       notes: null,
     };
   }
@@ -542,7 +598,8 @@ export function parseExtraction(raw: string): PieceExtraction {
     notice,
     photo,
     missing_elements: arrS(obj.missing_elements) ?? [],
-    citations: arrS(obj.citations) ?? [],
+    citations: parseCitations(obj.citations),
+    page_count: n(obj.page_count),
     notes: s(obj.notes),
   };
 }

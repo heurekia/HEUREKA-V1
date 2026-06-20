@@ -318,7 +318,10 @@ function buildCitationIndex(pieces: VerdictPieceInput[]): Map<string, Set<string
   for (const p of pieces) {
     const set = new Set<string>();
     if (p.extraction?.citations) {
-      for (const c of p.extraction.citations) set.add(c.trim());
+      // Phase 1 : `citations` est désormais `CitationRef[]` (objet avec
+      // `text`, `page`, `bbox`). On indexe uniquement le `text` car le
+      // matching de provenance est purement textuel.
+      for (const c of p.extraction.citations) set.add(c.text.trim());
     }
     idx.set(p.id, set);
   }

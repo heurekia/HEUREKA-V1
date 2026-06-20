@@ -54,11 +54,18 @@ export async function buildInstructionContext(
     throw new ContextBuildError(`dossier ${dossierId} not found`, "dossier_not_found");
   }
 
-  // Faits actifs uniquement (superseded_at IS NULL).
+  // Faits actifs GAGNANTS uniquement (superseded_at IS NULL AND is_winner).
+  // Phase 1 : la table peut désormais contenir des candidats non-gagnants
+  // pour alimenter le moteur de contradictions. Le moteur réglementaire ne
+  // doit voir qu'un fait par clé pour garder ses verdicts déterministes.
   const factRows = await db
     .select()
     .from(dossier_facts)
-    .where(and(eq(dossier_facts.dossier_id, dossierId), isNull(dossier_facts.superseded_at)));
+    .where(and(
+      eq(dossier_facts.dossier_id, dossierId),
+      isNull(dossier_facts.superseded_at),
+      eq(dossier_facts.is_winner, true),
+    ));
 
   const facts: DossierFact[] = factRows.map((r) => ({
     key: r.key,

@@ -1050,6 +1050,33 @@ SET source_document_id = pbc.document_id
 FROM plu_by_commune pbc
 WHERE z.commune_id = pbc.commune_id
   AND z.source_document_id IS NULL;
+
+-- ── Phase 1 — Fondations preuves et candidats ──────────────────────────────
+-- Préalable au moteur de contradictions (Phase 3). Aujourd'hui resolveDossierFacts
+-- choisit silencieusement un gagnant par clé. On veut désormais persister TOUS
+-- les candidats (avec is_winner=false pour les non-gagnants), regrouper les
+-- candidats dont les valeurs divergent par conflict_group_id, et garder une
+-- trace de la valeur brute avant normalisation.
+ALTER TABLE dossier_facts ADD COLUMN IF NOT EXISTS is_winner boolean NOT NULL DEFAULT true;
+ALTER TABLE dossier_facts ADD COLUMN IF NOT EXISTS conflict_group_id uuid;
+ALTER TABLE dossier_facts ADD COLUMN IF NOT EXISTS raw_value jsonb;
+ALTER TABLE dossier_facts ADD COLUMN IF NOT EXISTS normalized_value jsonb;
+ALTER TABLE dossier_facts ADD COLUMN IF NOT EXISTS normalization_method text;
+
+-- L'ancien index garantissait un seul fait actif par (dossier, clé). Avec les
+-- non-gagnants persistés, on doit restreindre la contrainte aux gagnants.
+-- DROP de l'ancien index avant d'en créer un plus précis — sans courte
+-- fenêtre de non-unicité car ils ciblent les mêmes lignes (tous les
+-- pré-Phase-1 ont is_winner=true par défaut).
+DROP INDEX IF EXISTS uniq_dossier_facts_active_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_dossier_facts_active_winner_key
+  ON dossier_facts(dossier_id, key)
+  WHERE superseded_at IS NULL AND is_winner = true;
+
+-- Index utiles pour : lister tous les candidats d'une clé donnée, et regrouper
+-- les contradictions à l'instruction.
+CREATE INDEX IF NOT EXISTS idx_dossier_facts_conflict_group
+  ON dossier_facts(conflict_group_id) WHERE conflict_group_id IS NOT NULL;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
