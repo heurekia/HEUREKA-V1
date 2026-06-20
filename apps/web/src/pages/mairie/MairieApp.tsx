@@ -4106,7 +4106,7 @@ function DocumentsPanel({ commune }: { commune: string }) {
 // ── PLU upload panel (état vide Réglementation) ────────────────────────────────
 
 type ZoneDef = { code: string; label: string; type: string };
-type ZoneProgress = { code: string; label: string; type: string; status: "pending" | "done"; rules?: number; vision?: number };
+type ZoneProgress = { code: string; label: string; type: string; status: "pending" | "done"; rules?: number; vision?: number; batch?: number; total_batches?: number };
 
 function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, onManual }: { commune: string; inseeCode?: string; onSuccess: () => void; loadError: string | null; onCancel?: () => void; onManual?: () => void }) {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -4174,8 +4174,13 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
               const zones = ev.zones as ZoneDef[];
               setPhase("Extraction des règles en parallèle…");
               setZoneProgress(zones.map(z => ({ ...z, status: "pending" })));
+            } else if (ev.type === "zone_progress") {
+              // Progression intra-zone (lot de pages X/N). Met aussi à jour la
+              // jauge globale et garantit qu'au moins un événement transite
+              // toutes les ~30-60 s pendant l'extraction.
+              setZoneProgress(prev => prev.map(z => z.code === ev.zone ? { ...z, batch: ev.batch as number, total_batches: ev.total_batches as number } : z));
             } else if (ev.type === "zone_done") {
-              setZoneProgress(prev => prev.map(z => z.code === ev.zone ? { ...z, status: "done", rules: ev.rules as number, vision: ev.vision as number } : z));
+              setZoneProgress(prev => prev.map(z => z.code === ev.zone ? { ...z, status: "done", rules: ev.rules as number, vision: ev.vision as number, batch: undefined, total_batches: undefined } : z));
             } else if (ev.type === "done") {
               setDone({ zones: ev.zones as number, rules: ev.rules as number, needs_review: ev.needs_review as number });
               setPhase(null);
@@ -4270,7 +4275,12 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
                       {z.status === "done" ? (
                         <span style={{ fontSize: 11, color: "#15803D", fontWeight: 600 }}>✓ {z.rules} règle{(z.rules ?? 0) > 1 ? "s" : ""}</span>
                       ) : (
-                        <div style={{ width: 12, height: 12, border: "2px solid #C7D2FE", borderTopColor: "#4F46E5", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+                        <>
+                          {z.batch && z.total_batches ? (
+                            <span style={{ fontSize: 11, color: "#64748b" }}>lot {z.batch}/{z.total_batches}</span>
+                          ) : null}
+                          <div style={{ width: 12, height: 12, border: "2px solid #C7D2FE", borderTopColor: "#4F46E5", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+                        </>
                       )}
                     </div>
                   ))}
