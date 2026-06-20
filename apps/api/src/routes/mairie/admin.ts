@@ -345,6 +345,21 @@ adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     (res as unknown as { flush?: () => void }).flush?.();
   };
 
+  // SSE heartbeat. La phase 2 enchaîne des appels Pixtral de 30-60 s pendant
+  // lesquels aucun événement applicatif n'est émis. Sans trafic sur la socket,
+  // un proxy avec idle timeout (Railway, Cloudflare, navigateur Safari) coupe
+  // la connexion → côté client `fetch()` lève "Load failed". On envoie un
+  // commentaire SSE toutes les 10 s pour garder la connexion vivante.
+  const heartbeat = setInterval(() => {
+    res.write(`: keepalive ${Date.now()}\n\n`);
+    (res as unknown as { flush?: () => void }).flush?.();
+  }, 10_000);
+
+  // Le client a fermé l'onglet / coupé la connexion : on arrête l'extraction
+  // pour ne pas continuer à brûler des tokens Mistral inutilement.
+  let aborted = false;
+  req.on("close", () => { aborted = true; });
+
   try {
     // Upsert commune
     let commune = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
@@ -450,7 +465,17 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].`,
       let visionCount = 0;
       let batchErrors = 0;
 
-      for (const [first, last] of batches) {
+      for (let bi = 0; bi < batches.length; bi++) {
+        if (aborted) break;
+        const [first, last] = batches[bi]!;
+        // Événement de progression par lot : permet à l'UI d'afficher l'avancée
+        // intra-zone (UL = 12 lots) et — surtout — maintient le flux SSE actif
+        // entre deux appels Pixtral pour qu'aucun proxy ne coupe la connexion.
+        send({
+          type: "zone_progress", zone: zone.code,
+          batch: bi + 1, total_batches: batches.length,
+          page_from: first, page_to: last,
+        });
         try {
           const blocks = renderPagesAsBlocks(first, last - first + 1);
           const ruleMsg = await callAi(
@@ -521,9 +546,15 @@ Correspondance article → topic :
     const extracted: Array<{ zoneDef: typeof zoneRanges[number]; rules: PluRuleInput[]; visionCount: number }> = [];
     const CONCURRENCY = 2;
     for (let i = 0; i < zoneRanges.length; i += CONCURRENCY) {
+      if (aborted) break;
       const batch = zoneRanges.slice(i, i + CONCURRENCY);
       const batchResults = await Promise.all(batch.map(extractZone));
       extracted.push(...batchResults);
+    }
+
+    if (aborted) {
+      console.warn("[ingest-plu-pdf] client déconnecté en cours d'extraction — abandon, aucune écriture DB.");
+      return; // pas de transaction, pas de purge du référentiel existant.
     }
 
     // Garde-fou : si l'IA n'a réussi à extraire des règles que pour une
@@ -608,6 +639,8 @@ Correspondance article → topic :
       ? "Le service d'extraction IA est momentanément indisponible ou surchargé. Aucune donnée n'a été modifiée — réessayez dans quelques instants."
       : (err instanceof Error ? err.message : String(err));
     send({ type: "error", message });
+  } finally {
+    clearInterval(heartbeat);
   }
 
   res.end();
