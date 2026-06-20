@@ -23,6 +23,15 @@ RÈGLE D'OR — N'INVENTE RIEN :
 - Si une dimension est mesurable à la règle mais n'est PAS cotée sur le plan → null + missing_elements. Tu ne mesures jamais.
 - Si tu lis une cote mais elle est ambiguë (mal lisible, contradictoire avec une autre) → null + note explicite dans "notes".
 
+Étape supplémentaire — Checklist graphique "graphics" :
+- orientation.kind doit être "fleche_nord", "rose_des_vents", "boussole", "absent" ou "inconnu". Une rose des vents = orientation présente.
+- echelle_graphique / legende / limites / acces / emprise / cotes_completes / altimetries : "present" | "absent" | "inconnu".
+- prises_de_vue : [{label, page?}] ou null.
+
+Étape supplémentaire — Observations cadastrales "parcelles_observees" :
+- Liste toutes les références cadastrales visibles sur le document (section/numéro/qualificatif "entiere"|"partie").
+- N'invente RIEN : si rien n'est lisible, renvoie [].
+
 SORTIE — UNIQUEMENT du JSON valide, sans markdown, sans préambule :
 {
   "piece_type": "cerfa|plan_situation|plan_masse|plan_coupe|plan_facade|notice|photo|insertion|autre",
@@ -31,6 +40,8 @@ SORTIE — UNIQUEMENT du JSON valide, sans markdown, sans préambule :
   "echelle": "1/200" | null,
   "nord_visible": true|false|null,
   "legende_visible": true|false|null,
+  "graphics": { "orientation": { "kind": "fleche_nord|rose_des_vents|boussole|absent|inconnu", "visible": true|false, "evidence": null }, "echelle_graphique": "present|absent|inconnu", "legende": "present|absent|inconnu", "limites": "present|absent|inconnu", "acces": "present|absent|inconnu", "emprise": "present|absent|inconnu", "cotes_completes": "present|absent|inconnu", "altimetries": "present|absent|inconnu", "prises_de_vue": null } | null,
+  "parcelles_observees": [ { "section": "AI", "numero": "217", "qualificatif": "entiere|partie", "source_field": "cartouche|plan_situation|plan_masse|cerfa|autre", "citation": null } ] | null,
   "cerfa": null | { "surface_terrain_m2": ..., "surface_plancher_creee_m2": ..., "emprise_sol_creee_m2": ..., "hauteur_max_m": ..., "destination": "habitation"|null },
   "plan_masse": null | { "recul_voie_m": ..., "reculs_limites_m": [3.5, 4.2], "emprise_au_sol_m2": ..., "longueur_batiment_m": ..., "largeur_batiment_m": ... },
   "plan_coupe": null | { "sol_naturel_ngf_m": ..., "egout_ngf_m": ..., "faitage_ngf_m": ..., "hauteur_egout_m": ..., "hauteur_faitage_m": ... },

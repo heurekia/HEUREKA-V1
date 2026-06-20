@@ -76,5 +76,102 @@
       },
       "expected_non_conformites": []
     }
+  },
+  {
+    "id": "plan-masse-rose-des-vents-01",
+    "file": "plan-masse-rose-des-vents-01.png",
+    "mime": "image/png",
+    "label": "Plan de masse — rose des vents (pas de flèche Nord)",
+    "context": {
+      "dossierType": "permis_de_construire_mi",
+      "natures": ["maison_neuve"],
+      "zone": "UB",
+      "commune": "Ballan-Miré",
+      "aide": "Vérifie que la rose des vents (en bas à droite du cartouche) est bien détectée comme orientation présente. Le moteur historique se limitait à 'flèche Nord' et la signalait comme absente."
+    },
+    "golden": {
+      "piece_type": "plan_masse",
+      "expected_quality": "lisible",
+      "expected_values": {
+        "graphics.orientation.kind": "rose_des_vents",
+        "graphics.orientation.visible": true,
+        "nord_visible": true,
+        "graphics.echelle_graphique": "present",
+        "graphics.legende": "present"
+      },
+      "expected_missing": [],
+      "expected_non_conformites": [],
+      "notes": "Régression cible : avant Phase 5 le moteur émettait 'flèche Nord absente'. Avec graphics.orientation.kind=rose_des_vents, plus aucune non-conformité orientation ne doit remonter. FICHIER À PRODUIRE — anonymisé."
+    }
+  },
+  {
+    "id": "plan-masse-parcelles-partielles-01",
+    "file": "plan-masse-parcelles-partielles-01.png",
+    "mime": "image/png",
+    "label": "Plan de masse — projet à cheval sur AI 217 et AI 218p",
+    "context": {
+      "dossierType": "permis_de_construire_mi",
+      "natures": ["maison_neuve"],
+      "zone": "UB",
+      "commune": "Ballan-Miré",
+      "aide": "Le cartouche indique 'AI 217 & AI 218p'. Vérifie que parcelles_observees liste DEUX entrées avec le bon qualificatif. Le 'p' ne doit jamais être collé au numéro cadastral."
+    },
+    "golden": {
+      "piece_type": "plan_masse",
+      "expected_quality": "lisible",
+      "expected_values": {
+        "graphics.orientation.kind": "rose_des_vents",
+        "nord_visible": true
+      },
+      "expected_missing": [],
+      "expected_non_conformites": [],
+      "notes": "Régression cible : avant Phase 2.3, l'extraction ne portait aucune liste de parcelles. Le golden attend parcelles_observees = [{section:'AI',numero:'217',qualificatif:'entiere'},{section:'AI',numero:'218',qualificatif:'partie'}]. Le scoring liste-vs-liste n'est pas encore couvert par le harnais — utiliser les tests unitaires pieceExtractor.test.ts pour la validation structurelle. FICHIER À PRODUIRE — anonymisé."
+    }
+  },
+  {
+    "id": "cerfa-commune-divergente-01",
+    "file": "cerfa-commune-divergente-01.png",
+    "mime": "image/png",
+    "label": "CERFA — cartouche 'VENDÔME' mais terrain en Ballan-Miré",
+    "context": {
+      "dossierType": "permis_de_construire_mi",
+      "natures": ["maison_neuve"],
+      "zone": "UB",
+      "commune": "Ballan-Miré",
+      "aide": "Le cartouche d'un plan annexé porte 'commune de VENDÔME'. Le terrain réel est à Ballan-Miré. L'extraction ne doit PAS choisir silencieusement : la divergence doit rester visible (à terme, déclencher une contradiction Phase 3)."
+    },
+    "golden": {
+      "piece_type": "cerfa",
+      "expected_quality": "lisible",
+      "expected_values": {
+        "cerfa.surface_plancher_creee_m2": 95,
+        "cerfa.destination": "habitation"
+      },
+      "expected_non_conformites": [],
+      "notes": "Régression cible : la mention 'VENDÔME' lue dans le cartouche doit être conservée telle quelle dans 'citations' (et — à terme — alimenter un FactCandidate distinct du contexte 'commune=Ballan-Miré'). Pour l'instant on ne mesure que la non-correction silencieuse via les citations. FICHIER À PRODUIRE — anonymisé."
+    }
+  },
+  {
+    "id": "pcmi-composite-2-3-01",
+    "file": "pcmi-composite-2-3-01.pdf",
+    "mime": "application/pdf",
+    "label": "PCMI 2-3 composite — plan de masse + plan de coupe sur la même page",
+    "context": {
+      "dossierType": "permis_de_construire_mi",
+      "natures": ["maison_neuve"],
+      "zone": "UB",
+      "commune": "Ballan-Miré",
+      "aide": "La même page porte à la fois un plan de masse (en haut) et un plan de coupe (en bas). Le moteur historique ne pouvait sélectionner qu'UN type — d'où une perte d'information systématique."
+    },
+    "golden": {
+      "piece_type": "plan_masse",
+      "expected_quality": "lisible",
+      "expected_values": {
+        "plan_masse.recul_voie_m": 4.0,
+        "plan_coupe.hauteur_faitage_m": 9.0
+      },
+      "expected_non_conformites": [],
+      "notes": "Régression cible : Phase 4 introduira un schéma multi-vues (views[]) qui éliminera l'arbitrage forcé entre plan_masse et plan_coupe. En attendant, ce golden mesure si l'extraction CURRENT capture au moins les valeurs des DEUX vues, même si piece_type n'en porte qu'une. FICHIER À PRODUIRE — anonymisé."
+    }
   }
 ]

@@ -7109,6 +7109,27 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     quality?: string;
     echelle?: string | null;
     nord_visible?: boolean | null;
+    // Phase 5 : checklist graphique étendue. Optionnel pour rétro-compat
+    // avec les anciennes extractions stockées en jsonb.
+    graphics?: {
+      orientation?: { kind?: string; visible?: boolean; evidence?: string | null } | null;
+      echelle_graphique?: string | null;
+      legende?: string | null;
+      limites?: string | null;
+      acces?: string | null;
+      emprise?: string | null;
+      cotes_completes?: string | null;
+      altimetries?: string | null;
+      prises_de_vue?: Array<{ label: string; page?: number | null }> | null;
+    } | null;
+    // Phase 2.3 : références cadastrales observées sur la pièce.
+    parcelles_observees?: Array<{
+      section: string;
+      numero: string;
+      qualificatif: "entiere" | "partie";
+      source_field?: string | null;
+      citation?: string | null;
+    }> | null;
     cerfa?: Record<string, unknown> | null;
     plan_masse?: Record<string, unknown> | null;
     plan_coupe?: Record<string, unknown> | null;

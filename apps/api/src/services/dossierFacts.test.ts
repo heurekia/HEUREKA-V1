@@ -3,6 +3,7 @@ import {
   extractFactsFromDossier,
   extractFactsFromPiece,
   resolveDossierFacts,
+  resolveDossierFactsWithConflicts,
   type DossierForFacts,
   type PieceForFacts,
 } from "./dossierFacts.ts";
@@ -29,6 +30,8 @@ function piece(id: string, nom: string, ext: Partial<PieceExtraction> & { piece_
       echelle: ext.echelle ?? null,
       nord_visible: ext.nord_visible ?? null,
       legende_visible: ext.legende_visible ?? null,
+      graphics: ext.graphics ?? null,
+      parcelles_observees: ext.parcelles_observees ?? null,
       cerfa: ext.cerfa ?? null,
       plan_masse: ext.plan_masse ?? null,
       plan_coupe: ext.plan_coupe ?? null,
@@ -290,5 +293,105 @@ describe("extractFactsFromDossier", () => {
       } as never),
     );
     expect(facts).toEqual([]);
+  });
+});
+
+// ── Phase 1 : la source_ref capte désormais method (ocr/vision/declarative/external_api) ─
+describe("FactSourceRef.method propagation", () => {
+  it("marque CERFA en declarative et plans en vision", () => {
+    const cerfaFacts = extractFactsFromPiece(
+      piece("p-cerfa", "cerfa.pdf", {
+        piece_type: "cerfa",
+        cerfa: { hauteur_max_m: 7 },
+      }),
+    );
+    expect(cerfaFacts.every((c) => c.source_ref.method === "declarative")).toBe(true);
+
+    const coupeFacts = extractFactsFromPiece(
+      piece("p-coupe", "coupe.pdf", {
+        piece_type: "plan_coupe",
+        plan_coupe: { hauteur_faitage_m: 9 },
+      }),
+    );
+    expect(coupeFacts.every((c) => c.source_ref.method === "vision")).toBe(true);
+  });
+
+  it("marque les faits issus du parcel_analysis en external_api", () => {
+    const facts = extractFactsFromDossier(
+      dossier({ metadata: { parcel_analysis: { plu_zone: { zone_code: "UA" } } } }),
+    );
+    const zone = facts.find((f) => f.key === "zonage_plu");
+    expect(zone?.source_ref.method).toBe("external_api");
+  });
+
+  it("marque les déclarations wizard en declarative", () => {
+    const facts = extractFactsFromDossier(dossier({ surface_plancher: "120" }));
+    const sp = facts.find((f) => f.key === "surface_plancher_apres");
+    expect(sp?.source_ref.method).toBe("declarative");
+  });
+});
+
+// ── Phase 1 : résolution avec conservation des candidats ──────────────
+describe("resolveDossierFactsWithConflicts", () => {
+  it("renvoie un seul candidat (winner) quand il n'y a pas de divergence", () => {
+    const candidates = extractFactsFromPiece(
+      piece("p1", "coupe.pdf", {
+        piece_type: "plan_coupe",
+        plan_coupe: { hauteur_faitage_m: 8.4 },
+      }),
+    );
+    const persisted = resolveDossierFactsWithConflicts(candidates);
+    const hauteurs = persisted.filter((f) => f.key === "hauteur");
+    expect(hauteurs).toHaveLength(1);
+    expect(hauteurs[0]?.is_winner).toBe(true);
+    expect(hauteurs[0]?.conflict_group_id).toBeNull();
+  });
+
+  it("préserve TOUS les candidats quand les valeurs divergent (CERFA vs plan)", () => {
+    const candidates = [
+      ...extractFactsFromPiece(piece("p1", "cerfa.pdf", { piece_type: "cerfa", cerfa: { hauteur_max_m: 7 } })),
+      ...extractFactsFromPiece(piece("p2", "coupe.pdf", { piece_type: "plan_coupe", plan_coupe: { hauteur_faitage_m: 8.4 } })),
+    ];
+    const persisted = resolveDossierFactsWithConflicts(candidates);
+    const hauteurs = persisted.filter((f) => f.key === "hauteur");
+    expect(hauteurs).toHaveLength(2);
+    const winner = hauteurs.find((f) => f.is_winner);
+    expect(winner?.value).toBe(8.4);
+    // Les deux candidats divergents partagent le MÊME conflict_group_id.
+    expect(hauteurs[0]?.conflict_group_id).toBeTruthy();
+    expect(hauteurs[0]?.conflict_group_id).toBe(hauteurs[1]?.conflict_group_id);
+  });
+
+  it("ne crée PAS de conflict_group_id quand deux candidats portent la même valeur", () => {
+    const candidates = [
+      ...extractFactsFromPiece(piece("p1", "coupeA.pdf", { piece_type: "plan_coupe", plan_coupe: { hauteur_faitage_m: 8.4 } })),
+      ...extractFactsFromPiece(piece("p2", "coupeB.pdf", { piece_type: "plan_coupe", plan_coupe: { hauteur_faitage_m: 8.4 } })),
+    ];
+    const persisted = resolveDossierFactsWithConflicts(candidates);
+    const hauteurs = persisted.filter((f) => f.key === "hauteur" && !f.source_ref.field.includes("egout"));
+    expect(hauteurs).toHaveLength(2);
+    expect(hauteurs.every((f) => f.conflict_group_id === null)).toBe(true);
+  });
+
+  it("attribue toujours is_winner au candidat de plus haute priorité", () => {
+    const candidates = [
+      ...extractFactsFromPiece(piece("p1", "cerfa.pdf", { piece_type: "cerfa", cerfa: { hauteur_max_m: 7 } })),
+      ...extractFactsFromPiece(piece("p2", "coupe.pdf", { piece_type: "plan_coupe", plan_coupe: { hauteur_faitage_m: 8.4 } })),
+    ];
+    const persisted = resolveDossierFactsWithConflicts(candidates);
+    const hauteurs = persisted.filter((f) => f.key === "hauteur");
+    const winner = hauteurs.find((f) => f.is_winner);
+    expect(winner?.source).toBe("document_extraction"); // plan vs CERFA déclaratif
+  });
+
+  it("reste cohérent avec resolveDossierFacts (même gagnant)", () => {
+    const candidates = [
+      ...extractFactsFromPiece(piece("p1", "cerfa.pdf", { piece_type: "cerfa", cerfa: { hauteur_max_m: 7 } })),
+      ...extractFactsFromPiece(piece("p2", "coupe.pdf", { piece_type: "plan_coupe", plan_coupe: { hauteur_faitage_m: 8.4 } })),
+    ];
+    const legacyWinner = resolveDossierFacts(candidates).find((f) => f.key === "hauteur");
+    const phase1Winner = resolveDossierFactsWithConflicts(candidates).find((f) => f.key === "hauteur" && f.is_winner);
+    expect(phase1Winner?.value).toBe(legacyWinner?.value);
+    expect(phase1Winner?.source).toBe(legacyWinner?.source);
   });
 });
