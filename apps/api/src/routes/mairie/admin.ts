@@ -4,7 +4,9 @@ import { dossiers, users, communes, zones, zone_regulatory_rules } from "@heurek
 import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
-import { callAi, type AiToolDefinition } from "../../services/aiUsage.js";
+import { callAi, convertPdfPagesToPng, type AiContentBlock, type AiToolDefinition } from "../../services/aiUsage.js";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, type TocEntry } from "../../services/pluImport.js";
+import { PDFDocument } from "pdf-lib";
 import {
   computeInstructionDelay,
   applyMonthsToDate,
@@ -12,7 +14,7 @@ import {
   type DeadlineServitude,
   type DeadlineBreakdownItem,
 } from "../../services/instructionDelays.js";
-import { DELAI_INSTRUCTION_MOIS_DEFAUT, splitPdfBase64 } from "./_shared.js";
+import { DELAI_INSTRUCTION_MOIS_DEFAUT } from "./_shared.js";
 
 export const adminRouter = Router();
 
@@ -359,141 +361,178 @@ adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
 
     // NB : on ne purge PAS l'existant ici. L'extraction (longue) a lieu d'abord ;
     // la purge + insertion se font en transaction à la fin, une fois l'extraction
-    // réussie — ainsi une interruption en cours d'extraction ne détruit rien.
+    // réussie ET cohérente (cf. assertTocCoverage) — ainsi un import partiel
+    // (LLM qui rate la moitié des zones) ne détruit jamais le référentiel
+    // déjà validé.
 
-    // Découpage du PDF (gère la limite ~100 pages/requête d'Anthropic).
-    send({ type: "phase", message: "Préparation du document…" });
-    const chunks = await splitPdfBase64(pdf_base64);
+    // Pixtral n'accepte pas le PDF natif. On rend toutes les pages en PNG via
+    // pdftoppm (cf. services/aiUsage.ts → convertPdfPagesToPng), et on les
+    // envoie sous forme de blocs `image` directement dans le content du message.
+    // Le bug historique faisait le contraire : transmettre un blob PDF au
+    // helper "document", qui ne convertissait QUE la première page — sur un
+    // tronçon de 90 pages, 89 étaient invisibles à l'IA (article 12 inclus).
+    const pdfBuffer = Buffer.from(pdf_base64, "base64");
+    const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+    const totalPages = pdfDoc.getPageCount();
 
-    // Mistral Pixtral n'accepte pas le PDF nativement ; la conversion 1re page
-    // PDF→PNG est faite côté aiUsage.ts (helper pdftoppm). Pas d'équivalent au
-    // prompt caching Anthropic — chaque tronçon est ré-analysé from scratch.
-    const pdfDocFor = (b64: string) => ({
-      type: "document" as const,
-      source: { type: "base64" as const, media_type: "application/pdf" as const, data: b64 },
-    });
-
-    // Phase 1 — Détection des zones, tronçon par tronçon (chaque zone est rattachée
-    // au premier tronçon où sa section apparaît).
-    send({ type: "phase", message: chunks.length > 1 ? `Détection des zones (${chunks.length} parties)…` : "Détection des zones…" });
-    const detectChunk = async (c: number) => {
-     try {
-      const zoneMsg = await callAi(
-        { purpose: "plu_zone_detect", userId: req.user?.id ?? null, communeId: commune.id },
-        {
-          model: "ai-smart",
-          max_tokens: 2000,
-          messages: [{
-            role: "user",
-            content: [
-              pdfDocFor(chunks[c]!),
-              {
-                type: "text",
-                text: `Cet extrait fait partie d'un règlement PLU français.
-
-Liste TOUTES les zones et sous-zones qui possèdent, DANS CET EXTRAIT, une section réglementaire dédiée (titre de section + articles ; ex : UA, UB, UC, Ni, Nj, A, Ab, 1AU, 2AU…). Utilise le sommaire s'il est présent dans l'extrait.
-Inclure les sous-zones ayant un règlement distinct. Ne pas exclure une zone parce qu'elle semble petite.
-Si aucune section de zone n'apparaît dans cet extrait, répondre [].
-
-Répondre UNIQUEMENT avec un JSON array, sans autre texte :
-[{"code":"UA","label":"Zone UA – Centre ancien","type":"U"},…]
-Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.`,
-              },
-            ],
-          }],
-        },
-      );
-      const raw = zoneMsg.content[0]?.type === "text" ? zoneMsg.content[0].text : "[]";
-      const found = JSON.parse(raw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
-      send({ type: "phase", message: `Détection des zones — partie ${c + 1}/${chunks.length} analysée (${found.length} zones)` });
-      return found.map(z => ({ ...z, chunk: c }));
-     } catch (e) {
-      // Un tronçon en échec ne doit pas bloquer ni annuler tout l'import :
-      // on continue avec les zones des autres tronçons.
-      console.error(`[ingest-plu-pdf] détection tronçon ${c} échouée`, e);
-      send({ type: "phase", message: `Détection des zones — partie ${c + 1}/${chunks.length} ignorée (erreur temporaire)` });
-      return [] as Array<{ code: string; label: string; type: string; chunk: number }>;
-     }
+    const renderPagesAsBlocks = (firstPage: number, maxPages: number): AiContentBlock[] => {
+      const pngs = convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 150 });
+      return pngs.map<AiContentBlock>((png) => ({
+        type: "image",
+        source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
+      }));
     };
 
-    // Tronçons analysés en parallèle ; on conserve l'ordre pour rattacher chaque
-    // zone au PREMIER tronçon où elle apparaît.
-    const perChunk = await Promise.all(chunks.map((_, c) => detectChunk(c)));
-    const zoneMap = new Map<string, { code: string; label: string; type: string; chunk: number }>();
-    for (const list of perChunk) {
-      for (const z of list) {
-        if (z.code && !zoneMap.has(z.code)) zoneMap.set(z.code, z);
-      }
-    }
-    const zoneDefs = [...zoneMap.values()];
+    // Phase 1 — Sommaire. On rend les 5 premières pages et on demande la liste
+    // des zones avec leur page de début. Plus de "détection tronçon par
+    // tronçon" : un seul appel ciblé qui pilote tout le découpage qui suit.
+    send({ type: "phase", message: "Lecture du sommaire…" });
+    const TOC_PAGES = Math.min(5, totalPages);
+    const tocBlocks = renderPagesAsBlocks(1, TOC_PAGES);
+    const tocMsg = await callAi(
+      { purpose: "plu_toc_detect", userId: req.user?.id ?? null, communeId: commune.id },
+      {
+        model: "ai-smart",
+        max_tokens: 2000,
+        messages: [{
+          role: "user",
+          content: [
+            ...tocBlocks,
+            {
+              type: "text",
+              text: `Ces ${TOC_PAGES} pages sont le début d'un règlement PLU français. Lis le SOMMAIRE et renvoie la liste de TOUTES les zones (UA, UC, UJ, UL, UM, UP, UX, AUs, A, N, Ni, Nj, 1AU…) avec leur page de DÉBUT de section dans le document (numérotation 1-indexée, alignée sur les pages PDF physiques).
 
-    if (zoneDefs.length === 0) {
-      send({ type: "error", message: "Aucune zone détectée. Vérifiez que c'est bien un règlement PLU textuel." });
+Inclus les sous-zones ayant un règlement distinct. Pour chaque zone, type = "U" (urbaine) | "AU" (à urbaniser) | "A" (agricole) | "N" (naturelle).
+
+Réponds UNIQUEMENT avec un JSON array, sans autre texte :
+[{"code":"UA","label":"Zone UA – Centre ancien","type":"U","startPage":7}, …]
+
+Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].`,
+            },
+          ],
+        }],
+      },
+    );
+    const tocRaw = tocMsg.content[0]?.type === "text" ? tocMsg.content[0].text : "[]";
+    const tocParsed = JSON.parse(tocRaw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{
+      code?: unknown; label?: unknown; type?: unknown; startPage?: unknown;
+    }>;
+    const toc: TocEntry[] = tocParsed.flatMap((e) => {
+      const code = typeof e.code === "string" ? e.code.trim() : "";
+      const startPage = Number(e.startPage);
+      if (!code || !Number.isInteger(startPage)) return [];
+      return [{
+        code,
+        label: typeof e.label === "string" ? e.label : code,
+        type: typeof e.type === "string" ? e.type : "U",
+        startPage,
+      }];
+    });
+
+    if (toc.length === 0) {
+      send({ type: "error", message: "Aucun sommaire détecté dans les premières pages. Vérifiez que c'est bien un règlement PLU avec sommaire." });
       return res.end();
     }
 
-    send({ type: "zones_found", zones: zoneDefs.map(z => ({ code: z.code, label: z.label, type: z.type })) });
+    const zoneRanges = partitionPagesByZone(toc, totalPages);
+    send({ type: "zones_found", zones: zoneRanges.map((z) => ({ code: z.code, label: z.label, type: z.type })) });
+    send({ type: "phase", message: `Sommaire : ${zoneRanges.length} zones identifiées (${zoneRanges.map(z => z.code).join(", ")}).` });
 
-    // Phase 2 — Règles par zone, extraites depuis le tronçon contenant la zone.
-    const extractZone = async (zoneDef: { code: string; label: string; type: string; chunk: number }) => {
-     try {
-      const ruleMsg = await callAi(
-        { purpose: "plu_rule_extract", userId: req.user?.id ?? null, communeId: commune.id },
-        {
-          model: "ai-smart",
-          max_tokens: 4000,
-          tools: [PLU_SAVE_RULE_TOOL],
-          tool_choice: "any",
-          messages: [{
-            role: "user",
-            content: [
-              pdfDocFor(chunks[zoneDef.chunk]!),
-              {
-                type: "text",
-                text: `Cet extrait fait partie d'un règlement PLU français. Extrais les règles de la ZONE ${zoneDef.code} uniquement.
+    // Phase 2 — Règles par zone. Pour chaque zone, on rend TOUTES ses pages
+    // [startPage, endPage] en lots de PAGE_BATCH images Pixtral. Chaque lot
+    // appelle save_rule autant de fois qu'il a vu d'articles ; on fusionne
+    // les règles par (article_number, topic) en gardant la plus complète.
+    const PAGE_BATCH = 8;
 
-Pour CHAQUE article présent dans la section Zone ${zoneDef.code}, appelle save_rule une fois.
+    const extractZone = async (zone: typeof zoneRanges[number]) => {
+      const batches = chunkPages(zone.startPage, zone.endPage, PAGE_BATCH);
+      const merged = new Map<string, PluRuleInput>();
+      let visionCount = 0;
+      let batchErrors = 0;
+
+      for (const [first, last] of batches) {
+        try {
+          const blocks = renderPagesAsBlocks(first, last - first + 1);
+          const ruleMsg = await callAi(
+            { purpose: "plu_rule_extract", userId: req.user?.id ?? null, communeId: commune.id },
+            {
+              model: "ai-smart",
+              max_tokens: 4000,
+              tools: [PLU_SAVE_RULE_TOOL],
+              tool_choice: "any",
+              messages: [{
+                role: "user",
+                content: [
+                  ...blocks,
+                  {
+                    type: "text",
+                    text: `Ces pages font partie d'un règlement PLU français, section "Zone ${zone.code}" (${zone.label}). Extrais les règles de la ZONE ${zone.code} uniquement.
+
+Pour CHAQUE article ou sous-article distinct présent dans ces pages, appelle save_rule UNE fois.
 Correspondance article → topic :
   1/2 → destinations | 5 → terrain_min | 6 → recul_voie | 7 → recul_limite
   8 → recul_batiments | 9 → emprise_sol | 10 → hauteur | 11 → aspect
   12 → stationnement | 13 → espaces_verts | 14 → cos
 
+- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau peut être une règle distincte.
 - Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
 - Plusieurs valeurs selon sous-secteurs → valeur principale dans value_max, variantes dans conditions.
-- Si la valeur numérique est dans un schéma graphique du document → needs_vision = true.
-- Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact du document cité.
+- Si la valeur numérique est dans un schéma graphique → needs_vision = true.
+- Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
 - N'invente aucune valeur. Si incertain, omets value_min/max/exact.`,
-              },
-            ],
-          }],
-        },
-      );
+                  },
+                ],
+              }],
+            },
+          );
 
-      const rules: PluRuleInput[] = ruleMsg.content
-        .filter((b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use")
-        .map(b => b.input as PluRuleInput);
-      const visionCount = rules.filter(r => r.needs_vision || r.needs_external_doc).length;
+          const batchRules = ruleMsg.content
+            .filter((b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use")
+            .map(b => b.input as PluRuleInput);
 
-      send({ type: "zone_done", zone: zoneDef.code, rules: rules.length, vision: visionCount });
-      return { zoneDef, rules, visionCount };
-     } catch (e) {
-      // Une zone en échec ne fait pas planter tout l'import : on l'enregistre
-      // sans règle (l'instructeur pourra la compléter manuellement).
-      console.error(`[ingest-plu-pdf] extraction zone ${zoneDef.code} échouée`, e);
-      send({ type: "zone_done", zone: zoneDef.code, rules: 0, vision: 0, error: true });
-      return { zoneDef, rules: [] as PluRuleInput[], visionCount: 0 };
-     }
+          for (const r of batchRules) {
+            // Fusion par (article_number, topic) : si la même règle ressort
+            // dans deux lots (chevauchement de tableau, article à cheval),
+            // on garde celle au rule_text le plus long (proxy "plus complet").
+            const key = `${r.article_number ?? "x"}|${r.topic}`;
+            const prev = merged.get(key);
+            if (!prev || (r.rule_text?.length ?? 0) > (prev.rule_text?.length ?? 0)) {
+              merged.set(key, r);
+            }
+            if (r.needs_vision || r.needs_external_doc) visionCount++;
+          }
+        } catch (e) {
+          batchErrors++;
+          console.error(`[ingest-plu-pdf] zone ${zone.code} lot p${first}-${last} échoué`, e);
+        }
+      }
+
+      const rules = [...merged.values()];
+      send({
+        type: "zone_done", zone: zone.code,
+        rules: rules.length, vision: visionCount,
+        ...(batchErrors > 0 ? { warning: `${batchErrors} lot(s) en erreur sur ${batches.length}` } : {}),
+      });
+      return { zoneDef: zone, rules, visionCount };
     };
 
-    // Concurrence bornée : traiter les zones par petits lots évite de saturer
-    // l'API IA (toutes les zones d'un coup provoque des 429/529/500).
-    const extracted: Array<{ zoneDef: { code: string; label: string; type: string; chunk: number }; rules: PluRuleInput[]; visionCount: number }> = [];
-    const CONCURRENCY = 3;
-    for (let i = 0; i < zoneDefs.length; i += CONCURRENCY) {
-      const batch = zoneDefs.slice(i, i + CONCURRENCY);
+    // Concurrence bornée : 2 zones en parallèle (chaque zone ouvre déjà
+    // plusieurs requêtes IA séquentielles via ses lots de pages).
+    const extracted: Array<{ zoneDef: typeof zoneRanges[number]; rules: PluRuleInput[]; visionCount: number }> = [];
+    const CONCURRENCY = 2;
+    for (let i = 0; i < zoneRanges.length; i += CONCURRENCY) {
+      const batch = zoneRanges.slice(i, i + CONCURRENCY);
       const batchResults = await Promise.all(batch.map(extractZone));
       extracted.push(...batchResults);
     }
+
+    // Garde-fou : si l'IA n'a réussi à extraire des règles que pour une
+    // poignée de zones, on REFUSE d'écraser le référentiel existant. La
+    // requête échoue clairement et la transaction d'écriture ne s'ouvre pas.
+    assertTocCoverage(
+      toc,
+      extracted.map((e) => ({ code: e.zoneDef.code, ruleCount: e.rules.length })),
+    );
 
     // ── Écriture atomique ──────────────────────────────────────────────────────
     // L'extraction (ci-dessus) est terminée et a réussi : on purge l'existant et

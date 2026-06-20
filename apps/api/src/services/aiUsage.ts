@@ -135,25 +135,30 @@ function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
 // Rend les pages d'un PDF en PNGs via pdftoppm. Utilisé par les callers qui
 // veulent envoyer plusieurs pages à Pixtral (qui n'accepte pas le PDF natif)
 // — typiquement l'OCR CERFA, où des champs utiles se trouvent en pages 2-3
-// (terrain, parcelle, surface de plancher, description du projet).
+// (terrain, parcelle, surface de plancher, description du projet) ; et
+// l'ingestion PLU qui doit rendre toutes les pages d'une zone (cf. mairie/
+// admin.ts → ingest-plu-pdf) pour que Pixtral puisse réellement lire les
+// tableaux (article 12, espaces verts…) au-delà de la première page.
 //
-// `maxPages` non défini → toutes les pages du PDF (limite implicite via le
-// garde-fou côté appelant). `dpi` 150 par défaut : lisible pour l'OCR sans
-// faire exploser la taille du payload Mistral sur un CERFA multi-pages.
+// `firstPage` 1-indexé (cf. pdftoppm -f). `maxPages` non défini → toutes
+// les pages restantes ; sinon on rend `maxPages` pages à partir de
+// `firstPage`. `dpi` 150 par défaut : lisible pour l'OCR sans faire
+// exploser la taille du payload Mistral sur un PDF multi-pages.
 export function convertPdfPagesToPng(
   pdf: Buffer,
-  opts: { maxPages?: number; dpi?: number } = {},
+  opts: { firstPage?: number; maxPages?: number; dpi?: number } = {},
 ): Buffer[] {
   const dpi = opts.dpi ?? 150;
+  const firstPage = Math.max(1, opts.firstPage ?? 1);
   const dir = mkdtempSync(path.join(tmpdir(), "heureka-ai-"));
   try {
     const pdfPath = path.join(dir, "in.pdf");
     const outPrefix = path.join(dir, "out");
     writeFileSync(pdfPath, pdf);
     try {
-      const args = ["-png", "-r", String(dpi), "-f", "1"];
+      const args = ["-png", "-r", String(dpi), "-f", String(firstPage)];
       if (opts.maxPages && opts.maxPages > 0) {
-        args.push("-l", String(opts.maxPages));
+        args.push("-l", String(firstPage + opts.maxPages - 1));
       }
       args.push(pdfPath, outPrefix);
       execFileSync("pdftoppm", args, { stdio: ["ignore", "ignore", "pipe"] });
