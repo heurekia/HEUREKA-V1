@@ -5,7 +5,7 @@ import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock, type AiToolDefinition } from "../../services/aiUsage.js";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, type TocEntry } from "../../services/pluImport.js";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, type TocEntry } from "../../services/pluImport.js";
 import { PDFDocument } from "pdf-lib";
 import {
   computeInstructionDelay,
@@ -463,8 +463,7 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].`,
 
     const extractZone = async (zone: typeof zoneRanges[number]) => {
       const batches = chunkPages(zone.startPage, zone.endPage, PAGE_BATCH);
-      const merged = new Map<string, PluRuleInput>();
-      let visionCount = 0;
+      const allRules: PluRuleInput[] = [];
       let batchErrors = 0;
 
       for (let bi = 0; bi < batches.length; bi++) {
@@ -501,9 +500,10 @@ Correspondance article → topic :
   8 → recul_batiments | 9 → emprise_sol | 10 → hauteur | 11 → aspect
   12 → stationnement | 13 → espaces_verts | 14 → cos
 
-- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau peut être une règle distincte.
+- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau = une règle distincte → un appel save_rule par ligne.
+- Un même article peut porter PLUSIEURS règles distinctes selon la destination (habitation, commerce, bureaux, artisanat, hôtellerie…). Émets UN save_rule par destination / catégorie, avec son propre rule_text et sa propre valeur. Ne fusionne pas tout dans une seule règle.
 - Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
-- Plusieurs valeurs selon sous-secteurs → valeur principale dans value_max, variantes dans conditions.
+- Plusieurs valeurs selon sous-secteurs géographiques (UA1 vs UA2…) → 1 save_rule par sous-secteur si possible, sinon valeur principale dans value_max + variantes dans conditions.
 - Si la valeur numérique est dans un schéma graphique → needs_vision = true.
 - Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
 - N'invente aucune valeur. Si incertain, omets value_min/max/exact.`,
@@ -517,25 +517,20 @@ Correspondance article → topic :
             .filter((b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use")
             .map(b => b.input as PluRuleInput);
 
-          for (const r of batchRules) {
-            if (!isUsableRule(r)) continue;
-            // Fusion par (article_number, topic) : si la même règle ressort
-            // dans deux lots (chevauchement de tableau, article à cheval),
-            // on garde celle au rule_text le plus long (proxy "plus complet").
-            const key = `${toArticleInt(r.article_number) ?? "x"}|${r.topic}`;
-            const prev = merged.get(key);
-            if (!prev || (r.rule_text?.length ?? 0) > (prev.rule_text?.length ?? 0)) {
-              merged.set(key, r);
-            }
-            if (r.needs_vision || r.needs_external_doc) visionCount++;
-          }
+          // On accumule tel quel ; la déduplication se fait en fin de zone
+          // sur le texte de règle (cf. dedupeRules), pas sur (article, topic)
+          // — sinon les multiples règles d'un même article (article 12
+          // stationnement : habitation / commerce / bureaux / artisanat /
+          // hôtellerie / etc.) seraient écrasées les unes sur les autres.
+          allRules.push(...batchRules);
         } catch (e) {
           batchErrors++;
           console.error(`[ingest-plu-pdf] zone ${zone.code} lot p${first}-${last} échoué`, e);
         }
       }
 
-      const rules = [...merged.values()];
+      const rules = dedupeRules(allRules);
+      const visionCount = rules.filter(r => r.needs_vision || r.needs_external_doc).length;
       send({
         type: "zone_done", zone: zone.code,
         rules: rules.length, vision: visionCount,
@@ -902,9 +897,10 @@ Correspondance article → topic :
   8 → recul_batiments | 9 → emprise_sol | 10 → hauteur | 11 → aspect
   12 → stationnement | 13 → espaces_verts | 14 → cos
 
-- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau peut être une règle distincte.
+- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau = une règle distincte → un appel save_rule par ligne.
+- Un même article peut porter PLUSIEURS règles distinctes selon la destination (habitation, commerce, bureaux, artisanat, hôtellerie…). Émets UN save_rule par destination / catégorie, avec son propre rule_text et sa propre valeur. Ne fusionne pas tout dans une seule règle.
 - Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
-- Plusieurs valeurs selon sous-secteurs → valeur principale dans value_max, variantes dans conditions.
+- Plusieurs valeurs selon sous-secteurs géographiques (UA1 vs UA2…) → 1 save_rule par sous-secteur si possible, sinon valeur principale dans value_max + variantes dans conditions.
 - Si la valeur numérique est dans un schéma graphique → needs_vision = true.
 - Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
 - N'invente aucune valeur. Si incertain, omets value_min/max/exact.` },
@@ -953,18 +949,16 @@ Correspondance article → topic :
     await Promise.all(Array.from({ length: SERVER_CONCURRENCY }, worker));
     if (firstError) throw firstError;
 
-    // Fusion + validation de couverture + transaction DB.
+    // Déduplication finale par texte de règle (cf. dedupeRules) puis
+    // transaction DB. Crucial : on NE déduplique PAS par (article, topic) —
+    // un même article peut porter plusieurs règles distinctes (article 12
+    // stationnement par destination, article 11 aspect par élément, etc.).
     job.phase = "Enregistrement…";
     const merged = job.zones.map((zoneDef) => {
       const st = job.zoneState.get(zoneDef.code)!;
-      const m = new Map<string, PluRuleInput>();
-      for (const r of st.rules) {
-        if (!isUsableRule(r)) continue;
-        const key = `${toArticleInt(r.article_number) ?? "x"}|${r.topic}`;
-        const prev = m.get(key);
-        if (!prev || (r.rule_text?.length ?? 0) > (prev.rule_text?.length ?? 0)) m.set(key, r);
-      }
-      return { zoneDef, rules: [...m.values()], visionCount: st.visionCount };
+      const rules = dedupeRules(st.rules);
+      const visionCount = rules.filter(r => r.needs_vision || r.needs_external_doc).length;
+      return { zoneDef, rules, visionCount };
     });
 
     assertTocCoverage(job.toc, merged.map((e) => ({ code: e.zoneDef.code, ruleCount: e.rules.length })));
@@ -1097,9 +1091,10 @@ Correspondance article → topic :
   8 → recul_batiments | 9 → emprise_sol | 10 → hauteur | 11 → aspect
   12 → stationnement | 13 → espaces_verts | 14 → cos
 
-- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau peut être une règle distincte.
+- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau = une règle distincte → un appel save_rule par ligne.
+- Un même article peut porter PLUSIEURS règles distinctes selon la destination (habitation, commerce, bureaux, artisanat, hôtellerie…). Émets UN save_rule par destination / catégorie, avec son propre rule_text et sa propre valeur. Ne fusionne pas tout dans une seule règle.
 - Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
-- Plusieurs valeurs selon sous-secteurs → valeur principale dans value_max, variantes dans conditions.
+- Plusieurs valeurs selon sous-secteurs géographiques (UA1 vs UA2…) → 1 save_rule par sous-secteur si possible, sinon valeur principale dans value_max + variantes dans conditions.
 - Si la valeur numérique est dans un schéma graphique → needs_vision = true.
 - Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
 - N'invente aucune valeur. Si incertain, omets value_min/max/exact.` },
@@ -1138,20 +1133,15 @@ adminRouter.post("/admin/ingest-plu-pdf/commit", async (req: AuthRequest, res) =
     const job = INGEST_JOBS.get(jobId);
     if (!job) return res.status(404).json({ error: "Job introuvable ou expiré." });
 
-    // Fusion par (article_number, topic) intra-zone : le client peut envoyer
-    // plusieurs règles avec la même clé (chevauchements de tableau, article à
-    // cheval sur deux lots) — on garde la plus complète, comme dans l'ancien
-    // flux monolithique.
+    // Déduplication par texte de règle (cf. dedupeRules) intra-zone.
+    // Pas par (article, topic) — sinon l'article 12 stationnement, qui porte
+    // typiquement 6+ règles distinctes (habitation, commerce, bureaux,
+    // artisanat, hôtellerie…), serait réduit à une seule.
     const merged = zoneResults.map((zr) => {
-      const m = new Map<string, PluRuleInput>();
-      for (const r of zr.rules) {
-        if (!isUsableRule(r)) continue;
-        const key = `${toArticleInt(r.article_number) ?? "x"}|${r.topic}`;
-        const prev = m.get(key);
-        if (!prev || (r.rule_text?.length ?? 0) > (prev.rule_text?.length ?? 0)) m.set(key, r);
-      }
+      const rules = dedupeRules(zr.rules);
+      const visionCount = rules.filter(r => r.needs_vision || r.needs_external_doc).length;
       const zoneDef = job.zones.find((z) => z.code === zr.zoneCode);
-      return { zoneDef, rules: [...m.values()], visionCount: zr.visionCount ?? 0 };
+      return { zoneDef, rules, visionCount };
     }).filter((e): e is { zoneDef: NonNullable<typeof e.zoneDef>; rules: PluRuleInput[]; visionCount: number } => !!e.zoneDef);
 
     // Garde-fou : si l'IA n'a réussi à extraire des règles que pour une

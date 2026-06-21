@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule } from "./pluImport.ts";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules } from "./pluImport.ts";
 
 describe("partitionPagesByZone", () => {
   it("découpe les zones en plages fermées [start, end] selon la zone suivante", () => {
@@ -239,5 +239,62 @@ describe("isUsableRule", () => {
 
   it("accepte une règle avec topic + rule_text non vides", () => {
     expect(isUsableRule({ topic: "hauteur", rule_text: "9 m au faîtage." })).toBe(true);
+  });
+});
+
+describe("dedupeRules", () => {
+  it("conserve les multiples règles d'un même article+topic (cas article 12 stationnement)", () => {
+    // Régression : la fusion par (article, topic) ne gardait qu'UNE règle.
+    // Article 12 stationnement d'un PLU porte typiquement 6+ règles
+    // distinctes — toutes doivent passer.
+    const rules = [
+      { article_number: 12, topic: "stationnement", rule_text: "Habitation : 1 place par logement.", summary: "habitation 1pl/log" },
+      { article_number: 12, topic: "stationnement", rule_text: "Commerce < 100 m² : 1 place pour 60 m² de surface de vente.", summary: "commerce 1pl/60m²" },
+      { article_number: 12, topic: "stationnement", rule_text: "Bureaux : 1 place pour 40 m² de surface de plancher.", summary: "bureaux 1pl/40m²" },
+      { article_number: 12, topic: "stationnement", rule_text: "Artisanat : 1 place pour 80 m² de surface de plancher.", summary: "artisanat 1pl/80m²" },
+      { article_number: 12, topic: "stationnement", rule_text: "Hébergement hôtelier : 1 place par chambre.", summary: "hôtel 1pl/chambre" },
+    ];
+    expect(dedupeRules(rules)).toHaveLength(5);
+  });
+
+  it("déduplique les règles au texte quasi identique (chevauchement de lot)", () => {
+    const rules = [
+      { article_number: 10, topic: "hauteur", rule_text: "La hauteur maximale est fixée à 9 mètres au faîtage.", summary: "h<=9m" },
+      { article_number: 10, topic: "hauteur", rule_text: "La hauteur maximale est fixée à 9 mètres au faîtage.", summary: "h<=9m" }, // doublon exact
+      { article_number: 10, topic: "hauteur", rule_text: "  LA  HAUTEUR maximale est fixée à 9 mètres au faîtage.  ", summary: "h<=9m" }, // doublon (casse + espaces)
+    ];
+    const out = dedupeRules(rules);
+    expect(out).toHaveLength(1);
+  });
+
+  it("garde toutes les règles dont le texte diverge réellement (cas du sous-secteur)", () => {
+    // Side de sécurité : on préfère un doublon (réviseur humain peut couper)
+    // à une règle perdue. Quand les rule_text divergent au-delà de la
+    // normalisation, on garde les deux — c'est le cas des règles "préfixe
+    // commun + précision différente" qui correspondent à des sous-secteurs.
+    const rules = [
+      { article_number: 7, topic: "recul_limite", rule_text: "En limite ou H/2 minimum 3 m en UA1.", summary: "UA1" },
+      { article_number: 7, topic: "recul_limite", rule_text: "En limite ou H/2 minimum 5 m en UA2.", summary: "UA2" },
+    ];
+    expect(dedupeRules(rules)).toHaveLength(2);
+  });
+
+  it("garde la règle au rule_text le plus long quand les textes normalisés sont identiques", () => {
+    const rules = [
+      { article_number: 10, topic: "hauteur", rule_text: "9 m au faîtage.", summary: "..." },
+      { article_number: 10, topic: "hauteur", rule_text: "9 m au faîtage.", summary: "..." },
+    ];
+    const out = dedupeRules(rules);
+    expect(out).toHaveLength(1);
+  });
+
+  it("filtre les règles fantômes (rule_text vide) au passage", () => {
+    const rules = [
+      { article_number: 1, topic: "destinations", rule_text: "Sont autorisées les constructions à usage d'habitation.", summary: "habit autorisé" },
+      { article_number: 1, topic: "destinations", rule_text: "", summary: "" },
+      { article_number: null, topic: "", rule_text: "Texte sans topic.", summary: "" },
+    ];
+    const out = dedupeRules(rules);
+    expect(out).toHaveLength(1);
   });
 });
