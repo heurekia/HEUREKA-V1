@@ -689,6 +689,15 @@ type IngestJob = {
     endPage: number;
     batches: Array<{ index: number; firstPage: number; lastPage: number }>;
   }>;
+  // État du worker en arrière-plan (cf. runIngestJob). Le client interroge
+  // /status pour suivre l'avancée sans tenir une connexion HTTP longue, ce qui
+  // permet de fermer l'onglet ou de changer de page sans interrompre
+  // l'extraction.
+  status: "running" | "done" | "error";
+  phase: string;
+  zoneState: Map<string, { doneBatches: number; rules: PluRuleInput[]; visionCount: number }>;
+  result?: { zones: number; rules: number; needs_review: number; detail: Array<{ zone: string; rules: number; vision: number }> };
+  error?: string;
   createdAt: number;
 };
 
@@ -698,6 +707,9 @@ const INGEST_JOB_TTL_MS = 60 * 60 * 1000; // 1 h
 function gcIngestJobs() {
   const now = Date.now();
   for (const [id, j] of INGEST_JOBS) {
+    // Pour un job actif, on prolonge le TTL : tant qu'il tourne, on ne le
+    // supprime pas. La purge ne vise que les jobs `done`/`error` non lus.
+    if (j.status === "running") continue;
     if (now - j.createdAt > INGEST_JOB_TTL_MS) INGEST_JOBS.delete(id);
   }
 }
@@ -809,12 +821,28 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
     }));
 
     const jobId = `${commune.insee_code}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    INGEST_JOBS.set(jobId, {
+    const zoneState = new Map(zones_out.map((z) => [z.code, { doneBatches: 0, rules: [] as PluRuleInput[], visionCount: 0 }]));
+    const job: IngestJob = {
       jobId, pdfBuffer, totalPages, toc,
       commune: { id: commune.id, name: commune.name, insee_code: commune.insee_code },
       userId: req.user?.id ?? null,
       zones: zones_out,
+      status: "running",
+      phase: "Extraction des règles…",
+      zoneState,
       createdAt: Date.now(),
+    };
+    INGEST_JOBS.set(jobId, job);
+
+    // Lance le worker en arrière-plan SANS attendre. Le client n'a qu'à
+    // interroger /status pour suivre la progression — il peut fermer l'onglet
+    // ou naviguer ailleurs, l'extraction continue côté serveur jusqu'à
+    // l'écriture en DB.
+    void runIngestJob(job).catch((err) => {
+      console.error("[ingest-plu-pdf] worker uncaught", err);
+      job.status = "error";
+      job.error = err instanceof Error ? err.message : String(err);
+      job.phase = "Erreur";
     });
 
     res.json({
@@ -833,6 +861,205 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
         : (err instanceof Error ? err.message : String(err)),
     });
   }
+});
+
+// Worker arrière-plan : extrait tous les lots de toutes les zones, puis
+// commit la transaction DB. Ne renvoie rien — le client lit l'avancée via
+// /status. Tant que le process Node tourne, le job continue, indépendamment
+// de la connexion HTTP qui a lancé /start (l'utilisateur peut fermer l'onglet).
+async function runIngestJob(job: IngestJob): Promise<void> {
+  // Aplatit tous les lots en une queue, traité par un pool de workers.
+  const queue: Array<{ zoneCode: string; batchIndex: number }> = [];
+  for (const z of job.zones) for (const b of z.batches) queue.push({ zoneCode: z.code, batchIndex: b.index });
+
+  let next = 0;
+  let firstError: Error | null = null;
+  // Concurrence serveur volontairement modeste (3) : reste sous le rate limit
+  // Mistral et évite de saturer le tier prod sur une seule ingestion.
+  const SERVER_CONCURRENCY = 3;
+  const MAX_RETRY = 2;
+
+  const processBatch = async (zoneCode: string, batchIndex: number): Promise<void> => {
+    const zone = job.zones.find((z) => z.code === zoneCode)!;
+    const batch = zone.batches[batchIndex]!;
+    const blocks = renderPagesAsBlocksFor(job.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
+    const ruleMsg = await callAi(
+      { purpose: "plu_rule_extract", userId: job.userId, communeId: job.commune.id },
+      {
+        model: "ai-smart",
+        max_tokens: 4000,
+        tools: [PLU_SAVE_RULE_TOOL],
+        tool_choice: "any",
+        messages: [{
+          role: "user",
+          content: [
+            ...blocks,
+            { type: "text", text: `Ces pages font partie d'un règlement PLU français, section "Zone ${zone.code}" (${zone.label}). Extrais les règles de la ZONE ${zone.code} uniquement.
+
+Pour CHAQUE article ou sous-article distinct présent dans ces pages, appelle save_rule UNE fois.
+Correspondance article → topic :
+  1/2 → destinations | 5 → terrain_min | 6 → recul_voie | 7 → recul_limite
+  8 → recul_batiments | 9 → emprise_sol | 10 → hauteur | 11 → aspect
+  12 → stationnement | 13 → espaces_verts | 14 → cos
+
+- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau peut être une règle distincte.
+- Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
+- Plusieurs valeurs selon sous-secteurs → valeur principale dans value_max, variantes dans conditions.
+- Si la valeur numérique est dans un schéma graphique → needs_vision = true.
+- Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
+- N'invente aucune valeur. Si incertain, omets value_min/max/exact.` },
+          ],
+        }],
+      },
+    );
+    const rules = ruleMsg.content
+      .filter((b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use")
+      .map((b) => b.input as PluRuleInput);
+    const visionCount = rules.filter((r) => r.needs_vision || r.needs_external_doc).length;
+    const st = job.zoneState.get(zoneCode)!;
+    st.rules.push(...rules);
+    st.visionCount += visionCount;
+    st.doneBatches += 1;
+  };
+
+  const worker = async () => {
+    while (true) {
+      if (firstError) return;
+      const i = next++;
+      if (i >= queue.length) return;
+      const { zoneCode, batchIndex } = queue[i]!;
+      let attempt = 0;
+      while (true) {
+        try {
+          await processBatch(zoneCode, batchIndex);
+          break;
+        } catch (e) {
+          const status = (e as { status?: number })?.status;
+          const transient = status === 429 || status === 529 || (typeof status === "number" && status >= 500);
+          if (transient && attempt < MAX_RETRY) {
+            await new Promise((r) => setTimeout(r, 1500 * Math.pow(2, attempt)));
+            attempt++;
+            continue;
+          }
+          console.error(`[ingest-plu-pdf] worker ${zoneCode} lot ${batchIndex} échoué`, e);
+          firstError = e as Error;
+          return;
+        }
+      }
+    }
+  };
+
+  try {
+    await Promise.all(Array.from({ length: SERVER_CONCURRENCY }, worker));
+    if (firstError) throw firstError;
+
+    // Fusion + validation de couverture + transaction DB.
+    job.phase = "Enregistrement…";
+    const merged = job.zones.map((zoneDef) => {
+      const st = job.zoneState.get(zoneDef.code)!;
+      const m = new Map<string, PluRuleInput>();
+      for (const r of st.rules) {
+        if (!isUsableRule(r)) continue;
+        const key = `${toArticleInt(r.article_number) ?? "x"}|${r.topic}`;
+        const prev = m.get(key);
+        if (!prev || (r.rule_text?.length ?? 0) > (prev.rule_text?.length ?? 0)) m.set(key, r);
+      }
+      return { zoneDef, rules: [...m.values()], visionCount: st.visionCount };
+    });
+
+    assertTocCoverage(job.toc, merged.map((e) => ({ code: e.zoneDef.code, ruleCount: e.rules.length })));
+
+    await db.transaction(async (tx) => {
+      const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, job.commune.id));
+      if (oldZones.length > 0) {
+        await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
+        await tx.delete(zones).where(eq(zones.commune_id, job.commune.id));
+      }
+      for (const { zoneDef, rules } of merged) {
+        const [created] = await tx.insert(zones).values({
+          commune_id: job.commune.id,
+          zone_code: zoneDef.code,
+          zone_label: zoneDef.label,
+          zone_type: zoneDef.type,
+          summary: `Zone ${zoneDef.code} — extrait par IA, à valider`,
+          status: "active",
+          is_active: true,
+        }).returning();
+        const zoneId = created!.id;
+        for (const rule of rules) {
+          const articleInt = toArticleInt(rule.article_number);
+          await tx.insert(zone_regulatory_rules).values({
+            zone_id: zoneId,
+            article_number: articleInt,
+            article_title: rule.article_title ?? (articleInt != null ? `Article ${articleInt}` : ""),
+            topic: rule.topic,
+            rule_text: rule.rule_text,
+            value_min: ((v: unknown) => v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null)(rule.value_min),
+            value_max: ((v: unknown) => v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null)(rule.value_max),
+            value_exact: ((v: unknown) => v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null)(rule.value_exact),
+            unit: rule.unit ?? null,
+            conditions: rule.conditions ?? null,
+            summary: rule.summary,
+            instructor_note: [
+              rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
+              rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
+            ].filter(Boolean).join(" | ") || null,
+            validation_status: "brouillon" as const,
+          });
+        }
+      }
+    });
+
+    const detail = merged.map((e) => ({ zone: e.zoneDef.code, rules: e.rules.length, vision: e.visionCount }));
+    job.result = {
+      zones: detail.length,
+      rules: detail.reduce((s, z) => s + z.rules, 0),
+      needs_review: detail.reduce((s, z) => s + z.vision, 0),
+      detail,
+    };
+    job.status = "done";
+    job.phase = "Terminé";
+    // Libère le PDF (mémoire) — le résultat reste consultable via /status le
+    // temps que le client le récupère, puis le GC TTL nettoie le job.
+    job.pdfBuffer = Buffer.alloc(0);
+  } catch (e) {
+    job.status = "error";
+    job.error = e instanceof Error ? e.message : String(e);
+    job.phase = "Erreur";
+  }
+}
+
+// GET /admin/ingest-plu-pdf/status?jobId=… — état courant du job (polling).
+adminRouter.get("/admin/ingest-plu-pdf/status", async (req: AuthRequest, res) => {
+  gcIngestJobs();
+  const jobId = String(req.query.jobId ?? "");
+  if (!jobId) return res.status(400).json({ error: "jobId requis" });
+  const job = INGEST_JOBS.get(jobId);
+  if (!job) return res.status(404).json({ error: "Job introuvable ou expiré" });
+
+  const zonesStatus = job.zones.map((z) => {
+    const st = job.zoneState.get(z.code);
+    const done_batches = st?.doneBatches ?? 0;
+    return {
+      code: z.code,
+      label: z.label,
+      type: z.type,
+      total_batches: z.batches.length,
+      done_batches,
+      rules_so_far: st?.rules.length ?? 0,
+      vision_so_far: st?.visionCount ?? 0,
+      done: done_batches >= z.batches.length,
+    };
+  });
+  res.json({
+    jobId: job.jobId,
+    status: job.status,
+    phase: job.phase,
+    commune: job.commune,
+    zones: zonesStatus,
+    result: job.result ?? null,
+    error: job.error ?? null,
+  });
 });
 
 // POST /admin/ingest-plu-pdf/batch — extrait UN lot de pages.
