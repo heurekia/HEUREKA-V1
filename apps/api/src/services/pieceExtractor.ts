@@ -250,6 +250,14 @@ Mélange autorisé dans la même liste. Tu peux aussi renseigner "page_count" (n
 - source_field : où apparaît la mention ("cartouche" | "plan_situation" | "plan_masse" | "cerfa" | "autre").
 - N'invente AUCUNE référence : si rien n'est lisible, parcelles_observees=[].
 
+ÉTAPE 8 — LECTURE DES COTES SUR LES COUPES ET FAÇADES (anti-erreur d'orientation) :
+- Les plans peuvent être PIVOTÉS : le dessin peut être tourné de 90° (voire 180°) alors même que le cartouche ou le texte reste horizontal. Ne te fie JAMAIS à l'orientation de la page pour décider ce qui est "vertical".
+- Repère D'ABORD la ligne de SOL / terrain naturel (TN, niveau 0.00, trait de sol souvent hachuré). Dans la réalité, la HAUTEUR se mesure perpendiculairement à cette ligne.
+- Une cote PARALLÈLE à la ligne de sol = LONGUEUR ou LARGEUR du bâtiment → ce n'est JAMAIS une hauteur. Une cote PERPENDICULAIRE à la ligne de sol = hauteur (égout, acrotère, faîtage). Vérifie l'axe de la cote, pas sa position sur la feuille.
+- PRIVILÉGIE les niveaux NGF : si sol naturel, égout, acrotère ou faîtage sont cotés en NGF, la hauteur = DIFFÉRENCE d'altitude (hauteur au faîtage = faîtage_NGF − sol_naturel_NGF ; idem égout, acrotère). Cette différence prime sur une cote dimensionnelle lue sur le dessin.
+- En cas de CONTRADICTION entre une cote dimensionnelle et la différence des NGF, retiens la différence des NGF et explique l'écart dans "notes".
+- Garde-fou de bon sens : une hauteur de bâtiment courant dépasse rarement ~12 m. Si tu obtiens une valeur nettement supérieure, tu as probablement lu une LONGUEUR ou une cote NGF — relis l'axe de la cote avant de conclure, et signale le doute dans "notes".
+
 SORTIE — UNIQUEMENT du JSON valide, sans markdown, sans préambule :
 {
   "piece_type": "cerfa|plan_situation|plan_masse|plan_coupe|plan_facade|notice|photo|insertion|autre",
@@ -543,7 +551,7 @@ export function parseExtraction(raw: string): PieceExtraction {
   } : null;
 
   const pcRaw = obj.plan_coupe as Record<string, unknown> | null | undefined;
-  const plan_coupe = pcRaw && typeof pcRaw === "object" ? {
+  let plan_coupe = pcRaw && typeof pcRaw === "object" ? {
     sol_naturel_ngf_m: n(pcRaw.sol_naturel_ngf_m),
     sol_fini_ngf_m: n(pcRaw.sol_fini_ngf_m),
     egout_ngf_m: n(pcRaw.egout_ngf_m),
@@ -554,6 +562,16 @@ export function parseExtraction(raw: string): PieceExtraction {
     hauteur_acrotere_m: n(pcRaw.hauteur_acrotere_m),
     pente_terrain_pct: n(pcRaw.pente_terrain_pct),
   } : null;
+
+  // Backstop déterministe : recale les hauteurs cotées sur la différence des
+  // niveaux NGF (invariante à la rotation du plan). Neutralise le cas typique
+  // d'une coupe pivotée à 90° où une LONGUEUR est lue comme une hauteur.
+  let coupeNote: string | null = null;
+  if (plan_coupe) {
+    const rec = reconcileCoupeHeights(plan_coupe);
+    plan_coupe = rec.plan_coupe;
+    coupeNote = rec.note;
+  }
 
   const pfRaw = obj.plan_facade as Record<string, unknown> | null | undefined;
   const plan_facade = pfRaw && typeof pfRaw === "object" ? {
@@ -600,8 +618,72 @@ export function parseExtraction(raw: string): PieceExtraction {
     missing_elements: arrS(obj.missing_elements) ?? [],
     citations: parseCitations(obj.citations),
     page_count: n(obj.page_count),
-    notes: s(obj.notes),
+    notes: mergeNotes(s(obj.notes), coupeNote),
   };
+}
+
+// Tolérance de cohérence entre une hauteur cotée et la différence des NGF.
+// 0,5 m absorbe les arrondis de lecture sans masquer une vraie incohérence
+// (ex. 15,56 m vs 4,80 m de différence NGF).
+const COUPE_NGF_TOLERANCE_M = 0.5;
+
+function round2(v: number): number {
+  return Math.round(v * 100) / 100;
+}
+
+function mergeNotes(...parts: Array<string | null>): string | null {
+  const kept = parts.filter((p): p is string => !!p && p.trim().length > 0);
+  return kept.length ? kept.join(" · ") : null;
+}
+
+type CoupeFields = {
+  sol_naturel_ngf_m: number | null;
+  sol_fini_ngf_m: number | null;
+  egout_ngf_m: number | null;
+  faitage_ngf_m: number | null;
+  acrotere_ngf_m: number | null;
+  hauteur_egout_m: number | null;
+  hauteur_faitage_m: number | null;
+  hauteur_acrotere_m: number | null;
+  pente_terrain_pct: number | null;
+};
+
+// Réconcilie les hauteurs cotées avec les différences de niveaux NGF.
+// Règle : la hauteur réglementaire se mesure depuis le SOL NATUREL. Quand on
+// dispose des deux altitudes, la différence (sommet − sol naturel) est la
+// source la plus fiable car elle ne dépend pas de l'orientation du dessin.
+//   - hauteur absente + NGF disponibles → on remplit depuis les NGF ;
+//   - hauteur présente mais incohérente (> tolérance) avec les NGF → on retient
+//     la valeur NGF et on journalise l'écart dans `note`.
+// Pur (aucune I/O) et exporté pour test.
+export function reconcileCoupeHeights(pc: CoupeFields): { plan_coupe: CoupeFields; note: string | null } {
+  const sol = pc.sol_naturel_ngf_m;
+  if (sol == null) return { plan_coupe: pc, note: null };
+
+  const out: CoupeFields = { ...pc };
+  const notes: string[] = [];
+
+  const pairs: Array<{ label: string; ngf: number | null; key: keyof CoupeFields }> = [
+    { label: "égout", ngf: pc.egout_ngf_m, key: "hauteur_egout_m" },
+    { label: "faîtage", ngf: pc.faitage_ngf_m, key: "hauteur_faitage_m" },
+    { label: "acrotère", ngf: pc.acrotere_ngf_m, key: "hauteur_acrotere_m" },
+  ];
+
+  for (const { label, ngf, key } of pairs) {
+    if (ngf == null) continue;
+    const derived = round2(ngf - sol);
+    if (derived <= 0) continue; // NGF aberrants : on ne corrige pas à l'aveugle
+    const coted = out[key] as number | null;
+    if (coted == null) {
+      out[key] = derived;
+      notes.push(`hauteur ${label} dérivée des cotes NGF (${derived} m)`);
+    } else if (Math.abs(coted - derived) > COUPE_NGF_TOLERANCE_M) {
+      out[key] = derived;
+      notes.push(`hauteur ${label} cotée (${coted} m) incohérente avec la différence de NGF (${derived} m) — valeur NGF retenue`);
+    }
+  }
+
+  return { plan_coupe: out, note: notes.length ? notes.join(" ; ") : null };
 }
 
 export interface PieceExtractContext {

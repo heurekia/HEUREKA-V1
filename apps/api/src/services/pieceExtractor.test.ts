@@ -1,5 +1,62 @@
 import { describe, it, expect } from "vitest";
-import { parseExtraction } from "./pieceExtractor.js";
+import { parseExtraction, reconcileCoupeHeights } from "./pieceExtractor.js";
+
+describe("reconcileCoupeHeights — recalage hauteurs sur NGF (anti-rotation)", () => {
+  const base = {
+    sol_naturel_ngf_m: null, sol_fini_ngf_m: null, egout_ngf_m: null,
+    faitage_ngf_m: null, acrotere_ngf_m: null, hauteur_egout_m: null,
+    hauteur_faitage_m: null, hauteur_acrotere_m: null, pente_terrain_pct: null,
+  };
+
+  it("écrase une hauteur cotée incohérente par la différence des NGF (15,56 → 4,8)", () => {
+    const { plan_coupe, note } = reconcileCoupeHeights({
+      ...base, sol_naturel_ngf_m: 100.0, faitage_ngf_m: 104.8, hauteur_faitage_m: 15.56,
+    });
+    expect(plan_coupe.hauteur_faitage_m).toBe(4.8);
+    expect(note).toMatch(/incohérente|NGF retenue/i);
+  });
+
+  it("dérive une hauteur manquante depuis les NGF", () => {
+    const { plan_coupe, note } = reconcileCoupeHeights({
+      ...base, sol_naturel_ngf_m: 50, egout_ngf_m: 56.5, hauteur_egout_m: null,
+    });
+    expect(plan_coupe.hauteur_egout_m).toBe(6.5);
+    expect(note).toMatch(/dérivée des cotes NGF/i);
+  });
+
+  it("ne touche pas une hauteur cohérente (écart ≤ tolérance)", () => {
+    const { plan_coupe, note } = reconcileCoupeHeights({
+      ...base, sol_naturel_ngf_m: 100, faitage_ngf_m: 109, hauteur_faitage_m: 9.0,
+    });
+    expect(plan_coupe.hauteur_faitage_m).toBe(9.0);
+    expect(note).toBeNull();
+  });
+
+  it("ne corrige rien sans cote de sol naturel (pas de référence)", () => {
+    const { plan_coupe, note } = reconcileCoupeHeights({
+      ...base, faitage_ngf_m: 104.8, hauteur_faitage_m: 15.56,
+    });
+    expect(plan_coupe.hauteur_faitage_m).toBe(15.56);
+    expect(note).toBeNull();
+  });
+
+  it("ignore une différence NGF négative ou nulle (cotes aberrantes)", () => {
+    const { plan_coupe, note } = reconcileCoupeHeights({
+      ...base, sol_naturel_ngf_m: 105, faitage_ngf_m: 104.8, hauteur_faitage_m: 9,
+    });
+    expect(plan_coupe.hauteur_faitage_m).toBe(9);
+    expect(note).toBeNull();
+  });
+
+  it("parseExtraction applique le recalage et journalise la note", () => {
+    const r = parseExtraction(JSON.stringify({
+      piece_type: "plan_coupe", confidence_type: 0.9, quality: "lisible",
+      plan_coupe: { sol_naturel_ngf_m: 100, faitage_ngf_m: 104.8, hauteur_faitage_m: 15.56 },
+    }));
+    expect(r.plan_coupe?.hauteur_faitage_m).toBe(4.8);
+    expect(r.notes).toMatch(/NGF/i);
+  });
+});
 
 // ── Phase 5 : checklist graphique étendue ─────────────────────────────────
 describe("parseExtraction — graphics", () => {
