@@ -7241,7 +7241,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     notice?: Record<string, unknown> | null;
     photo?: Record<string, unknown> | null;
     missing_elements?: string[];
-    citations?: string[];
+    // Rétro-compat : les anciennes extractions stockaient des strings, le
+    // pipeline actuel renvoie des objets { text, page?, bbox?, confidence? }.
+    citations?: Array<string | { text?: string | null; page?: number | null }>;
     notes?: string | null;
   };
   type DossierPiece = {
@@ -9489,14 +9491,29 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                             )}
                             {e.echelle && <span style={{ marginLeft: 8 }}><span style={{ color: "#94a3b8" }}>Échelle :</span> <strong>{e.echelle}</strong></span>}
                           </div>
-                          {e.citations && e.citations.length > 0 && (
-                            <div style={{ marginTop: 6 }}>
-                              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", letterSpacing: "0.04em", marginBottom: 3 }}>CITATIONS</div>
-                              <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, color: "#374151", lineHeight: 1.5 }}>
-                                {e.citations.slice(0, 6).map((c, i) => <li key={i}>{c}</li>)}
-                              </ul>
-                            </div>
-                          )}
+                          {(() => {
+                            const cites = (e.citations ?? [])
+                              .map((c) => {
+                                if (typeof c === "string") return { text: c, page: null as number | null };
+                                const text = typeof c?.text === "string" ? c.text : "";
+                                const page = typeof c?.page === "number" ? c.page : null;
+                                return text ? { text, page } : null;
+                              })
+                              .filter((c): c is { text: string; page: number | null } => c !== null);
+                            return cites.length > 0 && (
+                              <div style={{ marginTop: 6 }}>
+                                <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", letterSpacing: "0.04em", marginBottom: 3 }}>CITATIONS</div>
+                                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, color: "#374151", lineHeight: 1.5 }}>
+                                  {cites.slice(0, 6).map((c, i) => (
+                                    <li key={i}>
+                                      {c.text}
+                                      {c.page !== null && <span style={{ color: "#94a3b8" }}> (p. {c.page})</span>}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            );
+                          })()}
                           {e.missing_elements && e.missing_elements.length > 0 && (
                             <div style={{ marginTop: 6, padding: "6px 9px", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6 }}>
                               <div style={{ fontSize: 10.5, fontWeight: 700, color: "#92400E", letterSpacing: "0.04em", marginBottom: 3 }}>ÉLÉMENTS ABSENTS</div>
