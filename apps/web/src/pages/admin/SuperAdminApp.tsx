@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
+import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
@@ -1463,6 +1463,35 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
   const [selection, setSelection] = useState<Set<string> | null>(null);
   const [form, setForm] = useState({ type: "plui", name: "", original_filename: "" });
 
+  // ── Flow d'ingestion PDF d'un document existant ──────────────────────────
+  // Étape 1 : on uploade le PDF en base64 via /start (le worker serveur
+  // extrait les règles en arrière-plan).
+  // Étape 2 : on poll /status toutes les 2 s jusqu'à done|error.
+  // À la fin, on rafraîchit la liste pour refléter le status=ingested.
+  const [ingest, setIngest] = useState<{
+    docId: string;
+    docName: string;
+    jobId: string | null;
+    phase: string;
+    zonesDone: number;
+    zonesTotal: number;
+    error: string | null;
+  } | null>(null);
+  const ingestTargetRef = useRef<{ id: string; name: string } | null>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // Polling : on garde un timer en ref pour pouvoir l'annuler proprement
+  // (changement d'EPCI, démontage, ingestion suivante).
+  const pollTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (pollTimerRef.current) {
+        window.clearTimeout(pollTimerRef.current);
+        pollTimerRef.current = null;
+      }
+    };
+  }, []);
+
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
@@ -1526,6 +1555,106 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
     });
   };
 
+  const pollIngestStatus = useCallback((jobId: string, docId: string, docName: string) => {
+    const tick = async () => {
+      try {
+        const r = await fetch(`/api/mairie/admin/ingest-plu-pdf/status?jobId=${encodeURIComponent(jobId)}`, {
+          credentials: "include",
+        });
+        if (!r.ok) throw new Error(`status HTTP ${r.status}`);
+        const data = await r.json() as {
+          status: "running" | "done" | "error";
+          phase: string;
+          zones?: Array<{ code: string; total_batches: number; done_batches: number }>;
+          error?: string;
+        };
+        const totalBatches = data.zones?.reduce((s, z) => s + z.total_batches, 0) ?? 0;
+        const doneBatches = data.zones?.reduce((s, z) => s + z.done_batches, 0) ?? 0;
+        setIngest((prev) => prev && prev.docId === docId ? {
+          ...prev,
+          phase: data.phase || prev.phase,
+          zonesDone: doneBatches,
+          zonesTotal: totalBatches,
+        } : prev);
+
+        if (data.status === "done") {
+          setIngest(null);
+          await load();
+          return;
+        }
+        if (data.status === "error") {
+          setIngest((prev) => prev && prev.docId === docId ? {
+            ...prev,
+            error: data.error ?? "Erreur d'extraction",
+          } : prev);
+          return;
+        }
+        // Toujours en cours → re-arme le timer.
+        pollTimerRef.current = window.setTimeout(tick, 2000);
+      } catch (e) {
+        // Erreur réseau transitoire : on retente une fois, puis on abandonne.
+        setIngest((prev) => prev && prev.docId === docId ? {
+          ...prev,
+          error: e instanceof Error ? e.message : "Erreur réseau",
+        } : prev);
+      }
+    };
+    pollTimerRef.current = window.setTimeout(tick, 1500);
+  }, [load]);
+
+  const handleIngestStart = (doc: RegulatoryDocumentLite) => {
+    ingestTargetRef.current = { id: doc.id, name: doc.name };
+    fileInputRef.current?.click();
+  };
+
+  const handleFileSelected = async (file: File | null) => {
+    if (!file || !ingestTargetRef.current) return;
+    const target = ingestTargetRef.current;
+    ingestTargetRef.current = null;
+    if (fileInputRef.current) fileInputRef.current.value = ""; // permet de re-sélectionner le même fichier
+
+    setIngest({
+      docId: target.id,
+      docName: target.name,
+      jobId: null,
+      phase: "Lecture du PDF…",
+      zonesDone: 0,
+      zonesTotal: 0,
+      error: null,
+    });
+
+    try {
+      // Conversion ArrayBuffer → base64 par chunks pour gérer ~30 Mo sans
+      // saturer la stack JS (apply spread limité aux gros tableaux).
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const CHUNK = 32768;
+      const chunks: string[] = [];
+      for (let i = 0; i < buf.length; i += CHUNK) {
+        chunks.push(String.fromCharCode(...buf.subarray(i, i + CHUNK)));
+      }
+      const pdf_base64 = btoa(chunks.join(""));
+
+      setIngest((prev) => prev ? { ...prev, phase: "Lecture du sommaire…" } : prev);
+      const startResp = await api.post<{ jobId: string; zones: Array<{ code: string }> }>(
+        "/mairie/admin/ingest-plu-pdf/start",
+        { doc_id: target.id, pdf_base64 },
+        { timeoutMs: 120_000 },
+      );
+      setIngest((prev) => prev ? {
+        ...prev,
+        jobId: startResp.jobId,
+        phase: `Extraction des règles (${startResp.zones.length} zones)…`,
+        zonesTotal: startResp.zones.length,
+      } : prev);
+      pollIngestStatus(startResp.jobId, target.id, target.name);
+    } catch (e) {
+      setIngest((prev) => prev ? {
+        ...prev,
+        error: e instanceof Error ? e.message : "Erreur lors du démarrage",
+      } : prev);
+    }
+  };
+
   const typeLabel = (t: string) => EPCI_DOCUMENT_TYPES.find((d) => d.value === t)?.label.split(" — ")[0] ?? t.toUpperCase();
   const statusColors: Record<string, { color: string; bg: string }> = {
     uploaded: { color: C.textMuted, bg: C.bg },
@@ -1540,6 +1669,15 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
 
   return (
     <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px dashed ${C.border}` }}>
+      {/* Input file caché, partagé par tous les boutons « Importer un PDF ».
+          Le doc cible est résolu via ingestTargetRef au moment du click. */}
+      <input
+        ref={fileInputRef}
+        type="file"
+        accept="application/pdf"
+        style={{ display: "none" }}
+        onChange={(e) => handleFileSelected(e.target.files?.[0] ?? null)}
+      />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.text }}>
           📜 Documents réglementaires <span style={{ color: C.textMuted, fontWeight: 400 }}>· {docs?.length ?? 0}</span>
@@ -1677,19 +1815,71 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
           {docs.map((d) => {
             const sc = statusColors[d.status] ?? statusColors["uploaded"]!;
             const vc = validationColors[d.validation_status] ?? validationColors["brouillon"]!;
+            const isIngesting = ingest?.docId === d.id;
+            const progressPct = ingest && ingest.zonesTotal > 0
+              ? Math.round((ingest.zonesDone / ingest.zonesTotal) * 100)
+              : 0;
             return (
-              <div key={d.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "center", gap: 12 }}>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
-                    {typeLabel(d.type)} <span style={{ color: C.textMuted, fontWeight: 400 }}>· {d.name}</span>
+              <div key={d.id} style={{ background: C.white, border: `1px solid ${isIngesting ? C.accent : C.border}`, borderRadius: 8, padding: "10px 14px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ flex: 1 }}>
+                    <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
+                      {typeLabel(d.type)} <span style={{ color: C.textMuted, fontWeight: 400 }}>· {d.name}</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>
+                      {d.communes_couvertes.length} / {d.communes_membres_total} commune{d.communes_membres_total !== 1 ? "s" : ""} couverte{d.communes_couvertes.length !== 1 ? "s" : ""}
+                      {d.ingested_at && ` · ingéré le ${new Date(d.ingested_at).toLocaleDateString("fr-FR")}`}
+                    </div>
                   </div>
-                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>
-                    {d.communes_couvertes.length} / {d.communes_membres_total} commune{d.communes_membres_total !== 1 ? "s" : ""} couverte{d.communes_couvertes.length !== 1 ? "s" : ""}
-                    {d.ingested_at && ` · ingéré le ${new Date(d.ingested_at).toLocaleDateString("fr-FR")}`}
-                  </div>
+                  <Badge label={d.status} color={sc.color} bg={sc.bg} />
+                  <Badge label={d.validation_status} color={vc.color} bg={vc.bg} />
+                  {!isIngesting && !ingest && d.status === "uploaded" && (
+                    <button
+                      onClick={(ev) => { ev.stopPropagation(); handleIngestStart(d); }}
+                      style={{ padding: "6px 12px", background: C.accent, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+                    >
+                      📥 Importer un PDF
+                    </button>
+                  )}
                 </div>
-                <Badge label={d.status} color={sc.color} bg={sc.bg} />
-                <Badge label={d.validation_status} color={vc.color} bg={vc.bg} />
+
+                {isIngesting && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+                    {ingest.error ? (
+                      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                        <div style={{ flex: 1, padding: "8px 12px", background: C.redBg, color: C.red, borderRadius: 6, fontSize: 12 }}>
+                          ⚠ {ingest.error}
+                        </div>
+                        <button
+                          onClick={(ev) => { ev.stopPropagation(); setIngest(null); }}
+                          style={{ padding: "6px 12px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", fontSize: 12, color: C.text, fontWeight: 600 }}
+                        >
+                          Fermer
+                        </button>
+                      </div>
+                    ) : (
+                      <>
+                        <div style={{ fontSize: 12, color: C.accent, marginBottom: 6, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+                          <span>{ingest.phase}</span>
+                          {ingest.zonesTotal > 0 && (
+                            <span style={{ fontWeight: 600 }}>{ingest.zonesDone} / {ingest.zonesTotal} lots</span>
+                          )}
+                        </div>
+                        <div style={{ height: 6, background: C.bg, borderRadius: 3, overflow: "hidden" }}>
+                          <div style={{
+                            height: "100%",
+                            width: `${progressPct}%`,
+                            background: C.accent,
+                            transition: "width 0.3s ease",
+                          }} />
+                        </div>
+                        <div style={{ fontSize: 10, color: C.textMuted, marginTop: 8, fontStyle: "italic" }}>
+                          L'extraction tourne côté serveur — vous pouvez fermer cette section, elle continuera. À la fin, la liste se rafraîchit automatiquement.
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
               </div>
             );
           })}
