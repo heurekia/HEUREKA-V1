@@ -17,7 +17,8 @@ interface AuthContextType {
   user: User | null;
   loading: boolean;
   login: (email: string, password: string) => Promise<User>;
-  register: (data: { email: string; password: string; prenom: string; nom: string; role?: string; commune?: string }) => Promise<User>;
+  register: (data: { email: string; password: string; prenom: string; nom: string; role?: string; commune?: string }) => Promise<{ pendingVerification: boolean; email: string }>;
+  verifyEmail: (token: string) => Promise<User>;
   logout: () => Promise<void>;
   refreshUser: () => Promise<void>;
 }
@@ -61,9 +62,17 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     return res.user;
   };
 
+  // L'inscription ne connecte plus l'utilisateur : il doit confirmer son email.
+  // On renvoie l'état "en attente de vérification" pour que l'UI affiche
+  // l'écran « consultez votre boîte mail ».
   const register = async (data: { email: string; password: string; prenom: string; nom: string; role?: string; commune?: string }) => {
-    const res = await api.post<{ user: User }>("/auth/register", data);
+    return api.post<{ pendingVerification: boolean; email: string }>("/auth/register", data);
+  };
+
+  const verifyEmail = async (token: string) => {
+    const res = await api.post<{ user: User }>("/auth/verify-email", { token });
     setUser(res.user);
+    prewarmPluZones(res.user);
     return res.user;
   };
 
@@ -73,7 +82,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, logout, refreshUser: fetchUser }}>
+    <AuthContext.Provider value={{ user, loading, login, register, verifyEmail, logout, refreshUser: fetchUser }}>
       {children}
     </AuthContext.Provider>
   );

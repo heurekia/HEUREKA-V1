@@ -9,6 +9,7 @@ import { Register } from "../pages/public/Register";
 import { MentionsLegales } from "../pages/public/MentionsLegales";
 import { PolitiqueConfidentialite } from "../pages/public/PolitiqueConfidentialite";
 import { ActiverCompte } from "../pages/public/ActiverCompte";
+import { VerifierEmail } from "../pages/public/VerifierEmail";
 import { CitoyenDashboard } from "../pages/citoyen/Dashboard";
 import { MesDemandes } from "../pages/citoyen/MesDemandes";
 import { NouvelleDemandeWizard } from "../pages/citoyen/NouvelleDemandeWizard";
@@ -32,6 +33,7 @@ export function PublicRouter() {
         <Route path="/mentions-legales" element={<MentionsLegales />} />
         <Route path="/politique-confidentialite" element={<PolitiqueConfidentialite />} />
         <Route path="/activer-compte" element={<ActiverCompte />} />
+        <Route path="/verifier-email" element={<VerifierEmail />} />
       </Route>
 
       <Route path="/citoyen" element={<ProtectedRoute roles={["citoyen"]}><CitoyenLayout /></ProtectedRoute>}>

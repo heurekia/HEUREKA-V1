@@ -1,28 +1,45 @@
 import { useState } from "react";
-import { useNavigate, Link, useSearchParams } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
 import { Seo } from "../../components/Seo";
 import { sanitizeNextParam } from "../../router/guards";
+import { CheckCircle, MailCheck } from "lucide-react";
+
+// Mêmes règles que la politique appliquée côté API (auth.ts → passwordPolicyErrors)
+// et que l'écran d'activation (ActiverCompte.tsx).
+const RULES: { label: string; test: (p: string) => boolean }[] = [
+  { label: "12 caractères minimum", test: (p) => p.length >= 12 },
+  { label: "Une lettre majuscule", test: (p) => /[A-Z]/.test(p) },
+  { label: "Une lettre minuscule", test: (p) => /[a-z]/.test(p) },
+  { label: "Un chiffre", test: (p) => /[0-9]/.test(p) },
+  { label: "Un caractère spécial (!@#$%…)", test: (p) => /[^A-Za-z0-9]/.test(p) },
+];
 
 export function Register() {
   const [form, setForm] = useState({ email: "", password: "", prenom: "", nom: "" });
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [submittedEmail, setSubmittedEmail] = useState<string | null>(null);
   const { register } = useAuth();
-  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const next = sanitizeNextParam(searchParams.get("next"));
 
+  const passwordOk = RULES.every((r) => r.test(form.password));
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    if (!passwordOk) {
+      setError("Votre mot de passe ne respecte pas les critères de sécurité.");
+      return;
+    }
     setError("");
     setLoading(true);
     try {
-      await register(form);
-      navigate(next ?? "/citoyen", { replace: true });
+      const res = await register(form);
+      setSubmittedEmail(res.email);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur d'inscription");
     } finally {
@@ -31,6 +48,35 @@ export function Register() {
   };
 
   const loginHref = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
+
+  // Écran de confirmation après inscription : le compte est créé mais inactif
+  // tant que l'email n'est pas confirmé.
+  if (submittedEmail) {
+    return (
+      <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+        <Seo title="Confirmez votre email" path="/register" noindex />
+        <Card className="w-full max-w-md">
+          <CardContent className="py-10 text-center">
+            <div className="w-14 h-14 bg-heureka-50 rounded-full flex items-center justify-center mx-auto mb-5">
+              <MailCheck className="w-7 h-7 text-heureka-600" />
+            </div>
+            <h1 className="text-2xl font-bold text-gray-900 mb-2">Vérifiez votre boîte mail</h1>
+            <p className="text-gray-600 text-sm leading-relaxed mb-1">
+              Nous avons envoyé un lien de confirmation à
+            </p>
+            <p className="text-gray-900 font-medium mb-5">{submittedEmail}</p>
+            <p className="text-gray-500 text-sm leading-relaxed mb-6">
+              Cliquez sur le lien reçu pour activer votre compte et accéder à votre espace.
+              Le lien est valable 24 heures. Pensez à vérifier vos spams.
+            </p>
+            <Link to={loginHref}>
+              <Button variant="secondary" className="w-full">Retour à la connexion</Button>
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
 
   return (
     <div className="min-h-screen bg-gray-50 flex items-center justify-center p-4">
@@ -72,9 +118,24 @@ export function Register() {
             </div>
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Mot de passe</label>
-              <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required placeholder="Minimum 8 caractères" minLength={8} />
+              <Input type="password" value={form.password} onChange={(e) => setForm({ ...form, password: e.target.value })} required placeholder="12 caractères minimum" autoComplete="new-password" />
+              {form.password.length > 0 && (
+                <div className="mt-2 grid grid-cols-1 gap-1">
+                  {RULES.map((rule) => {
+                    const ok = rule.test(form.password);
+                    return (
+                      <div key={rule.label} className="flex items-center gap-2">
+                        <div className={`w-4 h-4 rounded-full flex items-center justify-center shrink-0 ${ok ? "bg-green-100" : "bg-gray-200"}`}>
+                          {ok && <CheckCircle className="w-3 h-3 text-green-600" />}
+                        </div>
+                        <span className={`text-xs ${ok ? "text-green-700 font-medium" : "text-gray-500"}`}>{rule.label}</span>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
             </div>
-            <Button type="submit" className="w-full" disabled={loading}>
+            <Button type="submit" className="w-full" disabled={loading || !passwordOk}>
               {loading ? "Création du compte..." : "Créer mon compte →"}
             </Button>
             <p className="text-center text-xs text-gray-400">
