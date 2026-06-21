@@ -1155,6 +1155,19 @@ ALTER TABLE regulatory_documents ALTER COLUMN commune_id DROP NOT NULL;
 -- bloquer. Les futures inscriptions partent à NULL → vérification requise.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at timestamp;
 UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL;
+
+-- ── FranceConnect (OpenID Connect) ─────────────────────────────────────────
+-- Identifiant pivot FranceConnect (claim « sub »). UNIQUE pour empêcher deux
+-- comptes locaux de pointer la même identité FranceConnect. Reste NULL pour
+-- les comptes créés par email/mot de passe (l'index UNIQUE de Postgres autorise
+-- plusieurs NULL).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS fc_sub text;
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_users_fc_sub ON users(fc_sub) WHERE fc_sub IS NOT NULL;
+
+-- Un compte « 100 % FranceConnect » n'a pas de mot de passe local : on lève le
+-- NOT NULL historique. Les comptes email/mot de passe gardent évidemment leur
+-- hash ; seuls les comptes issus de FranceConnect ont password_hash = NULL.
+ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
