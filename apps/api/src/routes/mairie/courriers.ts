@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossier_courriers, users, communes, courrier_templates, legal_mentions } from "@heureka-v1/db";
+import { dossier_courriers, users, communes, courrier_templates, legal_mentions, user_communes } from "@heureka-v1/db";
 import { eq, desc, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { CODE_URBANISME_ID } from "../../services/legifrance.js";
@@ -89,10 +89,51 @@ courriersRouter.get("/dossiers/:id/courriers", async (req: AuthRequest, res) => 
 
 // ── Courriers : templates & en-tête commune ───────────────────────────────
 
-// Source of truth: commune_insee (stable) > commune name (fallback).
-// Creates a minimal commune row on the fly if none exists yet.
+// Code INSEE explicitement demandé par le client = commune sélectionnée dans
+// le sélecteur de l'interface (les agents multi-communes en changent à la
+// volée). On ne l'utilise qu'après vérification des droits.
+function requestedInsee(req: AuthRequest): string | null {
+  const v = req.query?.insee_code as unknown;
+  return typeof v === "string" && v.trim() ? v.trim() : null;
+}
+
+// Vérifie que l'utilisateur a réellement accès à cette commune (via
+// user_communes, ou sa commune principale). Un admin voit toutes les communes.
+async function userCanAccessInsee(req: AuthRequest, insee: string): Promise<boolean> {
+  if (req.user!.role === "admin") return true;
+  const linked = await db
+    .select({ insee: communes.insee_code })
+    .from(user_communes)
+    .innerJoin(communes, eq(user_communes.commune_id, communes.id))
+    .where(eq(user_communes.user_id, req.user!.id));
+  if (linked.some((r) => r.insee === insee)) return true;
+  const [u] = await db.select({ commune_insee: users.commune_insee })
+    .from(users).where(eq(users.id, req.user!.id)).limit(1);
+  return u?.commune_insee === insee;
+}
+
+// INSEE de la commune sélectionnée si — et seulement si — l'utilisateur y a
+// droit. Sinon null (on retombera sur la commune principale du compte).
+async function resolveSelectedInsee(req: AuthRequest): Promise<string | null> {
+  const requested = requestedInsee(req);
+  if (requested && (await userCanAccessInsee(req, requested))) return requested;
+  return null;
+}
+
+// Source of truth: commune sélectionnée (multi-communes) > commune_insee >
+// commune name. Creates a minimal commune row on the fly if none exists yet.
 async function getCommuneRowForUser(req: AuthRequest) {
   const userId = req.user!.id;
+
+  // Commune explicitement sélectionnée dans l'interface : prioritaire sur la
+  // commune principale du compte, après vérification des droits. Sans ça, un
+  // agent rattaché à plusieurs communes retombait toujours sur sa commune
+  // principale (ex. Ballan-Miré) quel que soit le sélecteur.
+  const selected = await resolveSelectedInsee(req);
+  if (selected) {
+    const [bySelected] = await db.select().from(communes).where(eq(communes.insee_code, selected)).limit(1);
+    if (bySelected) return bySelected;
+  }
 
   // Fetch user fields from DB (always up-to-date even with old JWT tokens)
   const [u] = await db.select({ commune: users.commune, commune_insee: users.commune_insee })
@@ -125,6 +166,10 @@ async function getCommuneRowForUser(req: AuthRequest) {
 }
 
 async function getCommuneForUser(req: AuthRequest): Promise<string | null> {
+  // Commune sélectionnée dans l'interface (multi-communes) si l'utilisateur y
+  // a droit, sinon commune principale du compte.
+  const selected = await resolveSelectedInsee(req);
+  if (selected) return selected;
   const [u] = await db.select({ commune: users.commune, commune_insee: users.commune_insee })
     .from(users).where(eq(users.id, req.user!.id)).limit(1);
   // Prefer INSEE code as the canonical identifier for template ownership

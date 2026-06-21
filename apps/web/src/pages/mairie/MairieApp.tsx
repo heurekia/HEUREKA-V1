@@ -2661,11 +2661,11 @@ function ParametresScreen({ commune = "", isAdmin = false, canManageUsers = fals
       )}
       {stab === "Courriers" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
-          <CommuneLetterheadPanel />
+          <CommuneLetterheadPanel inseeCode={communeInseeMap[commune]} />
           <div style={{ borderTop: "1px solid #E2E8F0", paddingTop: 28 }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Modèles de courrier</div>
             <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Créez et gérez vos modèles de courrier avec variables dynamiques.</div>
-            <TemplateManagerPanel />
+            <TemplateManagerPanel inseeCode={communeInseeMap[commune]} />
           </div>
         </div>
       )}

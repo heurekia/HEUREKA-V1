@@ -1367,7 +1367,7 @@ function CanvasTemplateEditor({ editing, setEditing, letterhead, handleSave, sav
 
 
 // ─── Template Manager Panel ────────────────────────────────────────────────
-export function TemplateManagerPanel() {
+export function TemplateManagerPanel({ inseeCode }: { inseeCode?: string }) {
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
   const [loading, setLoading] = useState(true);
   const [editing, setEditing] = useState<Partial<CourrierTemplate> | null>(null);
@@ -1377,18 +1377,23 @@ export function TemplateManagerPanel() {
     letterhead_address: null, footer_text: null, signature_image: null, tampon_image: null,
   });
 
+  // Commune sélectionnée dans l'interface : on la transmet pour que les modèles
+  // et l'en-tête correspondent au sélecteur, et non à la commune principale du
+  // compte (sinon un agent multi-communes retombe toujours sur la même).
+  const q = inseeCode ? `?insee_code=${encodeURIComponent(inseeCode)}` : "";
+
   const load = useCallback(async () => {
-    const rows = await api.get<CourrierTemplate[]>("/mairie/templates");
+    const rows = await api.get<CourrierTemplate[]>(`/mairie/templates${q}`);
     setTemplates(rows);
     setLoading(false);
-  }, []);
+  }, [q]);
 
-  useEffect(() => { load().catch(() => setLoading(false)); }, [load]);
+  useEffect(() => { setLoading(true); load().catch(() => setLoading(false)); }, [load]);
   useEffect(() => {
-    api.get<Letterhead & { commune_configured?: boolean }>("/mairie/commune-letterhead")
+    api.get<Letterhead & { commune_configured?: boolean }>(`/mairie/commune-letterhead${q}`)
       .then(lh => { if (lh.commune_configured !== false) setLetterhead(lh); })
       .catch(() => {});
-  }, []);
+  }, [q]);
 
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -1398,9 +1403,9 @@ export function TemplateManagerPanel() {
     setSaveError(null);
     try {
       if (editing.id) {
-        await api.put(`/mairie/templates/${editing.id}`, { name: editing.name, category: editing.category ?? "general", body: editing.body ?? "" });
+        await api.put(`/mairie/templates/${editing.id}${q}`, { name: editing.name, category: editing.category ?? "general", body: editing.body ?? "" });
       } else {
-        await api.post("/mairie/templates", { name: editing.name, category: editing.category ?? "general", body: editing.body ?? "" });
+        await api.post(`/mairie/templates${q}`, { name: editing.name, category: editing.category ?? "general", body: editing.body ?? "" });
       }
       await load();
       setEditing(null);
@@ -1413,7 +1418,7 @@ export function TemplateManagerPanel() {
 
   const handleDelete = async (id: string) => {
     if (!window.confirm("Supprimer ce modèle de courrier ?")) return;
-    await api.delete(`/mairie/templates/${id}`);
+    await api.delete(`/mairie/templates/${id}${q}`);
     await load();
   };
 
@@ -1482,7 +1487,7 @@ export function TemplateManagerPanel() {
 }
 
 // ─── Commune Letterhead Panel ──────────────────────────────────────────────
-export function CommuneLetterheadPanel() {
+export function CommuneLetterheadPanel({ inseeCode }: { inseeCode?: string }) {
   const { user } = useAuth();
   const [form, setForm] = useState({
     letterhead_logo: "", letterhead_title: "", letterhead_subtitle: "",
@@ -1495,8 +1500,13 @@ export function CommuneLetterheadPanel() {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [communeConfigured, setCommuneConfigured] = useState<boolean | null>(null);
 
+  // En-tête de la commune sélectionnée dans le sélecteur, pas de la commune
+  // principale du compte (cf. TemplateManagerPanel).
+  const q = inseeCode ? `?insee_code=${encodeURIComponent(inseeCode)}` : "";
+
   useEffect(() => {
-    api.get<typeof form & { commune_configured?: boolean; commune_logo_url?: string | null }>("/mairie/commune-letterhead").then(lh => {
+    setLoading(true);
+    api.get<typeof form & { commune_configured?: boolean; commune_logo_url?: string | null }>(`/mairie/commune-letterhead${q}`).then(lh => {
       setCommuneConfigured(lh.commune_configured ?? false);
       if (lh.commune_configured === false) return;
       setCommuneLogoUrl(lh.commune_logo_url ?? null);
@@ -1510,7 +1520,7 @@ export function CommuneLetterheadPanel() {
         tampon_image: (lh as typeof lh & { tampon_image?: string }).tampon_image ?? "",
       });
     }).catch(() => { setCommuneConfigured(false); }).finally(() => setLoading(false));
-  }, [user]);
+  }, [user, q]);
 
   const toBase64 = (file: File): Promise<string> => new Promise((resolve, reject) => {
     const reader = new FileReader();
@@ -1523,7 +1533,7 @@ export function CommuneLetterheadPanel() {
     setSaving(true);
     setSaveError(null);
     try {
-      await api.put("/mairie/commune-letterhead", {
+      await api.put(`/mairie/commune-letterhead${q}`, {
         letterhead_logo: form.letterhead_logo || null,
         letterhead_title: form.letterhead_title || null,
         letterhead_subtitle: form.letterhead_subtitle || null,
