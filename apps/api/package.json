@@ -7,6 +7,7 @@
     "build": "tsc",
     "start": "tsx src/index.ts",
     "ingest-plu": "tsx src/scripts/ingest-plu.ts",
+    "refresh-plu-cache": "tsx src/scripts/refresh-plu-cache.ts",
     "migrate-uploads": "tsx src/scripts/migrate-uploads-to-s3.ts",
     "reindex-rag": "tsx src/scripts/reindex-rag.ts",
     "convert-pdf-compat": "tsx src/scripts/convert-pdf-compat.ts",
