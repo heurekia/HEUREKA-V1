@@ -92,8 +92,8 @@ function maskParcelle(p: string): string {
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
 const PDF_TYPE = "application/pdf";
 
-// Limite de taille pour l'envoi à Claude (Anthropic accepte jusqu'à 32 Mo en base64).
-// Au-delà on renvoie une analyse "non vérifiée" plutôt que d'échouer.
+// Limite de taille (~30 Mo) pour l'envoi à Pixtral en base64. Au-delà on
+// renvoie une analyse "non vérifiée" plutôt que d'échouer.
 const MAX_INLINE_BYTES = 30 * 1024 * 1024;
 
 function isAllowedImage(mime: string): boolean {
@@ -357,7 +357,7 @@ export async function analyzePiece(
 // le slot, pas chaque fichier isolément. Sinon l'IA suggère un complément alors
 // que l'information figure simplement sur le fichier voisin du même lot.
 //
-// Cette fonction envoie tous les documents en un seul appel Claude et renvoie
+// Cette fonction envoie tous les documents en un seul appel LLM et renvoie
 // UNE analyse couvrant le slot. L'appelant (dossierConformity) la mappe ensuite
 // à chacun des `dossier_pieces_jointes` du lot.
 export interface PieceGroupDoc {
@@ -401,7 +401,7 @@ export async function analyzePieceGroup(
     };
   }
 
-  // Filtre la taille cumulée (chaque document doit tenir dans la limite Claude).
+  // Filtre la taille cumulée (chaque document doit tenir dans la limite Pixtral).
   const sized = supported.filter((d) => d.buf.length <= MAX_INLINE_BYTES);
   const oversized = supported.filter((d) => d.buf.length > MAX_INLINE_BYTES);
   if (sized.length === 0) {
@@ -422,7 +422,7 @@ export async function analyzePieceGroup(
   const fileHash = concatHash.digest("hex");
 
   // En-tête utilisateur : énumère les documents avec leur libellé métier pour
-  // que Claude sache QUEL fichier il voit et qu'ils appartiennent au MÊME slot.
+  // que le modèle sache QUEL fichier il voit et qu'ils appartiennent au MÊME slot.
   const docList = sized.map((d, i) => `  ${i + 1}. ${sanitizePieceName(d.nom)}`).join("\n");
   const skippedNote = skipped.length > 0
     ? `\n\nDocuments fournis mais non visualisables (format) : ${skipped.map((d) => sanitizePieceName(d.nom)).join(", ")}.`

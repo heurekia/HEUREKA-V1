@@ -20,7 +20,7 @@ import { uploadsRouter } from "./routes/uploads.js";
 
 export const app = express();
 
-// Trust the first proxy (Railway, Render, etc.) so rate-limiters see the real client IP
+// Trust the first proxy (nginx en frontal du VPS OVH) so rate-limiters see the real client IP
 app.set("trust proxy", 1);
 
 // Skip compression for Server-Sent Events — gzip buffering would hold the
@@ -49,7 +49,7 @@ app.use(helmet({
 app.use(cookieParser());
 
 const _allowedOrigins = (
-  process.env.FRONTEND_URLS ?? process.env.FRONTEND_URL ?? process.env.RAILWAY_STATIC_URL ?? "http://localhost:5173"
+  process.env.FRONTEND_URLS ?? process.env.FRONTEND_URL ?? "http://localhost:5173"
 ).split(",").map((s) => s.trim());
 
 app.use(cors({

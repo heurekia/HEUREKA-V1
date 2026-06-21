@@ -2219,8 +2219,8 @@ export function NouvelleDemandeWizard() {
                       <div style={{ color: "#475569", lineHeight: 1.5 }}>
                         Pour vous aider à déposer un dossier complet du premier coup, nous
                         soumettons chaque pièce à une analyse automatique opérée par{" "}
-                        <strong>Anthropic (modèle Claude)</strong>, sous contrat de
-                        sous-traitance RGPD. Le nom de fichier d'origine et les
+                        <strong>Mistral AI (modèle Pixtral, hébergé en France)</strong>, sous
+                        contrat de sous-traitance RGPD. Le nom de fichier d'origine et les
                         identifiants directs sont retirés avant transmission. <strong>Une décision finale est toujours prise par un instructeur humain.</strong>
                         {" "}
                         <button
@@ -2241,7 +2241,7 @@ export function NouvelleDemandeWizard() {
                           <li><strong>Finalité :</strong> vérification automatisée de complétude / lisibilité des pièces et détection précoce de non-conformités PLU.</li>
                           <li><strong>Base légale :</strong> exécution d'une mission de service public (art. 6.1.e RGPD).</li>
                           <li><strong>Données envoyées :</strong> contenu du fichier + zone PLU + nature des travaux. <em>Aucune donnée d'identité (nom, email, adresse postale, numéro de parcelle complet) n'est transmise à l'IA.</em></li>
-                          <li><strong>Sous-traitant :</strong> Anthropic, sous DPA + clauses contractuelles types (SCC). Rétention serveur : 30 jours maximum (zéro-rétention en option).</li>
+                          <li><strong>Sous-traitant :</strong> Mistral AI SAS (Paris, France), sous DPA art. 28 RGPD. Inférence en France métropolitaine — aucun transfert hors UE, pas de SCC requises. Aucune utilisation des données pour l'entraînement des modèles.</li>
                           <li><strong>Vos droits :</strong> opposition (case ci-dessous), accès, rectification, effacement, portabilité — via la page « Profil » ou le DPD de votre mairie.</li>
                           <li><strong>Décision automatisée :</strong> aucune ; l'IA produit un avis indicatif, la décision est rendue par un instructeur humain (art. 22 RGPD).</li>
                           <li><strong>Trace :</strong> chaque appel IA est journalisé (empreinte SHA-256 du fichier, sans dupliquer le contenu) pour audit.</li>

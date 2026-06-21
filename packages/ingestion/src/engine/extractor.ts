@@ -1,6 +1,6 @@
 /**
  * Extractor — raw document → text.
- *  - .pdf  → pdftotext (poppler-utils). Offline/CLI use; not the Railway runtime.
+ *  - .pdf  → pdftotext (poppler-utils). Offline/CLI use; not the API runtime.
  *  - .txt  → read as-is (handy for tests / pre-extracted text).
  *  - .docx → TODO (mammoth) — next sprint.
  */

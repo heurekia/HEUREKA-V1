@@ -99,9 +99,9 @@ function indexToc(toc: CodeTocResponse): Map<string, TocEntry> {
 }
 
 // La TOC d'un code (surtout le CU) peut peser plusieurs Mo et prendre
-// 10-20 s à charger au cold-start. Le gateway Railway ayant un timeout
-// ~30 s, on borne l'attente à 12 s ici pour ne jamais bloquer une requête
-// utilisateur trop longtemps. Si l'index n'est pas prêt à temps, on rend
+// 10-20 s à charger au cold-start. On borne l'attente à 12 s ici pour ne
+// jamais bloquer une requête utilisateur trop longtemps (au-delà, nginx ou
+// le navigateur perdent patience). Si l'index n'est pas prêt à temps, on rend
 // une Map vide — l'article sera fetché sans chemin de section.
 const TOC_FETCH_TIMEOUT_MS = 12_000;
 

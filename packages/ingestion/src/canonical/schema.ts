@@ -5,7 +5,7 @@
  * logiciel métier, éditeur de PLU) peut produire pour pousser un règlement
  * en HEUREKA SANS passer par l'extraction LLM. Bénéfices :
  *
- *  - Coût : zéro token Anthropic consommé sur l'ingestion.
+ *  - Coût : zéro token LLM consommé sur l'ingestion.
  *  - Certitude juridique : ce que l'instructeur écrit = ce qui est servi.
  *  - Versionnable : le JSON vit dans Git, audit trail natif.
  *  - Échange : un bureau d'études peut livrer le même JSON à plusieurs

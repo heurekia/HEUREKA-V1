@@ -221,16 +221,16 @@ reglementationRouter.post("/reglementation/zones/:zoneId/rules/bulk", requireRol
 });
 
 // POST /mairie/reglementation/structure-article
-// « Agent » de structuration : l'instructeur colle le TEXTE d'un article ; Claude
-// (texte court, pas le PDF) renvoie les champs structurés pour pré-remplir le
-// formulaire. L'instructeur vérifie puis enregistre.
+// « Agent » de structuration : l'instructeur colle le TEXTE d'un article ; le
+// LLM (texte court, pas le PDF) renvoie les champs structurés pour pré-remplir
+// le formulaire. L'instructeur vérifie puis enregistre.
 //
-// Streaming SSE : la passerelle (Railway/Cloudflare) coupe sans préavis une
-// requête HTTP « silencieuse » qui dépasse ~100 s — l'utilisateur voit alors
-// un 502 ALORS QUE Anthropic a déjà facturé la génération. Le stream Anthropic
-// est forwardé au client en heartbeats SSE → la passerelle voit du trafic
-// régulier → plus de 502. À la fin, on parse l'accumulé et on envoie les
-// règles dans un événement `done`.
+// Streaming SSE : la passerelle (nginx en frontal du VPS) coupe sans préavis
+// une requête HTTP « silencieuse » qui dépasse ~100 s — l'utilisateur voit
+// alors un 502 ALORS QUE Mistral a déjà facturé la génération. Le stream est
+// forwardé au client en heartbeats SSE → la passerelle voit du trafic régulier
+// → plus de 502. À la fin, on parse l'accumulé et on envoie les règles dans un
+// événement `done`.
 reglementationRouter.post("/reglementation/structure-article", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { text, zone_code, article_number, image_base64, image_media_type } = req.body as { text?: string; zone_code?: string; article_number?: number | string; image_base64?: string; image_media_type?: string };
   const hasImage = typeof image_base64 === "string" && image_base64.length > 0;
@@ -388,7 +388,7 @@ AUTRES RÈGLES :
 
 // POST /mairie/reglementation/structure-zone
 // « Agent » de structuration ZONE : l'instructeur colle le règlement COMPLET d'une
-// zone (tous les articles, déjà résumés). Claude (Sonnet) renvoie une liste de
+// zone (tous les articles, déjà résumés). Le LLM renvoie une liste de
 // (sous-)règles découpées par sous-section, chacune pré-remplie ET dotée de sa
 // version « citoyen » (titre court + une phrase simple). L'instructeur valide.
 //

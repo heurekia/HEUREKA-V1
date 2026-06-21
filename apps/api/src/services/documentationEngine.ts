@@ -35,7 +35,7 @@ import {
   regulatory_documents,
   documentation_favoris,
 } from "@heureka-v1/db";
-import { eq, and, inArray, ilike, or } from "drizzle-orm";
+import { eq, and, ilike, or } from "drizzle-orm";
 
 // ── Types publics ────────────────────────────────────────────────────────────
 
@@ -858,6 +858,3 @@ export async function removeFavori(params: {
     ));
 }
 
-// Garde-fou : l'import est utilisé uniquement par les tests / call-sites
-// futurs ; on évite un warning « unused » sans rien exporter de neuf.
-export const _internal = { inArray };

@@ -42,7 +42,7 @@ export function containsJpx(buffer: Buffer): boolean {
 
 /** Lance pdftocairo en mode PDF→PDF via stdin/stdout. Le binaire fait
  *  partie de `poppler-utils`, déjà installé sur le VPS pour la chaîne
- *  Pixtral (cf. nixpacks.toml historique / apt install).
+ *  Pixtral (cf. provisioning VPS : `apt install poppler-utils`).
  *
  *  Timeout 30 s par sécurité : sur un PDF malformé pdftocairo peut
  *  rester bloqué indéfiniment, on préfère renoncer et garder

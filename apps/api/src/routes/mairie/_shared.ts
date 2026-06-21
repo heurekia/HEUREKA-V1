@@ -9,10 +9,10 @@ import {
   type DeadlineServitude,
 } from "../../services/instructionDelays.js";
 
-// Anthropic limite chaque requête à ~100 pages de PDF. Les gros règlements PLU
-// (200+ pages) sont découpés en tronçons ≤ maxPages, avec un léger chevauchement
-// pour ne pas couper en deux la section d'une zone à cheval sur deux tronçons.
-// Un PLU court (≤ 100 pages) reste en un seul tronçon (le PDF d'origine).
+// Les gros règlements PLU (200+ pages) sont découpés en tronçons ≤ maxPages
+// avant rendu page-à-page en PNG (Pixtral n'accepte pas le PDF natif). Léger
+// chevauchement pour ne pas couper en deux la section d'une zone à cheval sur
+// deux tronçons. Un PLU court (≤ 100 pages) reste en un seul tronçon.
 export async function splitPdfBase64(base64: string, maxPages = 90, overlap = 8): Promise<string[]> {
   const src = await PDFDocument.load(Buffer.from(base64, "base64"), { ignoreEncryption: true });
   const total = src.getPageCount();
