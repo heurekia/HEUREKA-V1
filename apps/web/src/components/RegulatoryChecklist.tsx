@@ -151,7 +151,7 @@ interface Props {
   dossierId: string;
   /** Handler appelé quand l'instructeur clique sur un fondement de type
    *  « document_segment » pour ouvrir le passage cité dans le viewer
-   *  (onglet Instruction · mode Comparer). Conservé depuis la refonte
+   *  (onglet Documents · mode Comparer). Conservé depuis la refonte
    *  layout de main. Si non fourni, les fondements restent en texte simple. */
   onJumpToCitation?: (ref: SourceRef) => void;
 }
@@ -457,7 +457,7 @@ function FindingCard({
           {finding.explanation ? <p className="text-[12px] leading-relaxed text-gray-600">{finding.explanation}</p> : null}
 
           {/* Fondements : les passages de document indexé sont cliquables et
-              ouvrent le viewer (onglet Instruction · Comparer). Conservé depuis
+              ouvrent le viewer (onglet Documents · Comparer). Conservé depuis
               la refonte layout de main. */}
           {finding.legal_basis.length > 0 ? (
             <div className="mt-2 flex flex-wrap items-center gap-1 text-[11.5px] text-gray-500">
