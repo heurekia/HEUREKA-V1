@@ -119,6 +119,7 @@ export function clipZonesToCommune(zones: PluZonesGeoJson, communeGeom: Polygon 
   type Geom = Parameters<typeof polygonClipping.intersection>[0];
   const mask = communeGeom.coordinates as unknown as Geom;
   const communeBbox = geomBbox(communeGeom);
+  const debug = process.env.PLU_DEBUG === "1";
   const out: unknown[] = [];
   for (const f of (zones.features ?? []) as ZoneFeature[]) {
     const g = f.geometry;
@@ -127,10 +128,12 @@ export function clipZonesToCommune(zones: PluZonesGeoJson, communeGeom: Polygon 
       continue;
     }
     const zoneGeom = g as Polygon | MultiPolygon;
-    // Rejet rapide des zones clairement disjointes (limitrophes du PLUi).
-    if (!bboxOverlap(geomBbox(zoneGeom), communeBbox)) continue;
-    // Inclusion robuste : si la zone ne recouvre pas la commune → on la retire.
-    if (!geomsOverlap(zoneGeom, communeGeom)) continue;
+    const bbOk = bboxOverlap(geomBbox(zoneGeom), communeBbox);
+    const ovOk = bbOk && geomsOverlap(zoneGeom, communeGeom);
+    if (debug) console.log(`[clip] ${f.properties?.libelle ?? "?"} type=${g.type} bbox=${bbOk} overlap=${ovOk}`);
+    // Rejet rapide des zones clairement disjointes (limitrophes du PLUi), puis
+    // inclusion robuste : si la zone ne recouvre pas la commune → on la retire.
+    if (!bbOk || !ovOk) continue;
     // Découpe pour le bord. Si polygon-clipping rate (vide/throw) → zone entière.
     try {
       const clipped = polygonClipping.intersection(g.coordinates as unknown as Geom, mask);
