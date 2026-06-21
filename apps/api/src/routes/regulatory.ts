@@ -284,7 +284,9 @@ regulatoryRouter.get(
         })
         .from(zone_regulatory_rules)
         .innerJoin(zones, eq(zones.id, zone_regulatory_rules.zone_id))
-        .innerJoin(communes, eq(communes.id, zones.commune_id))
+        // leftJoin (et non innerJoin) : une zone de PLUi a commune_id = NULL ;
+        // un innerJoin droperait la règle et renverrait un 404 à tort.
+        .leftJoin(communes, eq(communes.id, zones.commune_id))
         .where(eq(zone_regulatory_rules.id, ruleId))
         .limit(1);
       if (!row) return res.status(404).json({ error: "Règle introuvable" });

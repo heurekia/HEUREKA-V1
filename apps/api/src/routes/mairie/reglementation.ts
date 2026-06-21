@@ -7,6 +7,7 @@ import { requireRole } from "../../middlewares/auth.js";
 import { streamAi, type AiContentBlock } from "../../services/aiUsage.js";
 import { parseLooseArray } from "../../services/jsonExtract.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
+import { resolveCommuneActiveZoneIds } from "../../services/communeZones.js";
 
 export const reglementationRouter = Router();
 
@@ -34,9 +35,14 @@ reglementationRouter.get("/reglementation", async (req: AuthRequest, res) => {
       .limit(1);
     if (!commune) return res.status(404).json({ error: "Commune non trouvée" });
 
-    const zoneRows = await db.select().from(zones)
-      .where(and(eq(zones.commune_id, commune.id), eq(zones.is_active, true)))
-      .orderBy(zones.display_order);
+    // PLUi-aware : zones communales propres + zones partagées des documents
+    // intercommunaux rattachés à la commune (cf. resolveCommuneActiveZoneIds).
+    const activeZoneIds = await resolveCommuneActiveZoneIds(commune.id);
+    const zoneRows = activeZoneIds.length > 0
+      ? await db.select().from(zones)
+          .where(inArray(zones.id, activeZoneIds))
+          .orderBy(zones.display_order)
+      : [];
 
     const result = await Promise.all(zoneRows.map(async zone => {
       const allRules = await db.select().from(zone_regulatory_rules)
