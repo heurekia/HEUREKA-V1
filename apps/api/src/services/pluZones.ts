@@ -9,7 +9,8 @@
 //
 // parcelAnalysis uses these to escape the fragility of point-based /document
 // lookups : a single robust commune-level resolve, then local hit-tests.
-import type { Geometry, Polygon, MultiPolygon, Feature } from "geojson";
+import type { Geometry, Polygon, MultiPolygon, Feature, Position } from "geojson";
+import polygonClipping from "polygon-clipping";
 import { db } from "../db.js";
 import { communes } from "@heureka-v1/db";
 import { eq } from "drizzle-orm";
@@ -60,6 +61,38 @@ export function filterZonesByInsee(zones: PluZonesGeoJson, inseeCode: string): P
   const filtered = withInsee.filter(f => f.properties?.insee === inseeCode);
   if (filtered.length === 0) return zones;
   return { ...zones, features: filtered };
+}
+
+// Découpe (intersection géométrique) les zones PLU sur le contour communal.
+// Le paramètre `geom` du GPU est un filtre d'INTERSECTION : l'API renvoie les
+// polygones de zone ENTIERS dès qu'ils touchent l'emprise, donc les zones de
+// bordure (et les zones limitrophes des PLUi) débordent du contour. On les
+// rogne ici sur le ring communal pleine résolution pour un rendu net dans la
+// délimitation de la ville. C'est aussi plus robuste que `filterZonesByInsee` :
+// une zone d'une autre commune sans intersection est retirée géométriquement,
+// même quand la propriété `insee` est absente (vieux datasets).
+//  - feature sans intersection         → retirée (hors commune)
+//  - feature sans géométrie polygonale  → conservée telle quelle
+//  - géométrie pathologique (throw)     → conservée non rognée (jamais perdue)
+export function clipZonesToCommune(zones: PluZonesGeoJson, communeRing: number[][]): PluZonesGeoJson {
+  type Geom = Parameters<typeof polygonClipping.intersection>[0];
+  const communePoly = [communeRing] as unknown as Geom;
+  const out: unknown[] = [];
+  for (const f of (zones.features ?? []) as ZoneFeature[]) {
+    const g = f.geometry;
+    if (!g || (g.type !== "Polygon" && g.type !== "MultiPolygon")) {
+      out.push(f);
+      continue;
+    }
+    try {
+      const clipped = polygonClipping.intersection(g.coordinates as unknown as Geom, communePoly);
+      if (clipped.length === 0) continue; // hors commune
+      out.push({ ...f, geometry: { type: "MultiPolygon", coordinates: clipped as unknown as Position[][][] } });
+    } catch {
+      out.push(f);
+    }
+  }
+  return { ...zones, features: out };
 }
 
 // Fait l'appel complet GPU + persiste en DB. Aucun side-effect HTTP.
@@ -223,8 +256,10 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   };
 
   for (const cand of cands) {
-    // Fetch principal : partition + geom commune
-    const params1 = new URLSearchParams({ partition: cand.partition, _limit: "1000" });
+    // Fetch principal : partition + geom commune.
+    // _limit aligné sur la limite dure de l'API GPU (5000) pour ne pas tronquer
+    // silencieusement les communes denses / PLUi.
+    const params1 = new URLSearchParams({ partition: cand.partition, _limit: "5000" });
     params1.set("geom", communeGeom);
     const r1 = await fetchWithRetry(
       `https://apicarto.ign.fr/api/gpu/zone-urba?${params1.toString()}`,
@@ -286,6 +321,13 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
 
   const cleaned = filterZonesByInsee(chosenZones, inseeCode);
 
+  // Découpe au contour PLEINE RÉSOLUTION (fullRing, pas la version simplifiée à
+  // 50 pts utilisée pour la requête GPU) : garantit que les zones ne débordent
+  // pas de la délimitation de la ville. Garde-fou anti-carte-vide : si la
+  // découpe retire tout (contour pathologique), on conserve le non-rogné.
+  const clippedZones = clipZonesToCommune(cleaned, fullRing);
+  const finalZones = (clippedZones.features?.length ?? 0) > 0 ? clippedZones : cleaned;
+
   // Persistance en base (await pour que la fraîcheur soit garantie au retour).
   // On stocke aussi la partition gagnante : `parcelAnalysis` la réutilise pour
   // ses sous-requêtes (zone-urba, prescription-surf, info-surf) sans refaire
@@ -293,7 +335,7 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   // d'échec "PLU existe mais convention de nommage non-standard".
   await db.update(communes)
     .set({
-      plu_zones_geojson: cleaned,
+      plu_zones_geojson: finalZones,
       plu_zones_cached_at: new Date(),
       plu_partition: chosenPartition,
       plu_unavailable_reason: null,
@@ -301,7 +343,7 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
     .where(eq(communes.insee_code, inseeCode))
     .catch((e: unknown) => console.error("[plu-zones DB persist]", e));
 
-  return { ok: true, zones: cleaned, partition: chosenPartition, diag };
+  return { ok: true, zones: finalZones, partition: chosenPartition, diag };
 }
 
 // ETag faible basé sur l'horodatage du cache DB — suffisant pour 304.
