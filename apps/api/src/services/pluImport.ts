@@ -160,6 +160,38 @@ export function parseTocFromNativeText(text: string, minZones = 3): TocEntry[] {
   return entries.length >= minZones ? entries : [];
 }
 
+/**
+ * Coercition entière pour article_number (colonne `integer`).
+ *   - "" / null / undefined       → null
+ *   - "12.2" (sous-article 12.2)   → 12 (le n° d'article ; le détail ".2"
+ *                                     reste porté par article_title)
+ *   - 7 / "7" / 7.0                → 7
+ *   - "abc"                        → null
+ *
+ * `rule.article_number ?? null` ne suffit pas : "" (chaîne vide souvent
+ * renvoyée par l'IA) y passe tel quel, et Postgres rejette '' sur une colonne
+ * integer → l'INSERT, donc toute la transaction d'ingestion PLU, échoue.
+ */
+export function toArticleInt(v: unknown): number | null {
+  if (v == null || v === "") return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+/**
+ * Une règle extraite n'est exploitable que si elle porte au minimum un topic
+ * ET un texte de règle non vides. Pixtral renvoie parfois des appels save_rule
+ * quasi vides (hallucination de fin de réponse, page blanche, tableau
+ * illisible). On les écarte AVANT le garde-fou de couverture, pour qu'une zone
+ * qui ne produit que du vide compte réellement comme 0 règle (et déclenche
+ * assertTocCoverage) plutôt que d'insérer des lignes fantômes qui plantent
+ * l'INSERT ou polluent le référentiel.
+ */
+export function isUsableRule(r: { topic?: unknown; rule_text?: unknown }): boolean {
+  return typeof r?.topic === "string" && r.topic.trim().length > 0
+    && typeof r?.rule_text === "string" && r.rule_text.trim().length > 0;
+}
+
 export function assertTocCoverage(
   toc: TocEntry[],
   extracted: Array<{ code: string; ruleCount: number }>,

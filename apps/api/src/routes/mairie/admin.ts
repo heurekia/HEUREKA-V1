@@ -5,7 +5,7 @@ import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock, type AiToolDefinition } from "../../services/aiUsage.js";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, type TocEntry } from "../../services/pluImport.js";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, type TocEntry } from "../../services/pluImport.js";
 import { PDFDocument } from "pdf-lib";
 import {
   computeInstructionDelay,
@@ -518,10 +518,11 @@ Correspondance article → topic :
             .map(b => b.input as PluRuleInput);
 
           for (const r of batchRules) {
+            if (!isUsableRule(r)) continue;
             // Fusion par (article_number, topic) : si la même règle ressort
             // dans deux lots (chevauchement de tableau, article à cheval),
             // on garde celle au rule_text le plus long (proxy "plus complet").
-            const key = `${r.article_number ?? "x"}|${r.topic}`;
+            const key = `${toArticleInt(r.article_number) ?? "x"}|${r.topic}`;
             const prev = merged.get(key);
             if (!prev || (r.rule_text?.length ?? 0) > (prev.rule_text?.length ?? 0)) {
               merged.set(key, r);
@@ -598,10 +599,11 @@ Correspondance article → topic :
         }).returning();
         const zoneId = created!.id;
         for (const rule of rules) {
+          const articleInt = toArticleInt(rule.article_number);
           await tx.insert(zone_regulatory_rules).values({
             zone_id: zoneId,
-            article_number: rule.article_number ?? null,
-            article_title: rule.article_title ?? (rule.article_number ? `Article ${rule.article_number}` : ""),
+            article_number: articleInt,
+            article_title: rule.article_title ?? (articleInt != null ? `Article ${articleInt}` : ""),
             topic: rule.topic,
             rule_text: rule.rule_text,
             value_min: num(rule.value_min),
@@ -916,7 +918,8 @@ adminRouter.post("/admin/ingest-plu-pdf/commit", async (req: AuthRequest, res) =
     const merged = zoneResults.map((zr) => {
       const m = new Map<string, PluRuleInput>();
       for (const r of zr.rules) {
-        const key = `${r.article_number ?? "x"}|${r.topic}`;
+        if (!isUsableRule(r)) continue;
+        const key = `${toArticleInt(r.article_number) ?? "x"}|${r.topic}`;
         const prev = m.get(key);
         if (!prev || (r.rule_text?.length ?? 0) > (prev.rule_text?.length ?? 0)) m.set(key, r);
       }
@@ -952,10 +955,11 @@ adminRouter.post("/admin/ingest-plu-pdf/commit", async (req: AuthRequest, res) =
         }).returning();
         const zoneId = created!.id;
         for (const rule of rules) {
+          const articleInt = toArticleInt(rule.article_number);
           await tx.insert(zone_regulatory_rules).values({
             zone_id: zoneId,
-            article_number: rule.article_number ?? null,
-            article_title: rule.article_title ?? (rule.article_number ? `Article ${rule.article_number}` : ""),
+            article_number: articleInt,
+            article_title: rule.article_title ?? (articleInt != null ? `Article ${articleInt}` : ""),
             topic: rule.topic,
             rule_text: rule.rule_text,
             value_min: num(rule.value_min),
