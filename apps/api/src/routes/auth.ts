@@ -6,7 +6,7 @@ import { db } from "../db.js";
 import { users, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens, ai_usage_events, audit_logs } from "@heureka-v1/db";
 import { eq, and, gt, isNull, inArray } from "drizzle-orm";
 import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
-import { sendPasswordResetEmail } from "../services/mailer.js";
+import { sendPasswordResetEmail, sendVerificationEmail } from "../services/mailer.js";
 import { logAudit } from "../services/audit.js";
 import { getStorageProvider } from "../services/storage.js";
 import crypto from "crypto";
@@ -77,9 +77,54 @@ function writeAudit(userId: string | null, email: string, action: string, req: A
   return logAudit(req, action, { userId, email });
 }
 
+// Politique de mot de passe unique pour TOUS les points d'entrée (inscription,
+// activation, réinitialisation, changement). Mêmes règles que la checklist
+// affichée côté front (ActiverCompte.tsx) : 12 caractères + majuscule +
+// minuscule + chiffre + caractère spécial. Centralisée ici pour éviter toute
+// divergence entre les routes.
+const PASSWORD_MIN_LENGTH = 12;
+export function passwordPolicyErrors(p: string): string[] {
+  const errs: string[] = [];
+  if (p.length < PASSWORD_MIN_LENGTH) errs.push(`au moins ${PASSWORD_MIN_LENGTH} caractères`);
+  if (!/[A-Z]/.test(p)) errs.push("une lettre majuscule");
+  if (!/[a-z]/.test(p)) errs.push("une lettre minuscule");
+  if (!/[0-9]/.test(p)) errs.push("un chiffre");
+  if (!/[^A-Za-z0-9]/.test(p)) errs.push("un caractère spécial");
+  return errs;
+}
+const PASSWORD_POLICY_MESSAGE =
+  "Le mot de passe doit contenir au moins 12 caractères, une majuscule, une minuscule, un chiffre et un caractère spécial.";
+const strongPassword = z.string().refine((p) => passwordPolicyErrors(p).length === 0, {
+  message: PASSWORD_POLICY_MESSAGE,
+});
+
+// Construit l'URL du portail d'origine de la requête (www pour les citoyens,
+// app pour les pros) à partir de l'Origin/Referer, afin que les liens email
+// renvoient vers le bon sous-domaine. NE PAS faire confiance aveuglément à un
+// header arbitraire : on n'accepte que les origines explicitement autorisées
+// (mêmes que la whitelist CORS), sinon on laisse le mailer retomber sur sa
+// valeur par défaut.
+const VERIFICATION_TOKEN_TTL_MS = 24 * 60 * 60 * 1000; // 24 h
+function originBaseUrl(req: AuthRequest): string | undefined {
+  const raw = (req.headers.origin as string | undefined) ?? undefined;
+  if (!raw) return undefined;
+  const allowed = (process.env.FRONTEND_URLS ?? process.env.FRONTEND_URL ?? "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  return allowed.includes(raw) ? raw : undefined;
+}
+
+async function issueVerificationToken(userId: string): Promise<string> {
+  const token = crypto.randomBytes(32).toString("hex");
+  const expires = new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS);
+  await db.insert(password_tokens).values({ user_id: userId, token, type: "verification", expires_at: expires });
+  return token;
+}
+
 const registerSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(8),
+  password: strongPassword,
   prenom: z.string().min(1),
   nom: z.string().min(1),
   commune: z.string().optional(),
@@ -104,16 +149,19 @@ authRouter.post("/register", registerLimiter, async (req: AuthRequest, res) => {
         role: "citoyen" as const,
         commune: data.commune,
         telephone: data.telephone,
+        // Email non vérifié : pas de session tant que l'adresse n'est pas
+        // confirmée. Empêche la création de comptes en masse avec des emails
+        // jetables/inexistants.
+        email_verified_at: null,
       })
       .returning();
     const user = rows[0]!;
-    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
-    res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
-    res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
+    // On NE connecte PAS l'utilisateur ici. Il doit d'abord confirmer son email.
+    const verifToken = await issueVerificationToken(user.id);
+    await sendVerificationEmail({ to: user.email, prenom: user.prenom, token: verifToken, baseUrl: originBaseUrl(req) })
+      .catch((err) => console.error("[mailer] verification:", err));
     await writeAudit(user.id, user.email, "register", req);
-    res.status(201).json({
-      user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune, commune_insee: user.commune_insee },
-    });
+    res.status(201).json({ pendingVerification: true, email: user.email });
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "Données invalides", details: err.errors });
@@ -139,6 +187,15 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
     if (!user || !valid) {
       await writeAudit(null, email, "login_failed", req);
       return res.status(401).json({ error: "Email ou mot de passe incorrect" });
+    }
+    // Email non confirmé → on bloque la session. Le code `email_not_verified`
+    // permet au front de proposer le renvoi du lien de vérification.
+    if (!user.email_verified_at) {
+      await writeAudit(user.id, user.email, "login_unverified", req);
+      return res.status(403).json({
+        error: "Veuillez confirmer votre adresse email avant de vous connecter. Consultez votre boîte de réception.",
+        code: "email_not_verified",
+      });
     }
     const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
     res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
@@ -306,7 +363,7 @@ authRouter.patch("/me/password", requireAuth, async (req: AuthRequest, res) => {
   try {
     const { current_password, new_password } = req.body as { current_password?: string; new_password?: string };
     if (!current_password || !new_password) return res.status(400).json({ error: "Mots de passe requis" });
-    if (new_password.length < 8) return res.status(400).json({ error: "Le nouveau mot de passe doit faire au moins 8 caractères" });
+    if (passwordPolicyErrors(new_password).length > 0) return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
     const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
     const valid = await bcrypt.compare(current_password, user.password_hash);
@@ -386,7 +443,7 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
   try {
     const { token, password } = req.body as { token?: string; password?: string };
     if (!token || !password) return res.status(400).json({ error: "Token et mot de passe requis" });
-    if (password.length < 12) return res.status(400).json({ error: "Le mot de passe doit contenir au moins 12 caractères" });
+    if (passwordPolicyErrors(password).length > 0) return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
 
     const [row] = await db.select().from(password_tokens)
       .where(and(eq(password_tokens.token, token), isNull(password_tokens.used_at), gt(password_tokens.expires_at, new Date())))
@@ -395,7 +452,9 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
 
     const password_hash = await bcrypt.hash(password, 10);
     await Promise.all([
-      db.update(users).set({ password_hash }).where(eq(users.id, row.user_id)),
+      // Cliquer sur le lien d'activation reçu par email prouve la possession de
+      // l'adresse → on marque l'email comme vérifié en même temps.
+      db.update(users).set({ password_hash, email_verified_at: new Date() }).where(eq(users.id, row.user_id)),
       db.update(password_tokens).set({ used_at: new Date() }).where(eq(password_tokens.id, row.id)),
     ]);
 
@@ -407,6 +466,66 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, row.type === "activation" ? "account_activated" : "password_reset", req);
     res.json({ user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Vérification d'email après inscription publique ──────────────────────────
+// Le mot de passe est déjà défini à l'inscription : ce token ne sert qu'à
+// prouver la possession de l'adresse. On confirme l'email puis on ouvre la
+// session directement (le citoyen est connecté).
+authRouter.post("/verify-email", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, legacyHeaders: false }), async (req: AuthRequest, res) => {
+  try {
+    const { token } = req.body as { token?: string };
+    if (!token) return res.status(400).json({ error: "Token requis" });
+
+    const [row] = await db.select().from(password_tokens)
+      .where(and(
+        eq(password_tokens.token, token),
+        eq(password_tokens.type, "verification"),
+        isNull(password_tokens.used_at),
+        gt(password_tokens.expires_at, new Date()),
+      ))
+      .limit(1);
+    if (!row) return res.status(400).json({ error: "Lien invalide ou expiré" });
+
+    await Promise.all([
+      db.update(users).set({ email_verified_at: new Date() }).where(eq(users.id, row.user_id)),
+      db.update(password_tokens).set({ used_at: new Date() }).where(eq(password_tokens.id, row.id)),
+    ]);
+
+    const [user] = await db.select().from(users).where(eq(users.id, row.user_id)).limit(1);
+    if (!user) return res.status(500).json({ error: "Erreur serveur" });
+
+    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
+    res.cookie(cookieNameFor(req), jwtToken, COOKIE_OPTIONS);
+    res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
+    await writeAudit(user.id, user.email, "email_verified", req);
+    res.json({ user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune, commune_insee: user.commune_insee } });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Renvoyer le lien de vérification ─────────────────────────────────────────
+// Réponse toujours 200 pour ne pas révéler l'existence d'un compte (anti
+// énumération). N'envoie un email que si le compte existe ET n'est pas vérifié.
+authRouter.post("/resend-verification", rateLimit({ windowMs: 60 * 60 * 1000, max: 5, legacyHeaders: false }), async (req: AuthRequest, res) => {
+  try {
+    const { email } = req.body as { email?: string };
+    if (!email) return res.status(400).json({ error: "Email requis" });
+
+    const [user] = await db.select().from(users).where(eq(users.email, email)).limit(1);
+    if (user && !user.email_verified_at) {
+      const verifToken = await issueVerificationToken(user.id);
+      await sendVerificationEmail({ to: user.email, prenom: user.prenom, token: verifToken, baseUrl: originBaseUrl(req) })
+        .catch((err) => console.error("[mailer] verification (resend):", err));
+      await writeAudit(user.id, user.email, "verification_resent", req);
+    }
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

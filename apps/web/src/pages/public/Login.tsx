@@ -6,12 +6,17 @@ import { Input } from "../../components/ui/input";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
 import { Seo } from "../../components/Seo";
 import { sanitizeNextParam } from "../../router/guards";
+import { api, ApiError } from "../../lib/api";
 
 export function Login() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  // Affiché quand la connexion échoue car l'email n'est pas confirmé : permet
+  // de renvoyer le lien de vérification.
+  const [needsVerification, setNeedsVerification] = useState(false);
+  const [resendState, setResendState] = useState<"idle" | "sending" | "sent">("idle");
   const { login } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -20,6 +25,7 @@ export function Login() {
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
+    setNeedsVerification(false);
     setLoading(true);
     try {
       const u = await login(email, password);
@@ -29,10 +35,23 @@ export function Login() {
         navigate(next ?? "/citoyen", { replace: true });
       }
     } catch (err) {
+      if (err instanceof ApiError && (err.body as { code?: string })?.code === "email_not_verified") {
+        setNeedsVerification(true);
+      }
       setError(err instanceof Error ? err.message : "Identifiants incorrects");
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleResend = async () => {
+    setResendState("sending");
+    try {
+      await api.post("/auth/resend-verification", { email });
+    } catch {
+      /* réponse volontairement opaque côté API — on confirme dans tous les cas */
+    }
+    setResendState("sent");
   };
 
   const registerHref = next ? `/register?next=${encodeURIComponent(next)}` : "/register";
@@ -59,7 +78,23 @@ export function Login() {
         <CardContent>
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
-              <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg text-sm">{error}</div>
+              <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg text-sm">
+                <p>{error}</p>
+                {needsVerification && (
+                  resendState === "sent" ? (
+                    <p className="mt-2 text-red-600">Lien renvoyé. Consultez votre boîte mail (et vos spams).</p>
+                  ) : (
+                    <button
+                      type="button"
+                      onClick={handleResend}
+                      disabled={resendState === "sending" || !email}
+                      className="mt-2 font-medium text-heureka-700 underline hover:text-heureka-800 disabled:opacity-50"
+                    >
+                      {resendState === "sending" ? "Envoi…" : "Renvoyer le lien de confirmation"}
+                    </button>
+                  )
+                )}
+              </div>
             )}
             <div>
               <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>

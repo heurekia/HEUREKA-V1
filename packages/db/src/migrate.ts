@@ -1146,6 +1146,15 @@ ALTER TABLE zones ALTER COLUMN commune_id DROP NOT NULL;
 -- Idem pour le document lui-même : un PLUi porté par un EPCI n'a pas de
 -- commune propriétaire unique, son périmètre vit dans document_communes.
 ALTER TABLE regulatory_documents ALTER COLUMN commune_id DROP NOT NULL;
+
+-- ── Vérification d'email à l'inscription publique ──────────────────────────
+-- Un compte citoyen auto-inscrit reste non vérifié (email_verified_at NULL) et
+-- ne peut pas se connecter tant que l'adresse n'est pas confirmée via le lien
+-- envoyé par email. Backfill : tous les comptes déjà existants au moment de la
+-- migration sont considérés vérifiés (on prend created_at) pour ne pas les
+-- bloquer. Les futures inscriptions partent à NULL → vérification requise.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at timestamp;
+UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
