@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, PLU_FAMILY_TYPES } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { invalidatePricingCache } from "../services/aiUsage.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
@@ -171,12 +171,87 @@ superAdminRouter.get("/epci", async (_req, res) => {
       .from(communes)
       .where(isNotNull(communes.epci_id));
 
-    const result = epciList.map((e) => ({
-      ...e,
-      communes: communeList
-        .filter((c) => c.epci_id === e.id)
-        .map((c) => ({ id: c.id, name: c.name })),
-    }));
+    const pluTypes = PLU_FAMILY_TYPES as readonly string[];
+
+    // Documents de famille PLU portés par un EPCI (= PLUi / PLUm). Plus récent
+    // d'abord : on retient le premier rencontré par EPCI.
+    const intercommunalDocs = await db
+      .select({
+        id: regulatory_documents.id,
+        type: regulatory_documents.type,
+        porteur_epci_id: regulatory_documents.porteur_epci_id,
+      })
+      .from(regulatory_documents)
+      .where(and(
+        isNotNull(regulatory_documents.porteur_epci_id),
+        inArray(regulatory_documents.type, pluTypes as string[]),
+      ))
+      .orderBy(desc(regulatory_documents.created_at));
+
+    const docByEpci = new Map<string, { id: string; type: string }>();
+    for (const d of intercommunalDocs) {
+      if (d.porteur_epci_id && !docByEpci.has(d.porteur_epci_id)) {
+        docByEpci.set(d.porteur_epci_id, { id: d.id, type: d.type });
+      }
+    }
+
+    // Nombre de communes couvertes par chaque document intercommunal (suivi du
+    // déploiement progressif : 3/44 par exemple), via document_communes.
+    const coverageRows = docByEpci.size > 0
+      ? await db
+          .select({ document_id: document_communes.document_id, commune_id: document_communes.commune_id })
+          .from(document_communes)
+          .where(inArray(document_communes.document_id, Array.from(docByEpci.values()).map((d) => d.id)))
+      : [];
+    const coverageByDoc = new Map<string, number>();
+    for (const r of coverageRows) {
+      coverageByDoc.set(r.document_id, (coverageByDoc.get(r.document_id) ?? 0) + 1);
+    }
+
+    // Communes disposant d'un PLU communal propre (porteur = commune).
+    const communalPluRows = await db
+      .select({ commune_id: regulatory_documents.porteur_commune_id })
+      .from(regulatory_documents)
+      .where(and(
+        isNotNull(regulatory_documents.porteur_commune_id),
+        inArray(regulatory_documents.type, pluTypes as string[]),
+      ));
+    const communesWithCommunalPlu = new Set(
+      communalPluRows.map((r) => r.commune_id).filter((id): id is string => id != null),
+    );
+
+    const result = epciList.map((e) => {
+      const members = communeList.filter((c) => c.epci_id === e.id);
+      const interDoc = docByEpci.get(e.id);
+      const communalCount = members.filter((c) => communesWithCommunalPlu.has(c.id)).length;
+
+      // Mode réglementaire dérivé — aucun champ stocké, c'est une lecture du
+      // modèle documentaire :
+      //  - plui/plum : l'EPCI porte un document de famille PLU intercommunal ;
+      //  - communal  : pas de document intercommunal, mais au moins une commune
+      //                membre a son propre PLU ;
+      //  - none      : aucun document de zonage rattaché.
+      let mode: "plui" | "plum" | "communal" | "none";
+      if (interDoc) {
+        mode = interDoc.type === "plum" ? "plum" : "plui";
+      } else if (communalCount > 0) {
+        mode = "communal";
+      } else {
+        mode = "none";
+      }
+
+      return {
+        ...e,
+        communes: members.map((c) => ({ id: c.id, name: c.name })),
+        regulatory: {
+          mode,
+          intercommunal_document_id: interDoc?.id ?? null,
+          communes_total: members.length,
+          communes_couvertes_plui: interDoc ? coverageByDoc.get(interDoc.id) ?? 0 : 0,
+          communes_plu_communal: communalCount,
+        },
+      };
+    });
 
     res.json(result);
   } catch (err) {
