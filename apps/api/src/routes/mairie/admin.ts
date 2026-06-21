@@ -1182,15 +1182,35 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
     await Promise.all(Array.from({ length: 3 }, synthWorker));
 
     job.phase = "Enregistrement…";
+
+    // Deux régimes selon le mode du job (cf. doc dans /commit) — la logique
+    // est identique : on factorise plus tard si un 3e site apparaît.
+    const isDocMode = !!job.document;
+    const isEpciDoc = job.document?.porteur === "epci";
+    const sourceDocumentId = job.document?.id ?? null;
+    const zoneCommuneId = isEpciDoc ? null : job.commune.id;
+    const numCoerce = (v: unknown): number | null =>
+      v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null;
+
     await db.transaction(async (tx) => {
-      const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, job.commune.id));
-      if (oldZones.length > 0) {
-        await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
-        await tx.delete(zones).where(eq(zones.commune_id, job.commune.id));
+      if (isDocMode) {
+        const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.source_document_id, sourceDocumentId!));
+        if (oldZones.length > 0) {
+          await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
+          await tx.delete(zones).where(eq(zones.source_document_id, sourceDocumentId!));
+        }
+      } else {
+        const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, job.commune.id));
+        if (oldZones.length > 0) {
+          await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
+          await tx.delete(zones).where(eq(zones.commune_id, job.commune.id));
+        }
       }
+
       for (const { zoneDef, rules } of merged) {
         const [created] = await tx.insert(zones).values({
-          commune_id: job.commune.id,
+          commune_id: isDocMode ? zoneCommuneId : job.commune.id,
+          source_document_id: sourceDocumentId,
           zone_code: zoneDef.code,
           zone_label: zoneDef.label,
           zone_type: zoneDef.type,
@@ -1203,13 +1223,14 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
           const articleInt = toArticleInt(rule.article_number);
           await tx.insert(zone_regulatory_rules).values({
             zone_id: zoneId,
+            source_document_id: sourceDocumentId,
             article_number: articleInt,
             article_title: rule.article_title ?? (articleInt != null ? `Article ${articleInt}` : ""),
             topic: rule.topic,
             rule_text: rule.rule_text,
-            value_min: ((v: unknown) => v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null)(rule.value_min),
-            value_max: ((v: unknown) => v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null)(rule.value_max),
-            value_exact: ((v: unknown) => v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null)(rule.value_exact),
+            value_min: numCoerce(rule.value_min),
+            value_max: numCoerce(rule.value_max),
+            value_exact: numCoerce(rule.value_exact),
             unit: rule.unit ?? null,
             conditions: rule.conditions ?? null,
             summary: rule.summary,
@@ -1223,6 +1244,13 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
             validation_status: "brouillon" as const,
           });
         }
+      }
+
+      // Marquage du document comme ingéré (mode document uniquement).
+      if (isDocMode) {
+        await tx.update(regulatory_documents)
+          .set({ status: "ingested", ingested_at: new Date(), updated_at: new Date() })
+          .where(eq(regulatory_documents.id, sourceDocumentId!));
       }
     });
 
