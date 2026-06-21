@@ -2429,6 +2429,13 @@ function Conformite() {
           reference: "CCSC Art. 11.3",
           statut: "actif",
         },
+        {
+          titre: "Sauvegardes chiffrées 3-2-1",
+          description: "pg_dump quotidien + archive des uploads et de la configuration (nginx/systemd), chiffrés en GPG AES-256. Trois copies : VPS, arborescence locale /var/backups/heureka/ et mirror OVH Object Storage (Gravelines 🇫🇷). Rétention 7 quotidiennes / 4 hebdomadaires / 6 mensuelles, vérification automatique hebdomadaire par restauration test. Procédures opérationnelles documentées.",
+          reference: "CCSC Art. 11.6",
+          statut: "actif",
+          code_ref: "infra/backup/ + docs/security/dossier-exploitation.md",
+        },
       ],
     },
     {
@@ -2490,10 +2497,10 @@ function Conformite() {
       bg: "#F5F3FF",
       mesures: [
         {
-          titre: "Hébergement applicatif en UE",
-          description: "Plateforme déployée sur infrastructure cloud en région UE. À vérifier au moment de la mise en production avec la DSI Tours Métropole.",
+          titre: "Hébergement applicatif en France (OVH)",
+          description: "Plateforme déployée sur VPS OVH, datacenters français (Gravelines / Roubaix / Strasbourg). Sauvegardes stockées sur OVH Object Storage (Gravelines 🇫🇷). Conforme à l'exigence « serveurs en France ou UE » — aucun transfert hors UE.",
           reference: "Annexe Technique n°2 §4.12",
-          statut: "doc",
+          statut: "actif",
         },
         {
           titre: "LLM Mistral La Plateforme — hébergement en France",
