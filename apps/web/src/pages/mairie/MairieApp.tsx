@@ -2390,8 +2390,30 @@ function SignatairesPanel({ commune }: { commune: string }) {
 function ParametresScreen({ commune = "", isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
   const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
-  const [searchParams] = useSearchParams();
-  const [stab, setStab] = useState(() => searchParams.get("tab") === "notifications" ? "Notifications" : "Réglementation");
+  const TAB_SLUGS: Record<string, string> = {
+    "Général": "general",
+    "Utilisateurs": "utilisateurs",
+    "Réglementation": "reglementation",
+    "Documents": "documents",
+    "Workflow & Délais": "workflow",
+    "Notifications": "notifications",
+    "Courriers": "courriers",
+    "Intégrations": "integrations",
+  };
+  const SLUG_TO_TAB: Record<string, string> = Object.fromEntries(Object.entries(TAB_SLUGS).map(([tab, slug]) => [slug, tab]));
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [stab, setStab] = useState(() => SLUG_TO_TAB[searchParams.get("tab") ?? ""] ?? "Réglementation");
+  const selectTab = (t: string) => {
+    setStab(t);
+    const sp = new URLSearchParams(searchParams);
+    sp.set("tab", TAB_SLUGS[t] ?? "reglementation");
+    setSearchParams(sp);
+  };
+  // Garde l'onglet synchronisé avec l'URL (liens directs, navigation arrière/avant)
+  useEffect(() => {
+    const t = SLUG_TO_TAB[searchParams.get("tab") ?? ""];
+    if (t && t !== stab) setStab(t);
+  }, [searchParams]);
   const [events, setEvents] = useState([
     { label: "Nouveau dossier déposé", sub: "Lorsqu'un nouveau dossier est déposé par un pétitionnaire.", icon: "📋", active: true },
     { label: "Dossier assigné", sub: "Lorsqu'un dossier vous est assigné.", icon: "👤", active: true },
@@ -2436,7 +2458,7 @@ function ParametresScreen({ commune = "", isAdmin = false, canManageUsers = fals
       </div>
       <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #E2E8F0", marginBottom: 24 }}>
         {settingsTabs.map(t => (
-          <button key={t} onClick={() => setStab(t)} style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: stab === t ? 600 : 400, color: stab === t ? "#4F46E5" : "#64748b", borderBottom: stab === t ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>{t}</button>
+          <button key={t} onClick={() => selectTab(t)} style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: stab === t ? 600 : 400, color: stab === t ? "#4F46E5" : "#64748b", borderBottom: stab === t ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>{t}</button>
         ))}
       </div>
       {stab === "Général" && <CommuneGeneralTab commune={commune} isAdmin={isAdmin} onInseeUpdated={onInseeUpdated} />}
