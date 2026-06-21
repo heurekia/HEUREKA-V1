@@ -18,7 +18,7 @@ import {
   type RegulatoryRuleHint,
   type PieceGroupDoc,
 } from "./pieceAnalyzer.js";
-import { loadZoneRulesWithInheritance } from "./zoneRules.js";
+import { loadZoneRulesWithInheritance, resolveDossierZoneCode } from "./zoneRules.js";
 import {
   computeRuleVerdicts,
   type RuleVerdictsReport,
@@ -404,7 +404,10 @@ export async function runDossierConformityAnalysis(
       .map((p) => ({ code: p.code, nom: p.nom }));
 
     // 6. Zone PLU + règles
-    const zoneCode = (meta.zone as string | undefined) ?? undefined;
+    // Zone faisant foi : on privilégie la zone géolocalisée (parcel_analysis)
+    // au snapshot figé au dépôt, pour appliquer les règles de la zone réellement
+    // identifiée pour la parcelle — et non d'une zone obsolète.
+    const zoneCode = resolveDossierZoneCode(meta) ?? undefined;
     const commune = dossier.commune ?? undefined;
     // Résolution de l'ID de commune pour l'imputation des coûts IA (nullable :
     // si le nom de commune du dossier ne matche aucune commune en base, on

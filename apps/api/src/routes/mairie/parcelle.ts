@@ -175,6 +175,17 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
         prevServitudes.length !== servitudes.length ||
         prevServitudes.some((p, i) => p.categorie !== servitudes[i]?.categorie);
 
+      // Zone faisant foi : on aligne metadata.zone sur la zone géolocalisée (ou
+      // l'override instructeur) résolue par l'analyse. Sans cela, metadata.zone
+      // restait figée sur le snapshot du dépôt et l'analyse de conformité
+      // appliquait les règles d'une zone obsolète, différente de celle affichée
+      // dans l'onglet Parcelle.
+      const resolvedZone = analysis.plu_zone?.zone_code ?? analysis.db_zone?.code ?? undefined;
+      const prevZone = typeof (prevMeta as { zone?: unknown }).zone === "string"
+        ? ((prevMeta as { zone: string }).zone)
+        : undefined;
+      const zoneChanged = !!resolvedZone && resolvedZone !== prevZone;
+
       const baseDate = dossier.date_completude ?? dossier.date_depot;
       let breakdownStale = false;
       if (baseDate) {
@@ -193,11 +204,14 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
           );
       }
 
-      if (servitudesChanged || !dossier.date_limite_instruction || breakdownStale) {
+      if (servitudesChanged || zoneChanged || !dossier.date_limite_instruction || breakdownStale) {
         const newMeta: Record<string, unknown> = {
           ...prevMeta,
           servitudes,
           parcel_analysis: analysis,
+          // metadata.zone reste la clé canonique lue par la conformité et la
+          // classification : on la maintient synchronisée avec la zone résolue.
+          ...(resolvedZone ? { zone: resolvedZone } : {}),
         };
 
         const patch: Record<string, unknown> = { metadata: newMeta, updated_at: new Date() };

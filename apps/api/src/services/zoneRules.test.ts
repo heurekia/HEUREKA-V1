@@ -7,7 +7,36 @@ import {
   applyParcelSecteurContext,
   isRuleSiblingOnly,
   pickMostSpecificRule,
+  resolveDossierZoneCode,
 } from "./zoneRules.js";
+
+describe("resolveDossierZoneCode", () => {
+  it("privilégie la zone géolocalisée de parcel_analysis", () => {
+    const meta = {
+      zone: "UB", // snapshot dépôt (obsolète)
+      parcel_analysis: { plu_zone: { zone_code: "UD" } },
+    };
+    expect(resolveDossierZoneCode(meta)).toBe("UD");
+  });
+
+  it("retombe sur db_zone.code quand plu_zone est absente", () => {
+    const meta = { parcel_analysis: { db_zone: { code: "UDa" } } };
+    expect(resolveDossierZoneCode(meta)).toBe("UDa");
+  });
+
+  it("retombe sur metadata.zone sans analyse parcellaire", () => {
+    expect(resolveDossierZoneCode({ zone: "UC" })).toBe("UC");
+  });
+
+  it("retombe sur l'ancienne clé zone_plu en dernier recours", () => {
+    expect(resolveDossierZoneCode({ zone_plu: "A" })).toBe("A");
+  });
+
+  it("renvoie null quand rien n'est résolu", () => {
+    expect(resolveDossierZoneCode({})).toBeNull();
+    expect(resolveDossierZoneCode({ zone: "  " })).toBeNull();
+  });
+});
 
 describe("deriveParentZoneCode", () => {
   it("strips a trailing lowercase suffix", () => {

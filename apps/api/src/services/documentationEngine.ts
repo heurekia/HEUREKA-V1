@@ -37,6 +37,7 @@ import {
 } from "@heureka-v1/db";
 import { eq, and, ilike, or, inArray } from "drizzle-orm";
 import { resolveCommuneZoneIds, resolveCommuneActiveZoneIds } from "./communeZones.js";
+import { walkZoneAncestry, resolveDossierZoneCode } from "./zoneRules.js";
 
 // ── Types publics ────────────────────────────────────────────────────────────
 
@@ -287,12 +288,14 @@ export async function buildDocumentationContext(
     }
   }
 
-  // Zone : prend d'abord la valeur déclarée dans metadata.zone_plu, puis le
-  // fait éventuellement extrait, puis null si rien n'est résolu.
+  // Zone faisant foi pour le dossier. On privilégie la zone GÉOLOCALISÉE par
+  // l'analyse parcellaire (rafraîchie à chaque ouverture de l'onglet Parcelle,
+  // donc la plus fiable), puis le snapshot figé au dépôt (metadata.zone), enfin
+  // l'ancienne clé metadata.zone_plu — historiquement jamais écrite, conservée
+  // par sécurité. Sans cette résolution, context.zone restait null et le
+  // listing remontait le règlement de TOUTES les zones de la commune.
   const meta = (dossier.metadata ?? {}) as Record<string, unknown>;
-  const zoneFromMeta = typeof meta.zone_plu === "string" && meta.zone_plu.trim()
-    ? meta.zone_plu.trim()
-    : null;
+  const zoneFromMeta = resolveDossierZoneCode(meta);
 
   let piece: { id: string; code_piece: string | null; nom: string } | null = null;
   if (opts.pieceId) {
@@ -394,12 +397,14 @@ export async function listApplicableReferences(
           eq(zone_regulatory_rules.validation_status, "valide"),
         ));
 
-      // Filtre zone : si la parcelle est zonée, on garde la zone et toutes les
-      // règles communes (sub_theme général). Sinon, fallback : on remonte tout
-      // le règlement de la commune avec un drapeau de provenance.
+      // Filtre zone : si la parcelle est zonée, on garde la zone ET ses zones
+      // mères (un secteur UDa hérite des règles de UD), comme partout ailleurs
+      // via walkZoneAncestry. Sinon, fallback : on remonte tout le règlement de
+      // la commune avec un drapeau de provenance.
       const zoneSelected = context.zone;
+      const acceptedZones = zoneSelected ? new Set(walkZoneAncestry(zoneSelected)) : null;
       for (const r of ruleRows) {
-        const zoneMatched = !zoneSelected || r.zone_code === zoneSelected;
+        const zoneMatched = !acceptedZones || acceptedZones.has(r.zone_code);
         if (!zoneMatched) continue;
 
         if (topicFilter && !topicFilter.has(r.topic) && !topicFilter.has("general")) {
