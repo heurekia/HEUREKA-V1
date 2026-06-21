@@ -1060,15 +1060,16 @@ ALTER TABLE zone_regulatory_rules
 CREATE INDEX IF NOT EXISTS idx_zone_regulatory_rules_source_document
   ON zone_regulatory_rules(source_document_id);
 
--- Backfill : on rattache chaque règle au PLU le plus récent de la commune
--- de sa zone. Couvre la quasi-totalité du corpus actuel (1 commune = 1 PLU).
--- Les communes sans aucun document type='plu' restent à NULL — détectables
--- via SELECT count(*) WHERE source_document_id IS NULL et à corriger
--- manuellement (cas rares : règles saisies à la main sans ingestion).
+-- Backfill : on rattache chaque règle au document de famille PLU le plus
+-- récent de la commune de sa zone (plu / plui / plum). Couvre la quasi-
+-- totalité du corpus actuel (1 commune = 1 PLU). Les communes sans aucun
+-- document de famille PLU restent à NULL — détectables via SELECT count(*)
+-- WHERE source_document_id IS NULL et à corriger manuellement (cas rares :
+-- règles saisies à la main sans ingestion).
 WITH plu_by_commune AS (
   SELECT DISTINCT ON (commune_id) commune_id, id AS document_id
   FROM regulatory_documents
-  WHERE type = 'plu' AND commune_id IS NOT NULL
+  WHERE type IN ('plu', 'plui', 'plum') AND commune_id IS NOT NULL
   ORDER BY commune_id, created_at DESC
 )
 UPDATE zone_regulatory_rules zrr
@@ -1088,12 +1089,13 @@ ALTER TABLE zones
 CREATE INDEX IF NOT EXISTS idx_zones_source_document
   ON zones(source_document_id);
 
--- Backfill : chaque zone hérite du PLU le plus récent de sa commune (même
--- logique que pour zone_regulatory_rules en Lot 2).
+-- Backfill : chaque zone hérite du document de famille PLU le plus récent de
+-- sa commune (plu / plui / plum — même logique que pour zone_regulatory_rules
+-- en Lot 2).
 WITH plu_by_commune AS (
   SELECT DISTINCT ON (commune_id) commune_id, id AS document_id
   FROM regulatory_documents
-  WHERE type = 'plu' AND commune_id IS NOT NULL
+  WHERE type IN ('plu', 'plui', 'plum') AND commune_id IS NOT NULL
   ORDER BY commune_id, created_at DESC
 )
 UPDATE zones z

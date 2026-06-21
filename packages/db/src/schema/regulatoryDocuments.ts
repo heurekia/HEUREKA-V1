@@ -12,7 +12,7 @@ export const regulatory_documents = pgTable("regulatory_documents", {
   // porteur par défaut des documents communaux historiques.
   porteur_commune_id: uuid("porteur_commune_id"),
   porteur_epci_id: uuid("porteur_epci_id"),
-  type: text("type").notNull(), // plu | ppri | oap | peb | pprt | plh | zac | autre
+  type: text("type").notNull(), // cf. REGULATORY_DOCUMENT_TYPES ci-dessous
   name: text("name").notNull(),
   original_filename: text("original_filename").notNull(),
   file_size: integer("file_size"),
@@ -31,3 +31,43 @@ export const regulatory_documents = pgTable("regulatory_documents", {
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });
+
+// Vocabulaire des types de documents réglementaires. Texte libre en base (la
+// colonne reste `text` pour ne pas figer le référentiel — cf. décision produit
+// « type ouvert »), mais ces constantes servent de référence partagée à
+// l'ingestion, à l'UI et aux validations.
+//
+//  - plu  : Plan Local d'Urbanisme communal (porteur = commune).
+//  - plui : PLU intercommunal (porteur = EPCI, rattaché à N communes).
+//  - plum : PLU métropolitain — variante de PLUi portée par une métropole.
+//  - ppri/pprt : plans de prévention des risques (inondation / technologique).
+//  - oap  : Orientations d'Aménagement et de Programmation.
+//  - peb  : Plan d'Exposition au Bruit.
+//  - plh  : Programme Local de l'Habitat.
+//  - zac  : Zone d'Aménagement Concerté.
+//  - autre: tout document non catalogué (ingestion possible, à qualifier).
+export const REGULATORY_DOCUMENT_TYPES = [
+  "plu",
+  "plui",
+  "plum",
+  "ppri",
+  "pprt",
+  "oap",
+  "peb",
+  "plh",
+  "zac",
+  "autre",
+] as const;
+export type RegulatoryDocumentType = (typeof REGULATORY_DOCUMENT_TYPES)[number];
+
+// « Famille PLU » : les types qui produisent un zonage + des règles
+// structurées (zones / zone_regulatory_rules). C'est ce sous-ensemble qui
+// distingue un document « réglementaire de zonage » (PLU/PLUi/PLUm) d'une
+// annexe thématique (PPRI, OAP…). Sert au backfill des règles et à la
+// détection du mode réglementaire d'un EPCI.
+export const PLU_FAMILY_TYPES = ["plu", "plui", "plum"] as const;
+export type PluFamilyType = (typeof PLU_FAMILY_TYPES)[number];
+
+export function isPluFamily(type: string | null | undefined): boolean {
+  return type != null && (PLU_FAMILY_TYPES as readonly string[]).includes(type);
+}
