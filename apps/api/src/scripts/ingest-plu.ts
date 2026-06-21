@@ -4,9 +4,9 @@
  * Algorithm:
  *   1. Extract PDF text via pdftotext, split on form-feed (page boundaries)
  *   2. Filter pages: skip pages with < 300 chars (images, maps, schemas)
- *   3. Discover zones in the clean text (regex → Claude fallback)
+ *   3. Discover zones in the clean text (regex → LLM fallback)
  *   4. Segment text by zone
- *   5. Per zone: Claude tool_use with strict schema → one call, N rules
+ *   5. Per zone: LLM tool_use with strict schema → one call, N rules
  *   6. Detect "renvoi au schéma" → flag needs_vision for manual review
  *   7. Store as validation_status = "brouillon" (never used without human sign-off)
  *

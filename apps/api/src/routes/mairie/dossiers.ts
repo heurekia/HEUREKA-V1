@@ -731,7 +731,7 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
 });
 
 // ── Extraction OCR d'un CERFA pour pré-remplir le formulaire de création ──
-// L'opérateur uploade un CERFA scanné ; on appelle Claude vision avec un prompt
+// L'opérateur uploade un CERFA scanné ; on appelle Pixtral avec un prompt
 // dédié aux métadonnées administratives (type, pétitionnaire, adresse, parcelle,
 // surfaces). Le résultat n'est PAS persisté : l'opérateur peut le corriger avant
 // de cliquer « Créer le dossier ».

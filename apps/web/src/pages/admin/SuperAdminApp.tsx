@@ -2454,7 +2454,7 @@ function Conformite() {
         },
         {
           titre: "Mentions légales & politique de confidentialité",
-          description: "Pages publiques /mentions-legales et /politique-confidentialite : responsable de traitement (collectivité), sous-traitants détaillés (Railway, Mistral AI, Resend) avec localisation des données, section dédiée à l'analyse IA (sous-traitant, données transmises, rétention 30j, décision humaine art. 22), droits des personnes avec pointeurs vers les actions de l'espace Profil. Tous les sous-traitants IA hébergent en UE (Mistral AI Paris). Liens visibles depuis les footers public et connecté.",
+          description: "Pages publiques /mentions-legales et /politique-confidentialite : responsable de traitement (collectivité), sous-traitants détaillés (OVH SAS, Mistral AI, Resend) avec localisation des données, section dédiée à l'analyse IA (sous-traitant, données transmises, rétention 30j, décision humaine art. 22), droits des personnes avec pointeurs vers les actions de l'espace Profil. Inférence IA en France (Mistral AI Paris), hébergement applicatif en France (OVH). Liens visibles depuis les footers public et connecté.",
           reference: "RGPD art. 13-14",
           statut: "actif",
           code_ref: "MentionsLegales.tsx + PolitiqueConfidentialite.tsx",

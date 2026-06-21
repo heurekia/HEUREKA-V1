@@ -1225,7 +1225,7 @@ superAdminRouter.delete("/legal-mentions/missing/:id", async (req, res) => {
 
 // Diagnostic : la table ai_usage_events existe-t-elle, et a-t-elle toutes les
 // colonnes attendues ? Utile quand la page « Coûts IA » reste à zéro alors que
-// la console Anthropic facture — typiquement migration non appliquée.
+// la console Mistral facture — typiquement migration non appliquée.
 superAdminRouter.get("/ai-cost/healthcheck", async (_req, res) => {
   try {
     const rows = await db.execute<{ column_name: string }>(

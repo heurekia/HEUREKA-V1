@@ -18,9 +18,10 @@ const server = app.listen(PORT, "0.0.0.0", () => {
   warmCodeTocCache("CE");
 });
 
-// Graceful shutdown. Sans ça, Railway envoie SIGTERM pendant un rolling
-// deploy, Node sort en code 143, pnpm rapporte ELIFECYCLE et Railway lève
-// une alerte "crash" alors que c'est un arrêt normal demandé par la plateforme.
+// Graceful shutdown. Sans ça, systemd envoie SIGTERM lors d'un
+// `systemctl restart` (déploiement ou rotation logs), Node sort en code 143,
+// pnpm rapporte ELIFECYCLE et l'unité est marquée failed alors que c'est un
+// arrêt normal demandé par l'orchestrateur.
 function shutdown(signal: NodeJS.Signals) {
   console.log(`[shutdown] ${signal} reçu — fermeture HTTP…`);
   const force = setTimeout(() => {

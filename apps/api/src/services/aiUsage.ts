@@ -1,17 +1,15 @@
 /**
  * Inférence IA — Mistral La Plateforme (direct, Paris, France).
  *
- * Décision juin 2026 : on bascule l'intégralité des appels IA de HEUREKA
- * (citoyen + mairie) sur Mistral La Plateforme en accès direct. Raisons :
- *   - Vision requise (CERFA, plans, photos) → Pixtral, non disponible sur
- *     AWS Bedrock à ce jour.
- *   - Souveraineté : entité Mistral SA Paris, droit français applicable.
- *   - Latence (~15 ms depuis Tours) et tarif natif EUR.
+ * Choix Mistral :
+ *   - Vision native (CERFA, plans, photos) avec Pixtral.
+ *   - Souveraineté : entité Mistral AI SAS Paris, droit français applicable,
+ *     inférence sur datacenters UE — pas de transfert hors UE, pas de SCC.
+ *   - Tarif natif EUR.
  *
- * Cette refonte retire entièrement les chemins Anthropic + Bedrock :
- * variables d'env (AI_PROVIDER, AWS_*), SDK (@anthropic-ai/sdk, @anthropic-ai/
- * bedrock-sdk), types Claude. Le tracking ai_usage_events reste identique
- * — seul le `model` stocké change (pixtral-large-latest plutôt que claude-*).
+ * Tous les appels IA passent par `callAi` / `streamAi` ci-dessous, qui
+ * alimentent `ai_usage_events` (page admin « Coûts IA »). Le `model` stocké
+ * est l'id Mistral natif (ex. `pixtral-large-latest`).
  */
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
@@ -119,10 +117,6 @@ function getMistralKey(): string {
   return k;
 }
 
-export function aiProviderInfo(): { provider: string; region: string } {
-  return { provider: "mistral", region: "fr-paris" };
-}
-
 // ── Types AiRequest (format interne, indépendant du SDK Mistral) ────────────
 
 export type AiContentBlock =
@@ -220,14 +214,14 @@ export function convertPdfPagesToPng(
       execFileSync("pdftoppm", args, { stdio: ["ignore", "ignore", "pipe"] });
     } catch (err) {
       // ENOENT = binaire absent → message actionnable plutôt que stack
-      // trace cryptique. Le déploiement Railway installe poppler-utils via
-      // nixpacks.toml ; en local : `apt install poppler-utils` (Debian/
-      // Ubuntu), `brew install poppler` (macOS), ou `nix-shell -p
-      // poppler_utils`. Cf. apps/api/.env.example.
+      // trace cryptique. Le VPS OVH provisionne poppler-utils via le script
+      // de setup ; en local : `apt install poppler-utils` (Debian/Ubuntu),
+      // `brew install poppler` (macOS), ou `nix-shell -p poppler_utils`.
+      // Cf. apps/api/.env.example.
       const code = (err as { code?: string }).code;
       if (code === "ENOENT") {
         throw new Error(
-          "pdftoppm introuvable (paquet poppler-utils). Installer : `apt install poppler-utils` (Linux), `brew install poppler` (macOS). En prod Railway : redéployer pour appliquer nixpacks.toml.",
+          "pdftoppm introuvable (paquet poppler-utils). Installer : `apt install poppler-utils` (Linux), `brew install poppler` (macOS). En prod : ré-exécuter le provisioning du VPS.",
         );
       }
       throw err;
@@ -495,9 +489,10 @@ export interface AiStream {
 }
 
 /**
- * Streaming SSE Mistral. Renvoie un objet qui s'itère comme un stream
- * Anthropic (event.type === "content_block_delta") pour minimiser la
- * réécriture des routes mairie/reglementation. Le tracking ai_usage_events
+ * Streaming SSE Mistral. Renvoie un objet itérable d'événements
+ * `content_block_delta` / `text_delta` (forme héritée pour minimiser la
+ * réécriture des routes mairie/reglementation — à plat sur Mistral, mais le
+ * shape interne reste indépendant du provider). Le tracking ai_usage_events
  * est déclenché automatiquement à `finalMessage()`.
  */
 export async function streamAi(ctx: CallAiContext, request: AiRequest): Promise<AiStream> {

@@ -4420,7 +4420,7 @@ const ZONE_TYPE_STYLE: Record<string, { bg: string; color: string; border: strin
 };
 
 // Découpe le règlement collé en blocs analysables par l'IA.
-// Objectif : aucun bloc > MAX_CHARS (sinon l'appel Claude dépasse 120 s).
+// Objectif : aucun bloc > MAX_CHARS (sinon l'appel LLM dépasse 120 s).
 //
 // Étape 1 — coupe sur les en-têtes d'article (« Article 7 », « Préambule »,
 // « ARTICLE U.A.1 », « **Article 11 -** »). Insensible à la casse, tolère

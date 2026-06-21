@@ -93,7 +93,7 @@ async function getOwnedDossier(dossierId: string, userId: string) {
 }
 
 // ── Classification de la procédure d'urbanisme ──
-// Moteur déterministe pour type/libellé/articles — Claude pour explication+alertes
+// Moteur déterministe pour type/libellé/articles — LLM pour explication+alertes
 dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
   try {
     const {
@@ -148,12 +148,12 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
     );
     const pieces_requises = getPiecesForType(det.type, piecesCtx);
 
-    // ── 3. Explication citoyenne + alertes via Claude ─────────────────────────
+    // ── 3. Explication citoyenne + alertes via LLM ─────────────────────────
     let explication = "";
     let alertes: string[] = [];
 
     // Délai légal pré-calculé pour CE dossier (base + extensions). On le
-    // fournit à Claude pour qu'il n'invente PAS de durée — il doit reprendre
+    // fournit au modèle pour qu'il n'invente PAS de durée — il doit reprendre
     // exactement les composantes qu'on lui donne.
     const delaiCalc = computeInstructionDelay(
       det.type,
@@ -219,7 +219,7 @@ Règles strictes :
           alertes = parsed.alertes ?? [];
         }
       } catch {
-        // Claude failure is non-blocking — proceed with empty explanation
+        // LLM failure is non-blocking — proceed with default explanation
         explication = `Votre projet nécessite une ${det.libelle}. Délai moyen : ${det.delai_moyen}.`;
         if (hasABF) alertes = ["Votre terrain est en périmètre ABF : prévoyez un délai supplémentaire d'environ 1 mois."];
       }
@@ -1004,8 +1004,8 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       // chemin disque. Les services prennent en charge local ET S3 via le
       // StorageProvider en relisant la key si besoin (cf. signature *FromBuffer).
       // Diagnostic : on log explicitement les erreurs au lieu de les avaler
-      // silencieusement, sinon un échec Bedrock (model ID invalide,
-      // AccessDenied, etc.) reste invisible.
+      // silencieusement, sinon un échec Mistral (modèle inconnu, 401, rate
+      // limit, etc.) reste invisible.
       const fileBuffer = req.file.buffer;
       const mimeType = req.file.mimetype;
       const captureErr = (label: string) => (err: unknown) => {

@@ -1,10 +1,13 @@
 /**
  * Types du harnais de benchmark LLM pour HEUREKA.
  *
- * Objectif : comparer plusieurs fournisseurs d'inférence (Anthropic direct,
- * Anthropic via Bedrock, Mistral Pixtral, Google Vertex) sur la tâche
- * d'analyse de pièces d'urbanisme RÉELLES, afin de décider lequel
- * privilégier en production.
+ * Objectif : mesurer la qualité d'extraction des modèles Mistral (Pixtral 12B
+ * vs Pixtral Large notamment) sur la tâche d'analyse de pièces d'urbanisme
+ * RÉELLES, détecter les régressions après un changement de prompt, et
+ * arbitrer le mapping `MODEL_MAP` (`ai-fast` / `ai-smart` → modèle réel).
+ *
+ * L'interface `BenchmarkProvider` reste générique pour permettre l'ajout
+ * d'un comparatif si un autre fournisseur intra-UE devient pertinent.
  *
  * Aucune dépendance vers le code applicatif HEUREKA — le harnais reproduit
  * en autonome les prompts utilisés en prod (cf. apps/api/src/services/

@@ -16,8 +16,10 @@ benchmark-fixtures/
 1. **Choisir une pièce représentative** d'un cas réel rencontré en instruction. Par ex. : un plan de masse coté correctement, un plan de coupe avec NGF lisibles, un CERFA scanné, un plan illisible, un PDF multi-pages.
 2. **L'anonymiser** : retirer nom/prénom/email/téléphone/adresse exacte du pétitionnaire et des voisins. Outils : Adobe Acrobat Redact, ou export PNG avec masquage manuel.
 3. **Choisir un format compatible** :
-   - PNG ou JPG → tous les providers (Anthropic, Mistral Pixtral).
-   - PDF → Anthropic natif. Mistral Pixtral n'accepte PAS le PDF → convertir page par page en PNG.
+   - PNG ou JPG → accepté nativement par Mistral Pixtral.
+   - PDF → Pixtral n'accepte PAS le PDF nativement ; le harnais convertit
+     automatiquement la première page via `pdftoppm` (poppler-utils). Pour un
+     PDF multi-pages, fournir directement les pages utiles en PNG.
 4. **Le déposer** dans `pieces/` avec un nom court parlant (`plan-masse-01.png`).
 5. **Renseigner le manifest** : ajouter une entrée avec id, mime, label, contexte (zone PLU, nature des travaux) et **vérité-terrain** (valeurs exactes lisibles sur le plan).
 

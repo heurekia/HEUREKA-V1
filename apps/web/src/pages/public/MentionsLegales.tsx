@@ -40,10 +40,11 @@ export function MentionsLegales() {
       <section className="mb-8">
         <h2 className="text-lg font-semibold text-[#000020] mb-3">Hébergement</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
-          La plateforme est hébergée par <strong>Railway Corporation</strong>, 548 Market St PMB 59449,
-          San Francisco, CA 94104, États-Unis. Les bases de données et fichiers déposés par les usagers
-          sont stockés sur des serveurs situés <strong>dans l'Union Européenne (région eu-west-1, Irlande)</strong>.
-          Voir la politique de confidentialité pour le détail des sous-traitants techniques.
+          La plateforme est hébergée par <strong>OVH SAS</strong>, 2 rue Kellermann, 59100 Roubaix, France
+          (RCS Lille Métropole 424 761 419). L'application, la base de données et les fichiers déposés par
+          les usagers sont stockés sur des serveurs situés <strong>en France métropolitaine</strong>
+          (VPS OVH + Object Storage OVH pour les sauvegardes). Voir la politique de confidentialité pour
+          le détail des sous-traitants techniques.
         </p>
       </section>
 

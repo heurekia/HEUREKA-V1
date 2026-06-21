@@ -6,7 +6,7 @@ interne) capable de produire un JSON valide.
 
 ## Pourquoi ce format
 
-- **Coût** : zéro token Anthropic consommé.
+- **Coût** : zéro token LLM consommé.
 - **Certitude juridique** : ce que vous écrivez est ce qui sera utilisé pour
   servir les instructions et les citoyens. Aucune interprétation IA possible.
 - **Versionnable** : le fichier vit dans Git, audit trail naturel.

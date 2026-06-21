@@ -113,9 +113,9 @@ export function PolitiqueConfidentialite() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               <tr>
-                <td className="py-2 pr-4">Railway Corporation (USA)</td>
-                <td className="py-2 pr-4">Hébergement applicatif et base de données</td>
-                <td className="py-2">UE — eu-west-1 (Irlande)</td>
+                <td className="py-2 pr-4">OVH SAS (France)</td>
+                <td className="py-2 pr-4">Hébergement applicatif, base de données et sauvegardes</td>
+                <td className="py-2">France — datacenters OVH (VPS + Object Storage)</td>
               </tr>
               <tr>
                 <td className="py-2 pr-4">Mistral AI SAS (France)</td>
@@ -189,9 +189,9 @@ export function PolitiqueConfidentialite() {
           France métropolitaine. Les articles 44 et suivants du RGPD ne sont donc pas engagés pour ce traitement.
         </p>
         <p className="text-sm text-gray-600 mt-2">
-          Les bases de données et les fichiers eux-mêmes restent hébergés dans l'Union Européenne. La migration
-          de l'hébergement applicatif vers un fournisseur français (Clever Cloud) est planifiée pour atteindre
-          un niveau de souveraineté maximale.
+          L'hébergement applicatif et la base de données sont assurés depuis juin 2026 par OVH SAS, sur des
+          datacenters situés en France métropolitaine — aucune donnée ne quitte le territoire français pour
+          l'opération de la plateforme.
         </p>
       </section>
     </div>
