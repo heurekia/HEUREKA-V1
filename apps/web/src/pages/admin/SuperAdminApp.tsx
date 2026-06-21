@@ -1465,6 +1465,12 @@ const EPCI_DOCUMENT_TYPES = [
   { value: "autre", label: "Autre document réglementaire" },
 ] as const;
 
+// localStorage clé `plu-ingest-job:<docId>` : si l'opérateur quitte l'écran
+// puis revient, on reprend le polling du job — l'extraction continue côté
+// serveur indépendamment de l'onglet. L'entrée est posée au /start réussi et
+// retirée à la fin (done / error / job expiré).
+const INGEST_JOB_KEY = (docId: string) => `plu-ingest-job:${docId}`;
+
 function EpciDocuments({ epciId, members }: { epciId: string; members: { id: string; name: string }[] }) {
   const [docs, setDocs] = useState<RegulatoryDocumentLite[] | null>(null);
   const [loading, setLoading] = useState(true);
@@ -1588,6 +1594,16 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
         const r = await fetch(`/api/mairie/admin/ingest-plu-pdf/status?jobId=${encodeURIComponent(jobId)}`, {
           credentials: "include",
         });
+        if (r.status === 404) {
+          // Job expiré / process serveur redémarré → l'extraction n'existe plus
+          // en mémoire. On nettoie et on demande de relancer.
+          try { localStorage.removeItem(INGEST_JOB_KEY(docId)); } catch { /* SSR-safe */ }
+          setIngest((prev) => prev && prev.docId === docId ? {
+            ...prev,
+            error: "Le job d'ingestion a expiré côté serveur (process redémarré ?). Relancez l'import.",
+          } : prev);
+          return;
+        }
         if (!r.ok) throw new Error(`status HTTP ${r.status}`);
         const data = await r.json() as {
           status: "running" | "done" | "error";
@@ -1605,11 +1621,13 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
         } : prev);
 
         if (data.status === "done") {
+          try { localStorage.removeItem(INGEST_JOB_KEY(docId)); } catch { /* SSR-safe */ }
           setIngest(null);
           await load();
           return;
         }
         if (data.status === "error") {
+          try { localStorage.removeItem(INGEST_JOB_KEY(docId)); } catch { /* SSR-safe */ }
           setIngest((prev) => prev && prev.docId === docId ? {
             ...prev,
             error: data.error ?? "Erreur d'extraction",
@@ -1618,16 +1636,42 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
         }
         // Toujours en cours → re-arme le timer.
         pollTimerRef.current = window.setTimeout(tick, 2000);
-      } catch (e) {
-        // Erreur réseau transitoire : on retente une fois, puis on abandonne.
-        setIngest((prev) => prev && prev.docId === docId ? {
-          ...prev,
-          error: e instanceof Error ? e.message : "Erreur réseau",
-        } : prev);
+      } catch {
+        // Blip réseau / 5xx transitoire : on ré-arme le timer et on retentera au
+        // prochain tick plutôt que d'abandonner le suivi (important pour la
+        // reprise après navigation : un job long ne doit pas tomber sur un blip).
+        pollTimerRef.current = window.setTimeout(tick, 3000);
       }
     };
     pollTimerRef.current = window.setTimeout(tick, 1500);
   }, [load]);
+
+  // Reprise après navigation : au (re)montage, dès que la liste des documents
+  // est chargée, on cherche un job d'ingestion encore actif en localStorage et
+  // on reprend son suivi. Le worker serveur a continué pendant l'absence.
+  const didResumeRef = useRef(false);
+  useEffect(() => { didResumeRef.current = false; }, [epciId]);
+  useEffect(() => {
+    if (didResumeRef.current || !docs || docs.length === 0) return;
+    didResumeRef.current = true;
+    for (const d of docs) {
+      let saved: string | null = null;
+      try { saved = localStorage.getItem(INGEST_JOB_KEY(d.id)); } catch { /* SSR-safe */ }
+      if (saved) {
+        setIngest({
+          docId: d.id,
+          docName: d.name,
+          jobId: saved,
+          phase: "Reprise de l'ingestion en cours…",
+          zonesDone: 0,
+          zonesTotal: 0,
+          error: null,
+        });
+        pollIngestStatus(saved, d.id, d.name);
+        break;
+      }
+    }
+  }, [docs, epciId, pollIngestStatus]);
 
   const handleIngestStart = (doc: RegulatoryDocumentLite) => {
     ingestTargetRef.current = { id: doc.id, name: doc.name };
@@ -1737,6 +1781,9 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
         { timeoutMs: 120_000 },
       );
       setManualToc(null);
+      // Persiste le jobId : permet de reprendre le suivi si l'opérateur quitte
+      // l'écran puis revient (le worker serveur continue de toute façon).
+      try { localStorage.setItem(INGEST_JOB_KEY(docId), startResp.jobId); } catch { /* SSR-safe */ }
       setIngest((prev) => prev ? {
         ...prev,
         jobId: startResp.jobId,
