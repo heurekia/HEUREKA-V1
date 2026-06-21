@@ -8329,8 +8329,89 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             </button>
           );
 
+          // ── Helpers visuels (vue Terrain) ──────────────────────────────
+          // Palette de tons partagée par les pastilles et les filets de carte.
+          const tones = {
+            danger:  { c: "#B91C1C", bg: "#FEF2F2", bd: "#FECACA" },
+            warn:    { c: "#B45309", bg: "#FFFBEB", bd: "#FDE68A" },
+            ok:      { c: "#15803D", bg: "#F0FDF4", bd: "#BBF7D0" },
+            info:    { c: "#4F46E5", bg: "#EEF2FF", bd: "#C7D2FE" },
+            abf:     { c: "#92400E", bg: "#FEF3C7", bd: "#FCD34D" },
+            neutral: { c: "#475569", bg: "#F8FAFC", bd: "#E2E8F0" },
+          } as const;
+          type Tone = keyof typeof tones;
+          // Pastille de synthèse : lecture « d'un coup d'œil » en tête de carte.
+          const Pill = ({ icon, label, tone }: { icon: string; label: string; tone: Tone }) => {
+            const t = tones[tone];
+            return (
+              <span style={{ display: "inline-flex", alignItems: "center", gap: 5, fontSize: 11.5, fontWeight: 600, color: t.c, background: t.bg, border: `1px solid ${t.bd}`, borderRadius: 999, padding: "4px 11px", whiteSpace: "nowrap" as const }}>
+                <span style={{ fontSize: 12 }}>{icon}</span>{label}
+              </span>
+            );
+          };
+          // Carte de contrainte unifiée : filet coloré à gauche + pastille icône.
+          // Remplace les fonds pleins teintés — plus léger et plus lisible quand
+          // plusieurs SUP / prescriptions s'empilent.
+          const ConstraintItem = ({ rail, icon, title, code, children, footer }: { rail: string; icon: string; title: string; code?: string; children?: React.ReactNode; footer?: React.ReactNode }) => (
+            <div style={{ display: "flex", background: "white", border: "1px solid #E8EEF4", borderRadius: 10, overflow: "hidden", boxShadow: "0 1px 2px rgba(15,23,42,0.04)" }}>
+              <div style={{ width: 4, background: rail, flexShrink: 0 }} />
+              <div style={{ flex: 1, minWidth: 0, padding: "11px 13px" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
+                  <span style={{ flexShrink: 0, width: 26, height: 26, borderRadius: 7, background: `${rail}1A`, display: "inline-flex", alignItems: "center", justifyContent: "center", fontSize: 14 }}>{icon}</span>
+                  <span style={{ flex: 1, minWidth: 0, fontSize: 12.5, fontWeight: 700, color: "#0F172A", lineHeight: 1.35 }}>{title}</span>
+                  {code && <span style={{ flexShrink: 0, fontSize: 10, fontWeight: 700, color: "#64748B", background: "#F1F5F9", borderRadius: 5, padding: "2px 6px", letterSpacing: "0.03em" }}>{code}</span>}
+                </div>
+                {children && <div style={{ marginTop: 8, paddingLeft: 35 }}>{children}</div>}
+                {footer && <div style={{ marginTop: 8, paddingLeft: 35, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" as const }}>{footer}</div>}
+              </div>
+            </div>
+          );
+          // Intitulé de colonne — oriente la lecture (« contraintes » vs « potentiel »).
+          const ColHeading = ({ children }: { children: React.ReactNode }) => (
+            <div style={{ fontSize: 11, fontWeight: 700, color: "#64748b", textTransform: "uppercase" as const, letterSpacing: "0.07em", padding: "0 2px 2px" }}>{children}</div>
+          );
+
           return (
             <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+              {/* ── En-tête : carte d'identité du terrain (pleine largeur) ── */}
+              {(() => {
+                const zc = pa?.plu_zone ?? (pa?.db_zone ? { zone_code: pa.db_zone.code, zone_label: pa.db_zone.label ?? pa.db_zone.code, zone_type: pa.db_zone.type ?? "U" } : null);
+                const col = zoneColor(zc?.zone_type);
+                const ruleCount = pa?.rules?.filter((r) => r.relevance !== "excluded").length ?? 0;
+                const facts: Array<[string, string]> = [
+                  ["Référence", pa?.parcel?.parcelle_id ?? dossier.parcelle ?? "—"],
+                  ["Section / N°", pa?.parcel ? `${pa.parcel.section} / ${pa.parcel.numero}` : "—"],
+                  ["Surface", pa?.parcel?.surface_m2 ? `${pa.parcel.surface_m2} m²` : "—"],
+                  ["Commune", pa?.parcel?.commune ?? liveCommune ?? "—"],
+                  ["Adresse", pa?.address?.label ?? liveAdresse ?? "—"],
+                ];
+                return (
+                  <div style={{ ...CARD, padding: 18 }}>
+                    <div style={{ display: "flex", alignItems: "stretch", justifyContent: "space-between", gap: 18, flexWrap: "wrap" as const }}>
+                      <div style={{ display: "flex", gap: 26, rowGap: 14, flexWrap: "wrap" as const, flex: 1, minWidth: 0, alignItems: "flex-start" }}>
+                        {facts.map(([l, v]) => (
+                          <div key={l} style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em", marginBottom: 4 }}>{l}</div>
+                            <div style={{ fontSize: 13.5, fontWeight: 700, color: "#0F172A", maxWidth: 240, overflow: "hidden", textOverflow: "ellipsis" as const }}>{v}</div>
+                          </div>
+                        ))}
+                      </div>
+                      <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "flex-end", gap: 6, flexShrink: 0, background: col.bg, border: `1px solid ${col.c}33`, borderRadius: 12, padding: "12px 16px", minWidth: 150 }}>
+                        <div style={{ fontSize: 10, fontWeight: 700, color: col.c, textTransform: "uppercase" as const, letterSpacing: "0.06em", opacity: 0.85 }}>Zone PLU</div>
+                        <div style={{ fontSize: 22, fontWeight: 800, color: col.c, lineHeight: 1 }}>{zc?.zone_code ?? "—"}</div>
+                        {zc?.zone_label && <div style={{ fontSize: 11, color: "#475569", textAlign: "right" as const, maxWidth: 200, lineHeight: 1.4 }}>{zc.zone_label}</div>}
+                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 2, flexWrap: "wrap" as const, justifyContent: "flex-end" }}>
+                          {ruleCount > 0 && <span style={{ fontSize: 10.5, fontWeight: 600, color: "#4F46E5", background: "white", border: "1px solid #C7D2FE", borderRadius: 6, padding: "2px 7px" }}>{ruleCount} article{ruleCount > 1 ? "s" : ""}</span>}
+                          <InstructionLink label="Règlement complet" docType="plu" />
+                        </div>
+                      </div>
+                    </div>
+                    {pa?.plu_zone?.plu_nom && (
+                      <div style={{ marginTop: 12, fontSize: 10.5, color: "#94a3b8", fontStyle: "italic" as const }}>Source GPU : {pa.plu_zone.plu_nom}</div>
+                    )}
+                  </div>
+                );
+              })()}
               {/* Warnings */}
               {pa?.warnings && pa.warnings.length > 0 && (
                 <div style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 10, padding: "10px 14px", display: "flex", flexDirection: "column" as const, gap: 4 }}>
@@ -8363,11 +8444,35 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
-                {/* ── Colonne gauche : contraintes + ABF + constructibilité ── */}
+                {/* ── Colonne gauche : ce qui contraint le terrain ── */}
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
-                  {/* Contraintes */}
+                  <ColHeading>Ce qui contraint le terrain</ColHeading>
+                  {/* Risques & servitudes */}
                   <div style={CARD}>
-                    <SecTitle>Contraintes réglementaires</SecTitle>
+                    <SecTitle>Risques & servitudes</SecTitle>
+                    {/* Synthèse — pastilles « d'un coup d'œil » */}
+                    {(() => {
+                      const flood = pa?.risks?.flood_risk ?? "inconnu";
+                      const floodPill: Record<string, { label: string; tone: Tone }> = {
+                        fort:    { label: "Inondable — aléa fort", tone: "danger" },
+                        moyen:   { label: "Inondable — aléa moyen", tone: "warn" },
+                        faible:  { label: "Inondable — aléa faible", tone: "warn" },
+                        nul:     { label: "Hors zone inondable", tone: "ok" },
+                        inconnu: { label: "Inondation non déterminée", tone: "neutral" },
+                      };
+                      const fp: { label: string; tone: Tone } = floodPill[flood] ?? { label: "Inondation non déterminée", tone: "neutral" };
+                      const supCount = pa?.servitudes?.length ?? 0;
+                      const pscCount = pa?.prescriptions?.length ?? 0;
+                      return (
+                        <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 7, marginBottom: 14 }}>
+                          <Pill icon="🌊" label={fp.label} tone={fp.tone} />
+                          {hasABFServitude && <Pill icon="⚜️" label="Périmètre ABF" tone="abf" />}
+                          {pa?.risks?.seismic_zone && <Pill icon="〰️" label={`Sismicité ${pa.risks.seismic_zone}`} tone="neutral" />}
+                          {supCount > 0 && <Pill icon="📜" label={`${supCount} servitude${supCount > 1 ? "s" : ""}`} tone="info" />}
+                          {pscCount > 0 && <Pill icon="🌳" label={`${pscCount} prescription${pscCount > 1 ? "s" : ""}`} tone="ok" />}
+                        </div>
+                      );
+                    })()}
                     {/* Zone picker when GPU fails */}
                     {!pa?.plu_zone && pa?.available_zones && pa.available_zones.length > 0 && (
                       <div style={{ marginBottom: 12, padding: "10px 14px", background: "#FFF7ED", border: "1px solid #FCD34D", borderRadius: 8 }}>
@@ -8389,19 +8494,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       </div>
                     )}
                     <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                      {/* Zone PLU */}
-                      {(() => {
-                        const zc = pa?.plu_zone ?? (pa?.db_zone ? { zone_code: pa.db_zone.code, zone_label: pa.db_zone.label ?? pa.db_zone.code, zone_type: pa.db_zone.type ?? "U" } : null);
-                        const col = zoneColor(zc?.zone_type);
-                        return (
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: col.bg, borderRadius: 9, border: `1px solid ${col.c}22` }}>
-                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>Zone PLU</span>
-                            <span style={{ fontSize: 11.5, fontWeight: 600, color: col.c }}>
-                              {zc ? `${zc.zone_code} – ${zc.zone_label}` : "Non identifiée"}
-                            </span>
-                          </div>
-                        );
-                      })()}
                       {/* Risque inondation */}
                       {(() => {
                         const flood = pa?.risks?.flood_risk ?? "inconnu";
@@ -8455,41 +8547,43 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         if (s.datdecr) valueRows.push(["Acte de protection", s.datdecr]);
                         if (s.ref_acte) valueRows.push(["Référence", s.ref_acte]);
                         return (
-                          <div key={i} style={{ padding: "12px 14px", background: isABF ? "#FFFBEB" : "#F0F9FF", borderRadius: 9, border: `1px solid ${isABF ? "#FDE68A" : "#BAE6FD"}` }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: valueRows.length > 0 ? 8 : 0 }}>
-                              <span style={{ fontSize: 16, flexShrink: 0 }}>{isABF ? "⚜️" : "📜"}</span>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 12.5, fontWeight: 700, color: isABF ? "#92400E" : "#0C4A6E" }}>{friendly}</div>
-                              </div>
-                            </div>
-                            {valueRows.length > 0 && (
-                              <div style={{ display: "flex", flexDirection: "column" as const, gap: 4, marginLeft: 26 }}>
+                          <ConstraintItem
+                            key={i}
+                            rail={isABF ? "#D97706" : "#0EA5E9"}
+                            icon={isABF ? "⚜️" : "📜"}
+                            title={friendly}
+                            code={s.categorie}
+                            footer={
+                              <>
+                                {s.urlacte && (
+                                  <a href={s.urlacte} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#4F46E5", fontWeight: 600 }}>
+                                    Voir l'acte officiel ↗
+                                  </a>
+                                )}
+                                {/* Toute citation du règlement ou du PDF passe par Instruction. */}
+                                <InstructionLink
+                                  label="Confronter aux pièces"
+                                  docType={s.categorie?.startsWith("PM1") ? "ppri" : s.categorie?.startsWith("PM2") ? "pprt" : undefined}
+                                />
+                              </>
+                            }
+                          >
+                            {(valueRows.length > 0 || s.dessup) && (
+                              <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
                                 {valueRows.map(([label, value]) => (
                                   <div key={label} style={{ display: "flex", gap: 8, fontSize: 11.5, lineHeight: 1.5 }}>
-                                    <span style={{ color: isABF ? "#B45309" : "#0369A1", flexShrink: 0, minWidth: 130 }}>{label}</span>
-                                    <span style={{ color: isABF ? "#7C2D12" : "#0F172A", fontWeight: 500 }}>{value}</span>
+                                    <span style={{ color: "#94a3b8", flexShrink: 0, minWidth: 120 }}>{label}</span>
+                                    <span style={{ color: "#334155", fontWeight: 500 }}>{value}</span>
                                   </div>
                                 ))}
+                                {s.dessup && (
+                                  <div style={{ marginTop: valueRows.length > 0 ? 4 : 0, fontSize: 11.5, color: "#475569", lineHeight: 1.55, fontStyle: "italic" as const }}>
+                                    {s.dessup}
+                                  </div>
+                                )}
                               </div>
                             )}
-                            {s.dessup && (
-                              <div style={{ marginLeft: 26, marginTop: 6, fontSize: 11.5, color: isABF ? "#7C2D12" : "#0F172A", lineHeight: 1.55, fontStyle: "italic" }}>
-                                {s.dessup}
-                              </div>
-                            )}
-                            <div style={{ marginLeft: 26, marginTop: 8, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" as const }}>
-                              {s.urlacte && (
-                                <a href={s.urlacte} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#4F46E5", fontWeight: 600 }}>
-                                  Voir l'acte officiel ↗
-                                </a>
-                              )}
-                              {/* Toute citation du règlement ou du PDF passe par Instruction. */}
-                              <InstructionLink
-                                label="Confronter aux pièces dans Instruction"
-                                docType={s.categorie?.startsWith("PM1") ? "ppri" : s.categorie?.startsWith("PM2") ? "pprt" : undefined}
-                              />
-                            </div>
-                          </div>
+                          </ConstraintItem>
                         );
                       })}
                       {/* Prescriptions surfaciques PLU */}
@@ -8523,29 +8617,29 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         const def = pscLabels[p.typepsc] ?? { titre: "Prescription PLU", icon: "📋" };
                         const title = p.libelle || def.titre;
                         return (
-                          <div key={i} style={{ padding: "12px 14px", background: "#F0FDF4", borderRadius: 9, border: "1px solid #BBF7D0" }}>
-                            <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: p.txtpsc ? 8 : 0 }}>
-                              <span style={{ fontSize: 16, flexShrink: 0 }}>{def.icon}</span>
-                              <div style={{ flex: 1, minWidth: 0 }}>
-                                <div style={{ fontSize: 12.5, fontWeight: 700, color: "#14532D" }}>{title}</div>
-                              </div>
-                            </div>
+                          <ConstraintItem
+                            key={i}
+                            rail="#22C55E"
+                            icon={def.icon}
+                            title={title}
+                            code={`PSC ${p.typepsc}`}
+                            footer={
+                              <InstructionLink
+                                label="Règlement applicable"
+                                docType={p.typepsc === "18" ? "oap" : p.typepsc === "09" ? "ppri" : "plu"}
+                              />
+                            }
+                          >
                             {p.txtpsc ? (
-                              <div style={{ marginLeft: 26, fontSize: 11.5, color: "#14532D", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>
+                              <div style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>
                                 {p.txtpsc}
                               </div>
                             ) : (
-                              <div style={{ marginLeft: 26, fontSize: 11, color: "#15803D", fontStyle: "italic" }}>
+                              <div style={{ fontSize: 11, color: "#94a3b8", fontStyle: "italic" as const }}>
                                 Texte réglementaire non publié dans le GPU — se référer au règlement de zone.
                               </div>
                             )}
-                            <div style={{ marginLeft: 26, marginTop: 6 }}>
-                              <InstructionLink
-                                label="Voir le règlement applicable dans Instruction"
-                                docType={p.typepsc === "18" ? "oap" : p.typepsc === "09" ? "ppri" : "plu"}
-                              />
-                            </div>
-                          </div>
+                          </ConstraintItem>
                         );
                       })}
                     </div>
@@ -8571,7 +8665,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     </div>
                   )}
 
-                  {/* Constructibilité */}
+                </div>
+
+                {/* ── Colonne droite : ce qu'on peut y faire ── */}
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+                  <ColHeading>Ce qu'on peut y faire</ColHeading>
+                  {/* Constructibilité estimée — synthèse + détail chiffré fusionnés */}
                   {pa?.buildability && (
                     <div style={CARD}>
                       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 14 }}>
@@ -8583,6 +8682,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           <span style={{ fontSize: 11, color: "#64748b" }}>confiance</span>
                         </div>
                       </div>
+                      {pa.buildability.resultSummary && (
+                        <div style={{ display: "flex", gap: 8, alignItems: "flex-start", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 9, padding: "10px 12px", marginBottom: 12 }}>
+                          <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M22 11.08V12a10 10 0 11-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
+                          <p style={{ fontSize: 12.5, color: "#14532D", margin: 0, lineHeight: 1.6 }}>{pa.buildability.resultSummary}</p>
+                        </div>
+                      )}
                       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
                         {[
                           ["Emprise restante", pa.buildability.remainingFootprintM2 > 0 ? `${Math.round(pa.buildability.remainingFootprintM2)} m²` : "0 m²"],
@@ -8599,73 +8704,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       </div>
                     </div>
                   )}
-                </div>
-
-                {/* ── Colonne droite ── */}
-                <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
-                  {/* Infos cadastrales */}
-                  <div style={CARD}>
-                    <SecTitle>Informations cadastrales</SecTitle>
-                    {[
-                      ["Référence", pa?.parcel?.parcelle_id ?? dossier.parcelle ?? "—"],
-                      ["Section / N°", pa?.parcel ? `${pa.parcel.section} / ${pa.parcel.numero}` : "—"],
-                      ["Surface parcelle", pa?.parcel?.surface_m2 ? `${pa.parcel.surface_m2} m²` : "—"],
-                      ["Commune", pa?.parcel?.commune ?? liveCommune ?? "—"],
-                      ["Code INSEE", pa?.parcel?.code_insee ?? "—"],
-                      ["Adresse", pa?.address?.label ?? liveAdresse ?? "—"],
-                    ].map(([l, v]) => (
-                      <div key={l} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", paddingBottom: 8, marginBottom: 8, borderBottom: "1px solid #F1F5F9" }}>
-                        <span style={{ fontSize: 12, color: "#64748b" }}>{l}</span>
-                        <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", textAlign: "right" as const, maxWidth: "60%" }}>{v}</span>
-                      </div>
-                    ))}
-                  </div>
-
-                  {/* Synthèse zone PLU — pointeur seulement, le règlement complet vit dans Instruction */}
-                  <div style={CARD}>
-                    <SecTitle action={<InstructionLink label="Règlement complet" docType="plu" />}>
-                      Zone PLU
-                    </SecTitle>
-                    {(() => {
-                      const zc = pa?.plu_zone ?? (pa?.db_zone ? { zone_code: pa.db_zone.code, zone_label: pa.db_zone.label ?? pa.db_zone.code, zone_type: pa.db_zone.type ?? "U" } : null);
-                      if (!zc) {
-                        return (
-                          <div style={{ fontSize: 12.5, color: "#94a3b8", padding: "8px 0" }}>
-                            Zone PLU non identifiée — voir les contraintes ci-contre.
-                          </div>
-                        );
-                      }
-                      const ruleCount = pa?.rules?.filter((r) => r.relevance !== "excluded").length ?? 0;
-                      return (
-                        <div>
-                          <div style={{ fontSize: 18, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>
-                            {zc.zone_code}
-                          </div>
-                          <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.5, marginBottom: 12 }}>
-                            {zc.zone_label}
-                          </div>
-                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
-                            {ruleCount > 0 && (
-                              <span style={{ fontSize: 11.5, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 6, padding: "3px 9px" }}>
-                                {ruleCount} article{ruleCount > 1 ? "s" : ""} indexé{ruleCount > 1 ? "s" : ""}
-                              </span>
-                            )}
-                            <button
-                              onClick={() => goToDocuments("plu")}
-                              style={{ fontSize: 11.5, fontWeight: 600, color: "#3730A3", background: "white", border: "1px solid #C7D2FE", borderRadius: 6, padding: "3px 9px", cursor: "pointer" }}
-                            >
-                              Confronter aux pièces →
-                            </button>
-                          </div>
-                          {pa?.plu_zone?.plu_nom && (
-                            <div style={{ marginTop: 10, fontSize: 11, color: "#94a3b8", fontStyle: "italic" }}>
-                              Source GPU : {pa.plu_zone.plu_nom}
-                            </div>
-                          )}
-                        </div>
-                      );
-                    })()}
-                  </div>
 
                   {/* Historique SITADEL/ADS — autorisations passées sur la parcelle/rue/commune */}
                   <div style={CARD}>
@@ -8802,16 +8840,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       );
                     })()}
                   </div>
-
-                  {/* Résumé constructibilité */}
-                  {pa?.buildability?.resultSummary && (
-                    <div style={{ ...CARD, background: "#F0FDF4", border: "1px solid #BBF7D0" }}>
-                      <div style={{ display: "flex", gap: 8, alignItems: "flex-start" }}>
-                        <svg width={16} height={16} viewBox="0 0 24 24" fill="none" stroke="#15803D" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={{ flexShrink: 0, marginTop: 1 }}><path d="M22 11.08V12a10 10 0 11-5.93-9.14" /><polyline points="22 4 12 14.01 9 11.01" /></svg>
-                        <p style={{ fontSize: 12.5, color: "#14532D", margin: 0, lineHeight: 1.6 }}>{pa.buildability.resultSummary}</p>
-                      </div>
-                    </div>
-                  )}
                 </div>
               </div>
             </div>
