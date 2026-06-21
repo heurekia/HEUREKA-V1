@@ -1621,6 +1621,84 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
     fileInputRef.current?.click();
   };
 
+  // ── Édition / suppression d'un document existant ────────────────────────
+  const [editingDocId, setEditingDocId] = useState<string | null>(null);
+  const [editForm, setEditForm] = useState({ type: "plui", name: "", original_filename: "" });
+  const [editSelection, setEditSelection] = useState<Set<string>>(new Set());
+  const [editInitialSelection, setEditInitialSelection] = useState<Set<string>>(new Set());
+  const [confirmDeleteId, setConfirmDeleteId] = useState<string | null>(null);
+  const [actionSubmitting, setActionSubmitting] = useState(false);
+
+  const openEdit = (doc: RegulatoryDocumentLite) => {
+    setEditingDocId(doc.id);
+    setEditForm({
+      type: doc.type,
+      name: doc.name,
+      original_filename: doc.original_filename === "—" ? "" : doc.original_filename,
+    });
+    const sel = new Set(doc.communes_couvertes);
+    setEditSelection(sel);
+    setEditInitialSelection(sel);
+    setError(null);
+  };
+
+  const closeEdit = () => {
+    setEditingDocId(null);
+    setError(null);
+  };
+
+  const toggleEditCommune = (id: string) => {
+    setEditSelection((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const handleEditSubmit = async (docId: string) => {
+    if (!editForm.name.trim()) { setError("Le nom du document est requis"); return; }
+    if (editSelection.size === 0) { setError("Au moins une commune doit être rattachée"); return; }
+    setActionSubmitting(true);
+    setError(null);
+    try {
+      // PATCH infos d'abord, PUT périmètre ensuite. Les deux endpoints ont
+      // leurs validations propres ; en cas d'échec sur le second, le PATCH
+      // est conservé — ce qui est acceptable car aucun n'est destructif.
+      await api.patch(`/admin/epci/${epciId}/documents/${docId}`, {
+        type: editForm.type,
+        name: editForm.name.trim(),
+        original_filename: editForm.original_filename.trim() || undefined,
+      });
+      const selChanged = editSelection.size !== editInitialSelection.size
+        || Array.from(editSelection).some((id) => !editInitialSelection.has(id));
+      if (selChanged) {
+        await api.put(`/admin/epci/${epciId}/documents/${docId}/communes`, {
+          commune_ids: Array.from(editSelection),
+        });
+      }
+      closeEdit();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur lors de la mise à jour");
+    } finally {
+      setActionSubmitting(false);
+    }
+  };
+
+  const handleDelete = async (docId: string) => {
+    setActionSubmitting(true);
+    setError(null);
+    try {
+      await api.delete(`/admin/epci/${epciId}/documents/${docId}`);
+      setConfirmDeleteId(null);
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur lors de la suppression");
+    } finally {
+      setActionSubmitting(false);
+    }
+  };
+
   const handleFileSelected = async (file: File | null) => {
     if (!file || !ingestTargetRef.current) return;
     const target = ingestTargetRef.current;
@@ -1683,6 +1761,13 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
 
   return (
     <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px dashed ${C.border}` }}>
+      {confirmDeleteId && (
+        <ConfirmDialog
+          message={`Supprimer ce document réglementaire ? Les zones et règles qui en proviennent seront également supprimées. Cette action est irréversible.`}
+          onConfirm={() => handleDelete(confirmDeleteId)}
+          onCancel={() => setConfirmDeleteId(null)}
+        />
+      )}
       {/* Input file caché, partagé par tous les boutons « Importer un PDF ».
           Le doc cible est résolu via ingestTargetRef au moment du click. */}
       <input
@@ -1830,11 +1915,12 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
             const sc = statusColors[d.status] ?? statusColors["uploaded"]!;
             const vc = validationColors[d.validation_status] ?? validationColors["brouillon"]!;
             const isIngesting = ingest?.docId === d.id;
+            const isEditing = editingDocId === d.id;
             const progressPct = ingest && ingest.zonesTotal > 0
               ? Math.round((ingest.zonesDone / ingest.zonesTotal) * 100)
               : 0;
             return (
-              <div key={d.id} style={{ background: C.white, border: `1px solid ${isIngesting ? C.accent : C.border}`, borderRadius: 8, padding: "10px 14px" }}>
+              <div key={d.id} style={{ background: C.white, border: `1px solid ${isIngesting || isEditing ? C.accent : C.border}`, borderRadius: 8, padding: "10px 14px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
@@ -1847,7 +1933,7 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
                   </div>
                   <Badge label={d.status} color={sc.color} bg={sc.bg} />
                   <Badge label={d.validation_status} color={vc.color} bg={vc.bg} />
-                  {!isIngesting && !ingest && d.status === "uploaded" && (
+                  {!isIngesting && !isEditing && !ingest && d.status === "uploaded" && (
                     <button
                       onClick={(ev) => { ev.stopPropagation(); handleIngestStart(d); }}
                       style={{ padding: "6px 12px", background: C.accent, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
@@ -1855,7 +1941,89 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
                       📥 Importer un PDF
                     </button>
                   )}
+                  {!isIngesting && !isEditing && (
+                    <>
+                      <button
+                        onClick={(ev) => { ev.stopPropagation(); openEdit(d); }}
+                        style={{ padding: "6px 10px", background: C.accentLight, color: C.accent, border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+                      >
+                        Modifier
+                      </button>
+                      <button
+                        onClick={(ev) => { ev.stopPropagation(); setConfirmDeleteId(d.id); }}
+                        style={{ padding: "6px 10px", background: C.redBg, color: C.red, border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+                      >
+                        Supprimer
+                      </button>
+                    </>
+                  )}
                 </div>
+
+                {isEditing && (
+                  <div onClick={(ev) => ev.stopPropagation()} style={{ marginTop: 12, paddingTop: 12, borderTop: `1px solid ${C.border}` }}>
+                    <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12, marginBottom: 12 }}>
+                      <Field label="Type">
+                        <Select value={editForm.type} onChange={(v) => setEditForm({ ...editForm, type: v })} disabled={actionSubmitting}>
+                          {EPCI_DOCUMENT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                        </Select>
+                      </Field>
+                      <Field label="Nom du document *">
+                        <Input value={editForm.name} onChange={(v) => setEditForm({ ...editForm, name: v })} disabled={actionSubmitting} />
+                      </Field>
+                      <Field label="Nom du fichier source (optionnel)">
+                        <Input value={editForm.original_filename} onChange={(v) => setEditForm({ ...editForm, original_filename: v })} disabled={actionSubmitting} />
+                      </Field>
+                    </div>
+
+                    <div style={{ marginBottom: 12 }}>
+                      <div style={{ fontSize: 12, fontWeight: 600, color: C.textMuted, marginBottom: 8 }}>
+                        Communes couvertes <span style={{ color: C.textLight, fontWeight: 400 }}>· {editSelection.size} / {members.length}</span>
+                      </div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {members.map((m) => {
+                          const active = editSelection.has(m.id);
+                          return (
+                            <button
+                              key={m.id}
+                              type="button"
+                              onClick={() => toggleEditCommune(m.id)}
+                              disabled={actionSubmitting}
+                              style={{
+                                padding: "4px 10px",
+                                background: active ? C.accentLight : C.white,
+                                border: `1px solid ${active ? C.accent : C.border}`,
+                                borderRadius: 16,
+                                cursor: "pointer",
+                                fontSize: 12,
+                                color: active ? C.accent : C.textMuted,
+                                fontWeight: 500,
+                              }}
+                            >
+                              {active ? "✓ " : ""}{m.name}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        onClick={() => handleEditSubmit(d.id)}
+                        disabled={actionSubmitting}
+                        style={{ padding: "8px 16px", background: C.accent, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 700, opacity: actionSubmitting ? 0.6 : 1 }}
+                      >
+                        {actionSubmitting ? "Enregistrement…" : "Enregistrer"}
+                      </button>
+                      <button
+                        onClick={closeEdit}
+                        disabled={actionSubmitting}
+                        style={{ padding: "8px 14px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", fontSize: 13, color: C.text, fontWeight: 600 }}
+                      >
+                        Annuler
+                      </button>
+                    </div>
+                  </div>
+                )}
 
                 {isIngesting && (
                   <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
