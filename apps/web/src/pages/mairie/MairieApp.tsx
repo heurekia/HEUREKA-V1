@@ -5075,9 +5075,6 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
                 <span style={{ fontSize: 16, fontWeight: 700, color: "#000020", flex: 1 }}>{selectedZone.zone_label}</span>
                 <button onClick={() => deleteZone(selectedZone.id)} title="Supprimer la zone" style={{ border: "1px solid #FECACA", background: "#FFF5F5", borderRadius: 7, padding: "4px 10px", fontSize: 11, color: "#EF4444", cursor: "pointer" }}>✕ Zone</button>
               </div>
-              {selectedZone.summary && (
-                <p style={{ fontSize: 13, color: "#6B7280", margin: 0 }}>{selectedZone.summary}</p>
-              )}
             </div>
 
             {/* Rules list */}
