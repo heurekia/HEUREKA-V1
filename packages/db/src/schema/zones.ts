@@ -4,7 +4,12 @@ import { regulatory_documents } from "./regulatoryDocuments.js";
 
 export const zones = pgTable("zones", {
   id: uuid("id").primaryKey().defaultRandom(),
-  commune_id: uuid("commune_id").notNull().references(() => communes.id),
+  // Nullable depuis le support PLUi : une zone portée par un PLUi intercommunal
+  // n'appartient pas à UNE commune mais s'applique aux N communes membres via
+  // document_communes (résolution par source_document_id côté moteur). Les
+  // zones de PLU communal gardent leur commune_id renseigné — comportement
+  // historique inchangé.
+  commune_id: uuid("commune_id").references(() => communes.id),
   // Document réglementaire d'origine. Nullable : permet aux zones créées
   // manuellement (route POST /reglementation/zones) d'exister sans document
   // attaché. ON DELETE SET NULL — supprimer un document ne casse pas les

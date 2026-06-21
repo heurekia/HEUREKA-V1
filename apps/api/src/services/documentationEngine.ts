@@ -614,11 +614,15 @@ export async function getReferenceDetail(referenceId: string): Promise<Documenta
       .where(eq(zone_regulatory_rules.id, id))
       .limit(1);
     if (!row) return null;
-    const [commune] = await db
-      .select({ name: communes.name })
-      .from(communes)
-      .where(eq(communes.id, row.commune_id))
-      .limit(1);
+    // commune_id peut être NULL pour une zone de PLUi (portée intercommunale,
+    // pas de commune unique). On ne résout le nom de commune que s'il existe.
+    const [commune] = row.commune_id
+      ? await db
+          .select({ name: communes.name })
+          .from(communes)
+          .where(eq(communes.id, row.commune_id))
+          .limit(1)
+      : [];
     const appliesIf = Array.isArray(row.applies_if) ? row.applies_if as string[] : [];
     return {
       id_regle: `rule:${row.rule_id}`,
