@@ -1,6 +1,7 @@
 import { and, eq, ilike, inArray, or } from "drizzle-orm";
 import { db } from "../db.js";
 import { zones, zone_regulatory_rules, communes } from "@heureka-v1/db";
+import { resolveCommuneZoneIds } from "./communeZones.js";
 
 export type ZoneRow = typeof zones.$inferSelect;
 export type RuleRow = typeof zone_regulatory_rules.$inferSelect;
@@ -330,16 +331,22 @@ export async function loadZoneRulesWithInheritance(
   // suffix (UB → UBa, UBai, UBb, …). For very short parents (« A », « N »)
   // skipping the prefix scan avoids over-fetching unrelated zones.
   const useSiblingScan = parent.length >= 2;
-  const where = communeId
-    ? and(
-        useSiblingScan
-          ? or(inArray(zones.zone_code, ancestry), ilike(zones.zone_code, `${parent}%`))
-          : inArray(zones.zone_code, ancestry),
-        eq(zones.commune_id, communeId),
-      )
-    : useSiblingScan
-      ? or(inArray(zones.zone_code, ancestry), ilike(zones.zone_code, `${parent}%`))
-      : inArray(zones.zone_code, ancestry);
+  const codeScope = useSiblingScan
+    ? or(inArray(zones.zone_code, ancestry), ilike(zones.zone_code, `${parent}%`))
+    : inArray(zones.zone_code, ancestry);
+
+  // Périmètre commune PLUi-aware : zones communales propres + zones partagées
+  // des PLUi rattachés (cf. resolveCommuneZoneIds). Sans commune résolue, on
+  // ne restreint pas (comportement historique).
+  let where = codeScope;
+  if (communeId) {
+    const communeZoneIds = await resolveCommuneZoneIds(communeId);
+    // Commune résolue mais sans aucune zone applicable → rien à charger.
+    if (communeZoneIds.length === 0) {
+      return { zone: null, matchedChain: [], rules: [] };
+    }
+    where = and(codeScope, inArray(zones.id, communeZoneIds));
+  }
   const foundZones = await db.select().from(zones).where(where);
 
   if (foundZones.length === 0) {

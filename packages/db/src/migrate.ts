@@ -1130,6 +1130,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_dossier_facts_active_winner_key
 -- les contradictions à l'instruction.
 CREATE INDEX IF NOT EXISTS idx_dossier_facts_conflict_group
   ON dossier_facts(conflict_group_id) WHERE conflict_group_id IS NOT NULL;
+
+-- ── Phase 3 — Zones partagées pour les PLUi ────────────────────────────────
+-- Une zone portée par un PLUi intercommunal ne « possède » pas de commune
+-- unique : elle s'applique aux N communes membres via document_communes, et
+-- le moteur résout les règles par source_document_id (cf. Lot 4). On lève
+-- donc le NOT NULL sur zones.commune_id. Additif et rétro-compatible : toutes
+-- les zones existantes conservent leur commune_id ; seules les futures zones
+-- de PLUi pourront être créées avec commune_id NULL.
+ALTER TABLE zones ALTER COLUMN commune_id DROP NOT NULL;
+
+-- Idem pour le document lui-même : un PLUi porté par un EPCI n'a pas de
+-- commune propriétaire unique, son périmètre vit dans document_communes.
+ALTER TABLE regulatory_documents ALTER COLUMN commune_id DROP NOT NULL;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

@@ -17,10 +17,11 @@
 import type { Geometry, Polygon } from "geojson";
 import { db } from "../db.js";
 import { zones, zone_regulatory_rules, communes, gpu_parcel_cache } from "@heureka-v1/db";
-import { eq, and, ilike, sql } from "drizzle-orm";
+import { eq, and, ilike, sql, inArray } from "drizzle-orm";
 import { calculateBuildability, type BuildabilityInput } from "./buildability.js";
 import { computeBuiltFootprintM2 } from "./buildingFootprint.js";
 import { loadZoneRulesWithInheritance, pickMostSpecificRule } from "./zoneRules.js";
+import { resolveCommuneZoneIds } from "./communeZones.js";
 import { getCommunePluContext, findZoneAtPoint, type PluCommuneContext } from "./pluZones.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -1491,10 +1492,12 @@ export async function analyseParcel(
         .where(eq(communes.insee_code, code_insee))
         .limit(1);
       if (communeRow) {
-        const zoneRows = await db
+        // PLUi-aware : zones communales + zones partagées des PLUi rattachés.
+        const communeZoneIds = await resolveCommuneZoneIds(communeRow.id);
+        const zoneRows = communeZoneIds.length === 0 ? [] : await db
           .select({ zone_code: zones.zone_code, zone_label: zones.zone_label, zone_type: zones.zone_type })
           .from(zones)
-          .where(eq(zones.commune_id, communeRow.id))
+          .where(inArray(zones.id, communeZoneIds))
           .orderBy(zones.display_order);
         result.available_zones = zoneRows.map(z => ({
           zone_code: z.zone_code,

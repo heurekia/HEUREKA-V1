@@ -35,7 +35,8 @@ import {
   regulatory_documents,
   documentation_favoris,
 } from "@heureka-v1/db";
-import { eq, and, ilike, or } from "drizzle-orm";
+import { eq, and, ilike, or, inArray } from "drizzle-orm";
+import { resolveCommuneZoneIds, resolveCommuneActiveZoneIds } from "./communeZones.js";
 
 // ── Types publics ────────────────────────────────────────────────────────────
 
@@ -274,10 +275,14 @@ export async function buildDocumentationContext(
       .limit(1);
     if (commune) {
       inseeCode = commune.insee_code;
-      const zoneRows = await db
-        .select({ zone_code: zones.zone_code })
-        .from(zones)
-        .where(and(eq(zones.commune_id, commune.id), eq(zones.is_active, true)));
+      // PLUi-aware : inclut les zones partagées des documents intercommunaux.
+      const activeZoneIds = await resolveCommuneActiveZoneIds(commune.id);
+      const zoneRows = activeZoneIds.length > 0
+        ? await db
+            .select({ zone_code: zones.zone_code })
+            .from(zones)
+            .where(inArray(zones.id, activeZoneIds))
+        : [];
       zonesDisponibles = zoneRows.map((z) => z.zone_code);
     }
   }
@@ -365,7 +370,9 @@ export async function listApplicableReferences(
       .limit(1);
 
     if (commune) {
-      const ruleRows = await db
+      // PLUi-aware : zones communales + zones partagées des PLUi rattachés.
+      const communeZoneIds = await resolveCommuneZoneIds(commune.id);
+      const ruleRows = communeZoneIds.length === 0 ? [] : await db
         .select({
           rule_id: zone_regulatory_rules.id,
           zone_code: zones.zone_code,
@@ -383,7 +390,7 @@ export async function listApplicableReferences(
         .from(zone_regulatory_rules)
         .innerJoin(zones, eq(zones.id, zone_regulatory_rules.zone_id))
         .where(and(
-          eq(zones.commune_id, commune.id),
+          inArray(zones.id, communeZoneIds),
           eq(zone_regulatory_rules.validation_status, "valide"),
         ));
 
@@ -614,11 +621,15 @@ export async function getReferenceDetail(referenceId: string): Promise<Documenta
       .where(eq(zone_regulatory_rules.id, id))
       .limit(1);
     if (!row) return null;
-    const [commune] = await db
-      .select({ name: communes.name })
-      .from(communes)
-      .where(eq(communes.id, row.commune_id))
-      .limit(1);
+    // commune_id peut être NULL pour une zone de PLUi (portée intercommunale,
+    // pas de commune unique). On ne résout le nom de commune que s'il existe.
+    const [commune] = row.commune_id
+      ? await db
+          .select({ name: communes.name })
+          .from(communes)
+          .where(eq(communes.id, row.commune_id))
+          .limit(1)
+      : [];
     const appliesIf = Array.isArray(row.applies_if) ? row.applies_if as string[] : [];
     return {
       id_regle: `rule:${row.rule_id}`,
@@ -651,11 +662,15 @@ export async function getReferenceDetail(referenceId: string): Promise<Documenta
       .where(eq(regulatory_documents.id, id))
       .limit(1);
     if (!row) return null;
-    const [commune] = await db
-      .select({ name: communes.name })
-      .from(communes)
-      .where(eq(communes.id, row.commune_id))
-      .limit(1);
+    // commune_id peut être NULL pour un document intercommunal (PLUi porté par
+    // un EPCI). On ne résout le nom de commune que s'il est renseigné.
+    const [commune] = row.commune_id
+      ? await db
+          .select({ name: communes.name })
+          .from(communes)
+          .where(eq(communes.id, row.commune_id))
+          .limit(1)
+      : [];
     const isOap = (row.type ?? "").toLowerCase() === "oap";
     return {
       id_regle: `doc:${row.id}`,
@@ -696,7 +711,9 @@ export async function searchReferences(
   if (!commune) return [];
 
   const pattern = `%${cleaned}%`;
-  const ruleRows = await db
+  // PLUi-aware : zones communales + zones partagées des PLUi rattachés.
+  const communeZoneIds = await resolveCommuneZoneIds(commune.id);
+  const ruleRows = communeZoneIds.length === 0 ? [] : await db
     .select({
       rule_id: zone_regulatory_rules.id,
       zone_code: zones.zone_code,
@@ -713,7 +730,7 @@ export async function searchReferences(
     .from(zone_regulatory_rules)
     .innerJoin(zones, eq(zones.id, zone_regulatory_rules.zone_id))
     .where(and(
-      eq(zones.commune_id, commune.id),
+      inArray(zones.id, communeZoneIds),
       eq(zone_regulatory_rules.validation_status, "valide"),
       or(
         ilike(zone_regulatory_rules.rule_text, pattern),
