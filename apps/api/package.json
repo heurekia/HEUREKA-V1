@@ -37,6 +37,7 @@
     "node-cron": "^4.2.1",
     "nodemailer": "^9.0.1",
     "pdf-lib": "^1.17.1",
+    "polygon-clipping": "^0.15.7",
     "resend": "^6.12.4",
     "tsx": "^4.19.4",
     "unpdf": "^0.12.1",

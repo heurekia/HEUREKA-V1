@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { findZoneAtPoint, filterZonesByInsee } from "./pluZones.js";
+import { findZoneAtPoint, filterZonesByInsee, clipZonesToCommune } from "./pluZones.js";
 
 // Helpers de construction de zones GeoJSON minimales — uniquement les champs
 // que findZoneAtPoint et filterZonesByInsee inspectent (libelle, typezone,
@@ -145,5 +145,66 @@ describe("filterZonesByInsee", () => {
     const cleaned = filterZonesByInsee(zones, "41047");
     // Plutôt que retourner zéro feature (carte vide), on garde l'original.
     expect(cleaned.features).toHaveLength(1);
+  });
+});
+
+describe("clipZonesToCommune", () => {
+  // Contour commune = carré 0..10.
+  const commune = square(0, 0, 10, 10)[0]!;
+
+  it("rogne une zone qui déborde du contour", () => {
+    // Zone 5..15 : la moitié droite déborde, on doit la rogner à 5..10.
+    const zones = {
+      type: "FeatureCollection",
+      features: [
+        { type: "Feature", properties: { libelle: "UA", typezone: "U" },
+          geometry: { type: "Polygon", coordinates: square(5, 0, 15, 10) } },
+      ],
+    };
+    const clipped = clipZonesToCommune(zones, commune);
+    expect(clipped.features).toHaveLength(1);
+    const g = (clipped.features![0] as { geometry: { type: string; coordinates: number[][][][] } }).geometry;
+    expect(g.type).toBe("MultiPolygon");
+    // Tous les sommets rognés sont dans [0,10]×[0,10].
+    const xs = g.coordinates.flat(2).map(p => p[0]!);
+    const ys = g.coordinates.flat(2).map(p => p[1]!);
+    expect(Math.max(...xs)).toBeLessThanOrEqual(10);
+    expect(Math.min(...xs)).toBeGreaterThanOrEqual(5);
+    expect(Math.max(...ys)).toBeLessThanOrEqual(10);
+  });
+
+  it("retire une zone entièrement hors commune (intersection vide)", () => {
+    const zones = {
+      type: "FeatureCollection",
+      features: [
+        { type: "Feature", properties: { libelle: "A", typezone: "A" },
+          geometry: { type: "Polygon", coordinates: square(20, 20, 30, 30) } },
+      ],
+    };
+    expect(clipZonesToCommune(zones, commune).features).toHaveLength(0);
+  });
+
+  it("conserve une zone entièrement contenue (rognage neutre)", () => {
+    const zones = {
+      type: "FeatureCollection",
+      features: [
+        { type: "Feature", properties: { libelle: "UB", typezone: "U" },
+          geometry: { type: "Polygon", coordinates: square(2, 2, 4, 4) } },
+      ],
+    };
+    const clipped = clipZonesToCommune(zones, commune);
+    expect(clipped.features).toHaveLength(1);
+    // La zone rognée reste localisable par point-in-polygon.
+    expect(findZoneAtPoint(clipped, 3, 3)?.zone_code).toBe("UB");
+  });
+
+  it("laisse passer les features sans géométrie polygonale", () => {
+    const zones = {
+      type: "FeatureCollection",
+      features: [
+        { type: "Feature", properties: { libelle: "X" }, geometry: { type: "Point", coordinates: [1, 1] } },
+      ],
+    };
+    expect(clipZonesToCommune(zones, commune).features).toHaveLength(1);
   });
 });
