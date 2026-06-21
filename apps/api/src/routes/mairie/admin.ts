@@ -1090,8 +1090,17 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
     // zone, on demande à l'IA une lecture article-par-article en langage
     // courant, avec description des croquis, à stocker dans zones.summary.
     // Remplace l'ancien placeholder « Zone XX — extrait par IA, à valider ».
-    // Concurrence 3 → ~1-2 min ajoutées pour Tours (10 zones).
-    job.phase = "Synthèse narrative des zones…";
+    // Concurrence 5 (texte seul, pas d'images → moins de pression rate limit
+    // vs les lots d'extraction) → ~1-2 min ajoutées pour Tours (10 zones).
+    // On rafraîchit job.phase à chaque zone terminée pour que le polling
+    // /status affiche « Synthèse narrative… (N/T) » et que l'utilisateur ne
+    // croie pas que l'ingestion est figée.
+    const synthTotal = merged.length;
+    let synthDone = 0;
+    const refreshSynthPhase = () => {
+      job.phase = `Synthèse narrative des zones… (${synthDone}/${synthTotal})`;
+    };
+    refreshSynthPhase();
     const zoneSummaries = new Map<string, string>();
     let synthNext = 0;
     const synthWorker = async () => {
@@ -1101,6 +1110,7 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
         const { zoneDef, rules } = merged[i]!;
         if (rules.length === 0) {
           zoneSummaries.set(zoneDef.code, `Zone ${zoneDef.code} — aucune règle extraite.`);
+          synthDone++; refreshSynthPhase();
           continue;
         }
         try {
@@ -1112,9 +1122,10 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
           // mise en forme narrative mais on n'écrase pas la zone avec rien.
           zoneSummaries.set(zoneDef.code, fallbackZoneSummary(zoneDef, rules));
         }
+        synthDone++; refreshSynthPhase();
       }
     };
-    await Promise.all(Array.from({ length: 3 }, synthWorker));
+    await Promise.all(Array.from({ length: 5 }, synthWorker));
 
     job.phase = "Enregistrement…";
     await db.transaction(async (tx) => {
