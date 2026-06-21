@@ -283,6 +283,9 @@ type PluRuleInput = {
   unit?: string | null;
   conditions?: string | null;
   summary: string;
+  citizen_title?: string | null;
+  citizen_summary?: string | null;
+  citizen_relevant?: boolean;
   needs_vision?: boolean;
   needs_external_doc?: boolean;
   external_doc_name?: string | null;
@@ -310,12 +313,15 @@ const PLU_SAVE_RULE_TOOL: AiToolDefinition = {
         value_exact: { type: "number", description: "Valeur unique exacte. Omettre si absent." },
         unit: { type: "string", enum: ["m","%","m²","places"], description: "Unité. Omettre si pas de valeur numérique." },
         conditions: { type: "string", description: "Conditions ou exceptions. Omettre si aucune." },
-        summary: { type: "string", description: "Résumé en 10 mots maximum." },
-        needs_vision: { type: "boolean", description: "True si la valeur numérique principale est dans un schéma graphique du document." },
+        summary: { type: "string", description: "Résumé technique en 10 mots maximum (usage interne instructeur)." },
+        citizen_title: { type: "string", description: "Titre court de la règle, en langage courant, destiné aux particuliers (≤ 8 mots, sans jargon juridique). Ex: « Stationnement pour logements individuels »." },
+        citizen_summary: { type: "string", description: "Explication COMPLÈTE de la règle en langage courant, 3 à 6 phrases. Inclut explicitement : la règle de fond, les conditions et exceptions, les valeurs chiffrées avec leur unité, et — si needs_vision = true — une description précise du schéma/croquis (ce qu'il représente, ce qu'il autorise/interdit). Phrases complètes, pas de bullets, pas de compact, pas de jargon." },
+        citizen_relevant: { type: "boolean", description: "False seulement si la disposition n'a aucune utilité pour un particulier (procédure administrative pure, articles internes à l'administration). True par défaut." },
+        needs_vision: { type: "boolean", description: "True si la règle renvoie à un schéma/croquis graphique du document (calcul de hauteur, implantation, types de lucarnes, etc.)." },
         needs_external_doc: { type: "boolean", description: "True si la règle renvoie explicitement à un document externe (PPRI, PLH, cahier des charges ZAC, servitude…)." },
         external_doc_name: { type: "string", description: "Nom du document externe référencé (ex: 'PPRI', 'PLH', 'cahier des charges ZAC'). Remplir si needs_external_doc = true." },
       },
-      required: ["article_number","article_title","topic","rule_text","not_regulated","summary","needs_vision","needs_external_doc"],
+      required: ["article_number","article_title","topic","rule_text","not_regulated","summary","citizen_title","citizen_summary","needs_vision","needs_external_doc"],
     },
   },
 };
@@ -504,9 +510,15 @@ Correspondance article → topic :
 - Un même article peut porter PLUSIEURS règles distinctes selon la destination (habitation, commerce, bureaux, artisanat, hôtellerie…). Émets UN save_rule par destination / catégorie, avec son propre rule_text et sa propre valeur. Ne fusionne pas tout dans une seule règle.
 - Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
 - Plusieurs valeurs selon sous-secteurs géographiques (UA1 vs UA2…) → 1 save_rule par sous-secteur si possible, sinon valeur principale dans value_max + variantes dans conditions.
-- Si la valeur numérique est dans un schéma graphique → needs_vision = true.
+- Si la règle renvoie à un schéma/croquis graphique → needs_vision = true.
 - Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
-- N'invente aucune valeur. Si incertain, omets value_min/max/exact.`,
+- N'invente aucune valeur. Si incertain, omets value_min/max/exact.
+
+CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à rédiger SOIGNEUSEMENT :
+- citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Stationnement pour logements individuels », « Hauteur maximale des annexes », « Implantation en limite de propriété ».
+- citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant, niveau « particulier qui veut construire chez lui ». Inclus EXPLICITEMENT : la règle, les conditions, les exceptions, les valeurs chiffrées avec unité, ET — si needs_vision = true — décris le schéma associé (ce qu'il montre, ce qu'il autorise, ce qu'il interdit). Phrases complètes, JAMAIS de version 10 mots compacte, pas de bullets, pas de jargon juridique.
+- Exemple acceptable (article 7, recul limites) : « Selon la profondeur par rapport à la voie, l'implantation est autorisée soit d'une limite à l'autre, soit avec un retrait minimal. Sur les 20 premiers mètres : retrait de 3 m minimum (ou H/2) pour moins de 3 logements ; 5 m (ou 1,5 × H) pour 3 logements et plus. Au-delà de 20 mètres, l'implantation en limite séparative est interdite. Exceptions : annexes, jumelages, extensions de constructions déjà en limite. Les piscines doivent rester à 3 m minimum. Le schéma associé illustre le calcul de H sur terrain plat ou en pente, et la zone des 20 mètres depuis la voie. »
+- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.`,
                   },
                 ],
               }],
@@ -607,6 +619,9 @@ Correspondance article → topic :
             unit: rule.unit ?? null,
             conditions: rule.conditions ?? null,
             summary: rule.summary,
+            citizen_title: rule.citizen_title?.trim() || null,
+            citizen_summary: rule.citizen_summary?.trim() || null,
+            citizen_relevant: rule.citizen_relevant !== false,
             instructor_note: [
               rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
               rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
@@ -858,6 +873,109 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
   }
 });
 
+// Génère un texte narratif article-par-article (style NotebookLM) à partir
+// des règles dédupliquées d'une zone. Ce texte sera stocké dans zones.summary
+// et constitue la « lecture citoyenne complète » d'une zone : pas une fiche
+// récapitulative, un vrai déroulé qui reformule chaque article en langage
+// courant, mentionne les conditions, les exceptions, et décrit les croquis.
+async function synthesizeZoneNarrative(
+  zoneDef: { code: string; label: string; type: string },
+  rules: PluRuleInput[],
+  communeId: string,
+  userId: string | null,
+): Promise<string> {
+  // On passe à l'IA la liste structurée des règles déjà extraites. Pas besoin
+  // d'images cette fois : tout est dans les rule_text + citizen_summary qu'on
+  // a déjà capturés. Appel texte pur → rapide et bon marché.
+  const rulesPayload = rules.map((r, i) => ({
+    n: i + 1,
+    article: r.article_number ?? null,
+    article_title: r.article_title ?? null,
+    topic: r.topic,
+    rule_text: r.rule_text,
+    summary: r.summary,
+    conditions: r.conditions ?? null,
+    citizen_summary: r.citizen_summary ?? null,
+    needs_vision: !!r.needs_vision,
+    needs_external_doc: !!r.needs_external_doc,
+    external_doc_name: r.external_doc_name ?? null,
+  }));
+  const msg = await callAi(
+    { purpose: "plu_zone_synth", userId, communeId },
+    {
+      model: "ai-smart",
+      max_tokens: 4000,
+      messages: [{
+        role: "user",
+        content: [{
+          type: "text", text: `Tu rédiges une synthèse complète d'une zone d'un PLU français destinée à des particuliers et à des instructeurs.
+
+Zone : ${zoneDef.code} (${zoneDef.label ?? ""}), type ${zoneDef.type}.
+
+Voici la liste exhaustive des règles déjà extraites (${rules.length}) :
+
+${JSON.stringify(rulesPayload, null, 2)}
+
+Rédige une SYNTHÈSE COMPLÈTE, article par article, dans le format ci-dessous. Ne fais surtout PAS une version compacte : développe chaque article en paragraphes, avec phrases complètes en langage courant.
+
+Format attendu (exemple ci-dessous, à adapter aux articles réellement présents) :
+
+Article 1 : Occupations et utilisations interdites
+Sont formellement interdits tous les aménagements incompatibles avec un quartier d'habitation… [développe en 2-5 phrases]
+
+Article 2 : Occupations soumises à conditions particulières (Exceptions)
+Les occupations suivantes sont admises sous conditions : … [développe]
+
+Article 6 : Implantation par rapport aux voies publiques
+[paragraphe expliquant la règle de fond]
+Exception : […]
+Description du croquis associé : [si needs_vision, décris ce que montre le croquis]
+
+CONSIGNES :
+- 1 section par article cité dans les règles. Article omis = ne pas inventer.
+- Regroupe les sous-règles d'un même article SOUS le même titre d'article (article 12 stationnement par destination → un seul bloc « Article 12 », avec un sous-paragraphe par destination).
+- Quand needs_vision = true sur une règle, ajoute « Description du croquis associé : … » et décris-le (ce qu'il montre, ce qu'il autorise / interdit).
+- Quand needs_external_doc = true, mentionne explicitement « Cette règle renvoie au document externe : … » et nomme le document.
+- Mentionne TOUTES les valeurs chiffrées avec leur unité.
+- Mentionne TOUTES les exceptions sous un libellé « Exception : … » en fin de paragraphe.
+- Pas de bullets « - » ni de listes à puces sauf si la règle PLU en contient explicitement (ex : liste des destinations interdites).
+- Pas de titre global ni d'introduction ni de conclusion ni de méta-commentaire — commence directement par « Article X : … ».
+
+Rédige maintenant la synthèse.`}],
+      }],
+    },
+  );
+  const text = msg.content
+    .filter((b): b is Extract<typeof b, { type: "text" }> => b.type === "text")
+    .map((b) => b.text)
+    .join("\n")
+    .trim();
+  if (!text) throw new Error("Synthèse vide");
+  return text;
+}
+
+// Repli si la passe de synthèse échoue (timeout, rate limit, etc.). On ne
+// veut pas perdre l'ingestion à cause d'un seul appel raté — on assemble un
+// texte à partir des citizen_summary que l'IA a déjà produits par règle.
+function fallbackZoneSummary(
+  zoneDef: { code: string; label: string },
+  rules: PluRuleInput[],
+): string {
+  const sorted = [...rules].sort((a, b) => (a.article_number ?? 99) - (b.article_number ?? 99));
+  const parts: string[] = [`Zone ${zoneDef.code} — ${zoneDef.label ?? ""}`.trim()];
+  let currentArticle: number | null = null;
+  for (const r of sorted) {
+    const art = toArticleInt(r.article_number);
+    if (art !== currentArticle) {
+      parts.push("");
+      parts.push(`Article ${art ?? "?"} : ${r.article_title ?? r.topic}`);
+      currentArticle = art;
+    }
+    parts.push(r.citizen_summary?.trim() || r.rule_text);
+  }
+  return parts.join("\n");
+}
+
 // Worker arrière-plan : extrait tous les lots de toutes les zones, puis
 // commit la transaction DB. Ne renvoie rien — le client lit l'avancée via
 // /status. Tant que le process Node tourne, le job continue, indépendamment
@@ -901,9 +1019,15 @@ Correspondance article → topic :
 - Un même article peut porter PLUSIEURS règles distinctes selon la destination (habitation, commerce, bureaux, artisanat, hôtellerie…). Émets UN save_rule par destination / catégorie, avec son propre rule_text et sa propre valeur. Ne fusionne pas tout dans une seule règle.
 - Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
 - Plusieurs valeurs selon sous-secteurs géographiques (UA1 vs UA2…) → 1 save_rule par sous-secteur si possible, sinon valeur principale dans value_max + variantes dans conditions.
-- Si la valeur numérique est dans un schéma graphique → needs_vision = true.
+- Si la règle renvoie à un schéma/croquis graphique → needs_vision = true.
 - Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
-- N'invente aucune valeur. Si incertain, omets value_min/max/exact.` },
+- N'invente aucune valeur. Si incertain, omets value_min/max/exact.
+
+CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à rédiger SOIGNEUSEMENT :
+- citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Stationnement pour logements individuels », « Hauteur maximale des annexes », « Implantation en limite de propriété ».
+- citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant, niveau « particulier qui veut construire chez lui ». Inclus EXPLICITEMENT : la règle, les conditions, les exceptions, les valeurs chiffrées avec unité, ET — si needs_vision = true — décris le schéma associé (ce qu'il montre, ce qu'il autorise, ce qu'il interdit). Phrases complètes, JAMAIS de version 10 mots compacte, pas de bullets, pas de jargon juridique.
+- Exemple acceptable (article 7, recul limites) : « Selon la profondeur par rapport à la voie, l'implantation est autorisée soit d'une limite à l'autre, soit avec un retrait minimal. Sur les 20 premiers mètres : retrait de 3 m minimum (ou H/2) pour moins de 3 logements ; 5 m (ou 1,5 × H) pour 3 logements et plus. Au-delà de 20 mètres, l'implantation en limite séparative est interdite. Exceptions : annexes, jumelages, extensions de constructions déjà en limite. Les piscines doivent rester à 3 m minimum. Le schéma associé illustre le calcul de H sur terrain plat ou en pente, et la zone des 20 mètres depuis la voie. »
+- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.` },
           ],
         }],
       },
@@ -949,11 +1073,10 @@ Correspondance article → topic :
     await Promise.all(Array.from({ length: SERVER_CONCURRENCY }, worker));
     if (firstError) throw firstError;
 
-    // Déduplication finale par texte de règle (cf. dedupeRules) puis
-    // transaction DB. Crucial : on NE déduplique PAS par (article, topic) —
-    // un même article peut porter plusieurs règles distinctes (article 12
-    // stationnement par destination, article 11 aspect par élément, etc.).
-    job.phase = "Enregistrement…";
+    // Déduplication finale par texte de règle (cf. dedupeRules). Crucial :
+    // on NE déduplique PAS par (article, topic) — un même article peut porter
+    // plusieurs règles distinctes (article 12 stationnement par destination,
+    // article 11 aspect par élément, etc.).
     const merged = job.zones.map((zoneDef) => {
       const st = job.zoneState.get(zoneDef.code)!;
       const rules = dedupeRules(st.rules);
@@ -963,6 +1086,37 @@ Correspondance article → topic :
 
     assertTocCoverage(job.toc, merged.map((e) => ({ code: e.zoneDef.code, ruleCount: e.rules.length })));
 
+    // Phase 3 — Synthèse narrative par zone (style NotebookLM). Pour chaque
+    // zone, on demande à l'IA une lecture article-par-article en langage
+    // courant, avec description des croquis, à stocker dans zones.summary.
+    // Remplace l'ancien placeholder « Zone XX — extrait par IA, à valider ».
+    // Concurrence 3 → ~1-2 min ajoutées pour Tours (10 zones).
+    job.phase = "Synthèse narrative des zones…";
+    const zoneSummaries = new Map<string, string>();
+    let synthNext = 0;
+    const synthWorker = async () => {
+      while (true) {
+        const i = synthNext++;
+        if (i >= merged.length) return;
+        const { zoneDef, rules } = merged[i]!;
+        if (rules.length === 0) {
+          zoneSummaries.set(zoneDef.code, `Zone ${zoneDef.code} — aucune règle extraite.`);
+          continue;
+        }
+        try {
+          const synth = await synthesizeZoneNarrative(zoneDef, rules, job.commune.id, job.userId);
+          zoneSummaries.set(zoneDef.code, synth);
+        } catch (e) {
+          console.error(`[ingest-plu-pdf] synthèse zone ${zoneDef.code} échouée`, e);
+          // Repli sur citizen_summary concaténés par article : on perd la
+          // mise en forme narrative mais on n'écrase pas la zone avec rien.
+          zoneSummaries.set(zoneDef.code, fallbackZoneSummary(zoneDef, rules));
+        }
+      }
+    };
+    await Promise.all(Array.from({ length: 3 }, synthWorker));
+
+    job.phase = "Enregistrement…";
     await db.transaction(async (tx) => {
       const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, job.commune.id));
       if (oldZones.length > 0) {
@@ -975,7 +1129,7 @@ Correspondance article → topic :
           zone_code: zoneDef.code,
           zone_label: zoneDef.label,
           zone_type: zoneDef.type,
-          summary: `Zone ${zoneDef.code} — extrait par IA, à valider`,
+          summary: zoneSummaries.get(zoneDef.code) ?? `Zone ${zoneDef.code} — extrait par IA, à valider`,
           status: "active",
           is_active: true,
         }).returning();
@@ -994,6 +1148,9 @@ Correspondance article → topic :
             unit: rule.unit ?? null,
             conditions: rule.conditions ?? null,
             summary: rule.summary,
+            citizen_title: rule.citizen_title?.trim() || null,
+            citizen_summary: rule.citizen_summary?.trim() || null,
+            citizen_relevant: rule.citizen_relevant !== false,
             instructor_note: [
               rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
               rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
@@ -1095,9 +1252,15 @@ Correspondance article → topic :
 - Un même article peut porter PLUSIEURS règles distinctes selon la destination (habitation, commerce, bureaux, artisanat, hôtellerie…). Émets UN save_rule par destination / catégorie, avec son propre rule_text et sa propre valeur. Ne fusionne pas tout dans une seule règle.
 - Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
 - Plusieurs valeurs selon sous-secteurs géographiques (UA1 vs UA2…) → 1 save_rule par sous-secteur si possible, sinon valeur principale dans value_max + variantes dans conditions.
-- Si la valeur numérique est dans un schéma graphique → needs_vision = true.
+- Si la règle renvoie à un schéma/croquis graphique → needs_vision = true.
 - Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
-- N'invente aucune valeur. Si incertain, omets value_min/max/exact.` },
+- N'invente aucune valeur. Si incertain, omets value_min/max/exact.
+
+CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à rédiger SOIGNEUSEMENT :
+- citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Stationnement pour logements individuels », « Hauteur maximale des annexes », « Implantation en limite de propriété ».
+- citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant, niveau « particulier qui veut construire chez lui ». Inclus EXPLICITEMENT : la règle, les conditions, les exceptions, les valeurs chiffrées avec unité, ET — si needs_vision = true — décris le schéma associé (ce qu'il montre, ce qu'il autorise, ce qu'il interdit). Phrases complètes, JAMAIS de version 10 mots compacte, pas de bullets, pas de jargon juridique.
+- Exemple acceptable (article 7, recul limites) : « Selon la profondeur par rapport à la voie, l'implantation est autorisée soit d'une limite à l'autre, soit avec un retrait minimal. Sur les 20 premiers mètres : retrait de 3 m minimum (ou H/2) pour moins de 3 logements ; 5 m (ou 1,5 × H) pour 3 logements et plus. Au-delà de 20 mètres, l'implantation en limite séparative est interdite. Exceptions : annexes, jumelages, extensions de constructions déjà en limite. Les piscines doivent rester à 3 m minimum. Le schéma associé illustre le calcul de H sur terrain plat ou en pente, et la zone des 20 mètres depuis la voie. »
+- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.` },
           ],
         }],
       },
@@ -1185,6 +1348,9 @@ adminRouter.post("/admin/ingest-plu-pdf/commit", async (req: AuthRequest, res) =
             unit: rule.unit ?? null,
             conditions: rule.conditions ?? null,
             summary: rule.summary,
+            citizen_title: rule.citizen_title?.trim() || null,
+            citizen_summary: rule.citizen_summary?.trim() || null,
+            citizen_relevant: rule.citizen_relevant !== false,
             instructor_note: [
               rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
               rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
