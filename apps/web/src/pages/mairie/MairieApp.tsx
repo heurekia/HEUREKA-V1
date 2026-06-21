@@ -9069,11 +9069,22 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           {v.sources.length > 0 && (
                             <div style={{ marginTop: 8, paddingTop: 8, borderTop: `1px dashed ${meta.border}` }}>
                               <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", letterSpacing: "0.04em", marginBottom: 4 }}>SOURCES — PIÈCES DU DOSSIER</div>
-                              {v.sources.map((s, i) => (
-                                <div key={i} style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55 }}>
-                                  📎 <strong>{s.piece_nom}</strong> — « {s.citation} »
-                                </div>
-                              ))}
+                              {v.sources.map((s, i) => {
+                                const canOpen = !!s.piece_id;
+                                return (
+                                  <div
+                                    key={i}
+                                    onClick={canOpen ? () => openPieceById(s.piece_id) : undefined}
+                                    title={canOpen ? "Ouvrir la pièce justificative" : undefined}
+                                    style={{
+                                      fontSize: 11.5, color: "#374151", lineHeight: 1.55,
+                                      cursor: canOpen ? "pointer" : "default",
+                                    }}
+                                  >
+                                    📎 <strong style={canOpen ? { color: "#4338CA", textDecoration: "underline", textDecorationStyle: "dotted" } : undefined}>{s.piece_nom}{canOpen ? " ↗" : ""}</strong> — « {s.citation} »
+                                  </div>
+                                );
+                              })}
                             </div>
                           )}
                           {(v.regulatory_sources?.length ?? 0) > 0 && (

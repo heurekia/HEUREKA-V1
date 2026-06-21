@@ -134,6 +134,58 @@ describe("evaluateHauteur", () => {
     });
   });
 
+  describe("garde-fou extraction aberrante", () => {
+    it("rétrograde en 'incertain'/alerte une hauteur extraite ≥ 2× le seuil (15,56 m vs 6,5 m)", () => {
+      const finding = evaluateHauteur(
+        rule({ rule_id: "r1", value_max: 6.5 }),
+        ctx([fact({ key: "hauteur", value: 15.56, source: "document_extraction" })]),
+      )!;
+      expect(finding.status).toBe("incertain");
+      expect(finding.severity).toBe("alerte");
+      expect(finding.recommended_action?.action_type).toBe("clarifier_fait");
+      expect(finding.title).toMatch(/incohérente|vérifier/i);
+    });
+
+    it("fire sur le plafond absolu (≥ 30 m) même proche du seuil relatif", () => {
+      const finding = evaluateHauteur(
+        rule({ rule_id: "r1", value_max: 18 }),
+        ctx([fact({ key: "hauteur", value: 35, source: "document_extraction" })]),
+      )!;
+      expect(finding.status).toBe("incertain");
+      expect(finding.title).toMatch(/incohérente|vérifier/i);
+    });
+
+    it("considère la plus petite valeur de cas comme seuil (règle à cas conditionnels)", () => {
+      const finding = evaluateHauteur(
+        rule({
+          rule_id: "r1",
+          value_max: null,
+          cases: [{ condition: "Toiture-terrasse (acrotère)", value: 6.5, unit: "m" }],
+        }),
+        ctx([fact({ key: "hauteur", value: 15.56, source: "document_extraction" })]),
+      )!;
+      expect(finding.status).toBe("incertain");
+      expect(finding.title).toMatch(/incohérente|vérifier/i);
+    });
+
+    it("NE rétrograde PAS une non-conformité modérée (11 m vs 5 m : < 12 m absolu)", () => {
+      const finding = evaluateHauteur(
+        rule({ rule_id: "r1", value_max: 5 }),
+        ctx([fact({ key: "hauteur", value: 11, source: "document_extraction" })]),
+      )!;
+      expect(finding.status).toBe("non_conforme");
+    });
+
+    it("ne s'applique pas à une saisie instructeur (35 m saisi → non_conforme bloquant)", () => {
+      const finding = evaluateHauteur(
+        rule({ rule_id: "r1", value_max: 9 }),
+        ctx([fact({ key: "hauteur", value: 35, source: "instructor_entry" })]),
+      )!;
+      expect(finding.status).toBe("non_conforme");
+      expect(finding.severity).toBe("bloquant");
+    });
+  });
+
   describe("confidence policy", () => {
     it("does NOT ground a non_conforme on a citizen declaration — downgrades to incertain", () => {
       const finding = evaluateHauteur(
