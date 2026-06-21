@@ -1415,6 +1415,290 @@ function CommuneDetail() {
   );
 }
 
+// ─── Documents réglementaires portés par un EPCI ──────────────────────────────
+// Encart imbriqué dans la fiche d'un groupement : liste les documents (PLUi,
+// PLUm, etc.) portés par l'EPCI avec leur couverture (X/Y communes membres),
+// et permet d'en créer de nouveaux. L'ingestion effective des règles reste
+// pilotée par la CLI `pnpm ingest --doc-id <id>` (extraction PDF en ligne =
+// lot ultérieur).
+
+interface RegulatoryDocumentLite {
+  id: string;
+  type: string;
+  name: string;
+  original_filename: string;
+  synthese: string | null;
+  status: string;
+  validation_status: string;
+  ingested_at: string | null;
+  created_at: string;
+  communes_couvertes: string[];
+  communes_membres_total: number;
+}
+
+// Types portés par un EPCI. Volontairement restreint au sous-ensemble utile :
+// PLU (communal) est exclu côté UI superadmin — un PLU communal se crée
+// depuis l'onglet documents d'une commune, pas d'un EPCI.
+const EPCI_DOCUMENT_TYPES = [
+  { value: "plui", label: "PLUi — Plan local d'urbanisme intercommunal" },
+  { value: "plum", label: "PLUm — Plan local d'urbanisme métropolitain" },
+  { value: "ppri", label: "PPRI — Plan de prévention des risques d'inondation" },
+  { value: "pprt", label: "PPRT — Plan de prévention des risques technologiques" },
+  { value: "oap", label: "OAP — Orientation d'aménagement et de programmation" },
+  { value: "peb", label: "PEB — Plan d'exposition au bruit" },
+  { value: "plh", label: "PLH — Programme local de l'habitat" },
+  { value: "zac", label: "ZAC — Zone d'aménagement concerté" },
+  { value: "autre", label: "Autre document réglementaire" },
+] as const;
+
+function EpciDocuments({ epciId, members }: { epciId: string; members: { id: string; name: string }[] }) {
+  const [docs, setDocs] = useState<RegulatoryDocumentLite[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [creating, setCreating] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  // Périmètre de couverture : `null` = toutes les membres (cas par défaut),
+  // sinon un Set des id de communes effectivement cochées. Cette séparation
+  // évite de pré-cocher 44 cases au montage du formulaire.
+  const [selection, setSelection] = useState<Set<string> | null>(null);
+  const [form, setForm] = useState({ type: "plui", name: "", original_filename: "" });
+
+  const load = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const list = await api.get<RegulatoryDocumentLite[]>(`/admin/epci/${epciId}/documents`);
+      setDocs(list);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur de chargement");
+      setDocs([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [epciId]);
+
+  useEffect(() => { load(); }, [load]);
+
+  const resetForm = () => {
+    setForm({ type: "plui", name: "", original_filename: "" });
+    setSelection(null);
+    setCreating(false);
+  };
+
+  const handleSubmit = async () => {
+    if (!form.name.trim()) { setError("Le nom du document est requis"); return; }
+    const commune_ids = selection ? Array.from(selection) : undefined;
+    if (commune_ids && commune_ids.length === 0) {
+      setError("Sélectionnez au moins une commune");
+      return;
+    }
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.post(`/admin/epci/${epciId}/documents`, {
+        type: form.type,
+        name: form.name.trim(),
+        original_filename: form.original_filename.trim() || undefined,
+        commune_ids,
+      });
+      resetForm();
+      await load();
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur lors de la création");
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const toggleCommune = (id: string) => {
+    setSelection((prev) => {
+      // Premier toggle depuis l'état « toutes » : on bascule en mode liste
+      // explicite, et on pré-coche toutes les autres communes (le clic
+      // décoche celle-là, comme attendu).
+      if (prev === null) {
+        const all = new Set(members.map((m) => m.id));
+        all.delete(id);
+        return all;
+      }
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  };
+
+  const typeLabel = (t: string) => EPCI_DOCUMENT_TYPES.find((d) => d.value === t)?.label.split(" — ")[0] ?? t.toUpperCase();
+  const statusColors: Record<string, { color: string; bg: string }> = {
+    uploaded: { color: C.textMuted, bg: C.bg },
+    ingested: { color: C.green, bg: C.greenBg },
+    error: { color: C.red, bg: C.redBg },
+  };
+  const validationColors: Record<string, { color: string; bg: string }> = {
+    valide: { color: C.green, bg: C.greenBg },
+    brouillon: { color: C.orange, bg: C.orangeBg },
+    rejete: { color: C.red, bg: C.redBg },
+  };
+
+  return (
+    <div style={{ marginTop: 20, paddingTop: 20, borderTop: `1px dashed ${C.border}` }}>
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
+        <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.text }}>
+          📜 Documents réglementaires <span style={{ color: C.textMuted, fontWeight: 400 }}>· {docs?.length ?? 0}</span>
+        </h4>
+        {!creating && (
+          <button
+            onClick={(ev) => { ev.stopPropagation(); setCreating(true); setError(null); }}
+            style={{ padding: "6px 12px", background: C.accent, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
+          >
+            + Créer un document
+          </button>
+        )}
+      </div>
+
+      {error && (
+        <div style={{ marginBottom: 12, padding: "8px 12px", background: C.redBg, color: C.red, borderRadius: 6, fontSize: 12 }}>
+          {error}
+        </div>
+      )}
+
+      {creating && (
+        <div onClick={(ev) => ev.stopPropagation()} style={{ background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, padding: 16, marginBottom: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12, marginBottom: 12 }}>
+            <Field label="Type">
+              <Select value={form.type} onChange={(v) => setForm({ ...form, type: v })} disabled={submitting}>
+                {EPCI_DOCUMENT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+              </Select>
+            </Field>
+            <Field label="Nom du document *">
+              <Input
+                value={form.name}
+                onChange={(v) => setForm({ ...form, name: v })}
+                placeholder={form.type === "plui" ? "PLUi de la communauté de communes du …" : `${typeLabel(form.type)} …`}
+                disabled={submitting}
+              />
+            </Field>
+            <Field label="Nom du fichier source (optionnel)">
+              <Input
+                value={form.original_filename}
+                onChange={(v) => setForm({ ...form, original_filename: v })}
+                placeholder="reglement-plui.pdf"
+                disabled={submitting}
+              />
+            </Field>
+          </div>
+
+          <div style={{ marginBottom: 12 }}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 8 }}>
+              <span style={{ fontSize: 12, fontWeight: 600, color: C.textMuted }}>Communes couvertes</span>
+              <span style={{ fontSize: 12, color: C.textLight }}>
+                {selection === null
+                  ? `Toutes (${members.length})`
+                  : `${selection.size} / ${members.length}`}
+              </span>
+              {selection !== null && (
+                <button
+                  type="button"
+                  onClick={() => setSelection(null)}
+                  style={{ marginLeft: "auto", background: "none", border: "none", color: C.accent, fontSize: 12, fontWeight: 600, cursor: "pointer", padding: 0 }}
+                >
+                  Toutes les communes
+                </button>
+              )}
+            </div>
+            {members.length === 0 ? (
+              <div style={{ fontSize: 12, color: C.textMuted, fontStyle: "italic" }}>
+                Aucune commune rattachée à ce groupement — rattachez au moins une commune avant de créer un document.
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                {members.map((m) => {
+                  const active = selection === null || selection.has(m.id);
+                  return (
+                    <button
+                      key={m.id}
+                      type="button"
+                      onClick={() => toggleCommune(m.id)}
+                      disabled={submitting}
+                      style={{
+                        padding: "4px 10px",
+                        background: active ? C.accentLight : C.white,
+                        border: `1px solid ${active ? C.accent : C.border}`,
+                        borderRadius: 16,
+                        cursor: "pointer",
+                        fontSize: 12,
+                        color: active ? C.accent : C.textMuted,
+                        fontWeight: 500,
+                      }}
+                    >
+                      {active ? "✓ " : ""}{m.name}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          <div style={{ display: "flex", gap: 8 }}>
+            <button
+              onClick={handleSubmit}
+              disabled={submitting || members.length === 0}
+              style={{
+                padding: "8px 16px",
+                background: members.length === 0 ? C.border : C.accent,
+                color: "white",
+                border: "none",
+                borderRadius: 6,
+                cursor: members.length === 0 ? "not-allowed" : "pointer",
+                fontSize: 13,
+                fontWeight: 700,
+                opacity: submitting ? 0.6 : 1,
+              }}
+            >
+              {submitting ? "Création…" : "Créer le document"}
+            </button>
+            <button
+              onClick={resetForm}
+              disabled={submitting}
+              style={{ padding: "8px 14px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", fontSize: 13, color: C.text, fontWeight: 600 }}
+            >
+              Annuler
+            </button>
+          </div>
+        </div>
+      )}
+
+      {loading ? (
+        <div style={{ padding: 16, textAlign: "center" }}><Spinner size={16} /></div>
+      ) : !docs || docs.length === 0 ? (
+        <div style={{ padding: "12px 14px", background: C.bg, borderRadius: 8, fontSize: 13, color: C.textMuted, fontStyle: "italic" }}>
+          Aucun document réglementaire porté par ce groupement.
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {docs.map((d) => {
+            const sc = statusColors[d.status] ?? statusColors["uploaded"]!;
+            const vc = validationColors[d.validation_status] ?? validationColors["brouillon"]!;
+            return (
+              <div key={d.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "center", gap: 12 }}>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
+                    {typeLabel(d.type)} <span style={{ color: C.textMuted, fontWeight: 400 }}>· {d.name}</span>
+                  </div>
+                  <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2 }}>
+                    {d.communes_couvertes.length} / {d.communes_membres_total} commune{d.communes_membres_total !== 1 ? "s" : ""} couverte{d.communes_couvertes.length !== 1 ? "s" : ""}
+                    {d.ingested_at && ` · ingéré le ${new Date(d.ingested_at).toLocaleDateString("fr-FR")}`}
+                  </div>
+                </div>
+                <Badge label={d.status} color={sc.color} bg={sc.bg} />
+                <Badge label={d.validation_status} color={vc.color} bg={vc.bg} />
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Groupements ──────────────────────────────────────────────────────────────
 function Groupements() {
   const [epciList, setEpciList] = useState<Epci[]>([]);
@@ -1653,6 +1937,10 @@ function Groupements() {
                         </div>
                       </div>
                     )}
+                    {/* Documents réglementaires portés par cet EPCI — encart
+                        autonome qui fetch ses propres données et gère son
+                        propre formulaire de création. */}
+                    <EpciDocuments epciId={e.id} members={e.communes} />
                   </div>
                 )}
               </div>
