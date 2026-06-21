@@ -938,109 +938,6 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
   }
 });
 
-// Génère un texte narratif article-par-article (style NotebookLM) à partir
-// des règles dédupliquées d'une zone. Ce texte sera stocké dans zones.summary
-// et constitue la « lecture citoyenne complète » d'une zone : pas une fiche
-// récapitulative, un vrai déroulé qui reformule chaque article en langage
-// courant, mentionne les conditions, les exceptions, et décrit les croquis.
-async function synthesizeZoneNarrative(
-  zoneDef: { code: string; label: string; type: string },
-  rules: PluRuleInput[],
-  communeId: string,
-  userId: string | null,
-): Promise<string> {
-  // On passe à l'IA la liste structurée des règles déjà extraites. Pas besoin
-  // d'images cette fois : tout est dans les rule_text + citizen_summary qu'on
-  // a déjà capturés. Appel texte pur → rapide et bon marché.
-  const rulesPayload = rules.map((r, i) => ({
-    n: i + 1,
-    article: r.article_number ?? null,
-    article_title: r.article_title ?? null,
-    topic: r.topic,
-    rule_text: r.rule_text,
-    summary: r.summary,
-    conditions: r.conditions ?? null,
-    citizen_summary: r.citizen_summary ?? null,
-    needs_vision: !!r.needs_vision,
-    needs_external_doc: !!r.needs_external_doc,
-    external_doc_name: r.external_doc_name ?? null,
-  }));
-  const msg = await callAi(
-    { purpose: "plu_zone_synth", userId, communeId },
-    {
-      model: "ai-smart",
-      max_tokens: 4000,
-      messages: [{
-        role: "user",
-        content: [{
-          type: "text", text: `Tu rédiges une synthèse complète d'une zone d'un PLU français destinée à des particuliers et à des instructeurs.
-
-Zone : ${zoneDef.code} (${zoneDef.label ?? ""}), type ${zoneDef.type}.
-
-Voici la liste exhaustive des règles déjà extraites (${rules.length}) :
-
-${JSON.stringify(rulesPayload, null, 2)}
-
-Rédige une SYNTHÈSE COMPLÈTE, article par article, dans le format ci-dessous. Ne fais surtout PAS une version compacte : développe chaque article en paragraphes, avec phrases complètes en langage courant.
-
-Format attendu (exemple ci-dessous, à adapter aux articles réellement présents) :
-
-Article 1 : Occupations et utilisations interdites
-Sont formellement interdits tous les aménagements incompatibles avec un quartier d'habitation… [développe en 2-5 phrases]
-
-Article 2 : Occupations soumises à conditions particulières (Exceptions)
-Les occupations suivantes sont admises sous conditions : … [développe]
-
-Article 6 : Implantation par rapport aux voies publiques
-[paragraphe expliquant la règle de fond]
-Exception : […]
-Description du croquis associé : [si needs_vision, décris ce que montre le croquis]
-
-CONSIGNES :
-- 1 section par article cité dans les règles. Article omis = ne pas inventer.
-- Regroupe les sous-règles d'un même article SOUS le même titre d'article (article 12 stationnement par destination → un seul bloc « Article 12 », avec un sous-paragraphe par destination).
-- Quand needs_vision = true sur une règle, ajoute « Description du croquis associé : … » et décris-le (ce qu'il montre, ce qu'il autorise / interdit).
-- Quand needs_external_doc = true, mentionne explicitement « Cette règle renvoie au document externe : … » et nomme le document.
-- Mentionne TOUTES les valeurs chiffrées avec leur unité.
-- Mentionne TOUTES les exceptions sous un libellé « Exception : … » en fin de paragraphe.
-- Pas de bullets « - » ni de listes à puces sauf si la règle PLU en contient explicitement (ex : liste des destinations interdites).
-- Pas de titre global ni d'introduction ni de conclusion ni de méta-commentaire — commence directement par « Article X : … ».
-
-Rédige maintenant la synthèse.`}],
-      }],
-    },
-  );
-  const text = msg.content
-    .filter((b): b is Extract<typeof b, { type: "text" }> => b.type === "text")
-    .map((b) => b.text)
-    .join("\n")
-    .trim();
-  if (!text) throw new Error("Synthèse vide");
-  return text;
-}
-
-// Repli si la passe de synthèse échoue (timeout, rate limit, etc.). On ne
-// veut pas perdre l'ingestion à cause d'un seul appel raté — on assemble un
-// texte à partir des citizen_summary que l'IA a déjà produits par règle.
-function fallbackZoneSummary(
-  zoneDef: { code: string; label: string },
-  rules: PluRuleInput[],
-): string {
-  const sorted = [...rules].sort((a, b) => (a.article_number ?? 99) - (b.article_number ?? 99));
-  const parts: string[] = [`Zone ${zoneDef.code} — ${zoneDef.label ?? ""}`.trim()];
-  let currentArticle: number | null = null;
-  for (const r of sorted) {
-    const art = toArticleInt(r.article_number);
-    if (art !== currentArticle) {
-      parts.push("");
-      parts.push(`Article ${art ?? "?"} : ${r.article_title ?? r.topic}`);
-      currentArticle = art;
-    }
-    parts.push(r.citizen_summary?.trim() || r.rule_text);
-  }
-  return parts.join("\n");
-}
-
 // Worker arrière-plan : extrait tous les lots de toutes les zones, puis
 // commit la transaction DB. Ne renvoie rien — le client lit l'avancée via
 // /status. Tant que le process Node tourne, le job continue, indépendamment
@@ -1151,36 +1048,6 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
 
     assertTocCoverage(job.toc, merged.map((e) => ({ code: e.zoneDef.code, ruleCount: e.rules.length })));
 
-    // Phase 3 — Synthèse narrative par zone (style NotebookLM). Pour chaque
-    // zone, on demande à l'IA une lecture article-par-article en langage
-    // courant, avec description des croquis, à stocker dans zones.summary.
-    // Remplace l'ancien placeholder « Zone XX — extrait par IA, à valider ».
-    // Concurrence 3 → ~1-2 min ajoutées pour Tours (10 zones).
-    job.phase = "Synthèse narrative des zones…";
-    const zoneSummaries = new Map<string, string>();
-    let synthNext = 0;
-    const synthWorker = async () => {
-      while (true) {
-        const i = synthNext++;
-        if (i >= merged.length) return;
-        const { zoneDef, rules } = merged[i]!;
-        if (rules.length === 0) {
-          zoneSummaries.set(zoneDef.code, `Zone ${zoneDef.code} — aucune règle extraite.`);
-          continue;
-        }
-        try {
-          const synth = await synthesizeZoneNarrative(zoneDef, rules, job.commune.id, job.userId);
-          zoneSummaries.set(zoneDef.code, synth);
-        } catch (e) {
-          console.error(`[ingest-plu-pdf] synthèse zone ${zoneDef.code} échouée`, e);
-          // Repli sur citizen_summary concaténés par article : on perd la
-          // mise en forme narrative mais on n'écrase pas la zone avec rien.
-          zoneSummaries.set(zoneDef.code, fallbackZoneSummary(zoneDef, rules));
-        }
-      }
-    };
-    await Promise.all(Array.from({ length: 3 }, synthWorker));
-
     job.phase = "Enregistrement…";
 
     // Deux régimes selon le mode du job (cf. doc dans /commit) — la logique
@@ -1214,7 +1081,7 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
           zone_code: zoneDef.code,
           zone_label: zoneDef.label,
           zone_type: zoneDef.type,
-          summary: zoneSummaries.get(zoneDef.code) ?? `Zone ${zoneDef.code} — extrait par IA, à valider`,
+          summary: null,
           status: "active",
           is_active: true,
         }).returning();
