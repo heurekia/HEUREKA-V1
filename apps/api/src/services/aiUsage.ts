@@ -198,6 +198,38 @@ export function convertPdfPagesToPng(
   }
 }
 
+// Extrait le texte natif d'une plage de pages via pdftotext (poppler-utils,
+// installé en même temps que pdftoppm). Utilisé par l'ingestion PLU pour lire
+// le sommaire sans appel Pixtral : ~1 s au lieu de 30 s, ce qui fait passer
+// /ingest-plu-pdf/start sous le timeout du proxy nginx (60 s).
+//
+// Renvoie `null` si pdftotext n'est pas installé (le caller bascule alors sur
+// le chemin Pixtral). Renvoie une chaîne vide si le PDF n'a pas de couche
+// texte (PDF scanné) — le caller bascule aussi sur Pixtral.
+export function extractPdfText(
+  pdf: Buffer,
+  opts: { firstPage?: number; lastPage?: number } = {},
+): string | null {
+  const dir = mkdtempSync(path.join(tmpdir(), "heureka-pdftext-"));
+  try {
+    const pdfPath = path.join(dir, "in.pdf");
+    writeFileSync(pdfPath, pdf);
+    const args = ["-layout"];
+    if (opts.firstPage) args.push("-f", String(opts.firstPage));
+    if (opts.lastPage) args.push("-l", String(opts.lastPage));
+    args.push(pdfPath, "-"); // "-" = stdout
+    try {
+      const out = execFileSync("pdftotext", args, { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 });
+      return out.toString("utf8");
+    } catch (err) {
+      if ((err as { code?: string }).code === "ENOENT") return null;
+      throw err;
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 function translateMessages(request: AiRequest): MistralChatMessage[] {
   const out: MistralChatMessage[] = [];
   if (request.system) {

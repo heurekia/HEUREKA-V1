@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { partitionPagesByZone, chunkPages, assertTocCoverage } from "./pluImport.ts";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText } from "./pluImport.ts";
 
 describe("partitionPagesByZone", () => {
   it("découpe les zones en plages fermées [start, end] selon la zone suivante", () => {
@@ -136,5 +136,75 @@ describe("assertTocCoverage", () => {
         0.5,
       ),
     ).not.toThrow();
+  });
+});
+
+describe("parseTocFromNativeText", () => {
+  it("extrait 10 zones d'un sommaire de type Tours", () => {
+    // Sommaire synthétique d'un PLU Tours, mise en page typique pdftotext -layout
+    const text = `
+      RÈGLEMENT - PIÈCE 4
+                                                                       SOMMAIRE
+      Chapitre I  - Dispositions applicables à la zone UA  ........................... 7
+      Chapitre II - Dispositions applicables à la zone UC  ........................... 33
+      Chapitre III- Dispositions applicables à la zone UJ  ........................... 45
+      Chapitre IV - Dispositions applicables à la zone UL  ........................... 67
+      Chapitre V  - Dispositions applicables à la zone UM  ........................... 90
+      Chapitre VI - Dispositions applicables à la zone UP  ........................... 110
+      Chapitre VII- Dispositions applicables à la zone UX  ........................... 140
+      Chapitre VIII-Dispositions applicables à la zone AUs ........................... 160
+      Chapitre IX - Dispositions applicables à la zone A   ........................... 171
+      Chapitre X  - Dispositions applicables à la zone N   ........................... 180
+    `;
+    const toc = parseTocFromNativeText(text);
+    expect(toc.map(z => z.code)).toEqual(["UA","UC","UJ","UL","UM","UP","UX","AUs","A","N"]);
+    expect(toc.find(z => z.code === "UL")!.startPage).toBe(67);
+    expect(toc.find(z => z.code === "AUs")!.startPage).toBe(160);
+    expect(toc.find(z => z.code === "AUs")!.type).toBe("AU");
+    expect(toc.find(z => z.code === "A")!.type).toBe("A");
+    expect(toc.find(z => z.code === "N")!.type).toBe("N");
+  });
+
+  it("accepte le suffixe 'p.' ou 'page'", () => {
+    const text = `
+      Zone UA — Centre ancien ............ p. 7
+      Zone UB — Faubourgs ................ page 18
+      Zone N  — Espaces naturels ......... p. 50
+    `;
+    const toc = parseTocFromNativeText(text);
+    expect(toc.map(z => [z.code, z.startPage])).toEqual([["UA", 7], ["UB", 18], ["N", 50]]);
+  });
+
+  it("ignore les mentions sans page (titres pleine page hors sommaire)", () => {
+    const text = `
+      Zone UA — Centre ancien ............ 7
+      DISPOSITIONS APPLICABLES À LA ZONE UA
+      Article UA 1 - Occupations autorisées
+      Zone UB ........................ 18
+    `;
+    // minZones=2 car le test focalise sur le filtrage des titres pleine page.
+    const toc = parseTocFromNativeText(text, 2);
+    expect(toc.map(z => z.code)).toEqual(["UA", "UB"]);
+  });
+
+  it("renvoie [] si moins de minZones (signal pour basculer sur Pixtral)", () => {
+    const text = "Zone UA ........... 7\nZone UB ......... 12\n";
+    expect(parseTocFromNativeText(text, 3)).toEqual([]);
+    expect(parseTocFromNativeText(text, 2)).toHaveLength(2);
+  });
+
+  it("trie par page croissante même si le sommaire est en désordre", () => {
+    const text = `
+      Zone N  — Espaces naturels ........ 180
+      Zone UA — Centre .................. 7
+      Zone UC — Faubourgs ............... 33
+    `;
+    const toc = parseTocFromNativeText(text);
+    expect(toc.map(z => z.code)).toEqual(["UA", "UC", "N"]);
+  });
+
+  it("ignore le texte vide / sans 'zone'", () => {
+    expect(parseTocFromNativeText("")).toEqual([]);
+    expect(parseTocFromNativeText("Article 1 - Occupations ........... 7")).toEqual([]);
   });
 });

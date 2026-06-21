@@ -99,6 +99,67 @@ export function chunkPages(start: number, end: number, batchSize: number): Array
  * l'extraction renvoie des règles uniquement pour UA et UC (2 zones), on
  * lève ; le règlement précédent reste en place.
  */
+/**
+ * Extrait le sommaire d'un PLU depuis le TEXTE NATIF du PDF (cf.
+ * services/aiUsage.ts → extractPdfText). Évite l'appel Pixtral en phase 1,
+ * qui faisait dépasser /ingest-plu-pdf/start de la limite proxy nginx (60 s).
+ *
+ * Heuristique : on cherche les lignes qui mentionnent à la fois une "zone"
+ * et un numéro de page en fin de ligne. Couvre les sommaires PLU usuels :
+ *
+ *   "Dispositions applicables à la zone UA  ........... 7"
+ *   "Chapitre 2 - Zone UC  ...... p. 33"
+ *   "TITRE II - DISPOSITIONS APPLICABLES À LA ZONE UL    67"
+ *
+ * Si moins de `minZones` zones trouvées, retourne [] et le caller bascule sur
+ * Pixtral. Codes reconnus : U[A-Z], 1AU/2AU/AU[a-z]?, A, A[a-z]?, N, N[a-z]?.
+ */
+export function parseTocFromNativeText(text: string, minZones = 3): TocEntry[] {
+  if (!text) return [];
+  const zoneCodeRe = /\bzone\s+(?<code>[12]?AU[a-z]{0,2}|U[A-Z][a-z]?|N[a-z]{0,2}|A[a-z]{0,2})\b/i;
+  const pageRe = /(?:p\.?\s*|page\s+)?(\d{1,3})\s*$/;
+  const seenCodes = new Map<string, TocEntry>();
+  const lines = text.split(/\r?\n/);
+  for (const rawLine of lines) {
+    const line = rawLine.trim();
+    if (line.length === 0) continue;
+    const zm = line.match(zoneCodeRe);
+    if (!zm?.groups?.code) continue;
+    // Normalise : AUS → AUs, NJ → Nj, UA → UA. Les codes commençant par
+    // un préfixe à 2 lettres majuscules (AU, parfois UA, UC…) conservent ce
+    // préfixe, seul le suffixe est mis en minuscule.
+    const raw = zm.groups.code;
+    let code: string;
+    if (raw.length <= 2) {
+      code = raw.toUpperCase();
+    } else if (/^[12]?AU/i.test(raw)) {
+      // 1AU, 2AU, AUs, AUa : "AU" majuscule, suffixe minuscule.
+      const m = raw.match(/^([12]?)AU(.*)$/i)!;
+      code = (m[1] ?? "") + "AU" + (m[2] ?? "").toLowerCase();
+    } else {
+      // UA, UC, Nh, Ah, Ni : 1re lettre majuscule + 2e majuscule si dans
+      // {UA-UZ}, sinon minuscule (Nh, Ni).
+      code = raw[0]!.toUpperCase() + (
+        raw[0]!.toUpperCase() === "U"
+          ? raw[1]!.toUpperCase() + raw.slice(2).toLowerCase()
+          : raw.slice(1).toLowerCase()
+      );
+    }
+    const pm = line.match(pageRe);
+    if (!pm) continue;
+    const page = Number(pm[1]);
+    if (!Number.isInteger(page) || page < 1 || page > 999) continue;
+    if (seenCodes.has(code)) continue;
+    const type = /^[12]?AU/i.test(code) ? "AU"
+      : code.startsWith("U") ? "U"
+      : code.startsWith("A") ? "A"
+      : code.startsWith("N") ? "N" : "U";
+    seenCodes.set(code, { code, label: `Zone ${code}`, type, startPage: page });
+  }
+  const entries = [...seenCodes.values()].sort((a, b) => a.startPage - b.startPage);
+  return entries.length >= minZones ? entries : [];
+}
+
 export function assertTocCoverage(
   toc: TocEntry[],
   extracted: Array<{ code: string; ruleCount: number }>,

@@ -4,8 +4,8 @@ import { dossiers, users, communes, zones, zone_regulatory_rules } from "@heurek
 import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
-import { callAi, convertPdfPagesToPng, type AiContentBlock, type AiToolDefinition } from "../../services/aiUsage.js";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, type TocEntry } from "../../services/pluImport.js";
+import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock, type AiToolDefinition } from "../../services/aiUsage.js";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, type TocEntry } from "../../services/pluImport.js";
 import { PDFDocument } from "pdf-lib";
 import {
   computeInstructionDelay,
@@ -735,19 +735,33 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
     const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
     const totalPages = pdfDoc.getPageCount();
 
-    // Phase 1 — Sommaire (1 seul appel Pixtral, < 30 s).
-    const TOC_PAGES = Math.min(5, totalPages);
-    const tocBlocks = renderPagesAsBlocksFor(pdfBuffer, 1, TOC_PAGES);
-    const tocMsg = await callAi(
-      { purpose: "plu_toc_detect", userId: req.user?.id ?? null, communeId: commune.id },
-      {
-        model: "ai-smart",
-        max_tokens: 2000,
-        messages: [{
-          role: "user",
-          content: [
-            ...tocBlocks,
-            { type: "text", text: `Ces ${TOC_PAGES} pages sont le début d'un règlement PLU français. Lis le SOMMAIRE et renvoie la liste de TOUTES les zones (UA, UC, UJ, UL, UM, UP, UX, AUs, A, N, Ni, Nj, 1AU…) avec leur page de DÉBUT de section dans le document (numérotation 1-indexée, alignée sur les pages PDF physiques).
+    // Phase 1 — Sommaire.
+    // Voie rapide : texte natif via pdftotext (~1 s). Couvre la quasi-totalité
+    // des PLU français (sommaire structuré "Dispositions applicables à la
+    // zone XX ... page N"). Évite l'appel Pixtral qui faisait dépasser /start
+    // de la limite proxy nginx (60 s → 504 Gateway Time-out).
+    // Fallback Pixtral si pdftotext n'est pas installé OU si le sommaire
+    // natif n'identifie pas au moins 3 zones (PDF scanné, ou structure
+    // inhabituelle).
+    const tocPages = Math.min(15, totalPages);
+    const nativeText = extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
+    let toc: TocEntry[] = nativeText ? parseTocFromNativeText(nativeText) : [];
+
+    if (toc.length === 0) {
+      // Bascule Pixtral. Sur PDF normal, on n'arrive ici que pour des PLU à
+      // sommaire inhabituel — coût modéré et acceptable.
+      const TOC_PAGES = Math.min(5, totalPages);
+      const tocBlocks = renderPagesAsBlocksFor(pdfBuffer, 1, TOC_PAGES);
+      const tocMsg = await callAi(
+        { purpose: "plu_toc_detect", userId: req.user?.id ?? null, communeId: commune.id },
+        {
+          model: "ai-smart",
+          max_tokens: 2000,
+          messages: [{
+            role: "user",
+            content: [
+              ...tocBlocks,
+              { type: "text", text: `Ces ${TOC_PAGES} pages sont le début d'un règlement PLU français. Lis le SOMMAIRE et renvoie la liste de TOUTES les zones (UA, UC, UJ, UL, UM, UP, UX, AUs, A, N, Ni, Nj, 1AU…) avec leur page de DÉBUT de section dans le document (numérotation 1-indexée, alignée sur les pages PDF physiques).
 
 Inclus les sous-zones ayant un règlement distinct. Pour chaque zone, type = "U" (urbaine) | "AU" (à urbaniser) | "A" (agricole) | "N" (naturelle).
 
@@ -755,36 +769,36 @@ Réponds UNIQUEMENT avec un JSON array, sans autre texte :
 [{"code":"UA","label":"Zone UA – Centre ancien","type":"U","startPage":7}, …]
 
 Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
-          ],
-        }],
-      },
-    );
-    const tocRaw = tocMsg.content[0]?.type === "text" ? tocMsg.content[0].text : "[]";
-    const tocParsed = JSON.parse(tocRaw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{
-      code?: unknown; label?: unknown; type?: unknown; startPage?: unknown;
-    }>;
-    const toc: TocEntry[] = tocParsed.flatMap((e) => {
-      const code = typeof e.code === "string" ? e.code.trim() : "";
-      const startPage = Number(e.startPage);
-      if (!code || !Number.isInteger(startPage)) return [];
-      return [{
-        code,
-        label: typeof e.label === "string" ? e.label : code,
-        type: typeof e.type === "string" ? e.type : "U",
-        startPage,
-      }];
-    });
+            ],
+          }],
+        },
+      );
+      const tocRaw = tocMsg.content[0]?.type === "text" ? tocMsg.content[0].text : "[]";
+      const tocParsed = JSON.parse(tocRaw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{
+        code?: unknown; label?: unknown; type?: unknown; startPage?: unknown;
+      }>;
+      toc = tocParsed.flatMap((e) => {
+        const code = typeof e.code === "string" ? e.code.trim() : "";
+        const startPage = Number(e.startPage);
+        if (!code || !Number.isInteger(startPage)) return [];
+        return [{
+          code,
+          label: typeof e.label === "string" ? e.label : code,
+          type: typeof e.type === "string" ? e.type : "U",
+          startPage,
+        }];
+      });
+    }
 
     if (toc.length === 0) {
       return res.status(422).json({ error: "Aucun sommaire détecté dans les premières pages. Vérifiez que c'est bien un règlement PLU avec sommaire." });
     }
 
     const zoneRanges = partitionPagesByZone(toc, totalPages);
-    // PAGE_BATCH = 4 : un appel Pixtral avec 8 images dépassait régulièrement
-    // les 60 s du proxy nginx (504 Gateway Time-out). À 4 images la requête
-    // tient en 20-30 s. On a 2x plus de batches mais le client orchestre
-    // CONCURRENCY=4 → le temps total reste équivalent.
-    const PAGE_BATCH = 4;
+    // PAGE_BATCH = 3 : marge confortable sous les 60 s du proxy nginx. Pixtral
+    // sur 3 images répond en 15-20 s typiquement. Le nombre de batches monte
+    // (Tours ≈ 70) mais le client orchestre CONCURRENCY=4 → temps total OK.
+    const PAGE_BATCH = 3;
     const zones_out = zoneRanges.map((z) => ({
       code: z.code, label: z.label, type: z.type,
       startPage: z.startPage, endPage: z.endPage,
