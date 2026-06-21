@@ -7,6 +7,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { publicRouter } from "./routes/public.js";
 import { authRouter } from "./routes/auth.js";
+import { franceConnectRouter } from "./routes/franceConnect.js";
 import { dossiersRouter } from "./routes/dossiers.js";
 import { mairieRouter } from "./routes/mairie/index.js";
 import { calibrationRouter } from "./routes/calibration.js";
@@ -71,6 +72,7 @@ app.use(express.json({ limit: "2mb" }));
 
 app.use("/api/public", publicRouter);
 app.use("/api/auth", authRouter);
+app.use("/api/auth/franceconnect", franceConnectRouter);
 app.use("/api/dossiers", dossiersRouter);
 app.use("/api/mairie", mairieRouter);
 app.use("/api/calibration", calibrationRouter);

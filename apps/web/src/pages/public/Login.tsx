@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { Button } from "../../components/ui/button";
@@ -17,10 +17,30 @@ export function Login() {
   // de renvoyer le lien de vérification.
   const [needsVerification, setNeedsVerification] = useState(false);
   const [resendState, setResendState] = useState<"idle" | "sending" | "sent">("idle");
+  const [fcEnabled, setFcEnabled] = useState(false);
   const { login } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const next = sanitizeNextParam(searchParams.get("next"));
+
+  // Erreur renvoyée par le callback FranceConnect (?fc_error=...).
+  const fcError = searchParams.get("fc_error");
+  useEffect(() => {
+    if (fcError) setError(fcError);
+  }, [fcError]);
+
+  // Le bouton FranceConnect n'apparaît que si le serveur est configuré
+  // (client_id / client_secret présents côté API).
+  useEffect(() => {
+    api
+      .get<{ enabled: boolean }>("/auth/franceconnect/status")
+      .then((s) => setFcEnabled(s.enabled))
+      .catch(() => setFcEnabled(false));
+  }, []);
+
+  const franceConnectHref = next
+    ? `/api/auth/franceconnect/login?next=${encodeURIComponent(next)}`
+    : "/api/auth/franceconnect/login";
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -108,6 +128,33 @@ export function Login() {
               {loading ? "Connexion..." : "Se connecter"}
             </Button>
           </form>
+
+          {fcEnabled && (
+            <div className="mt-6">
+              <div className="relative">
+                <div className="absolute inset-0 flex items-center">
+                  <div className="w-full border-t border-gray-200" />
+                </div>
+                <div className="relative flex justify-center text-xs">
+                  <span className="bg-white px-2 text-gray-400">ou</span>
+                </div>
+              </div>
+              {/* Lien (navigation pleine page, pas fetch) : le flux OIDC repose
+                  sur des redirections navigateur + cookies de session. */}
+              <a
+                href={franceConnectHref}
+                className="mt-4 flex w-full items-center justify-center gap-2 rounded-lg border border-gray-300 bg-white px-4 py-2.5 text-sm font-medium text-gray-700 transition hover:bg-gray-50"
+              >
+                S'identifier avec
+                <span className="font-bold text-[#000091]">FranceConnect</span>
+              </a>
+              <p className="mt-2 text-center text-xs text-gray-400">
+                FranceConnect est la solution proposée par l'État pour sécuriser et
+                simplifier la connexion à vos services en ligne.
+              </p>
+            </div>
+          )}
+
           <p className="text-center text-sm text-gray-500 mt-4">
             Pas encore de compte ?{" "}
             <Link to={registerHref} className="text-heureka-600 font-medium hover:underline">

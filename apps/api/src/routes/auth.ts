@@ -47,12 +47,12 @@ const registerLimiter = rateLimit({
 
 const IS_PROD = process.env.NODE_ENV === "production";
 
-const COOKIE_CLEAR_OPTIONS = {
+export const COOKIE_CLEAR_OPTIONS = {
   path: "/",
   ...(IS_PROD ? { domain: ".heurekia.com" } : {}),
 };
 
-const COOKIE_OPTIONS = {
+export const COOKIE_OPTIONS = {
   httpOnly: true,
   secure: IS_PROD,
   sameSite: "lax" as const,
@@ -307,6 +307,12 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
 
+    // Compte « 100 % FranceConnect » : aucun mot de passe local à vérifier.
+    // La suppression par ce flux (qui exige le mot de passe) n'est pas
+    // applicable — l'utilisateur devra passer par une procédure dédiée.
+    if (!user.password_hash) {
+      return res.status(400).json({ error: "Ce compte n'a pas de mot de passe (connexion FranceConnect)." });
+    }
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: "Mot de passe incorrect" });
 
@@ -366,6 +372,11 @@ authRouter.patch("/me/password", requireAuth, async (req: AuthRequest, res) => {
     if (passwordPolicyErrors(new_password).length > 0) return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
     const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    // Compte FranceConnect sans mot de passe local : on ne peut pas « changer »
+    // un mot de passe inexistant via cette route.
+    if (!user.password_hash) {
+      return res.status(400).json({ error: "Ce compte utilise FranceConnect et n'a pas de mot de passe." });
+    }
     const valid = await bcrypt.compare(current_password, user.password_hash);
     if (!valid) return res.status(401).json({ error: "Mot de passe actuel incorrect" });
     const password_hash = await bcrypt.hash(new_password, 10);

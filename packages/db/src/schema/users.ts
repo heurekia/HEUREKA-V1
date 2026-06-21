@@ -5,7 +5,11 @@ export const userRoleEnum = pgEnum("user_role", ["citoyen", "mairie", "instructe
 export const users = pgTable("users", {
   id: uuid("id").primaryKey().defaultRandom(),
   email: text("email").notNull().unique(),
-  password_hash: text("password_hash").notNull(),
+  // NULL pour un compte « 100 % FranceConnect » (aucun mot de passe local).
+  password_hash: text("password_hash"),
+  // Identifiant pivot FranceConnect (claim « sub »), NULL pour les comptes
+  // email/mot de passe. Unicité garantie par un index partiel (cf. migrate.ts).
+  fc_sub: text("fc_sub"),
   prenom: text("prenom").notNull(),
   nom: text("nom").notNull(),
   role: userRoleEnum("role").notNull().default("citoyen"),
