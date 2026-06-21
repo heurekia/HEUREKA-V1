@@ -2,17 +2,12 @@ import { db } from "../../db.js";
 import { communes } from "@heureka-v1/db";
 import { eq } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
-import path from "path";
-import { fileURLToPath } from "url";
 import { PDFDocument } from "pdf-lib";
 import {
   computeInstructionDelay,
   type DeadlineMetadata,
   type DeadlineServitude,
 } from "../../services/instructionDelays.js";
-
-export const __dirname_mairie = path.dirname(fileURLToPath(import.meta.url));
-export const UPLOADS_DIR_MAIRIE = path.resolve(__dirname_mairie, "../../../uploads");
 
 // Anthropic limite chaque requête à ~100 pages de PDF. Les gros règlements PLU
 // (200+ pages) sont découpés en tronçons ≤ maxPages, avec un léger chevauchement
