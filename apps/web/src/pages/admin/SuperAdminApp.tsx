@@ -4191,8 +4191,6 @@ interface AiCostSummary {
     cost_eur: number;
     input_tokens: number;
     output_tokens: number;
-    cache_read_tokens: number;
-    cache_creation_tokens: number;
   };
   by_purpose: { purpose: string; events: number; cost_eur: number }[];
   by_model: { model: string; events: number; cost_eur: number }[];
@@ -4862,8 +4860,6 @@ interface AiCostDossierDetail {
     model: string;
     input_tokens: number;
     output_tokens: number;
-    cache_read_input_tokens: number;
-    cache_creation_input_tokens: number;
     cost_eur: number;
     duration_ms: number | null;
     created_at: string;
@@ -4956,7 +4952,6 @@ function CoutsIADossier() {
                     <th style={{ padding: "8px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted }}>Modèle</th>
                     <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>In</th>
                     <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Out</th>
-                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Cache R/W</th>
                     <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Durée</th>
                     <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Coût</th>
                   </tr>
@@ -4969,7 +4964,6 @@ function CoutsIADossier() {
                       <td style={{ padding: "8px 16px", color: C.textMuted, fontFamily: "monospace" }}>{e.model}</td>
                       <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.input_tokens.toLocaleString("fr-FR")}</td>
                       <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.output_tokens.toLocaleString("fr-FR")}</td>
-                      <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.cache_read_input_tokens}/{e.cache_creation_input_tokens}</td>
                       <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.duration_ms ? `${(e.duration_ms / 1000).toFixed(1)}s` : "—"}</td>
                       <td style={{ padding: "8px 16px", color: C.text, fontWeight: 700, textAlign: "right" }}>{fmtEur(e.cost_eur)}</td>
                     </tr>
@@ -4993,8 +4987,6 @@ interface AiCostCommuneDetail {
     model: string;
     input_tokens: number;
     output_tokens: number;
-    cache_read_input_tokens: number;
-    cache_creation_input_tokens: number;
     cost_eur: number;
     duration_ms: number | null;
     created_at: string;

@@ -1234,8 +1234,7 @@ superAdminRouter.get("/ai-cost/healthcheck", async (_req, res) => {
     const cols = (rows as unknown as { column_name: string }[]).map((r) => r.column_name);
     const required = [
       "id", "dossier_id", "commune_id", "user_id", "purpose", "model",
-      "input_tokens", "output_tokens", "cache_read_input_tokens",
-      "cache_creation_input_tokens", "cost_eur", "duration_ms", "created_at",
+      "input_tokens", "output_tokens", "cost_eur", "duration_ms", "created_at",
     ];
     const missing = required.filter((c) => !cols.includes(c));
     let totalEvents = 0;
@@ -1499,8 +1498,6 @@ superAdminRouter.get("/ai-cost/summary", async (req, res) => {
         cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
         input_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.input_tokens}), 0)`,
         output_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.output_tokens}), 0)`,
-        cache_read_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.cache_read_input_tokens}), 0)`,
-        cache_creation_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.cache_creation_input_tokens}), 0)`,
       }).from(ai_usage_events).where(cond as never),
       db.select({
         purpose: ai_usage_events.purpose,
@@ -1521,8 +1518,6 @@ superAdminRouter.get("/ai-cost/summary", async (req, res) => {
         cost_eur: Number(totals?.cost_eur ?? 0),
         input_tokens: Number(totals?.input_tokens ?? 0),
         output_tokens: Number(totals?.output_tokens ?? 0),
-        cache_read_tokens: Number(totals?.cache_read_tokens ?? 0),
-        cache_creation_tokens: Number(totals?.cache_creation_tokens ?? 0),
       },
       by_purpose: byPurpose.map((r) => ({ purpose: r.purpose, events: Number(r.events), cost_eur: Number(r.cost_eur) })),
       by_model: byModel.map((r) => ({ model: r.model, events: Number(r.events), cost_eur: Number(r.cost_eur) })),

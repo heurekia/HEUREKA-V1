@@ -44,8 +44,6 @@ export function trackIngestionUsage(ev: IngestionUsageEvent): void {
         model: ev.model,
         input_tokens: ev.input_tokens,
         output_tokens: ev.output_tokens,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
         cost_eur: Math.round(cost * 1_000_000) / 1_000_000,
         input_rate_eur_per_m: input,
         output_rate_eur_per_m: output,

@@ -291,8 +291,7 @@ function translateMessages(request: AiRequest): MistralChatMessage[] {
 // ── Boot probe ──────────────────────────────────────────────────────────────
 const REQUIRED_COLUMNS = [
   "id", "dossier_id", "commune_id", "user_id", "purpose", "model",
-  "input_tokens", "output_tokens", "cache_read_input_tokens",
-  "cache_creation_input_tokens", "cost_eur", "duration_ms", "created_at",
+  "input_tokens", "output_tokens", "cost_eur", "duration_ms", "created_at",
 ] as const;
 
 export async function probeAiUsageTable(): Promise<void> {
@@ -340,8 +339,6 @@ function trackUsage(
         model,
         input_tokens: promptTokens,
         output_tokens: completionTokens,
-        cache_read_input_tokens: 0,
-        cache_creation_input_tokens: 0,
         cost_eur: priced.cost_eur,
         input_rate_eur_per_m: priced.input_eur_per_m,
         output_rate_eur_per_m: priced.output_eur_per_m,
