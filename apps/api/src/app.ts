@@ -60,10 +60,14 @@ app.use(cors({
   },
   credentials: true,
 }));
-// PLU ingestion uploads a base64-encoded PDF (~35 MB file ≈ 47 MB body). Allow a
-// higher limit on that single route only — parsed first so the 2 MB global parser
-// below skips it (body-parser won't re-parse an already-parsed request).
-app.use("/api/mairie/admin/ingest-plu-pdf", express.json({ limit: "60mb" }));
+// PLU ingestion uploads a base64-encoded PDF. base64 inflates the file by ~33 %,
+// so a 60 MB body only fit a ~45 MB PDF — too small for an intercommunal PLUi
+// règlement, which returned 413 (PayloadTooLargeError). 150 MB leaves room for a
+// ~110 MB PDF. Parsed first so the 2 MB global parser below skips it (body-parser
+// won't re-parse an already-parsed request).
+// NB : la limite proxy nginx (client_max_body_size) doit être ≥ cette valeur,
+// sinon nginx renvoie le 413 avant même d'atteindre Express.
+app.use("/api/mairie/admin/ingest-plu-pdf", express.json({ limit: "150mb" }));
 // Référentiel documentaire commune (OAP, PPRI, PEB…) : PDFs envoyés en base64.
 app.use("/api/mairie/documents", express.json({ limit: "60mb" }));
 // Analyse d'article avec image (tableau/croquis) en base64.
