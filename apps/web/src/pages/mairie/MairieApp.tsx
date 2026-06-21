@@ -6511,6 +6511,23 @@ function decisionStepIndex(status: DecisionStatus): number {
 const DETAIL_TABS = ["Résumé", "Terrain", "Documents", "Instruction", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
 type DetailTab = typeof DETAIL_TABS[number];
 
+// Slugs d'URL pour chaque onglet du détail dossier : ils permettent de restituer
+// l'onglet courant après un rechargement de page (ou via un lien direct), au lieu
+// de retomber systématiquement sur "Résumé".
+const TAB_TO_SLUG: Record<DetailTab, string> = {
+  "Résumé": "resume",
+  "Terrain": "terrain",
+  "Documents": "documents",
+  "Instruction": "instruction",
+  "Consultations": "consultations",
+  "Courriers": "courriers",
+  "Chronologie": "chronologie",
+  "Décision": "decision",
+};
+const SLUG_TO_DETAIL_TAB: Record<string, DetailTab> = Object.fromEntries(
+  Object.entries(TAB_TO_SLUG).map(([tab, slug]) => [slug, tab as DetailTab]),
+);
+
 const TAB_ICONS: Record<string, React.ReactNode> = {
   "Résumé": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>,
   "Terrain": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>,
@@ -7069,7 +7086,25 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   navigate: (s: string) => void;
 }) {
   const { user } = useAuth();
-  const [activeTab, setActiveTab] = useState<DetailTab>("Résumé");
+  // Onglet actif persisté dans l'URL (?tab=) : un rechargement de page ou un lien
+  // direct restitue l'onglet courant au lieu de revenir sur "Résumé".
+  const [searchParams, setSearchParams] = useSearchParams();
+  const [activeTab, setActiveTabState] = useState<DetailTab>(
+    () => SLUG_TO_DETAIL_TAB[searchParams.get("tab") ?? ""] ?? "Résumé",
+  );
+  const setActiveTab = useCallback((tab: DetailTab) => {
+    setActiveTabState(tab);
+    setSearchParams(prev => {
+      const sp = new URLSearchParams(prev);
+      sp.set("tab", TAB_TO_SLUG[tab]);
+      return sp;
+    }, { replace: true });
+  }, [setSearchParams]);
+  // Garde l'onglet synchronisé avec l'URL (navigation arrière/avant, liens directs).
+  useEffect(() => {
+    const t = SLUG_TO_DETAIL_TAB[searchParams.get("tab") ?? ""];
+    if (t && t !== activeTab) setActiveTabState(t);
+  }, [searchParams]);
   // Onglet Documents : mode d'affichage côté instructeur — aperçu (3 col.),
   // comparer (pièce ↔ document réglementaire), lecture (plein écran).
   // Persisté en localStorage entre dossiers (préférence utilisateur).
