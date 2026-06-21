@@ -67,16 +67,24 @@ export function filterZonesByInsee(zones: PluZonesGeoJson, inseeCode: string): P
 // Le paramètre `geom` du GPU est un filtre d'INTERSECTION : l'API renvoie les
 // polygones de zone ENTIERS dès qu'ils touchent l'emprise, donc les zones de
 // bordure (et les zones limitrophes des PLUi) débordent du contour. On les
-// rogne ici sur le ring communal pleine résolution pour un rendu net dans la
-// délimitation de la ville. C'est aussi plus robuste que `filterZonesByInsee` :
+// rogne ici sur la géométrie communale pleine résolution pour un rendu net dans
+// la délimitation de la ville. C'est aussi plus robuste que `filterZonesByInsee` :
 // une zone d'une autre commune sans intersection est retirée géométriquement,
 // même quand la propriété `insee` est absente (vieux datasets).
+//
+// Le masque est la géométrie communale COMPLÈTE (tous les polygones + trous) :
+//  - commune en plusieurs morceaux (MultiPolygon, exclaves) → les zones de
+//    chaque morceau sont conservées ;
+//  - commune avec un trou (enclave d'une autre commune)      → les zones du trou
+//    sont retirées.
+// On ne supprime donc jamais une zone qui appartient réellement à la commune ;
+// au pire on rogne son débordement hors limite.
 //  - feature sans intersection         → retirée (hors commune)
 //  - feature sans géométrie polygonale  → conservée telle quelle
 //  - géométrie pathologique (throw)     → conservée non rognée (jamais perdue)
-export function clipZonesToCommune(zones: PluZonesGeoJson, communeRing: number[][]): PluZonesGeoJson {
+export function clipZonesToCommune(zones: PluZonesGeoJson, communeGeom: Polygon | MultiPolygon): PluZonesGeoJson {
   type Geom = Parameters<typeof polygonClipping.intersection>[0];
-  const communePoly = [communeRing] as unknown as Geom;
+  const mask = communeGeom.coordinates as unknown as Geom;
   const out: unknown[] = [];
   for (const f of (zones.features ?? []) as ZoneFeature[]) {
     const g = f.geometry;
@@ -85,7 +93,7 @@ export function clipZonesToCommune(zones: PluZonesGeoJson, communeRing: number[]
       continue;
     }
     try {
-      const clipped = polygonClipping.intersection(g.coordinates as unknown as Geom, communePoly);
+      const clipped = polygonClipping.intersection(g.coordinates as unknown as Geom, mask);
       if (clipped.length === 0) continue; // hors commune
       out.push({ ...f, geometry: { type: "MultiPolygon", coordinates: clipped as unknown as Position[][][] } });
     } catch {
@@ -106,8 +114,14 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
     { signal: AbortSignal.timeout(8000) }
   );
   if (!geoR) return { ok: false, status: 502, error: "Erreur geo.api.gouv.fr", diag };
-  type GeoComm = { features?: Array<{ geometry?: { coordinates: number[][][] } }> };
-  const fullRing = ((await geoR.json()) as GeoComm).features?.[0]?.geometry?.coordinates[0];
+  type GeoComm = { features?: Array<{ geometry?: Polygon | MultiPolygon }> };
+  const communeGeometry = ((await geoR.json()) as GeoComm).features?.[0]?.geometry;
+  if (!communeGeometry) return { ok: false, status: 404, error: "Commune non trouvée", diag };
+  // Anneau extérieur (1er polygone) pour la requête GPU : filet large, simplifié
+  // ensuite à 50 pts. La découpe finale, elle, utilise la géométrie COMPLÈTE.
+  const fullRing = communeGeometry.type === "Polygon"
+    ? communeGeometry.coordinates[0]
+    : communeGeometry.coordinates[0]?.[0];
   if (!fullRing?.length) return { ok: false, status: 404, error: "Commune non trouvée", diag };
 
   const MAX_PTS = 50;
@@ -325,7 +339,7 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   // 50 pts utilisée pour la requête GPU) : garantit que les zones ne débordent
   // pas de la délimitation de la ville. Garde-fou anti-carte-vide : si la
   // découpe retire tout (contour pathologique), on conserve le non-rogné.
-  const clippedZones = clipZonesToCommune(cleaned, fullRing);
+  const clippedZones = clipZonesToCommune(cleaned, communeGeometry);
   const finalZones = (clippedZones.features?.length ?? 0) > 0 ? clippedZones : cleaned;
 
   // Persistance en base (await pour que la fraîcheur soit garantie au retour).
