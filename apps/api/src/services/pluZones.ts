@@ -120,6 +120,12 @@ export function clipZonesToCommune(zones: PluZonesGeoJson, communeGeom: Polygon 
   const mask = communeGeom.coordinates as unknown as Geom;
   const communeBbox = geomBbox(communeGeom);
   const debug = process.env.PLU_DEBUG === "1";
+  if (debug) {
+    let nPts = 0;
+    const polys: number[][][][] = communeGeom.type === "Polygon" ? [communeGeom.coordinates] : communeGeom.coordinates;
+    for (const poly of polys) for (const ring of poly) nPts += ring.length;
+    console.log(`[clip] COMMUNE type=${communeGeom.type} rings=${polys.reduce((a, p) => a + p.length, 0)} pts=${nPts} bbox=${JSON.stringify(communeBbox.map(n => +n.toFixed(4)))}`);
+  }
   const out: unknown[] = [];
   for (const f of (zones.features ?? []) as ZoneFeature[]) {
     const g = f.geometry;
@@ -128,9 +134,10 @@ export function clipZonesToCommune(zones: PluZonesGeoJson, communeGeom: Polygon 
       continue;
     }
     const zoneGeom = g as Polygon | MultiPolygon;
-    const bbOk = bboxOverlap(geomBbox(zoneGeom), communeBbox);
+    const zb = geomBbox(zoneGeom);
+    const bbOk = bboxOverlap(zb, communeBbox);
     const ovOk = bbOk && geomsOverlap(zoneGeom, communeGeom);
-    if (debug) console.log(`[clip] ${f.properties?.libelle ?? "?"} type=${g.type} bbox=${bbOk} overlap=${ovOk}`);
+    if (debug) console.log(`[clip] ${f.properties?.libelle ?? "?"} bbox=${bbOk} overlap=${ovOk} zbbox=${JSON.stringify(zb.map(n => +n.toFixed(4)))}`);
     // Rejet rapide des zones clairement disjointes (limitrophes du PLUi), puis
     // inclusion robuste : si la zone ne recouvre pas la commune → on la retire.
     if (!bbOk || !ovOk) continue;
