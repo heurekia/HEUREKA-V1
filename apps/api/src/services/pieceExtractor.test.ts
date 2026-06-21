@@ -58,6 +58,43 @@ describe("reconcileCoupeHeights — recalage hauteurs sur NGF (anti-rotation)", 
   });
 });
 
+describe("parseExtraction — orientation & cartouche", () => {
+  it("lit l'orientation pivotée et la journalise dans notes", () => {
+    const r = parseExtraction(JSON.stringify({
+      piece_type: "plan_coupe", confidence_type: 0.9, quality: "lisible",
+      orientation_lecture: { rotation_deg: 90, indice: "cartouche en bas, texte tourné de 90°" },
+      cartouche: { present: true, auteur: "Cabinet X", titre: "Coupe AA", echelle: "1/100" },
+    }));
+    expect(r.orientation_lecture).toEqual({ rotation_deg: 90, indice: "cartouche en bas, texte tourné de 90°" });
+    expect(r.cartouche?.auteur).toBe("Cabinet X");
+    expect(r.notes).toMatch(/pivot/i);
+  });
+
+  it("normalise une rotation hors borne (450 → 90) et valide le multiple de 90", () => {
+    const r = parseExtraction(JSON.stringify({
+      piece_type: "plan_facade", confidence_type: 0.8, quality: "lisible",
+      orientation_lecture: { rotation_deg: 450, indice: "x" },
+    }));
+    expect(r.orientation_lecture?.rotation_deg).toBe(90);
+  });
+
+  it("ne journalise rien quand la pièce est déjà droite (0°)", () => {
+    const r = parseExtraction(JSON.stringify({
+      piece_type: "plan_coupe", confidence_type: 0.9, quality: "lisible",
+      orientation_lecture: { rotation_deg: 0, indice: "cartouche horizontal" },
+    }));
+    expect(r.notes).toBeNull();
+  });
+
+  it("déduit cartouche.present=false quand aucun champ n'est lisible (croquis citoyen)", () => {
+    const r = parseExtraction(JSON.stringify({
+      piece_type: "plan_coupe", confidence_type: 0.6, quality: "partiellement_lisible",
+      cartouche: { present: false },
+    }));
+    expect(r.cartouche).toEqual({ present: false });
+  });
+});
+
 // ── Phase 5 : checklist graphique étendue ─────────────────────────────────
 describe("parseExtraction — graphics", () => {
   it("garde graphics=null quand le LLM ne renseigne rien (rétro-compat)", () => {
