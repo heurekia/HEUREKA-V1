@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { invalidatePricingCache } from "../services/aiUsage.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
@@ -483,6 +483,182 @@ superAdminRouter.post("/epci/:id/documents", async (req, res) => {
       communes_couvertes: targetCommuneIds,
       communes_membres_total: memberIds.size,
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Modifie les infos d'un document (type, name, synthèse, validation_status).
+// Le périmètre des communes couvertes n'est PAS touché ici — voir PUT
+// /communes ci-dessous (responsabilité séparée).
+superAdminRouter.patch("/epci/:id/documents/:docId", async (req: any, res) => {
+  try {
+    const { id, docId } = req.params;
+    const { type, name, original_filename, synthese, validation_status } = req.body as {
+      type?: string;
+      name?: string;
+      original_filename?: string;
+      synthese?: string | null;
+      validation_status?: "valide" | "brouillon" | "rejete";
+    };
+
+    // Cohérence : on vérifie que le document est bien porté par cet EPCI.
+    const [doc] = await db.select()
+      .from(regulatory_documents)
+      .where(and(
+        eq(regulatory_documents.id, docId),
+        eq(regulatory_documents.porteur_epci_id, id),
+      ))
+      .limit(1);
+    if (!doc) return res.status(404).json({ error: "Document introuvable pour cet EPCI" });
+
+    const patch: Partial<typeof regulatory_documents.$inferInsert> & { updated_at: Date } = { updated_at: new Date() };
+    if (type !== undefined) {
+      if (!(REGULATORY_DOCUMENT_TYPES as readonly string[]).includes(type)) {
+        return res.status(400).json({ error: `type invalide. Valeurs autorisées : ${REGULATORY_DOCUMENT_TYPES.join(", ")}` });
+      }
+      patch.type = type;
+    }
+    if (name !== undefined) {
+      if (!name.trim()) return res.status(400).json({ error: "name ne peut pas être vide" });
+      patch.name = name.trim();
+    }
+    if (original_filename !== undefined) patch.original_filename = original_filename.trim() || "—";
+    if (synthese !== undefined) patch.synthese = synthese?.trim() || null;
+    if (validation_status !== undefined) {
+      if (!["valide", "brouillon", "rejete"].includes(validation_status)) {
+        return res.status(400).json({ error: "validation_status invalide" });
+      }
+      patch.validation_status = validation_status;
+      // Convention partagée avec mairie/consultations : passer à 'valide'
+      // horodatte + impute le validator ; tout retour en arrière efface.
+      if (validation_status === "valide") {
+        patch.validated_by = req.user?.id ?? null;
+        patch.validated_at = new Date();
+      } else {
+        patch.validated_by = null;
+        patch.validated_at = null;
+      }
+    }
+
+    const [updated] = await db.update(regulatory_documents)
+      .set(patch)
+      .where(eq(regulatory_documents.id, docId))
+      .returning();
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Remplace l'intégralité du périmètre de couverture d'un document : la liste
+// `commune_ids` fournie devient EXACTEMENT le rattachement effectif.
+// Endpoint séparé du PATCH parce que la manipulation du périmètre a ses
+// propres invariants (filtre membres EPCI, anti-effacement total) et que les
+// callers UI peuvent vouloir l'un sans l'autre.
+superAdminRouter.put("/epci/:id/documents/:docId/communes", async (req, res) => {
+  try {
+    const { id, docId } = req.params;
+    const { commune_ids } = req.body as { commune_ids?: string[] };
+    if (!Array.isArray(commune_ids)) {
+      return res.status(400).json({ error: "commune_ids doit être un tableau" });
+    }
+
+    const [doc] = await db.select({ id: regulatory_documents.id })
+      .from(regulatory_documents)
+      .where(and(
+        eq(regulatory_documents.id, docId),
+        eq(regulatory_documents.porteur_epci_id, id),
+      ))
+      .limit(1);
+    if (!doc) return res.status(404).json({ error: "Document introuvable pour cet EPCI" });
+
+    // Filtre défensif : seules les communes membres de l'EPCI sont autorisées.
+    const memberRows = await db
+      .select({ id: communes.id })
+      .from(communes)
+      .where(eq(communes.epci_id, id));
+    const memberIds = new Set(memberRows.map((r) => r.id));
+    const invalid = commune_ids.filter((cid) => !memberIds.has(cid));
+    if (invalid.length > 0) {
+      return res.status(400).json({
+        error: "Certaines communes ne sont pas membres de cet EPCI",
+        invalid_commune_ids: invalid,
+      });
+    }
+    if (commune_ids.length === 0) {
+      return res.status(400).json({ error: "Au moins une commune doit être rattachée. Supprimez le document si vous voulez retirer toutes les communes." });
+    }
+
+    // Sync atomique : on retire les rattachements absents de la nouvelle
+    // liste, on ajoute ceux qui manquent. ON CONFLICT pour idempotence si
+    // déjà présent (transition fluide sans suppression intermédiaire).
+    await db.transaction(async (tx) => {
+      const current = await tx
+        .select({ commune_id: document_communes.commune_id })
+        .from(document_communes)
+        .where(eq(document_communes.document_id, docId));
+      const currentSet = new Set(current.map((r) => r.commune_id));
+      const targetSet = new Set(commune_ids);
+
+      const toRemove = current.filter((r) => !targetSet.has(r.commune_id)).map((r) => r.commune_id);
+      const toAdd = commune_ids.filter((cid) => !currentSet.has(cid));
+
+      if (toRemove.length > 0) {
+        await tx.delete(document_communes).where(and(
+          eq(document_communes.document_id, docId),
+          inArray(document_communes.commune_id, toRemove),
+        ));
+      }
+      if (toAdd.length > 0) {
+        await tx.insert(document_communes).values(
+          toAdd.map((commune_id) => ({ document_id: docId, commune_id })),
+        );
+      }
+    });
+
+    res.json({ document_id: docId, communes_couvertes: commune_ids, communes_membres_total: memberIds.size });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Suppression d'un document. Cascade implicite : les rattachements
+// document_communes (FK ON DELETE CASCADE) partent avec, et les zones/règles
+// produites par ce document voient leur source_document_id passer à NULL
+// (FK ON DELETE SET NULL). Pour effacer aussi les zones et règles dérivées,
+// on les supprime explicitement dans la même transaction — c'est le
+// comportement attendu côté UI (« je supprime le PLUi → tout ce qu'il a
+// produit s'en va »).
+superAdminRouter.delete("/epci/:id/documents/:docId", async (req, res) => {
+  try {
+    const { id, docId } = req.params;
+    const [doc] = await db.select({ id: regulatory_documents.id })
+      .from(regulatory_documents)
+      .where(and(
+        eq(regulatory_documents.id, docId),
+        eq(regulatory_documents.porteur_epci_id, id),
+      ))
+      .limit(1);
+    if (!doc) return res.status(404).json({ error: "Document introuvable pour cet EPCI" });
+
+    await db.transaction(async (tx) => {
+      const derivedZones = await tx.select({ id: zones.id })
+        .from(zones)
+        .where(eq(zones.source_document_id, docId));
+      if (derivedZones.length > 0) {
+        const zoneIds = derivedZones.map((z) => z.id);
+        await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, zoneIds));
+        await tx.delete(zones).where(inArray(zones.id, zoneIds));
+      }
+      // document_communes part en cascade via la FK.
+      await tx.delete(regulatory_documents).where(eq(regulatory_documents.id, docId));
+    });
+
+    res.json({ success: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
