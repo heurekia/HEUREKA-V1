@@ -601,12 +601,17 @@ CREATE TABLE IF NOT EXISTS ai_usage_events (
   model                       text NOT NULL,
   input_tokens                integer NOT NULL DEFAULT 0,
   output_tokens               integer NOT NULL DEFAULT 0,
-  cache_read_input_tokens     integer NOT NULL DEFAULT 0,
-  cache_creation_input_tokens integer NOT NULL DEFAULT 0,
   cost_eur                    double precision NOT NULL DEFAULT 0,
   duration_ms                 integer,
   created_at                  timestamp NOT NULL DEFAULT now()
 );
+
+-- Suppression idempotente des colonnes Anthropic-only cache_*_input_tokens.
+-- Concept "prompt caching" sans équivalent Mistral, toujours écrites à 0
+-- depuis la bascule juin 2026 — déposent du bruit "0/0" dans l'admin Coûts IA
+-- sans porter d'information. Aucune perte de donnée (valeurs déjà nulles).
+ALTER TABLE ai_usage_events DROP COLUMN IF EXISTS cache_read_input_tokens;
+ALTER TABLE ai_usage_events DROP COLUMN IF EXISTS cache_creation_input_tokens;
 ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS commune_id uuid REFERENCES communes(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_dossier ON ai_usage_events(dossier_id);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_commune ON ai_usage_events(commune_id);

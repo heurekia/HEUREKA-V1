@@ -81,9 +81,7 @@ HEUREKA-V1/
 │   ├── document-technique.md      (ce document)
 │   ├── reglementation/            Exemples PLU annotés (Ballan-Miré)
 │   └── security/                  AIPD, registre art. 30, DPA, conformité DSI
-├── Procfile                       node --import tsx apps/api/src/index.ts
-├── railway.json                   pre-deploy = migrations, health = /api/health
-├── nixpacks.toml                  Node 20, pnpm, poppler-utils (pdftoppm)
+├── infra/backup/                  Scripts pg_dump + uploads + mirror OVH Object Storage
 ├── pnpm-workspace.yaml            apps/* packages/*
 └── tsconfig.base.json
 ```
@@ -189,7 +187,7 @@ HEUREKA-V1/
 | Table | Fichier | Rôle |
 |---|---|---|
 | **`audit_logs`** | `auditLogs.ts` | Traçabilité (CCSC §4.14, RGPD art. 5.1.e) — `user_id` (FK set null), `email`, `role` (snapshot), `action` (login/logout/login_failed/create_dossier/upload_piece/submit_dossier/change_status…), `target_type`, `target_id`, `metadata` jsonb, `ip`, `user_agent`. **Purge auto 12 mois**. |
-| **`ai_usage_events`** | `aiUsageEvents.ts` | Tracking coûts + RGPD inférence IA — `purpose` (piece_analyze / piece_extract / rule_verdicts / procedure_explain / plu_zone_detect / plu_rule_extract / plu_article_structure / plu_zone_structure), `model`, `input_tokens`, `output_tokens`, `cache_read_input_tokens`, `cache_creation_input_tokens`, `cost_eur`, `duration_ms`, **`file_hash` SHA-256** (jamais le contenu) |
+| **`ai_usage_events`** | `aiUsageEvents.ts` | Tracking coûts + RGPD inférence IA — `purpose` (piece_analyze / piece_extract / rule_verdicts / procedure_explain / plu_zone_detect / plu_rule_extract / plu_article_structure / plu_zone_structure), `model`, `input_tokens`, `output_tokens`, `cost_eur`, `duration_ms`, **`file_hash` SHA-256** (jamais le contenu) |
 | `ai_alert_config` | `aiAlertConfig.ts` | Singleton id=1 — `slack_webhook_url`, `per_call_threshold_eur`, `daily_threshold_eur`, `daily_last_notified_at` |
 | `notifications` | `notifications.ts` | Notifications in-app — `type`, `title`, `message`, `is_read` |
 
