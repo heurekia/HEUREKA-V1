@@ -1,4 +1,4 @@
-import { db, dossiers, dossier_facts, zone_regulatory_rules, zones, communes } from "@heureka-v1/db";
+import { db, dossiers, dossier_facts, zone_regulatory_rules, zones, communes, document_communes } from "@heureka-v1/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { ENGINE_VERSION } from "../version.js";
 import { deriveApplicabilityTags } from "./applicability_tags.js";
@@ -163,15 +163,51 @@ async function loadCandidateRuleIds(
   const communeRow = communeRows[0];
   if (!communeRow) return [];
 
-  const ruleRows = await db
+  // Résolution via deux chemins unionnés, pour préparer le support PLUi sans
+  // casser les règles existantes :
+  //
+  //  1) document_communes → rules.source_document_id : voie « moderne ». Couvre
+  //     nativement les PLUi (1 document → N communes via document_communes)
+  //     et reste équivalente aux PLU strictement communaux (1 document →
+  //     1 commune). Toute règle ingérée par loadRules() depuis le Lot 3
+  //     passe par ce chemin.
+  //
+  //  2) zones.commune_id, restreint à source_document_id IS NULL : fallback
+  //     pour les règles créées manuellement via POST /reglementation/zones/
+  //     :zoneId/rules qui ne posent pas de source_document_id. Garantit qu'on
+  //     ne perd aucune règle pré-Lot 3 ou créée à la main.
+  //
+  // Pendant la cohabitation, l'union des deux est strictement ≥ la requête
+  // historique unique zones.commune_id — on ne risque pas de masquer une
+  // règle. Une fois toutes les règles taguées source_document_id, le chemin 2
+  // pourra disparaître.
+  const ruleIds = new Set<string>();
+
+  const fromDocument = await db
+    .select({ id: zone_regulatory_rules.id })
+    .from(zone_regulatory_rules)
+    .innerJoin(
+      document_communes,
+      eq(document_communes.document_id, zone_regulatory_rules.source_document_id),
+    )
+    .where(and(
+      eq(document_communes.commune_id, communeRow.id),
+      eq(zone_regulatory_rules.validation_status, "valide"),
+    ));
+  for (const r of fromDocument) ruleIds.add(r.id);
+
+  const fromZoneFallback = await db
     .select({ id: zone_regulatory_rules.id })
     .from(zone_regulatory_rules)
     .innerJoin(zones, eq(zones.id, zone_regulatory_rules.zone_id))
     .where(and(
       eq(zones.commune_id, communeRow.id),
       eq(zone_regulatory_rules.validation_status, "valide"),
+      isNull(zone_regulatory_rules.source_document_id),
     ));
-  return ruleRows.map((r) => r.id);
+  for (const r of fromZoneFallback) ruleIds.add(r.id);
+
+  return Array.from(ruleIds);
 }
 
 // ── Coercions défensives ──
