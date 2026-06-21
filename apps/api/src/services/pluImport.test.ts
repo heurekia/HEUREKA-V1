@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText } from "./pluImport.ts";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule } from "./pluImport.ts";
 
 describe("partitionPagesByZone", () => {
   it("découpe les zones en plages fermées [start, end] selon la zone suivante", () => {
@@ -206,5 +206,38 @@ describe("parseTocFromNativeText", () => {
   it("ignore le texte vide / sans 'zone'", () => {
     expect(parseTocFromNativeText("")).toEqual([]);
     expect(parseTocFromNativeText("Article 1 - Occupations ........... 7")).toEqual([]);
+  });
+});
+
+describe("toArticleInt", () => {
+  it("renvoie null pour vide / null / undefined / non numérique", () => {
+    // C'était la cause du crash : "" sur une colonne integer Postgres.
+    expect(toArticleInt("")).toBeNull();
+    expect(toArticleInt(null)).toBeNull();
+    expect(toArticleInt(undefined)).toBeNull();
+    expect(toArticleInt("abc")).toBeNull();
+    expect(toArticleInt(NaN)).toBeNull();
+  });
+
+  it("tronque les sous-articles décimaux vers le numéro d'article entier", () => {
+    expect(toArticleInt("12.2")).toBe(12); // article 12.2 → 12
+    expect(toArticleInt(12.9)).toBe(12);
+    expect(toArticleInt(7)).toBe(7);
+    expect(toArticleInt("7")).toBe(7);
+  });
+});
+
+describe("isUsableRule", () => {
+  it("rejette les règles fantômes (topic ou rule_text vide/absent)", () => {
+    expect(isUsableRule({})).toBe(false);
+    expect(isUsableRule({ topic: "", rule_text: "" })).toBe(false);
+    expect(isUsableRule({ topic: "hauteur", rule_text: "" })).toBe(false);
+    expect(isUsableRule({ topic: "", rule_text: "9 m" })).toBe(false);
+    expect(isUsableRule({ topic: "   ", rule_text: "   " })).toBe(false);
+    expect(isUsableRule({ topic: undefined, rule_text: undefined })).toBe(false);
+  });
+
+  it("accepte une règle avec topic + rule_text non vides", () => {
+    expect(isUsableRule({ topic: "hauteur", rule_text: "9 m au faîtage." })).toBe(true);
   });
 });
