@@ -4133,6 +4133,29 @@ function DocumentsPanel({ commune }: { commune: string }) {
 
 type ZoneProgress = { code: string; label: string; type: string; status: "pending" | "done"; rules?: number; vision?: number; batch?: number; total_batches?: number };
 
+// Le jobId actif (ingestion en cours côté serveur) est persisté en
+// localStorage clé `plu-ingest-job:<INSEE>` : si l'utilisateur navigue ailleurs
+// puis revient sur cette page, on reprend le polling — l'extraction continue
+// côté serveur tant que le process Node tourne, indépendamment de la connexion
+// HTTP qui a lancé le job.
+const ACTIVE_JOB_KEY = (insee: string) => `plu-ingest-job:${insee.trim()}`;
+
+type ZoneSpec = { code: string; label: string; type: string; total_batches: number };
+type StatusResp = {
+  jobId: string;
+  status: "running" | "done" | "error";
+  phase: string;
+  commune: { id: string; name: string; insee_code: string };
+  zones: Array<{
+    code: string; label: string; type: string;
+    total_batches: number; done_batches: number;
+    rules_so_far: number; vision_so_far: number;
+    done: boolean;
+  }>;
+  result: { zones: number; rules: number; needs_review: number } | null;
+  error: string | null;
+};
+
 function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, onManual }: { commune: string; inseeCode?: string; onSuccess: () => void; loadError: string | null; onCancel?: () => void; onManual?: () => void }) {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [communeInput, setCommuneInput] = useState(commune);
@@ -4144,8 +4167,76 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<{ zones: number; rules: number; needs_review: number } | null>(null);
   const fileRef = useRef<HTMLInputElement>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => { setCommuneInput(commune); setInseeInput(inseeCode ?? ""); }, [commune, inseeCode]);
+
+  const stopPolling = () => {
+    if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
+  };
+
+  const applyStatus = (s: StatusResp) => {
+    setPhase(s.phase);
+    setZoneProgress(s.zones.map((z) => ({
+      code: z.code, label: z.label, type: z.type,
+      status: z.done ? "done" : "pending",
+      rules: z.rules_so_far, vision: z.vision_so_far,
+      batch: z.done ? undefined : z.done_batches,
+      total_batches: z.done ? undefined : z.total_batches,
+    })));
+    if (s.status === "done" && s.result) {
+      setDone({ zones: s.result.zones, rules: s.result.rules, needs_review: s.result.needs_review });
+      setPhase(null);
+      setLoading(false);
+      stopPolling();
+      try { localStorage.removeItem(ACTIVE_JOB_KEY(s.commune.insee_code)); } catch { /* SSR-safe */ }
+      setTimeout(onSuccess, 1500);
+    } else if (s.status === "error") {
+      setError(s.error ?? "Erreur serveur");
+      setPhase(null);
+      setLoading(false);
+      stopPolling();
+      try { localStorage.removeItem(ACTIVE_JOB_KEY(s.commune.insee_code)); } catch { /* SSR-safe */ }
+    }
+  };
+
+  const startPolling = (jobId: string) => {
+    stopPolling();
+    const tick = async () => {
+      try {
+        const r = await fetch(`/api/mairie/admin/ingest-plu-pdf/status?jobId=${encodeURIComponent(jobId)}`, { credentials: "include" });
+        if (r.status === 404) {
+          // Job expiré / process redémarré → on nettoie et on demande à
+          // l'utilisateur de relancer.
+          setError("Le job d'ingestion a expiré côté serveur (process redémarré ?). Relancez l'import.");
+          setPhase(null); setLoading(false); stopPolling();
+          try { localStorage.removeItem(ACTIVE_JOB_KEY(inseeInput)); } catch { /* SSR-safe */ }
+          return;
+        }
+        if (!r.ok) return; // erreur transitoire (réseau, 5xx) → on retentera au prochain tick
+        const s = await r.json() as StatusResp;
+        applyStatus(s);
+      } catch { /* network blip — tick suivant */ }
+    };
+    // 1er tick immédiat puis toutes les 2,5 s.
+    void tick();
+    pollTimerRef.current = setInterval(tick, 2500);
+  };
+
+  // Au montage : reprend automatiquement le polling si un job était en cours
+  // pour ce code INSEE (l'utilisateur a navigué ailleurs puis est revenu).
+  useEffect(() => {
+    const insee = (inseeCode ?? "").trim();
+    if (!insee) return;
+    let savedJob: string | null = null;
+    try { savedJob = localStorage.getItem(ACTIVE_JOB_KEY(insee)); } catch { /* SSR-safe */ }
+    if (!savedJob) return;
+    setLoading(true);
+    setPhase("Reprise de l'ingestion en cours…");
+    startPolling(savedJob);
+    return stopPolling;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inseeCode]);
 
   const handleFile = (f: File | null) => { setPdfFile(f); setError(null); setDone(null); setZoneProgress([]); };
 
@@ -4167,17 +4258,7 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
       reader.readAsDataURL(pdfFile);
     });
 
-    // Nouveau flux en 3 phases (start → batches → commit). Évite la dépendance
-    // à une seule connexion HTTP longue (le proxy Railway/Cloudflare la coupait
-    // au bout de quelques minutes → Safari "Load failed"). Chaque requête tient
-    // dans le budget proxy ; le client orchestre la parallélisation.
-    type ZoneSpec = {
-      code: string; label: string; type: string;
-      startPage: number; endPage: number;
-      batches: Array<{ index: number; firstPage: number; lastPage: number }>;
-    };
-    type BatchResult = { rules: unknown[]; visionCount: number };
-
+    type StartResp = { jobId: string; zones: Array<ZoneSpec & { batches: Array<{ index: number; firstPage: number; lastPage: number }> }> };
     const postJSON = async <T,>(path: string, body: unknown): Promise<T> => {
       const r = await fetch(path, {
         method: "POST",
@@ -4192,28 +4273,21 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
         const msg = (parsed as { error?: string } | null)?.error ?? txt ?? `HTTP ${r.status}`;
         const err = new Error(msg) as Error & { status?: number; transient?: boolean };
         err.status = r.status;
-        // 502/503/504 (Bad Gateway / unavailable / Gateway timeout) sont des
-        // erreurs proxy/nginx transitoires : on relancera le batch.
         err.transient = (parsed as { transient?: boolean } | null)?.transient === true
           || r.status === 502 || r.status === 503 || r.status === 504;
         throw err;
       }
       return parsed as T;
     };
-
-    // Wrapper retry pour les endpoints non-batch (start, commit). Comme pour
-    // /batch : 502/503/504 traités comme transitoires, backoff exponentiel.
     const postJSONWithRetry = async <T,>(path: string, body: unknown, maxAttempts = 2): Promise<T> => {
       let attempt = 0;
       while (true) {
-        try {
-          return await postJSON<T>(path, body);
-        } catch (e) {
+        try { return await postJSON<T>(path, body); }
+        catch (e) {
           const err = e as Error & { transient?: boolean };
           if (err.transient && attempt < maxAttempts) {
             await new Promise((r) => setTimeout(r, 1500 * Math.pow(2, attempt)));
-            attempt++;
-            continue;
+            attempt++; continue;
           }
           throw err;
         }
@@ -4221,97 +4295,23 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
     };
 
     try {
-      // Phase 1 — start : extraction du sommaire. Le serveur lit le texte
-      // natif via pdftotext (< 2 s) ; ne tombe sur Pixtral que pour les PDF
-      // scannés ou à sommaire inhabituel.
       setPhase("Lecture du sommaire…");
-      const startResp = await postJSONWithRetry<{ jobId: string; zones: ZoneSpec[] }>(
+      const startResp = await postJSONWithRetry<StartResp>(
         "/api/mairie/admin/ingest-plu-pdf/start",
         { commune_name: communeInput.trim(), insee_code: inseeInput.trim(), pdf_base64 },
       );
       const { jobId, zones: zoneSpecs } = startResp;
+      // Persiste le jobId : si l'utilisateur navigue ailleurs, on reprendra au
+      // remount via le useEffect ci-dessus.
+      try { localStorage.setItem(ACTIVE_JOB_KEY(inseeInput.trim()), jobId); } catch { /* SSR-safe */ }
       setZoneProgress(zoneSpecs.map((z) => ({ code: z.code, label: z.label, type: z.type, status: "pending" })));
-      const totalBatchesByZone = new Map(zoneSpecs.map((z) => [z.code, z.batches.length]));
-      setPhase(`Sommaire : ${zoneSpecs.length} zones (${zoneSpecs.map((z) => z.code).join(", ")}). Extraction…`);
-
-      // Phase 2 — batches : on aplatit tous les lots en une seule queue et on
-      // les exécute avec une concurrence bornée (4 lots en vol). Chaque lot est
-      // une requête HTTP courte → aucun risque de timeout proxy. Au passage on
-      // met à jour la progression intra-zone (lot X/N).
-      type FlatBatch = { zoneCode: string; batchIndex: number };
-      const queue: FlatBatch[] = [];
-      for (const z of zoneSpecs) for (const b of z.batches) queue.push({ zoneCode: z.code, batchIndex: b.index });
-      const zoneAcc = new Map<string, { rules: unknown[]; visionCount: number; doneBatches: number }>();
-      for (const z of zoneSpecs) zoneAcc.set(z.code, { rules: [], visionCount: 0, doneBatches: 0 });
-
-      const CONCURRENCY = 4;
-      let next = 0;
-      let firstError: Error | null = null;
-
-      const worker = async () => {
-        while (true) {
-          const i = next++;
-          if (i >= queue.length) return;
-          if (firstError) return;
-          const item = queue[i]!;
-          // Retry transitoire jusqu'à 3 tentatives sur 502/503/504 + rate
-          // limit Mistral, avec backoff exponentiel (1,5 s → 3 s → 6 s).
-          // Les batches sont idempotents côté serveur (pas d'état partiel).
-          let attempt = 0;
-          while (true) {
-            try {
-              const r = await postJSON<BatchResult>(
-                "/api/mairie/admin/ingest-plu-pdf/batch",
-                { jobId, zoneCode: item.zoneCode, batchIndex: item.batchIndex },
-              );
-              const acc = zoneAcc.get(item.zoneCode)!;
-              acc.rules.push(...r.rules);
-              acc.visionCount += r.visionCount;
-              acc.doneBatches += 1;
-              const total = totalBatchesByZone.get(item.zoneCode) ?? 0;
-              const isZoneDone = acc.doneBatches >= total;
-              setZoneProgress((prev) => prev.map((z) =>
-                z.code === item.zoneCode
-                  ? (isZoneDone
-                      ? { ...z, status: "done" as const, rules: acc.rules.length, vision: acc.visionCount, batch: undefined, total_batches: undefined }
-                      : { ...z, batch: acc.doneBatches, total_batches: total })
-                  : z,
-              ));
-              break;
-            } catch (e) {
-              const err = e as Error & { transient?: boolean };
-              if (err.transient && attempt < 3) {
-                await new Promise((r) => setTimeout(r, 1500 * Math.pow(2, attempt)));
-                attempt++;
-                continue;
-              }
-              firstError = err;
-              return;
-            }
-          }
-        }
-      };
-      await Promise.all(Array.from({ length: CONCURRENCY }, worker));
-      if (firstError) throw firstError;
-
-      // Phase 3 — commit : transaction DB en 1 requête courte.
-      setPhase("Enregistrement…");
-      const zoneResults = zoneSpecs.map((z) => ({
-        zoneCode: z.code,
-        rules: zoneAcc.get(z.code)!.rules,
-        visionCount: zoneAcc.get(z.code)!.visionCount,
-      }));
-      const final = await postJSONWithRetry<{ zones: number; rules: number; needs_review: number }>(
-        "/api/mairie/admin/ingest-plu-pdf/commit",
-        { jobId, zoneResults },
-      );
-      setDone({ zones: final.zones, rules: final.rules, needs_review: final.needs_review });
-      setPhase(null);
-      setTimeout(onSuccess, 1500);
+      setPhase(`Sommaire : ${zoneSpecs.length} zones (${zoneSpecs.map((z) => z.code).join(", ")}). Extraction en arrière-plan…`);
+      // Le serveur fait tout le travail (extraction des règles + écriture DB).
+      // On suit l'avancée via polling de /status.
+      startPolling(jobId);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erreur serveur");
       setPhase(null);
-    } finally {
       setLoading(false);
     }
   };

@@ -192,6 +192,50 @@ export function isUsableRule(r: { topic?: unknown; rule_text?: unknown }): boole
     && typeof r?.rule_text === "string" && r.rule_text.trim().length > 0;
 }
 
+/**
+ * Déduplique une liste de règles extraites en gardant la plus complète quand
+ * deux règles ont un texte quasi identique.
+ *
+ * IMPORTANT — pourquoi pas par `(article_number, topic)` :
+ * Un même article peut porter PLUSIEURS règles distinctes sur le même topic.
+ * Exemple typique, article 12 (stationnement) :
+ *   - habitation : 1 place / logement
+ *   - commerce < 100 m² : 1 place / 60 m²
+ *   - bureaux : 1 place / 40 m²
+ *   - artisanat : 1 place / 80 m²
+ *   etc.
+ * Toutes partagent `article_number=12, topic=stationnement`. Une fusion par
+ * (article, topic) n'en gardait qu'UNE → perte massive de règles à
+ * l'insertion finale (≈ 8 règles vues pendant l'extraction, 1 seule restituée).
+ *
+ * Heuristique correcte : la clé est un préfixe normalisé de rule_text
+ * (lowercase, espaces compactés, 160 caractères). Deux règles avec préfixe
+ * identique = même règle dupliquée (chevauchement de tableau sur deux lots,
+ * réémission par hallucination). Préfixes différents = règles distinctes,
+ * toutes gardées.
+ */
+type ExtractedRule = {
+  topic?: unknown;
+  rule_text?: string | null;
+  needs_vision?: boolean;
+  needs_external_doc?: boolean;
+};
+export function dedupeRules<R extends ExtractedRule>(rules: R[]): R[] {
+  const norm = (s: string) =>
+    s.toLowerCase().normalize("NFKD").replace(/\s+/g, " ").trim().slice(0, 160);
+  const m = new Map<string, R>();
+  for (const r of rules) {
+    if (!isUsableRule(r)) continue;
+    const key = norm(r.rule_text as string);
+    if (!key) continue;
+    const prev = m.get(key);
+    if (!prev || (r.rule_text?.length ?? 0) > (prev.rule_text?.length ?? 0)) {
+      m.set(key, r);
+    }
+  }
+  return [...m.values()];
+}
+
 export function assertTocCoverage(
   toc: TocEntry[],
   extracted: Array<{ code: string; ruleCount: number }>,
