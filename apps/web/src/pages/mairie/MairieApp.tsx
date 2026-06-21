@@ -6448,16 +6448,18 @@ function decisionStepIndex(status: DecisionStatus): number {
 
 // "Terrain" remplace "Parcelle" : vue contextuelle (cadastre, contraintes
 // fortes, constructibilité synthétique, historique SITADEL/ADS). La carte
-// et le règlement détaillé migrent vers "Instruction", devenue l'espace de
-// preuve où l'instructeur confronte les pièces aux PDF réglementaires.
-const DETAIL_TABS = ["Résumé", "Terrain", "Conformité IA", "Instruction", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
+// et le règlement détaillé vivent dans "Documents", l'espace de preuve où
+// l'instructeur confronte les pièces aux PDF réglementaires. "Instruction"
+// porte désormais l'analyse réglementaire (constats du moteur + qualification),
+// anciennement étiquetée "Conformité IA".
+const DETAIL_TABS = ["Résumé", "Terrain", "Documents", "Instruction", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
 type DetailTab = typeof DETAIL_TABS[number];
 
 const TAB_ICONS: Record<string, React.ReactNode> = {
   "Résumé": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>,
   "Terrain": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>,
-  "Conformité IA": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>,
-  "Instruction": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
+  "Instruction": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>,
+  "Documents": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
   "Consultations": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>,
   "Courriers": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>,
   "Chronologie": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
@@ -7020,7 +7022,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   // tant qu'on reste sur le dossier — réinitialisé entre dossiers).
   const [docsRegulatoryDocId, setDocsRegulatoryDocId] = useState<string | null>(null);
   // Hints transmis au RegulatoryDocViewer quand on arrive depuis une citation
-  // de verdict (onglet Conformité IA). docType : auto-sélection PLU/PPRI/OAP…
+  // de verdict (onglet Instruction). docType : auto-sélection PLU/PPRI/OAP…
   // page : ouvre directement à la bonne page via fragment #page=N.
   const [docsRegulatoryDocTypeHint, setDocsRegulatoryDocTypeHint] = useState<string | null>(null);
   const [docsRegulatoryDocPage, setDocsRegulatoryDocPage] = useState<number | null>(null);
@@ -7303,7 +7305,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [extractingPieceId, setExtractingPieceId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (activeTab !== "Instruction" || documents !== null) return;
+    if (activeTab !== "Documents" || documents !== null) return;
     setDocumentsLoading(true);
     api.get<DossierPiece[]>(`/mairie/dossiers/${dossier.id}/pieces`)
       .then((data) => { setDocuments(data); setSelectedDoc(0); })
@@ -7362,7 +7364,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       .catch(() => setEvents([]));
   }, [activeTab, events, dossier.id]);
 
-  // ── Conformité IA (rapport + lancement) ──
+  // ── Instruction (rapport + lancement) ──
   type ConformiteReport = {
     schema_version: number;
     score_global: string;
@@ -7421,7 +7423,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [finaleBlockers, setFinaleBlockers] = useState<{ reason: string; blockers: FinaleBlockers } | null>(null);
 
   useEffect(() => {
-    if (activeTab !== "Conformité IA" || conformite !== null) return;
+    if (activeTab !== "Instruction" || conformite !== null) return;
     api.get<{ status: string; report: ConformiteReport | null; analyzed_at: string | null }>(`/mairie/dossiers/${dossier.id}/conformite`)
       .then(setConformite)
       .catch(() => setConformite({ status: "absent", report: null, analyzed_at: null }));
@@ -7429,7 +7431,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
   // Charge la finale en parallèle de l'interim (1 GET en plus, OK).
   useEffect(() => {
-    if (activeTab !== "Conformité IA" || conformiteFinale !== null) return;
+    if (activeTab !== "Instruction" || conformiteFinale !== null) return;
     api.get<ConformiteFinale>(`/mairie/dossiers/${dossier.id}/conformite/finale`)
       .then(setConformiteFinale)
       .catch(() => setConformiteFinale({ status: "absent", report: null, analyzed_at: null, triggered_by: null }));
@@ -7489,7 +7491,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   };
   const [communeDocs, setCommuneDocs] = useState<CommuneDocLite[] | null>(null);
   useEffect(() => {
-    if (activeTab !== "Instruction" || communeDocs !== null) return;
+    if (activeTab !== "Documents" || communeDocs !== null) return;
     api.get<CommuneDocLite[]>(`/mairie/dossiers/${dossier.id}/commune-documents`)
       .then(setCommuneDocs)
       .catch(() => setCommuneDocs([]));
@@ -8149,18 +8151,25 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
                 <SecTitle>Avancement du dossier</SecTitle>
                 <div style={{ flex: 1, display: "flex", flexDirection: "column" as const, justifyContent: "center" }}>
-                  {[
-                    { label: "Dépôt", done: true },
-                    { label: "Complétude", done: true },
-                    { label: "Instruction", done: ["en_instruction","decision_en_cours","accepte","refuse","accord_prescription"].includes(dossier.status) },
-                    { label: "Consultations", done: false },
-                    { label: "Décision", done: ["accepte","refuse","accord_prescription"].includes(dossier.status) },
-                  ].map((step, i) => (
-                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: i < 4 ? 14 : 0 }}>
+                  {([
+                    { label: "Dépôt", done: true, tab: null },
+                    { label: "Complétude", done: !["brouillon","soumis"].includes(dossier.status), tab: "Documents" },
+                    { label: "Instruction", done: ["en_instruction","decision_en_cours","accepte","refuse","accord_prescription"].includes(dossier.status), tab: "Instruction" },
+                    { label: "Consultations", done: false, tab: "Consultations" },
+                    { label: "Décision", done: ["accepte","refuse","accord_prescription"].includes(dossier.status), tab: "Décision" },
+                  ] as Array<{ label: string; done: boolean; tab: DetailTab | null }>).map((step, i) => (
+                    <div
+                      key={i}
+                      onClick={() => { if (step.tab) setActiveTab(step.tab); }}
+                      style={{ display: "flex", alignItems: "center", gap: 12, cursor: step.tab ? "pointer" : "default", borderRadius: 8, padding: step.tab ? "3px 5px" : 0, marginLeft: step.tab ? -5 : 0, marginRight: step.tab ? -5 : 0, marginBottom: i < 4 ? 12 : 0 }}
+                      onMouseEnter={(e) => { if (step.tab) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
+                      onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+                    >
                       <div style={{ width: 28, height: 28, borderRadius: "50%", background: step.done ? "linear-gradient(135deg,#4F46E5,#6366F1)" : "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: step.done ? "0 2px 6px rgba(79,70,229,0.3)" : "none" }}>
                         {step.done ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <span style={{ fontSize: 11, color: "#CBD5E1", fontWeight: 700 }}>{i + 1}</span>}
                       </div>
-                      <span style={{ fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
+                      <span style={{ flex: 1, fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
+                      {step.tab ? <span style={{ color: "#CBD5E1", fontSize: 16 }}>›</span> : null}
                     </div>
                   ))}
                 </div>
@@ -8245,9 +8254,10 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           );
 
           // CTA récurrent : tous les renvois vers le règlement complet, les
-          // citations et les PDF d'OAP/PPRI pointent vers l'onglet Instruction.
-          const goToInstruction = (docType?: string) => {
-            setActiveTab("Instruction");
+          // citations et les PDF d'OAP/PPRI pointent vers l'onglet Documents
+          // (l'espace de preuve, ex-"Instruction").
+          const goToDocuments = (docType?: string) => {
+            setActiveTab("Documents");
             if (docType) {
               setDocsViewMode("compare");
               setDocsRegulatoryDocTypeHint(docType);
@@ -8256,7 +8266,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           };
           const InstructionLink = ({ label, docType }: { label: string; docType?: string }) => (
             <button
-              onClick={() => goToInstruction(docType)}
+              onClick={() => goToDocuments(docType)}
               style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "#4F46E5", background: "transparent", border: "none", padding: 0, cursor: "pointer" }}
             >
               {label} →
@@ -8291,7 +8301,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   <strong style={{ fontWeight: 700 }}>Règlement, citations et PDF</strong> — l'espace de preuve et de comparaison est dans l'onglet Instruction.
                 </div>
                 <button
-                  onClick={() => goToInstruction()}
+                  onClick={() => goToDocuments()}
                   style={{ flexShrink: 0, padding: "6px 14px", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 5px rgba(79,70,229,0.3)" }}
                 >Ouvrir l'Instruction →</button>
               </div>
@@ -8585,7 +8595,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                               </span>
                             )}
                             <button
-                              onClick={() => goToInstruction("plu")}
+                              onClick={() => goToDocuments("plu")}
                               style={{ fontSize: 11.5, fontWeight: 600, color: "#3730A3", background: "white", border: "1px solid #C7D2FE", borderRadius: 6, padding: "3px 9px", cursor: "pointer" }}
                             >
                               Confronter aux pièces →
@@ -8753,7 +8763,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         })()}
 
         {/* ── CONFORMITÉ IA ── */}
-        {activeTab === "Conformité IA" && (
+        {activeTab === "Instruction" && (
           <>
             {/* Bloc Analyse finale avant arrêté (3.C.5c) — affiché en tête
                 de l'onglet pour que l'instructeur sache à tout moment où il
@@ -8837,7 +8847,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             </div>
           </>
         )}
-        {activeTab === "Conformité IA" && (() => {
+        {activeTab === "Instruction" && (() => {
           const report = conformite?.report ?? null;
           const status = conformite?.status ?? "absent";
           const verdicts = report?.rule_verdicts?.verdicts ?? [];
@@ -8870,7 +8880,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 <div style={{ textAlign: "center" as const, padding: "32px 20px", color: "#64748b" }}>
                   <div style={{ fontSize: 44, marginBottom: 12 }}>🔍</div>
                   <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>
-                    Conformité IA non encore lancée
+                    Analyse détaillée non encore lancée
                   </div>
                   <p style={{ fontSize: 13, maxWidth: 520, margin: "0 auto 16px", lineHeight: 1.55 }}>
                     L'analyse croise les <strong>extractions des pièces déposées</strong> avec les <strong>règles PLU</strong> de la zone
@@ -9021,7 +9031,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         })()}
 
         {/* ── DOCUMENTS ── */}
-        {activeTab === "Instruction" && (() => {
+        {activeTab === "Documents" && (() => {
           const docs = documents ?? [];
           const sel = docs[selectedDoc] ?? null;
 
