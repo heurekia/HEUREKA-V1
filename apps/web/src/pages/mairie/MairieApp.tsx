@@ -7086,16 +7086,44 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   // dans tous les modes (préférence persistée par instructeur).
   const [docsLeftCollapsed, setDocsLeftCollapsed] = useLocalStorageBool("heureka.instrLeftCollapsed", false);
   const [docsRightCollapsed, setDocsRightCollapsed] = useLocalStorageBool("heureka.instrRightCollapsed", false);
-  // Mode « grand écran » de la comparaison (overlay plein viewport). Volontairement
-  // non persisté : on ne veut pas rouvrir un dossier coincé en plein écran.
-  const [compareFullscreen, setCompareFullscreen] = useState(false);
-  // Échap quitte le grand écran.
+  // Mode « grand écran » de l'instruction (overlay plein viewport, disponible
+  // dans tous les modes d'affichage). Volontairement non persisté : on ne veut
+  // pas rouvrir un dossier coincé en plein écran.
+  const [docsFullscreen, setDocsFullscreen] = useState(false);
+  // Élément overlay sur lequel on déclenche le plein écran natif du navigateur
+  // (Fullscreen API) : il masque les onglets/barre du navigateur et occupe tout
+  // l'écran, tout en gardant visibles les boutons React posés à l'intérieur.
+  const docsFullscreenRef = useRef<HTMLDivElement>(null);
+  // Échap quitte le grand écran (en plus de la sortie native gérée par le navigateur).
   useEffect(() => {
-    if (!compareFullscreen) return;
-    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCompareFullscreen(false); };
+    if (!docsFullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setDocsFullscreen(false); };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [compareFullscreen]);
+  }, [docsFullscreen]);
+  // Synchronise l'état avec le plein écran natif. Demande le plein écran natif à
+  // l'ouverture de l'overlay ; si l'API est refusée (navigateur, permissions),
+  // on garde la dégradation gracieuse : l'overlay position:fixed couvre déjà
+  // toute la fenêtre de l'app. À la fermeture, on quitte le plein écran natif.
+  useEffect(() => {
+    if (docsFullscreen) {
+      const el = docsFullscreenRef.current;
+      if (el && el.requestFullscreen && !document.fullscreenElement) {
+        el.requestFullscreen().catch(() => { /* refusé → overlay seul, OK */ });
+      }
+    } else if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => { /* ignore */ });
+    }
+  }, [docsFullscreen]);
+  // Si l'utilisateur quitte le plein écran natif (Échap/F11), on referme l'overlay
+  // pour rester cohérent.
+  useEffect(() => {
+    const onFsChange = () => {
+      if (!document.fullscreenElement) setDocsFullscreen(false);
+    };
+    document.addEventListener("fullscreenchange", onFsChange);
+    return () => document.removeEventListener("fullscreenchange", onFsChange);
+  }, []);
 
   // Handler de jump depuis une citation de verdict. Bascule l'onglet, le mode
   // d'affichage, et nourrit les hints du RegulatoryDocViewer.
@@ -9211,6 +9239,10 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           const leftW = leftIsStripe ? "44px" : (docsViewMode === "compare" ? "240px" : "280px");
           const rightW = rightIsStripe ? "44px" : "260px";
           const gridTemplate = `${leftW} 1fr ${rightW}`;
+          // Borne de hauteur commune aux trois colonnes (pièces · viewer ·
+          // annotation) pour qu'elles s'alignent et défilent dans les mêmes
+          // limites au lieu de grandir indépendamment selon leur contenu.
+          const colMaxH = "calc(100vh - 210px)";
           // Déplier un bandeau : si on était en Lecture, on en sort en gardant
           // l'autre bandeau replié pour préserver la sensation de focus.
           const expandLeft = () => {
@@ -9309,24 +9341,64 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             />
           );
 
+          // Viewer plein cadre de la pièce sélectionnée, réutilisé dans l'overlay
+          // grand écran pour les modes Aperçu et Lecture (le mode Comparer y monte
+          // compareSplit). Évite de dupliquer la logique de rendu image/PDF.
+          const pieceFullscreenBody = (
+            <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#0F172A0A" }}>
+              {sel ? (() => {
+                const t = (sel.type ?? "").toLowerCase();
+                const isImage = t.startsWith("image/");
+                const isPdf = t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf");
+                return isImage ? (
+                  <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                    <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                  </div>
+                ) : isPdf ? (
+                  <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+                    <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
+                  </div>
+                ) : (
+                  <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8", fontSize: 13 }}>Aperçu indisponible pour ce format</div>
+                );
+              })() : (
+                <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8", fontSize: 13 }}>Sélectionnez une pièce à gauche.</div>
+              )}
+            </div>
+          );
+
+          // Placeholder affiché dans la grille pendant que la pièce/comparaison
+          // est ouverte en grand écran : évite de monter deux viewers simultanés.
+          const fullscreenPlaceholder = (
+            <div style={{ flex: 1, height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "#64748b", fontSize: 13 }}>
+              <div style={{ fontSize: 34 }}>⛶</div>
+              <div>Ouvert en grand écran</div>
+              <button
+                type="button"
+                onClick={() => setDocsFullscreen(false)}
+                style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, color: "#475569", cursor: "pointer" }}
+              >
+                Réduire
+              </button>
+            </div>
+          );
+
           return (
             <>
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                {docsViewMode === "compare" && (
-                  <button
-                    type="button"
-                    onClick={() => setCompareFullscreen(true)}
-                    title="Ouvrir la comparaison en grand écran (Échap pour quitter)"
-                    style={{
-                      border: "1px solid #E2E8F0", background: "white", borderRadius: 8,
-                      padding: "5px 12px", fontSize: 12, fontWeight: 600, color: "#475569",
-                      cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
-                      boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
-                    }}
-                  >
-                    <span style={{ fontSize: 13 }}>⛶</span>Grand écran
-                  </button>
-                )}
+                <button
+                  type="button"
+                  onClick={() => setDocsFullscreen(true)}
+                  title="Ouvrir en grand écran (Échap pour quitter)"
+                  style={{
+                    border: "1px solid #E2E8F0", background: "white", borderRadius: 8,
+                    padding: "5px 12px", fontSize: 12, fontWeight: 600, color: "#475569",
+                    cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
+                    boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                  }}
+                >
+                  <span style={{ fontSize: 13 }}>⛶</span>Grand écran
+                </button>
                 <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden", background: "white", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
                   <ModeBtn value="apercu"  label="Aperçu"   icon="⊞" title="Pièces · viewer · annotation" />
                   <ModeBtn value="compare" label="Comparer" icon="❘❘" title="Pièce et document réglementaire côte à côte" />
@@ -9340,7 +9412,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   <span style={{ fontSize: 10, letterSpacing: "0.08em", writingMode: "vertical-rl", transform: "rotate(180deg)", textTransform: "uppercase" }}>Pièces ({docs.length})</span>
                 </div>
               ) : (
-              <div style={{ ...CARD, maxHeight: "calc(100vh - 220px)", overflowY: "auto" as const }}>
+              <div style={{ ...CARD, maxHeight: colMaxH, overflowY: "auto" as const }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
                   <SecTitle>Pièces du dossier</SecTitle>
                   <CollapseBtn side="left" onClick={() => setDocsLeftCollapsed(true)} />
@@ -9440,28 +9512,16 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               // Hauteur dynamique : la comparaison s'étire pour occuper toute la
               // hauteur du cadre (au lieu d'un 640px figé). minHeight garde un
               // viewer exploitable sur petit écran.
-              <div style={{ ...CARD, padding: 0, minWidth: 0, display: "flex", flexDirection: "column" as const, height: "calc(100vh - 210px)", minHeight: 460, overflow: "hidden" }}>
+              <div style={{ ...CARD, padding: 0, minWidth: 0, display: "flex", flexDirection: "column" as const, height: colMaxH, minHeight: 460, overflow: "hidden" }}>
                 <div style={{ flex: 1, minHeight: 0 }}>
-                  {compareFullscreen ? (
-                    <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "#64748b", fontSize: 13 }}>
-                      <div style={{ fontSize: 34 }}>⛶</div>
-                      <div>Comparaison ouverte en grand écran</div>
-                      <button
-                        type="button"
-                        onClick={() => setCompareFullscreen(false)}
-                        style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, color: "#475569", cursor: "pointer" }}
-                      >
-                        Réduire
-                      </button>
-                    </div>
-                  ) : compareSplit}
+                  {docsFullscreen ? fullscreenPlaceholder : compareSplit}
                 </div>
               </div>
               ) : (
-              <div style={{ ...CARD, minWidth: 0, display: "flex", flexDirection: "column" as const }}>
+              <div style={{ ...CARD, minWidth: 0, display: "flex", flexDirection: "column" as const, height: colMaxH, minHeight: 460, overflow: "hidden" }}>
                 <SecTitle>{`Aperçu : ${sel?.nom ?? "—"}`}</SecTitle>
                 <div style={{ flex: 1, minWidth: 0, background: "#F8FAFC", borderRadius: 11, minHeight: 340, border: "1px solid #EAECF0", overflow: "hidden", position: "relative" as const, display: "flex", flexDirection: "column" as const }}>
-                  {sel ? (() => {
+                  {docsFullscreen ? fullscreenPlaceholder : sel ? (() => {
                     const t = (sel.type ?? "").toLowerCase();
                     const isImage = t.startsWith("image/");
                     const isPdf = t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf");
@@ -9510,7 +9570,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   <span style={{ fontSize: 10, letterSpacing: "0.08em", writingMode: "vertical-rl", transform: "rotate(180deg)", textTransform: "uppercase" }}>Annotation</span>
                 </div>
               ) : (
-              <div style={CARD}>
+              <div style={{ ...CARD, maxHeight: colMaxH, overflowY: "auto" as const }}>
                 <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", marginBottom: 10 }}>
                   <CollapseBtn side="right" onClick={() => setDocsRightCollapsed(true)} />
                 </div>
@@ -9692,17 +9752,24 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               </div>
               )}
             </div>
-            {/* Grand écran : overlay plein viewport réutilisant le même split.
-                Rendu hors de la grille pour un position:fixed propre. */}
-            {docsViewMode === "compare" && compareFullscreen && (
-              <div style={{ position: "fixed", inset: 0, zIndex: 2000, background: "white", display: "flex", flexDirection: "column" }}>
+            {/* Grand écran : overlay plein viewport, disponible dans tous les modes.
+                On déclenche aussi le plein écran natif (Fullscreen API) sur cet
+                élément via docsFullscreenRef → les onglets/barre du navigateur
+                disparaissent et l'overlay occupe tout l'écran, tout en gardant
+                visibles les boutons React posés à l'intérieur. Rendu hors de la
+                grille pour un position:fixed propre (et fallback si le natif
+                est refusé). */}
+            {docsFullscreen && (
+              <div ref={docsFullscreenRef} style={{ position: "fixed", inset: 0, zIndex: 2000, background: "white", display: "flex", flexDirection: "column" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid #E2E8F0", background: "#F8FAFC" }}>
-                  <span style={{ fontSize: 13, fontWeight: 700, color: "#1E293B", whiteSpace: "nowrap" }}>⛶ Comparaison — grand écran</span>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#1E293B", whiteSpace: "nowrap" }}>
+                    ⛶ {docsViewMode === "compare" ? "Comparaison" : "Pièce"} — grand écran
+                  </span>
                   {docs.length > 0 && (
                     <select
                       value={selectedDoc}
                       onChange={(e) => setSelectedDoc(Number(e.target.value))}
-                      title="Pièce comparée"
+                      title="Pièce affichée"
                       style={{ maxWidth: 360, fontSize: 12, padding: "5px 8px", borderRadius: 7, border: "1px solid #E2E8F0", background: "white", color: "#374151", cursor: "pointer" }}
                     >
                       {docs.map((doc, i) => (
@@ -9714,13 +9781,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   <span style={{ fontSize: 11, color: "#94a3b8" }}>Échap pour quitter</span>
                   <button
                     type="button"
-                    onClick={() => setCompareFullscreen(false)}
+                    onClick={() => setDocsFullscreen(false)}
                     style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, color: "#475569", cursor: "pointer" }}
                   >
                     Quitter ✕
                   </button>
                 </div>
-                <div style={{ flex: 1, minHeight: 0 }}>{compareSplit}</div>
+                <div style={{ flex: 1, minHeight: 0 }}>{docsViewMode === "compare" ? compareSplit : pieceFullscreenBody}</div>
               </div>
             )}
             </>
