@@ -1,6 +1,6 @@
 import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { CATEGORIES } from "@heureka-v1/shared";
 
@@ -1491,6 +1491,19 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
     zonesTotal: number;
     error: string | null;
   } | null>(null);
+  // Saisie manuelle du sommaire : activée quand /start renvoie 422 no_toc
+  // (détection auto impossible sur un PLUi volumineux ou un sommaire atypique).
+  // On garde le PDF déjà encodé en base64 pour relancer /start sans re-lire le
+  // fichier, et la liste des ancres zone→page éditées par l'opérateur.
+  const [manualToc, setManualToc] = useState<{
+    docId: string;
+    docName: string;
+    pdfBase64: string;
+    totalPages: number;
+    rows: Array<{ code: string; startPage: string }>;
+    submitting: boolean;
+    error: string | null;
+  } | null>(null);
   const ingestTargetRef = useRef<{ id: string; name: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // Polling : on garde un timer en ref pour pouvoir l'annuler proprement
@@ -1699,6 +1712,61 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
     }
   };
 
+  // Lance (ou relance) l'extraction. `manualTocEntries` est fourni uniquement
+  // au second essai, après que la détection auto a échoué et que l'opérateur a
+  // saisi les ancres zone→page à la main.
+  const startIngest = async (
+    docId: string,
+    docName: string,
+    pdfBase64: string,
+    manualTocEntries?: Array<{ code: string; startPage: number }>,
+  ) => {
+    setIngest({
+      docId,
+      docName,
+      jobId: null,
+      phase: "Lecture du sommaire…",
+      zonesDone: 0,
+      zonesTotal: 0,
+      error: null,
+    });
+    try {
+      const startResp = await api.post<{ jobId: string; zones: Array<{ code: string }> }>(
+        "/mairie/admin/ingest-plu-pdf/start",
+        { doc_id: docId, pdf_base64: pdfBase64, ...(manualTocEntries ? { manual_toc: manualTocEntries } : {}) },
+        { timeoutMs: 120_000 },
+      );
+      setManualToc(null);
+      setIngest((prev) => prev ? {
+        ...prev,
+        jobId: startResp.jobId,
+        phase: `Extraction des règles (${startResp.zones.length} zones)…`,
+        zonesTotal: startResp.zones.length,
+      } : prev);
+      pollIngestStatus(startResp.jobId, docId, docName);
+    } catch (e) {
+      // Détection auto du sommaire impossible → on bascule sur la saisie
+      // manuelle plutôt que d'afficher une erreur sans issue.
+      if (e instanceof ApiError && e.status === 422 && (e.body as { code?: string })?.code === "no_toc") {
+        const totalPages = Number((e.body as { totalPages?: number })?.totalPages) || 0;
+        setIngest(null);
+        setManualToc((prev) => prev
+          ? { ...prev, totalPages: totalPages || prev.totalPages, submitting: false }
+          : { docId, docName, pdfBase64, totalPages, rows: [{ code: "", startPage: "" }], submitting: false, error: null });
+        return;
+      }
+      const msg = e instanceof Error ? e.message : "Erreur lors du démarrage";
+      if (manualTocEntries) {
+        // Échec d'une relance manuelle (ex. page hors plage rejetée côté API) :
+        // on garde le formulaire ouvert avec le message, sans encart séparé.
+        setIngest(null);
+        setManualToc((prev) => prev ? { ...prev, submitting: false, error: msg } : prev);
+      } else {
+        setIngest((prev) => prev ? { ...prev, error: msg } : prev);
+      }
+    }
+  };
+
   const handleFileSelected = async (file: File | null) => {
     if (!file || !ingestTargetRef.current) return;
     const target = ingestTargetRef.current;
@@ -1715,36 +1783,47 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
       error: null,
     });
 
-    try {
-      // Conversion ArrayBuffer → base64 par chunks pour gérer ~30 Mo sans
-      // saturer la stack JS (apply spread limité aux gros tableaux).
-      const buf = new Uint8Array(await file.arrayBuffer());
-      const CHUNK = 32768;
-      const chunks: string[] = [];
-      for (let i = 0; i < buf.length; i += CHUNK) {
-        chunks.push(String.fromCharCode(...buf.subarray(i, i + CHUNK)));
-      }
-      const pdf_base64 = btoa(chunks.join(""));
-
-      setIngest((prev) => prev ? { ...prev, phase: "Lecture du sommaire…" } : prev);
-      const startResp = await api.post<{ jobId: string; zones: Array<{ code: string }> }>(
-        "/mairie/admin/ingest-plu-pdf/start",
-        { doc_id: target.id, pdf_base64 },
-        { timeoutMs: 120_000 },
-      );
-      setIngest((prev) => prev ? {
-        ...prev,
-        jobId: startResp.jobId,
-        phase: `Extraction des règles (${startResp.zones.length} zones)…`,
-        zonesTotal: startResp.zones.length,
-      } : prev);
-      pollIngestStatus(startResp.jobId, target.id, target.name);
-    } catch (e) {
-      setIngest((prev) => prev ? {
-        ...prev,
-        error: e instanceof Error ? e.message : "Erreur lors du démarrage",
-      } : prev);
+    // Conversion ArrayBuffer → base64 par chunks pour gérer ~30 Mo sans
+    // saturer la stack JS (apply spread limité aux gros tableaux).
+    const buf = new Uint8Array(await file.arrayBuffer());
+    const CHUNK = 32768;
+    const chunks: string[] = [];
+    for (let i = 0; i < buf.length; i += CHUNK) {
+      chunks.push(String.fromCharCode(...buf.subarray(i, i + CHUNK)));
     }
+    const pdf_base64 = btoa(chunks.join(""));
+
+    await startIngest(target.id, target.name, pdf_base64);
+  };
+
+  // ── Helpers de la saisie manuelle du sommaire ──────────────────────────────
+  const addManualRow = () =>
+    setManualToc((p) => p ? { ...p, rows: [...p.rows, { code: "", startPage: "" }] } : p);
+  const removeManualRow = (i: number) =>
+    setManualToc((p) => p ? { ...p, rows: p.rows.filter((_, idx) => idx !== i) } : p);
+  const updateManualRow = (i: number, field: "code" | "startPage", value: string) =>
+    setManualToc((p) => p ? { ...p, rows: p.rows.map((r, idx) => idx === i ? { ...r, [field]: value } : r) } : p);
+
+  const submitManualToc = async () => {
+    if (!manualToc) return;
+    const entries = manualToc.rows
+      .map((r) => ({ code: r.code.trim(), startPage: Number(r.startPage) }))
+      .filter((r) =>
+        r.code !== "" &&
+        Number.isInteger(r.startPage) &&
+        r.startPage >= 1 &&
+        (manualToc.totalPages === 0 || r.startPage <= manualToc.totalPages));
+    if (entries.length === 0) {
+      setManualToc((p) => p ? { ...p, error: "Indiquez au moins une zone avec un code et une page de début valide." } : p);
+      return;
+    }
+    setManualToc((p) => p ? { ...p, submitting: true, error: null } : p);
+    const { docId, docName, pdfBase64 } = manualToc;
+    await startIngest(docId, docName, pdfBase64, entries);
+    // Si startIngest a re-déclenché un no_toc (improbable en manuel) ou une
+    // erreur, manualToc est déjà ré-armé/effacé par startIngest. On retombe ici
+    // seulement en cas de succès (manualToc null) — rien à faire.
+    setManualToc((p) => p ? { ...p, submitting: false } : p);
   };
 
   const typeLabel = (t: string) => EPCI_DOCUMENT_TYPES.find((d) => d.value === t)?.label.split(" — ")[0] ?? t.toUpperCase();
@@ -1915,12 +1994,13 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
             const sc = statusColors[d.status] ?? statusColors["uploaded"]!;
             const vc = validationColors[d.validation_status] ?? validationColors["brouillon"]!;
             const isIngesting = ingest?.docId === d.id;
+            const isManualToc = manualToc?.docId === d.id;
             const isEditing = editingDocId === d.id;
             const progressPct = ingest && ingest.zonesTotal > 0
               ? Math.round((ingest.zonesDone / ingest.zonesTotal) * 100)
               : 0;
             return (
-              <div key={d.id} style={{ background: C.white, border: `1px solid ${isIngesting || isEditing ? C.accent : C.border}`, borderRadius: 8, padding: "10px 14px" }}>
+              <div key={d.id} style={{ background: C.white, border: `1px solid ${isIngesting || isManualToc || isEditing ? C.accent : C.border}`, borderRadius: 8, padding: "10px 14px" }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 13, fontWeight: 700, color: C.text }}>
@@ -1933,7 +2013,7 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
                   </div>
                   <Badge label={d.status} color={sc.color} bg={sc.bg} />
                   <Badge label={d.validation_status} color={vc.color} bg={vc.bg} />
-                  {!isIngesting && !isEditing && !ingest && d.status === "uploaded" && (
+                  {!isIngesting && !isManualToc && !isEditing && !ingest && !manualToc && d.status === "uploaded" && (
                     <button
                       onClick={(ev) => { ev.stopPropagation(); handleIngestStart(d); }}
                       style={{ padding: "6px 12px", background: C.accent, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600 }}
@@ -1941,7 +2021,7 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
                       📥 Importer un PDF
                     </button>
                   )}
-                  {!isIngesting && !isEditing && (
+                  {!isIngesting && !isManualToc && !isEditing && (
                     <>
                       <button
                         onClick={(ev) => { ev.stopPropagation(); openEdit(d); }}
@@ -2060,6 +2140,84 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
                         </div>
                       </>
                     )}
+                  </div>
+                )}
+
+                {isManualToc && !isIngesting && manualToc && (
+                  <div style={{ marginTop: 10, paddingTop: 10, borderTop: `1px solid ${C.border}` }}>
+                    <div style={{ fontSize: 12, color: C.text, fontWeight: 600, marginBottom: 4 }}>
+                      Sommaire non détecté automatiquement — saisie manuelle
+                    </div>
+                    <div style={{ fontSize: 11, color: C.textMuted, marginBottom: 10 }}>
+                      Indiquez chaque zone (code et page de début de sa section dans le PDF).
+                      La fin de chaque zone est déduite du début de la suivante.
+                      {manualToc.totalPages > 0 && ` Le document fait ${manualToc.totalPages} pages.`}
+                    </div>
+
+                    <div style={{ display: "flex", flexDirection: "column", gap: 6, marginBottom: 8 }}>
+                      <div style={{ display: "flex", gap: 8, fontSize: 10, color: C.textMuted, fontWeight: 600, paddingLeft: 2 }}>
+                        <span style={{ flex: 1 }}>CODE ZONE (UA, AUs, A, N…)</span>
+                        <span style={{ width: 120 }}>PAGE DE DÉBUT</span>
+                        <span style={{ width: 28 }} />
+                      </div>
+                      {manualToc.rows.map((row, i) => (
+                        <div key={i} style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                          <input
+                            value={row.code}
+                            onChange={(e) => updateManualRow(i, "code", e.target.value)}
+                            placeholder="ex : UA"
+                            style={{ flex: 1, padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, outline: "none", boxSizing: "border-box" }}
+                          />
+                          <input
+                            type="number"
+                            min={1}
+                            max={manualToc.totalPages || undefined}
+                            value={row.startPage}
+                            onChange={(e) => updateManualRow(i, "startPage", e.target.value)}
+                            placeholder="ex : 12"
+                            style={{ width: 120, padding: "6px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, outline: "none", boxSizing: "border-box" }}
+                          />
+                          <button
+                            onClick={(ev) => { ev.stopPropagation(); removeManualRow(i); }}
+                            disabled={manualToc.rows.length === 1}
+                            title="Retirer cette ligne"
+                            style={{ width: 28, height: 28, background: C.redBg, color: C.red, border: "none", borderRadius: 6, cursor: manualToc.rows.length === 1 ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700, opacity: manualToc.rows.length === 1 ? 0.4 : 1 }}
+                          >
+                            ×
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+
+                    <button
+                      onClick={(ev) => { ev.stopPropagation(); addManualRow(); }}
+                      style={{ padding: "5px 10px", background: C.accentLight, color: C.accent, border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 600, marginBottom: 10 }}
+                    >
+                      + Ajouter une zone
+                    </button>
+
+                    {manualToc.error && (
+                      <div style={{ marginBottom: 10, padding: "8px 12px", background: C.redBg, color: C.red, borderRadius: 6, fontSize: 12 }}>
+                        ⚠ {manualToc.error}
+                      </div>
+                    )}
+
+                    <div style={{ display: "flex", gap: 8 }}>
+                      <button
+                        onClick={(ev) => { ev.stopPropagation(); submitManualToc(); }}
+                        disabled={manualToc.submitting}
+                        style={{ padding: "7px 14px", background: C.accent, color: "white", border: "none", borderRadius: 6, cursor: manualToc.submitting ? "wait" : "pointer", fontSize: 12, fontWeight: 600, opacity: manualToc.submitting ? 0.6 : 1 }}
+                      >
+                        {manualToc.submitting ? "Lancement…" : "Lancer l'extraction"}
+                      </button>
+                      <button
+                        onClick={(ev) => { ev.stopPropagation(); setManualToc(null); }}
+                        disabled={manualToc.submitting}
+                        style={{ padding: "7px 14px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", fontSize: 12, color: C.text, fontWeight: 600 }}
+                      >
+                        Annuler
+                      </button>
+                    </div>
                   </div>
                 )}
               </div>
