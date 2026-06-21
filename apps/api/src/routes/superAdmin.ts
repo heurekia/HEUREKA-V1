@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, PLU_FAMILY_TYPES } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { invalidatePricingCache } from "../services/aiUsage.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
@@ -325,6 +325,164 @@ superAdminRouter.delete("/epci/:id", async (req, res) => {
 
     await db.delete(epci).where(eq(epci.id, id));
     res.json({ success: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Documents portés par un EPCI (PLUi, PLUm, etc.) ─────────────────────────
+//
+// Le minimum vital pour déclencher l'usage PLUi : créer un regulatory_document
+// porté par un EPCI et le rattacher aux communes couvertes (toutes les membres
+// par défaut, ou un sous-ensemble explicite pour un déploiement progressif).
+// L'ingestion effective des règles passe ensuite par la CLI pnpm ingest avec
+// --doc-id, ou par une route ultérieure d'extraction PDF.
+
+// Liste les documents portés par un EPCI, avec leur couverture (N/M communes).
+// Comportement parallèle à GET /superadmin/epci pour le bloc regulatory : tout
+// est dérivé du modèle documentaire, rien n'est stocké en double.
+superAdminRouter.get("/epci/:id/documents", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [groupement] = await db.select({ id: epci.id }).from(epci).where(eq(epci.id, id)).limit(1);
+    if (!groupement) return res.status(404).json({ error: "EPCI introuvable" });
+
+    const docs = await db
+      .select({
+        id: regulatory_documents.id,
+        type: regulatory_documents.type,
+        name: regulatory_documents.name,
+        original_filename: regulatory_documents.original_filename,
+        synthese: regulatory_documents.synthese,
+        status: regulatory_documents.status,
+        validation_status: regulatory_documents.validation_status,
+        ingested_at: regulatory_documents.ingested_at,
+        created_at: regulatory_documents.created_at,
+      })
+      .from(regulatory_documents)
+      .where(eq(regulatory_documents.porteur_epci_id, id))
+      .orderBy(desc(regulatory_documents.created_at));
+
+    // Couverture par document : nombre de communes rattachées via document_communes.
+    const coverageRows = docs.length === 0 ? [] : await db
+      .select({ document_id: document_communes.document_id, commune_id: document_communes.commune_id })
+      .from(document_communes)
+      .where(inArray(document_communes.document_id, docs.map((d) => d.id)));
+    const coverageByDoc = new Map<string, string[]>();
+    for (const r of coverageRows) {
+      const arr = coverageByDoc.get(r.document_id) ?? [];
+      arr.push(r.commune_id);
+      coverageByDoc.set(r.document_id, arr);
+    }
+
+    // Nombre total de communes membres (pour exposer la fraction 3/44).
+    const totalMembersRows = await db
+      .select({ count: count() })
+      .from(communes)
+      .where(eq(communes.epci_id, id));
+    const totalMembers = Number(totalMembersRows[0]?.count ?? 0);
+
+    res.json(docs.map((d) => ({
+      ...d,
+      communes_couvertes: coverageByDoc.get(d.id) ?? [],
+      communes_membres_total: totalMembers,
+    })));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Crée un document porté par un EPCI et le rattache aux communes couvertes.
+// Si `commune_ids` n'est pas fourni, on rattache TOUTES les communes membres
+// par défaut (mode complet). Sinon on respecte la liste — utile au déploiement
+// progressif (3 communes pilotes sur 44).
+//
+// Sécurité : on n'accepte que des communes effectivement membres de l'EPCI,
+// pour éviter qu'un appel mal formé n'écrase la sémantique du périmètre.
+superAdminRouter.post("/epci/:id/documents", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { type, name, original_filename, commune_ids, synthese } = req.body as {
+      type?: string;
+      name?: string;
+      original_filename?: string;
+      commune_ids?: string[];
+      synthese?: string;
+    };
+
+    if (!type) return res.status(400).json({ error: "type est requis" });
+    if (!name?.trim()) return res.status(400).json({ error: "name est requis" });
+    if (!(REGULATORY_DOCUMENT_TYPES as readonly string[]).includes(type)) {
+      return res.status(400).json({ error: `type invalide. Valeurs autorisées : ${REGULATORY_DOCUMENT_TYPES.join(", ")}` });
+    }
+
+    const [groupement] = await db.select({ id: epci.id }).from(epci).where(eq(epci.id, id)).limit(1);
+    if (!groupement) return res.status(404).json({ error: "EPCI introuvable" });
+
+    // Résolution des communes à rattacher.
+    const memberRows = await db
+      .select({ id: communes.id })
+      .from(communes)
+      .where(eq(communes.epci_id, id));
+    const memberIds = new Set(memberRows.map((r) => r.id));
+
+    let targetCommuneIds: string[];
+    if (Array.isArray(commune_ids) && commune_ids.length > 0) {
+      // Filtre défensif : on ne rattache QUE des communes effectivement membres.
+      // Une commune externe glissée ici serait un signal de bug côté caller.
+      const invalid = commune_ids.filter((cid) => !memberIds.has(cid));
+      if (invalid.length > 0) {
+        return res.status(400).json({
+          error: "Certaines communes ne sont pas membres de cet EPCI",
+          invalid_commune_ids: invalid,
+        });
+      }
+      targetCommuneIds = commune_ids;
+    } else {
+      // Pas de liste fournie → toutes les communes membres.
+      targetCommuneIds = Array.from(memberIds);
+    }
+
+    if (targetCommuneIds.length === 0) {
+      return res.status(400).json({
+        error: "Aucune commune à rattacher (EPCI sans membre ou liste vide)",
+      });
+    }
+
+    // Création atomique : document + rattachements N:N.
+    const document = await db.transaction(async (tx) => {
+      const [doc] = await tx
+        .insert(regulatory_documents)
+        .values({
+          // commune_id reste NULL en mode PLUi : le porteur est l'EPCI, le
+          // périmètre vit dans document_communes.
+          commune_id: null,
+          porteur_commune_id: null,
+          porteur_epci_id: id,
+          type,
+          name: name.trim(),
+          original_filename: original_filename?.trim() || "—",
+          synthese: synthese?.trim() || null,
+          // Statut initial "uploaded" : aucune règle n'est encore ingérée. La
+          // CLI ou une route d'extraction passera ensuite à "ingested".
+          status: "uploaded",
+        })
+        .returning();
+
+      await tx.insert(document_communes).values(
+        targetCommuneIds.map((commune_id) => ({ document_id: doc!.id, commune_id })),
+      );
+
+      return doc!;
+    });
+
+    res.status(201).json({
+      ...document,
+      communes_couvertes: targetCommuneIds,
+      communes_membres_total: memberIds.size,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
