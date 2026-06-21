@@ -2401,12 +2401,15 @@ function ParametresScreen({ commune = "", isAdmin = false, canManageUsers = fals
     "Intégrations": "integrations",
   };
   const SLUG_TO_TAB: Record<string, string> = Object.fromEntries(Object.entries(TAB_SLUGS).map(([tab, slug]) => [slug, tab]));
+  const NOTIF_SUBS = ["historique", "evenements", "canaux"] as const;
+  type NotifSub = (typeof NOTIF_SUBS)[number];
   const [searchParams, setSearchParams] = useSearchParams();
   const [stab, setStab] = useState(() => SLUG_TO_TAB[searchParams.get("tab") ?? ""] ?? "Réglementation");
   const selectTab = (t: string) => {
     setStab(t);
     const sp = new URLSearchParams(searchParams);
     sp.set("tab", TAB_SLUGS[t] ?? "reglementation");
+    if (t !== "Notifications") sp.delete("sub");
     setSearchParams(sp);
   };
   // Garde l'onglet synchronisé avec l'URL (liens directs, navigation arrière/avant)
@@ -2432,7 +2435,22 @@ function ParametresScreen({ commune = "", isAdmin = false, canManageUsers = fals
   ]);
   const toggleChannel = (label: string) => setChannels(cs => cs.map(c => c.label === label ? { ...c, active: !c.active } : c));
   const [recipientMode, setRecipientMode] = useState(0);
-  const [notifSubTab, setNotifSubTab] = useState<"historique" | "evenements" | "canaux">("historique");
+  const [notifSubTab, setNotifSubTab] = useState<NotifSub>(() => {
+    const s = searchParams.get("sub");
+    return NOTIF_SUBS.includes(s as NotifSub) ? (s as NotifSub) : "historique";
+  });
+  const selectNotifSubTab = (val: NotifSub) => {
+    setNotifSubTab(val);
+    const sp = new URLSearchParams(searchParams);
+    sp.set("tab", "notifications");
+    sp.set("sub", val);
+    setSearchParams(sp);
+  };
+  // Synchronise le sous-onglet Notifications avec l'URL (?sub=)
+  useEffect(() => {
+    const s = searchParams.get("sub");
+    if (NOTIF_SUBS.includes(s as NotifSub) && s !== notifSubTab) setNotifSubTab(s as NotifSub);
+  }, [searchParams]);
   const [histNotifs, setHistNotifs] = useState<ApiNotif[]>([]);
   const [histLoading, setHistLoading] = useState(false);
   const loadHistNotifs = () => {
@@ -2479,7 +2497,7 @@ function ParametresScreen({ commune = "", isAdmin = false, canManageUsers = fals
           {/* Sub-tabs */}
           <div style={{ display: "flex", gap: 0, borderBottom: "1px solid #E2E8F0", marginBottom: 20 }}>
             {([["historique", "Historique"], ["evenements", "Par événement"], ["canaux", "Canaux & Préférences"]] as const).map(([val, label]) => (
-              <button key={val} onClick={() => setNotifSubTab(val)}
+              <button key={val} onClick={() => selectNotifSubTab(val)}
                 style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, cursor: "pointer",
                   fontWeight: notifSubTab === val ? 600 : 400, color: notifSubTab === val ? "#4F46E5" : "#64748b",
                   borderBottom: notifSubTab === val ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -1 }}>
