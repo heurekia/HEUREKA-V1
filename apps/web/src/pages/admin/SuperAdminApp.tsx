@@ -76,6 +76,20 @@ interface InseeCandidate {
   region: string;
 }
 
+interface EpciCandidate {
+  nom: string;
+  siren: string;
+  type: string;
+}
+
+interface EpciImportResult {
+  epci: { id: string; name: string; type: string; siren: string | null };
+  created: string[];
+  attached: string[];
+  already_member: string[];
+  errors: { commune: string; error: string }[];
+}
+
 // ─── Colors ───────────────────────────────────────────────────────────────────
 const C = {
   sidebar: "#0F172A",
@@ -1889,6 +1903,221 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
   );
 }
 
+// ─── Import EPCI officiel ─────────────────────────────────────────────────────
+// Recherche un EPCI dans le référentiel officiel (geo.api.gouv.fr), prévisualise
+// ses communes membres, puis crée le groupement + crée/rattache toutes les
+// communes cochées en un seul appel. Remplace la saisie commune par commune.
+function EpciImportPanel({ onDone, onCancel }: { onDone: (r: EpciImportResult) => void; onCancel: () => void }) {
+  const [query, setQuery] = useState("");
+  const [results, setResults] = useState<EpciCandidate[]>([]);
+  const [searching, setSearching] = useState(false);
+  const [open, setOpen] = useState(false);
+
+  const [selected, setSelected] = useState<EpciCandidate | null>(null);
+  const [epciForm, setEpciForm] = useState({ name: "", type: "CC", departement: "", region: "" });
+  const [members, setMembers] = useState<InseeCandidate[]>([]);
+  const [checked, setChecked] = useState<Record<string, boolean>>({});
+  const [loadingMembers, setLoadingMembers] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const search = useCallback(async (q: string) => {
+    if (q.length < 2) { setResults([]); setOpen(false); return; }
+    setSearching(true);
+    try {
+      const data = await api.get<EpciCandidate[]>(`/admin/epci-lookup?nom=${encodeURIComponent(q)}`);
+      setResults(data);
+      setOpen(true);
+    } catch {
+      setResults([]);
+    } finally {
+      setSearching(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    const t = setTimeout(() => search(query), 350);
+    return () => clearTimeout(t);
+  }, [query, search]);
+
+  const pickEpci = async (e: EpciCandidate) => {
+    setSelected(e);
+    setQuery(e.nom);
+    setOpen(false);
+    setError(null);
+    setLoadingMembers(true);
+    setMembers([]);
+    try {
+      const data = await api.get<InseeCandidate[]>(`/admin/epci-communes?siren=${encodeURIComponent(e.siren)}`);
+      setMembers(data);
+      setChecked(Object.fromEntries(data.map((c) => [c.insee, true])));
+      // Pré-remplit l'en-tête du groupement depuis la première commune membre.
+      setEpciForm({
+        name: e.nom,
+        type: e.type || "CC",
+        departement: data[0]?.departement ?? "",
+        region: data[0]?.region ?? "",
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur lors de la récupération des communes");
+    } finally {
+      setLoadingMembers(false);
+    }
+  };
+
+  const checkedCount = members.filter((c) => checked[c.insee]).length;
+  const allChecked = members.length > 0 && checkedCount === members.length;
+
+  const handleImport = async () => {
+    const communes = members.filter((c) => checked[c.insee]);
+    if (communes.length === 0) { setError("Sélectionnez au moins une commune"); return; }
+    if (!epciForm.name.trim()) { setError("Le nom du groupement est requis"); return; }
+    setImporting(true);
+    setError(null);
+    try {
+      const result = await api.post<EpciImportResult>("/admin/epci/import", {
+        epci: {
+          name: epciForm.name.trim(),
+          siren: selected?.siren,
+          type: epciForm.type,
+          departement: epciForm.departement || undefined,
+          region: epciForm.region || undefined,
+        },
+        communes,
+      });
+      onDone(result);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Erreur lors de l'import");
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  return (
+    <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
+      <h3 style={{ margin: "0 0 6px", fontSize: 16, fontWeight: 700, color: C.text }}>Importer un EPCI officiel</h3>
+      <p style={{ margin: "0 0 20px", fontSize: 13, color: C.textMuted }}>
+        Recherchez l'EPCI dans le référentiel national : ses communes membres seront créées et rattachées automatiquement.
+      </p>
+
+      <Field label="Rechercher un EPCI">
+        <div style={{ position: "relative" }}>
+          <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+            <Input value={query} onChange={(v) => { setQuery(v); setSelected(null); }} placeholder="CC du Golfe, Métropole de Lyon…" />
+            {searching && <Spinner size={18} />}
+          </div>
+          {open && results.length > 0 && (
+            <div style={{
+              position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 100,
+              background: C.white, border: `1px solid ${C.border}`, borderRadius: 8,
+              boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden",
+            }}>
+              {results.map((r) => (
+                <button
+                  key={r.siren}
+                  onClick={() => pickEpci(r)}
+                  style={{
+                    display: "block", width: "100%", textAlign: "left", padding: "10px 14px",
+                    background: "none", border: "none", cursor: "pointer", borderBottom: `1px solid ${C.border}`,
+                    fontSize: 14, color: C.text,
+                  }}
+                  onMouseEnter={(e) => (e.currentTarget.style.background = C.bg)}
+                  onMouseLeave={(e) => (e.currentTarget.style.background = "none")}
+                >
+                  <strong>{r.nom}</strong>
+                  <span style={{ color: C.textMuted, marginLeft: 8, fontSize: 12 }}>{r.type} · SIREN {r.siren}</span>
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
+      </Field>
+
+      {loadingMembers && (
+        <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "20px 0", color: C.textMuted, fontSize: 14 }}>
+          <Spinner size={18} /> Récupération des communes membres…
+        </div>
+      )}
+
+      {selected && !loadingMembers && members.length > 0 && (
+        <div style={{ marginTop: 20 }}>
+          <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16, marginBottom: 16 }}>
+            <Field label="Nom du groupement *">
+              <Input value={epciForm.name} onChange={(v) => setEpciForm({ ...epciForm, name: v })} />
+            </Field>
+            <Field label="Type">
+              <Select value={epciForm.type} onChange={(v) => setEpciForm({ ...epciForm, type: v })}>
+                {["CC", "CA", "CU", "Métropole", "SAN", "Autre"].map((t) => <option key={t} value={t}>{t}</option>)}
+              </Select>
+            </Field>
+            <Field label="Département">
+              <Input value={epciForm.departement} onChange={(v) => setEpciForm({ ...epciForm, departement: v })} />
+            </Field>
+            <Field label="Région">
+              <Input value={epciForm.region} onChange={(v) => setEpciForm({ ...epciForm, region: v })} />
+            </Field>
+          </div>
+
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+            <span style={{ fontSize: 13, fontWeight: 600, color: C.textMuted }}>
+              Communes membres ({checkedCount}/{members.length} sélectionnée{checkedCount !== 1 ? "s" : ""})
+            </span>
+            <button
+              onClick={() => setChecked(Object.fromEntries(members.map((c) => [c.insee, !allChecked])))}
+              style={{ background: "none", border: "none", cursor: "pointer", color: C.accent, fontSize: 13, fontWeight: 600 }}
+            >
+              {allChecked ? "Tout décocher" : "Tout cocher"}
+            </button>
+          </div>
+
+          <div style={{
+            maxHeight: 280, overflowY: "auto", border: `1px solid ${C.border}`, borderRadius: 8,
+            display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: 2, padding: 6, background: C.bg,
+          }}>
+            {members.map((c) => (
+              <label key={c.insee} style={{
+                display: "flex", alignItems: "center", gap: 8, padding: "7px 10px", borderRadius: 6,
+                cursor: "pointer", background: checked[c.insee] ? C.accentLight : C.white, fontSize: 13,
+              }}>
+                <input
+                  type="checkbox"
+                  checked={!!checked[c.insee]}
+                  onChange={(ev) => setChecked({ ...checked, [c.insee]: ev.target.checked })}
+                  style={{ accentColor: C.accent, cursor: "pointer" }}
+                />
+                <span style={{ color: C.text, fontWeight: 500 }}>{c.nom}</span>
+                <span style={{ color: C.textLight, fontSize: 11, marginLeft: "auto" }}>{c.insee}</span>
+              </label>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {error && (
+        <div style={{ marginTop: 16, padding: "10px 14px", background: C.redBg, color: C.red, borderRadius: 8, fontSize: 13 }}>{error}</div>
+      )}
+
+      <div style={{ display: "flex", gap: 12, marginTop: 20 }}>
+        <button
+          onClick={handleImport}
+          disabled={importing || checkedCount === 0}
+          style={{
+            padding: "10px 24px", background: importing || checkedCount === 0 ? C.textLight : C.accent, color: "white",
+            border: "none", borderRadius: 8, cursor: importing || checkedCount === 0 ? "not-allowed" : "pointer", fontSize: 14, fontWeight: 700,
+            display: "flex", alignItems: "center", gap: 8,
+          }}
+        >
+          {importing && <Spinner size={16} />}
+          {importing ? "Import en cours…" : `Importer ${checkedCount} commune${checkedCount !== 1 ? "s" : ""}`}
+        </button>
+        <button onClick={onCancel} style={{ padding: "10px 20px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, color: C.text, fontWeight: 600 }}>
+          Annuler
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ─── Groupements ──────────────────────────────────────────────────────────────
 function Groupements() {
   const [epciList, setEpciList] = useState<Epci[]>([]);
@@ -1896,6 +2125,7 @@ function Groupements() {
   const [loading, setLoading] = useState(true);
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
   const [showCreate, setShowCreate] = useState(false);
+  const [showImport, setShowImport] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [form, setForm] = useState({ name: "", siren: "", type: "CC", departement: "", region: "" });
@@ -1926,6 +2156,21 @@ function Groupements() {
     } catch (e) {
       setToast({ msg: e instanceof Error ? e.message : "Erreur", type: "error" });
     }
+  };
+
+  const handleImportDone = (r: EpciImportResult) => {
+    setShowImport(false);
+    const parts: string[] = [];
+    if (r.created.length) parts.push(`${r.created.length} créée${r.created.length !== 1 ? "s" : ""}`);
+    if (r.attached.length) parts.push(`${r.attached.length} rattachée${r.attached.length !== 1 ? "s" : ""}`);
+    if (r.already_member.length) parts.push(`${r.already_member.length} déjà membre${r.already_member.length !== 1 ? "s" : ""}`);
+    if (r.errors.length) parts.push(`${r.errors.length} en erreur`);
+    setToast({
+      msg: `${r.epci.name} : ${parts.join(", ") || "aucune commune"}`,
+      type: r.errors.length ? "error" : "success",
+    });
+    setExpandedId(r.epci.id);
+    load();
   };
 
   const handleDelete = async (id: string) => {
@@ -1979,15 +2224,25 @@ function Groupements() {
           <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Groupements EPCI</h1>
           <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>{epciList.length} groupement{epciList.length !== 1 ? "s" : ""}</p>
         </div>
-        <button
-          onClick={() => setShowCreate(!showCreate)}
-          style={{ padding: "10px 20px", background: C.accent, color: "white", border: "none", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700 }}
-          onMouseEnter={(e) => (e.currentTarget.style.background = C.accentHover)}
-          onMouseLeave={(e) => (e.currentTarget.style.background = C.accent)}
-        >
-          {showCreate ? "Annuler" : "+ Créer un groupement"}
-        </button>
+        <div style={{ display: "flex", gap: 12 }}>
+          <button
+            onClick={() => { setShowImport(!showImport); setShowCreate(false); }}
+            style={{ padding: "10px 20px", background: showImport ? C.bg : C.accentLight, color: C.accent, border: `1px solid ${showImport ? C.border : C.accentLight}`, borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700 }}
+          >
+            {showImport ? "Annuler" : "⚡ Importer un EPCI officiel"}
+          </button>
+          <button
+            onClick={() => { setShowCreate(!showCreate); setShowImport(false); }}
+            style={{ padding: "10px 20px", background: C.accent, color: "white", border: "none", borderRadius: 10, cursor: "pointer", fontSize: 14, fontWeight: 700 }}
+            onMouseEnter={(e) => (e.currentTarget.style.background = C.accentHover)}
+            onMouseLeave={(e) => (e.currentTarget.style.background = C.accent)}
+          >
+            {showCreate ? "Annuler" : "+ Créer un groupement"}
+          </button>
+        </div>
       </div>
+
+      {showImport && <EpciImportPanel onDone={handleImportDone} onCancel={() => setShowImport(false)} />}
 
       {showCreate && (
         <div style={{ background: C.white, borderRadius: 12, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>

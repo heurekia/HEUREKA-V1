@@ -331,6 +331,218 @@ superAdminRouter.delete("/epci/:id", async (req, res) => {
   }
 });
 
+// ─── Import EPCI « clé en main » ─────────────────────────────────────────────
+//
+// Le point de douleur côté super admin : créer un EPCI puis saisir ses communes
+// membres une par une. Or l'État publie la composition officielle de chaque EPCI
+// (geo.api.gouv.fr). On en tire trois routes :
+//   1. /epci-lookup        : rechercher l'EPCI officiel (nom + SIREN + type)
+//   2. /epci-communes      : prévisualiser la liste des communes membres
+//   3. POST /epci/import   : créer le groupement + créer/rattacher les communes
+//
+// Le rattachement est non destructif : une commune déjà connue (même code INSEE)
+// est simplement reliée à l'EPCI, on ne réécrit pas ses autres champs.
+
+// Déduit le type Heureka (CC/CA/CU/Métropole) depuis le nom officiel de l'EPCI.
+// geo.api.gouv.fr n'expose pas la nature juridique de façon exploitable, mais le
+// nom la porte presque toujours ("CC du …", "Métropole de …").
+function inferEpciType(nom: string): string {
+  const n = nom.toLowerCase();
+  if (n.includes("métropole") || n.includes("metropole")) return "Métropole";
+  if (n.startsWith("ca ") || n.includes("communauté d'agglomération") || n.includes("communaute d'agglomeration")) return "CA";
+  if (n.startsWith("cu ") || n.includes("communauté urbaine") || n.includes("communaute urbaine")) return "CU";
+  if (n.startsWith("cc ") || n.includes("communauté de communes") || n.includes("communaute de communes")) return "CC";
+  return "CC";
+}
+
+// Recherche un EPCI dans le référentiel officiel par son nom.
+superAdminRouter.get("/epci-lookup", async (req, res) => {
+  try {
+    const { nom } = req.query as { nom?: string };
+    if (!nom) return res.status(400).json({ error: "nom est requis" });
+
+    const url = `https://geo.api.gouv.fr/epcis?nom=${encodeURIComponent(nom)}&fields=nom,code&limit=8`;
+    const response = await fetch(url);
+    if (!response.ok) {
+      return res.status(502).json({ error: "Erreur lors de la consultation du service geo.api.gouv.fr" });
+    }
+
+    const data = await response.json() as Array<{ nom: string; code: string }>;
+    const result = data.map((e) => ({
+      nom: e.nom,
+      siren: e.code,
+      type: inferEpciType(e.nom),
+    }));
+
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Liste les communes membres d'un EPCI (référentiel officiel), pour prévisualiser
+// avant import. siren = code de l'EPCI dans geo.api.gouv.fr.
+superAdminRouter.get("/epci-communes", async (req, res) => {
+  try {
+    const { siren } = req.query as { siren?: string };
+    if (!siren) return res.status(400).json({ error: "siren est requis" });
+
+    const url = `https://geo.api.gouv.fr/epcis/${encodeURIComponent(siren)}/communes?fields=nom,code,codesPostaux,departement,region`;
+    const response = await fetch(url);
+    if (response.status === 404) {
+      return res.status(404).json({ error: "EPCI introuvable dans le référentiel officiel" });
+    }
+    if (!response.ok) {
+      return res.status(502).json({ error: "Erreur lors de la consultation du service geo.api.gouv.fr" });
+    }
+
+    const data = await response.json() as Array<{
+      nom: string;
+      code: string;
+      codesPostaux: string[];
+      departement?: { nom: string };
+      region?: { nom: string };
+    }>;
+
+    const result = data
+      .map((c) => ({
+        nom: c.nom,
+        insee: c.code,
+        zip: c.codesPostaux?.[0] ?? "",
+        departement: c.departement?.nom ?? "",
+        region: c.region?.nom ?? "",
+      }))
+      .sort((a, b) => a.nom.localeCompare(b.nom, "fr"));
+
+    res.json(result);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Crée (ou réutilise) un EPCI puis crée/rattache en lot les communes fournies.
+// Body : { epci_id?, epci?: { name, siren?, type?, departement?, region? },
+//          communes: [{ nom, insee, zip?, departement?, region? }] }
+// - epci_id fourni → import dans un groupement existant.
+// - sinon → réutilise l'EPCI de même SIREN s'il existe, sinon le crée.
+// Rattachement non destructif : commune existante (même INSEE) = simple lien.
+superAdminRouter.post("/epci/import", async (req, res) => {
+  try {
+    const body = (req.body ?? {}) as {
+      epci_id?: string;
+      epci?: { name?: string; siren?: string; type?: string; departement?: string; region?: string };
+      communes?: Array<{ nom?: string; insee?: string; zip?: string; departement?: string; region?: string }>;
+    };
+
+    const inputCommunes = (body.communes ?? []).filter((c) => c.insee && c.nom);
+    if (inputCommunes.length === 0) {
+      return res.status(400).json({ error: "Aucune commune à importer" });
+    }
+
+    // Département / région de l'EPCI : fournis explicitement, sinon dérivés de la
+    // première commune membre (suffisant pour pré-remplir l'en-tête du groupement).
+    const firstC = inputCommunes[0]!;
+
+    // 1. Résoudre l'EPCI cible.
+    let targetEpci: typeof epci.$inferSelect | undefined;
+    if (body.epci_id) {
+      [targetEpci] = await db.select().from(epci).where(eq(epci.id, body.epci_id)).limit(1);
+      if (!targetEpci) return res.status(404).json({ error: "Groupement introuvable" });
+    } else {
+      const e = body.epci ?? {};
+      const name = e.name?.trim();
+      if (!name) return res.status(400).json({ error: "epci.name ou epci_id est requis" });
+
+      // Réutilise un EPCI de même SIREN pour éviter les doublons.
+      if (e.siren) {
+        [targetEpci] = await db.select().from(epci).where(eq(epci.siren, e.siren)).limit(1);
+      }
+      if (!targetEpci) {
+        [targetEpci] = await db
+          .insert(epci)
+          .values({
+            name,
+            siren: e.siren || null,
+            type: e.type || inferEpciType(name),
+            departement: e.departement || firstC.departement || null,
+            region: e.region || firstC.region || null,
+          })
+          .returning();
+      }
+    }
+    const epciId = targetEpci!.id;
+
+    // 2. Communes déjà en base (par INSEE), pour distinguer création / rattachement.
+    const inseeCodes = inputCommunes.map((c) => c.insee!) as string[];
+    const existing = await db
+      .select({ id: communes.id, insee_code: communes.insee_code, epci_id: communes.epci_id })
+      .from(communes)
+      .where(inArray(communes.insee_code, inseeCodes));
+    const existingByInsee = new Map(existing.map((c) => [c.insee_code, c]));
+
+    const created: string[] = [];
+    const attached: string[] = [];
+    const alreadyMember: string[] = [];
+    const errors: Array<{ commune: string; error: string }> = [];
+
+    for (const c of inputCommunes) {
+      try {
+        const found = existingByInsee.get(c.insee!);
+        if (found) {
+          if (found.epci_id === epciId) {
+            alreadyMember.push(c.nom!);
+          } else {
+            // Rattachement non destructif : on ne touche qu'à epci_id.
+            await db
+              .update(communes)
+              .set({ epci_id: epciId, updated_at: new Date() })
+              .where(eq(communes.id, found.id));
+            attached.push(c.nom!);
+          }
+        } else {
+          await db.insert(communes).values({
+            name: c.nom!,
+            insee_code: c.insee!,
+            zip_code: c.zip || "",
+            departement: c.departement || null,
+            region: c.region || null,
+            epci_id: epciId,
+            instruction_mutualisee: false,
+          });
+          created.push(c.nom!);
+        }
+      } catch (e) {
+        errors.push({ commune: c.nom ?? c.insee ?? "?", error: e instanceof Error ? e.message : "Erreur" });
+      }
+    }
+
+    await logAudit(req, "admin_epci_imported", {
+      targetType: "epci",
+      targetId: epciId,
+      metadata: {
+        epci_name: targetEpci!.name,
+        created: created.length,
+        attached: attached.length,
+        already_member: alreadyMember.length,
+        errors: errors.length,
+      },
+    });
+
+    res.status(201).json({
+      epci: { id: epciId, name: targetEpci!.name, type: targetEpci!.type, siren: targetEpci!.siren },
+      created,
+      attached,
+      already_member: alreadyMember,
+      errors,
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ─── Documents portés par un EPCI (PLUi, PLUm, etc.) ─────────────────────────
 //
 // Le minimum vital pour déclencher l'usage PLUi : créer un regulatory_document
