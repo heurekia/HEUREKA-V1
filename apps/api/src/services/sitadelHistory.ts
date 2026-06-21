@@ -49,6 +49,8 @@ const TYPE_DAU_LABELS: Record<string, string> = {
   PD: "Permis de démolir",
 };
 
+export type SitadelScope = "parcel" | "street" | "commune" | "auto";
+
 export interface SitadelPermit {
   num_dau: string;
   type_dau: string;            // "PC" | "DP" | "PA" | "PD"
@@ -60,6 +62,8 @@ export interface SitadelPermit {
   date_daact: string | null;   // déclaration d'achèvement
   an_depot: number | null;
   adresse: string | null;
+  voie: string | null;         // ADR_LIBVOIE_TER brut (sert au filtre rue)
+  lieudit: string | null;      // ADR_LIEUDIT_TER brut (adresses rurales)
   superficie_terrain: number | null;
   cadastre: Array<{ section: string; numero: string }>;
   // Détails projet (présents selon la source)
@@ -74,6 +78,8 @@ export interface SitadelHistoryResult {
   permits: SitadelPermit[];
   total: number;
   truncated: boolean;
+  /** Niveau de filtre effectivement retenu (utile en mode auto). */
+  effective_scope: SitadelScope;
   sources_consulted: string[];
   warnings: string[];
 }
@@ -105,16 +111,19 @@ function buildCadastre(row: Record<string, unknown>): Array<{ section: string; n
 }
 
 function normalize(row: Record<string, unknown>, source: SitadelPermit["source"]): SitadelPermit | null {
-  const numDau = pickStr(row, "NUM_DAU");
-  const typeDau = pickStr(row, "TYPE_DAU");
+  const numDau = pickStr(row, "NUM_DAU") ?? pickStr(row, "NUM_PA") ?? pickStr(row, "NUM_PD");
+  const typeDau = pickStr(row, "TYPE_DAU")
+    ?? (source === "amenager" ? "PA" : source === "demolir" ? "PD" : null);
   if (!numDau || !typeDau) return null;
 
-  const etatCode = pickStr(row, "ETAT_DAU") ?? "";
+  const etatCode = pickStr(row, "ETAT_DAU") ?? pickStr(row, "ETAT_PA") ?? pickStr(row, "ETAT_PD") ?? "";
 
+  const voie = pickStr(row, "ADR_LIBVOIE_TER");
+  const lieudit = pickStr(row, "ADR_LIEUDIT_TER");
   const adresseParts = [
     pickStr(row, "ADR_NUM_TER"),
-    pickStr(row, "ADR_LIBVOIE_TER"),
-    pickStr(row, "ADR_LIEUDIT_TER"),
+    voie,
+    lieudit,
     pickStr(row, "ADR_LOCALITE_TER"),
   ].filter(Boolean);
   const adresse = adresseParts.length > 0 ? adresseParts.join(" ") : null;
@@ -130,6 +139,8 @@ function normalize(row: Record<string, unknown>, source: SitadelPermit["source"]
     date_daact: pickStr(row, "DATE_REELLE_DAACT"),
     an_depot: pickNum(row, "AN_DEPOT"),
     adresse,
+    voie,
+    lieudit,
     superficie_terrain: pickNum(row, "SUPERFICIE_TERRAIN"),
     cadastre: buildCadastre(row),
     nature_projet: pickStr(row, "NATURE_PROJET_COMPLETEE") ?? pickStr(row, "NATURE_PROJET_DECLAREE"),
@@ -138,6 +149,50 @@ function normalize(row: Record<string, unknown>, source: SitadelPermit["source"]
     surface_creee: pickNum(row, "SURF_HAB_CREEE") ?? pickNum(row, "SURF_LOC_CREEE"),
     source,
   };
+}
+
+// ── Filtres / normalisation pour le scope cascadé ───────────────────────────
+
+/** Normalisation FR pour comparer noms de voies SITADEL ↔ adresse dossier.
+ *  SITADEL stocke en majuscules non-accentuées (`ADR_LIBVOIE_TER`, 26 car. max),
+ *  ex. "AVENUE DE LA REPUBLIQUE". Côté dossier on a souvent du libre saisi mixte,
+ *  avec ponctuation et numéro de voie en tête. On enlève accents/ponctuation,
+ *  on uppercase, on compacte les espaces. */
+function normalizeVoie(s: string): string {
+  return s
+    .normalize("NFD")
+    .replace(/[̀-ͯ]/g, "")
+    .toUpperCase()
+    .replace(/[^A-Z0-9 ]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** Retire le numéro de voie (et bis/ter/quater) en tête. */
+function stripLeadingHouseNumber(s: string): string {
+  return s.replace(/^\s*\d+\s*(BIS|TER|QUATER)?\s*/i, "");
+}
+
+function cadastreKey(c: { section: string; numero: string }): string {
+  return `${c.section.toUpperCase()}|${c.numero.replace(/^0+/, "")}`;
+}
+
+function matchesParcel(p: SitadelPermit, cadastre: Array<{ section: string; numero: string }>): boolean {
+  if (cadastre.length === 0) return false;
+  const targets = new Set(cadastre.map(cadastreKey));
+  return p.cadastre.some((c) => targets.has(cadastreKey(c)));
+}
+
+function matchesStreet(p: SitadelPermit, streetNorm: string): boolean {
+  if (!streetNorm) return false;
+  const candidates: string[] = [];
+  if (p.voie) candidates.push(normalizeVoie(p.voie));
+  if (p.lieudit) candidates.push(normalizeVoie(p.lieudit));
+  if (candidates.length === 0) return false;
+  // Match symétrique : le libellé SITADEL peut être tronqué à 26 caractères, et
+  // l'adresse côté dossier peut au contraire être plus longue (avec commune en
+  // suffixe). On accepte donc l'inclusion dans les deux sens.
+  return candidates.some((c) => c.includes(streetNorm) || streetNorm.includes(c));
 }
 
 async function fetchResource(
@@ -174,14 +229,19 @@ async function fetchResource(
 export interface SitadelQuery {
   insee_code: string;
   cadastre?: Array<{ section: string; numero: string }>;
-  /** Si true, on filtre uniquement sur la parcelle. Sinon toute la commune. */
-  parcelOnly?: boolean;
+  /** Libellé de voie (extraite de l'adresse dossier ou saisie). Comparée à
+   *  ADR_LIBVOIE_TER / ADR_LIEUDIT_TER après normalisation. */
+  street?: string | null;
+  /** Stratégie de filtrage. "auto" cascade parcelle → rue → commune et retient
+   *  le premier niveau qui ramène au moins un permis. Défaut "auto". */
+  scope?: SitadelScope;
   /** Max de lignes ramenées par fichier source. Défaut 50. */
   maxPerSource?: number;
 }
 
 export async function fetchSitadelHistory(q: SitadelQuery): Promise<SitadelHistoryResult> {
   const maxPerSource = q.maxPerSource ?? 50;
+  const scope: SitadelScope = q.scope ?? "auto";
   const warnings: string[] = [];
 
   const results = await Promise.all(
@@ -194,36 +254,63 @@ export async function fetchSitadelHistory(q: SitadelQuery): Promise<SitadelHisto
     ),
   );
 
-  let permits = results.flat();
+  const allPermits = results.flat();
+  const cadastre = q.cadastre ?? [];
+  const streetNorm = q.street ? normalizeVoie(stripLeadingHouseNumber(q.street)) : null;
 
-  // Filtrage cadastral en mémoire — l'API tabulaire ne permet pas de combiner
-  // un filtre commune + un filtre section/numéro de façon fiable, et SITADEL
-  // peut référencer la parcelle dans SEC_CADASTRE1, SEC_CADASTRE2 ou SEC_CADASTRE3.
-  if (q.parcelOnly && q.cadastre && q.cadastre.length > 0) {
-    const targets = new Set(
-      q.cadastre.map((c) => `${c.section.toUpperCase()}|${c.numero.replace(/^0+/, "")}`),
-    );
-    permits = permits.filter((p) =>
-      p.cadastre.some((c) =>
-        targets.has(`${c.section.toUpperCase()}|${c.numero.replace(/^0+/, "")}`),
-      ),
-    );
+  // Cascade : parcelle → rue → commune. En mode forcé ("parcel" / "street" /
+  // "commune") on s'arrête au niveau demandé, même s'il est vide. En mode
+  // "auto" on remonte jusqu'au premier niveau non vide, ce qui correspond au
+  // comportement attendu sur l'onglet Parcelle : "exact si possible, sinon on
+  // élargit".
+  let filtered: SitadelPermit[];
+  let effective: SitadelScope;
+
+  const tryParcel = () => cadastre.length > 0 ? allPermits.filter((p) => matchesParcel(p, cadastre)) : null;
+  const tryStreet = () => streetNorm ? allPermits.filter((p) => matchesStreet(p, streetNorm)) : null;
+
+  if (scope === "parcel") {
+    filtered = tryParcel() ?? [];
+    effective = "parcel";
+  } else if (scope === "street") {
+    filtered = tryStreet() ?? [];
+    effective = "street";
+  } else if (scope === "commune") {
+    filtered = allPermits;
+    effective = "commune";
+  } else {
+    // auto
+    const atParcel = tryParcel();
+    if (atParcel && atParcel.length > 0) {
+      filtered = atParcel;
+      effective = "parcel";
+    } else {
+      const atStreet = tryStreet();
+      if (atStreet && atStreet.length > 0) {
+        filtered = atStreet;
+        effective = "street";
+      } else {
+        filtered = allPermits;
+        effective = "commune";
+      }
+    }
   }
 
   // Tri antéchronologique sur date d'autorisation (ou de dépôt à défaut).
-  permits.sort((a, b) => {
+  filtered.sort((a, b) => {
     const da = a.date_autorisation ?? (a.an_depot ? `${a.an_depot}-01-01` : "");
     const db = b.date_autorisation ?? (b.an_depot ? `${b.an_depot}-01-01` : "");
     return db.localeCompare(da);
   });
 
-  const total = permits.length;
+  const total = filtered.length;
   const truncated = results.some((r) => r.length >= maxPerSource);
 
   return {
-    permits: permits.slice(0, 100),
+    permits: filtered.slice(0, 100),
     total,
     truncated,
+    effective_scope: effective,
     sources_consulted: Object.keys(RESOURCES),
     warnings,
   };

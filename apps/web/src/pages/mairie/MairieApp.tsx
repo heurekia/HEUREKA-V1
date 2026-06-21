@@ -7475,9 +7475,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   }, [activeTab, communeDocs, dossier.id]);
 
   // Historique SITADEL/ADS — autorisations passées sur la parcelle.
-  // Chargé à l'ouverture de l'onglet Terrain. `scope=parcel` filtre sur la
-  // même section/numéro cadastral ; `scope=commune` ouvre à toute la commune
-  // si la parcelle n'a aucun historique.
+  // Chargé à l'ouverture de l'onglet Terrain. Le scope "auto" (défaut) cascade
+  // côté API : parcelle exacte → même rue (libellé voie) → toute la commune,
+  // et garde le premier niveau non vide. L'utilisateur peut forcer un niveau
+  // précis (parcel / street / commune) via le toggle. `effective_scope` dans
+  // la réponse indique quel niveau a été appliqué pour le rendu.
+  type SitadelScope = "auto" | "parcel" | "street" | "commune";
   type SitadelPermit = {
     num_dau: string;
     type_dau: string;
@@ -7489,6 +7492,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     date_daact: string | null;
     an_depot: number | null;
     adresse: string | null;
+    voie: string | null;
+    lieudit: string | null;
     superficie_terrain: number | null;
     cadastre: Array<{ section: string; numero: string }>;
     nature_projet: string | null;
@@ -7501,19 +7506,16 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     permits: SitadelPermit[];
     total: number;
     truncated: boolean;
+    effective_scope: "parcel" | "street" | "commune";
     sources_consulted: string[];
     warnings: string[];
   };
   const [sitadelHistory, setSitadelHistory] = useState<SitadelHistory | null>(null);
   const [sitadelLoading, setSitadelLoading] = useState(false);
-  const [sitadelScope, setSitadelScope] = useState<"parcel" | "commune">("parcel");
+  const [sitadelScope, setSitadelScope] = useState<SitadelScope>("auto");
   const [sitadelError, setSitadelError] = useState<string | null>(null);
   useEffect(() => {
     if (activeTab !== "Terrain") return;
-    // Sur changement de scope, on relance ; sinon on respecte le cache.
-    if (sitadelHistory && sitadelHistory.permits.length >= 0 && !sitadelLoading) {
-      // pas de relance si déjà chargé pour ce scope
-    }
     setSitadelLoading(true);
     setSitadelError(null);
     api.get<SitadelHistory>(`/mairie/dossiers/${dossier.id}/sitadel-history?scope=${sitadelScope}`)
@@ -8578,12 +8580,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     })()}
                   </div>
 
-                  {/* Historique SITADEL/ADS — autorisations passées sur la parcelle/commune */}
+                  {/* Historique SITADEL/ADS — autorisations passées sur la parcelle/rue/commune */}
                   <div style={CARD}>
                     <SecTitle
                       action={
                         <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 7, overflow: "hidden", background: "white" }}>
-                          {(["parcel", "commune"] as const).map((s) => (
+                          {(["auto", "parcel", "street", "commune"] as const).map((s) => (
                             <button
                               key={s}
                               onClick={() => { setSitadelScope(s); setSitadelHistory(null); }}
@@ -8593,7 +8595,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                                 color: sitadelScope === s ? "white" : "#475569",
                                 border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer",
                               }}
-                            >{s === "parcel" ? "Parcelle" : "Commune"}</button>
+                              title={
+                                s === "auto" ? "Cascade : parcelle → rue → commune"
+                                : s === "parcel" ? "Filtre strict sur la section/numéro cadastral"
+                                : s === "street" ? "Même libellé de voie (ou lieu-dit)"
+                                : "Toutes les autorisations de la commune"
+                              }
+                            >{s === "auto" ? "Auto" : s === "parcel" ? "Parcelle" : s === "street" ? "Rue" : "Commune"}</button>
                           ))}
                         </div>
                       }
@@ -8609,8 +8617,18 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       </div>
                     ) : !sitadelHistory || sitadelHistory.permits.length === 0 ? (
                       <div style={{ fontSize: 12, color: "#64748b", padding: "8px 0", lineHeight: 1.5 }}>
-                        Aucun permis trouvé dans SITADEL pour cette {sitadelScope === "parcel" ? "parcelle" : "commune"} depuis 2013.
+                        Aucun permis trouvé dans SITADEL pour {
+                          sitadelScope === "parcel" ? "cette parcelle"
+                          : sitadelScope === "street" ? "cette rue"
+                          : "cette commune"
+                        } depuis 2013.
                         {sitadelScope === "parcel" && (
+                          <button
+                            onClick={() => { setSitadelScope("street"); setSitadelHistory(null); }}
+                            style={{ marginLeft: 6, fontSize: 12, color: "#4F46E5", background: "none", border: "none", fontWeight: 600, cursor: "pointer", padding: 0 }}
+                          >Élargir à la rue →</button>
+                        )}
+                        {sitadelScope === "street" && (
                           <button
                             onClick={() => { setSitadelScope("commune"); setSitadelHistory(null); }}
                             style={{ marginLeft: 6, fontSize: 12, color: "#4F46E5", background: "none", border: "none", fontWeight: 600, cursor: "pointer", padding: 0 }}
@@ -8628,8 +8646,22 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         "3": "#15803D", "5": "#15803D", "6": "#15803D",
                         "4": "#DC2626", "7": "#DC2626", "8": "#94A3B8",
                       };
+                      // Bandeau indiquant le niveau effectivement appliqué.
+                      // Surtout utile en mode "auto" pour expliquer pourquoi
+                      // on voit des permis voisins (cascade rue ou commune)
+                      // plutôt que la parcelle elle-même.
+                      const eff = sitadelHistory.effective_scope;
+                      const effLabel =
+                        eff === "parcel" ? { txt: "Parcelle exacte", c: "#15803D", bg: "#F0FDF4", border: "#BBF7D0" }
+                        : eff === "street" ? { txt: "Élargi à la rue (aucun permis sur la parcelle)", c: "#C2410C", bg: "#FFF7ED", border: "#FED7AA" }
+                        : { txt: "Élargi à la commune (aucun permis sur la parcelle ni la rue)", c: "#9A3412", bg: "#FEF3C7", border: "#FDE68A" };
                       return (
                         <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {sitadelScope === "auto" && (
+                            <div style={{ fontSize: 10.5, fontWeight: 600, color: effLabel.c, background: effLabel.bg, border: `1px solid ${effLabel.border}`, borderRadius: 6, padding: "4px 8px", marginBottom: 2 }}>
+                              {effLabel.txt} · {sitadelHistory.total} résultat{sitadelHistory.total > 1 ? "s" : ""}
+                            </div>
+                          )}
                           {sitadelHistory.permits.slice(0, 8).map((p) => {
                             const tc = typeColor[p.type_dau] ?? { c: "#64748B", bg: "#F1F5F9" };
                             const ec = etatColor[p.etat_code] ?? "#64748B";

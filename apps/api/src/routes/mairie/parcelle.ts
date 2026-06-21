@@ -234,10 +234,12 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
 });
 
 // ── Historique SITADEL/ADS ──────────────────────────────────────────────────
-// GET /mairie/dossiers/:id/sitadel-history[?scope=parcel|commune]
-// Récupère les autorisations d'urbanisme délivrées par le passé sur la même
-// parcelle (scope=parcel, défaut) ou sur la commune (scope=commune) via la
-// base ouverte SITADEL publiée par le SDES.
+// GET /mairie/dossiers/:id/sitadel-history[?scope=parcel|street|commune|auto]
+// Récupère les autorisations d'urbanisme passées (PC, DP, PA, PD) via la base
+// ouverte SITADEL (SDES). Le scope "auto" (défaut) cascade : parcelle exacte
+// → même rue (ou lieu-dit) → toute la commune, et retient le premier niveau
+// non vide. La réponse expose `effective_scope` pour que l'UI affiche le
+// niveau réellement retenu.
 //
 // On préfère l'INSEE + cadastre issus du parcel_analysis déjà persisté dans
 // le metadata du dossier (cf. endpoint analyse-parcelle ci-dessus). À défaut
@@ -252,7 +254,12 @@ parcelleRouter.get("/dossiers/:id/sitadel-history", async (req: AuthRequest, res
       .limit(1);
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
 
-    const scope = (req.query.scope as string | undefined) === "commune" ? "commune" : "parcel";
+    const scopeParam = req.query.scope as string | undefined;
+    const scope: "parcel" | "street" | "commune" | "auto" =
+      scopeParam === "parcel" || scopeParam === "street" || scopeParam === "commune"
+        ? scopeParam
+        : "auto";
+
     const meta = (dossier.metadata ?? {}) as Record<string, unknown>;
     const pa = meta["parcel_analysis"] as
       | { parcel?: { code_insee?: string; section?: string; numero?: string } }
@@ -282,10 +289,21 @@ parcelleRouter.get("/dossiers/:id/sitadel-history", async (req: AuthRequest, res
       if (m && m[1] && m[2]) cadastre.push({ section: m[1].toUpperCase(), numero: m[2] });
     }
 
+    // Rue / lieu-dit — extrait de l'adresse libre du dossier. Le service
+    // SITADEL re-normalise et compare à ADR_LIBVOIE_TER + ADR_LIEUDIT_TER.
+    // On découpe sur la virgule pour éviter d'embarquer le code postal et la
+    // commune dans le libellé (ex. "12 rue Pasteur, 37510 Ballan-Miré").
+    let street: string | null = null;
+    if (dossier.adresse) {
+      const firstPart = dossier.adresse.split(",")[0]?.trim() ?? "";
+      if (firstPart.length > 0) street = firstPart;
+    }
+
     const result = await fetchSitadelHistory({
       insee_code: inseeCode,
       cadastre,
-      parcelOnly: scope === "parcel" && cadastre.length > 0,
+      street,
+      scope,
     });
 
     res.json(result);
