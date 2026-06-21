@@ -655,11 +655,15 @@ export async function getReferenceDetail(referenceId: string): Promise<Documenta
       .where(eq(regulatory_documents.id, id))
       .limit(1);
     if (!row) return null;
-    const [commune] = await db
-      .select({ name: communes.name })
-      .from(communes)
-      .where(eq(communes.id, row.commune_id))
-      .limit(1);
+    // commune_id peut être NULL pour un document intercommunal (PLUi porté par
+    // un EPCI). On ne résout le nom de commune que s'il est renseigné.
+    const [commune] = row.commune_id
+      ? await db
+          .select({ name: communes.name })
+          .from(communes)
+          .where(eq(communes.id, row.commune_id))
+          .limit(1)
+      : [];
     const isOap = (row.type ?? "").toLowerCase() === "oap";
     return {
       id_regle: `doc:${row.id}`,

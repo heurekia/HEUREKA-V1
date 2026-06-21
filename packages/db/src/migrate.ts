@@ -1139,6 +1139,10 @@ CREATE INDEX IF NOT EXISTS idx_dossier_facts_conflict_group
 -- les zones existantes conservent leur commune_id ; seules les futures zones
 -- de PLUi pourront être créées avec commune_id NULL.
 ALTER TABLE zones ALTER COLUMN commune_id DROP NOT NULL;
+
+-- Idem pour le document lui-même : un PLUi porté par un EPCI n'a pas de
+-- commune propriétaire unique, son périmètre vit dans document_communes.
+ALTER TABLE regulatory_documents ALTER COLUMN commune_id DROP NOT NULL;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

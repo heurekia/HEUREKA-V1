@@ -6,7 +6,12 @@ import { integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 // couvrir N communes membres via document_communes.
 export const regulatory_documents = pgTable("regulatory_documents", {
   id: uuid("id").primaryKey().defaultRandom(),
-  commune_id: uuid("commune_id").notNull(),
+  // Commune « propriétaire » historique. Nullable depuis le support PLUi : un
+  // document porté par un EPCI (porteur_epci_id) n'a pas de commune unique —
+  // son périmètre vit dans document_communes. Les documents communaux gardent
+  // commune_id renseigné (= porteur_commune_id). Le porteur effectif est
+  // toujours donné par le couple porteur_commune_id / porteur_epci_id (XOR).
+  commune_id: uuid("commune_id"),
   // Porteur du document. Exactement l'un des deux est renseigné (CHECK SQL).
   // Permet de rattacher un PLUi à un EPCI tout en gardant la commune comme
   // porteur par défaut des documents communaux historiques.

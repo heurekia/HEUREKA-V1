@@ -24,24 +24,65 @@ import type { ZoneRules } from "../structure/structurer.ts";
 export interface LoadRulesDocumentInput {
   /** Si fourni, on utilise CE document — pas de lookup, pas de création. */
   id?: string;
-  /** Sinon : type du document à upsert pour la commune. Default "plu". */
+  /** Sinon : type du document à upsert. Default "plu" (commune) / "plui" (EPCI). */
   type?: string;
-  /** Nom affiché dans l'UI. Default "<TYPE> <Commune>". */
+  /** Nom affiché dans l'UI. Default dérivé du porteur. */
   name?: string;
   /** Nom du fichier source. Default "reglement.pdf". */
   originalFilename?: string;
 }
 
+/** Une commune membre à rattacher à un document PLUi. */
+export interface MemberCommune {
+  insee: string;
+  name: string;
+  zipCode?: string;
+}
+
+/**
+ * Porteur intercommunal : le document est porté par un EPCI et rattaché à
+ * toutes les communes membres fournies. Les zones sont créées UNE fois avec
+ * commune_id = NULL (zones partagées) ; la résolution par commune se fait via
+ * document_communes côté moteur (cf. Lot 4).
+ */
+export interface EpciPorteur {
+  epci_id: string;
+  /** Communes membres couvertes par ce PLUi (upsert + rattachement N:N). */
+  communes: MemberCommune[];
+}
+
 export interface LoadRulesOptions {
   zipCode?: string;
   document?: LoadRulesDocumentInput;
+  /**
+   * Si fourni, bascule en mode PLUi : porteur = EPCI, zones partagées,
+   * rattachement à toutes les communes membres. Les paramètres `insee` /
+   * `communeName` de loadRules() sont alors ignorés pour le porteur (ils
+   * peuvent rester vides). Sans ce champ, comportement communal historique.
+   */
+  epci?: EpciPorteur;
 }
 
 export interface LoadRulesResult {
-  commune_id: string;
+  /** Commune porteuse (mode communal) ou null (mode PLUi). */
+  commune_id: string | null;
   document_id: string;
+  /** Communes rattachées au document (1 en communal, N en PLUi). */
+  commune_ids: string[];
   zones: number;
   rules: number;
+}
+
+/** Upsert d'une commune par INSEE, renvoie la ligne (existante ou créée). */
+async function upsertCommune(insee: string, name: string, zipCode?: string) {
+  const existing = (await db.select().from(communes).where(eq(communes.insee_code, insee)).limit(1))[0];
+  if (existing) return existing;
+  return (
+    await db
+      .insert(communes)
+      .values({ name, insee_code: insee, zip_code: zipCode ?? "" })
+      .returning()
+  )[0]!;
 }
 
 export async function loadRules(
@@ -50,26 +91,32 @@ export async function loadRules(
   zoneRules: ZoneRules[],
   opts: LoadRulesOptions = {},
 ): Promise<LoadRulesResult> {
-  // 1) Upsert commune
-  let commune = (await db.select().from(communes).where(eq(communes.insee_code, insee)).limit(1))[0];
-  if (!commune) {
-    commune = (
-      await db
-        .insert(communes)
-        .values({ name: communeName, insee_code: insee, zip_code: opts.zipCode ?? "" })
-        .returning()
-    )[0]!;
+  const isEpci = !!opts.epci;
+
+  // 1) Résolution des communes.
+  //  - Mode communal : 1 commune porteuse (= insee/communeName).
+  //  - Mode PLUi : N communes membres ; pas de commune porteuse (porteur = EPCI).
+  let porteurCommuneId: string | null;
+  let attachedCommuneIds: string[];
+  if (opts.epci) {
+    const members = await Promise.all(
+      opts.epci.communes.map((c) => upsertCommune(c.insee, c.name, c.zipCode)),
+    );
+    porteurCommuneId = null;
+    attachedCommuneIds = members.map((c) => c.id);
+  } else {
+    const commune = await upsertCommune(insee, communeName, opts.zipCode);
+    porteurCommuneId = commune.id;
+    attachedCommuneIds = [commune.id];
   }
 
-  // 2) Résolution / création du regulatory_document
+  // 2) Résolution / création du regulatory_document.
   //
-  // Trois cas :
-  //  a) opts.document.id fourni → on l'utilise directement (le caller a déjà créé
-  //     le document via une route d'upload, par exemple).
-  //  b) sinon, on cherche un document existant pour (commune, type). S'il existe,
-  //     on le réutilise : la ré-ingestion remplace son contenu, ce qui évite
-  //     d'accumuler N documents au fil des passes répétées.
-  //  c) sinon, on crée un nouveau document avec le porteur = commune.
+  //  a) opts.document.id fourni → on l'utilise directement.
+  //  b) sinon, on cherche un document existant pour le porteur + type. S'il
+  //     existe, on le réutilise : la ré-ingestion remplace son contenu, ce qui
+  //     évite d'accumuler N documents au fil des passes répétées.
+  //  c) sinon, on crée un nouveau document avec le bon porteur.
   let document: typeof regulatory_documents.$inferSelect | undefined;
   if (opts.document?.id) {
     document = (
@@ -81,20 +128,21 @@ export async function loadRules(
     )[0];
     if (!document) throw new Error(`regulatory_document introuvable : ${opts.document.id}`);
   } else {
-    const docType = opts.document?.type ?? "plu";
-    const docName = opts.document?.name ?? `${docType.toUpperCase()} ${communeName}`;
+    const docType = opts.document?.type ?? (isEpci ? "plui" : "plu");
+    const docName =
+      opts.document?.name ??
+      (isEpci ? `${docType.toUpperCase()} (intercommunal)` : `${docType.toUpperCase()} ${communeName}`);
     const docFilename = opts.document?.originalFilename ?? "reglement.pdf";
+
+    const matchPorteur = opts.epci
+      ? eq(regulatory_documents.porteur_epci_id, opts.epci.epci_id)
+      : eq(regulatory_documents.porteur_commune_id, porteurCommuneId!);
 
     const existing = (
       await db
         .select()
         .from(regulatory_documents)
-        .where(
-          and(
-            eq(regulatory_documents.commune_id, commune.id),
-            eq(regulatory_documents.type, docType),
-          ),
-        )
+        .where(and(matchPorteur, eq(regulatory_documents.type, docType)))
         .orderBy(desc(regulatory_documents.created_at))
         .limit(1)
     )[0];
@@ -105,8 +153,9 @@ export async function loadRules(
         await db
           .insert(regulatory_documents)
           .values({
-            commune_id: commune.id,
-            porteur_commune_id: commune.id,
+            commune_id: porteurCommuneId, // NULL en mode PLUi
+            porteur_commune_id: opts.epci ? null : porteurCommuneId,
+            porteur_epci_id: opts.epci ? opts.epci.epci_id : null,
             type: docType,
             name: docName,
             original_filename: docFilename,
@@ -117,16 +166,19 @@ export async function loadRules(
       )[0]!;
   }
 
-  // 3) Rattachement N:N document → commune. Idempotent (ON CONFLICT DO NOTHING
-  //    via la contrainte unique document_communes_unique).
-  await db
-    .insert(document_communes)
-    .values({ document_id: document.id, commune_id: commune.id })
-    .onConflictDoNothing();
+  // 3) Rattachement N:N document → communes. Idempotent (contrainte unique).
+  if (attachedCommuneIds.length > 0) {
+    await db
+      .insert(document_communes)
+      .values(attachedCommuneIds.map((commune_id) => ({ document_id: document!.id, commune_id })))
+      .onConflictDoNothing();
+  }
 
   // 4) Purge des zones/règles précédemment produites par CE document, puis
-  //    réinsertion. Le scope est document, pas commune : les autres documents
-  //    de la commune (PPRI, OAP avec règles structurées) ne sont pas touchés.
+  //    réinsertion. Le scope est document, pas commune. En mode PLUi, les zones
+  //    sont créées avec commune_id = NULL (zones partagées) ; la résolution par
+  //    commune passe par document_communes côté moteur.
+  const zoneCommuneId = porteurCommuneId; // NULL en mode PLUi
   let ruleCount = 0;
   await db.transaction(async (tx) => {
     const old = await tx
@@ -145,7 +197,7 @@ export async function loadRules(
       const [zone] = await tx
         .insert(zones)
         .values({
-          commune_id: commune!.id,
+          commune_id: zoneCommuneId,
           source_document_id: document!.id,
           zone_code: zr.zone_code,
           zone_label: zr.zone_label,
@@ -183,8 +235,9 @@ export async function loadRules(
   });
 
   return {
-    commune_id: commune.id,
+    commune_id: porteurCommuneId,
     document_id: document.id,
+    commune_ids: attachedCommuneIds,
     zones: zoneRules.length,
     rules: ruleCount,
   };
