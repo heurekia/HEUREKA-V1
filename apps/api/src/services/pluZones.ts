@@ -134,6 +134,30 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   }
   const communeGeom = JSON.stringify({ type: "Polygon", coordinates: [queryRing] });
 
+  // Emprise (bbox) de la commune → rectangle à 5 points pour la requête zone-urba.
+  // ⚠️ On N'interroge PAS le GPU avec le contour décimé : l'échantillonnage brut
+  // d'indices (i % step) produit fréquemment un polygone AUTO-SÉCANT, et
+  // GeoServer renvoie alors un `INTERSECTS(the_geom, …)` incomplet — il perd les
+  // petites zones intérieures (U/AU du bourg) en ne gardant que les grandes (A/N).
+  // Un rectangle est toujours valide et contient À COUP SÛR toutes les zones de
+  // la commune ; on les rogne ensuite au contour exact (clipZonesToCommune).
+  let minLon = Infinity, minLat = Infinity, maxLon = -Infinity, maxLat = -Infinity;
+  const scanRing = (ring: number[][]) => {
+    for (const p of ring) {
+      const lon = p[0]!, lat = p[1]!;
+      if (lon < minLon) minLon = lon;
+      if (lon > maxLon) maxLon = lon;
+      if (lat < minLat) minLat = lat;
+      if (lat > maxLat) maxLat = lat;
+    }
+  };
+  if (communeGeometry.type === "Polygon") communeGeometry.coordinates.forEach(scanRing);
+  else communeGeometry.coordinates.forEach(poly => poly.forEach(scanRing));
+  const bboxGeom = JSON.stringify({
+    type: "Polygon",
+    coordinates: [[[minLon, minLat], [maxLon, minLat], [maxLon, maxLat], [minLon, maxLat], [minLon, minLat]]],
+  });
+
   // ── Collecte des partitions candidates (sans probe à ce stade) ──────────────
   type Cand = { partition: string; source: string; du_type?: string; etat?: string };
   const cands: Cand[] = [];
@@ -270,11 +294,11 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   };
 
   for (const cand of cands) {
-    // Fetch principal : partition + geom commune.
+    // Fetch principal : partition + emprise bbox (rectangle valide, cf. plus haut).
     // _limit aligné sur la limite dure de l'API GPU (5000) pour ne pas tronquer
     // silencieusement les communes denses / PLUi.
     const params1 = new URLSearchParams({ partition: cand.partition, _limit: "5000" });
-    params1.set("geom", communeGeom);
+    params1.set("geom", bboxGeom);
     const r1 = await fetchWithRetry(
       `https://apicarto.ign.fr/api/gpu/zone-urba?${params1.toString()}`,
       { signal: AbortSignal.timeout(25000) }, 2, 2000
