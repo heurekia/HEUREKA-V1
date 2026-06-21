@@ -98,9 +98,15 @@ const KIND_LABELS: Record<AnnotationKind, string> = {
 
 export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotationCreated, originalDownloadUrl }: Props) {
   const [numPages, setNumPages] = useState<number | null>(null);
+  // `page` est désormais la page la plus visible dans le scroll continu —
+  // dérivée du scrollTop, pas la seule page rendue. Sert au compteur en barre
+  // d'outils et reste la valeur cible pour scrollToPage.
   const [page, setPage] = useState(initialPage);
   const [scale, setScale] = useState(1.0);
   const [error, setError] = useState<string | null>(null);
+  // Map page → div wrapper, alimentée par les refs callbacks ci-dessous.
+  // Permet à scrollToPage et au scroll-listener de retrouver chaque page.
+  const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
   // "compat" si la route /api/uploads sert la version re-encodée par
   // pdftocairo (JPEG 2000 → JPEG), "original" sinon. Lu depuis le header
   // X-Pdf-Variant via une requête HEAD légère au mount. Sert à afficher
@@ -144,10 +150,16 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
   const [saveError, setSaveError] = useState<string | null>(null);
 
   // Quand l'appelant change la page (ex : depuis une citation cliquée),
-  // on s'aligne. Sans cet effet on resterait sur la page initiale du mount.
+  // on scroll vers la page cible. setPage est inutile : le scroll-listener
+  // mettra à jour le compteur lui-même quand la page atteindra la vue.
   useEffect(() => {
-    setPage(initialPage);
-  }, [initialPage]);
+    if (numPages == null) return;
+    // Petit délai pour laisser react-pdf finir de poser la première vague de
+    // pages — sans ça la cible n'a pas encore son offsetTop final.
+    const id = window.setTimeout(() => scrollToPage(initialPage), 50);
+    return () => window.clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [initialPage, numPages]);
 
   // Raccourcis clavier — actifs uniquement quand le focus n'est pas dans un
   // champ texte (sinon "r" rentrerait dans la textarea de l'annotation).
@@ -205,13 +217,21 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
     return () => { cancelled = true; };
   }, [fileUrl, originalDownloadUrl]);
 
-  // Saute à une page en réinitialisant le scroll en haut du conteneur.
+  // Scroll vers le haut de la page p dans le conteneur scrollable. Les pages
+  // sont rendues en continu : on ne change pas la page rendue, on déplace la
+  // vue. `block: "start"` aligne le haut de la page sur le haut du viewport.
+  const scrollToPage = (p: number) => {
+    if (numPages == null) return;
+    const target = pageRefs.current.get(Math.max(1, Math.min(numPages, p)));
+    if (!target) return;
+    target.scrollIntoView({ block: "start", behavior: "smooth" });
+  };
+  // Wrapper conservé pour les chevrons et l'input — sémantique : "saute à
+  // cette page" en scrollant, et nettoie la capture courante.
   const goToPage = (p: number) => {
     if (numPages == null) return;
     const next = Math.max(1, Math.min(numPages, p));
-    setPage(next);
-    if (containerRef.current) containerRef.current.scrollTop = 0;
-    // Toute capture en cours est invalidée par un changement de page
+    scrollToPage(next);
     setSelection(null);
     setShowForm(false);
   };
@@ -246,6 +266,45 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
       // silencieusement, la rotation reste fonctionnelle en mémoire.
     }
   }, [persistenceKey, rotation]);
+
+  // Met à jour `page` selon le scroll : la page la plus centrale est
+  // considérée comme "courante" pour le compteur de la barre d'outils.
+  // Throttled via requestAnimationFrame pour rester économe pendant le scroll.
+  useEffect(() => {
+    if (numPages == null) return;
+    const container = containerRef.current;
+    if (!container) return;
+    let rafId: number | null = null;
+    const compute = () => {
+      rafId = null;
+      // Point de référence : un tiers depuis le haut du conteneur. Ressenti
+      // plus naturel que le centre exact — la page qu'on lit occupe
+      // typiquement le haut du viewport.
+      const ref = container.scrollTop + container.clientHeight / 3;
+      let best = { page: 1, dist: Infinity };
+      pageRefs.current.forEach((el, p) => {
+        const top = el.offsetTop;
+        const bottom = top + el.offsetHeight;
+        const dist = ref >= top && ref <= bottom
+          ? 0
+          : Math.min(Math.abs(ref - top), Math.abs(ref - bottom));
+        if (dist < best.dist) best = { page: p, dist };
+      });
+      setPage((cur) => (cur === best.page ? cur : best.page));
+    };
+    const onScroll = () => {
+      if (rafId != null) return;
+      rafId = requestAnimationFrame(compute);
+    };
+    container.addEventListener("scroll", onScroll, { passive: true });
+    // Calcul initial une fois les pages mises en page.
+    const initId = window.setTimeout(compute, 100);
+    return () => {
+      container.removeEventListener("scroll", onScroll);
+      if (rafId != null) cancelAnimationFrame(rafId);
+      window.clearTimeout(initId);
+    };
+  }, [numPages, scale, rotation]);
 
   // Drag-to-pan en mode hand. On capture sur le conteneur scrollable et on
   // ajuste scrollLeft/scrollTop selon le delta souris. setPointerCapture
@@ -292,16 +351,25 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
       const quote = sel.toString().trim();
       if (!quote) return;
 
-      // Trouve la page courante via le DOM react-pdf
-      const pageEl = containerRef.current?.querySelector(".react-pdf__Page") as HTMLElement | null;
-      if (!pageEl) return;
-      const pageRect = pageEl.getBoundingClientRect();
       const range = sel.getRangeAt(0);
+      // Dans le scroll continu, plusieurs pages coexistent dans le DOM : on
+      // retrouve la bonne via l'ancêtre `.react-pdf__Page` du début de
+      // sélection, qui porte data-page-number.
+      const startNode = range.startContainer.nodeType === Node.ELEMENT_NODE
+        ? (range.startContainer as Element)
+        : range.startContainer.parentElement;
+      const pageEl = startNode?.closest(".react-pdf__Page") as HTMLElement | null;
+      if (!pageEl) return;
+      const pageNumber = parseInt(pageEl.dataset.pageNumber || "0", 10);
+      if (!pageNumber) return;
+
+      const pageRect = pageEl.getBoundingClientRect();
       const clientRects = Array.from(range.getClientRects());
       if (clientRects.length === 0) return;
 
-      // On ne garde que les rects qui chevauchent la page (sinon on capture
-      // des sélections qui partent de la marge ou d'un autre élément).
+      // On ne garde que les rects qui chevauchent la page de départ — si la
+      // sélection s'étend sur la page suivante, ces rects-là sont tronqués.
+      // Acceptable pour la v1 : on annote sur la première page.
       const inside = clientRects.filter((r) =>
         r.width > 0 && r.height > 0 &&
         r.right > pageRect.left && r.left < pageRect.right &&
@@ -310,7 +378,7 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
       if (inside.length === 0) return;
 
       const rects: HighlightRect[] = inside.map((r) => ({
-        page,
+        page: pageNumber,
         x: ((r.left - pageRect.left) / pageRect.width) * 100,
         y: ((r.top - pageRect.top) / pageRect.height) * 100,
         width: (r.width / pageRect.width) * 100,
@@ -319,7 +387,7 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
 
       const lastRect = inside[inside.length - 1]!;
       setSelection({
-        page,
+        page: pageNumber,
         quote: quote.slice(0, 2000),
         rects,
         anchorX: lastRect.right,
@@ -328,7 +396,7 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
     };
     document.addEventListener("mouseup", handleMouseUp);
     return () => document.removeEventListener("mouseup", handleMouseUp);
-  }, [documentId, page, tool]);
+  }, [documentId, tool]);
 
   const openForm = () => {
     setFormKind("note_perso");
@@ -522,16 +590,27 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
             onLoadSuccess={({ numPages }) => { setNumPages(numPages); setError(null); }}
             onLoadError={(err) => setError(err.message)}
             loading={<div className="text-sm text-gray-400 mt-12">Chargement du PDF…</div>}
-            className="self-start"
+            className="self-start flex flex-col gap-4"
           >
-            <Page
-              pageNumber={page}
-              scale={scale}
-              rotate={rotation}
-              renderAnnotationLayer={true}
-              renderTextLayer={true}
-              className="shadow-lg"
-            />
+            {numPages != null && Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
+              <div
+                key={p}
+                ref={(el) => {
+                  if (el) pageRefs.current.set(p, el);
+                  else pageRefs.current.delete(p);
+                }}
+                data-page-wrapper={p}
+              >
+                <Page
+                  pageNumber={p}
+                  scale={scale}
+                  rotate={rotation}
+                  renderAnnotationLayer={true}
+                  renderTextLayer={true}
+                  className="shadow-lg"
+                />
+              </div>
+            ))}
           </Document>
         )}
       </div>
