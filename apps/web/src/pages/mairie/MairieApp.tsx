@@ -7312,6 +7312,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [consultationsLoading, setConsultationsLoading] = useState(false);
   const [consultationsMissioning, setConsultationsMissioning] = useState(false);
   const [selectedConsultation, setSelectedConsultation] = useState<string | null>(null);
+  // ── Missionner un service annexe (modale de sélection + message) ──
+  type AvailableService = { id: string; name: string; type: string; email: string | null };
+  const [showMissionModal, setShowMissionModal] = useState(false);
+  const [availableServices, setAvailableServices] = useState<AvailableService[] | null>(null);
+  const [missionServiceId, setMissionServiceId] = useState<string>("");
+  const [missionMessage, setMissionMessage] = useState<string>("");
 
   type PieceAnalyse = { score?: string; commentaire?: string; suggestions?: string[] };
   type PieceExtractionLite = {
@@ -7650,13 +7656,45 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
   const hasABFServitude = parcelAnalysis?.servitudes?.some(s => s.categorie?.startsWith("AC")) ?? false;
 
-  const missionnerABF = async () => {
+  // Ouvre la modale "Missionner un service" et charge les services externes
+  // enregistrés qui couvrent la commune du dossier (seuls eux peuvent recevoir
+  // la consultation dans leur messagerie). On pré-remplit le message avec un
+  // libellé mentionnant le dossier.
+  const openMissionModal = (preferType?: string) => {
+    setMissionServiceId("");
+    setMissionMessage(
+      `Bonjour,\n\nNous sollicitons votre avis dans le cadre de l'instruction du dossier ${dossier.numero}` +
+      `${dossier.adresse ? ` situé ${dossier.adresse}` : ""}.\n\n` +
+      `Vous pouvez consulter le dossier et nous répondre directement via cette messagerie.\n\nCordialement,`,
+    );
+    setShowMissionModal(true);
+    const preselect = (list: AvailableService[]) => {
+      if (preferType) {
+        const match = list.find(s => s.type === preferType);
+        if (match) setMissionServiceId(match.id);
+      }
+    };
+    if (availableServices === null) {
+      api.get<AvailableService[]>(`/mairie/dossiers/${dossier.id}/available-services`)
+        .then(list => { setAvailableServices(list); preselect(list); })
+        .catch(() => setAvailableServices([]));
+    } else {
+      preselect(availableServices);
+    }
+  };
+
+  const submitMission = async () => {
+    const svc = (availableServices ?? []).find(s => s.id === missionServiceId);
+    if (!svc) return;
     setConsultationsMissioning(true);
     try {
       await api.post(`/mairie/dossiers/${dossier.id}/consultations`, {
-        service_name: "ABF – Architecte des Bâtiments de France",
-        service_type: "ABF",
+        service_name: svc.name,
+        service_type: svc.type,
+        external_service_id: svc.id,
+        message: missionMessage.trim() || undefined,
       });
+      setShowMissionModal(false);
       // Refresh and switch to consultations tab
       setConsultations(null);
       setActiveTab("Consultations");
@@ -8479,7 +8517,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>Périmètre ABF — consultation obligatoire</div>
                           <div style={{ fontSize: 12, color: "#B45309", lineHeight: 1.6, marginBottom: 12 }}>Cette parcelle est en périmètre de protection des Monuments Historiques. L'avis de l'Architecte des Bâtiments de France est requis avant toute décision.</div>
                           <button
-                            onClick={missionnerABF}
+                            onClick={() => openMissionModal("ABF")}
                             disabled={consultationsMissioning}
                             style={{ background: consultationsMissioning ? "#F5F3FF" : "linear-gradient(135deg,#8B5CF6,#7C3AED)", color: consultationsMissioning ? "#8B5CF6" : "white", border: consultationsMissioning ? "1px solid #C4B5FD" : "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(124,58,237,0.3)" }}
                           >
@@ -9841,11 +9879,11 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       Organismes consultés
                     </div>
                     <button
-                      onClick={missionnerABF}
+                      onClick={() => openMissionModal()}
                       disabled={consultationsMissioning}
                       style={{ background: consultationsMissioning ? "#EEF2FF" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: consultationsMissioning ? "#4F46E5" : "white", border: consultationsMissioning ? "1px solid #C7D2FE" : "none", borderRadius: 9, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(79,70,229,0.3)" }}
                     >
-                      {consultationsMissioning ? "En cours…" : "+ Missionner l'ABF"}
+                      {consultationsMissioning ? "En cours…" : "+ Missionner un service"}
                     </button>
                   </div>
                   {consultationsLoading ? (
@@ -9900,6 +9938,56 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   );
                 })()}
               </div>
+
+              {/* ── Modale : missionner un service annexe ── */}
+              {showMissionModal && (
+                <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => !consultationsMissioning && setShowMissionModal(false)}>
+                  <div style={{ background: "white", borderRadius: 14, width: 520, maxWidth: "92vw", padding: 24, boxShadow: "0 20px 50px rgba(0,0,0,0.2)" }} onClick={e => e.stopPropagation()}>
+                    <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>Missionner un service</div>
+                    <div style={{ fontSize: 12.5, color: "#64748b", marginBottom: 18 }}>Sélectionnez le service à consulter et rédigez un message. Il sera notifié de cette nouvelle consultation et recevra votre message dans sa messagerie pour le dossier {dossier.numero}.</div>
+
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Service à consulter</label>
+                    {availableServices === null ? (
+                      <div style={{ fontSize: 12.5, color: "#94a3b8", padding: "10px 0", marginBottom: 16 }}>Chargement des services…</div>
+                    ) : availableServices.length === 0 ? (
+                      <div style={{ fontSize: 12.5, color: "#B45309", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 9, padding: "11px 13px", marginBottom: 16, lineHeight: 1.5 }}>
+                        Aucun service externe n'est rattaché à cette commune. Un administrateur doit d'abord créer le service et lui associer la commune.
+                      </div>
+                    ) : (
+                      <select
+                        value={missionServiceId}
+                        onChange={e => setMissionServiceId(e.target.value)}
+                        style={{ width: "100%", border: "1.5px solid #E2E8F0", borderRadius: 9, padding: "10px 12px", fontSize: 13, outline: "none", boxSizing: "border-box" as const, marginBottom: 16, background: "white", color: "#0F172A", cursor: "pointer" }}
+                      >
+                        <option value="">— Choisir un service —</option>
+                        {availableServices.map(s => (
+                          <option key={s.id} value={s.id}>{s.name} ({s.type})</option>
+                        ))}
+                      </select>
+                    )}
+
+                    <label style={{ display: "block", fontSize: 12, fontWeight: 600, color: "#374151", marginBottom: 6 }}>Message au service</label>
+                    <textarea
+                      value={missionMessage}
+                      onChange={e => setMissionMessage(e.target.value)}
+                      rows={6}
+                      placeholder="Précisez l'objet de la consultation…"
+                      style={{ width: "100%", border: "1.5px solid #E2E8F0", borderRadius: 9, padding: "10px 12px", fontSize: 12.5, outline: "none", resize: "vertical" as const, fontFamily: "inherit", boxSizing: "border-box" as const, marginBottom: 18, lineHeight: 1.6 }}
+                    />
+
+                    <div style={{ display: "flex", gap: 9, justifyContent: "flex-end" }}>
+                      <button onClick={() => setShowMissionModal(false)} disabled={consultationsMissioning} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer", color: "#374151" }}>Annuler</button>
+                      <button
+                        onClick={submitMission}
+                        disabled={!missionServiceId || consultationsMissioning}
+                        style={{ background: !missionServiceId || consultationsMissioning ? "#C7D2FE" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: !missionServiceId || consultationsMissioning ? "not-allowed" : "pointer" }}
+                      >
+                        {consultationsMissioning ? "Envoi en cours…" : "Envoyer la consultation"}
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </div>
           );
         })()}
