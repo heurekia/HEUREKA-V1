@@ -8,6 +8,7 @@ import { getStorageProvider } from "../services/storage.js";
 import { refreshPluZones, PLU_REFRESH_AFTER_MS } from "../services/pluZones.js";
 import { resolveEffectiveInstructeur } from "../services/absenceDelegation.js";
 import { assignInstructeur } from "../services/dossierWorkflow.js";
+import { maybeNotifyDossierReady } from "../services/pieceOcrQueue.js";
 
 // Rétention paramétrable. Valeurs par défaut alignées sur la politique de
 // confidentialité publique et les exigences DSI Tours (CCSC).
@@ -156,6 +157,35 @@ export function startScheduledJobs() {
       }
     } catch (err) {
       console.error("[cron] absence redirection failed:", err);
+    }
+  });
+
+  // Toutes les minutes : balayage des dossiers comptoir mairie dont l'OCR est
+  // resté coincé (worker tombé, restart process, LLM bloqué sans throw…).
+  // maybeNotifyDossierReady fait elle-même le reap des pièces stale ET
+  // déclenche la notif si tout est prêt — ce job n'a qu'à lui passer la liste
+  // des dossiers susceptibles d'être bloqués.
+  cron.schedule("* * * * *", async () => {
+    try {
+      const rows = await db.execute<{ id: string }>(sql`
+        SELECT DISTINCT d.id
+          FROM dossiers d
+          JOIN dossier_pieces_jointes p ON p.dossier_id = d.id
+         WHERE p.archived_at IS NULL
+           AND p.ocr_status IN ('pending','processing')
+           AND (d.metadata->>'mairie_pieces_ocr_notified_at') IS NULL
+         LIMIT 50
+      `);
+      const dossierIds = (rows as unknown as { rows?: { id: string }[] }).rows
+        ?? (rows as unknown as { id: string }[]);
+      const ids: string[] = Array.isArray(dossierIds) ? dossierIds.map((r) => r.id) : [];
+      for (const id of ids) {
+        await maybeNotifyDossierReady(id).catch((err) => {
+          console.warn(`[cron] sweep OCR pour ${id} a échoué:`, err instanceof Error ? `${err.name}: ${err.message}` : err);
+        });
+      }
+    } catch (err) {
+      console.error("[cron] sweep OCR pièces mairie a échoué:", err);
     }
   });
 
