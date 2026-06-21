@@ -104,6 +104,53 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
   const [page, setPage] = useState(initialPage);
   const [scale, setScale] = useState(1.0);
   const [error, setError] = useState<string | null>(null);
+  // Tentatives de rechargement du PDF. Les routes /api/uploads re-encodent
+  // certains PDF à la volée (variante compat) et streament des fichiers
+  // volumineux : sous charge, le gateway en amont peut renvoyer un 502/503/504
+  // transitoire, surtout quand on enchaîne les pièces (chaque changement
+  // remonte un nouveau fetch). On retente automatiquement avant d'abandonner,
+  // avec un cache-buster pour forcer une nouvelle requête.
+  const MAX_AUTO_RETRIES = 3;
+  const [reloadNonce, setReloadNonce] = useState(0);
+  const autoRetryRef = useRef(0);
+  const retryTimerRef = useRef<number | null>(null);
+  // URL transmise à react-pdf : inchangée au premier chargement (cas nominal),
+  // suffixée d'un paramètre anti-cache lors d'un retry pour éviter qu'un 502
+  // mis en cache (navigateur/CDN) ne se répète.
+  const documentFile = reloadNonce === 0
+    ? fileUrl
+    : `${fileUrl}${fileUrl.includes("?") ? "&" : "?"}_retry=${reloadNonce}`;
+  // Nouvelle pièce → on repart d'un compteur de tentatives propre.
+  useEffect(() => {
+    autoRetryRef.current = 0;
+    setReloadNonce(0);
+    setError(null);
+    return () => { if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current); };
+  }, [fileUrl]);
+  // Erreur de chargement : on distingue les erreurs transitoires de passerelle
+  // (502/503/504, échec réseau) — retentées en silence avec un léger backoff —
+  // des erreurs définitives (PDF corrompu, 404…) affichées tout de suite.
+  const handlePdfLoadError = (err: Error) => {
+    const msg = err?.message ?? String(err);
+    const transient = /\b(502|503|504)\b/.test(msg) || /Failed to fetch|NetworkError|Load failed/i.test(msg);
+    if (transient && autoRetryRef.current < MAX_AUTO_RETRIES) {
+      autoRetryRef.current += 1;
+      setError(null);
+      if (retryTimerRef.current) window.clearTimeout(retryTimerRef.current);
+      retryTimerRef.current = window.setTimeout(
+        () => setReloadNonce((n) => n + 1),
+        600 * autoRetryRef.current,
+      );
+      return;
+    }
+    setError(msg);
+  };
+  // Relance manuelle depuis le message d'erreur : on remet le compteur à zéro.
+  const retryPdfLoad = () => {
+    autoRetryRef.current = 0;
+    setError(null);
+    setReloadNonce((n) => n + 1);
+  };
   // Map page → div wrapper, alimentée par les refs callbacks ci-dessous.
   // Permet à scrollToPage et au scroll-listener de retrouver chaque page.
   const pageRefs = useRef<Map<number, HTMLDivElement>>(new Map());
@@ -577,18 +624,25 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
       >
         {error ? (
           <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded px-4 py-3 max-w-md self-start mt-8">
-            Impossible d'ouvrir le PDF : {error}
+            <div>Impossible d'ouvrir le PDF : {error}</div>
+            <button
+              type="button"
+              onClick={retryPdfLoad}
+              className="mt-2 px-3 py-1 rounded border border-red-300 bg-white text-red-700 font-medium hover:bg-red-100"
+            >
+              Réessayer
+            </button>
           </div>
         ) : (
           <Document
-            file={fileUrl}
+            file={documentFile}
             // withCredentials: true → cookies de session envoyés avec le fetch
             // interne de pdfjs. Sans ça, les pièces du dossier servies par
             // /api/uploads/:key (protégées par requireAuth) renvoient 401 et
             // react-pdf surface "Unexpected server response (500)".
             options={PDF_OPTIONS}
-            onLoadSuccess={({ numPages }) => { setNumPages(numPages); setError(null); }}
-            onLoadError={(err) => setError(err.message)}
+            onLoadSuccess={({ numPages }) => { setNumPages(numPages); setError(null); autoRetryRef.current = 0; }}
+            onLoadError={handlePdfLoadError}
             loading={<div className="text-sm text-gray-400 mt-12">Chargement du PDF…</div>}
             className="self-start flex flex-col gap-4"
           >
