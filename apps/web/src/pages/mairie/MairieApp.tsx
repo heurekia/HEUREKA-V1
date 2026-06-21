@@ -8412,16 +8412,21 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   </div>
                 );
               })()}
-              {/* Warnings */}
-              {pa?.warnings && pa.warnings.length > 0 && (
-                <div style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 10, padding: "10px 14px", display: "flex", flexDirection: "column" as const, gap: 4 }}>
-                  {pa.warnings.map((w, i) => (
-                    <div key={i} style={{ fontSize: 12.5, color: "#92400E", display: "flex", gap: 6, alignItems: "flex-start" }}>
-                      <span style={{ flexShrink: 0 }}>⚠️</span>{w}
-                    </div>
-                  ))}
-                </div>
-              )}
+              {/* Warnings — on masque l'alerte ABF, déjà rendue par le bloc
+                  dédié « Périmètre ABF » ci-dessous (évite le doublon). */}
+              {(() => {
+                const shownWarnings = (pa?.warnings ?? []).filter(w => !/ABF|Architecte des Bâtiments/i.test(w));
+                if (shownWarnings.length === 0) return null;
+                return (
+                  <div style={{ background: "#FFFBEB", border: "1px solid #FCD34D", borderRadius: 10, padding: "10px 14px", display: "flex", flexDirection: "column" as const, gap: 4 }}>
+                    {shownWarnings.map((w, i) => (
+                      <div key={i} style={{ fontSize: 12.5, color: "#92400E", display: "flex", gap: 6, alignItems: "flex-start" }}>
+                        <span style={{ flexShrink: 0 }}>⚠️</span>{w}
+                      </div>
+                    ))}
+                  </div>
+                );
+              })()}
               {parcelError && (
                 <div style={{ background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 10, padding: "12px 14px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
                   <span style={{ fontSize: 12.5, color: "#991B1B" }}>{parcelError}</span>
@@ -8431,17 +8436,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   >Corriger l'adresse ✏️</button>
                 </div>
               )}
-
-              {/* Renvoi global vers Instruction — règles complètes, PDF, citations */}
-              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "10px 16px", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 10 }}>
-                <div style={{ fontSize: 12, color: "#3730A3", lineHeight: 1.5 }}>
-                  <strong style={{ fontWeight: 700 }}>Règlement, citations et PDF</strong> — l'espace de preuve et de comparaison est dans l'onglet Instruction.
-                </div>
-                <button
-                  onClick={() => goToDocuments()}
-                  style={{ flexShrink: 0, padding: "6px 14px", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 5px rgba(79,70,229,0.3)" }}
-                >Ouvrir l'Instruction →</button>
-              </div>
 
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
                 {/* ── Colonne gauche : ce qui contraint le terrain ── */}
