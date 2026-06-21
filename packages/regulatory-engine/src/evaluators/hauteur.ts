@@ -10,6 +10,41 @@ const HEIGHT_TOLERANCE_M = 0.01;
 
 const FACT_KEY = "hauteur";
 
+// ── Garde-fou anti-extraction aberrante ──────────────────────────────
+// Une hauteur "extraite" d'une pièce qui dépasse un plafond absolu, ou qui
+// dépasse très largement le seuil PLU, trahit le plus souvent une erreur de
+// lecture (cote NGF altimétrique prise pour une hauteur, échelle mal
+// interprétée) plutôt qu'un projet réellement hors-norme. On ne fonde JAMAIS
+// un refus sur une telle valeur : on remonte un point de vérification ciblé.
+//
+// Réglages volontairement conservateurs pour ne pas re-qualifier de vraies
+// non-conformités modérées :
+//   - plafond absolu : ≥ 30 m (immeuble de grande hauteur — toujours revu) ;
+//   - dépassement extrême : ≥ 2× le seuil ET ≥ 12 m en absolu.
+const IMPLAUSIBLE_ABSOLUTE_M = 30;
+const IMPLAUSIBLE_FACTOR = 2;
+const IMPLAUSIBLE_MIN_M = 12;
+
+// Seuil de référence pour le test de dépassement : le plus petit seuil
+// chiffré positif que porte la règle (value_max, value_exact, ou la plus
+// petite valeur de cas). null si la règle ne chiffre rien.
+function referenceMaxForPlausibility(rule: EvaluableRule): number | null {
+  const candidates: number[] = [];
+  if (rule.value_max != null) candidates.push(rule.value_max);
+  if (rule.value_exact != null) candidates.push(rule.value_exact);
+  for (const c of rule.cases ?? []) {
+    if (typeof c.value === "number" && c.value > 0) candidates.push(c.value);
+  }
+  const positives = candidates.filter((v) => v > 0);
+  return positives.length ? Math.min(...positives) : null;
+}
+
+function isImplausibleExtractedHeight(observed: number, rule: EvaluableRule): boolean {
+  if (observed >= IMPLAUSIBLE_ABSOLUTE_M) return true;
+  const ref = referenceMaxForPlausibility(rule);
+  return ref != null && observed >= ref * IMPLAUSIBLE_FACTOR && observed >= IMPLAUSIBLE_MIN_M;
+}
+
 // Évalue une règle de hauteur contre les faits du dossier.
 //
 // Renvoie null si la règle n'est pas de topic "hauteur" — permet à
@@ -80,6 +115,29 @@ export function evaluateHauteur(
         action_type: "clarifier_fait",
         label: "Vérifier la hauteur extraite et son unité",
         priority: "moyenne",
+      },
+    };
+  }
+
+  // ── Garde-fou : valeur extraite manifestement aberrante ──────────
+  // Prend le pas sur l'évaluation des seuils/cas : comparer un seuil à une
+  // valeur probablement fausse n'a pas de sens. Limité aux faits issus d'une
+  // extraction automatique — une saisie instructeur ou une déclaration sont
+  // traitées par leurs branches dédiées.
+  if (fact.source === "document_extraction" && isImplausibleExtractedHeight(observed, rule)) {
+    return {
+      ...baseFields,
+      status: "incertain",
+      severity: "alerte",
+      title: `Hauteur extraite incohérente (${formatM(observed)}) — à vérifier sur la pièce`,
+      explanation: `La hauteur extraite automatiquement (${formatM(observed)}) dépasse très largement ${formatThresholds(rule)}. Une telle valeur résulte le plus souvent d'une erreur de lecture (cote NGF altimétrique prise pour une hauteur, échelle mal interprétée) plutôt que d'un projet réellement hors-norme. À confirmer sur le plan de coupe avant toute décision.`,
+      facts_used: [FACT_KEY],
+      missing_facts: [],
+      recommended_action: {
+        action_type: "clarifier_fait",
+        label: "Vérifier la hauteur sur le plan de coupe (cotes faîtage / égout vs sol naturel)",
+        reason: "Valeur extraite probablement erronée — ne pas fonder de décision sans contrôle.",
+        priority: "haute",
       },
     };
   }
