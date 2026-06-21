@@ -9910,7 +9910,6 @@ function NouveauDossierModalHeader({ title, back, onClose }: { title: string; ba
 }
 
 function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commune: string }) {
-  const routerNavigate = useNavigate();
   const [mode, setMode] = useState<"choose" | "manual" | "ocr">("choose");
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
@@ -9933,6 +9932,12 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  // Une fois le dossier créé et les pièces déposées, on reste sur cet écran
+  // de confirmation : l'OCR/IA tourne en arrière-plan et la cloche notifiera
+  // l'instructeur quand tout sera prêt. On ne redirige plus immédiatement
+  // vers le détail du dossier pour ne pas laisser croire qu'il est déjà
+  // analysable.
+  const [createdSummary, setCreatedSummary] = useState<{ id: string; numero: string; piecesCount: number } | null>(null);
 
   // OCR state — multi-fichiers : le CERFA pré-remplit le formulaire, les
   // autres pièces sont mises en attente et uploadées après création du dossier.
@@ -10088,7 +10093,7 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
       } else if (mode === "manual") {
         payload["metadata"] = { created_via: "manual" };
       }
-      const created = await api.post<{ id: string }>("/mairie/dossiers", payload);
+      const created = await api.post<{ id: string; numero: string }>("/mairie/dossiers", payload);
 
       // Upload séquentiel des pièces : on évite de saturer la bande passante
       // côté navigateur (CERFAs scannés à 15 Mo par fichier × N pièces) et on
@@ -10148,8 +10153,12 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
         }
       }
 
-      onClose();
-      routerNavigate(`/mairie/dossiers/${created.id}`);
+      // On NE redirige PAS vers le détail du dossier : l'OCR/IA des pièces
+      // tourne en arrière-plan et l'instructeur recevra une notification
+      // « Dossier prêt à instruire » dès que toutes les pièces seront
+      // analysées (cf. pieceOcrQueue.maybeNotifyDossierReady côté API).
+      // L'agent au comptoir voit une confirmation et peut fermer la modale.
+      setCreatedSummary({ id: created.id, numero: created.numero, piecesCount: stagedFiles.length });
     } catch (err) {
       setSubmitError(err instanceof Error ? err.message : "Erreur lors de la création");
     } finally {
@@ -10160,6 +10169,42 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
 
 
   const inputStyle = { width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const, background: "white" };
+
+  // Confirmation post-création : dossier persisté, pièces uploadées, OCR/IA
+  // en cours côté worker. On reste sur la modale pour rappeler à l'agent que
+  // la suite arrive via la cloche de notification.
+  if (createdSummary) return (
+    <NouveauDossierOverlay onClose={onClose}>
+      <NouveauDossierModalHeader title="Dossier enregistré" onClose={onClose} />
+      <div style={{ padding: "24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 10, padding: "14px 16px" }}>
+          <span style={{ fontSize: 22, lineHeight: 1 }}>✅</span>
+          <div style={{ fontSize: 13, color: "#065F46", lineHeight: 1.55 }}>
+            Dossier <strong>{createdSummary.numero}</strong> enregistré
+            {createdSummary.piecesCount > 0 && (
+              <> avec {createdSummary.piecesCount} pièce{createdSummary.piecesCount > 1 ? "s" : ""}</>
+            )}.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start", background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 10, padding: "14px 16px" }}>
+          <span style={{ fontSize: 18, lineHeight: 1 }}>⏳</span>
+          <div style={{ fontSize: 13, color: "#075985", lineHeight: 1.6 }}>
+            L'analyse OCR et IA des pièces tourne en arrière-plan.
+            <strong> Vous (ou l'instructeur assigné) recevrez une notification dans la cloche dès que le dossier sera prêt à instruire.</strong>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#0C4A6E" }}>
+              Inutile d'ouvrir le dossier maintenant : tant que la notification n'est pas arrivée, les analyses ne sont pas finalisées.
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: 4 }}>
+          <button onClick={onClose}
+            style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "10px 20px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            Fermer
+          </button>
+        </div>
+      </div>
+    </NouveauDossierOverlay>
+  );
 
   if (mode === "choose") return (
     <NouveauDossierOverlay onClose={onClose}>
