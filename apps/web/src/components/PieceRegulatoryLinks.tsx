@@ -129,7 +129,7 @@ export function PieceRegulatoryLinks({ dossierId, pieceId, onAppendToNote }: Pro
     return <Hint tone="danger">Règles indisponibles : {error}</Hint>;
   }
   if (!data) {
-    return <Hint>Pas d'analyse — lancez-la dans l'onglet Conformité IA pour relier cette pièce aux règles.</Hint>;
+    return <Hint>Pas d'analyse — lancez-la dans l'onglet Instruction pour relier cette pièce aux règles.</Hint>;
   }
   if (linkedFindings.length === 0) {
     return <Hint>Aucune règle PLU n'est encore reliée à cette pièce.</Hint>;

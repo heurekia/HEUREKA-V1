@@ -6163,13 +6163,13 @@ function decisionStepIndex(status: DecisionStatus): number {
   return 0;
 }
 
-const DETAIL_TABS = ["Résumé", "Parcelle", "Conformité IA", "Documents", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
+const DETAIL_TABS = ["Résumé", "Parcelle", "Documents", "Instruction", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
 type DetailTab = typeof DETAIL_TABS[number];
 
 const TAB_ICONS: Record<string, React.ReactNode> = {
   "Résumé": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>,
   "Parcelle": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>,
-  "Conformité IA": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>,
+  "Instruction": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>,
   "Documents": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
   "Consultations": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>,
   "Courriers": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>,
@@ -7031,7 +7031,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [conformiteLaunching, setConformiteLaunching] = useState(false);
 
   useEffect(() => {
-    if (activeTab !== "Conformité IA" || conformite !== null) return;
+    if (activeTab !== "Instruction" || conformite !== null) return;
     api.get<{ status: string; report: ConformiteReport | null; analyzed_at: string | null }>(`/mairie/dossiers/${dossier.id}/conformite`)
       .then(setConformite)
       .catch(() => setConformite({ status: "absent", report: null, analyzed_at: null }));
@@ -7631,33 +7631,55 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   ))}
                 </div>
               </div>
-              {/* Avancement */}
+              {/* Avancement — étapes cliquables + prochaine action réelle */}
               <div style={CARD}>
-                <SecTitle>Avancement du dossier</SecTitle>
-                {[
-                  { label: "Dépôt", done: true },
-                  { label: "Complétude", done: true },
-                  { label: "Instruction", done: ["en_instruction","decision_en_cours","accepte","refuse","accord_prescription"].includes(dossier.status) },
-                  { label: "Consultations", done: false },
-                  { label: "Décision", done: ["accepte","refuse","accord_prescription"].includes(dossier.status) },
-                ].map((step, i) => (
-                  <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: i < 4 ? 14 : 0 }}>
+                <SecTitle>Où en est l'instruction ?</SecTitle>
+                {([
+                  { label: "Dépôt", done: true, tab: null },
+                  { label: "Complétude", done: !["brouillon","soumis"].includes(dossier.status), tab: "Documents" },
+                  { label: "Instruction", done: ["en_instruction","decision_en_cours","accepte","refuse","accord_prescription"].includes(dossier.status), tab: "Instruction" },
+                  { label: "Consultations", done: false, tab: "Consultations" },
+                  { label: "Décision", done: ["accepte","refuse","accord_prescription"].includes(dossier.status), tab: "Décision" },
+                ] as Array<{ label: string; done: boolean; tab: DetailTab | null }>).map((step, i) => (
+                  <div
+                    key={i}
+                    onClick={() => { if (step.tab) setActiveTab(step.tab); }}
+                    style={{ display: "flex", alignItems: "center", gap: 12, cursor: step.tab ? "pointer" : "default", borderRadius: 8, padding: step.tab ? "2px 4px" : 0, margin: step.tab ? "0 -4px" : 0, marginBottom: i < 4 ? 14 : 0 }}
+                    onMouseEnter={(e) => { if (step.tab) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
+                    onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
+                  >
                     <div style={{ width: 28, height: 28, borderRadius: "50%", background: step.done ? "linear-gradient(135deg,#4F46E5,#6366F1)" : "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: step.done ? "0 2px 6px rgba(79,70,229,0.3)" : "none" }}>
                       {step.done ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <span style={{ fontSize: 11, color: "#CBD5E1", fontWeight: 700 }}>{i + 1}</span>}
                     </div>
-                    <span style={{ fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
+                    <span style={{ flex: 1, fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
+                    {step.tab ? <span style={{ color: "#CBD5E1", fontSize: 16 }}>›</span> : null}
                   </div>
                 ))}
-                <div style={{ marginTop: 20, padding: "14px 16px", background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", borderRadius: 12, border: "1px solid #C7D2FE" }}>
-                  <div style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", marginBottom: 6, letterSpacing: "0.04em" }}>SCORE DE CONFORMITÉ IA</div>
-                  <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                    <div style={{ flex: 1, height: 7, background: "#C7D2FE", borderRadius: 4, overflow: "hidden" }}>
-                      <div style={{ width: "78%", height: "100%", background: "linear-gradient(90deg,#4F46E5,#818CF8)", borderRadius: 4 }} />
+                {(() => {
+                  // Prochaine action déterministe selon le statut. Remplace
+                  // l'ancien « score 78% » codé en dur (donnée fictive trompeuse).
+                  const NEXT: Record<string, { text: string; tab: DetailTab | null }> = {
+                    brouillon:         { text: "Dossier non encore soumis par le pétitionnaire", tab: null },
+                    soumis:            { text: "Vérifier la complétude du dossier", tab: "Documents" },
+                    pre_instruction:   { text: "Vérifier la complétude du dossier", tab: "Documents" },
+                    incomplet:         { text: "En attente de pièces du pétitionnaire", tab: "Documents" },
+                    en_instruction:    { text: "Examiner l'analyse réglementaire", tab: "Instruction" },
+                    decision_en_cours: { text: "Finaliser et rédiger la décision", tab: "Décision" },
+                    accepte:           { text: "Dossier clôturé — accordé", tab: null },
+                    refuse:            { text: "Dossier clôturé — refusé", tab: null },
+                    accord_prescription:{ text: "Dossier clôturé — accordé avec prescriptions", tab: null },
+                  };
+                  const na = NEXT[dossier.status] ?? { text: "Poursuivre l'instruction", tab: null };
+                  return (
+                    <div style={{ marginTop: 20, padding: "12px 14px", background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", borderRadius: 12, border: "1px solid #C7D2FE", display: "flex", alignItems: "center", gap: 12 }}>
+                      <span style={{ fontSize: 16 }}>👉</span>
+                      <div style={{ flex: 1, fontSize: 12.5, fontWeight: 600, color: "#4338CA" }}>{na.text}</div>
+                      {na.tab ? (
+                        <button onClick={() => setActiveTab(na.tab!)} style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Y aller</button>
+                      ) : null}
                     </div>
-                    <span style={{ fontSize: 16, fontWeight: 800, color: "#4F46E5" }}>78%</span>
-                  </div>
-                  <div style={{ fontSize: 11, color: "#6366F1", marginTop: 5 }}>6 règles conformes · 1 vigilance · 1 non vérifiable</div>
-                </div>
+                  );
+                })()}
               </div>
               {/* Mini map */}
               <div style={{ ...CARD, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" as const }}>
@@ -8250,13 +8272,18 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           );
         })()}
 
-        {/* ── CONFORMITÉ IA ── */}
-        {activeTab === "Conformité IA" && (
+        {/* ── INSTRUCTION (ex « Conformité IA ») ── */}
+        {activeTab === "Instruction" && (
           <div style={{ marginBottom: 20 }}>
             <RegulatoryChecklist dossierId={dossier.id} />
           </div>
         )}
-        {activeTab === "Conformité IA" && (() => {
+        {activeTab === "Instruction" && (
+          <div style={{ margin: "8px 0 12px", fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>
+            Analyse détaillée par pièce — pipeline historique
+          </div>
+        )}
+        {activeTab === "Instruction" && (() => {
           const report = conformite?.report ?? null;
           const status = conformite?.status ?? "absent";
           const verdicts = report?.rule_verdicts?.verdicts ?? [];
@@ -8289,7 +8316,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 <div style={{ textAlign: "center" as const, padding: "32px 20px", color: "#64748b" }}>
                   <div style={{ fontSize: 44, marginBottom: 12 }}>🔍</div>
                   <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>
-                    Conformité IA non encore lancée
+                    Analyse détaillée non encore lancée
                   </div>
                   <p style={{ fontSize: 13, maxWidth: 520, margin: "0 auto 16px", lineHeight: 1.55 }}>
                     L'analyse croise les <strong>extractions des pièces déposées</strong> avec les <strong>règles PLU</strong> de la zone
