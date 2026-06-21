@@ -8447,6 +8447,26 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 {/* ── Colonne gauche : ce qui contraint le terrain ── */}
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
                   <ColHeading>Ce qui contraint le terrain</ColHeading>
+                  {/* Alerte ABF — missionnement direct, remontée en tête pour
+                      que l'action soit visible immédiatement. */}
+                  {hasABFServitude && (
+                    <div style={{ background: "#FFFBEB", borderRadius: 12, padding: "16px 18px", border: "1.5px solid #FCD34D", boxShadow: "0 1px 4px rgba(245,158,11,0.12)" }}>
+                      <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
+                        <div style={{ flexShrink: 0, width: 32, height: 32, borderRadius: "50%", background: "#FEF3C7", border: "2px solid #FCD34D", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>⚜</div>
+                        <div style={{ flex: 1 }}>
+                          <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>Périmètre ABF — consultation obligatoire</div>
+                          <div style={{ fontSize: 12, color: "#B45309", lineHeight: 1.6, marginBottom: 12 }}>Cette parcelle est en périmètre de protection des Monuments Historiques. L'avis de l'Architecte des Bâtiments de France est requis avant toute décision.</div>
+                          <button
+                            onClick={missionnerABF}
+                            disabled={consultationsMissioning}
+                            style={{ background: consultationsMissioning ? "#F5F3FF" : "linear-gradient(135deg,#8B5CF6,#7C3AED)", color: consultationsMissioning ? "#8B5CF6" : "white", border: consultationsMissioning ? "1px solid #C4B5FD" : "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(124,58,237,0.3)" }}
+                          >
+                            {consultationsMissioning ? "Envoi en cours…" : "Missionner l'ABF"}
+                          </button>
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   {/* Risques & servitudes */}
                   <div style={CARD}>
                     <SecTitle>Risques & servitudes</SecTitle>
@@ -8644,26 +8664,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       })}
                     </div>
                   </div>
-
-                  {/* Alerte ABF — missionnement direct */}
-                  {hasABFServitude && (
-                    <div style={{ background: "#FFFBEB", borderRadius: 12, padding: "16px 18px", border: "1.5px solid #FCD34D", boxShadow: "0 1px 4px rgba(245,158,11,0.12)" }}>
-                      <div style={{ display: "flex", alignItems: "flex-start", gap: 12 }}>
-                        <div style={{ flexShrink: 0, width: 32, height: 32, borderRadius: "50%", background: "#FEF3C7", border: "2px solid #FCD34D", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>⚜</div>
-                        <div style={{ flex: 1 }}>
-                          <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>Périmètre ABF — consultation obligatoire</div>
-                          <div style={{ fontSize: 12, color: "#B45309", lineHeight: 1.6, marginBottom: 12 }}>Cette parcelle est en périmètre de protection des Monuments Historiques. L'avis de l'Architecte des Bâtiments de France est requis avant toute décision.</div>
-                          <button
-                            onClick={missionnerABF}
-                            disabled={consultationsMissioning}
-                            style={{ background: consultationsMissioning ? "#F5F3FF" : "linear-gradient(135deg,#8B5CF6,#7C3AED)", color: consultationsMissioning ? "#8B5CF6" : "white", border: consultationsMissioning ? "1px solid #C4B5FD" : "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(124,58,237,0.3)" }}
-                          >
-                            {consultationsMissioning ? "Envoi en cours…" : "Missionner l'ABF"}
-                          </button>
-                        </div>
-                      </div>
-                    </div>
-                  )}
 
                 </div>
 
