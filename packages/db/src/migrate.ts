@@ -874,9 +874,12 @@ CREATE TABLE IF NOT EXISTS dossier_facts (
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_facts_dossier ON dossier_facts(dossier_id);
 CREATE INDEX IF NOT EXISTS idx_dossier_facts_key ON dossier_facts(dossier_id, key);
--- Un seul fait "actif" par (dossier, clé) : superseded_at IS NULL ⇒ canonique.
-CREATE UNIQUE INDEX IF NOT EXISTS uniq_dossier_facts_active_key
-  ON dossier_facts(dossier_id, key) WHERE superseded_at IS NULL;
+-- Ancienne contrainte « un seul actif par (dossier, clé) » retirée :
+-- incompatible avec Phase 1 (plusieurs candidats persistés, un seul gagnant
+-- — cf. resolveDossierFactsWithConflicts). Le DROP IF EXISTS + CREATE de
+-- l'index correct se trouvent plus bas (uniq_dossier_facts_active_winner_key).
+-- Conserver le CREATE ici provoquait un fail de migration sur les bases qui
+-- contiennent déjà des données au format Phase 1.
 
 -- Analyse réglementaire : un run du moteur sur un dossier à un instant T.
 -- On historise plusieurs analyses (une à la soumission, une à la complétude,
