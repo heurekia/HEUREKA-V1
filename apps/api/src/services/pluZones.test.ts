@@ -198,6 +198,26 @@ describe("clipZonesToCommune", () => {
     expect(findZoneAtPoint(clipped, 3, 3)?.zone_code).toBe("UB");
   });
 
+  it("conserve une zone qui CONTIENT toute la commune (cas A/N d'un PLUi)", () => {
+    // Grande zone -5..15 qui englobe la commune 0..10 : aucun sommet de la zone
+    // n'est dans la commune, mais les sommets de la commune sont dans la zone.
+    const zones = {
+      type: "FeatureCollection",
+      features: [
+        { type: "Feature", properties: { libelle: "A", typezone: "A" },
+          geometry: { type: "Polygon", coordinates: square(-5, -5, 15, 15) } },
+      ],
+    };
+    const clipped = clipZonesToCommune(zones, commune);
+    expect(clipped.features).toHaveLength(1);
+    // Rognée à la commune → reste localisable partout dans 0..10.
+    expect(findZoneAtPoint(clipped, 5, 5)?.zone_code).toBe("A");
+    const g = (clipped.features![0] as { geometry: { coordinates: number[][][][] } }).geometry;
+    const xs = g.coordinates.flat(2).map(p => p[0]!);
+    expect(Math.max(...xs)).toBeLessThanOrEqual(10);
+    expect(Math.min(...xs)).toBeGreaterThanOrEqual(0);
+  });
+
   it("laisse passer les features sans géométrie polygonale", () => {
     const zones = {
       type: "FeatureCollection",

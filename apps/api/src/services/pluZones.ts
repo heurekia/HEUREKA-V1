@@ -69,22 +69,56 @@ export function filterZonesByInsee(zones: PluZonesGeoJson, inseeCode: string): P
 // bordure (et les zones limitrophes des PLUi) débordent du contour. On les
 // rogne ici sur la géométrie communale pleine résolution pour un rendu net dans
 // la délimitation de la ville. C'est aussi plus robuste que `filterZonesByInsee` :
-// une zone d'une autre commune sans intersection est retirée géométriquement,
-// même quand la propriété `insee` est absente (vieux datasets).
+// une zone d'une autre commune est retirée géométriquement, même quand la
+// propriété `insee` est absente (vieux datasets).
 //
-// Le masque est la géométrie communale COMPLÈTE (tous les polygones + trous) :
-//  - commune en plusieurs morceaux (MultiPolygon, exclaves) → les zones de
-//    chaque morceau sont conservées ;
-//  - commune avec un trou (enclave d'une autre commune)      → les zones du trou
-//    sont retirées.
-// On ne supprime donc jamais une zone qui appartient réellement à la commune ;
-// au pire on rogne son débordement hors limite.
-//  - feature sans intersection         → retirée (hors commune)
-//  - feature sans géométrie polygonale  → conservée telle quelle
-//  - géométrie pathologique (throw)     → conservée non rognée (jamais perdue)
+// ⚠️ Décision INCLUSION vs DÉCOUPE séparées :
+//  - L'inclusion (la zone appartient-elle à la commune ?) est décidée par un
+//    test robuste de recouvrement (ray-casting bidirectionnel). On NE se fie
+//    PAS au résultat de polygon-clipping pour ça : sur certaines géométries GPU
+//    (petites zones U/AU du bourg), polygon-clipping renvoie un résultat VIDE
+//    alors que la zone est bien dans la commune → c'est ce qui faisait
+//    disparaître le zonage du bourg.
+//  - La découpe ne sert qu'à obtenir un bord net. Si elle échoue (retour vide
+//    ou exception), on CONSERVE la zone entière plutôt que de la perdre.
+// Résultat :
+//  - zone sans recouvrement (commune voisine)   → retirée
+//  - zone qui recouvre, découpe OK              → rognée au contour
+//  - zone qui recouvre, découpe KO              → conservée entière
+//  - feature sans géométrie polygonale          → conservée telle quelle
+const geomBbox = (geom: Polygon | MultiPolygon): [number, number, number, number] => {
+  let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+  const polys: number[][][][] = geom.type === "Polygon" ? [geom.coordinates] : geom.coordinates;
+  for (const poly of polys) for (const ring of poly) for (const p of ring) {
+    const x = p[0]!, y = p[1]!;
+    if (x < minX) minX = x;
+    if (x > maxX) maxX = x;
+    if (y < minY) minY = y;
+    if (y > maxY) maxY = y;
+  }
+  return [minX, minY, maxX, maxY];
+};
+
+const bboxOverlap = (a: number[], b: number[]): boolean =>
+  a[0]! <= b[2]! && a[2]! >= b[0]! && a[1]! <= b[3]! && a[3]! >= b[1]!;
+
+// Vrai si zone et commune se recouvrent. Couvre les 3 cas : zone incluse dans la
+// commune, zone à cheval sur la limite, et commune entièrement contenue dans une
+// grande zone (A/N d'un PLUi).
+const geomsOverlap = (zone: Polygon | MultiPolygon, commune: Polygon | MultiPolygon): boolean => {
+  const polysC: number[][][][] = commune.type === "Polygon" ? [commune.coordinates] : commune.coordinates;
+  for (const poly of polysC) for (const ring of poly) for (const p of ring)
+    if (pointInPolygonGeom(p[0]!, p[1]!, zone)) return true;
+  const polysZ: number[][][][] = zone.type === "Polygon" ? [zone.coordinates] : zone.coordinates;
+  for (const poly of polysZ) for (const ring of poly) for (const p of ring)
+    if (pointInPolygonGeom(p[0]!, p[1]!, commune)) return true;
+  return false;
+};
+
 export function clipZonesToCommune(zones: PluZonesGeoJson, communeGeom: Polygon | MultiPolygon): PluZonesGeoJson {
   type Geom = Parameters<typeof polygonClipping.intersection>[0];
   const mask = communeGeom.coordinates as unknown as Geom;
+  const communeBbox = geomBbox(communeGeom);
   const out: unknown[] = [];
   for (const f of (zones.features ?? []) as ZoneFeature[]) {
     const g = f.geometry;
@@ -92,13 +126,20 @@ export function clipZonesToCommune(zones: PluZonesGeoJson, communeGeom: Polygon 
       out.push(f);
       continue;
     }
+    const zoneGeom = g as Polygon | MultiPolygon;
+    // Rejet rapide des zones clairement disjointes (limitrophes du PLUi).
+    if (!bboxOverlap(geomBbox(zoneGeom), communeBbox)) continue;
+    // Inclusion robuste : si la zone ne recouvre pas la commune → on la retire.
+    if (!geomsOverlap(zoneGeom, communeGeom)) continue;
+    // Découpe pour le bord. Si polygon-clipping rate (vide/throw) → zone entière.
     try {
       const clipped = polygonClipping.intersection(g.coordinates as unknown as Geom, mask);
-      if (clipped.length === 0) continue; // hors commune
-      out.push({ ...f, geometry: { type: "MultiPolygon", coordinates: clipped as unknown as Position[][][] } });
-    } catch {
-      out.push(f);
-    }
+      if (clipped.length > 0) {
+        out.push({ ...f, geometry: { type: "MultiPolygon", coordinates: clipped as unknown as Position[][][] } });
+        continue;
+      }
+    } catch { /* conserve la zone entière ci-dessous */ }
+    out.push(f);
   }
   return { ...zones, features: out };
 }
