@@ -275,6 +275,34 @@ export function pickMostSpecificRule<R extends {
   return candidates[0]!;
 }
 
+/**
+ * Résout le code de zone faisant foi pour un dossier à partir de son
+ * `metadata`, par ordre de fiabilité décroissante :
+ *   1. zone GÉOLOCALISÉE par l'analyse parcellaire (parcel_analysis) —
+ *      rafraîchie à chaque ouverture de l'onglet Parcelle, donc la plus fiable ;
+ *   2. metadata.zone — snapshot figé au dépôt par le wizard citoyen ;
+ *   3. metadata.zone_plu — clé héritée, historiquement jamais écrite.
+ *
+ * But : garantir que TOUS les consommateurs (conformité, documentation,
+ * constructibilité) appliquent les règles de la MÊME zone — celle réellement
+ * identifiée pour la parcelle.
+ */
+export function resolveDossierZoneCode(meta: Record<string, unknown>): string | null {
+  const pa = meta.parcel_analysis as
+    | { plu_zone?: { zone_code?: unknown }; db_zone?: { code?: unknown } }
+    | undefined;
+  const fromAnalysis =
+    typeof pa?.plu_zone?.zone_code === "string" && pa.plu_zone.zone_code.trim()
+      ? pa.plu_zone.zone_code.trim()
+      : typeof pa?.db_zone?.code === "string" && pa.db_zone.code.trim()
+        ? pa.db_zone.code.trim()
+        : null;
+  if (fromAnalysis) return fromAnalysis;
+  if (typeof meta.zone === "string" && meta.zone.trim()) return meta.zone.trim();
+  if (typeof meta.zone_plu === "string" && meta.zone_plu.trim()) return meta.zone_plu.trim();
+  return null;
+}
+
 export interface LoadedZoneRules {
   // The zone the parcel sits in (the deepest match found in DB)
   zone: { id: string; code: string; label: string | null; type: string | null } | null;
