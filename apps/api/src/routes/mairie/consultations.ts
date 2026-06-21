@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossiers, communes, regulatory_documents, dossier_consultations, external_services, service_communes } from "@heureka-v1/db";
+import { dossiers, communes, regulatory_documents, dossier_consultations, external_services, service_communes, dossier_messages } from "@heureka-v1/db";
 import { eq, desc, and, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 
@@ -273,6 +273,40 @@ consultationsRouter.get("/dossiers/:id/commune-documents", async (req: AuthReque
 
 // ── Consultations de services pour un dossier ──
 
+// Services externes enregistrés qui couvrent la commune du dossier. Sert à
+// peupler le sélecteur "Missionner un service" côté instructeur : seuls ces
+// services disposent d'un compte capable de recevoir la consultation et de
+// répondre dans la messagerie. On renvoie aussi le type pour l'affichage.
+consultationsRouter.get("/dossiers/:id/available-services", async (req: AuthRequest, res) => {
+  try {
+    const [dossierRow] = await db.select({ commune: dossiers.commune })
+      .from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
+    if (!dossierRow?.commune) return res.json([]);
+
+    const [communeRow] = await db.select({ id: communes.id })
+      .from(communes)
+      .where(sql`lower(trim(${communes.name})) = lower(trim(${dossierRow.commune}))`)
+      .limit(1);
+    if (!communeRow) return res.json([]);
+
+    const rows = await db.select({
+      id: external_services.id,
+      name: external_services.name,
+      type: external_services.type,
+      email: external_services.email,
+    })
+      .from(external_services)
+      .innerJoin(service_communes, eq(service_communes.service_id, external_services.id))
+      .where(eq(service_communes.commune_id, communeRow.id))
+      .orderBy(external_services.name);
+
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 consultationsRouter.get("/dossiers/:id/consultations", async (req: AuthRequest, res) => {
   try {
     const rows = await db
@@ -289,34 +323,41 @@ consultationsRouter.get("/dossiers/:id/consultations", async (req: AuthRequest, 
 
 consultationsRouter.post("/dossiers/:id/consultations", async (req: AuthRequest, res) => {
   try {
-    const { service_name, service_type, avis } = req.body as {
+    const { service_name, service_type, avis, external_service_id, message } = req.body as {
       service_name: string;
       service_type: string;
       avis?: string;
+      external_service_id?: string | null;
+      message?: string;
     };
     if (!service_name?.trim() || !service_type?.trim()) {
       return res.status(400).json({ error: "service_name et service_type sont requis" });
     }
 
-    // Resolve external_service_id by matching service_type + dossier commune coverage
-    let externalServiceId: string | null = null;
-    const [dossierRow] = await db.select({ commune: dossiers.commune })
-      .from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
-    if (dossierRow?.commune) {
-      const [communeRow] = await db.select({ id: communes.id })
-        .from(communes)
-        .where(sql`lower(trim(${communes.name})) = lower(trim(${dossierRow.commune}))`)
-        .limit(1);
-      if (communeRow) {
-        const [serviceRow] = await db.select({ id: external_services.id })
-          .from(external_services)
-          .innerJoin(service_communes, eq(service_communes.service_id, external_services.id))
-          .where(and(
-            eq(external_services.type, service_type.trim()),
-            eq(service_communes.commune_id, communeRow.id),
-          ))
+    // Resolution du service externe rattaché : si l'instructeur a explicitement
+    // choisi un service enregistré (external_service_id), on l'utilise tel quel ;
+    // sinon on retombe sur la résolution par type + couverture commune (cas
+    // historique du bouton ABF qui ne passait qu'un service_type).
+    let externalServiceId: string | null = external_service_id?.trim() || null;
+    if (!externalServiceId) {
+      const [dossierRow] = await db.select({ commune: dossiers.commune })
+        .from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
+      if (dossierRow?.commune) {
+        const [communeRow] = await db.select({ id: communes.id })
+          .from(communes)
+          .where(sql`lower(trim(${communes.name})) = lower(trim(${dossierRow.commune}))`)
           .limit(1);
-        externalServiceId = serviceRow?.id ?? null;
+        if (communeRow) {
+          const [serviceRow] = await db.select({ id: external_services.id })
+            .from(external_services)
+            .innerJoin(service_communes, eq(service_communes.service_id, external_services.id))
+            .where(and(
+              eq(external_services.type, service_type.trim()),
+              eq(service_communes.commune_id, communeRow.id),
+            ))
+            .limit(1);
+          externalServiceId = serviceRow?.id ?? null;
+        }
       }
     }
 
@@ -332,6 +373,20 @@ consultationsRouter.post("/dossiers/:id/consultations", async (req: AuthRequest,
         created_by_id: req.user?.id ?? null,
       })
       .returning();
+
+    // Message d'accompagnement : posté dans le fil de la consultation (scopé par
+    // consultation_id) pour qu'il arrive directement dans la messagerie du
+    // service consulté et le notifie de la nouvelle demande d'avis.
+    if (row && message?.trim()) {
+      await db.insert(dossier_messages).values({
+        dossier_id: req.params.id as string,
+        consultation_id: row.id,
+        from_user_id: req.user?.id ?? "",
+        from_role: req.user?.role ?? "mairie",
+        content: message.trim(),
+      });
+    }
+
     res.status(201).json(row);
   } catch (err) {
     console.error(err);
