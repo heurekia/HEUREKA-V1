@@ -4352,6 +4352,11 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
               </div>
             )}
             {zoneProgress.length > 0 && (
+              <div style={{ fontSize: 11, color: "#64748b", marginBottom: 10, lineHeight: 1.5 }}>
+                ℹ Vous pouvez fermer cet onglet ou naviguer ailleurs — l'extraction continue côté serveur. Revenez ici pour suivre l'avancée.
+              </div>
+            )}
+            {zoneProgress.length > 0 && (
               <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" }}>
                 <div style={{ padding: "8px 14px", background: "#F8FAFC", borderBottom: "1px solid #E2E8F0", fontSize: 11, fontWeight: 600, color: "#64748b", display: "flex", justifyContent: "space-between" }}>
                   <span>Zones détectées</span>
@@ -4817,6 +4822,20 @@ function ReglementationScreen({ commune, inseeCode }: { commune: string; inseeCo
   };
 
   useEffect(() => { load(); }, [commune, inseeCode]);
+
+  // Si une ingestion PLU est en cours côté serveur pour cette commune
+  // (jobId persisté en localStorage par PluUploadPanel), on force l'affichage
+  // du panneau d'upload — qui détectera de son côté le job actif et lancera
+  // le polling de /status. Sans ça, lorsqu'un référentiel existe déjà en DB,
+  // ce composant rendait la liste des zones et l'avancée d'ingestion restait
+  // invisible (transaction d'écriture seulement à la fin du worker).
+  useEffect(() => {
+    const insee = (inseeCode ?? "").trim();
+    if (!insee) return;
+    let active: string | null = null;
+    try { active = localStorage.getItem(`plu-ingest-job:${insee}`); } catch { /* SSR-safe */ }
+    if (active) setShowUpload(true);
+  }, [inseeCode]);
 
   const patchRule = async (id: string, patch: Partial<RuleRow>) => {
     setSaving(true);
