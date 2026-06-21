@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossiers, users, communes, zones, zone_regulatory_rules } from "@heureka-v1/db";
+import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_documents, document_communes } from "@heureka-v1/db";
 import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
@@ -689,7 +689,22 @@ type IngestJob = {
   pdfBuffer: Buffer;
   totalPages: number;
   toc: TocEntry[];
+  // Commune de référence : sert au logging/imputation des coûts IA et au mode
+  // legacy (PLU communal sans document explicite). En mode document, c'est
+  // la première commune rattachée — un porteur arbitraire mais cohérent.
   commune: { id: string; name: string; insee_code: string };
+  // Contexte document : présent quand l'ingestion cible un regulatory_document
+  // existant (créé en amont via /admin/epci/:id/documents ou similaire).
+  // Quand absent, fallback legacy : le commit purge/insère par commune_id sans
+  // tagger source_document_id (préservé pour ne pas casser l'écran d'import
+  // PLU communal historique).
+  document?: {
+    id: string;
+    porteur: "commune" | "epci";
+    // Communes membres rattachées via document_communes. En mode PLU communal
+    // (porteur="commune"), un seul élément.
+    communeIds: string[];
+  };
   userId: string | null;
   zones: Array<{
     code: string;
@@ -736,23 +751,72 @@ function renderPagesAsBlocksFor(pdfBuffer: Buffer, firstPage: number, maxPages: 
 }
 
 // POST /admin/ingest-plu-pdf/start
+//
+// Deux modes de déclenchement, mutuellement exclusifs :
+//  - Mode legacy (PLU communal) : { commune_name, insee_code, zip_code?,
+//    pdf_base64 } — upsert la commune, ingestion non-document-aware
+//    (commune_id à la purge, pas de source_document_id).
+//  - Mode document (PLUi/PLUm/PPRI/…) : { doc_id, pdf_base64 } — l'extraction
+//    est rattachée à un regulatory_document préalablement créé. Le commit
+//    purge/insère par source_document_id, pose commune_id NULL si porteur
+//    EPCI (zones partagées) ou commune.id si porteur commune. Les communes
+//    rattachées sont lues depuis document_communes.
 adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) => {
   try {
     gcIngestJobs();
-    const { commune_name, insee_code, zip_code, pdf_base64 } = req.body as {
-      commune_name?: string; insee_code?: string; zip_code?: string; pdf_base64?: string;
+    const { commune_name, insee_code, zip_code, pdf_base64, doc_id } = req.body as {
+      commune_name?: string; insee_code?: string; zip_code?: string;
+      pdf_base64?: string; doc_id?: string;
     };
-    if (!commune_name || !insee_code || !pdf_base64) {
-      return res.status(400).json({ error: "commune_name, insee_code et pdf_base64 requis" });
+    if (!pdf_base64) {
+      return res.status(400).json({ error: "pdf_base64 requis" });
     }
 
-    // Upsert commune (identique au legacy)
-    let commune = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
-    if (!commune) {
-      const [created] = await db.insert(communes).values({ name: commune_name, insee_code, zip_code: zip_code ?? "" }).returning();
-      commune = created!;
+    // Résolution du contexte d'ingestion : document explicite ou commune legacy.
+    let commune: typeof communes.$inferSelect;
+    let documentCtx: NonNullable<IngestJob["document"]> | undefined;
+    if (doc_id) {
+      // Mode document : on lit le porteur et les communes rattachées.
+      const [doc] = await db.select().from(regulatory_documents).where(eq(regulatory_documents.id, doc_id)).limit(1);
+      if (!doc) return res.status(404).json({ error: "Document réglementaire introuvable" });
+
+      const rattachements = await db
+        .select({ commune_id: document_communes.commune_id })
+        .from(document_communes)
+        .where(eq(document_communes.document_id, doc.id));
+      const communeIds = rattachements.map((r) => r.commune_id);
+      if (communeIds.length === 0) {
+        return res.status(400).json({ error: "Document sans commune rattachée — rattachez au moins une commune avant d'ingérer." });
+      }
+
+      // On choisit une commune de référence pour le logging/imputation des
+      // coûts IA. En mode PLU communal historique, le porteur_commune_id ;
+      // en mode EPCI (porteur_epci_id), la première commune membre — choix
+      // arbitraire mais cohérent (toutes seront couvertes par le document).
+      const refCommuneId = doc.porteur_commune_id ?? communeIds[0]!;
+      const [refCommune] = await db.select().from(communes).where(eq(communes.id, refCommuneId)).limit(1);
+      if (!refCommune) {
+        return res.status(500).json({ error: "Commune de référence introuvable (incohérence DB)" });
+      }
+      commune = refCommune;
+      documentCtx = {
+        id: doc.id,
+        porteur: doc.porteur_epci_id ? "epci" : "commune",
+        communeIds,
+      };
     } else {
-      await db.update(communes).set({ name: commune_name, zip_code: zip_code ?? commune.zip_code ?? "", updated_at: new Date() }).where(eq(communes.id, commune.id));
+      // Mode legacy : on garde le contrat strict {commune_name, insee_code}.
+      if (!commune_name || !insee_code) {
+        return res.status(400).json({ error: "doc_id OU (commune_name + insee_code) requis" });
+      }
+      const existing = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
+      if (!existing) {
+        const [created] = await db.insert(communes).values({ name: commune_name, insee_code, zip_code: zip_code ?? "" }).returning();
+        commune = created!;
+      } else {
+        await db.update(communes).set({ name: commune_name, zip_code: zip_code ?? existing.zip_code ?? "", updated_at: new Date() }).where(eq(communes.id, existing.id));
+        commune = existing;
+      }
     }
 
     const pdfBuffer = Buffer.from(pdf_base64, "base64");
@@ -835,6 +899,7 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
     const job: IngestJob = {
       jobId, pdfBuffer, totalPages, toc,
       commune: { id: commune.id, name: commune.name, insee_code: commune.insee_code },
+      document: documentCtx,
       userId: req.user?.id ?? null,
       zones: zones_out,
       status: "running",
@@ -1117,15 +1182,35 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
     await Promise.all(Array.from({ length: 3 }, synthWorker));
 
     job.phase = "Enregistrement…";
+
+    // Deux régimes selon le mode du job (cf. doc dans /commit) — la logique
+    // est identique : on factorise plus tard si un 3e site apparaît.
+    const isDocMode = !!job.document;
+    const isEpciDoc = job.document?.porteur === "epci";
+    const sourceDocumentId = job.document?.id ?? null;
+    const zoneCommuneId = isEpciDoc ? null : job.commune.id;
+    const numCoerce = (v: unknown): number | null =>
+      v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null;
+
     await db.transaction(async (tx) => {
-      const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, job.commune.id));
-      if (oldZones.length > 0) {
-        await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
-        await tx.delete(zones).where(eq(zones.commune_id, job.commune.id));
+      if (isDocMode) {
+        const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.source_document_id, sourceDocumentId!));
+        if (oldZones.length > 0) {
+          await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
+          await tx.delete(zones).where(eq(zones.source_document_id, sourceDocumentId!));
+        }
+      } else {
+        const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, job.commune.id));
+        if (oldZones.length > 0) {
+          await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
+          await tx.delete(zones).where(eq(zones.commune_id, job.commune.id));
+        }
       }
+
       for (const { zoneDef, rules } of merged) {
         const [created] = await tx.insert(zones).values({
-          commune_id: job.commune.id,
+          commune_id: isDocMode ? zoneCommuneId : job.commune.id,
+          source_document_id: sourceDocumentId,
           zone_code: zoneDef.code,
           zone_label: zoneDef.label,
           zone_type: zoneDef.type,
@@ -1138,13 +1223,14 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
           const articleInt = toArticleInt(rule.article_number);
           await tx.insert(zone_regulatory_rules).values({
             zone_id: zoneId,
+            source_document_id: sourceDocumentId,
             article_number: articleInt,
             article_title: rule.article_title ?? (articleInt != null ? `Article ${articleInt}` : ""),
             topic: rule.topic,
             rule_text: rule.rule_text,
-            value_min: ((v: unknown) => v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null)(rule.value_min),
-            value_max: ((v: unknown) => v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null)(rule.value_max),
-            value_exact: ((v: unknown) => v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null)(rule.value_exact),
+            value_min: numCoerce(rule.value_min),
+            value_max: numCoerce(rule.value_max),
+            value_exact: numCoerce(rule.value_exact),
             unit: rule.unit ?? null,
             conditions: rule.conditions ?? null,
             summary: rule.summary,
@@ -1158,6 +1244,13 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
             validation_status: "brouillon" as const,
           });
         }
+      }
+
+      // Marquage du document comme ingéré (mode document uniquement).
+      if (isDocMode) {
+        await tx.update(regulatory_documents)
+          .set({ status: "ingested", ingested_at: new Date(), updated_at: new Date() })
+          .where(eq(regulatory_documents.id, sourceDocumentId!));
       }
     });
 
@@ -1317,15 +1410,39 @@ adminRouter.post("/admin/ingest-plu-pdf/commit", async (req: AuthRequest, res) =
     const num = (v: unknown): number | null =>
       v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null;
 
+    // Deux régimes selon le mode du job :
+    //  - Mode document (PLUi/PLUm/PPRI/…) : purge par source_document_id,
+    //    insertion taguée source_document_id, commune_id NULL si porteur EPCI
+    //    (zones partagées) ou = commune.id si porteur commune. Les communes
+    //    rattachées via document_communes ont été posées au moment de la
+    //    création du document — on ne les retouche pas ici.
+    //  - Mode legacy : comportement historique préservé strictement
+    //    (purge par commune_id, pas de source_document_id). On garde ce mode
+    //    pour ne pas casser l'écran d'import PLU communal existant.
+    const isDocMode = !!job.document;
+    const isEpciDoc = job.document?.porteur === "epci";
+    const sourceDocumentId = job.document?.id ?? null;
+    const zoneCommuneId = isEpciDoc ? null : job.commune.id;
+
     await db.transaction(async (tx) => {
-      const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, job.commune.id));
-      if (oldZones.length > 0) {
-        await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
-        await tx.delete(zones).where(eq(zones.commune_id, job.commune.id));
+      if (isDocMode) {
+        const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.source_document_id, sourceDocumentId!));
+        if (oldZones.length > 0) {
+          await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
+          await tx.delete(zones).where(eq(zones.source_document_id, sourceDocumentId!));
+        }
+      } else {
+        const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, job.commune.id));
+        if (oldZones.length > 0) {
+          await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
+          await tx.delete(zones).where(eq(zones.commune_id, job.commune.id));
+        }
       }
+
       for (const { zoneDef, rules } of merged) {
         const [created] = await tx.insert(zones).values({
-          commune_id: job.commune.id,
+          commune_id: isDocMode ? zoneCommuneId : job.commune.id,
+          source_document_id: sourceDocumentId,
           zone_code: zoneDef.code,
           zone_label: zoneDef.label,
           zone_type: zoneDef.type,
@@ -1338,6 +1455,7 @@ adminRouter.post("/admin/ingest-plu-pdf/commit", async (req: AuthRequest, res) =
           const articleInt = toArticleInt(rule.article_number);
           await tx.insert(zone_regulatory_rules).values({
             zone_id: zoneId,
+            source_document_id: sourceDocumentId,
             article_number: articleInt,
             article_title: rule.article_title ?? (articleInt != null ? `Article ${articleInt}` : ""),
             topic: rule.topic,
@@ -1358,6 +1476,13 @@ adminRouter.post("/admin/ingest-plu-pdf/commit", async (req: AuthRequest, res) =
             validation_status: "brouillon" as const,
           });
         }
+      }
+
+      // Marquage du document comme ingéré (mode document uniquement).
+      if (isDocMode) {
+        await tx.update(regulatory_documents)
+          .set({ status: "ingested", ingested_at: new Date(), updated_at: new Date() })
+          .where(eq(regulatory_documents.id, sourceDocumentId!));
       }
     });
 
