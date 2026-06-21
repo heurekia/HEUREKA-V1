@@ -407,6 +407,18 @@ export async function refreshPluZones(inseeCode: string): Promise<PluFetchResult
   const clippedZones = clipZonesToCommune(cleaned, communeGeometry);
   const finalZones = (clippedZones.features?.length ?? 0) > 0 ? clippedZones : cleaned;
 
+  // Diagnostic : répartition des libellés à chaque étape (fetch → insee → clip).
+  // Permet de localiser où d'éventuelles zones (U/AU du bourg) sont perdues.
+  const libCount = (z: PluZonesGeoJson): string => {
+    const m: Record<string, number> = {};
+    for (const f of (z.features ?? []) as ZoneFeature[]) {
+      const l = f.properties?.libelle ?? "?";
+      m[l] = (m[l] ?? 0) + 1;
+    }
+    return JSON.stringify(m);
+  };
+  console.log(`[plu-zones diag] INSEE=${inseeCode} fetched=${libCount(chosenZones)} cleaned=${libCount(cleaned)} final=${libCount(finalZones)}`);
+
   // Persistance en base (await pour que la fraîcheur soit garantie au retour).
   // On stocke aussi la partition gagnante : `parcelAnalysis` la réutilise pour
   // ses sous-requêtes (zone-urba, prescription-surf, info-surf) sans refaire
