@@ -4201,10 +4201,31 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
       return parsed as T;
     };
 
+    // Wrapper retry pour les endpoints non-batch (start, commit). Comme pour
+    // /batch : 502/503/504 traités comme transitoires, backoff exponentiel.
+    const postJSONWithRetry = async <T,>(path: string, body: unknown, maxAttempts = 2): Promise<T> => {
+      let attempt = 0;
+      while (true) {
+        try {
+          return await postJSON<T>(path, body);
+        } catch (e) {
+          const err = e as Error & { transient?: boolean };
+          if (err.transient && attempt < maxAttempts) {
+            await new Promise((r) => setTimeout(r, 1500 * Math.pow(2, attempt)));
+            attempt++;
+            continue;
+          }
+          throw err;
+        }
+      }
+    };
+
     try {
-      // Phase 1 — start : extraction du sommaire (1 appel Pixtral, < 30 s).
+      // Phase 1 — start : extraction du sommaire. Le serveur lit le texte
+      // natif via pdftotext (< 2 s) ; ne tombe sur Pixtral que pour les PDF
+      // scannés ou à sommaire inhabituel.
       setPhase("Lecture du sommaire…");
-      const startResp = await postJSON<{ jobId: string; zones: ZoneSpec[] }>(
+      const startResp = await postJSONWithRetry<{ jobId: string; zones: ZoneSpec[] }>(
         "/api/mairie/admin/ingest-plu-pdf/start",
         { commune_name: communeInput.trim(), insee_code: inseeInput.trim(), pdf_base64 },
       );
@@ -4280,7 +4301,7 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
         rules: zoneAcc.get(z.code)!.rules,
         visionCount: zoneAcc.get(z.code)!.visionCount,
       }));
-      const final = await postJSON<{ zones: number; rules: number; needs_review: number }>(
+      const final = await postJSONWithRetry<{ zones: number; rules: number; needs_review: number }>(
         "/api/mairie/admin/ingest-plu-pdf/commit",
         { jobId, zoneResults },
       );
