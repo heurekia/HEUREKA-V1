@@ -764,9 +764,12 @@ function renderPagesAsBlocksFor(pdfBuffer: Buffer, firstPage: number, maxPages: 
 adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) => {
   try {
     gcIngestJobs();
-    const { commune_name, insee_code, zip_code, pdf_base64, doc_id } = req.body as {
+    const { commune_name, insee_code, zip_code, pdf_base64, doc_id, manual_toc } = req.body as {
       commune_name?: string; insee_code?: string; zip_code?: string;
       pdf_base64?: string; doc_id?: string;
+      // Saisie manuelle des ancres zone→page : repli quand la détection auto du
+      // sommaire échoue (PLUi volumineux, sommaire atypique ou scanné).
+      manual_toc?: Array<{ code?: unknown; label?: unknown; type?: unknown; startPage?: unknown }>;
     };
     if (!pdf_base64) {
       return res.status(400).json({ error: "pdf_base64 requis" });
@@ -824,6 +827,32 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
     const totalPages = pdfDoc.getPageCount();
 
     // Phase 1 — Sommaire.
+    //
+    // Voie manuelle prioritaire : si l'opérateur a saisi les ancres zone→page
+    // (PLUi volumineux ou sommaire atypique/scanné que la détection auto ne
+    // sait pas lire), on les utilise telles quelles et on saute la détection.
+    let toc: TocEntry[] = [];
+    const manualEntries = Array.isArray(manual_toc) ? manual_toc : [];
+    if (manualEntries.length > 0) {
+      toc = manualEntries.flatMap((e) => {
+        const code = typeof e?.code === "string" ? e.code.trim().toUpperCase() : "";
+        const startPage = Number(e?.startPage);
+        if (!code || !Number.isInteger(startPage) || startPage < 1 || startPage > totalPages) return [];
+        const type = typeof e?.type === "string" && e.type ? e.type
+          : /^[12]?AU/i.test(code) ? "AU"
+          : code.startsWith("U") ? "U"
+          : code.startsWith("A") ? "A"
+          : code.startsWith("N") ? "N" : "U";
+        const label = typeof e?.label === "string" && e.label.trim() ? e.label.trim() : `Zone ${code}`;
+        return [{ code, label, type, startPage }];
+      });
+      if (toc.length === 0) {
+        return res.status(400).json({
+          error: `Sommaire manuel invalide : indiquez au moins une zone avec un code et une page de début comprise entre 1 et ${totalPages}.`,
+        });
+      }
+    }
+
     // Voie rapide : texte natif via pdftotext (~1 s). Couvre la quasi-totalité
     // des PLU français (sommaire structuré "Dispositions applicables à la
     // zone XX ... page N"). Évite l'appel Pixtral qui faisait dépasser /start
@@ -831,9 +860,11 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
     // Fallback Pixtral si pdftotext n'est pas installé OU si le sommaire
     // natif n'identifie pas au moins 3 zones (PDF scanné, ou structure
     // inhabituelle).
-    const tocPages = Math.min(15, totalPages);
-    const nativeText = extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
-    let toc: TocEntry[] = nativeText ? parseTocFromNativeText(nativeText) : [];
+    if (toc.length === 0) {
+      const tocPages = Math.min(15, totalPages);
+      const nativeText = extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
+      toc = nativeText ? parseTocFromNativeText(nativeText) : [];
+    }
 
     if (toc.length === 0) {
       // Bascule Pixtral. Sur PDF normal, on n'arrive ici que pour des PLU à
@@ -879,7 +910,13 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
     }
 
     if (toc.length === 0) {
-      return res.status(422).json({ error: "Aucun sommaire détecté dans les premières pages. Vérifiez que c'est bien un règlement PLU avec sommaire." });
+      // code + totalPages : permettent au front de basculer sur la saisie
+      // manuelle des pages (formulaire zone→page) plutôt qu'un simple message.
+      return res.status(422).json({
+        error: "Aucun sommaire détecté dans les premières pages. Vérifiez que c'est bien un règlement PLU avec sommaire.",
+        code: "no_toc",
+        totalPages,
+      });
     }
 
     const zoneRanges = partitionPagesByZone(toc, totalPages);
