@@ -1,8 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api } from "../lib/api";
-import { Card, CardContent, CardHeader } from "./ui/card";
-import { Badge } from "./ui/badge";
-import { Button } from "./ui/button";
 
 // ─── Types alignés sur l'API régulatoire ────────────────────────────
 type FindingStatus = "conforme" | "non_conforme" | "incertain" | "non_applicable";
@@ -50,27 +47,24 @@ interface RegulatoryFinding {
   instructor_decided_at: string | null;
 }
 
+interface AnalysisSummary {
+  counts_by_status: Record<FindingStatus, number>;
+  counts_by_severity: Record<FindingSeverity, number>;
+  applicable_rules_count: number;
+  excluded_rules_count: number;
+  superseded_rule_ids: string[];
+  rules_without_evaluator: Array<{ rule_id: string; topic: string }>;
+  supported_topics: string[];
+  warnings: string[];
+  duration_ms: number;
+}
+
 interface RegulatoryAnalysis {
   id: string;
   status: "running" | "done" | "failed" | "obsolete";
   engine_version: string;
   ruleset_version: string | null;
-  summary: {
-    counts_by_status: Record<FindingStatus, number>;
-    counts_by_severity: Record<FindingSeverity, number>;
-    applicable_rules_count: number;
-    excluded_rules_count: number;
-    superseded_rule_ids: string[];
-    rules_without_evaluator: Array<{ rule_id: string; topic: string }>;
-    supported_topics: string[];
-    warnings: string[];
-    duration_ms: number;
-  } | null;
-  triggered_by: string | null;
-  validated_by: string | null;
-  validated_at: string | null;
-  started_at: string;
-  finished_at: string | null;
+  summary: AnalysisSummary | null;
   created_at: string;
 }
 
@@ -80,16 +74,9 @@ interface DossierFact {
   value: unknown;
   unit: string | null;
   source: "citizen_declaration" | "document_extraction" | "instructor_entry" | "external_data";
-  source_ref: {
-    piece_id?: string;
-    piece_type?: string;
-    nom_piece?: string | null;
-    field?: string;
-  } | null;
+  source_ref: { piece_id?: string; nom_piece?: string | null; field?: string } | null;
   confidence: number | null;
-  validated_by: string | null;
   validated_at: string | null;
-  created_at: string;
 }
 
 interface LatestResponse {
@@ -98,102 +85,74 @@ interface LatestResponse {
   facts: DossierFact[];
 }
 
-const FACT_SOURCE_BADGE: Record<DossierFact["source"], { label: string; variant: "default" | "success" | "warning" | "danger" | "info" | "purple" }> = {
-  citizen_declaration: { label: "Déclaration citoyen", variant: "warning" },
-  document_extraction: { label: "Pièce", variant: "purple" },
-  instructor_entry: { label: "Saisie instructeur", variant: "success" },
-  external_data: { label: "Donnée externe", variant: "info" },
+interface RuleDetail {
+  rule_id: string;
+  article_number: number | null;
+  article_title: string | null;
+  rule_text: string;
+  exceptions: string | null;
+  instructor_note: string | null;
+  zone_code: string;
+  commune_name: string;
+}
+
+// ─── Vocabulaire : le moteur CONSTATE, il ne juge pas ────────────────
+// Choix structurant validé avec le métier : aucun verdict ferme. Le moteur
+// signale des écarts ou une absence d'écart ; seul l'instructeur qualifie.
+
+type Section = "bloquant" | "prescription" | "verifier" | "conforme" | "non_applicable";
+
+function sectionOf(f: RegulatoryFinding): Section {
+  if (f.severity === "bloquant") return "bloquant";
+  if (f.severity === "prescription") return "prescription";
+  if (f.status === "conforme") return "conforme";
+  if (f.status === "non_applicable") return "non_applicable";
+  return "verifier"; // incertain, alerte, info
+}
+
+const SECTION_META: Record<Section, { title: string; dot: string; collapsedByDefault: boolean }> = {
+  bloquant:        { title: "Écarts bloquants",                dot: "#DC2626", collapsedByDefault: false },
+  prescription:    { title: "À régulariser par prescription",  dot: "#9333EA", collapsedByDefault: false },
+  verifier:        { title: "À vérifier",                       dot: "#D97706", collapsedByDefault: false },
+  conforme:        { title: "Sans écart détecté",              dot: "#16A34A", collapsedByDefault: true },
+  non_applicable:  { title: "Écartées par le moteur",          dot: "#94A3B8", collapsedByDefault: true },
 };
+const SECTION_ORDER: Section[] = ["bloquant", "prescription", "verifier", "conforme", "non_applicable"];
+
+// Étiquette du constat affichée sur chaque finding (le "tag" coloré).
+function constatTag(f: RegulatoryFinding): { label: string; cls: string } {
+  const s = sectionOf(f);
+  switch (s) {
+    case "bloquant":       return { label: "Écart détecté",        cls: "bg-red-50 text-red-700" };
+    case "prescription":   return { label: "Écart régularisable",  cls: "bg-purple-50 text-purple-700" };
+    case "verifier":       return { label: "Vérification requise", cls: "bg-amber-50 text-amber-800" };
+    case "conforme":       return { label: "Sans écart détecté",   cls: "bg-green-50 text-green-700" };
+    case "non_applicable": return { label: "Écartée par le moteur", cls: "bg-gray-100 text-gray-600" };
+  }
+}
+
+const TOPIC_LABELS: Record<string, string> = {
+  hauteur: "Hauteur", emprise_sol: "Emprise au sol", recul_voie: "Recul à la voie",
+  recul_limite: "Recul aux limites", stationnement: "Stationnement", aspect: "Aspect extérieur",
+  destinations: "Destinations", espaces_verts: "Espaces verts", general: "Disposition générale",
+};
+const topicLabel = (t: string) => TOPIC_LABELS[t] ?? t;
 
 const FACT_LABELS: Record<string, string> = {
-  hauteur: "Hauteur",
-  emprise: "Emprise au sol",
-  surface_terrain: "Surface du terrain",
-  surface_plancher_apres: "Surface plancher (projet)",
-  recul_voie: "Recul à la voie",
-  reculs_limites: "Reculs aux limites",
-  stationnement: "Places de stationnement",
-  destination_apres: "Destination après projet",
-  nb_logements: "Nombre de logements",
-  zonage_plu: "Zonage PLU",
-  secteur_abf: "Périmètre ABF",
-  risques: "Risques",
-  servitudes: "Servitudes",
-  nature_travaux: "Nature des travaux",
-  parcelle_ref: "Référence parcellaire",
-  extension: "Extension",
-  surelevation: "Surélévation",
-  demolition: "Démolition",
-  annexe: "Annexe",
-  changement_destination: "Changement de destination",
-  ravalement: "Modification d'aspect",
+  hauteur: "Hauteur", emprise: "Emprise au sol", surface_terrain: "Surface du terrain",
+  surface_plancher_apres: "Surface plancher", recul_voie: "Recul à la voie", reculs_limites: "Reculs aux limites",
+  stationnement: "Places de stationnement", destination_apres: "Destination", zonage_plu: "Zonage PLU",
+  secteur_abf: "Périmètre ABF", risques: "Risques", servitudes: "Servitudes", nature_travaux: "Nature des travaux",
 };
+const factLabel = (k: string) => FACT_LABELS[k] ?? k;
 
-function factLabel(key: string): string {
-  return FACT_LABELS[key] ?? key;
-}
-
-function formatFactValue(fact: DossierFact): string {
-  const v = fact.value;
-  if (v == null) return "—";
-  if (typeof v === "boolean") return v ? "Oui" : "Non";
-  if (Array.isArray(v)) return v.map((x) => String(x)).join(", ");
-  if (typeof v === "number") {
-    const rounded = Math.round(v * 100) / 100;
-    const isInt = Number.isInteger(rounded);
-    const num = isInt ? String(rounded) : rounded.toFixed(2).replace(".", ",");
-    return fact.unit ? `${num} ${fact.unit === "m2" ? "m²" : fact.unit}` : num;
-  }
-  if (typeof v === "string") return v;
-  return JSON.stringify(v);
-}
-
-function factSourceCaption(fact: DossierFact): string | null {
-  const ref = fact.source_ref;
-  if (!ref) return null;
-  if (ref.nom_piece) return ref.nom_piece;
-  if (ref.field) return ref.field;
-  return null;
-}
-
-// ─── Présentation ─────────────────────────────────────────────────────
-const SEVERITY_ORDER: FindingSeverity[] = ["bloquant", "prescription", "alerte", "info"];
-
-const STATUS_BADGE: Record<FindingStatus, { label: string; variant: "default" | "success" | "warning" | "danger" | "info" | "purple" }> = {
-  conforme: { label: "Conforme", variant: "success" },
-  non_conforme: { label: "Non conforme", variant: "danger" },
-  incertain: { label: "Incertain", variant: "warning" },
-  non_applicable: { label: "Non applicable", variant: "default" },
-};
-
-const SEVERITY_BADGE: Record<FindingSeverity, { label: string; variant: "default" | "success" | "warning" | "danger" | "info" | "purple" }> = {
-  bloquant: { label: "Bloquant", variant: "danger" },
-  prescription: { label: "Prescription", variant: "purple" },
-  alerte: { label: "Alerte", variant: "warning" },
-  info: { label: "Info", variant: "info" },
-};
-
-function topicLabel(topic: string): string {
-  // Étiquettes lisibles pour les topics fréquents. Inconnu → topic brut.
-  const dict: Record<string, string> = {
-    hauteur: "Hauteur",
-    emprise_sol: "Emprise au sol",
-    recul_voie: "Recul par rapport à la voie",
-    recul_limite: "Recul par rapport aux limites",
-    stationnement: "Stationnement",
-    aspect: "Aspect extérieur",
-    destinations: "Destinations",
-    espaces_verts: "Espaces verts",
-    general: "Disposition générale",
-  };
-  return dict[topic] ?? topic;
-}
-
+// ─── Composant principal ─────────────────────────────────────────────
 interface Props {
   dossierId: string;
-  /** Handler appelé quand l'instructeur clique sur une citation de fondement
-   *  pour ouvrir le passage dans le viewer (onglet Documents · mode Comparer).
-   *  Si non fourni, les fondements restent en texte simple (compat existant). */
+  /** Handler appelé quand l'instructeur clique sur un fondement de type
+   *  « document_segment » pour ouvrir le passage cité dans le viewer
+   *  (onglet Instruction · mode Comparer). Conservé depuis la refonte
+   *  layout de main. Si non fourni, les fondements restent en texte simple. */
   onJumpToCitation?: (ref: SourceRef) => void;
 }
 
@@ -202,14 +161,15 @@ export function RegulatoryChecklist({ dossierId, onJumpToCitation }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<LatestResponse | null>(null);
   const [running, setRunning] = useState(false);
+  const [collapsed, setCollapsed] = useState<Record<Section, boolean>>({
+    bloquant: false, prescription: false, verifier: false, conforme: true, non_applicable: true,
+  });
 
   const loadLatest = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
-      const res = await api.get<LatestResponse | undefined>(
-        `/regulatory/dossier/${dossierId}/latest`,
-      );
+      const res = await api.get<LatestResponse | undefined>(`/regulatory/dossier/${dossierId}/latest`);
       setData(res ?? null);
     } catch (err) {
       setError((err as Error).message);
@@ -218,9 +178,7 @@ export function RegulatoryChecklist({ dossierId, onJumpToCitation }: Props) {
     }
   }, [dossierId]);
 
-  useEffect(() => {
-    void loadLatest();
-  }, [loadLatest]);
+  useEffect(() => { void loadLatest(); }, [loadLatest]);
 
   const launchAnalysis = useCallback(async () => {
     setRunning(true);
@@ -240,21 +198,14 @@ export function RegulatoryChecklist({ dossierId, onJumpToCitation }: Props) {
       try {
         await api.post(`/regulatory/findings/${finding.id}/decision`, { decision, comment });
         setData((prev) =>
-          prev
-            ? {
-                ...prev,
-                findings: prev.findings.map((f) =>
-                  f.id === finding.id
-                    ? {
-                        ...f,
-                        instructor_decision: decision,
-                        instructor_comment: comment ?? null,
-                        instructor_decided_at: new Date().toISOString(),
-                      }
-                    : f,
-                ),
-              }
-            : prev,
+          prev ? {
+            ...prev,
+            findings: prev.findings.map((f) =>
+              f.id === finding.id
+                ? { ...f, instructor_decision: decision, instructor_comment: comment ?? null, instructor_decided_at: new Date().toISOString() }
+                : f,
+            ),
+          } : prev,
         );
       } catch (err) {
         setError((err as Error).message);
@@ -263,149 +214,172 @@ export function RegulatoryChecklist({ dossierId, onJumpToCitation }: Props) {
     [],
   );
 
-  const findingsBySeverity = useMemo(() => {
-    const map = new Map<FindingSeverity, RegulatoryFinding[]>();
-    for (const sev of SEVERITY_ORDER) map.set(sev, []);
-    for (const f of data?.findings ?? []) {
-      const arr = map.get(f.severity) ?? [];
-      arr.push(f);
-      map.set(f.severity, arr);
-    }
-    return map;
+  const factsByKey = useMemo(() => {
+    const m = new Map<string, DossierFact>();
+    for (const f of data?.facts ?? []) m.set(f.key, f);
+    return m;
   }, [data]);
 
-  // Lookup pour résoudre `facts_used: string[]` → DossierFact[].
-  const factsByKey = useMemo(() => {
-    const map = new Map<string, DossierFact>();
-    for (const f of data?.facts ?? []) map.set(f.key, f);
-    return map;
+  const bySection = useMemo(() => {
+    const m = new Map<Section, RegulatoryFinding[]>();
+    for (const s of SECTION_ORDER) m.set(s, []);
+    for (const f of data?.findings ?? []) m.get(sectionOf(f))!.push(f);
+    return m;
+  }, [data]);
+
+  const validationProgress = useMemo(() => {
+    const findings = data?.findings ?? [];
+    const decided = findings.filter((f) => f.instructor_decision != null).length;
+    return { decided, total: findings.length };
   }, [data]);
 
   if (loading) {
-    return (
-      <Card>
-        <CardContent>Chargement de l'analyse réglementaire…</CardContent>
-      </Card>
-    );
+    return <div className="rounded-xl border border-gray-200 bg-white p-6 text-sm text-gray-500">Chargement de l'analyse réglementaire…</div>;
   }
 
   return (
     <div className="space-y-4">
-      <Card>
-        <CardHeader className="flex items-center justify-between gap-3">
+      {/* En-tête + bandeau juridique + progression */}
+      <div className="rounded-xl border border-gray-200 bg-white">
+        <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3">
           <div>
-            <div className="text-lg font-semibold text-gray-900">Analyse réglementaire</div>
+            <div className="text-base font-semibold text-gray-900">Analyse réglementaire</div>
             {data?.analysis ? (
-              <div className="text-sm text-gray-500">
-                Moteur {data.analysis.engine_version} · lancée le{" "}
-                {new Date(data.analysis.created_at).toLocaleString("fr-FR")}
+              <div className="text-xs text-gray-500">
+                Moteur {data.analysis.engine_version} · lancée le {new Date(data.analysis.created_at).toLocaleString("fr-FR")}
               </div>
             ) : (
-              <div className="text-sm text-gray-500">Aucune analyse pour le moment.</div>
+              <div className="text-xs text-gray-500">Aucune analyse pour le moment.</div>
             )}
           </div>
-          <Button onClick={launchAnalysis} disabled={running}>
-            {running ? "Analyse en cours…" : data ? "Relancer l'analyse" : "Lancer l'analyse"}
-          </Button>
-        </CardHeader>
-        {data?.analysis.summary ? (
-          <CardContent>
-            <Summary summary={data.analysis.summary} />
-          </CardContent>
-        ) : null}
-      </Card>
+          <button
+            onClick={launchAnalysis}
+            disabled={running}
+            className="rounded-lg border border-indigo-200 bg-white px-4 py-2 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
+          >
+            {running ? "Analyse en cours…" : data ? "↻ Relancer l'analyse" : "Lancer l'analyse"}
+          </button>
+        </div>
 
-      {error ? (
-        <Card>
-          <CardContent className="text-red-700">{error}</CardContent>
-        </Card>
-      ) : null}
+        {data?.analysis.summary ? (
+          <div className="px-5 py-4">
+            {/* Bandeau : rien n'est ferme tant que l'instructeur n'a pas validé */}
+            <div className="mb-3 flex items-start gap-2.5 rounded-lg border border-amber-200 bg-amber-50 px-3.5 py-2.5 text-xs leading-relaxed text-amber-900">
+              <span>⚖️</span>
+              <div>
+                Les constats ci-dessous sont <strong>proposés par le moteur</strong> à partir des pièces du dossier.
+                Aucun n'a valeur de décision : <strong>chaque constat doit être validé, corrigé ou écarté par vous</strong> avant
+                de pouvoir fonder une décision.
+              </div>
+            </div>
+
+            {/* Progression de validation */}
+            <div className="mb-1 flex justify-between text-xs text-gray-500">
+              <span>Validation des constats par l'instructeur</span>
+              <span className="font-semibold text-gray-800">{validationProgress.decided} / {validationProgress.total} qualifiés</span>
+            </div>
+            <div className="mb-3 h-2 overflow-hidden rounded-full bg-gray-100">
+              <div
+                className="h-full rounded-full bg-gradient-to-r from-green-600 to-green-400"
+                style={{ width: `${validationProgress.total ? Math.round((validationProgress.decided / validationProgress.total) * 100) : 0}%` }}
+              />
+            </div>
+
+            {/* Synthèse des constats */}
+            <div className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Ce que le moteur a relevé (à valider)</div>
+            <SynthBar summary={data.analysis.summary} bySection={bySection} />
+
+            {data.analysis.summary.warnings.length > 0 ? (
+              <ul className="mt-3 list-disc pl-5 text-xs text-gray-600">
+                {data.analysis.summary.warnings.map((w, i) => <li key={i}>{w}</li>)}
+              </ul>
+            ) : null}
+          </div>
+        ) : null}
+      </div>
+
+      {error ? <div className="rounded-xl border border-red-200 bg-red-50 px-5 py-3 text-sm text-red-700">{error}</div> : null}
 
       {data && data.findings.length === 0 ? (
-        <Card>
-          <CardContent className="text-gray-600">
-            Aucun constat produit par cette analyse. Vérifiez les règles candidates et les
-            faits déclarés sur le dossier.
-          </CardContent>
-        </Card>
+        <div className="rounded-xl border border-gray-200 bg-white px-5 py-4 text-sm text-gray-600">
+          Aucun constat produit. Vérifiez les règles validées de la commune et les faits déclarés sur le dossier.
+        </div>
       ) : null}
 
+      {/* Sections par sévérité */}
       {data
-        ? SEVERITY_ORDER.map((sev) => {
-            const findings = findingsBySeverity.get(sev) ?? [];
+        ? SECTION_ORDER.map((section) => {
+            const findings = bySection.get(section) ?? [];
             if (findings.length === 0) return null;
+            const meta = SECTION_META[section];
+            const isCollapsed = collapsed[section];
             return (
-              <Card key={sev}>
-                <CardHeader className="flex items-center justify-between">
-                  <div className="text-base font-semibold text-gray-900">
-                    {SEVERITY_BADGE[sev].label} · {findings.length} constat
-                    {findings.length > 1 ? "s" : ""}
+              <div key={section}>
+                <button
+                  onClick={() => setCollapsed((c) => ({ ...c, [section]: !c[section] }))}
+                  className={`flex w-full items-center justify-between border border-gray-200 bg-white px-4 py-3 ${isCollapsed ? "rounded-xl" : "rounded-t-xl border-b-0"}`}
+                >
+                  <span className="flex items-center gap-2.5">
+                    <span className="h-2.5 w-2.5 rounded-full" style={{ background: meta.dot }} />
+                    <span className="text-[13px] font-bold uppercase tracking-wide text-gray-800">{meta.title}</span>
+                  </span>
+                  <span className="rounded-full bg-gray-100 px-2.5 py-0.5 text-[11px] font-bold text-gray-600">{findings.length}</span>
+                </button>
+                {!isCollapsed ? (
+                  <div className="overflow-hidden rounded-b-xl border border-t-0 border-gray-200 bg-white">
+                    {findings.map((f) => (
+                      <FindingCard
+                        key={f.id}
+                        finding={f}
+                        factsByKey={factsByKey}
+                        onDecision={onDecision}
+                        onJumpToCitation={onJumpToCitation}
+                      />
+                    ))}
                   </div>
-                  <Badge variant={SEVERITY_BADGE[sev].variant}>{SEVERITY_BADGE[sev].label}</Badge>
-                </CardHeader>
-                <CardContent className="space-y-3">
-                  {findings.map((f) => (
-                    <FindingRow
-                      key={f.id}
-                      finding={f}
-                      factsByKey={factsByKey}
-                      onDecision={onDecision}
-                      onJumpToCitation={onJumpToCitation}
-                    />
-                  ))}
-                </CardContent>
-              </Card>
+                ) : null}
+              </div>
             );
           })
         : null}
-    </div>
-  );
-}
 
-// ─── Sous-composants ──────────────────────────────────────────────────
-
-function Summary({ summary }: { summary: NonNullable<RegulatoryAnalysis["summary"]> }) {
-  return (
-    <div className="space-y-3 text-sm">
-      <div className="flex flex-wrap gap-2">
-        {(Object.keys(summary.counts_by_status) as FindingStatus[]).map((s) => (
-          <Badge key={s} variant={STATUS_BADGE[s].variant}>
-            {STATUS_BADGE[s].label} : {summary.counts_by_status[s]}
-          </Badge>
-        ))}
-      </div>
-      <div className="text-gray-600">
-        {summary.applicable_rules_count} règle{summary.applicable_rules_count > 1 ? "s" : ""}{" "}
-        applicable{summary.applicable_rules_count > 1 ? "s" : ""} · {summary.excluded_rules_count}{" "}
-        écartée{summary.excluded_rules_count > 1 ? "s" : ""} · moteur exécuté en{" "}
-        {summary.duration_ms} ms.
-      </div>
-      {summary.rules_without_evaluator.length > 0 ? (
-        <div className="rounded-md border border-yellow-200 bg-yellow-50 p-3 text-yellow-900">
-          <div className="font-medium">
-            {summary.rules_without_evaluator.length} règle
-            {summary.rules_without_evaluator.length > 1 ? "s" : ""} non évaluée
-            {summary.rules_without_evaluator.length > 1 ? "s" : ""} par le moteur
-          </div>
-          <div className="text-xs">
-            Topics non encore pris en charge :{" "}
-            {[...new Set(summary.rules_without_evaluator.map((r) => topicLabel(r.topic)))].join(", ")}.
-            À examiner manuellement.
-          </div>
+      {/* Règles non évaluées par le moteur — transparence */}
+      {data?.analysis.summary && data.analysis.summary.rules_without_evaluator.length > 0 ? (
+        <div className="rounded-xl border border-gray-200 bg-white px-4 py-3 text-xs text-gray-600">
+          <span className="font-semibold text-gray-700">
+            {data.analysis.summary.rules_without_evaluator.length} règle(s) non évaluée(s) par le moteur
+          </span>{" "}
+          — topics à instruire manuellement :{" "}
+          {[...new Set(data.analysis.summary.rules_without_evaluator.map((r) => topicLabel(r.topic)))].join(", ")}.
         </div>
       ) : null}
-      {summary.warnings.length > 0 ? (
-        <ul className="list-disc pl-5 text-gray-700">
-          {summary.warnings.map((w, i) => (
-            <li key={i}>{w}</li>
-          ))}
-        </ul>
-      ) : null}
     </div>
   );
 }
 
-function FindingRow({
+// ─── Synthèse en pastilles ───────────────────────────────────────────
+function SynthBar({ summary, bySection }: { summary: AnalysisSummary; bySection: Map<Section, RegulatoryFinding[]> }) {
+  const count = (s: Section) => bySection.get(s)?.length ?? 0;
+  const pills: Array<{ n: number; label: string; cls: string; dot: string }> = [
+    { n: count("bloquant"),       label: "écart(s) bloquant(s)",      cls: "bg-red-50 text-red-700",       dot: "#DC2626" },
+    { n: count("prescription"),   label: "à régulariser",             cls: "bg-purple-50 text-purple-700", dot: "#9333EA" },
+    { n: count("verifier"),       label: "à vérifier",                cls: "bg-amber-50 text-amber-800",   dot: "#D97706" },
+    { n: count("conforme"),       label: "sans écart détecté",        cls: "bg-green-50 text-green-700",   dot: "#16A34A" },
+  ];
+  return (
+    <div className="flex flex-wrap gap-2">
+      {pills.filter((p) => p.n > 0).map((p, i) => (
+        <span key={i} className={`inline-flex items-center gap-1.5 rounded-full px-3 py-1.5 text-xs font-semibold ${p.cls}`}>
+          <span className="h-2 w-2 rounded-full" style={{ background: p.dot }} />
+          {p.n} {p.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+// ─── Carte d'un constat (proposé / qualifié) ─────────────────────────
+function FindingCard({
   finding,
   factsByKey,
   onDecision,
@@ -416,198 +390,175 @@ function FindingRow({
   onDecision: (f: RegulatoryFinding, d: InstructorDecision, comment?: string) => void;
   onJumpToCitation?: (ref: SourceRef) => void;
 }) {
-  const [factsOpen, setFactsOpen] = useState(false);
-  const statusBadge = STATUS_BADGE[finding.status];
+  const [open, setOpen] = useState(false);
+  const [rule, setRule] = useState<RuleDetail | null>(null);
+  const [ruleLoading, setRuleLoading] = useState(false);
+  const [correcting, setCorrecting] = useState(false);
+  const [comment, setComment] = useState(finding.instructor_comment ?? "");
+
+  const tag = constatTag(finding);
   const decided = finding.instructor_decision;
-  const resolvedFactsUsed = finding.facts_used
-    .map((k) => factsByKey.get(k))
-    .filter((f): f is DossierFact => f != null);
-  // Faits référencés par la règle mais absents de la base — on les affiche
-  // tels quels pour ne pas masquer un trou de mapping.
-  const unresolvedFactsUsed = finding.facts_used.filter((k) => !factsByKey.has(k));
+  const isQualified = decided != null;
+
+  const toggle = useCallback(() => {
+    setOpen((v) => !v);
+    if (!rule && !ruleLoading && finding.rule_id) {
+      setRuleLoading(true);
+      api.get<{ rule: RuleDetail }>(`/regulatory/rules/${finding.rule_id}`)
+        .then((r) => setRule(r.rule))
+        .catch(() => { /* silencieux : le détail d'article est un bonus */ })
+        .finally(() => setRuleLoading(false));
+    }
+  }, [rule, ruleLoading, finding.rule_id]);
+
+  const usedFacts = finding.facts_used.map((k) => factsByKey.get(k)).filter((f): f is DossierFact => f != null);
+
+  const reviewLabel = decided === "accepted" ? "✓ Validé par vous"
+    : decided === "corrected" ? "✎ Corrigé par vous"
+    : decided === "ignored" ? "⊘ Écarté par vous"
+    : "À valider";
+
   return (
-    <div className="rounded-lg border border-gray-200 p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3">
-        <div className="space-y-1">
-          <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={statusBadge.variant}>{statusBadge.label}</Badge>
-            <span className="text-xs font-medium text-gray-500">{topicLabel(finding.topic)}</span>
-            {decided ? (
-              <Badge variant="info">
-                {decided === "accepted"
-                  ? "Accepté par l'instructeur"
-                  : decided === "corrected"
-                    ? "Corrigé"
-                    : "Ignoré"}
-              </Badge>
-            ) : null}
+    <div
+      className={`border-t border-gray-100 first:border-t-0 ${isQualified ? "border-l-[3px] border-l-green-500" : "border-l-[3px] border-l-dashed border-l-gray-200"}`}
+      style={decided === "ignored" ? { opacity: 0.6 } : undefined}
+    >
+      <button onClick={toggle} className="grid w-full grid-cols-[1fr_auto] items-start gap-3 px-[18px] py-3 text-left hover:bg-gray-50">
+        <div>
+          <div className="mb-1 flex flex-wrap items-center gap-2">
+            <span className={`rounded px-2 py-0.5 text-[10.5px] font-bold uppercase tracking-wide ${tag.cls}`}>{tag.label}</span>
+            <span className={`rounded px-2 py-0.5 text-[10.5px] font-bold ${isQualified ? "bg-green-50 text-green-700" : "border border-dashed border-orange-300 bg-orange-50 text-orange-700"}`}>
+              {reviewLabel}
+            </span>
+            <span className="text-[11px] text-gray-500">{topicLabel(finding.topic)}</span>
           </div>
-          <div className="text-base font-semibold text-gray-900">{finding.title}</div>
-        </div>
-      </div>
-      {finding.explanation ? (
-        <p className="mt-2 text-sm text-gray-700">{finding.explanation}</p>
-      ) : null}
-      {finding.missing_facts.length > 0 ? (
-        <p className="mt-2 text-sm text-gray-600">
-          Éléments manquants :{" "}
-          {finding.missing_facts.map((k) => factLabel(k)).join(", ")}
-        </p>
-      ) : null}
-      {finding.legal_basis.length > 0 ? (
-        <div className="mt-2 text-xs text-gray-500 flex items-center flex-wrap gap-1">
-          <span>Fondement :</span>
-          {finding.legal_basis.map((s, i) => {
-            const label = s.type === "zone_rule"
-              ? (s.article ?? "Règle PLU")
-              : s.type === "document_segment"
-                ? `${s.doc_type ?? "Doc"}${s.page != null ? ` p.${s.page}` : ""}`
-                : (s.ref ?? s.type);
-            // Cliquable uniquement pour les segments de document indexé — le
-            // parent sait alors basculer sur l'onglet Documents · Comparer.
-            const clickable = onJumpToCitation && s.type === "document_segment" && !!s.doc_type;
-            const sep = i > 0 ? <span key={`sep-${i}`} className="text-gray-300">·</span> : null;
-            return (
-              <span key={i} className="inline-flex items-center gap-1">
-                {sep}
-                {clickable ? (
-                  <button
-                    type="button"
-                    onClick={() => onJumpToCitation!(s)}
-                    title={s.quote ? `« ${s.quote.slice(0, 140)}${s.quote.length > 140 ? "…" : ""} »` : "Ouvrir le passage cité"}
-                    className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-heureka-50 text-heureka-700 hover:bg-heureka-100 transition-colors cursor-pointer"
-                  >
-                    📖 {label}
-                  </button>
-                ) : (
-                  <span>{label}</span>
-                )}
-              </span>
-            );
-          })}
-        </div>
-      ) : null}
-      {finding.recommended_action ? (
-        <div className="mt-3 rounded-md bg-gray-50 p-3 text-sm">
-          <div className="font-medium text-gray-900">{finding.recommended_action.label}</div>
-          {finding.recommended_action.reason ? (
-            <div className="text-gray-600">{finding.recommended_action.reason}</div>
-          ) : null}
-        </div>
-      ) : null}
-      {finding.facts_used.length > 0 ? (
-        <div className="mt-3">
-          <button
-            type="button"
-            className="text-xs font-medium text-heureka-600 hover:underline"
-            onClick={() => setFactsOpen((v) => !v)}
-          >
-            {factsOpen ? "Masquer les faits utilisés" : `Faits utilisés (${finding.facts_used.length})`}
-          </button>
-          {factsOpen ? (
-            <div className="mt-2 space-y-2">
-              {resolvedFactsUsed.map((f) => (
-                <FactRow key={f.id} fact={f} />
-              ))}
-              {unresolvedFactsUsed.map((k) => (
-                <div key={k} className="rounded-md border border-yellow-200 bg-yellow-50 p-2 text-xs text-yellow-900">
-                  Fait <code className="font-mono">{k}</code> référencé par le verdict mais introuvable dans le dossier (synchronisation manquante ?).
-                </div>
+          <div className="text-[13.5px] font-semibold leading-snug text-gray-900">{finding.title}</div>
+          {usedFacts.length > 0 ? (
+            <div className="mt-1 text-[11.5px] text-gray-500">
+              Fait utilisé :{" "}
+              {usedFacts.map((f) => (
+                <span key={f.id} className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">
+                  {factLabel(f.key)} = {formatFactValue(f)}
+                </span>
               ))}
             </div>
           ) : null}
+          {finding.missing_facts.length > 0 ? (
+            <div className="mt-1 text-[11.5px] text-gray-500">Manque : {finding.missing_facts.map(factLabel).join(", ")}</div>
+          ) : null}
+        </div>
+        <span className="rounded bg-indigo-50 px-2 py-1 text-[11px] font-semibold text-indigo-600">
+          {finding.legal_basis.find((s) => s.type === "zone_rule")?.article ?? topicLabel(finding.topic)}
+        </span>
+      </button>
+
+      {open ? (
+        <div className="px-[18px] pb-3.5 pl-12">
+          {finding.explanation ? <p className="text-[12px] leading-relaxed text-gray-600">{finding.explanation}</p> : null}
+
+          {/* Fondements : les passages de document indexé sont cliquables et
+              ouvrent le viewer (onglet Instruction · Comparer). Conservé depuis
+              la refonte layout de main. */}
+          {finding.legal_basis.length > 0 ? (
+            <div className="mt-2 flex flex-wrap items-center gap-1 text-[11.5px] text-gray-500">
+              <span>Fondement :</span>
+              {finding.legal_basis.map((s, i) => {
+                const label = s.type === "zone_rule"
+                  ? (s.article ?? "Règle PLU")
+                  : s.type === "document_segment"
+                    ? `${s.doc_type ?? "Doc"}${s.page != null ? ` p.${s.page}` : ""}`
+                    : (s.ref ?? s.type);
+                const clickable = onJumpToCitation && s.type === "document_segment" && !!s.doc_type;
+                return (
+                  <span key={i} className="inline-flex items-center gap-1">
+                    {i > 0 ? <span className="text-gray-300">·</span> : null}
+                    {clickable ? (
+                      <button
+                        type="button"
+                        onClick={() => onJumpToCitation!(s)}
+                        title={s.quote ? `« ${s.quote.slice(0, 140)}${s.quote.length > 140 ? "…" : ""} »` : "Ouvrir le passage cité"}
+                        className="inline-flex items-center gap-0.5 rounded bg-indigo-50 px-1.5 py-0.5 text-indigo-700 hover:bg-indigo-100"
+                      >
+                        📖 {label}
+                      </button>
+                    ) : (
+                      <span>{label}</span>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
+
+          {ruleLoading ? <p className="mt-2 text-[11px] italic text-gray-400">Chargement de l'article…</p> : null}
+          {rule ? (
+            <div className="mt-2.5 rounded-lg border border-gray-200 bg-[#FAFAFC] px-3 py-2.5 text-[12px] leading-relaxed text-gray-600">
+              <div className="mb-1 text-[11.5px] font-bold text-gray-900">
+                {rule.article_number != null ? `Article ${rule.article_number}` : "PLU"}
+                {rule.article_title ? ` — ${rule.article_title}` : ""}
+                <span className="ml-1.5 font-medium text-gray-500">· Zone {rule.zone_code} · {rule.commune_name}</span>
+              </div>
+              <div className="whitespace-pre-wrap text-gray-700">{rule.rule_text}</div>
+              {rule.exceptions ? <div className="mt-1.5 text-[11px] text-orange-800"><strong>Exceptions :</strong> {rule.exceptions}</div> : null}
+            </div>
+          ) : null}
+
+          {/* Qualification instructeur */}
+          {isQualified && !correcting ? (
+            <div className="mt-3 flex flex-wrap items-center gap-2 text-[11.5px] text-gray-600">
+              <span className="font-semibold text-green-700">{reviewLabel}</span>
+              {finding.instructor_decided_at ? <span>le {new Date(finding.instructor_decided_at).toLocaleString("fr-FR")}</span> : null}
+              {finding.instructor_comment ? <span className="italic">— « {finding.instructor_comment} »</span> : null}
+              <button onClick={() => { setCorrecting(true); }} className="ml-1 text-indigo-600 underline">revoir</button>
+            </div>
+          ) : (
+            <div className="mt-3 rounded-lg border border-indigo-200">
+              <div className="bg-indigo-50 px-3 py-2 text-[11.5px] font-bold text-indigo-700">Votre qualification</div>
+              <div className="px-3 py-2.5">
+                <div className="flex flex-wrap gap-1.5">
+                  <button onClick={() => onDecision(finding, "accepted")} className="rounded-md border border-green-200 bg-green-50 px-3 py-1.5 text-xs font-semibold text-green-700 hover:bg-green-100">✓ Valider le constat</button>
+                  <button onClick={() => setCorrecting((v) => !v)} className="rounded-md border border-amber-200 bg-amber-50 px-3 py-1.5 text-xs font-semibold text-amber-800 hover:bg-amber-100">✎ Corriger</button>
+                  <button onClick={() => onDecision(finding, "ignored", comment.trim() || undefined)} className="rounded-md border border-gray-200 bg-white px-3 py-1.5 text-xs font-semibold text-gray-500 hover:bg-gray-50">⊘ Écarter</button>
+                </div>
+                {correcting ? (
+                  <div className="mt-2.5 space-y-2">
+                    <textarea
+                      value={comment}
+                      onChange={(e) => setComment(e.target.value)}
+                      rows={3}
+                      placeholder="Expliquez la correction — ex. « la cote de 10,2 m inclut la souche de cheminée ; hauteur réelle au faîtage 8,9 m »"
+                      className="w-full rounded-md border border-gray-300 p-2 text-xs"
+                    />
+                    <div className="flex gap-2">
+                      <button
+                        onClick={() => { onDecision(finding, "corrected", comment.trim()); setCorrecting(false); }}
+                        disabled={comment.trim().length === 0}
+                        className="rounded-md bg-indigo-600 px-3 py-1.5 text-xs font-semibold text-white disabled:opacity-50"
+                      >
+                        Enregistrer la correction
+                      </button>
+                      <button onClick={() => setCorrecting(false)} className="rounded-md border border-gray-200 px-3 py-1.5 text-xs font-semibold text-gray-500">Annuler</button>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
         </div>
       ) : null}
-      <DecisionBar finding={finding} onDecision={onDecision} />
     </div>
   );
 }
 
-function FactRow({ fact }: { fact: DossierFact }) {
-  const badge = FACT_SOURCE_BADGE[fact.source];
-  const caption = factSourceCaption(fact);
-  return (
-    <div className="rounded-md bg-gray-50 p-2 text-xs">
-      <div className="flex flex-wrap items-center justify-between gap-2">
-        <div className="flex items-center gap-2">
-          <span className="font-medium text-gray-900">{factLabel(fact.key)}</span>
-          <span className="text-gray-700">= {formatFactValue(fact)}</span>
-        </div>
-        <div className="flex items-center gap-2">
-          {fact.validated_at ? (
-            <Badge variant="success" className="text-[10px]">Validé instructeur</Badge>
-          ) : null}
-          <Badge variant={badge.variant} className="text-[10px]">{badge.label}</Badge>
-          {fact.confidence != null ? (
-            <span className="text-gray-500">{Math.round(fact.confidence * 100)} %</span>
-          ) : null}
-        </div>
-      </div>
-      {caption ? <div className="mt-1 text-gray-500">Source : {caption}</div> : null}
-    </div>
-  );
-}
-
-function DecisionBar({
-  finding,
-  onDecision,
-}: {
-  finding: RegulatoryFinding;
-  onDecision: (f: RegulatoryFinding, d: InstructorDecision, comment?: string) => void;
-}) {
-  const [commentOpen, setCommentOpen] = useState(false);
-  const [comment, setComment] = useState(finding.instructor_comment ?? "");
-  return (
-    <div className="mt-3 space-y-2">
-      <div className="flex flex-wrap gap-2">
-        <Button
-          size="sm"
-          variant={finding.instructor_decision === "accepted" ? "default" : "outline"}
-          onClick={() => onDecision(finding, "accepted")}
-        >
-          Accepter
-        </Button>
-        <Button
-          size="sm"
-          variant={finding.instructor_decision === "corrected" ? "default" : "outline"}
-          onClick={() => setCommentOpen((v) => !v)}
-        >
-          Corriger
-        </Button>
-        <Button
-          size="sm"
-          variant={finding.instructor_decision === "ignored" ? "default" : "outline"}
-          onClick={() => onDecision(finding, "ignored")}
-        >
-          Ignorer
-        </Button>
-      </div>
-      {commentOpen ? (
-        <div className="space-y-2">
-          <textarea
-            className="w-full rounded-md border border-gray-300 p-2 text-sm"
-            rows={3}
-            value={comment}
-            onChange={(e) => setComment(e.target.value)}
-            placeholder="Expliquez la correction (visible dans l'audit)"
-          />
-          <div className="flex gap-2">
-            <Button
-              size="sm"
-              onClick={() => {
-                onDecision(finding, "corrected", comment);
-                setCommentOpen(false);
-              }}
-              disabled={comment.trim().length === 0}
-            >
-              Enregistrer la correction
-            </Button>
-            <Button size="sm" variant="outline" onClick={() => setCommentOpen(false)}>
-              Annuler
-            </Button>
-          </div>
-        </div>
-      ) : null}
-    </div>
-  );
+function formatFactValue(fact: DossierFact): string {
+  const v = fact.value;
+  if (v == null) return "—";
+  if (typeof v === "boolean") return v ? "Oui" : "Non";
+  if (Array.isArray(v)) return v.map(String).join(", ");
+  if (typeof v === "number") {
+    const r = Math.round(v * 100) / 100;
+    const num = Number.isInteger(r) ? String(r) : r.toFixed(2).replace(".", ",");
+    return fact.unit ? `${num} ${fact.unit === "m2" ? "m²" : fact.unit}` : num;
+  }
+  return String(v);
 }
