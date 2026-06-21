@@ -1,0 +1,66 @@
+name: Deploy to OVH VPS
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Deploy over SSH
+        uses: appleboy/ssh-action@v1.2.2
+
+        with:
+          host: ${{ secrets.VPS_HOST }}
+          username: ${{ secrets.VPS_USER }}
+          key: ${{ secrets.VPS_SSH_KEY }}
+          port: ${{ secrets.VPS_PORT }}
+
+          script: |
+            set -e
+
+            cd /home/ubuntu/heurekia
+
+            git fetch origin main
+            git reset --hard origin/main
+
+            pnpm install --frozen-lockfile
+
+            pnpm build
+
+            # Migration : on ARRÊTE le déploiement si elle échoue. L'ancien
+            # `|| true` masquait silencieusement les erreurs et a déjà laissé
+            # passer un schéma incomplet en prod (cf. incident colonne manquante
+            # source_document_id sur zone_regulatory_rules). L'API ne doit
+            # jamais démarrer contre un schéma désaligné de son code.
+            if ! pnpm --filter @heureka-v1/db migrate; then
+              echo "❌ Migration échouée — déploiement interrompu."
+              echo "L'API n'est PAS redémarrée pour préserver la version actuellement en ligne."
+              echo "Inspecter les logs ci-dessus, corriger le schéma manuellement si besoin, puis relancer le workflow."
+              exit 1
+            fi
+
+            pm2 restart heurekia-api --update-env
+            pm2 save
+
+            for i in {1..20}; do
+              if curl -fsS https://app.heurekia.com/api/health; then
+                echo "Healthcheck OK"
+                exit 0
+              fi
+
+              echo "Waiting for application startup..."
+              sleep 3
+            done
+
+            echo "Healthcheck failed after 60 seconds"
+            pm2 logs heurekia-api --lines 50 --nostream
+            exit 1

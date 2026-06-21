@@ -24,6 +24,8 @@ export const communes = pgTable("communes", {
   tampon_image: text("tampon_image"),
   plu_zones_geojson: jsonb("plu_zones_geojson"),
   plu_zones_cached_at: timestamp("plu_zones_cached_at"),
+  plu_partition: text("plu_partition"),
+  plu_unavailable_reason: text("plu_unavailable_reason"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

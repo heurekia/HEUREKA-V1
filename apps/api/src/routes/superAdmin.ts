@@ -1,7 +1,8 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, ai_usage_events, ai_alert_config } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
+import { invalidatePricingCache } from "../services/aiUsage.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, lt, inArray } from "drizzle-orm";
 import crypto from "crypto";
@@ -839,6 +840,25 @@ superAdminRouter.get("/insee-lookup", async (req, res) => {
 });
 
 // ─── Audit Logs ──────────────────────────────────────────────────────────────
+
+// Masque le dernier octet d'une IPv4 (192.168.1.42 → 192.168.1.x) et tronque
+// la partie hôte d'une IPv6 (RGPD : pas besoin d'identifier finement). L'IP
+// complète reste en base pour usage forensic (CCSC §4.14).
+function maskIp(ip: string | null): string | null {
+  if (!ip) return null;
+  // Strip "::ffff:" préfixe IPv6-mapped IPv4
+  const clean = ip.replace(/^::ffff:/, "");
+  // IPv4
+  const v4 = clean.match(/^(\d{1,3}\.\d{1,3}\.\d{1,3})\.\d{1,3}$/);
+  if (v4) return `${v4[1]}.x`;
+  // IPv6 — on garde les 4 premiers groupes (préfixe réseau /64)
+  if (clean.includes(":")) {
+    const parts = clean.split(":");
+    return parts.slice(0, 4).join(":") + "::x";
+  }
+  return clean;
+}
+
 superAdminRouter.get("/audit-logs", async (req, res) => {
   try {
     const page = Math.max(1, Number(req.query.page ?? 1));
@@ -847,6 +867,15 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
     const action = typeof req.query.action === "string" && req.query.action.length > 0
       ? req.query.action
       : undefined;
+    const role = typeof req.query.role === "string" && req.query.role.length > 0
+      ? req.query.role
+      : undefined;
+    const targetType = typeof req.query.target_type === "string" && req.query.target_type.length > 0
+      ? req.query.target_type
+      : undefined;
+    const targetId = typeof req.query.target_id === "string" && req.query.target_id.length > 0
+      ? req.query.target_id
+      : undefined;
     const sinceRaw = typeof req.query.since === "string" && req.query.since.length > 0
       ? req.query.since
       : undefined;
@@ -854,6 +883,18 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
 
     const conditions = [];
     if (action) conditions.push(eq(audit_logs.action, action));
+    if (role) {
+      // "mairie" du point de vue super admin couvre mairie + instructeur (les
+      // deux rôles qui agissent depuis l'interface mairie). "admin" reste
+      // distinct pour identifier les opérations super-admin.
+      if (role === "mairie") {
+        conditions.push(inArray(audit_logs.role, ["mairie", "instructeur"]));
+      } else {
+        conditions.push(eq(audit_logs.role, role));
+      }
+    }
+    if (targetType) conditions.push(eq(audit_logs.target_type, targetType));
+    if (targetId) conditions.push(eq(audit_logs.target_id, targetId));
     if (sinceDate && !Number.isNaN(sinceDate.getTime())) {
       conditions.push(gte(audit_logs.created_at, sinceDate));
     }
@@ -864,7 +905,11 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
         id: audit_logs.id,
         user_id: audit_logs.user_id,
         email: audit_logs.email,
+        role: audit_logs.role,
         action: audit_logs.action,
+        target_type: audit_logs.target_type,
+        target_id: audit_logs.target_id,
+        metadata: audit_logs.metadata,
         ip: audit_logs.ip,
         user_agent: audit_logs.user_agent,
         created_at: audit_logs.created_at,
@@ -880,7 +925,11 @@ superAdminRouter.get("/audit-logs", async (req, res) => {
       db.select({ count: count() }).from(audit_logs).where(where),
     ]);
 
-    res.json({ rows, total: Number(total?.count ?? 0), page, limit });
+    // RGPD : on masque le dernier octet de l'IP côté API avant exposition à
+    // l'admin. La valeur brute reste en base pour usage forensic.
+    const sanitized = rows.map((r) => ({ ...r, ip: maskIp(r.ip) }));
+
+    res.json({ rows: sanitized, total: Number(total?.count ?? 0), page, limit });
   } catch (err) {
     console.error("[audit-logs] query failed:", err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -1076,11 +1125,107 @@ superAdminRouter.delete("/legal-mentions/:id", async (req, res) => {
   }
 });
 
+// ── Articles manquants ───────────────────────────────────────────────────────
+// Quand l'utilisateur clique sur une référence d'article que Légifrance ne
+// renvoie pas, on enregistre la demande pour que l'admin la traite.
+
+// Liste les demandes non résolues, triées par fréquence puis date récente —
+// les références les plus cliquées remontent en haut.
+superAdminRouter.get("/legal-mentions/missing", async (req, res) => {
+  try {
+    const includeResolved = String(req.query.include_resolved ?? "") === "1";
+    const rows = await db
+      .select()
+      .from(legal_mentions_misses)
+      .where(includeResolved ? sql`TRUE` : isNull(legal_mentions_misses.resolved_at))
+      .orderBy(desc(legal_mentions_misses.miss_count), desc(legal_mentions_misses.last_seen_at));
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Tente la création de l'article via Légifrance. Si succès : l'article est
+// ajouté à `legal_mentions` et la demande est marquée "created". Si Légifrance
+// renvoie 404 sur cette référence : on renvoie une erreur ciblée pour que
+// l'admin sache que la référence est probablement mal orthographiée.
+superAdminRouter.post("/legal-mentions/missing/:id/create", async (req: any, res) => {
+  try {
+    const [miss] = await db
+      .select()
+      .from(legal_mentions_misses)
+      .where(eq(legal_mentions_misses.id, req.params.id))
+      .limit(1);
+    if (!miss) return res.status(404).json({ error: "Demande introuvable" });
+
+    const fresh = await refreshArticle(miss.code_key, miss.article_ref);
+    if (!fresh) {
+      return res.status(404).json({
+        error: `Article ${miss.article_ref} introuvable côté Légifrance — vérifie la référence (peut-être renumérotée, abrogée, ou hors champ ${miss.code_key}).`,
+      });
+    }
+
+    const [updated] = await db
+      .update(legal_mentions_misses)
+      .set({
+        resolved_at: new Date(),
+        resolved_by: req.user?.id ?? null,
+        resolution: "created",
+      })
+      .where(eq(legal_mentions_misses.id, req.params.id))
+      .returning();
+
+    // Renvoie aussi l'article fraîchement créé pour que le front puisse
+    // l'ajouter à sa liste sans reload.
+    const [article] = await db
+      .select()
+      .from(legal_mentions)
+      .where(and(eq(legal_mentions.code, resolveCode(miss.code_key)!.id), eq(legal_mentions.article_ref, miss.article_ref)))
+      .limit(1);
+
+    res.json({ miss: updated, article });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Marque la demande comme non pertinente (référence erronée, faux positif…).
+superAdminRouter.post("/legal-mentions/missing/:id/dismiss", async (req: any, res) => {
+  try {
+    const [updated] = await db
+      .update(legal_mentions_misses)
+      .set({
+        resolved_at: new Date(),
+        resolved_by: req.user?.id ?? null,
+        resolution: "dismissed",
+      })
+      .where(eq(legal_mentions_misses.id, req.params.id))
+      .returning();
+    if (!updated) return res.status(404).json({ error: "Demande introuvable" });
+    res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.delete("/legal-mentions/missing/:id", async (req, res) => {
+  try {
+    await db.delete(legal_mentions_misses).where(eq(legal_mentions_misses.id, req.params.id));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ─── Coûts IA ────────────────────────────────────────────────────────────────
 
 // Diagnostic : la table ai_usage_events existe-t-elle, et a-t-elle toutes les
 // colonnes attendues ? Utile quand la page « Coûts IA » reste à zéro alors que
-// la console Anthropic facture — typiquement migration non appliquée.
+// la console Mistral facture — typiquement migration non appliquée.
 superAdminRouter.get("/ai-cost/healthcheck", async (_req, res) => {
   try {
     const rows = await db.execute<{ column_name: string }>(
@@ -1089,8 +1234,7 @@ superAdminRouter.get("/ai-cost/healthcheck", async (_req, res) => {
     const cols = (rows as unknown as { column_name: string }[]).map((r) => r.column_name);
     const required = [
       "id", "dossier_id", "commune_id", "user_id", "purpose", "model",
-      "input_tokens", "output_tokens", "cache_read_input_tokens",
-      "cache_creation_input_tokens", "cost_eur", "duration_ms", "created_at",
+      "input_tokens", "output_tokens", "cost_eur", "duration_ms", "created_at",
     ];
     const missing = required.filter((c) => !cols.includes(c));
     let totalEvents = 0;
@@ -1230,6 +1374,88 @@ superAdminRouter.post("/ai-cost/alerts/test", async (_req, res) => {
   }
 });
 
+// ── Grille tarifaire IA (éditable depuis l'onglet Coûts IA) ───────────────
+// L'onglet affiche un coût ESTIMÉ : l'admin peut aligner la grille sur les
+// tarifs publiés par Mistral (cf. https://mistral.ai/pricing/) sans
+// redéploiement. Les anciens événements gardent leur cost_eur ; les nouveaux
+// utilisent la grille à jour. Le tarif effectivement appliqué à chaque
+// événement est gelé dans ai_usage_events.input_rate_eur_per_m / output_rate.
+superAdminRouter.get("/ai-cost/pricing", async (_req, res) => {
+  try {
+    const rows = await db.select().from(ai_pricing).orderBy(asc(ai_pricing.kind), asc(ai_pricing.model));
+    res.json(rows);
+  } catch (err) {
+    console.error("[ai-cost/pricing GET]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PUT /admin/ai-cost/pricing/:model — upsert d'un tarif. Le body accepte
+// input_eur_per_m, output_eur_per_m, kind ('chat'|'embedding'), note.
+superAdminRouter.put("/ai-cost/pricing/:model", async (req, res) => {
+  try {
+    const model = req.params.model.trim();
+    if (!model) return res.status(400).json({ error: "Modèle manquant" });
+    const body = (req.body ?? {}) as {
+      kind?: string;
+      input_eur_per_m?: number;
+      output_eur_per_m?: number;
+      note?: string | null;
+    };
+    const nonNeg = (v: unknown): number => {
+      const n = Number(v);
+      if (!Number.isFinite(n) || n < 0) {
+        throw new Error("Tarif invalide (doit être un nombre ≥ 0)");
+      }
+      return n;
+    };
+    const kind = body.kind === "embedding" ? "embedding" : "chat";
+    const input = nonNeg(body.input_eur_per_m);
+    const output = kind === "embedding" ? 0 : nonNeg(body.output_eur_per_m);
+    const note = typeof body.note === "string" ? body.note.trim() || null : null;
+    const user = (req as { user?: { id?: string } }).user;
+
+    await db.insert(ai_pricing).values({
+      model,
+      kind,
+      input_eur_per_m: input,
+      output_eur_per_m: output,
+      note,
+      updated_by: user?.id ?? null,
+      updated_at: new Date(),
+    }).onConflictDoUpdate({
+      target: ai_pricing.model,
+      set: {
+        kind,
+        input_eur_per_m: input,
+        output_eur_per_m: output,
+        note,
+        updated_by: user?.id ?? null,
+        updated_at: new Date(),
+      },
+    });
+    invalidatePricingCache();
+    const [row] = await db.select().from(ai_pricing).where(eq(ai_pricing.model, model)).limit(1);
+    res.json(row);
+  } catch (err) {
+    console.error("[ai-cost/pricing PUT]", err);
+    res.status(400).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// DELETE /admin/ai-cost/pricing/:model — retire un modèle de la grille.
+// Le fallback en dur dans aiUsage.ts reprend le relais s'il est encore connu.
+superAdminRouter.delete("/ai-cost/pricing/:model", async (req, res) => {
+  try {
+    await db.delete(ai_pricing).where(eq(ai_pricing.model, req.params.model));
+    invalidatePricingCache();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[ai-cost/pricing DELETE]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // Filtre temporel : ?period=7d|30d|all (défaut 30d) OU ?from=YYYY-MM-DD&to=YYYY-MM-DD
 // (les deux dates sont incluses ; to+1 jour côté requête pour borne stricte).
 function aiUsagePeriodRange(req: { query: { period?: string; from?: string; to?: string } }): { from: Date | null; to: Date | null } {
@@ -1272,8 +1498,6 @@ superAdminRouter.get("/ai-cost/summary", async (req, res) => {
         cost_eur: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)`,
         input_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.input_tokens}), 0)`,
         output_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.output_tokens}), 0)`,
-        cache_read_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.cache_read_input_tokens}), 0)`,
-        cache_creation_tokens: sql<number>`COALESCE(SUM(${ai_usage_events.cache_creation_input_tokens}), 0)`,
       }).from(ai_usage_events).where(cond as never),
       db.select({
         purpose: ai_usage_events.purpose,
@@ -1294,8 +1518,6 @@ superAdminRouter.get("/ai-cost/summary", async (req, res) => {
         cost_eur: Number(totals?.cost_eur ?? 0),
         input_tokens: Number(totals?.input_tokens ?? 0),
         output_tokens: Number(totals?.output_tokens ?? 0),
-        cache_read_tokens: Number(totals?.cache_read_tokens ?? 0),
-        cache_creation_tokens: Number(totals?.cache_creation_tokens ?? 0),
       },
       by_purpose: byPurpose.map((r) => ({ purpose: r.purpose, events: Number(r.events), cost_eur: Number(r.cost_eur) })),
       by_model: byModel.map((r) => ({ model: r.model, events: Number(r.events), cost_eur: Number(r.cost_eur) })),

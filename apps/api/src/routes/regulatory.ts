@@ -107,6 +107,11 @@ regulatoryRouter.get(
       // afficher la provenance de chaque verdict sans aller-retour. La
       // colonne pdf_content / OCR brut N'EST PAS exposée ici — seulement
       // les métadonnées de fait (valeur, source, source_ref, confidence).
+      // Phase 1 : on ne renvoie ici que les faits GAGNANTS. La table
+      // contient désormais aussi des non-gagnants (candidats divergents)
+      // pour alimenter le futur moteur de contradictions. L'UI règle des
+      // verdicts ne doit voir qu'un fait par clé pour rester cohérente
+      // avec l'historique. Un endpoint dédié remontera les conflits.
       const facts = await db
         .select({
           id: dossier_facts.id,
@@ -121,7 +126,11 @@ regulatoryRouter.get(
           created_at: dossier_facts.created_at,
         })
         .from(dossier_facts)
-        .where(and(eq(dossier_facts.dossier_id, dossierId), isNull(dossier_facts.superseded_at)));
+        .where(and(
+          eq(dossier_facts.dossier_id, dossierId),
+          isNull(dossier_facts.superseded_at),
+          eq(dossier_facts.is_winner, true),
+        ));
 
       res.json({ analysis, findings, facts });
     } catch (err) {

@@ -1,6 +1,6 @@
 import fs from "fs";
 import crypto from "crypto";
-import { callClaude } from "./aiUsage.js";
+import { callAi } from "./aiUsage.js";
 
 // ── RGPD : minimisation du nom de pièce ──────────────────────────────────────
 // Le nom passé au LLM peut contenir le NOM du citoyen (« Plan de masse -
@@ -92,8 +92,8 @@ function maskParcelle(p: string): string {
 const ALLOWED_IMAGE_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const;
 const PDF_TYPE = "application/pdf";
 
-// Limite de taille pour l'envoi à Claude (Anthropic accepte jusqu'à 32 Mo en base64).
-// Au-delà on renvoie une analyse "non vérifiée" plutôt que d'échouer.
+// Limite de taille (~30 Mo) pour l'envoi à Pixtral en base64. Au-delà on
+// renvoie une analyse "non vérifiée" plutôt que d'échouer.
 const MAX_INLINE_BYTES = 30 * 1024 * 1024;
 
 function isAllowedImage(mime: string): boolean {
@@ -218,15 +218,21 @@ Réponds UNIQUEMENT en JSON valide :
 {"score":"conforme"|"acceptable"|"incomplet"|"non_conforme","commentaire":"1-2 phrases sur la qualité et la conformité","suggestions":["suggestion concrète actionnable si nécessaire"]}
 Critères : conforme = document clair, lisible et approprié au type demandé ; acceptable = utilisable mais améliorable ; incomplet = partiellement visible, amputé ou illisible en partie ; non_conforme = mauvais type de document ou totalement illisible.`;
 
-const SYSTEM_PROMPT_REGULATORY = `Tu es expert en instruction de dossiers d'urbanisme (Code de l'Urbanisme + PLU). Tu analyses UNE pièce justificative déposée par un pétitionnaire en CROISANT son contenu avec :
+const SYSTEM_PROMPT_REGULATORY = `Tu es expert en instruction de dossiers d'urbanisme (Code de l'Urbanisme + PLU). Tu analyses LA OU LES pièce(s) justificative(s) déposée(s) par un pétitionnaire dans UN MÊME emplacement de bordereau (ex : "PC5 — Plans des façades et toitures"), en CROISANT leur contenu avec :
 1. ce qui est attendu pour ce type de pièce (CERFA),
 2. les règles du PLU applicables à la parcelle (fournies dans le contexte),
 3. les éventuelles servitudes (ABF, etc.).
 
+IMPORTANT — Lecture collective :
+- Si plusieurs documents sont fournis ci-dessous, ils ont été déposés ENSEMBLE pour le même emplacement (par ex. une façade Ouest + une façade Sud sous PC5).
+- Tu dois les évaluer COMME UN ENSEMBLE : une information visible sur un document COMPLÈTE l'autre.
+- Ne signale PAS comme manquant un élément qui figure sur un autre document du même lot.
+- Ton verdict (score, non-conformités, suggestions) porte sur l'emplacement dans son ensemble.
+
 Ta mission :
-- Vérifier que le document est du BON type (ex : un "plan de masse" doit être une vue de dessus avec cotes, pas une photo).
-- Vérifier qu'il est LISIBLE et COMPLET (cotes présentes, échelle indiquée, légende, …).
-- Quand c'est possible (cotes visibles, dimensions, hauteurs, distances), VÉRIFIER que les valeurs respectent les règles PLU fournies. Si une règle ne peut pas être vérifiée avec ce document (ex : règle de stationnement non vérifiable sur une coupe), ne l'invente PAS comme non-conformité.
+- Vérifier que les documents sont du BON type pour l'emplacement (ex : un "plan de masse" doit être une vue de dessus avec cotes, pas une photo).
+- Vérifier qu'ils sont LISIBLES et que l'ensemble est COMPLET (cotes présentes, échelle indiquée, légende, vues attendues, …).
+- Quand c'est possible (cotes visibles, dimensions, hauteurs, distances), VÉRIFIER que les valeurs respectent les règles PLU fournies. Si une règle ne peut pas être vérifiée avec ces documents (ex : règle de stationnement non vérifiable sur une coupe), ne l'invente PAS comme non-conformité.
 - Lister les NON-CONFORMITÉS détectées avec la règle, l'article si donné, ce qui est constaté, ce qui est attendu et la gravité (info | mineure | majeure).
 
 Réponds UNIQUEMENT en JSON valide, sans markdown, sans texte d'introduction :
@@ -240,11 +246,11 @@ Réponds UNIQUEMENT en JSON valide, sans markdown, sans texte d'introduction :
 }
 
 Règles strictes :
-- Score "non_conforme" UNIQUEMENT si le document est inutilisable (mauvais type ou totalement illisible).
-- Score "incomplet" si éléments réglementaires manquants ou non-conformité majeure détectée.
+- Score "non_conforme" UNIQUEMENT si l'ensemble est inutilisable (mauvais type ou totalement illisible).
+- Score "incomplet" si éléments réglementaires manquants sur TOUS les documents fournis pour cet emplacement OU non-conformité majeure détectée.
 - Score "acceptable" si utilisable avec réserves mineures.
 - Score "conforme" si rien à signaler.
-- N'invente JAMAIS une non-conformité que tu ne peux pas démontrer à partir du document.
+- N'invente JAMAIS une non-conformité que tu ne peux pas démontrer à partir des documents fournis.
 - Si une règle PLU citée n'est PAS vérifiable sur ce type de pièce, ne la mentionne pas.
 - Ton factuel, neutre, professionnel — pas de formules de politesse.`;
 
@@ -327,15 +333,126 @@ export async function analyzePiece(
     ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: base64 } }
     : { type: "image" as const, source: { type: "base64" as const, media_type: mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: base64 } };
 
-  const msg = await callClaude(
+  const msg = await callAi(
     { purpose: "piece_analyze", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId, fileHash },
     {
-      model: "claude-haiku-4-5-20251001",
+      model: "ai-fast",
       max_tokens: useRegulatory ? 1500 : 500,
       system,
       messages: [{
         role: "user",
         content: [documentBlock, { type: "text", text: userText }],
+      }],
+    },
+  );
+
+  const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
+  const parsed = parsePieceAnalysis(text);
+  return { ...parsed, reglementaire: useRegulatory };
+}
+
+// ── Analyse groupée : tous les fichiers d'un même emplacement ────────────────
+// Le citoyen peut déposer plusieurs fichiers dans une même case (ex : PC5 — un
+// PDF par façade). L'instructeur ET l'IA doivent évaluer l'ENSEMBLE déposé pour
+// le slot, pas chaque fichier isolément. Sinon l'IA suggère un complément alors
+// que l'information figure simplement sur le fichier voisin du même lot.
+//
+// Cette fonction envoie tous les documents en un seul appel LLM et renvoie
+// UNE analyse couvrant le slot. L'appelant (dossierConformity) la mappe ensuite
+// à chacun des `dossier_pieces_jointes` du lot.
+export interface PieceGroupDoc {
+  buf: Buffer;
+  mimeType: string;
+  nom: string;          // nom métier (sera sanitizé)
+}
+
+export async function analyzePieceGroup(
+  docs: PieceGroupDoc[],
+  codePiece: string,
+  ctx?: PieceContext,
+  trace?: { dossierId?: string | null; communeId?: string | null; userId?: string | null },
+): Promise<PieceAnalysis> {
+  if (docs.length === 0) {
+    return {
+      score: "non_conforme",
+      commentaire: "Aucun document fourni pour cet emplacement.",
+      suggestions: ["Déposer la pièce attendue."],
+      reglementaire: false,
+    };
+  }
+  if (docs.length === 1) {
+    // Cas mono-fichier : on retombe sur la fonction historique pour ne pas
+    // changer le comportement (et économiser un peu de prompt).
+    const only = docs[0]!;
+    return analyzePiece(only.buf, only.mimeType, only.nom, codePiece, ctx, trace);
+  }
+
+  // Filtre les formats supportés. Les autres sont mentionnés dans le prompt
+  // sans être encodés (le LLM les considère comme "non visualisables").
+  const supported = docs.filter((d) => isAllowedImage(d.mimeType) || isPdf(d.mimeType));
+  const skipped = docs.filter((d) => !(isAllowedImage(d.mimeType) || isPdf(d.mimeType)));
+
+  if (supported.length === 0) {
+    return {
+      score: "acceptable",
+      commentaire: "Documents reçus dans un format non visualisable automatiquement — un instructeur vérifiera manuellement.",
+      suggestions: [],
+      reglementaire: false,
+    };
+  }
+
+  // Filtre la taille cumulée (chaque document doit tenir dans la limite Pixtral).
+  const sized = supported.filter((d) => d.buf.length <= MAX_INLINE_BYTES);
+  const oversized = supported.filter((d) => d.buf.length > MAX_INLINE_BYTES);
+  if (sized.length === 0) {
+    return {
+      score: "acceptable",
+      commentaire: "Documents trop volumineux pour analyse automatique — vérification manuelle requise.",
+      suggestions: ["Compresser le PDF ou réduire la résolution des images."],
+      reglementaire: false,
+    };
+  }
+
+  const useRegulatory = !!ctx && !!(ctx.regles?.length || ctx.zone || ctx.aide);
+  const system = useRegulatory ? SYSTEM_PROMPT_REGULATORY : SYSTEM_PROMPT_BASIC;
+  const contextText = buildContextSection(ctx);
+  // Hash agrégé : permet le cache et la traçabilité (même lot → même hash).
+  const concatHash = crypto.createHash("sha256");
+  for (const d of sized) concatHash.update(d.buf);
+  const fileHash = concatHash.digest("hex");
+
+  // En-tête utilisateur : énumère les documents avec leur libellé métier pour
+  // que le modèle sache QUEL fichier il voit et qu'ils appartiennent au MÊME slot.
+  const docList = sized.map((d, i) => `  ${i + 1}. ${sanitizePieceName(d.nom)}`).join("\n");
+  const skippedNote = skipped.length > 0
+    ? `\n\nDocuments fournis mais non visualisables (format) : ${skipped.map((d) => sanitizePieceName(d.nom)).join(", ")}.`
+    : "";
+  const oversizedNote = oversized.length > 0
+    ? `\n\nDocuments trop volumineux pour cette analyse : ${oversized.map((d) => sanitizePieceName(d.nom)).join(", ")}.`
+    : "";
+
+  const userText = [
+    `Emplacement de bordereau : ${codePiece || "(non précisé)"}`,
+    `${sized.length} document${sized.length > 1 ? "s" : ""} déposé${sized.length > 1 ? "s" : ""} dans cet emplacement :\n${docList}${skippedNote}${oversizedNote}`,
+    contextText,
+    "Évalue l'ENSEMBLE des documents ci-dessus comme un tout pour ce seul emplacement.",
+  ].filter(Boolean).join("\n\n");
+
+  const documentBlocks = sized.map((d) => (
+    isPdf(d.mimeType)
+      ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: d.buf.toString("base64") } }
+      : { type: "image" as const, source: { type: "base64" as const, media_type: d.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: d.buf.toString("base64") } }
+  ));
+
+  const msg = await callAi(
+    { purpose: "piece_analyze", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId, fileHash },
+    {
+      model: "ai-fast",
+      max_tokens: useRegulatory ? 1800 : 700,
+      system,
+      messages: [{
+        role: "user",
+        content: [...documentBlocks, { type: "text", text: userText }],
       }],
     },
   );

@@ -123,7 +123,7 @@ CREATE TABLE IF NOT EXISTS zones (
 CREATE TABLE IF NOT EXISTS zone_regulatory_rules (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   zone_id uuid NOT NULL REFERENCES zones(id) ON DELETE CASCADE,
-  article_number integer,
+  article_number double precision,
   article_title text,
   topic text NOT NULL DEFAULT 'general',
   rule_text text NOT NULL,
@@ -211,6 +211,13 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS role_config_id uuid REFERENCES role_p
 
 -- Services annexes (ABF, SDIS, DDT, etc.)
 ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'service_externe';
+
+-- Typologies de procédures fines (PCMI vs PC, CUa vs CUb).
+-- Ajout idempotent : les valeurs legacy ('permis_de_construire',
+-- 'certificat_urbanisme') restent valides pour les dossiers déjà créés.
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'permis_de_construire_mi';
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'certificat_urbanisme_a';
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'certificat_urbanisme_b';
 
 CREATE TABLE IF NOT EXISTS external_services (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -430,6 +437,16 @@ CREATE INDEX IF NOT EXISTS idx_decision_events_decision_id ON decision_events(de
 -- Cache GPU zones PLU par commune (survit aux redémarrages serveur)
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_zones_geojson jsonb;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_zones_cached_at timestamp;
+-- Partition GPU "gagnante" pour la commune (DU_<INSEE>, <SIREN>_PLUI, etc.).
+-- Persistée pour court-circuiter la découverte par point dans le flux par adresse,
+-- où le /document GPU est fragile sur un Point (voirie, bord de commune,
+-- conventions de nommage hétérogènes).
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_partition text;
+-- Raison stable d'indisponibilité du PLU pour cette commune :
+--   'rnu' : commune en RNU, pas de PLU à chercher
+--   'not_in_gpu' : aucune partition trouvée côté Géoportail (commune sans PLU déposé)
+--   NULL : PLU disponible ou statut inconnu (échec transient sans diagnostic)
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_unavailable_reason text;
 
 -- Référentiel documentaire par commune (PPRI, OAP, PEB, etc.)
 CREATE TABLE IF NOT EXISTS commune_documents (
@@ -511,6 +528,15 @@ ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_analysis jsonb;
 ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_status text;
 ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_analyzed_at timestamp;
 
+-- Phase 3.C.5b : analyse de conformité FINALE — déclenchée explicitement par
+-- l'instructeur avant la délivrance de l'arrêté. Ne prend en compte que les
+-- pièces dont instructeur_status = 'valide'. Stockée séparément de l'analyse
+-- interim pour préserver l'historique et permettre la comparaison.
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_final_analysis jsonb;
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_final_status text;
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_final_analyzed_at timestamp;
+ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS conformite_final_triggered_by uuid REFERENCES users(id) ON DELETE SET NULL;
+
 -- Cas conditionnels structurés sur une règle (ex: 10 m sens unique / 13 m double sens)
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS cases jsonb DEFAULT '[]'::jsonb;
 -- Décomposition d'articles complexes en sous-règles + applicabilité
@@ -520,6 +546,18 @@ ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS sub_theme text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_title text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_summary text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_relevant boolean NOT NULL DEFAULT true;
+
+-- article_number : integer → double precision. Les PLU modernisés numérotent
+-- en décimal (« 12.1 », « 12.2 »…) ; la colonne integer faisait planter
+-- l'ingestion (invalid input syntax for type integer: "12.2"). Gardé idempotent
+-- ET conditionnel pour éviter une réécriture de table à chaque déploiement.
+DO $$ BEGIN
+  IF (SELECT data_type FROM information_schema.columns
+        WHERE table_name = 'zone_regulatory_rules' AND column_name = 'article_number') = 'integer' THEN
+    ALTER TABLE zone_regulatory_rules
+      ALTER COLUMN article_number TYPE double precision USING article_number::double precision;
+  END IF;
+END $$;
 
 -- Synthèse textuelle des documents thématiques de commune (OAP, PPRI, …) sur
 -- laquelle l'outil d'instruction s'appuie quand un dossier tombe dans le
@@ -563,17 +601,68 @@ CREATE TABLE IF NOT EXISTS ai_usage_events (
   model                       text NOT NULL,
   input_tokens                integer NOT NULL DEFAULT 0,
   output_tokens               integer NOT NULL DEFAULT 0,
-  cache_read_input_tokens     integer NOT NULL DEFAULT 0,
-  cache_creation_input_tokens integer NOT NULL DEFAULT 0,
   cost_eur                    double precision NOT NULL DEFAULT 0,
   duration_ms                 integer,
   created_at                  timestamp NOT NULL DEFAULT now()
 );
+
+-- Suppression idempotente des colonnes Anthropic-only cache_*_input_tokens.
+-- Concept "prompt caching" sans équivalent Mistral, toujours écrites à 0
+-- depuis la bascule juin 2026 — déposent du bruit "0/0" dans l'admin Coûts IA
+-- sans porter d'information. Aucune perte de donnée (valeurs déjà nulles).
+ALTER TABLE ai_usage_events DROP COLUMN IF EXISTS cache_read_input_tokens;
+ALTER TABLE ai_usage_events DROP COLUMN IF EXISTS cache_creation_input_tokens;
 ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS commune_id uuid REFERENCES communes(id) ON DELETE SET NULL;
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_dossier ON ai_usage_events(dossier_id);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_commune ON ai_usage_events(commune_id);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_created_at ON ai_usage_events(created_at);
 CREATE INDEX IF NOT EXISTS idx_ai_usage_events_purpose ON ai_usage_events(purpose);
+
+-- ── Grille tarifaire IA, éditable depuis le back-office ────────────────────
+-- Une ligne par modèle Mistral (chat ou embedding). Le service aiUsage lit
+-- cette table pour estimer le coût des nouveaux appels — les anciens
+-- événements gardent leur cost_eur historique (pas de recalcul rétroactif).
+-- "kind" ∈ {chat, embedding}. Pour kind=embedding, output_eur_per_m=0.
+-- Le tarif EFFECTIVEMENT appliqué est dupliqué sur ai_usage_events (colonnes
+-- input_rate_eur_per_m / output_rate_eur_per_m) pour pouvoir auditer un
+-- événement même après modification de la grille.
+CREATE TABLE IF NOT EXISTS ai_pricing (
+  model              text PRIMARY KEY,
+  kind               text NOT NULL DEFAULT 'chat',
+  input_eur_per_m    double precision NOT NULL,
+  output_eur_per_m   double precision NOT NULL DEFAULT 0,
+  note               text,
+  updated_by         uuid REFERENCES users(id) ON DELETE SET NULL,
+  updated_at         timestamp NOT NULL DEFAULT now()
+);
+
+-- Seed initial : grille au 2026-06 publiée par Mistral
+-- (cf. https://mistral.ai/pricing/). Conversion USD→EUR à 0.92 indicative ;
+-- l'admin peut écraser ces valeurs à tout moment depuis l'onglet Coûts IA.
+INSERT INTO ai_pricing (model, kind, input_eur_per_m, output_eur_per_m, note)
+VALUES
+  ('mistral-large-latest',  'chat',      1.80, 5.40, 'Mistral Large 2 — tarif legacy'),
+  ('mistral-large-3',       'chat',      0.46, 1.38, 'Mistral Large 3 ($0.5/$1.5 par M tokens, USD→EUR ~0.92)'),
+  ('mistral-small-latest',  'chat',      0.20, 0.60, 'Mistral Small 3'),
+  ('mistral-small-4',       'chat',      0.09, 0.28, 'Mistral Small 4 ($0.1/$0.3 par M tokens, USD→EUR ~0.92)'),
+  ('pixtral-large-latest',  'chat',      2.00, 6.00, 'Pixtral Large — vision'),
+  ('pixtral-12b-2409',      'chat',      0.15, 0.15, 'Pixtral 12B — vision compact'),
+  ('mistral-embed',         'embedding', 0.09, 0.00, '$0.1 par M tokens, USD→EUR ~0.92')
+ON CONFLICT (model) DO NOTHING;
+
+-- Tarif effectif appliqué à chaque événement (audit + réconciliation).
+-- NULLABLE pour les lignes historiques (avant déploiement de cette colonne).
+ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS input_rate_eur_per_m double precision;
+ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS output_rate_eur_per_m double precision;
+-- Endpoint Mistral utilisé : 'chat' (chat completions) | 'embedding' (embeddings).
+ALTER TABLE ai_usage_events ADD COLUMN IF NOT EXISTS endpoint text;
+
+-- Purge des événements résiduels Anthropic/Claude (bascule juin 2026 vers
+-- Mistral). Leur cost_eur était calculé sur la grille Claude → polluait les
+-- agrégats de l'onglet "Coûts IA · estimés", qui ne suit désormais que Mistral.
+-- Idempotent : aucun nouvel événement ne peut atterrir avec ce model_pattern
+-- depuis le retrait du MODEL_ID = "claude-haiku..." côté code applicatif.
+DELETE FROM ai_usage_events WHERE model LIKE 'claude-%';
 
 -- ── Configuration alertes Slack sur les coûts IA (singleton id=1) ──
 CREATE TABLE IF NOT EXISTS ai_alert_config (
@@ -615,6 +704,27 @@ ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS ai_consent boolean;
 ALTER TABLE dossiers ADD COLUMN IF NOT EXISTS ai_consent_at timestamp;
 -- Trace par pièce : l'IA a-t-elle effectivement été appelée sur ce fichier ?
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS ai_processed boolean NOT NULL DEFAULT false;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS archived_at timestamp;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS archived_by_piece_id uuid;
+CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_archived ON dossier_pieces_jointes(dossier_id, archived_at);
+
+-- ── OCR asynchrone côté comptoir mairie ──────────────────────────────────────
+-- L'analyse IA/OCR des pièces déposées est désormais exécutée en arrière-plan
+-- pour rendre la main à l'agent immédiatement après l'upload. ocr_status pilote
+-- ce cycle de vie et permet à la notification "dossier prêt" de savoir quand
+-- toutes les pièces sont passées par le worker.
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS ocr_status text NOT NULL DEFAULT 'pending';
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS ocr_started_at timestamp;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS ocr_completed_at timestamp;
+-- Backfill : les pièces déjà uploadées (avant ce passage en asynchrone) sont
+-- considérées comme traitées si ai_processed est vrai, sinon comme "skipped"
+-- pour ne pas bloquer indéfiniment d'éventuelles notifications futures.
+UPDATE dossier_pieces_jointes
+   SET ocr_status = CASE WHEN ai_processed THEN 'done' ELSE 'skipped' END,
+       ocr_completed_at = uploaded_at
+ WHERE ocr_status = 'pending' AND uploaded_at < now() - interval '5 minutes';
+CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_ocr_status
+  ON dossier_pieces_jointes(dossier_id, ocr_status);
 
 -- ── RGPD : empreinte du fichier envoyé à l'IA (sans stocker le contenu) ──
 -- SHA-256 hexadécimal calculé côté serveur AVANT envoi. Permet de prouver
@@ -629,6 +739,21 @@ CREATE INDEX IF NOT EXISTS idx_ai_usage_events_file_hash ON ai_usage_events(file
 -- la purge et la recherche par date.
 CREATE INDEX IF NOT EXISTS idx_audit_logs_created_at_purge ON audit_logs(created_at);
 
+-- ── Traçabilité étendue : actions mairie + recherches d'adresses citoyens ──
+-- role : rôle au moment de l'action (snapshot — l'utilisateur peut être
+--        supprimé ou changer de rôle ensuite).
+-- target_type/target_id : cible métier (ex: "dossier" + uuid) pour pouvoir
+--        retrouver toutes les actions sur un objet donné.
+-- metadata : contexte JSON spécifique à l'action (route, body filtré,
+--        adresse cherchée, code INSEE, etc.). Champs sensibles strippés
+--        côté service (audit.ts) avant insert.
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS role text;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_type text;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS target_id text;
+ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS metadata jsonb;
+CREATE INDEX IF NOT EXISTS idx_audit_logs_role ON audit_logs(role);
+CREATE INDEX IF NOT EXISTS idx_audit_logs_target ON audit_logs(target_type, target_id);
+
 -- ── Annotations chunk-level sur documents indexés (Phase 1 niveau B) ──
 -- Une annotation valide est INJECTÉE à côté du chunk lors du search RAG.
 -- Permet à l'instructeur de "patcher" un PDF sans le réécrire : corrections
@@ -638,7 +763,7 @@ CREATE TABLE IF NOT EXISTS document_segment_annotations (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
   segment_id text NOT NULL,
   source_id text NOT NULL,
-  kind text NOT NULL DEFAULT 'precision',
+  kind text NOT NULL DEFAULT 'note_perso',
   note text NOT NULL,
   applies_if jsonb NOT NULL DEFAULT '[]',
   validation_status text NOT NULL DEFAULT 'brouillon',
@@ -650,6 +775,37 @@ CREATE TABLE IF NOT EXISTS document_segment_annotations (
 );
 CREATE INDEX IF NOT EXISTS idx_segment_annotations_segment ON document_segment_annotations(segment_id);
 CREATE INDEX IF NOT EXISTS idx_segment_annotations_source ON document_segment_annotations(source_id);
+
+-- Phase 3.B : visibilité private/shared. Les annotations existantes ont été
+-- créées sous l'ancien modèle "tout ce qui est validé alimente l'IA" : on
+-- les bascule en 'shared' pour préserver leur comportement. Les nouvelles
+-- annotations sont 'private' par défaut — l'instructeur opt-in.
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM information_schema.columns
+    WHERE table_name = 'document_segment_annotations' AND column_name = 'visibility'
+  ) THEN
+    ALTER TABLE document_segment_annotations
+      ADD COLUMN visibility text NOT NULL DEFAULT 'private';
+    UPDATE document_segment_annotations SET visibility = 'shared';
+  END IF;
+END
+$$;
+
+-- Phase 3.C.3 : annotations PDF-level (vs chunk-level historique).
+--   - segment_id devient nullable (les annotations PDF n'en ont pas, elles
+--     pointent directement vers le document + page + rectangle de
+--     surlignage).
+--   - Nouvelles colonnes : page, quote, highlight_rects.
+ALTER TABLE document_segment_annotations
+  ALTER COLUMN segment_id DROP NOT NULL;
+ALTER TABLE document_segment_annotations
+  ADD COLUMN IF NOT EXISTS page integer,
+  ADD COLUMN IF NOT EXISTS quote text,
+  ADD COLUMN IF NOT EXISTS highlight_rects jsonb NOT NULL DEFAULT '[]';
+CREATE INDEX IF NOT EXISTS idx_segment_annotations_source_page
+  ON document_segment_annotations(source_id, page);
 
 -- ── Délégations de portefeuille en cas d'absence ──
 -- Chaîne ordonnée de délégués configurée par l'instructeur lui-même.
@@ -682,6 +838,17 @@ CREATE TABLE IF NOT EXISTS dossier_courriers (
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_courriers_dossier ON dossier_courriers(dossier_id);
 CREATE INDEX IF NOT EXISTS idx_dossier_courriers_type ON dossier_courriers(dossier_id, type);
+
+-- ── Indexes complémentaires pour la montée en charge ──
+-- Postgres ne crée pas d'index automatique pour les FK : sans ces lignes, les
+-- requêtes "pièces d'un dossier" et "dossiers d'un user/commune triés" font un
+-- scan séquentiel dès que les tables dépassent quelques dizaines de milliers
+-- de lignes.
+CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_dossier ON dossier_pieces_jointes(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_user ON dossier_pieces_jointes(user_id);
+CREATE INDEX IF NOT EXISTS idx_dossiers_commune_created ON dossiers(commune, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dossiers_user_created ON dossiers(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_dossiers_instructeur_created ON dossiers(instructeur_id, created_at DESC);
 
 -- ── Moteur réglementaire (palier 1) ──
 -- Faits d'instruction : on sépare ce que le citoyen a déclaré, ce qui a été
@@ -768,6 +935,222 @@ CREATE INDEX IF NOT EXISTS idx_regulatory_findings_analysis ON regulatory_findin
 CREATE INDEX IF NOT EXISTS idx_regulatory_findings_dossier ON regulatory_findings(dossier_id);
 CREATE INDEX IF NOT EXISTS idx_regulatory_findings_status ON regulatory_findings(dossier_id, status);
 CREATE INDEX IF NOT EXISTS idx_regulatory_findings_topic ON regulatory_findings(dossier_id, topic);
+
+-- ── Articles juridiques manquants ──────────────────────────────────────────
+-- Quand un utilisateur clique sur une référence d'article (R.421-1, L.123-2…)
+-- que ni notre cache ni Légifrance ne renvoient, on enregistre la demande pour
+-- que l'admin puisse soit créer l'article (via l'API Légifrance), soit la
+-- marquer comme non pertinente. Évite que des refs cassées renvoient
+-- silencieusement vers la homepage de legifrance.gouv.fr.
+CREATE TABLE IF NOT EXISTS legal_mentions_misses (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code_key text NOT NULL,
+  article_ref text NOT NULL,
+  first_seen_at timestamp NOT NULL DEFAULT now(),
+  last_seen_at timestamp NOT NULL DEFAULT now(),
+  miss_count integer NOT NULL DEFAULT 1,
+  resolved_at timestamp,
+  resolved_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  resolution text,
+  CONSTRAINT legal_mentions_misses_code_ref UNIQUE (code_key, article_ref)
+);
+CREATE INDEX IF NOT EXISTS idx_legal_mentions_misses_unresolved
+  ON legal_mentions_misses(last_seen_at DESC) WHERE resolved_at IS NULL;
+
+-- ── Lot 1a — Préparation des documents intercommunaux (PLUi) ────────────────
+-- Additif strict : aucune table renommée, aucun consommateur impacté.
+-- Le Lot 1b suivra avec le rename commune_documents → regulatory_documents et
+-- la propagation aux 8 fichiers TS qui référencent le nom actuel.
+
+-- Porteur polymorphe : un document est désormais porté par une commune OU
+-- par un EPCI (cas PLUi). Exactement l'un des deux doit être renseigné.
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS porteur_commune_id uuid REFERENCES communes(id) ON DELETE CASCADE;
+ALTER TABLE commune_documents ADD COLUMN IF NOT EXISTS porteur_epci_id uuid REFERENCES epci(id) ON DELETE CASCADE;
+
+-- Backfill : les documents existants gardent leur commune comme porteur.
+UPDATE commune_documents
+SET porteur_commune_id = commune_id
+WHERE porteur_commune_id IS NULL AND porteur_epci_id IS NULL;
+
+-- Contrainte XOR posée APRÈS le backfill — sinon échec sur les lignes existantes.
+DO $$ BEGIN
+  ALTER TABLE commune_documents
+    ADD CONSTRAINT commune_documents_porteur_xor
+    CHECK ((porteur_commune_id IS NOT NULL) <> (porteur_epci_id IS NOT NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
+-- Rattachement N:N document → communes. Un PLUi y aura N lignes, un PLU
+-- strictement communal une seule. Remplacera commune_documents.commune_id
+-- comme source de vérité du périmètre d'applicabilité (Lots 3 & 4).
+CREATE TABLE IF NOT EXISTS document_communes (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  document_id uuid NOT NULL REFERENCES commune_documents(id) ON DELETE CASCADE,
+  commune_id uuid NOT NULL REFERENCES communes(id) ON DELETE CASCADE,
+  created_at timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT document_communes_unique UNIQUE (document_id, commune_id)
+);
+CREATE INDEX IF NOT EXISTS idx_document_communes_document ON document_communes(document_id);
+CREATE INDEX IF NOT EXISTS idx_document_communes_commune ON document_communes(commune_id);
+
+-- Backfill 1:1 du périmètre existant. ON CONFLICT pour l'idempotence.
+INSERT INTO document_communes (document_id, commune_id)
+SELECT id, commune_id FROM commune_documents
+WHERE commune_id IS NOT NULL
+ON CONFLICT (document_id, commune_id) DO NOTHING;
+
+-- ── Lot 1b — Rename commune_documents → regulatory_documents ───────────────
+-- La table n'est plus strictement « par commune » : avec porteur_epci_id et
+-- document_communes elle décrit un document réglementaire générique.
+--
+-- Idempotence sur ré-exécution (bug rencontré en prod OVH) :
+-- le CREATE TABLE IF NOT EXISTS commune_documents historique plus haut dans
+-- ce script (legacy DDL) re-crée systématiquement une coquille vide à chaque
+-- exécution, MÊME après le rename. Si on ne fait rien, la 2e exécution
+-- trouve les deux tables et le RENAME échoue (relation déjà existante).
+-- On nettoie la coquille vide ici, puis on renomme uniquement si nécessaire.
+DO $$ BEGIN
+  -- Cas 1 : les deux tables existent → ne peut arriver qu'après une 1re
+  -- exécution réussie. La vraie donnée vit dans regulatory_documents, la
+  -- coquille vide est dans commune_documents (recréée plus haut). On la
+  -- supprime — mais seulement si elle est effectivement vide (garde-fou
+  -- contre toute situation imprévue).
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'commune_documents' AND relkind = 'r')
+     AND EXISTS (SELECT 1 FROM pg_class WHERE relname = 'regulatory_documents' AND relkind = 'r') THEN
+    IF NOT EXISTS (SELECT 1 FROM commune_documents LIMIT 1) THEN
+      DROP TABLE commune_documents CASCADE;
+    ELSE
+      RAISE EXCEPTION 'commune_documents et regulatory_documents existent simultanément avec des données dans la première — examen manuel requis avant de continuer';
+    END IF;
+  END IF;
+
+  -- Cas 2 : seule commune_documents existe (1re exécution post-merge sur une
+  -- base déjà alignée jusqu'au Lot 1a). On renomme.
+  IF EXISTS (SELECT 1 FROM pg_class WHERE relname = 'commune_documents' AND relkind = 'r')
+     AND NOT EXISTS (SELECT 1 FROM pg_class WHERE relname = 'regulatory_documents' AND relkind = 'r') THEN
+    ALTER TABLE commune_documents RENAME TO regulatory_documents;
+  END IF;
+END $$;
+
+-- Renommage des objets dépendants (contrainte XOR, index). Idempotent.
+-- On vérifie que la contrainte vit bien sur regulatory_documents avant de la
+-- renommer — évite de toucher une contrainte homonyme sur la coquille
+-- éphémère commune_documents recréée à chaque run et droppée juste au-dessus.
+DO $$ BEGIN
+  IF EXISTS (
+    SELECT 1 FROM pg_constraint c
+    JOIN pg_class t ON t.oid = c.conrelid
+    WHERE c.conname = 'commune_documents_porteur_xor'
+      AND t.relname = 'regulatory_documents'
+  ) THEN
+    ALTER TABLE regulatory_documents
+      RENAME CONSTRAINT commune_documents_porteur_xor TO regulatory_documents_porteur_xor;
+  END IF;
+END $$;
+ALTER INDEX IF EXISTS idx_commune_documents_commune_id RENAME TO idx_regulatory_documents_commune_id;
+
+-- ── Lot 2 — Traçabilité règle → document ───────────────────────────────────
+-- Une zone_regulatory_rule sait désormais de quel regulatory_document elle
+-- provient. Nullable au démarrage : permet le backfill puis les futures
+-- règles ajoutées manuellement par un instructeur sans document attaché.
+-- ON DELETE SET NULL : supprimer un document ne casse pas les règles qui
+-- en proviennent (purge contrôlée côté applicatif uniquement).
+ALTER TABLE zone_regulatory_rules
+  ADD COLUMN IF NOT EXISTS source_document_id uuid
+  REFERENCES regulatory_documents(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_zone_regulatory_rules_source_document
+  ON zone_regulatory_rules(source_document_id);
+
+-- Backfill : on rattache chaque règle au PLU le plus récent de la commune
+-- de sa zone. Couvre la quasi-totalité du corpus actuel (1 commune = 1 PLU).
+-- Les communes sans aucun document type='plu' restent à NULL — détectables
+-- via SELECT count(*) WHERE source_document_id IS NULL et à corriger
+-- manuellement (cas rares : règles saisies à la main sans ingestion).
+WITH plu_by_commune AS (
+  SELECT DISTINCT ON (commune_id) commune_id, id AS document_id
+  FROM regulatory_documents
+  WHERE type = 'plu' AND commune_id IS NOT NULL
+  ORDER BY commune_id, created_at DESC
+)
+UPDATE zone_regulatory_rules zrr
+SET source_document_id = pbc.document_id
+FROM zones z, plu_by_commune pbc
+WHERE zrr.zone_id = z.id
+  AND z.commune_id = pbc.commune_id
+  AND zrr.source_document_id IS NULL;
+
+-- ── Lot 3 — Refactor loadRules() document-centric ──────────────────────────
+-- Les zones aussi connaissent leur document d'origine. Permet à terme qu'un
+-- PLUi crée des zones partagées entre N communes (à travers document_communes)
+-- et que la purge à l'ingestion soit indexée par document, pas par commune.
+ALTER TABLE zones
+  ADD COLUMN IF NOT EXISTS source_document_id uuid
+  REFERENCES regulatory_documents(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_zones_source_document
+  ON zones(source_document_id);
+
+-- Backfill : chaque zone hérite du PLU le plus récent de sa commune (même
+-- logique que pour zone_regulatory_rules en Lot 2).
+WITH plu_by_commune AS (
+  SELECT DISTINCT ON (commune_id) commune_id, id AS document_id
+  FROM regulatory_documents
+  WHERE type = 'plu' AND commune_id IS NOT NULL
+  ORDER BY commune_id, created_at DESC
+)
+UPDATE zones z
+SET source_document_id = pbc.document_id
+FROM plu_by_commune pbc
+WHERE z.commune_id = pbc.commune_id
+  AND z.source_document_id IS NULL;
+
+-- ── Phase 1 — Fondations preuves et candidats ──────────────────────────────
+-- Préalable au moteur de contradictions (Phase 3). Aujourd'hui resolveDossierFacts
+-- choisit silencieusement un gagnant par clé. On veut désormais persister TOUS
+-- les candidats (avec is_winner=false pour les non-gagnants), regrouper les
+-- candidats dont les valeurs divergent par conflict_group_id, et garder une
+-- trace de la valeur brute avant normalisation.
+ALTER TABLE dossier_facts ADD COLUMN IF NOT EXISTS is_winner boolean NOT NULL DEFAULT true;
+ALTER TABLE dossier_facts ADD COLUMN IF NOT EXISTS conflict_group_id uuid;
+ALTER TABLE dossier_facts ADD COLUMN IF NOT EXISTS raw_value jsonb;
+ALTER TABLE dossier_facts ADD COLUMN IF NOT EXISTS normalized_value jsonb;
+ALTER TABLE dossier_facts ADD COLUMN IF NOT EXISTS normalization_method text;
+
+-- L'ancien index garantissait un seul fait actif par (dossier, clé). Avec les
+-- non-gagnants persistés, on doit restreindre la contrainte aux gagnants.
+-- DROP de l'ancien index avant d'en créer un plus précis — sans courte
+-- fenêtre de non-unicité car ils ciblent les mêmes lignes (tous les
+-- pré-Phase-1 ont is_winner=true par défaut).
+DROP INDEX IF EXISTS uniq_dossier_facts_active_key;
+CREATE UNIQUE INDEX IF NOT EXISTS uniq_dossier_facts_active_winner_key
+  ON dossier_facts(dossier_id, key)
+  WHERE superseded_at IS NULL AND is_winner = true;
+
+-- Index utiles pour : lister tous les candidats d'une clé donnée, et regrouper
+-- les contradictions à l'instruction.
+CREATE INDEX IF NOT EXISTS idx_dossier_facts_conflict_group
+  ON dossier_facts(conflict_group_id) WHERE conflict_group_id IS NOT NULL;
+`;
+
+// Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
+// d'une valeur d'enum tout juste ajoutée dans la même transaction. On reclasse
+// les dossiers historiquement créés en `permis_de_construire` vers PCMI quand
+// les natures stockées dans `metadata` indiquent une maison individuelle, et
+// les `certificat_urbanisme` génériques vers CUa/CUb selon le metadata.
+const BACKFILL_DOSSIER_TYPES = `
+UPDATE dossiers
+SET type = 'permis_de_construire_mi'
+WHERE type = 'permis_de_construire'
+  AND metadata ? 'natures'
+  AND (metadata->'natures') @> '["maison_neuve"]'::jsonb;
+
+UPDATE dossiers
+SET type = 'certificat_urbanisme_a'
+WHERE type = 'certificat_urbanisme'
+  AND metadata->>'certificatType' = 'a';
+
+UPDATE dossiers
+SET type = 'certificat_urbanisme_b'
+WHERE type = 'certificat_urbanisme'
+  AND (metadata->>'certificatType' IS DISTINCT FROM 'a');
 `;
 
 async function main() {
@@ -775,6 +1158,7 @@ async function main() {
   try {
     console.log("Running migrations...");
     await client.unsafe(SQL);
+    await client.unsafe(BACKFILL_DOSSIER_TYPES);
     console.log("Migrations complete.");
   } finally {
     await client.end();

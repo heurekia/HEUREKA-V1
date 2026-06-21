@@ -8,7 +8,7 @@
  */
 import { db, document_segments, document_segment_annotations } from "@heureka-v1/db";
 import { sql, eq, and, inArray } from "drizzle-orm";
-import { embedTexts } from "../db/embedder.ts";
+import { embedTexts, type EmbedOptions } from "../db/embedder.ts";
 
 export interface SearchParams {
   query: string;
@@ -19,6 +19,8 @@ export interface SearchParams {
   top_k?: number;
   /** Distance cosine maximale (1 - similarité). 0 = identique, 1 = orthogonal. */
   max_distance?: number;
+  /** Callback injecté par l'appelant pour tracer l'embedding de la requête. */
+  embed_options?: EmbedOptions;
 }
 
 export interface AnnotationHit {
@@ -49,9 +51,9 @@ export interface SearchHit {
 export async function searchSegments(p: SearchParams): Promise<SearchHit[]> {
   const topK = p.top_k ?? 5;
 
-  // 1. Embedding de la requête (input_type "query" — important : Voyage-3
-  // a deux espaces différents pour les documents et les requêtes).
-  const [queryEmbedding] = await embedTexts([p.query], "query");
+  // 1. Embedding de la requête. Mistral n'a qu'un seul espace (pas de
+  // dual-space document/query comme Voyage), même fonction des deux côtés.
+  const [queryEmbedding] = await embedTexts([p.query], p.embed_options);
   if (!queryEmbedding) return [];
 
   // 2. Recherche cosine en SQL. L'opérateur <=> de pgvector renvoie la
@@ -79,9 +81,12 @@ export async function searchSegments(p: SearchParams): Promise<SearchHit[]> {
 
   const filtered = rows.filter((r) => p.max_distance === undefined || r.distance <= p.max_distance);
 
-  // 3. Récupération des annotations VALIDÉES pour les chunks retenus, en un
-  // seul SELECT. Les brouillons et rejets sont exclus côté DB : c'est la
-  // garantie juridique qu'aucune note non-relue n'arrive dans le prompt.
+  // 3. Récupération des annotations pour les chunks retenus, en un seul
+  // SELECT. Deux gates cumulatifs côté DB :
+  //   - validation_status = 'valide'  → gate juridique (relue par un humain)
+  //   - visibility = 'shared'         → consentement explicite de l'auteur
+  //                                     à alimenter l'IA (vs note de travail)
+  // Les `note_perso` privées ne contaminent jamais un verdict.
   const segmentIds = filtered.map((r) => r.id);
   const annotationsBySegment = new Map<string, AnnotationHit[]>();
   if (segmentIds.length > 0) {
@@ -98,8 +103,15 @@ export async function searchSegments(p: SearchParams): Promise<SearchHit[]> {
       .where(and(
         inArray(document_segment_annotations.segment_id, segmentIds),
         eq(document_segment_annotations.validation_status, "valide"),
+        eq(document_segment_annotations.visibility, "shared"),
       ));
     for (const a of annRows) {
+      // 3.C.3 : les annotations PDF-level (segment_id null) ne sont pas
+      // routées au LLM via ce path — un matching texte/page sera ajouté
+      // plus tard pour les retrouver à côté du bon chunk. Le filtre
+      // inArray ci-dessus exclut déjà ces lignes côté SQL ; ce guard sert
+      // de garde-fou côté TS et reflète l'intention.
+      if (!a.segment_id) continue;
       const arr = annotationsBySegment.get(a.segment_id) ?? [];
       arr.push({
         id: a.id,

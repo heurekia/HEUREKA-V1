@@ -11,11 +11,14 @@
 
 export type DeadlineDossierType =
   | "permis_de_construire"
+  | "permis_de_construire_mi"
   | "declaration_prealable"
   | "permis_amenager"
   | "permis_demolir"
   | "permis_lotir"
-  | "certificat_urbanisme";
+  | "certificat_urbanisme"
+  | "certificat_urbanisme_a"
+  | "certificat_urbanisme_b";
 
 export interface DeadlineMetadata {
   natures?: string[];                    // ["maison_neuve", "agrandissement", …]
@@ -55,11 +58,14 @@ export interface DeadlineComputation {
 // Délai de droit commun par type, AVANT spécialisation (R.423-23 / R.410-9).
 const DEFAULT_MOIS: Record<DeadlineDossierType, number> = {
   permis_de_construire: 3,        // R.423-23 3° (autre que maison individuelle)
+  permis_de_construire_mi: 2,     // R.423-23 2° (maison individuelle)
   declaration_prealable: 1,       // R.423-23 1°
   permis_amenager: 3,             // R.423-23 3°
   permis_demolir: 2,              // R.423-23 2°
   permis_lotir: 3,                // R.423-23 3°
-  certificat_urbanisme: 2,        // R.410-9 — CUb opérationnel
+  certificat_urbanisme: 2,        // legacy — équivalent CUb
+  certificat_urbanisme_a: 1,      // R.410-9 al.1 — CUa informatif
+  certificat_urbanisme_b: 2,      // R.410-9 al.2 — CUb opérationnel
 };
 
 function isMaisonIndividuelle(natures: string[]): boolean {
@@ -118,6 +124,10 @@ export function computeInstructionDelay(
         baseArt = "R.423-23 3°";
       }
       break;
+    case "permis_de_construire_mi":
+      baseLabel = "PC maison individuelle";
+      baseArt = "R.423-23 2°";
+      break;
     case "declaration_prealable":
       baseLabel = "Déclaration préalable";
       baseArt = "R.423-23 1°";
@@ -135,7 +145,11 @@ export function computeInstructionDelay(
       baseArt = "R.423-23 2°";
       break;
     case "certificat_urbanisme":
-      if (metadata?.certificatType === "a") {
+    case "certificat_urbanisme_a":
+    case "certificat_urbanisme_b":
+      // Le type au niveau dossier prime ; le metadata.certificatType reste
+      // utilisé pour les rangées legacy stockées sous "certificat_urbanisme".
+      if (t === "certificat_urbanisme_a" || (t === "certificat_urbanisme" && metadata?.certificatType === "a")) {
         baseMois = 1;
         baseLabel = "CU informatif";
         baseArt = "R.410-9 al.1";
@@ -148,18 +162,27 @@ export function computeInstructionDelay(
   breakdown.push({ label: baseLabel, mois: baseMois, article: baseArt });
 
   // ── 2. Extensions automatiques (R.423-24 / 25 / 26) ──
-  // Patrimoine — ABF / sites / réserves / parcs nationaux : +1 mois
-  // On regroupe pour ne pas additionner deux fois la même cause patrimoniale.
+  // Patrimoine — ABF / SPR / sites / réserves : +1 mois
+  // Classification SUP officielle (cf. documentationEngine.ts SUP_LABELS) :
+  //   AC1 = Monuments historiques (avis ABF — L.621-* code du patrimoine)
+  //   AC2 = Sites classés ou inscrits (L.341-1 code de l'environnement)
+  //   AC3 = Réserves naturelles
+  //   AC4 = Sites patrimoniaux remarquables / AVAP / ZPPAUP (avis ABF —
+  //         L.632-1 code du patrimoine)
+  // Une seule extension patrimoine est ajoutée pour éviter d'empiler deux
+  // fois la même cause (ex. parcelle en AC1 + AC4 = un seul +1 mois ABF).
   const hasABF = hasServitude(sup, "AC1");
   const hasSiteClasse = hasServitude(sup, "AC2");
   const hasReserveNat = hasServitude(sup, "AC3");
-  const hasParcNat = hasServitude(sup, "AC4");
+  const hasSPR = hasServitude(sup, "AC4");
   if (hasABF) {
     breakdown.push({ label: "Périmètre ABF (Monuments Historiques)", mois: 1, article: "R.423-24 b)" });
+  } else if (hasSPR) {
+    breakdown.push({ label: "Site patrimonial remarquable (SPR/AVAP)", mois: 1, article: "R.423-24 b)" });
   } else if (hasSiteClasse) {
     breakdown.push({ label: "Site classé ou inscrit", mois: 1, article: "R.423-24 c)" });
-  } else if (hasReserveNat || hasParcNat) {
-    breakdown.push({ label: "Réserve naturelle / parc national", mois: 1, article: "R.423-24 d)" });
+  } else if (hasReserveNat) {
+    breakdown.push({ label: "Réserve naturelle", mois: 1, article: "R.423-24 d)" });
   }
 
   if (metadata?.secteurSauvegarde) {

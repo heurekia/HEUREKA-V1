@@ -1,11 +1,17 @@
 import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/MapLeaflet";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 import { RegulatoryChecklist } from "../../components/RegulatoryChecklist";
 import { PieceRegulatoryLinks } from "../../components/PieceRegulatoryLinks";
+import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
+import { ResizableSplit } from "../../components/ResizableSplit";
+import { PdfAnnotator } from "../../components/PdfAnnotator";
+import { useInstructionViewMode } from "../../hooks/useInstructionViewMode";
+import { useLocalStorageBool } from "../../hooks/useLocalStorageBool";
+import { linkifyArticles } from "../../utils/linkifyArticles";
 import {
   STATUS_LABELS as DOSSIER_STATUS_LABELS,
   primaryNextAction as primaryNextActionFor,
@@ -237,7 +243,7 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, sig
                     <div style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>Aucun résultat</div>
                   )}
                   {filtered.map(c => (
-                    <button key={c} onClick={() => { setCommune(c); setShowDrop(false); setSearch(""); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" as const, fontSize: 12, color: c === commune ? "#818cf8" : "#94a3b8", fontWeight: c === commune ? 600 : 400 }}>
+                    <button key={c} onClick={() => { const changed = c !== commune; setCommune(c); setShowDrop(false); setSearch(""); if (changed) setActive("Tableau de bord"); }} style={{ display: "flex", alignItems: "center", gap: 8, padding: "9px 12px", width: "100%", border: "none", background: "none", cursor: "pointer", textAlign: "left" as const, fontSize: 12, color: c === commune ? "#818cf8" : "#94a3b8", fontWeight: c === commune ? 600 : 400 }}>
                       <BuildingIcon size={12} />
                       <span style={{ flex: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{c}</span>
                       {c === commune && <span style={{ color: "#818cf8", flexShrink: 0 }}>✓</span>}
@@ -364,7 +370,7 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
   useEffect(() => {
     if (searchQuery.length <= 1) { setSearchResults([]); return; }
     const timer = setTimeout(() => {
-      const qs = commune ? `search=${encodeURIComponent(searchQuery)}&commune=${encodeURIComponent(commune)}` : `search=${encodeURIComponent(searchQuery)}`;
+      const qs = commune ? `search=${encodeURIComponent(searchQuery)}&commune=${encodeURIComponent(commune)}&limit=8` : `search=${encodeURIComponent(searchQuery)}&limit=8`;
       api.get<ApiDossier[]>(`/mairie/dossiers?${qs}`)
         .then(data => setSearchResults(data.slice(0, 8)))
         .catch(() => setSearchResults([]));
@@ -512,12 +518,15 @@ const STATUS_LABEL: Record<string, string> = {
 };
 
 const TYPE_LABEL: Record<string, string> = {
-  permis_de_construire: "Permis de construire",
+  permis_de_construire: "Permis de construire (PC)",
+  permis_de_construire_mi: "Permis de construire — Maison individuelle (PCMI)",
   declaration_prealable: "Déclaration préalable",
   permis_amenager: "Permis d'aménager",
   permis_demolir: "Permis de démolir",
   permis_lotir: "Permis de lotir",
   certificat_urbanisme: "Certificat d'urbanisme",
+  certificat_urbanisme_a: "Certificat d'urbanisme informatif (CUa)",
+  certificat_urbanisme_b: "Certificat d'urbanisme opérationnel (CUb)",
 };
 
 function fmtDate(d: string | Date | null | undefined): string {
@@ -532,6 +541,10 @@ type ApiDossier = {
   demandeur: string;
   instructeur_id?: string | null;
   instructeur?: string | null;
+  // Vrai tant qu'une pièce du dossier est encore `pending`/`processing` côté
+  // worker OCR. La ligne est alors grisée et non cliquable dans la liste, et
+  // le détail renvoie 423.
+  ocr_processing?: boolean;
 };
 
 function StatusBadge({ status }: { status: string }) {
@@ -759,6 +772,9 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   const [apiDossiers, setApiDossiers] = useState<ApiDossier[]>([]);
   const [loading, setLoading] = useState(true);
   const [showColPicker, setShowColPicker] = useState(false);
+  const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  const [rowActionBusy, setRowActionBusy] = useState(false);
+  const [refreshKey, setRefreshKey] = useState(0);
 
   type ColKey = "petitionnaire" | "adresse" | "type" | "statut" | "date_depot" | "echeance" | "instructeur";
   const ALL_COLS: { key: ColKey; label: string }[] = [
@@ -797,7 +813,7 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   // Re-fetch when commune or scope changes; compute deadlines on first load
   useEffect(() => {
     setLoading(true);
-    const params = new URLSearchParams({ commune });
+    const params = new URLSearchParams({ commune, limit: "500" });
     if (scope === "mine") params.set("mine", "true");
     else if (scope === "unassigned") params.set("unassigned", "true");
     fetch("/api/mairie/admin/compute-deadlines", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } })
@@ -808,7 +824,7 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
           .catch(() => {})
           .finally(() => setLoading(false));
       });
-  }, [commune, scope]);
+  }, [commune, scope, refreshKey]);
 
   const allRows = apiDossiers.map(d => ({
     id: d.id,
@@ -821,6 +837,9 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
     ech: fmtDate(d.date_limite_instruction),
     dateDepot: fmtDate(d.date_depot),
     instructeur: d.instructeur ?? null,
+    // Tant que l'OCR/IA tourne sur une pièce, on grise la ligne et on bloque
+    // l'ouverture — l'instructeur sera notifié quand tout sera prêt.
+    ocrProcessing: !!d.ocr_processing,
   }));
 
   const tabCounts: Record<string, number> = Object.fromEntries(
@@ -986,15 +1005,33 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
             ) : rows.length === 0 ? (
               <tr><td colSpan={colSpan} style={{ padding: "24px 16px", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Aucun dossier trouvé</td></tr>
             ) : rows.map((r) => (
-              <tr key={r.id} style={{ borderBottom: "1px solid #F1F5F9", cursor: "pointer" }}
-                onClick={() => onDossierClick({ id: r.id, numero: r.numero, type: r.type, petitionnaire: r.pet, adresse: r.addr, status: r.statusRaw, echeance: r.ech, date_depot: r.dateDepot })}
-                onMouseEnter={e => (e.currentTarget.style.background = "#F8FAFC")}
-                onMouseLeave={e => (e.currentTarget.style.background = "white")}>
-                <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 600, color: "#4F46E5" }}>{r.numero}</td>
+              <tr key={r.id} style={{
+                borderBottom: "1px solid #F1F5F9",
+                cursor: r.ocrProcessing ? "not-allowed" : "pointer",
+                background: r.ocrProcessing ? "#F8FAFC" : "white",
+                opacity: r.ocrProcessing ? 0.75 : 1,
+              }}
+                onClick={() => {
+                  if (r.ocrProcessing) return;
+                  onDossierClick({ id: r.id, numero: r.numero, type: r.type, petitionnaire: r.pet, adresse: r.addr, status: r.statusRaw, echeance: r.ech, date_depot: r.dateDepot });
+                }}
+                onMouseEnter={e => { if (!r.ocrProcessing) e.currentTarget.style.background = "#F8FAFC"; }}
+                onMouseLeave={e => { if (!r.ocrProcessing) e.currentTarget.style.background = "white"; }}
+                title={r.ocrProcessing ? "Analyse OCR/IA des pièces en cours — le dossier sera ouvert dès qu'il sera prêt (notification dans la cloche)." : undefined}>
+                <td style={{ padding: "12px 16px", fontSize: 13, fontWeight: 600, color: r.ocrProcessing ? "#94A3B8" : "#4F46E5" }}>{r.numero}</td>
                 {visibleCols.has("petitionnaire") && <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.pet}</td>}
                 {visibleCols.has("adresse") && <td style={{ padding: "12px 16px", fontSize: 13, color: "#64748b", maxWidth: 200, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{r.addr}</td>}
                 {visibleCols.has("type") && <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.type}</td>}
-                {visibleCols.has("statut") && <td style={{ padding: "12px 16px" }}><StatusBadge status={r.statusRaw} /></td>}
+                {visibleCols.has("statut") && <td style={{ padding: "12px 16px" }}>
+                  {r.ocrProcessing ? (
+                    <span style={{ background: "#F0F9FF", color: "#075985", borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 6 }}>
+                      <span style={{ width: 8, height: 8, borderRadius: "50%", background: "#38BDF8", display: "inline-block" }} />
+                      Chargement en cours…
+                    </span>
+                  ) : (
+                    <StatusBadge status={r.statusRaw} />
+                  )}
+                </td>}
                 {visibleCols.has("date_depot") && <td style={{ padding: "12px 16px", fontSize: 13, color: "#374151" }}>{r.dateDepot || <span style={{ color: "#CBD5E1" }}>—</span>}</td>}
                 {visibleCols.has("echeance") && (
                   <td style={{ padding: "12px 16px", fontSize: 13 }}>
@@ -1012,8 +1049,60 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
                     {r.instructeur ?? "Non assigné"}
                   </td>
                 )}
-                <td style={{ padding: "12px 16px" }}>
-                  <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }} onClick={e => e.stopPropagation()}><DotsIcon /></button>
+                <td style={{ padding: "12px 16px", position: "relative" }}>
+                  <button
+                    style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4, borderRadius: 4 }}
+                    onClick={e => { e.stopPropagation(); setMenuOpenId(prev => prev === r.id ? null : r.id); }}
+                    aria-label="Actions du dossier"
+                  >
+                    <DotsIcon />
+                  </button>
+                  {menuOpenId === r.id && (
+                    <>
+                      <div
+                        onClick={e => { e.stopPropagation(); setMenuOpenId(null); }}
+                        style={{ position: "fixed", inset: 0, zIndex: 98 }}
+                      />
+                      <div
+                        onClick={e => e.stopPropagation()}
+                        style={{ position: "absolute", right: 12, top: 38, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, padding: 4, zIndex: 99, minWidth: 200, boxShadow: "0 8px 24px rgba(0,0,0,0.10)" }}
+                      >
+                        <button
+                          onClick={async () => {
+                            try { await navigator.clipboard.writeText(r.numero); } catch {}
+                            setMenuOpenId(null);
+                          }}
+                          style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: "8px 10px", fontSize: 13, color: "#374151", cursor: "pointer", borderRadius: 6 }}
+                          onMouseEnter={e => (e.currentTarget.style.background = "#F1F5F9")}
+                          onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                        >
+                          Copier le N° de dossier
+                        </button>
+                        {isSupervisor && r.instructeur && (
+                          <button
+                            disabled={rowActionBusy}
+                            onClick={async () => {
+                              setRowActionBusy(true);
+                              try {
+                                await api.delete(`/mairie/dossiers/${r.id}/assign`);
+                                setRefreshKey(k => k + 1);
+                              } catch (err) {
+                                alert(err instanceof Error ? err.message : "Désassignation impossible");
+                              } finally {
+                                setRowActionBusy(false);
+                                setMenuOpenId(null);
+                              }
+                            }}
+                            style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: "8px 10px", fontSize: 13, color: "#B91C1C", cursor: rowActionBusy ? "wait" : "pointer", borderRadius: 6, opacity: rowActionBusy ? 0.6 : 1 }}
+                            onMouseEnter={e => (e.currentTarget.style.background = "#FEF2F2")}
+                            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                          >
+                            Désassigner l'instructeur
+                          </button>
+                        )}
+                      </div>
+                    </>
+                  )}
                 </td>
               </tr>
             ))}
@@ -2861,8 +2950,10 @@ function CalendrierScreen({ commune }: { commune: string }) {
     accepte: "Accepté", refuse: "Refusé", accord_prescription: "Accord", brouillon: "Brouillon",
   };
   const TYPE_SHORT: Record<string, string> = {
-    permis_de_construire: "PC", declaration_prealable: "DP", permis_amenager: "PA",
-    permis_demolir: "PD", permis_lotir: "PL", certificat_urbanisme: "CU",
+    permis_de_construire: "PC", permis_de_construire_mi: "PCMI",
+    declaration_prealable: "DP", permis_amenager: "PA",
+    permis_demolir: "PD", permis_lotir: "PL",
+    certificat_urbanisme: "CU", certificat_urbanisme_a: "CUa", certificat_urbanisme_b: "CUb",
   };
 
   type DossierRow = {
@@ -2880,7 +2971,7 @@ function CalendrierScreen({ commune }: { commune: string }) {
   });
 
   useEffect(() => {
-    fetch(`/api/mairie/dossiers?commune=${encodeURIComponent(commune)}`, { credentials: "include" })
+    fetch(`/api/mairie/dossiers?commune=${encodeURIComponent(commune)}&limit=500`, { credentials: "include" })
       .then(r => r.json())
       .then((data: unknown) => setDossiers(Array.isArray(data) ? data as DossierRow[] : []))
       .catch(() => {});
@@ -3132,9 +3223,74 @@ function CalendrierScreen({ commune }: { commune: string }) {
   );
 }
 
+// ── Statistiques ─────────────────────────────────────────────────────────────
+
+const TYPE_LABELS: Record<string, { full: string; short: string }> = {
+  permis_de_construire:    { full: "Permis de construire",      short: "PC" },
+  permis_de_construire_mi: { full: "Permis de construire (MI)", short: "PCMI" },
+  declaration_prealable:   { full: "Déclaration préalable",     short: "DP" },
+  permis_amenager:         { full: "Permis d'aménager",         short: "PA" },
+  permis_demolir:          { full: "Permis de démolir",         short: "PD" },
+  permis_lotir:            { full: "Permis de lotir",           short: "PL" },
+  certificat_urbanisme:    { full: "Certificat d'urbanisme",    short: "CU" },
+  certificat_urbanisme_a:  { full: "Certificat d'urbanisme (a)", short: "CUa" },
+  certificat_urbanisme_b:  { full: "Certificat d'urbanisme (b)", short: "CUb" },
+};
+const TYPE_COLORS = ["#4F46E5", "#6366F1", "#818CF8", "#A5B4FC", "#C7D2FE", "#8B5CF6", "#22C55E", "#F97316", "#EC4899"];
+
+const DECISION_META: Record<string, { label: string; color: string }> = {
+  accepte:              { label: "Accordé",          color: "#22C55E" },
+  refuse:               { label: "Refusé",           color: "#EF4444" },
+  accord_prescription:  { label: "Accord avec prescriptions", color: "#F97316" },
+};
+
+const MOIS_COURTS = ["Jan", "Fév", "Mar", "Avr", "Mai", "Jun", "Jul", "Aoû", "Sep", "Oct", "Nov", "Déc"];
+const formatMoisCourt = (yyyymm: string) => {
+  const m = parseInt(yyyymm.slice(5, 7), 10);
+  return MOIS_COURTS[m - 1] ?? yyyymm;
+};
+
+type StatsKpis = {
+  traites: number; acceptes: number; delai_moyen: number | null;
+  taux_acceptation: number | null; en_retard: number; en_retard_pct: number | null; total: number;
+};
+type StatsResponse = {
+  kpis: StatsKpis;
+  par_mois: { mois: string; count: number }[];
+  par_type: { type: string; count: number; acceptes: number; refuses: number; delai_moyen: number | null }[];
+  resultats_decisions: { status: string; count: number; pct: number }[];
+};
+type DelaisResponse = {
+  delai_par_type: { type: string; delai_moyen: number | null; delai_legal: number | null }[];
+  evolution: { mois: string; delai_moyen: number }[];
+  en_retard: {
+    id: string; numero: string; type: string; petitionnaire: string | null;
+    delai_legal: number | null; delai_ecoule: number | null; depassement: number | null; status: string;
+  }[];
+};
+type ServicesResponse = {
+  name: string; consultations: number; retours: number; en_attente: number;
+  delai_retour_moy: number | null; taux_reponse: number;
+}[];
+
 function StatistiquesScreen({ commune }: { commune: string }) {
   const [stab, setStab] = useState("Vue générale");
   const tabs = ["Vue générale", "Délais", "Types de dossiers", "Services"];
+
+  const [stats, setStats] = useState<StatsResponse | null>(null);
+  const [delais, setDelais] = useState<DelaisResponse | null>(null);
+  const [services, setServices] = useState<ServicesResponse | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    const q = commune ? `?commune=${encodeURIComponent(commune)}` : "";
+    Promise.all([
+      api.get<StatsResponse>(`/mairie/stats${q}`).then(setStats).catch(() => setStats(null)),
+      api.get<DelaisResponse>(`/mairie/stats/delais${q}`).then(setDelais).catch(() => setDelais(null)),
+      api.get<ServicesResponse>(`/mairie/stats/services${q}`).then(setServices).catch(() => setServices(null)),
+    ]).finally(() => setLoading(false));
+  }, [commune]);
 
   // Simple SVG bar chart
   const BarChart = ({ data }: { data: { label: string; value: number; color: string }[] }) => {
@@ -3152,29 +3308,34 @@ function StatistiquesScreen({ commune }: { commune: string }) {
     );
   };
 
-  const monthlyData = [
-    { label: "Jan", value: 18, color: "#4F46E5" }, { label: "Fév", value: 22, color: "#4F46E5" },
-    { label: "Mar", value: 31, color: "#4F46E5" }, { label: "Avr", value: 27, color: "#4F46E5" },
-    { label: "Mai", value: 35, color: "#4F46E5" }, { label: "Jun", value: 29, color: "#4F46E5" },
-    { label: "Jul", value: 24, color: "#4F46E5" }, { label: "Aoû", value: 19, color: "#4F46E5" },
-    { label: "Sep", value: 38, color: "#4F46E5" }, { label: "Oct", value: 42, color: "#4F46E5" },
-    { label: "Nov", value: 33, color: "#4F46E5" }, { label: "Déc", value: 28, color: "#4F46E5" },
-  ];
-
-  const typeData = [
-    { label: "PC", value: 48, color: "#4F46E5" },
-    { label: "DP", value: 67, color: "#6366F1" },
-    { label: "PA", value: 12, color: "#818CF8" },
-    { label: "CU", value: 23, color: "#A5B4FC" },
-    { label: "Autre", value: 9, color: "#C7D2FE" },
-  ];
-
+  const k = stats?.kpis;
   const kpis = [
-    { label: "Dossiers traités", value: "159", sub: "+12% vs mois dernier", color: "#4F46E5", bg: "#EEF2FF", icon: "📁" },
-    { label: "Délai moyen", value: "38j", sub: "Objectif : 45j", color: "#22C55E", bg: "#F0FDF4", icon: "⏱" },
-    { label: "Taux d'acceptation", value: "74%", sub: "118 acceptés / 159", color: "#F97316", bg: "#FFF7ED", icon: "✅" },
-    { label: "Dossiers en retard", value: "8", sub: "5% du total", color: "#EF4444", bg: "#FEF2F2", icon: "⚠️" },
+    { label: "Dossiers traités", value: k ? String(k.traites) : "–", sub: k ? `${k.total} dossiers au total` : "", color: "#4F46E5", bg: "#EEF2FF", icon: "📁" },
+    { label: "Délai moyen", value: k?.delai_moyen != null ? `${k.delai_moyen}j` : "–", sub: "Sur les dossiers délivrés", color: "#22C55E", bg: "#F0FDF4", icon: "⏱" },
+    { label: "Taux d'acceptation", value: k?.taux_acceptation != null ? `${k.taux_acceptation}%` : "–", sub: k && k.traites > 0 ? `${k.acceptes} acceptés / ${k.traites}` : "", color: "#F97316", bg: "#FFF7ED", icon: "✅" },
+    { label: "Dossiers en retard", value: k ? String(k.en_retard) : "–", sub: k?.en_retard_pct != null ? `${k.en_retard_pct}% du total` : "", color: "#EF4444", bg: "#FEF2F2", icon: "⚠️" },
   ];
+
+  const monthlyData = (stats?.par_mois ?? []).map((m) => ({ label: formatMoisCourt(m.mois), value: m.count, color: "#4F46E5" }));
+  const annee = stats?.par_mois?.[stats.par_mois.length - 1]?.mois?.slice(0, 4) ?? "";
+  const totalAnnee = monthlyData.reduce((s, m) => s + m.value, 0);
+
+  const typeData = (stats?.par_type ?? []).map((t, i) => ({
+    label: TYPE_LABELS[t.type]?.short ?? t.type,
+    value: t.count,
+    color: TYPE_COLORS[i % TYPE_COLORS.length] ?? "#4F46E5",
+  }));
+  const totalTypes = typeData.reduce((s, t) => s + t.value, 0) || 1;
+
+  const EVO_PALETTE = ["#C7D2FE", "#A5B4FC", "#818CF8", "#6366F1", "#4F46E5", "#4338CA"];
+  const evolutionData = (delais?.evolution ?? []).slice(-6).map((e, i) => ({
+    label: formatMoisCourt(e.mois),
+    value: e.delai_moyen,
+    color: EVO_PALETTE[i] ?? "#4F46E5",
+  }));
+  const evoFirst = evolutionData[0]?.value ?? 0;
+  const evoLast = evolutionData[evolutionData.length - 1]?.value ?? 0;
+  const evoDeltaPct = evoFirst > 0 ? Math.round(((evoLast - evoFirst) / evoFirst) * 100) : 0;
 
   return (
     <div style={{ padding: 24 }}>
@@ -3183,221 +3344,236 @@ function StatistiquesScreen({ commune }: { commune: string }) {
         <p style={{ color: "#64748b", fontSize: 13 }}>Analysez l'activité et les performances de traitement des dossiers.</p>
       </div>
 
-      {/* KPI cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 24 }}>
-        {kpis.map(k => (
-          <div key={k.label} style={{ background: "white", borderRadius: 12, padding: 20, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
-            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
-              <div style={{ width: 40, height: 40, borderRadius: 10, background: k.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{k.icon}</div>
-            </div>
-            <div style={{ fontSize: 26, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>{k.value}</div>
-            <div style={{ fontSize: 13, color: "#64748b", marginBottom: 4 }}>{k.label}</div>
-            <div style={{ fontSize: 11, color: k.color, fontWeight: 600 }}>{k.sub}</div>
-          </div>
-        ))}
-      </div>
-
-      {/* Tabs */}
-      <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #E2E8F0", marginBottom: 20 }}>
-        {tabs.map(t => (
-          <button key={t} onClick={() => setStab(t)} style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: stab === t ? 600 : 400, color: stab === t ? "#4F46E5" : "#64748b", borderBottom: stab === t ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>{t}</button>
-        ))}
-      </div>
-
-      {stab === "Vue générale" && (
-        <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Dossiers déposés par mois — 2024</div>
-            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>346 dossiers au total cette année</div>
-            <BarChart data={monthlyData} />
-          </div>
-          <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Répartition par type</div>
-              {typeData.map(t => (
-                <div key={t.label} style={{ marginBottom: 10 }}>
-                  <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                    <span style={{ fontSize: 12, color: "#374151" }}>{t.label === "PC" ? "Permis de construire" : t.label === "DP" ? "Déclaration préalable" : t.label === "PA" ? "Permis d'aménager" : t.label === "CU" ? "Certificat d'urbanisme" : "Autre"}</span>
-                    <span style={{ fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{t.value}</span>
-                  </div>
-                  <div style={{ height: 6, background: "#F1F5F9", borderRadius: 3, overflow: "hidden" }}>
-                    <div style={{ height: "100%", width: `${(t.value / 159) * 100}%`, background: t.color, borderRadius: 3 }} />
-                  </div>
+      {loading && !stats ? (
+        <div style={{ textAlign: "center", padding: 60, color: "#94a3b8", fontSize: 13 }}>Chargement…</div>
+      ) : (
+        <>
+          {/* KPI cards */}
+          <div style={{ display: "grid", gridTemplateColumns: "repeat(4,1fr)", gap: 12, marginBottom: 24 }}>
+            {kpis.map(kp => (
+              <div key={kp.label} style={{ background: "white", borderRadius: 12, padding: 20, border: "1px solid #E2E8F0", boxShadow: "0 1px 3px rgba(0,0,0,0.04)" }}>
+                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 12 }}>
+                  <div style={{ width: 40, height: 40, borderRadius: 10, background: kp.bg, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 18 }}>{kp.icon}</div>
                 </div>
-              ))}
-            </div>
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
-              <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Résultats des décisions</div>
-              {[{ label: "Accordé", n: 118, color: "#22C55E", pct: 74 }, { label: "Refusé", n: 28, color: "#EF4444", pct: 18 }, { label: "Sursis à statuer", n: 13, color: "#F97316", pct: 8 }].map(r => (
-                <div key={r.label} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
-                  <span style={{ width: 8, height: 8, borderRadius: "50%", background: r.color, flexShrink: 0, display: "inline-block" }} />
-                  <span style={{ fontSize: 12, color: "#374151", flex: 1 }}>{r.label}</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{r.n}</span>
-                  <span style={{ fontSize: 11, color: "#94a3b8", width: 32, textAlign: "right" }}>{r.pct}%</span>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-      )}
-
-      {stab === "Délais" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Délais moyens par type</div>
-            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Comparaison avec les délais légaux</div>
-            {[
-              { type: "Permis de construire", current: 52, legal: 90, color: "#22C55E" },
-              { type: "Déclaration préalable", current: 24, legal: 30, color: "#F97316" },
-              { type: "Permis d'aménager", current: 68, legal: 90, color: "#22C55E" },
-              { type: "Certificat d'urbanisme", current: 18, legal: 30, color: "#22C55E" },
-              { type: "Permis de démolir", current: 28, legal: 60, color: "#22C55E" },
-            ].map(d => (
-              <div key={d.type} style={{ marginBottom: 14 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
-                  <span style={{ fontSize: 12, color: "#374151" }}>{d.type}</span>
-                  <span style={{ fontSize: 12, fontWeight: 600, color: d.color }}>{d.current}j <span style={{ color: "#94a3b8", fontWeight: 400 }}>/ {d.legal}j légal</span></span>
-                </div>
-                <div style={{ height: 8, background: "#F1F5F9", borderRadius: 4, overflow: "hidden" }}>
-                  <div style={{ height: "100%", width: `${(d.current / d.legal) * 100}%`, background: d.color, borderRadius: 4 }} />
-                </div>
+                <div style={{ fontSize: 26, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>{kp.value}</div>
+                <div style={{ fontSize: 13, color: "#64748b", marginBottom: 4 }}>{kp.label}</div>
+                <div style={{ fontSize: 11, color: kp.color, fontWeight: 600 }}>{kp.sub}</div>
               </div>
             ))}
           </div>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Évolution du délai moyen</div>
-            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>6 derniers mois (jours)</div>
-            <BarChart data={[
-              { label: "Déc", value: 44, color: "#C7D2FE" }, { label: "Jan", value: 41, color: "#A5B4FC" },
-              { label: "Fév", value: 43, color: "#818CF8" }, { label: "Mar", value: 39, color: "#6366F1" },
-              { label: "Avr", value: 36, color: "#4F46E5" }, { label: "Mai", value: 38, color: "#4338CA" },
-            ]} />
-            <div style={{ marginTop: 16, padding: 12, background: "#F0FDF4", borderRadius: 8, fontSize: 12, color: "#15803D", fontWeight: 500 }}>
-              ↓ Amélioration de 14% en 6 mois — objectif 45j maintenu
-            </div>
-          </div>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20, gridColumn: "1 / -1" }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Dossiers dépassant les délais légaux</div>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ background: "#F8FAFC" }}>
-                  {["N° Dossier","Type","Pétitionnaire","Délai légal","Délai écoulé","Dépassement","Statut"].map(h => (
-                    <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  { id: "PC-2023-0567", type: "PC", pet: "Marie Bernard", legal: "90j", elapsed: "98j", over: "+8j" },
-                  { id: "DP-2024-0111", type: "DP", pet: "Lucas Morel", legal: "30j", elapsed: "38j", over: "+8j" },
-                  { id: "PC-2023-0412", type: "PC", pet: "SCI Horizon", legal: "90j", elapsed: "94j", over: "+4j" },
-                ].map(r => (
-                  <tr key={r.id} style={{ borderBottom: "1px solid #F1F5F9" }}>
-                    <td style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#4F46E5" }}>{r.id}</td>
-                    <td style={{ padding: "10px 12px", fontSize: 12, color: "#374151" }}>{r.type}</td>
-                    <td style={{ padding: "10px 12px", fontSize: 12, color: "#374151" }}>{r.pet}</td>
-                    <td style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>{r.legal}</td>
-                    <td style={{ padding: "10px 12px", fontSize: 12, color: "#374151" }}>{r.elapsed}</td>
-                    <td style={{ padding: "10px 12px" }}><span style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 11, fontWeight: 700, borderRadius: 6, padding: "2px 8px" }}>{r.over}</span></td>
-                    <td style={{ padding: "10px 12px" }}><StatusBadge status="En retard" /></td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
 
-      {stab === "Types de dossiers" && (
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 16 }}>Volume par type de dossier</div>
-            <BarChart data={typeData} />
+          {/* Tabs */}
+          <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #E2E8F0", marginBottom: 20 }}>
+            {tabs.map(t => (
+              <button key={t} onClick={() => setStab(t)} style={{ border: "none", background: "none", padding: "8px 16px", fontSize: 13, fontWeight: stab === t ? 600 : 400, color: stab === t ? "#4F46E5" : "#64748b", borderBottom: stab === t ? "2px solid #4F46E5" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>{t}</button>
+            ))}
           </div>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 16 }}>Détail par type</div>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr>
-                  {["Type","Déposés","Accordés","Refusés","Délai moy."].map(h => (
-                    <th key={h} style={{ padding: "6px 8px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  { type: "Permis de construire", n: 48, acc: 36, ref: 9, delay: "52j" },
-                  { type: "Déclaration préalable", n: 67, acc: 54, ref: 11, delay: "24j" },
-                  { type: "Permis d'aménager", n: 12, acc: 10, ref: 2, delay: "68j" },
-                  { type: "Certificat d'urbanisme", n: 23, acc: 16, ref: 4, delay: "18j" },
-                  { type: "Autre", n: 9, acc: 2, ref: 2, delay: "–" },
-                ].map(r => (
-                  <tr key={r.type} style={{ borderBottom: "1px solid #F8FAFC" }}>
-                    <td style={{ padding: "8px", fontSize: 12, color: "#374151" }}>{r.type}</td>
-                    <td style={{ padding: "8px", fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{r.n}</td>
-                    <td style={{ padding: "8px", fontSize: 12, color: "#22C55E", fontWeight: 600 }}>{r.acc}</td>
-                    <td style={{ padding: "8px", fontSize: 12, color: "#EF4444", fontWeight: 600 }}>{r.ref}</td>
-                    <td style={{ padding: "8px", fontSize: 12, color: "#64748b" }}>{r.delay}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20, gridColumn: "1 / -1" }}>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 16 }}>Tendance mensuelle par type (2024)</div>
-            <div style={{ display: "flex", gap: 12, flexWrap: "wrap" }}>
-              {[["Permis de construire","#4F46E5"],["Déclaration préalable","#22C55E"],["Permis d'aménager","#F97316"],["Certificat d'urbanisme","#8B5CF6"]].map(([l,c]) => (
-                <div key={l} style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#64748b" }}>
-                  <span style={{ width: 10, height: 10, borderRadius: 2, background: c, display: "inline-block" }} />{l}
-                </div>
-              ))}
-            </div>
-            <div style={{ marginTop: 12, height: 8, background: "linear-gradient(90deg, #EEF2FF 0%, #4F46E5 100%)", borderRadius: 4, opacity: 0.3 }} />
-            <div style={{ marginTop: 8, fontSize: 12, color: "#94a3b8", textAlign: "center" }}>Graphique linéaire — à connecter aux données réelles</div>
-          </div>
-        </div>
-      )}
 
-      {stab === "Services" && (
-        <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-          <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Consultations par service</div>
-          <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Nombre de consultations envoyées et délais de retour moyens</div>
-          <table style={{ width: "100%", borderCollapse: "collapse" }}>
-            <thead>
-              <tr style={{ background: "#F8FAFC" }}>
-                {["Service","Consultations","Retours reçus","En attente","Délai retour moy.","Taux de réponse"].map(h => (
-                  <th key={h} style={{ padding: "9px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {[
-                { service: "ABF – Architecte des Bâtiments de France", n: 42, ret: 38, att: 4, delay: "18j", taux: "90%" },
-                { service: "SDIS – Service Incendie", n: 67, ret: 65, att: 2, delay: "12j", taux: "97%" },
-                { service: "Métropole / Agglo", n: 28, ret: 22, att: 6, delay: "24j", taux: "79%" },
-                { service: "DREAL – Environnement", n: 19, ret: 16, att: 3, delay: "31j", taux: "84%" },
-                { service: "Service des Eaux", n: 33, ret: 33, att: 0, delay: "8j", taux: "100%" },
-                { service: "Direction Voirie", n: 15, ret: 12, att: 3, delay: "21j", taux: "80%" },
-              ].map(r => (
-                <tr key={r.service} style={{ borderBottom: "1px solid #F1F5F9" }}>
-                  <td style={{ padding: "10px 12px", fontSize: 12, fontWeight: 500, color: "#374151" }}>{r.service}</td>
-                  <td style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{r.n}</td>
-                  <td style={{ padding: "10px 12px", fontSize: 12, color: "#22C55E", fontWeight: 600 }}>{r.ret}</td>
-                  <td style={{ padding: "10px 12px", fontSize: 12, color: r.att > 0 ? "#F97316" : "#22C55E", fontWeight: 600 }}>{r.att}</td>
-                  <td style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>{r.delay}</td>
-                  <td style={{ padding: "10px 12px" }}>
-                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                      <div style={{ flex: 1, height: 6, background: "#F1F5F9", borderRadius: 3, overflow: "hidden" }}>
-                        <div style={{ height: "100%", width: r.taux, background: parseInt(r.taux) >= 90 ? "#22C55E" : parseInt(r.taux) >= 80 ? "#F97316" : "#EF4444", borderRadius: 3 }} />
+          {stab === "Vue générale" && (
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 16 }}>
+              <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Dossiers déposés par mois{annee ? ` — ${annee}` : ""}</div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>{totalAnnee} dossier{totalAnnee > 1 ? "s" : ""} sur les 12 derniers mois</div>
+                {monthlyData.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: 40, color: "#94a3b8", fontSize: 12 }}>Aucun dossier déposé sur la période</div>
+                ) : (
+                  <BarChart data={monthlyData} />
+                )}
+              </div>
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Répartition par type</div>
+                  {(stats?.par_type ?? []).length === 0 ? (
+                    <div style={{ textAlign: "center", padding: 20, color: "#94a3b8", fontSize: 12 }}>Aucun dossier</div>
+                  ) : (
+                    (stats?.par_type ?? []).map((t, i) => (
+                      <div key={t.type} style={{ marginBottom: 10 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                          <span style={{ fontSize: 12, color: "#374151" }}>{TYPE_LABELS[t.type]?.full ?? t.type}</span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{t.count}</span>
+                        </div>
+                        <div style={{ height: 6, background: "#F1F5F9", borderRadius: 3, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${(t.count / totalTypes) * 100}%`, background: TYPE_COLORS[i % TYPE_COLORS.length], borderRadius: 3 }} />
+                        </div>
                       </div>
-                      <span style={{ fontSize: 11, fontWeight: 600, color: "#374151", width: 32 }}>{r.taux}</span>
-                    </div>
-                  </td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
+                    ))
+                  )}
+                </div>
+                <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Résultats des décisions</div>
+                  {(stats?.resultats_decisions ?? []).length === 0 ? (
+                    <div style={{ textAlign: "center", padding: 20, color: "#94a3b8", fontSize: 12 }}>Aucune décision</div>
+                  ) : (
+                    (stats?.resultats_decisions ?? []).map((r) => {
+                      const meta = DECISION_META[r.status] ?? { label: r.status, color: "#94a3b8" };
+                      return (
+                        <div key={r.status} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 8 }}>
+                          <span style={{ width: 8, height: 8, borderRadius: "50%", background: meta.color, flexShrink: 0, display: "inline-block" }} />
+                          <span style={{ fontSize: 12, color: "#374151", flex: 1 }}>{meta.label}</span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{r.count}</span>
+                          <span style={{ fontSize: 11, color: "#94a3b8", width: 32, textAlign: "right" }}>{r.pct}%</span>
+                        </div>
+                      );
+                    })
+                  )}
+                </div>
+              </div>
+            </div>
+          )}
+
+          {stab === "Délais" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Délais moyens par type</div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Comparaison avec les délais légaux</div>
+                {(delais?.delai_par_type ?? []).filter((d) => d.delai_moyen != null && d.delai_legal != null).length === 0 ? (
+                  <div style={{ textAlign: "center", padding: 20, color: "#94a3b8", fontSize: 12 }}>Aucun dossier délivré sur la période</div>
+                ) : (
+                  (delais?.delai_par_type ?? []).map((d) => {
+                    if (d.delai_moyen == null || d.delai_legal == null) return null;
+                    const ratio = d.delai_moyen / d.delai_legal;
+                    const color = ratio > 1 ? "#EF4444" : ratio > 0.8 ? "#F97316" : "#22C55E";
+                    return (
+                      <div key={d.type} style={{ marginBottom: 14 }}>
+                        <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 4 }}>
+                          <span style={{ fontSize: 12, color: "#374151" }}>{TYPE_LABELS[d.type]?.full ?? d.type}</span>
+                          <span style={{ fontSize: 12, fontWeight: 600, color }}>{d.delai_moyen}j <span style={{ color: "#94a3b8", fontWeight: 400 }}>/ {d.delai_legal}j légal</span></span>
+                        </div>
+                        <div style={{ height: 8, background: "#F1F5F9", borderRadius: 4, overflow: "hidden" }}>
+                          <div style={{ height: "100%", width: `${Math.min(100, ratio * 100)}%`, background: color, borderRadius: 4 }} />
+                        </div>
+                      </div>
+                    );
+                  })
+                )}
+              </div>
+              <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Évolution du délai moyen</div>
+                <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>6 derniers mois (jours)</div>
+                {evolutionData.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: 40, color: "#94a3b8", fontSize: 12 }}>Pas assez de données</div>
+                ) : (
+                  <>
+                    <BarChart data={evolutionData} />
+                    {evoFirst > 0 && (
+                      <div style={{ marginTop: 16, padding: 12, background: evoDeltaPct <= 0 ? "#F0FDF4" : "#FEF2F2", borderRadius: 8, fontSize: 12, color: evoDeltaPct <= 0 ? "#15803D" : "#B91C1C", fontWeight: 500 }}>
+                        {evoDeltaPct <= 0 ? "↓ Amélioration" : "↑ Dégradation"} de {Math.abs(evoDeltaPct)}% sur 6 mois
+                      </div>
+                    )}
+                  </>
+                )}
+              </div>
+              <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20, gridColumn: "1 / -1" }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Dossiers dépassant les délais légaux</div>
+                {(delais?.en_retard ?? []).length === 0 ? (
+                  <div style={{ textAlign: "center", padding: 30, color: "#94a3b8", fontSize: 13 }}>Aucun dossier en retard</div>
+                ) : (
+                  <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                    <thead>
+                      <tr style={{ background: "#F8FAFC" }}>
+                        {["N° Dossier","Type","Pétitionnaire","Délai légal","Délai écoulé","Dépassement","Statut"].map(h => (
+                          <th key={h} style={{ padding: "8px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {(delais?.en_retard ?? []).map((r) => (
+                        <tr key={r.id} style={{ borderBottom: "1px solid #F1F5F9" }}>
+                          <td style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#4F46E5" }}>{r.numero}</td>
+                          <td style={{ padding: "10px 12px", fontSize: 12, color: "#374151" }}>{TYPE_LABELS[r.type]?.short ?? r.type}</td>
+                          <td style={{ padding: "10px 12px", fontSize: 12, color: "#374151" }}>{r.petitionnaire ?? "—"}</td>
+                          <td style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>{r.delai_legal != null ? `${r.delai_legal}j` : "—"}</td>
+                          <td style={{ padding: "10px 12px", fontSize: 12, color: "#374151" }}>{r.delai_ecoule != null ? `${r.delai_ecoule}j` : "—"}</td>
+                          <td style={{ padding: "10px 12px" }}>
+                            {r.depassement != null && r.depassement > 0
+                              ? <span style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 11, fontWeight: 700, borderRadius: 6, padding: "2px 8px" }}>+{r.depassement}j</span>
+                              : <span style={{ color: "#94a3b8", fontSize: 12 }}>—</span>}
+                          </td>
+                          <td style={{ padding: "10px 12px" }}><StatusBadge status="En retard" /></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                )}
+              </div>
+            </div>
+          )}
+
+          {stab === "Types de dossiers" && (
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16 }}>
+              <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 16 }}>Volume par type de dossier</div>
+                {typeData.length === 0 ? (
+                  <div style={{ textAlign: "center", padding: 40, color: "#94a3b8", fontSize: 12 }}>Aucun dossier</div>
+                ) : (
+                  <BarChart data={typeData} />
+                )}
+              </div>
+              <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 16 }}>Détail par type</div>
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr>
+                      {["Type","Déposés","Accordés","Refusés","Délai moy."].map(h => (
+                        <th key={h} style={{ padding: "6px 8px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(stats?.par_type ?? []).map((r) => (
+                      <tr key={r.type} style={{ borderBottom: "1px solid #F8FAFC" }}>
+                        <td style={{ padding: "8px", fontSize: 12, color: "#374151" }}>{TYPE_LABELS[r.type]?.full ?? r.type}</td>
+                        <td style={{ padding: "8px", fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{r.count}</td>
+                        <td style={{ padding: "8px", fontSize: 12, color: "#22C55E", fontWeight: 600 }}>{r.acceptes}</td>
+                        <td style={{ padding: "8px", fontSize: 12, color: "#EF4444", fontWeight: 600 }}>{r.refuses}</td>
+                        <td style={{ padding: "8px", fontSize: 12, color: "#64748b" }}>{r.delai_moyen != null ? `${r.delai_moyen}j` : "–"}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+
+          {stab === "Services" && (
+            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Consultations par service</div>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Nombre de consultations envoyées et délais de retour moyens</div>
+              {(services ?? []).length === 0 ? (
+                <div style={{ textAlign: "center", padding: 30, color: "#94a3b8", fontSize: 13 }}>Aucune consultation</div>
+              ) : (
+                <table style={{ width: "100%", borderCollapse: "collapse" }}>
+                  <thead>
+                    <tr style={{ background: "#F8FAFC" }}>
+                      {["Service","Consultations","Retours reçus","En attente","Délai retour moy.","Taux de réponse"].map(h => (
+                        <th key={h} style={{ padding: "9px 12px", textAlign: "left", fontSize: 11, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(services ?? []).map((r) => (
+                      <tr key={r.name} style={{ borderBottom: "1px solid #F1F5F9" }}>
+                        <td style={{ padding: "10px 12px", fontSize: 12, fontWeight: 500, color: "#374151" }}>{r.name}</td>
+                        <td style={{ padding: "10px 12px", fontSize: 12, fontWeight: 600, color: "#0F172A" }}>{r.consultations}</td>
+                        <td style={{ padding: "10px 12px", fontSize: 12, color: "#22C55E", fontWeight: 600 }}>{r.retours}</td>
+                        <td style={{ padding: "10px 12px", fontSize: 12, color: r.en_attente > 0 ? "#F97316" : "#22C55E", fontWeight: 600 }}>{r.en_attente}</td>
+                        <td style={{ padding: "10px 12px", fontSize: 12, color: "#64748b" }}>{r.delai_retour_moy != null ? `${r.delai_retour_moy}j` : "–"}</td>
+                        <td style={{ padding: "10px 12px" }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                            <div style={{ flex: 1, height: 6, background: "#F1F5F9", borderRadius: 3, overflow: "hidden" }}>
+                              <div style={{ height: "100%", width: `${r.taux_reponse}%`, background: r.taux_reponse >= 90 ? "#22C55E" : r.taux_reponse >= 80 ? "#F97316" : "#EF4444", borderRadius: 3 }} />
+                            </div>
+                            <span style={{ fontSize: 11, fontWeight: 600, color: "#374151", width: 32 }}>{r.taux_reponse}%</span>
+                          </div>
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              )}
+            </div>
+          )}
+        </>
       )}
     </div>
   );
@@ -3406,6 +3582,7 @@ function StatistiquesScreen({ commune }: { commune: string }) {
 // ── Référentiel documentaire ───────────────────────────────────────────────────
 
 const DOC_TYPES: { value: string; label: string; color: string }[] = [
+  { value: "plu",   label: "PLU",   color: "#1E40AF" },
   { value: "ppri",  label: "PPRI",  color: "#EF4444" },
   { value: "oap",   label: "OAP",   color: "#8B5CF6" },
   { value: "peb",   label: "PEB",   color: "#F59E0B" },
@@ -3679,7 +3856,7 @@ function DocumentsPanel({ commune }: { commune: string }) {
         <div>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Documents réglementaires</div>
           <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 2 }}>
-            PPRI, OAP, PEB, PLH, ZAC et autres plans réglementaires de {commune}
+            PLU, PPRI, OAP, PEB, PLH, ZAC et autres plans réglementaires de {commune}
           </div>
         </div>
         {!showForm && (
@@ -3954,8 +4131,7 @@ function DocumentsPanel({ commune }: { commune: string }) {
 
 // ── PLU upload panel (état vide Réglementation) ────────────────────────────────
 
-type ZoneDef = { code: string; label: string; type: string };
-type ZoneProgress = { code: string; label: string; type: string; status: "pending" | "done"; rules?: number; vision?: number };
+type ZoneProgress = { code: string; label: string; type: string; status: "pending" | "done"; rules?: number; vision?: number; batch?: number; total_batches?: number };
 
 function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, onManual }: { commune: string; inseeCode?: string; onSuccess: () => void; loadError: string | null; onCancel?: () => void; onManual?: () => void }) {
   const [pdfFile, setPdfFile] = useState<File | null>(null);
@@ -3991,51 +4167,147 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
       reader.readAsDataURL(pdfFile);
     });
 
-    try {
-      const resp = await fetch("/api/mairie/admin/ingest-plu-pdf", {
+    // Nouveau flux en 3 phases (start → batches → commit). Évite la dépendance
+    // à une seule connexion HTTP longue (le proxy Railway/Cloudflare la coupait
+    // au bout de quelques minutes → Safari "Load failed"). Chaque requête tient
+    // dans le budget proxy ; le client orchestre la parallélisation.
+    type ZoneSpec = {
+      code: string; label: string; type: string;
+      startPage: number; endPage: number;
+      batches: Array<{ index: number; firstPage: number; lastPage: number }>;
+    };
+    type BatchResult = { rules: unknown[]; visionCount: number };
+
+    const postJSON = async <T,>(path: string, body: unknown): Promise<T> => {
+      const r = await fetch(path, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         credentials: "include",
-        body: JSON.stringify({ commune_name: communeInput.trim(), insee_code: inseeInput.trim(), pdf_base64 }),
+        body: JSON.stringify(body),
       });
-
-      if (!resp.ok || !resp.body) {
-        const txt = await resp.text().catch(() => "Erreur serveur");
-        throw new Error(txt);
+      const txt = await r.text();
+      let parsed: unknown = null;
+      try { parsed = txt ? JSON.parse(txt) : null; } catch { /* keep raw */ }
+      if (!r.ok) {
+        const msg = (parsed as { error?: string } | null)?.error ?? txt ?? `HTTP ${r.status}`;
+        const err = new Error(msg) as Error & { status?: number; transient?: boolean };
+        err.status = r.status;
+        // 502/503/504 (Bad Gateway / unavailable / Gateway timeout) sont des
+        // erreurs proxy/nginx transitoires : on relancera le batch.
+        err.transient = (parsed as { transient?: boolean } | null)?.transient === true
+          || r.status === 502 || r.status === 503 || r.status === 504;
+        throw err;
       }
+      return parsed as T;
+    };
 
-      const reader = resp.body.getReader();
-      const decoder = new TextDecoder();
-      let buf2 = "";
-
+    // Wrapper retry pour les endpoints non-batch (start, commit). Comme pour
+    // /batch : 502/503/504 traités comme transitoires, backoff exponentiel.
+    const postJSONWithRetry = async <T,>(path: string, body: unknown, maxAttempts = 2): Promise<T> => {
+      let attempt = 0;
       while (true) {
-        const { done: streamDone, value } = await reader.read();
-        if (streamDone) break;
-        buf2 += decoder.decode(value, { stream: true });
-        const lines = buf2.split("\n");
-        buf2 = lines.pop() ?? "";
-        for (const line of lines) {
-          if (!line.startsWith("data: ")) continue;
-          try {
-            const ev = JSON.parse(line.slice(6)) as Record<string, unknown>;
-            if (ev.type === "phase") setPhase(ev.message as string);
-            else if (ev.type === "zones_found") {
-              const zones = ev.zones as ZoneDef[];
-              setPhase("Extraction des règles en parallèle…");
-              setZoneProgress(zones.map(z => ({ ...z, status: "pending" })));
-            } else if (ev.type === "zone_done") {
-              setZoneProgress(prev => prev.map(z => z.code === ev.zone ? { ...z, status: "done", rules: ev.rules as number, vision: ev.vision as number } : z));
-            } else if (ev.type === "done") {
-              setDone({ zones: ev.zones as number, rules: ev.rules as number, needs_review: ev.needs_review as number });
-              setPhase(null);
-              setTimeout(onSuccess, 1500);
-            } else if (ev.type === "error") {
-              setError(ev.message as string);
-              setPhase(null);
-            }
-          } catch { /* ignore malformed lines */ }
+        try {
+          return await postJSON<T>(path, body);
+        } catch (e) {
+          const err = e as Error & { transient?: boolean };
+          if (err.transient && attempt < maxAttempts) {
+            await new Promise((r) => setTimeout(r, 1500 * Math.pow(2, attempt)));
+            attempt++;
+            continue;
+          }
+          throw err;
         }
       }
+    };
+
+    try {
+      // Phase 1 — start : extraction du sommaire. Le serveur lit le texte
+      // natif via pdftotext (< 2 s) ; ne tombe sur Pixtral que pour les PDF
+      // scannés ou à sommaire inhabituel.
+      setPhase("Lecture du sommaire…");
+      const startResp = await postJSONWithRetry<{ jobId: string; zones: ZoneSpec[] }>(
+        "/api/mairie/admin/ingest-plu-pdf/start",
+        { commune_name: communeInput.trim(), insee_code: inseeInput.trim(), pdf_base64 },
+      );
+      const { jobId, zones: zoneSpecs } = startResp;
+      setZoneProgress(zoneSpecs.map((z) => ({ code: z.code, label: z.label, type: z.type, status: "pending" })));
+      const totalBatchesByZone = new Map(zoneSpecs.map((z) => [z.code, z.batches.length]));
+      setPhase(`Sommaire : ${zoneSpecs.length} zones (${zoneSpecs.map((z) => z.code).join(", ")}). Extraction…`);
+
+      // Phase 2 — batches : on aplatit tous les lots en une seule queue et on
+      // les exécute avec une concurrence bornée (4 lots en vol). Chaque lot est
+      // une requête HTTP courte → aucun risque de timeout proxy. Au passage on
+      // met à jour la progression intra-zone (lot X/N).
+      type FlatBatch = { zoneCode: string; batchIndex: number };
+      const queue: FlatBatch[] = [];
+      for (const z of zoneSpecs) for (const b of z.batches) queue.push({ zoneCode: z.code, batchIndex: b.index });
+      const zoneAcc = new Map<string, { rules: unknown[]; visionCount: number; doneBatches: number }>();
+      for (const z of zoneSpecs) zoneAcc.set(z.code, { rules: [], visionCount: 0, doneBatches: 0 });
+
+      const CONCURRENCY = 4;
+      let next = 0;
+      let firstError: Error | null = null;
+
+      const worker = async () => {
+        while (true) {
+          const i = next++;
+          if (i >= queue.length) return;
+          if (firstError) return;
+          const item = queue[i]!;
+          // Retry transitoire jusqu'à 3 tentatives sur 502/503/504 + rate
+          // limit Mistral, avec backoff exponentiel (1,5 s → 3 s → 6 s).
+          // Les batches sont idempotents côté serveur (pas d'état partiel).
+          let attempt = 0;
+          while (true) {
+            try {
+              const r = await postJSON<BatchResult>(
+                "/api/mairie/admin/ingest-plu-pdf/batch",
+                { jobId, zoneCode: item.zoneCode, batchIndex: item.batchIndex },
+              );
+              const acc = zoneAcc.get(item.zoneCode)!;
+              acc.rules.push(...r.rules);
+              acc.visionCount += r.visionCount;
+              acc.doneBatches += 1;
+              const total = totalBatchesByZone.get(item.zoneCode) ?? 0;
+              const isZoneDone = acc.doneBatches >= total;
+              setZoneProgress((prev) => prev.map((z) =>
+                z.code === item.zoneCode
+                  ? (isZoneDone
+                      ? { ...z, status: "done" as const, rules: acc.rules.length, vision: acc.visionCount, batch: undefined, total_batches: undefined }
+                      : { ...z, batch: acc.doneBatches, total_batches: total })
+                  : z,
+              ));
+              break;
+            } catch (e) {
+              const err = e as Error & { transient?: boolean };
+              if (err.transient && attempt < 3) {
+                await new Promise((r) => setTimeout(r, 1500 * Math.pow(2, attempt)));
+                attempt++;
+                continue;
+              }
+              firstError = err;
+              return;
+            }
+          }
+        }
+      };
+      await Promise.all(Array.from({ length: CONCURRENCY }, worker));
+      if (firstError) throw firstError;
+
+      // Phase 3 — commit : transaction DB en 1 requête courte.
+      setPhase("Enregistrement…");
+      const zoneResults = zoneSpecs.map((z) => ({
+        zoneCode: z.code,
+        rules: zoneAcc.get(z.code)!.rules,
+        visionCount: zoneAcc.get(z.code)!.visionCount,
+      }));
+      const final = await postJSONWithRetry<{ zones: number; rules: number; needs_review: number }>(
+        "/api/mairie/admin/ingest-plu-pdf/commit",
+        { jobId, zoneResults },
+      );
+      setDone({ zones: final.zones, rules: final.rules, needs_review: final.needs_review });
+      setPhase(null);
+      setTimeout(onSuccess, 1500);
     } catch (e) {
       setError(e instanceof Error ? e.message : "Erreur serveur");
       setPhase(null);
@@ -4119,7 +4391,12 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
                       {z.status === "done" ? (
                         <span style={{ fontSize: 11, color: "#15803D", fontWeight: 600 }}>✓ {z.rules} règle{(z.rules ?? 0) > 1 ? "s" : ""}</span>
                       ) : (
-                        <div style={{ width: 12, height: 12, border: "2px solid #C7D2FE", borderTopColor: "#4F46E5", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+                        <>
+                          {z.batch && z.total_batches ? (
+                            <span style={{ fontSize: 11, color: "#64748b" }}>lot {z.batch}/{z.total_batches}</span>
+                          ) : null}
+                          <div style={{ width: 12, height: 12, border: "2px solid #C7D2FE", borderTopColor: "#4F46E5", borderRadius: "50%", animation: "spin 0.8s linear infinite", flexShrink: 0 }} />
+                        </>
                       )}
                     </div>
                   ))}
@@ -4268,7 +4545,7 @@ const ZONE_TYPE_STYLE: Record<string, { bg: string; color: string; border: strin
 };
 
 // Découpe le règlement collé en blocs analysables par l'IA.
-// Objectif : aucun bloc > MAX_CHARS (sinon l'appel Claude dépasse 120 s).
+// Objectif : aucun bloc > MAX_CHARS (sinon l'appel LLM dépasse 120 s).
 //
 // Étape 1 — coupe sur les en-têtes d'article (« Article 7 », « Préambule »,
 // « ARTICLE U.A.1 », « **Article 11 -** »). Insensible à la casse, tolère
@@ -6104,23 +6381,29 @@ type SignataireRow = {
   user: { id: string; prenom: string; nom: string; email: string } | null;
 };
 
+const PC_DECISION_OPTIONS = [
+  { key: "accord", label: "Accord", sub: "Autorisation accordée" },
+  { key: "accord_prescription", label: "Accord avec prescriptions", sub: "Sous conditions" },
+  { key: "refus", label: "Refus", sub: "Opposition au projet" },
+  { key: "sursis_a_statuer", label: "Sursis à statuer", sub: "Décision différée" },
+];
+const CU_DECISION_OPTIONS = [
+  { key: "cu_positif", label: "CU positif", sub: "Faisabilité confirmée" },
+  { key: "cu_negatif", label: "CU négatif", sub: "Faisabilité impossible" },
+];
+
 const DECISION_OPTIONS: Record<string, Array<{ key: string; label: string; sub: string }>> = {
-  permis_de_construire: [
-    { key: "accord", label: "Accord", sub: "Autorisation accordée" },
-    { key: "accord_prescription", label: "Accord avec prescriptions", sub: "Sous conditions" },
-    { key: "refus", label: "Refus", sub: "Opposition au projet" },
-    { key: "sursis_a_statuer", label: "Sursis à statuer", sub: "Décision différée" },
-  ],
+  permis_de_construire: PC_DECISION_OPTIONS,
+  permis_de_construire_mi: PC_DECISION_OPTIONS,
   declaration_prealable: [
     { key: "non_opposition", label: "Non-opposition", sub: "Travaux autorisés" },
     { key: "non_opposition_prescription", label: "Non-opposition avec prescriptions", sub: "Sous réserves" },
     { key: "opposition", label: "Opposition", sub: "Travaux refusés" },
     { key: "pieces_complementaires", label: "Demande de pièces", sub: "Pièces manquantes" },
   ],
-  certificat_urbanisme: [
-    { key: "cu_positif", label: "CU positif", sub: "Faisabilité confirmée" },
-    { key: "cu_negatif", label: "CU négatif", sub: "Faisabilité impossible" },
-  ],
+  certificat_urbanisme: CU_DECISION_OPTIONS,
+  certificat_urbanisme_a: CU_DECISION_OPTIONS,
+  certificat_urbanisme_b: CU_DECISION_OPTIONS,
   permis_amenager: [
     { key: "accord", label: "Accord", sub: "Autorisation accordée" },
     { key: "accord_prescription", label: "Accord avec prescriptions", sub: "Sous conditions" },
@@ -6163,14 +6446,18 @@ function decisionStepIndex(status: DecisionStatus): number {
   return 0;
 }
 
-const DETAIL_TABS = ["Résumé", "Parcelle", "Documents", "Instruction", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
+// "Terrain" remplace "Parcelle" : vue contextuelle (cadastre, contraintes
+// fortes, constructibilité synthétique, historique SITADEL/ADS). La carte
+// et le règlement détaillé migrent vers "Instruction", devenue l'espace de
+// preuve où l'instructeur confronte les pièces aux PDF réglementaires.
+const DETAIL_TABS = ["Résumé", "Terrain", "Conformité IA", "Instruction", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
 type DetailTab = typeof DETAIL_TABS[number];
 
 const TAB_ICONS: Record<string, React.ReactNode> = {
   "Résumé": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><rect x="3" y="3" width="7" height="7" rx="1" /><rect x="14" y="3" width="7" height="7" rx="1" /><rect x="3" y="14" width="7" height="7" rx="1" /><rect x="14" y="14" width="7" height="7" rx="1" /></svg>,
-  "Parcelle": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>,
-  "Instruction": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M9 11l3 3L22 4" /><path d="M21 12v7a2 2 0 01-2 2H5a2 2 0 01-2-2V5a2 2 0 012-2h11" /></svg>,
-  "Documents": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
+  "Terrain": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>,
+  "Conformité IA": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" /></svg>,
+  "Instruction": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>,
   "Consultations": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2" /><circle cx="9" cy="7" r="4" /><path d="M23 21v-2a4 4 0 00-3-3.87" /><path d="M16 3.13a4 4 0 010 7.75" /></svg>,
   "Courriers": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>,
   "Chronologie": <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><circle cx="12" cy="12" r="10" /><polyline points="12 6 12 12 16 14" /></svg>,
@@ -6725,6 +7012,43 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 }) {
   const { user } = useAuth();
   const [activeTab, setActiveTab] = useState<DetailTab>("Résumé");
+  // Onglet Documents : mode d'affichage côté instructeur — aperçu (3 col.),
+  // comparer (pièce ↔ document réglementaire), lecture (plein écran).
+  // Persisté en localStorage entre dossiers (préférence utilisateur).
+  const [docsViewMode, setDocsViewMode] = useInstructionViewMode();
+  // Document réglementaire affiché en mode Comparer (sélection mémorisée
+  // tant qu'on reste sur le dossier — réinitialisé entre dossiers).
+  const [docsRegulatoryDocId, setDocsRegulatoryDocId] = useState<string | null>(null);
+  // Hints transmis au RegulatoryDocViewer quand on arrive depuis une citation
+  // de verdict (onglet Conformité IA). docType : auto-sélection PLU/PPRI/OAP…
+  // page : ouvre directement à la bonne page via fragment #page=N.
+  const [docsRegulatoryDocTypeHint, setDocsRegulatoryDocTypeHint] = useState<string | null>(null);
+  const [docsRegulatoryDocPage, setDocsRegulatoryDocPage] = useState<number | null>(null);
+  // Repli indépendant des bandeaux latéraux de l'onglet Instruction, disponible
+  // dans tous les modes (préférence persistée par instructeur).
+  const [docsLeftCollapsed, setDocsLeftCollapsed] = useLocalStorageBool("heureka.instrLeftCollapsed", false);
+  const [docsRightCollapsed, setDocsRightCollapsed] = useLocalStorageBool("heureka.instrRightCollapsed", false);
+  // Mode « grand écran » de la comparaison (overlay plein viewport). Volontairement
+  // non persisté : on ne veut pas rouvrir un dossier coincé en plein écran.
+  const [compareFullscreen, setCompareFullscreen] = useState(false);
+  // Échap quitte le grand écran.
+  useEffect(() => {
+    if (!compareFullscreen) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setCompareFullscreen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [compareFullscreen]);
+
+  // Handler de jump depuis une citation de verdict. Bascule l'onglet, le mode
+  // d'affichage, et nourrit les hints du RegulatoryDocViewer.
+  const jumpFromCitation = useCallback((ref: { doc_type?: string; page?: number }) => {
+    if (!ref.doc_type) return;
+    // Pas de bascule automatique : on prépare le viewer pour quand
+    // l'utilisateur ouvrira l'onglet Instruction, sans le forcer.
+    setDocsViewMode("compare");
+    setDocsRegulatoryDocTypeHint(ref.doc_type);
+    setDocsRegulatoryDocPage(typeof ref.page === "number" ? ref.page : null);
+  }, [setDocsViewMode]);
   // Mode d'ouverture de la modale courrier : null = fermée, "general" = bouton
   // historique, "pieces_complementaires" = entrée dédiée depuis le bandeau
   // workflow. Le mode pilote le panneau de sélection des pièces et le bouton
@@ -6791,18 +7115,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       setDelaiSaving(false);
     }
   }, [dossier.id, completudeDraft]);
-  const recomputeDeadline = useCallback(async () => {
-    setDelaiSaving(true);
-    try {
-      await api.patch(`/mairie/dossiers/${dossier.id}/deadline`, { recompute: true });
-      alert("Délai recalculé. Rechargez la page pour voir la nouvelle échéance.");
-      setShowDelaiPopover(false);
-    } catch (e) {
-      alert(e instanceof Error ? e.message : "Échec du recalcul");
-    } finally {
-      setDelaiSaving(false);
-    }
-  }, [dossier.id]);
   const [addressOverride, setAddressOverride] = useState<string | null>(null);
   const [selectedZone, setSelectedZone] = useState<string | null>(null);
   const [addrQuery, setAddrQuery] = useState("");
@@ -6811,6 +7123,28 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [addrSaving, setAddrSaving] = useState(false);
   const [liveAdresse, setLiveAdresse] = useState(dossier.adresse);
   const [liveCommune, setLiveCommune] = useState(dossier.commune ?? null);
+  // Édition inline du type de dossier — utile quand l'OCR a renvoyé un type
+  // générique (ex. PC au lieu de PCMI) ou pour corriger une erreur de saisie.
+  const [liveType, setLiveType] = useState<string>(dossier.type);
+  const [showTypeEditor, setShowTypeEditor] = useState(false);
+  const [typeSaving, setTypeSaving] = useState(false);
+  const saveType = useCallback(async (next: string) => {
+    if (next === liveType) {
+      setShowTypeEditor(false);
+      return;
+    }
+    setTypeSaving(true);
+    try {
+      await api.patch(`/mairie/dossiers/${dossier.id}/type`, { type: next });
+      setLiveType(next);
+      setShowTypeEditor(false);
+      alert("Type d'autorisation mis à jour. Le délai d'instruction a été recalculé.");
+    } catch (e) {
+      alert(e instanceof Error ? e.message : "Échec de la mise à jour du type");
+    } finally {
+      setTypeSaving(false);
+    }
+  }, [dossier.id, liveType]);
   const [clickingParcel, setClickingParcel] = useState(false);
   const [clickedCoords, setClickedCoords] = useState<{ lat: number; lng: number } | null>(null);
 
@@ -6900,6 +7234,27 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     quality?: string;
     echelle?: string | null;
     nord_visible?: boolean | null;
+    // Phase 5 : checklist graphique étendue. Optionnel pour rétro-compat
+    // avec les anciennes extractions stockées en jsonb.
+    graphics?: {
+      orientation?: { kind?: string; visible?: boolean; evidence?: string | null } | null;
+      echelle_graphique?: string | null;
+      legende?: string | null;
+      limites?: string | null;
+      acces?: string | null;
+      emprise?: string | null;
+      cotes_completes?: string | null;
+      altimetries?: string | null;
+      prises_de_vue?: Array<{ label: string; page?: number | null }> | null;
+    } | null;
+    // Phase 2.3 : références cadastrales observées sur la pièce.
+    parcelles_observees?: Array<{
+      section: string;
+      numero: string;
+      qualificatif: "entiere" | "partie";
+      source_field?: string | null;
+      citation?: string | null;
+    }> | null;
     cerfa?: Record<string, unknown> | null;
     plan_masse?: Record<string, unknown> | null;
     plan_coupe?: Record<string, unknown> | null;
@@ -6907,7 +7262,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     notice?: Record<string, unknown> | null;
     photo?: Record<string, unknown> | null;
     missing_elements?: string[];
-    citations?: string[];
+    // Rétro-compat : les anciennes extractions stockaient des strings, le
+    // pipeline actuel renvoie des objets { text, page?, bbox?, confidence? }.
+    citations?: Array<string | { text?: string | null; page?: number | null }>;
     notes?: string | null;
   };
   type DossierPiece = {
@@ -6923,14 +7280,30 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     instructeur_note: string | null;
     instructeur_status_at: string | null;
     uploaded_at: string;
+    // Statut du pipeline OCR — sert à signaler à l'instructeur qu'un
+    // document est en cours de traitement ou que l'extraction a échoué
+    // (sinon il croit que l'IA a "rien dit", alors qu'elle n'a rien pu lire).
+    ocr_status?: "pending" | "processing" | "done" | "failed" | "skipped" | null;
   };
   const [documents, setDocuments] = useState<DossierPiece[] | null>(null);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<number>(0);
+  // Catégories repliées dans l'onglet Documents (3.C.4 — affinage suite à
+  // dossiers avec 30+ pièces). Persisté entre les rerenders mais pas en
+  // localStorage : c'est un état de session, l'instructeur déplie ce qu'il
+  // veut regarder à un instant T sans contaminer ses autres dossiers.
+  const [collapsedDocCategories, setCollapsedDocCategories] = useState<Set<string>>(new Set());
+  const toggleDocCategory = useCallback((key: string) => {
+    setCollapsedDocCategories((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key); else next.add(key);
+      return next;
+    });
+  }, []);
   const [extractingPieceId, setExtractingPieceId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (activeTab !== "Documents" || documents !== null) return;
+    if (activeTab !== "Instruction" || documents !== null) return;
     setDocumentsLoading(true);
     api.get<DossierPiece[]>(`/mairie/dossiers/${dossier.id}/pieces`)
       .then((data) => { setDocuments(data); setSelectedDoc(0); })
@@ -7030,12 +7403,37 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [conformite, setConformite] = useState<{ status: string; report: ConformiteReport | null; analyzed_at: string | null } | null>(null);
   const [conformiteLaunching, setConformiteLaunching] = useState(false);
 
+  // Conformité FINALE (3.C.5b) — déclenchée avant arrêté, considère
+  // uniquement les pièces validées. Indépendante de l'interim ci-dessus.
+  type ConformiteFinale = {
+    status: string;
+    report: ConformiteReport | null;
+    analyzed_at: string | null;
+    triggered_by: string | null;
+  };
+  type FinaleBlockers = {
+    pieces_sans_statut: Array<{ id: string; nom: string; code_piece: string | null }>;
+    pieces_complement_en_attente: Array<{ id: string; nom: string; code_piece: string | null }>;
+    aucune_piece_validee: boolean;
+  };
+  const [conformiteFinale, setConformiteFinale] = useState<ConformiteFinale | null>(null);
+  const [conformiteFinaleLaunching, setConformiteFinaleLaunching] = useState(false);
+  const [finaleBlockers, setFinaleBlockers] = useState<{ reason: string; blockers: FinaleBlockers } | null>(null);
+
   useEffect(() => {
-    if (activeTab !== "Instruction" || conformite !== null) return;
+    if (activeTab !== "Conformité IA" || conformite !== null) return;
     api.get<{ status: string; report: ConformiteReport | null; analyzed_at: string | null }>(`/mairie/dossiers/${dossier.id}/conformite`)
       .then(setConformite)
       .catch(() => setConformite({ status: "absent", report: null, analyzed_at: null }));
   }, [activeTab, conformite, dossier.id]);
+
+  // Charge la finale en parallèle de l'interim (1 GET en plus, OK).
+  useEffect(() => {
+    if (activeTab !== "Conformité IA" || conformiteFinale !== null) return;
+    api.get<ConformiteFinale>(`/mairie/dossiers/${dossier.id}/conformite/finale`)
+      .then(setConformiteFinale)
+      .catch(() => setConformiteFinale({ status: "absent", report: null, analyzed_at: null, triggered_by: null }));
+  }, [activeTab, conformiteFinale, dossier.id]);
 
   const launchConformite = useCallback(async () => {
     setConformiteLaunching(true);
@@ -7051,8 +7449,34 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     }
   }, [dossier.id]);
 
+  const launchConformiteFinale = useCallback(async () => {
+    setConformiteFinaleLaunching(true);
+    setFinaleBlockers(null);
+    try {
+      await api.post(`/mairie/dossiers/${dossier.id}/conformite/finale`, {}, { timeoutMs: 240_000 });
+      const fresh = await api.get<ConformiteFinale>(`/mairie/dossiers/${dossier.id}/conformite/finale`);
+      setConformiteFinale(fresh);
+    } catch (e) {
+      // L'API renvoie 422 + payload { error, blockers } quand les pré-conditions
+      // ne sont pas réunies (pièces sans statut, complément en attente, etc.).
+      // On extrait via le message JSON-sérialisé du client api.
+      const msg = e instanceof Error ? e.message : String(e);
+      try {
+        const parsed = JSON.parse(msg);
+        if (parsed?.blockers) {
+          setFinaleBlockers({ reason: parsed.error ?? "Pré-conditions non réunies", blockers: parsed.blockers });
+          return;
+        }
+      } catch { /* pas du JSON, on retombe sur alert */ }
+      alert(msg);
+    } finally {
+      setConformiteFinaleLaunching(false);
+    }
+  }, [dossier.id]);
+
   // Documents thématiques de la commune (OAP, PPRI, …) avec leur synthèse.
-  // Chargés à l'ouverture de l'onglet Parcelle pour servir de support à l'instruction.
+  // Chargés à l'ouverture de l'onglet Instruction — c'est là qu'ils servent
+  // de support à la confrontation pièces ↔ règlement.
   type CommuneDocLite = {
     id: string;
     type: string;
@@ -7065,11 +7489,62 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   };
   const [communeDocs, setCommuneDocs] = useState<CommuneDocLite[] | null>(null);
   useEffect(() => {
-    if (activeTab !== "Parcelle" || communeDocs !== null) return;
+    if (activeTab !== "Instruction" || communeDocs !== null) return;
     api.get<CommuneDocLite[]>(`/mairie/dossiers/${dossier.id}/commune-documents`)
       .then(setCommuneDocs)
       .catch(() => setCommuneDocs([]));
   }, [activeTab, communeDocs, dossier.id]);
+
+  // Historique SITADEL/ADS — autorisations passées sur la parcelle.
+  // Chargé à l'ouverture de l'onglet Terrain. Le scope "auto" (défaut) cascade
+  // côté API : parcelle exacte → même rue (libellé voie) → toute la commune,
+  // et garde le premier niveau non vide. L'utilisateur peut forcer un niveau
+  // précis (parcel / street / commune) via le toggle. `effective_scope` dans
+  // la réponse indique quel niveau a été appliqué pour le rendu.
+  type SitadelScope = "auto" | "parcel" | "street" | "commune";
+  type SitadelPermit = {
+    num_dau: string;
+    type_dau: string;
+    type_label: string;
+    etat: string;
+    etat_code: string;
+    date_autorisation: string | null;
+    date_doc: string | null;
+    date_daact: string | null;
+    an_depot: number | null;
+    adresse: string | null;
+    voie: string | null;
+    lieudit: string | null;
+    superficie_terrain: number | null;
+    cadastre: Array<{ section: string; numero: string }>;
+    nature_projet: string | null;
+    destination: string | null;
+    nb_logements: number | null;
+    surface_creee: number | null;
+    source: "logements" | "locaux" | "amenager" | "demolir";
+  };
+  type SitadelHistory = {
+    permits: SitadelPermit[];
+    total: number;
+    truncated: boolean;
+    effective_scope: "parcel" | "street" | "commune";
+    sources_consulted: string[];
+    warnings: string[];
+  };
+  const [sitadelHistory, setSitadelHistory] = useState<SitadelHistory | null>(null);
+  const [sitadelLoading, setSitadelLoading] = useState(false);
+  const [sitadelScope, setSitadelScope] = useState<SitadelScope>("auto");
+  const [sitadelError, setSitadelError] = useState<string | null>(null);
+  useEffect(() => {
+    if (activeTab !== "Terrain") return;
+    setSitadelLoading(true);
+    setSitadelError(null);
+    api.get<SitadelHistory>(`/mairie/dossiers/${dossier.id}/sitadel-history?scope=${sitadelScope}`)
+      .then((data) => setSitadelHistory(data))
+      .catch((e) => setSitadelError(e instanceof Error ? e.message : "Indisponible"))
+      .finally(() => setSitadelLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeTab, dossier.id, sitadelScope]);
 
   const fetchConsultations = useCallback(() => {
     setConsultationsLoading(true);
@@ -7110,7 +7585,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     ? Math.ceil((new Date(dossier.echeance.split("/").reverse().join("-")).getTime() - Date.now()) / 86400000)
     : null;
 
-  const typeLabel = TYPE_LABEL[dossier.type] ?? dossier.type;
+  const typeLabel = TYPE_LABEL[liveType] ?? liveType;
 
   // ── Workflow d'instruction (statut + assignation) ──
   // Source de vérité côté serveur : la machine à états partagée. On reflète ici
@@ -7129,7 +7604,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
   // Pré-charge les pièces + le rapport conformité quand on entre dans le mode
   // "Demande de pièces complémentaires" — sinon le sélecteur s'ouvrirait sur
-  // une liste vide tant que l'instructeur n'a pas visité l'onglet Documents.
+  // une liste vide tant que l'instructeur n'a pas visité l'onglet Instruction.
   useEffect(() => {
     if (courrierMode !== "pieces_complementaires") return;
     if (documents === null && !documentsLoading) {
@@ -7346,7 +7821,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", padding: "5px 0", borderBottom: i < dossier.delai!.breakdown.length - 1 ? "1px dashed #F1F5F9" : "none" }}>
                       <div style={{ flex: 1, minWidth: 0 }}>
                         <div style={{ fontSize: 12.5, color: "#0F172A", fontWeight: 500 }}>{b.label}</div>
-                        <div style={{ fontSize: 10.5, color: "#94a3b8" }}>{b.article}</div>
+                        <div style={{ fontSize: 10.5, color: "#94a3b8" }}>{linkifyArticles(b.article)}</div>
                       </div>
                       <div style={{ fontSize: 13, fontWeight: 700, color: "#4F46E5", flexShrink: 0, marginLeft: 8 }}>
                         {b.mois > 0 ? `+${b.mois}` : b.mois} mois
@@ -7369,11 +7844,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         Enregistrer
                       </button>
                     </div>
-                    <button onClick={() => void recomputeDeadline()}
-                      disabled={delaiSaving}
-                      style={{ border: "1px solid #C7D2FE", background: "#EEF2FF", color: "#4F46E5", borderRadius: 6, padding: "5px 12px", fontSize: 11.5, fontWeight: 600, cursor: delaiSaving ? "default" : "pointer", marginTop: 4 }}>
-                      Recalculer le délai
-                    </button>
                   </div>
                 </div>
               )}
@@ -7615,7 +8085,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       ?? (parcelLoading ? "Identification…" : "—");
                     return [
                       ["Pétitionnaire", dossier.petitionnaire],
-                      ["Type de dossier", typeLabel],
                       ["Adresse", liveAdresse ?? "—"],
                       ["Commune", `${liveCommune ?? "—"}${dossier.code_postal ? ` (${dossier.code_postal})` : ""}`],
                       ["Parcelle", parcelleLabel],
@@ -7623,63 +8092,78 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       ["Date de dépôt", dossier.date_depot ? fmtDate(dossier.date_depot) : "—"],
                       ["Échéance", dossier.echeance],
                     ];
-                  })().map(([l, v]) => (
-                    <div key={l}>
-                      <div style={LABEL_ST}>{l}</div>
-                      <div style={VALUE_ST}>{v}</div>
+                  })().reduce<React.ReactNode[]>((acc, [l, v], idx) => {
+                    acc.push(
+                      <div key={l}>
+                        <div style={LABEL_ST}>{l}</div>
+                        <div style={VALUE_ST}>{v}</div>
+                      </div>,
+                    );
+                    // Le type de dossier est inséré juste après le pétitionnaire,
+                    // avec un éditeur inline qui appelle PATCH /mairie/dossiers/:id/type.
+                    if (idx === 0) {
+                      acc.push(
+                        <div key="type-row">
+                          <div style={{ ...LABEL_ST, display: "flex", alignItems: "center", gap: 8 }}>
+                            <span>Type de dossier</span>
+                            <button
+                              onClick={() => setShowTypeEditor(v2 => !v2)}
+                              disabled={typeSaving}
+                              style={{
+                                padding: "1px 6px", fontSize: 10,
+                                color: showTypeEditor ? "#4F46E5" : "#94a3b8",
+                                background: showTypeEditor ? "#EEF2FF" : "none",
+                                border: "1px solid " + (showTypeEditor ? "#4F46E5" : "#E2E8F0"),
+                                borderRadius: 4, cursor: typeSaving ? "wait" : "pointer", fontWeight: 500,
+                              }}>
+                              {showTypeEditor ? "Annuler" : "Modifier"}
+                            </button>
+                          </div>
+                          {showTypeEditor ? (
+                            <div style={{ display: "flex", gap: 8, alignItems: "center", marginTop: 4 }}>
+                              <select
+                                defaultValue={liveType}
+                                disabled={typeSaving}
+                                onChange={(e) => { void saveType(e.target.value); }}
+                                style={{
+                                  flex: 1, padding: "7px 8px", border: "1px solid #E2E8F0",
+                                  borderRadius: 8, fontSize: 12, background: "white",
+                                }}>
+                                {DOSSIER_TYPE_OPTIONS.map(opt => (
+                                  <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                ))}
+                              </select>
+                              {typeSaving && <span style={{ fontSize: 11, color: "#94a3b8" }}>Enregistrement…</span>}
+                            </div>
+                          ) : (
+                            <div style={VALUE_ST}>{typeLabel}</div>
+                          )}
+                        </div>,
+                      );
+                    }
+                    return acc;
+                  }, [])}
+                </div>
+              </div>
+              {/* Avancement */}
+              <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
+                <SecTitle>Avancement du dossier</SecTitle>
+                <div style={{ flex: 1, display: "flex", flexDirection: "column" as const, justifyContent: "center" }}>
+                  {[
+                    { label: "Dépôt", done: true },
+                    { label: "Complétude", done: true },
+                    { label: "Instruction", done: ["en_instruction","decision_en_cours","accepte","refuse","accord_prescription"].includes(dossier.status) },
+                    { label: "Consultations", done: false },
+                    { label: "Décision", done: ["accepte","refuse","accord_prescription"].includes(dossier.status) },
+                  ].map((step, i) => (
+                    <div key={i} style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: i < 4 ? 14 : 0 }}>
+                      <div style={{ width: 28, height: 28, borderRadius: "50%", background: step.done ? "linear-gradient(135deg,#4F46E5,#6366F1)" : "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: step.done ? "0 2px 6px rgba(79,70,229,0.3)" : "none" }}>
+                        {step.done ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <span style={{ fontSize: 11, color: "#CBD5E1", fontWeight: 700 }}>{i + 1}</span>}
+                      </div>
+                      <span style={{ fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
                     </div>
                   ))}
                 </div>
-              </div>
-              {/* Avancement — étapes cliquables + prochaine action réelle */}
-              <div style={CARD}>
-                <SecTitle>Où en est l'instruction ?</SecTitle>
-                {([
-                  { label: "Dépôt", done: true, tab: null },
-                  { label: "Complétude", done: !["brouillon","soumis"].includes(dossier.status), tab: "Documents" },
-                  { label: "Instruction", done: ["en_instruction","decision_en_cours","accepte","refuse","accord_prescription"].includes(dossier.status), tab: "Instruction" },
-                  { label: "Consultations", done: false, tab: "Consultations" },
-                  { label: "Décision", done: ["accepte","refuse","accord_prescription"].includes(dossier.status), tab: "Décision" },
-                ] as Array<{ label: string; done: boolean; tab: DetailTab | null }>).map((step, i) => (
-                  <div
-                    key={i}
-                    onClick={() => { if (step.tab) setActiveTab(step.tab); }}
-                    style={{ display: "flex", alignItems: "center", gap: 12, cursor: step.tab ? "pointer" : "default", borderRadius: 8, padding: step.tab ? "2px 4px" : 0, margin: step.tab ? "0 -4px" : 0, marginBottom: i < 4 ? 14 : 0 }}
-                    onMouseEnter={(e) => { if (step.tab) (e.currentTarget as HTMLDivElement).style.background = "#F8FAFC"; }}
-                    onMouseLeave={(e) => { (e.currentTarget as HTMLDivElement).style.background = "transparent"; }}
-                  >
-                    <div style={{ width: 28, height: 28, borderRadius: "50%", background: step.done ? "linear-gradient(135deg,#4F46E5,#6366F1)" : "#F1F5F9", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0, boxShadow: step.done ? "0 2px 6px rgba(79,70,229,0.3)" : "none" }}>
-                      {step.done ? <svg width={12} height={12} viewBox="0 0 24 24" fill="none" stroke="white" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg> : <span style={{ fontSize: 11, color: "#CBD5E1", fontWeight: 700 }}>{i + 1}</span>}
-                    </div>
-                    <span style={{ flex: 1, fontSize: 13, fontWeight: step.done ? 600 : 400, color: step.done ? "#0F172A" : "#94a3b8" }}>{step.label}</span>
-                    {step.tab ? <span style={{ color: "#CBD5E1", fontSize: 16 }}>›</span> : null}
-                  </div>
-                ))}
-                {(() => {
-                  // Prochaine action déterministe selon le statut. Remplace
-                  // l'ancien « score 78% » codé en dur (donnée fictive trompeuse).
-                  const NEXT: Record<string, { text: string; tab: DetailTab | null }> = {
-                    brouillon:         { text: "Dossier non encore soumis par le pétitionnaire", tab: null },
-                    soumis:            { text: "Vérifier la complétude du dossier", tab: "Documents" },
-                    pre_instruction:   { text: "Vérifier la complétude du dossier", tab: "Documents" },
-                    incomplet:         { text: "En attente de pièces du pétitionnaire", tab: "Documents" },
-                    en_instruction:    { text: "Examiner l'analyse réglementaire", tab: "Instruction" },
-                    decision_en_cours: { text: "Finaliser et rédiger la décision", tab: "Décision" },
-                    accepte:           { text: "Dossier clôturé — accordé", tab: null },
-                    refuse:            { text: "Dossier clôturé — refusé", tab: null },
-                    accord_prescription:{ text: "Dossier clôturé — accordé avec prescriptions", tab: null },
-                  };
-                  const na = NEXT[dossier.status] ?? { text: "Poursuivre l'instruction", tab: null };
-                  return (
-                    <div style={{ marginTop: 20, padding: "12px 14px", background: "linear-gradient(135deg,#EEF2FF,#F5F3FF)", borderRadius: 12, border: "1px solid #C7D2FE", display: "flex", alignItems: "center", gap: 12 }}>
-                      <span style={{ fontSize: 16 }}>👉</span>
-                      <div style={{ flex: 1, fontSize: 12.5, fontWeight: 600, color: "#4338CA" }}>{na.text}</div>
-                      {na.tab ? (
-                        <button onClick={() => setActiveTab(na.tab!)} style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 7, padding: "6px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>Y aller</button>
-                      ) : null}
-                    </div>
-                  );
-                })()}
               </div>
               {/* Mini map */}
               <div style={{ ...CARD, padding: 0, overflow: "hidden", display: "flex", flexDirection: "column" as const }}>
@@ -7742,12 +8226,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         )}
 
         {/* ── PARCELLE ── */}
-        {activeTab === "Parcelle" && (() => {
-          const TOPIC_LABEL: Record<string, string> = {
-            recul_voie: "Recul voirie", recul_limite: "Recul limites", emprise_sol: "Emprise au sol",
-            hauteur: "Hauteur max.", stationnement: "Stationnement", espaces_verts: "Espaces verts",
-            terrain_min: "Terrain min.",
-          };
+        {activeTab === "Terrain" && (() => {
+          // Écran Terrain — contexte décisionnel.
+          // Affiche le cadastre, les contraintes fortes (PLU/risques/SUP/prescriptions
+          // surfaciques), une constructibilité synthétique, et l'historique SITADEL/ADS
+          // de la parcelle. Le règlement détaillé et les PDF d'OAP/PPRI sont dans
+          // l'onglet Instruction — c'est là que se fait la confrontation pièce ↔ règle.
           const floodColor = (v: string) => v === "fort" ? { c: "#C2410C", bg: "#FFF7ED" } : v === "moyen" ? { c: "#C2410C", bg: "#FFF7ED" } : v === "faible" ? { c: "#B45309", bg: "#FFFBEB" } : { c: "#15803D", bg: "#F0FDF4" };
           const zoneColor = (t?: string) => t === "N" || t === "A" ? { c: "#15803D", bg: "#F0FDF4" } : { c: "#4F46E5", bg: "#EEF2FF" };
           const pa = parcelAnalysis;
@@ -7758,6 +8242,25 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               Analyse en cours…
               <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
             </div>
+          );
+
+          // CTA récurrent : tous les renvois vers le règlement complet, les
+          // citations et les PDF d'OAP/PPRI pointent vers l'onglet Instruction.
+          const goToInstruction = (docType?: string) => {
+            setActiveTab("Instruction");
+            if (docType) {
+              setDocsViewMode("compare");
+              setDocsRegulatoryDocTypeHint(docType);
+              setDocsRegulatoryDocPage(null);
+            }
+          };
+          const InstructionLink = ({ label, docType }: { label: string; docType?: string }) => (
+            <button
+              onClick={() => goToInstruction(docType)}
+              style={{ display: "inline-flex", alignItems: "center", gap: 4, fontSize: 11, fontWeight: 600, color: "#4F46E5", background: "transparent", border: "none", padding: 0, cursor: "pointer" }}
+            >
+              {label} →
+            </button>
           );
 
           return (
@@ -7782,72 +8285,20 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 </div>
               )}
 
-              <div style={{ display: "grid", gridTemplateColumns: "1.4fr 1fr", gap: 14 }}>
-                {/* ── Colonne gauche ── */}
-                <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
-                  {/* Carte */}
-                  <div style={{ ...CARD, padding: 0, overflow: "hidden" }}>
-                    <div style={{ padding: "14px 18px 10px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-                      <div style={SH as React.CSSProperties & { display: string; alignItems: string; gap: number; marginBottom: number }}>
-                        <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
-                        Vue parcellaire
-                      </div>
-                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" as const }}>
-                        {/* Sources techniques (data_sources) masquées de l'UI :
-                            elles restent dans la réponse API pour traçabilité et
-                            analyses internes mais ne sont plus affichées ici. */}
-                        {/* Click-to-identify parcel button */}
-                        <button
-                          onClick={() => {
-                            setClickingParcel(v => !v);
-                          }}
-                          style={{
-                            padding: "4px 10px", borderRadius: 7, fontSize: 11.5, fontWeight: 600, cursor: "pointer",
-                            border: clickingParcel ? "1.5px solid #4F46E5" : "1.5px solid #C7D2FE",
-                            background: clickingParcel ? "#EEF2FF" : "white",
-                            color: clickingParcel ? "#4F46E5" : "#64748b",
-                          }}
-                          title="Cliquez sur la carte pour identifier la parcelle"
-                        >
-                          {clickingParcel ? "✕ Annuler" : "📍 Localiser sur la carte"}
-                        </button>
-                      </div>
-                    </div>
-                    {clickingParcel && (
-                      <div style={{ margin: "0 14px 10px", padding: "8px 12px", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 8, fontSize: 12, color: "#4338CA", fontWeight: 600 }}>
-                        Cliquez au centre de la parcelle concernée — les limites cadastrales sont visibles sur le fond de carte.
-                      </div>
-                    )}
-                    {(() => {
-                      const pLat = pa?.address?.lat ?? (clickedCoords?.lat) ?? dossier.lat;
-                      const pLng = pa?.address?.lng ?? (clickedCoords?.lng) ?? dossier.lng;
-                      const hasCoords = pLat && pLng;
-                      return hasCoords ? (
-                        <MapLeaflet
-                          dossiers={[{ id: dossier.id, numero: dossier.numero, type: dossier.type, status: dossier.status, adresse: liveAdresse ?? dossier.adresse, lat: pLat, lng: pLng }]}
-                          height={clickingParcel ? 380 : 300}
-                          commune={liveCommune ?? dossier.commune}
-                          clickMode={clickingParcel}
-                          parcelLayer={clickingParcel}
-                          onMapClick={(lat, lng) => {
-                            setClickedCoords({ lat, lng });
-                            setParcelAnalysis(null);
-                            setParcelError(null);
-                            setSelectedZone(null);
-                          }}
-                        />
-                      ) : (
-                        <div style={{ height: 300, background: "#F8FAFC", display: "flex", alignItems: "center", justifyContent: "center", flexDirection: "column" as const, gap: 10 }}>
-                          <svg width={40} height={40} viewBox="0 0 24 24" fill="none" stroke="#CBD5E1" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
-                          <span style={{ fontSize: 13, color: "#94a3b8" }}>Coordonnées non disponibles</span>
-                          <button onClick={() => setClickingParcel(true)} style={{ padding: "6px 14px", background: "#4F46E5", color: "white", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
-                            📍 Localiser sur la carte
-                          </button>
-                        </div>
-                      );
-                    })()}
-                  </div>
+              {/* Renvoi global vers Instruction — règles complètes, PDF, citations */}
+              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 14, padding: "10px 16px", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 10 }}>
+                <div style={{ fontSize: 12, color: "#3730A3", lineHeight: 1.5 }}>
+                  <strong style={{ fontWeight: 700 }}>Règlement, citations et PDF</strong> — l'espace de preuve et de comparaison est dans l'onglet Instruction.
+                </div>
+                <button
+                  onClick={() => goToInstruction()}
+                  style={{ flexShrink: 0, padding: "6px 14px", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 5px rgba(79,70,229,0.3)" }}
+                >Ouvrir l'Instruction →</button>
+              </div>
 
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                {/* ── Colonne gauche : contraintes + ABF + constructibilité ── */}
+                <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
                   {/* Contraintes */}
                   <div style={CARD}>
                     <SecTitle>Contraintes réglementaires</SecTitle>
@@ -7960,11 +8411,18 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                                 {s.dessup}
                               </div>
                             )}
-                            {s.urlacte && (
-                              <a href={s.urlacte} target="_blank" rel="noopener noreferrer" style={{ display: "inline-block", marginLeft: 26, marginTop: 8, fontSize: 11, color: "#4F46E5", fontWeight: 600 }}>
-                                Voir l'acte officiel ↗
-                              </a>
-                            )}
+                            <div style={{ marginLeft: 26, marginTop: 8, display: "flex", gap: 12, alignItems: "center", flexWrap: "wrap" as const }}>
+                              {s.urlacte && (
+                                <a href={s.urlacte} target="_blank" rel="noopener noreferrer" style={{ fontSize: 11, color: "#4F46E5", fontWeight: 600 }}>
+                                  Voir l'acte officiel ↗
+                                </a>
+                              )}
+                              {/* Toute citation du règlement ou du PDF passe par Instruction. */}
+                              <InstructionLink
+                                label="Confronter aux pièces dans Instruction"
+                                docType={s.categorie?.startsWith("PM1") ? "ppri" : s.categorie?.startsWith("PM2") ? "pprt" : undefined}
+                              />
+                            </div>
                           </div>
                         );
                       })}
@@ -8015,6 +8473,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                                 Texte réglementaire non publié dans le GPU — se référer au règlement de zone.
                               </div>
                             )}
+                            <div style={{ marginLeft: 26, marginTop: 6 }}>
+                              <InstructionLink
+                                label="Voir le règlement applicable dans Instruction"
+                                docType={p.typepsc === "18" ? "oap" : p.typepsc === "09" ? "ppri" : "plu"}
+                              />
+                            </div>
                           </div>
                         );
                       })}
@@ -8091,171 +8555,187 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     ))}
                   </div>
 
-                  {/* Synthèse PLU */}
+                  {/* Synthèse zone PLU — pointeur seulement, le règlement complet vit dans Instruction */}
                   <div style={CARD}>
-                    <SecTitle>Synthèse PLU applicable</SecTitle>
-                    {pa?.rules && pa.rules.length > 0 ? (() => {
-                      // Mêmes rubriques thématiques que la vue citoyen, mais on garde
-                      // ici la prose RÉELLE du règlement (rule_text), pas la
-                      // reformulation courte (citizen_summary).
-                      const RUBRIQUES: Array<{ key: string; icon: string; label: string; topics: string[] }> = [
-                        { key: "construire",   icon: "🏗️", label: "Constructibilité",       topics: ["emprise_sol", "hauteur", "cos", "terrain_min"] },
-                        { key: "implanter",    icon: "📐", label: "Implantation",            topics: ["recul_voie", "recul_limite", "recul_batiments"] },
-                        { key: "aspect",       icon: "🎨", label: "Aspect & matériaux",      topics: ["aspect"] },
-                        { key: "stationnement",icon: "🅿️", label: "Stationnement",           topics: ["stationnement"] },
-                        { key: "verts",        icon: "🌳", label: "Espaces verts",           topics: ["espaces_verts"] },
-                        { key: "acces",        icon: "🚗", label: "Accès & réseaux",         topics: ["desserte_voies", "desserte_reseaux"] },
-                        { key: "usages",       icon: "🚦", label: "Usages — interdits / conditionnels", topics: ["interdictions", "conditions", "destinations"] },
-                        { key: "autres",       icon: "📋", label: "Autres dispositions",     topics: ["general"] },
-                      ];
-                      const topicRub = (t: string) => RUBRIQUES.find(r => r.topics.includes(t))?.key ?? "autres";
-                      // On retire les règles marquées "excluded" (contexte parcelle qui ne
-                      // colle pas — ex. cloture_sur_rue sur une parcelle enclavée).
-                      const visible = pa.rules.filter(r => r.relevance !== "excluded");
-                      const rubs = RUBRIQUES
-                        .map(rub => ({ ...rub, rules: visible.filter(r => topicRub(r.topic) === rub.key) }))
-                        .filter(rub => rub.rules.length > 0);
-
-                      const valueChip = (rule: typeof pa.rules[number]) => {
-                        const v = rule.value_exact != null ? `${rule.value_exact}`
-                          : rule.value_max != null ? `≤ ${rule.value_max}`
-                          : rule.value_min != null ? `≥ ${rule.value_min}` : null;
-                        if (!v) return null;
+                    <SecTitle action={<InstructionLink label="Règlement complet" docType="plu" />}>
+                      Zone PLU
+                    </SecTitle>
+                    {(() => {
+                      const zc = pa?.plu_zone ?? (pa?.db_zone ? { zone_code: pa.db_zone.code, zone_label: pa.db_zone.label ?? pa.db_zone.code, zone_type: pa.db_zone.type ?? "U" } : null);
+                      if (!zc) {
                         return (
-                          <span style={{ display: "inline-block", padding: "2px 8px", fontSize: 11.5, fontWeight: 700, color: "#4F46E5", background: "#EEF2FF", borderRadius: 6, border: "1px solid #C7D2FE" }}>
-                            {v} {rule.unit ?? ""}
-                          </span>
-                        );
-                      };
-
-                      return (
-                        <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
-                          {rubs.map((rub, idx) => (
-                            <details key={rub.key} open={idx === 0} style={{ borderTop: idx > 0 ? "1px solid #F1F5F9" : "none" }}>
-                              <summary style={{ padding: "10px 4px", cursor: "pointer", display: "flex", alignItems: "center", gap: 10, listStyle: "none" }}>
-                                <span style={{ fontSize: 18 }}>{rub.icon}</span>
-                                <span style={{ flex: 1, fontSize: 13, fontWeight: 700, color: "#0F172A" }}>{rub.label}</span>
-                                <span style={{ fontSize: 11, color: "#94a3b8", background: "#F1F5F9", borderRadius: 999, padding: "1px 8px", fontWeight: 600 }}>{rub.rules.length}</span>
-                              </summary>
-                              <div style={{ padding: "4px 4px 8px 28px", display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                                {rub.rules.map(rule => {
-                                  const header = [
-                                    rule.article_number != null ? `Art. ${rule.article_number}` : null,
-                                    rule.sub_theme ?? null,
-                                  ].filter(Boolean).join(" · ");
-                                  const chip = valueChip(rule);
-                                  return (
-                                    <div key={rule.id} style={{ paddingTop: 6, borderTop: "1px dashed #E2E8F0" }}>
-                                      {(header || chip) && (
-                                        <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4, flexWrap: "wrap" as const }}>
-                                          {header && <span style={{ fontSize: 11.5, fontWeight: 700, color: "#475569" }}>{header}</span>}
-                                          {chip}
-                                          {rule.relevance === "conditional" && (
-                                            <span style={{ fontSize: 10.5, fontWeight: 700, color: "#92400E", background: "#FEF3C7", borderRadius: 6, padding: "1px 7px", border: "1px solid #FDE68A" }}>Selon projet</span>
-                                          )}
-                                        </div>
-                                      )}
-                                      <div style={{ fontSize: 12.5, color: "#0F172A", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>
-                                        {rule.rule_text}
-                                      </div>
-                                      {rule.cases && rule.cases.length > 0 && (
-                                        <ul style={{ margin: "6px 0 0", paddingLeft: 18, fontSize: 11.5, color: "#374151", lineHeight: 1.5 }}>
-                                          {rule.cases.map((c, i) => (
-                                            <li key={i}>
-                                              {c.condition}
-                                              {c.value != null && (
-                                                <span style={{ fontWeight: 700, color: "#4F46E5" }}> — {c.value}{c.unit ?? ""}</span>
-                                              )}
-                                            </li>
-                                          ))}
-                                        </ul>
-                                      )}
-                                      {rule.conditions && (
-                                        <div style={{ marginTop: 4, fontSize: 11.5, color: "#475569", fontStyle: "italic", lineHeight: 1.5 }}>
-                                          Conditions : {rule.conditions}
-                                        </div>
-                                      )}
-                                      {rule.exceptions && (
-                                        <div style={{ marginTop: 4, fontSize: 11.5, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6, padding: "6px 8px", lineHeight: 1.5 }}>
-                                          <span style={{ fontWeight: 700 }}>Exceptions :</span> {rule.exceptions}
-                                        </div>
-                                      )}
-                                    </div>
-                                  );
-                                })}
-                              </div>
-                            </details>
-                          ))}
-                        </div>
-                      );
-                    })() : pa ? (() => {
-                      const zc = pa.plu_zone?.zone_code ?? pa.db_zone?.code;
-                      return (
-                        <div style={{ fontSize: 12.5, color: "#64748b", padding: "8px 0", lineHeight: 1.55 }}>
-                          <div style={{ display: "flex", alignItems: "flex-start", gap: 8 }}>
-                            <span style={{ fontSize: 16, flexShrink: 0 }}>ℹ️</span>
-                            <div>
-                              <div style={{ fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>Règles non chargées</div>
-                              {zc ? (
-                                <>La zone <code style={{ background: "#F1F5F9", padding: "1px 5px", borderRadius: 4, fontSize: 11.5, color: "#4F46E5", fontWeight: 600 }}>{zc}</code> n'a pas encore de règles indexées dans la base. Le règlement PDF est référencé ci-dessous — relancer l'ingestion du PLU depuis l'écran Paramètres &gt; Documents pour extraire les articles.</>
-                              ) : (
-                                "La zone PLU n'a pas pu être déterminée. Sélectionnez-la manuellement ci-dessus pour charger les règles."
-                              )}
-                            </div>
+                          <div style={{ fontSize: 12.5, color: "#94a3b8", padding: "8px 0" }}>
+                            Zone PLU non identifiée — voir les contraintes ci-contre.
                           </div>
+                        );
+                      }
+                      const ruleCount = pa?.rules?.filter((r) => r.relevance !== "excluded").length ?? 0;
+                      return (
+                        <div>
+                          <div style={{ fontSize: 18, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>
+                            {zc.zone_code}
+                          </div>
+                          <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.5, marginBottom: 12 }}>
+                            {zc.zone_label}
+                          </div>
+                          <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const }}>
+                            {ruleCount > 0 && (
+                              <span style={{ fontSize: 11.5, fontWeight: 600, color: "#4F46E5", background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 6, padding: "3px 9px" }}>
+                                {ruleCount} article{ruleCount > 1 ? "s" : ""} indexé{ruleCount > 1 ? "s" : ""}
+                              </span>
+                            )}
+                            <button
+                              onClick={() => goToInstruction("plu")}
+                              style={{ fontSize: 11.5, fontWeight: 600, color: "#3730A3", background: "white", border: "1px solid #C7D2FE", borderRadius: 6, padding: "3px 9px", cursor: "pointer" }}
+                            >
+                              Confronter aux pièces →
+                            </button>
+                          </div>
+                          {pa?.plu_zone?.plu_nom && (
+                            <div style={{ marginTop: 10, fontSize: 11, color: "#94a3b8", fontStyle: "italic" }}>
+                              Source GPU : {pa.plu_zone.plu_nom}
+                            </div>
+                          )}
                         </div>
                       );
-                    })() : (
-                      <div style={{ fontSize: 12.5, color: "#94a3b8", padding: "8px 0" }}>En attente de l'analyse…</div>
-                    )}
-                    {pa?.plu_zone?.plu_nom && (
-                      <div style={{ marginTop: 8, fontSize: 11, color: "#64748b", fontStyle: "italic" }}>
-                        Source GPU : {pa.plu_zone.plu_nom}
-                      </div>
-                    )}
+                    })()}
                   </div>
 
-                  {/* Documents thématiques de la commune (OAP, PPRI, …) */}
-                  {communeDocs && communeDocs.length > 0 && (() => {
-                    const docTypeMeta: Record<string, { label: string; color: string; icon: string }> = {
-                      ppri: { label: "PPRI", color: "#EF4444", icon: "🌊" },
-                      oap:  { label: "OAP",  color: "#8B5CF6", icon: "📐" },
-                      peb:  { label: "PEB",  color: "#F59E0B", icon: "✈️" },
-                      pprt: { label: "PPRT", color: "#EC4899", icon: "⚠️" },
-                      plh:  { label: "PLH",  color: "#10B981", icon: "🏘️" },
-                      zac:  { label: "ZAC",  color: "#3B82F6", icon: "🏗️" },
-                      autre:{ label: "Autre",color: "#64748B", icon: "📄" },
-                    };
-                    return (
-                      <div style={CARD}>
-                        <SecTitle>Documents d'instruction applicables</SecTitle>
-                        <div style={{ fontSize: 11.5, color: "#64748b", marginBottom: 12, marginTop: -10, lineHeight: 1.5 }}>
-                          Documents thématiques de la commune (OAP, PPRI…) et leur synthèse — l'outil s'en sert pour instruire ce dossier.
+                  {/* Historique SITADEL/ADS — autorisations passées sur la parcelle/rue/commune */}
+                  <div style={CARD}>
+                    <SecTitle
+                      action={
+                        <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 7, overflow: "hidden", background: "white" }}>
+                          {(["auto", "parcel", "street", "commune"] as const).map((s) => (
+                            <button
+                              key={s}
+                              onClick={() => { setSitadelScope(s); setSitadelHistory(null); }}
+                              style={{
+                                padding: "4px 11px",
+                                background: sitadelScope === s ? "#4F46E5" : "white",
+                                color: sitadelScope === s ? "white" : "#475569",
+                                border: "none", fontSize: 11, fontWeight: 600, cursor: "pointer",
+                              }}
+                              title={
+                                s === "auto" ? "Cascade : parcelle → rue → commune"
+                                : s === "parcel" ? "Filtre strict sur la section/numéro cadastral"
+                                : s === "street" ? "Même libellé de voie (ou lieu-dit)"
+                                : "Toutes les autorisations de la commune"
+                              }
+                            >{s === "auto" ? "Auto" : s === "parcel" ? "Parcelle" : s === "street" ? "Rue" : "Commune"}</button>
+                          ))}
                         </div>
-                        <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
-                          {communeDocs.map((d) => {
-                            const meta = docTypeMeta[d.type] ?? docTypeMeta.autre!;
+                      }
+                    >Historique SITADEL/ADS</SecTitle>
+                    <div style={{ fontSize: 11.5, color: "#64748b", marginBottom: 12, marginTop: -10, lineHeight: 1.5 }}>
+                      Autorisations d'urbanisme délivrées par le passé (PC, DP, PA, PD) — source : base ouverte SITADEL (SDES, data.gouv.fr).
+                    </div>
+                    {sitadelLoading ? (
+                      <div style={{ fontSize: 12, color: "#94a3b8", padding: "8px 0" }}>Chargement…</div>
+                    ) : sitadelError ? (
+                      <div style={{ fontSize: 12, color: "#991B1B", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, padding: "8px 10px" }}>
+                        Historique indisponible : {sitadelError}
+                      </div>
+                    ) : !sitadelHistory || sitadelHistory.permits.length === 0 ? (
+                      <div style={{ fontSize: 12, color: "#64748b", padding: "8px 0", lineHeight: 1.5 }}>
+                        Aucun permis trouvé dans SITADEL pour {
+                          sitadelScope === "parcel" ? "cette parcelle"
+                          : sitadelScope === "street" ? "cette rue"
+                          : "cette commune"
+                        } depuis 2013.
+                        {sitadelScope === "parcel" && (
+                          <button
+                            onClick={() => { setSitadelScope("street"); setSitadelHistory(null); }}
+                            style={{ marginLeft: 6, fontSize: 12, color: "#4F46E5", background: "none", border: "none", fontWeight: 600, cursor: "pointer", padding: 0 }}
+                          >Élargir à la rue →</button>
+                        )}
+                        {sitadelScope === "street" && (
+                          <button
+                            onClick={() => { setSitadelScope("commune"); setSitadelHistory(null); }}
+                            style={{ marginLeft: 6, fontSize: 12, color: "#4F46E5", background: "none", border: "none", fontWeight: 600, cursor: "pointer", padding: 0 }}
+                          >Élargir à la commune →</button>
+                        )}
+                      </div>
+                    ) : (() => {
+                      const typeColor: Record<string, { c: string; bg: string }> = {
+                        PC: { c: "#4F46E5", bg: "#EEF2FF" },
+                        DP: { c: "#15803D", bg: "#F0FDF4" },
+                        PA: { c: "#C2410C", bg: "#FFF7ED" },
+                        PD: { c: "#DC2626", bg: "#FEF2F2" },
+                      };
+                      const etatColor: Record<string, string> = {
+                        "3": "#15803D", "5": "#15803D", "6": "#15803D",
+                        "4": "#DC2626", "7": "#DC2626", "8": "#94A3B8",
+                      };
+                      // Bandeau indiquant le niveau effectivement appliqué.
+                      // Surtout utile en mode "auto" pour expliquer pourquoi
+                      // on voit des permis voisins (cascade rue ou commune)
+                      // plutôt que la parcelle elle-même.
+                      const eff = sitadelHistory.effective_scope;
+                      const effLabel =
+                        eff === "parcel" ? { txt: "Parcelle exacte", c: "#15803D", bg: "#F0FDF4", border: "#BBF7D0" }
+                        : eff === "street" ? { txt: "Élargi à la rue (aucun permis sur la parcelle)", c: "#C2410C", bg: "#FFF7ED", border: "#FED7AA" }
+                        : { txt: "Élargi à la commune (aucun permis sur la parcelle ni la rue)", c: "#9A3412", bg: "#FEF3C7", border: "#FDE68A" };
+                      return (
+                        <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
+                          {sitadelScope === "auto" && (
+                            <div style={{ fontSize: 10.5, fontWeight: 600, color: effLabel.c, background: effLabel.bg, border: `1px solid ${effLabel.border}`, borderRadius: 6, padding: "4px 8px", marginBottom: 2 }}>
+                              {effLabel.txt} · {sitadelHistory.total} résultat{sitadelHistory.total > 1 ? "s" : ""}
+                            </div>
+                          )}
+                          {sitadelHistory.permits.slice(0, 8).map((p) => {
+                            const tc = typeColor[p.type_dau] ?? { c: "#64748B", bg: "#F1F5F9" };
+                            const ec = etatColor[p.etat_code] ?? "#64748B";
+                            const date = p.date_autorisation
+                              ? new Date(p.date_autorisation).toLocaleDateString("fr-FR")
+                              : p.an_depot ? `Déposé ${p.an_depot}` : "—";
                             return (
-                              <div key={d.id} style={{ padding: "10px 12px", border: "1px solid #E2E8F0", borderRadius: 9, background: "#FAFBFC" }}>
-                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: d.synthese ? 6 : 0 }}>
-                                  <span style={{ fontSize: 15 }}>{meta.icon}</span>
-                                  <span style={{ background: meta.color, color: "white", borderRadius: 5, padding: "1px 7px", fontSize: 10, fontWeight: 700, letterSpacing: "0.04em" }}>{meta.label}</span>
-                                  <span style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>{d.name}</span>
+                              <div key={`${p.source}-${p.num_dau}`} style={{ padding: "10px 12px", border: "1px solid #E2E8F0", borderRadius: 9, background: "#FAFBFC" }}>
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
+                                  <span style={{ fontSize: 10.5, fontWeight: 700, color: tc.c, background: tc.bg, borderRadius: 5, padding: "2px 7px", letterSpacing: "0.04em" }}>{p.type_dau}</span>
+                                  <span style={{ fontSize: 12, fontWeight: 600, color: "#0F172A", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const }}>
+                                    {p.num_dau}
+                                  </span>
+                                  <span style={{ fontSize: 11, color: "#64748b", flexShrink: 0 }}>{date}</span>
                                 </div>
-                                {d.synthese ? (
-                                  <div style={{ fontSize: 11.5, color: "#374151", lineHeight: 1.55, whiteSpace: "pre-wrap" as const, marginLeft: 23 }}>{d.synthese}</div>
-                                ) : (
-                                  <div style={{ fontSize: 11, color: "#94a3b8", fontStyle: "italic", marginLeft: 23 }}>
-                                    Aucune synthèse rédigée — Paramètres &gt; Documents pour en ajouter une.
-                                  </div>
-                                )}
+                                <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, color: "#475569", flexWrap: "wrap" as const }}>
+                                  <span style={{ color: ec, fontWeight: 600 }}>{p.etat || "—"}</span>
+                                  {p.cadastre.length > 0 && (
+                                    <>
+                                      <span style={{ color: "#CBD5E1" }}>·</span>
+                                      <span>{p.cadastre.map((c) => `${c.section} ${c.numero}`).join(", ")}</span>
+                                    </>
+                                  )}
+                                  {p.nb_logements != null && p.nb_logements > 0 && (
+                                    <>
+                                      <span style={{ color: "#CBD5E1" }}>·</span>
+                                      <span>{p.nb_logements} lgt</span>
+                                    </>
+                                  )}
+                                  {p.surface_creee != null && p.surface_creee > 0 && (
+                                    <>
+                                      <span style={{ color: "#CBD5E1" }}>·</span>
+                                      <span>{Math.round(p.surface_creee)} m²</span>
+                                    </>
+                                  )}
+                                </div>
                               </div>
                             );
                           })}
+                          {sitadelHistory.total > 8 && (
+                            <div style={{ fontSize: 11, color: "#94a3b8", textAlign: "center" as const, paddingTop: 4 }}>
+                              {sitadelHistory.total - 8} autres autorisations non affichées.
+                            </div>
+                          )}
+                          {sitadelHistory.warnings.length > 0 && (
+                            <div style={{ fontSize: 10.5, color: "#92400E", marginTop: 4, fontStyle: "italic" }}>
+                              ⚠ {sitadelHistory.warnings.join(", ")}
+                            </div>
+                          )}
                         </div>
-                      </div>
-                    );
-                  })()}
+                      );
+                    })()}
+                  </div>
 
                   {/* Résumé constructibilité */}
                   {pa?.buildability?.resultSummary && (
@@ -8272,18 +8752,92 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           );
         })()}
 
-        {/* ── INSTRUCTION (ex « Conformité IA ») ── */}
-        {activeTab === "Instruction" && (
-          <div style={{ marginBottom: 20 }}>
-            <RegulatoryChecklist dossierId={dossier.id} />
-          </div>
+        {/* ── CONFORMITÉ IA ── */}
+        {activeTab === "Conformité IA" && (
+          <>
+            {/* Bloc Analyse finale avant arrêté (3.C.5c) — affiché en tête
+                de l'onglet pour que l'instructeur sache à tout moment où il
+                en est sur cette étape juridique. */}
+            <div style={{ marginBottom: 16, padding: 16, borderRadius: 12, border: "1.5px solid #C7D2FE", background: "linear-gradient(135deg, #F5F3FF 0%, #EFF6FF 100%)" }}>
+              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" as const }}>
+                <div style={{ flex: 1, minWidth: 240 }}>
+                  <div style={{ fontSize: 12, fontWeight: 800, color: "#4F46E5", letterSpacing: "0.05em", textTransform: "uppercase" as const, marginBottom: 4 }}>
+                    🛡 Analyse finale avant arrêté
+                  </div>
+                  {conformiteFinale?.status === "done" && conformiteFinale.analyzed_at ? (
+                    <div style={{ fontSize: 12.5, color: "#312E81", lineHeight: 1.5 }}>
+                      Effectuée le <strong>{new Date(conformiteFinale.analyzed_at).toLocaleString("fr-FR")}</strong>.
+                      Cette analyse ne prend en compte que les pièces explicitement <strong>validées</strong> par l'instructeur, et sert d'ancrage juridique à la décision.
+                    </div>
+                  ) : conformiteFinale?.status === "failed" ? (
+                    <div style={{ fontSize: 12.5, color: "#DC2626", lineHeight: 1.5 }}>
+                      Une tentative précédente a échoué. Relance possible une fois les pièces examinées.
+                    </div>
+                  ) : (
+                    <div style={{ fontSize: 12.5, color: "#312E81", lineHeight: 1.5 }}>
+                      À déclencher juste avant la délivrance de l'arrêté.
+                      L'analyse ne prendra en compte <strong>que les pièces validées</strong> (les pièces sans statut ou en complément demandé bloquent le lancement).
+                    </div>
+                  )}
+                </div>
+                <button
+                  onClick={() => void launchConformiteFinale()}
+                  disabled={conformiteFinaleLaunching}
+                  style={{
+                    background: conformiteFinaleLaunching ? "#C7D2FE" : "#4F46E5",
+                    color: "white",
+                    border: "none",
+                    borderRadius: 9,
+                    padding: "9px 16px",
+                    fontSize: 12.5,
+                    fontWeight: 700,
+                    cursor: conformiteFinaleLaunching ? "default" : "pointer",
+                    boxShadow: "0 2px 6px rgba(79,70,229,0.25)",
+                    whiteSpace: "nowrap" as const,
+                  }}
+                >
+                  {conformiteFinaleLaunching
+                    ? "Analyse en cours…"
+                    : conformiteFinale?.status === "done"
+                      ? "↻ Relancer l'analyse finale"
+                      : "Lancer l'analyse finale"}
+                </button>
+              </div>
+              {finaleBlockers && (
+                <div style={{ marginTop: 12, padding: 12, borderRadius: 9, background: "#FEF2F2", border: "1px solid #FECACA" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#991B1B", marginBottom: 6 }}>
+                    ⚠ {finaleBlockers.reason}
+                  </div>
+                  {finaleBlockers.blockers.pieces_sans_statut.length > 0 && (
+                    <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 4 }}>
+                      <strong>{finaleBlockers.blockers.pieces_sans_statut.length} pièce(s) à examiner :</strong>{" "}
+                      {finaleBlockers.blockers.pieces_sans_statut.slice(0, 5).map((p) => p.code_piece || p.nom).join(", ")}
+                      {finaleBlockers.blockers.pieces_sans_statut.length > 5 && ` (+${finaleBlockers.blockers.pieces_sans_statut.length - 5} autres)`}
+                    </div>
+                  )}
+                  {finaleBlockers.blockers.pieces_complement_en_attente.length > 0 && (
+                    <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 4 }}>
+                      <strong>{finaleBlockers.blockers.pieces_complement_en_attente.length} complément(s) en attente :</strong>{" "}
+                      {finaleBlockers.blockers.pieces_complement_en_attente.slice(0, 5).map((p) => p.code_piece || p.nom).join(", ")}
+                    </div>
+                  )}
+                  {finaleBlockers.blockers.aucune_piece_validee && (
+                    <div style={{ fontSize: 12, color: "#7F1D1D" }}>
+                      Aucune pièce n'a encore été validée. Au moins une validation explicite est requise.
+                    </div>
+                  )}
+                  <div style={{ fontSize: 11, color: "#991B1B", marginTop: 6, fontStyle: "italic" as const }}>
+                    Statue les pièces concernées dans l'onglet Documents, puis relance.
+                  </div>
+                </div>
+              )}
+            </div>
+            <div style={{ marginBottom: 20 }}>
+              <RegulatoryChecklist dossierId={dossier.id} onJumpToCitation={jumpFromCitation} />
+            </div>
+          </>
         )}
-        {activeTab === "Instruction" && (
-          <div style={{ margin: "8px 0 12px", fontSize: 11, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase" as const, letterSpacing: "0.06em" }}>
-            Analyse détaillée par pièce — pipeline historique
-          </div>
-        )}
-        {activeTab === "Instruction" && (() => {
+        {activeTab === "Conformité IA" && (() => {
           const report = conformite?.report ?? null;
           const status = conformite?.status ?? "absent";
           const verdicts = report?.rule_verdicts?.verdicts ?? [];
@@ -8316,7 +8870,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 <div style={{ textAlign: "center" as const, padding: "32px 20px", color: "#64748b" }}>
                   <div style={{ fontSize: 44, marginBottom: 12 }}>🔍</div>
                   <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>
-                    Analyse détaillée non encore lancée
+                    Conformité IA non encore lancée
                   </div>
                   <p style={{ fontSize: 13, maxWidth: 520, margin: "0 auto 16px", lineHeight: 1.55 }}>
                     L'analyse croise les <strong>extractions des pièces déposées</strong> avec les <strong>règles PLU</strong> de la zone
@@ -8390,7 +8944,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                             <span style={{ fontSize: 11.5, fontWeight: 700, color: meta.color, background: "white", border: `1px solid ${meta.border}`, borderRadius: 6, padding: "1px 8px" }}>
                               {meta.label}
                             </span>
-                            {v.article && <span style={{ fontSize: 11.5, fontWeight: 600, color: "#475569" }}>{v.article}</span>}
+                            {v.article && <span style={{ fontSize: 11.5, fontWeight: 600, color: "#475569" }}>{linkifyArticles(v.article)}</span>}
                             {v.sub_theme && <span style={{ fontSize: 11.5, color: "#64748b" }}>· {v.sub_theme}</span>}
                           </div>
                           <div style={{ fontSize: 12.5, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>
@@ -8467,9 +9021,77 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         })()}
 
         {/* ── DOCUMENTS ── */}
-        {activeTab === "Documents" && (() => {
+        {activeTab === "Instruction" && (() => {
           const docs = documents ?? [];
           const sel = docs[selectedDoc] ?? null;
+
+          // ── Regroupement des pièces par catégorie (3.C.4) ────────────────
+          // Les pièces déposées partagent un préfixe de code (PC1, PC2,
+          // DP-ABF-NDA, etc.) qui dit à quelle pièce du Cerfa elles
+          // correspondent. On les groupe par catégorie pour que
+          // l'instructeur ait un panneau lisible : "PC2 — Plan de masse"
+          // regroupe les versions successives + un éventuel complément.
+          // L'index original dans le tableau plat `docs` est mémorisé pour
+          // que `setSelectedDoc(i)` continue de fonctionner avec la même
+          // sémantique.
+          const PIECE_CATEGORIES: Array<{ key: string; label: string; codes: string[] }> = [
+            { key: "cerfa", label: "Formulaire CERFA",                       codes: ["CERFA"] },
+            { key: "pc1",   label: "PC1 · Plan de situation",                codes: ["PC1", "DP1", "PD1", "CU1"] },
+            { key: "pc2",   label: "PC2 · Plan de masse",                    codes: ["PC2", "DP2", "PD2"] },
+            { key: "pc3",   label: "PC3 · Plan en coupe",                    codes: ["PC3", "DP3"] },
+            { key: "pc4",   label: "PC4 · Notice descriptive",               codes: ["PC4", "DP4", "PD4"] },
+            { key: "pc5",   label: "PC5 · Plans façades & toitures",         codes: ["PC5"] },
+            { key: "pc6",   label: "PC6 · Insertion paysagère",              codes: ["PC6", "DP6"] },
+            { key: "pc7",   label: "PC7 · Photographies de situation",       codes: ["PC7", "DP7"] },
+            { key: "pc8",   label: "PC8 · Photographie environnement large", codes: ["PC8"] },
+            { key: "pc9",   label: "PC9 · Document graphique d'insertion",   codes: ["PC9"] },
+            { key: "abf",   label: "ABF · Notice & avis",                    codes: ["DP-ABF-NDA", "DP-ABF-FTM", "PCABF"] },
+            { key: "annexe",label: "Annexes",                                codes: ["ANNEXE"] },
+            { key: "other", label: "Autres",                                 codes: [] },
+          ];
+
+          type GroupedItem = { doc: DossierPiece; origIndex: number };
+          const buckets = new Map<string, GroupedItem[]>();
+          PIECE_CATEGORIES.forEach((c) => buckets.set(c.key, []));
+
+          // Quand code_piece n'est pas peuplé (dépôt en annexe libre ou
+          // upload citoyen avant la généralisation des slots), on tente
+          // d'extraire un code depuis le nom du fichier. C'est ce qui
+          // permet de remettre PC2a.pdf dans la rubrique PC2 plutôt que
+          // dans Autres.
+          const extractCodeFromName = (nom: string): string => {
+            // "PC2", "PC2a", "PCMI 04", "DP3", "PD-4"…
+            const m = nom.match(/^(PC|DP|PD|CU|PCMI|DPMI)\s*0*(\d+)/i);
+            if (m) {
+              const prefix = m[1]!.toUpperCase().replace(/MI$/, "");
+              return `${prefix}${m[2]}`;
+            }
+            if (/^Annexe\s/i.test(nom)) return "ANNEXE";
+            if (/^cerfa[\s_-]/i.test(nom)) return "CERFA";
+            return "";
+          };
+
+          docs.forEach((doc, i) => {
+            const codeBase = (doc.code_piece ?? "").toUpperCase();
+            const code = codeBase || extractCodeFromName(doc.nom);
+            // Premier prefix qui matche, "other" si rien.
+            const matched = PIECE_CATEGORIES.find((c) => c.codes.length > 0 && c.codes.some((p) => code.startsWith(p)));
+            buckets.get(matched?.key ?? "other")!.push({ doc, origIndex: i });
+          });
+
+          // Tri intra-groupe : statut d'instructeur (à examiner avant),
+          // puis date de dépôt décroissante (dernière version en haut).
+          const statusOrder: Record<string, number> = { "": 0, complement_demande: 1, valide: 2, rejete: 3 };
+          buckets.forEach((arr) => arr.sort((a, b) => {
+            const sa = statusOrder[a.doc.instructeur_status ?? ""] ?? 99;
+            const sb = statusOrder[b.doc.instructeur_status ?? ""] ?? 99;
+            if (sa !== sb) return sa - sb;
+            return new Date(b.doc.uploaded_at).getTime() - new Date(a.doc.uploaded_at).getTime();
+          }));
+
+          const grouped = PIECE_CATEGORIES
+            .map((c) => ({ key: c.key, label: c.label, items: buckets.get(c.key) ?? [] }))
+            .filter((g) => g.items.length > 0);
           const fmtSize = (n: number) => n < 1024 ? `${n} o` : n < 1024 * 1024 ? `${(n / 1024).toFixed(1)} Ko` : `${(n / (1024 * 1024)).toFixed(1)} Mo`;
           const fmtUploaded = (iso: string) => {
             const d = new Date(iso);
@@ -8491,10 +9113,150 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             return { label: "Déposé", bg: "#EFF6FF", color: "#1D4ED8", border: "#BFDBFE" };
           };
 
+          // Sélecteur de mode d'affichage — persisté par instructeur.
+          // apercu  : 3 colonnes historiques · compare : pièce ↔ doc règlementaire (split)
+          // lecture : pièce plein écran, panneaux escamotés en bandes
+          // Un bandeau passe en bande escamotée soit en mode Lecture (les deux),
+          // soit quand l'instructeur l'a explicitement replié (n'importe quel mode).
+          const leftIsStripe = docsViewMode === "lecture" || docsLeftCollapsed;
+          const rightIsStripe = docsViewMode === "lecture" || docsRightCollapsed;
+          const leftW = leftIsStripe ? "44px" : (docsViewMode === "compare" ? "240px" : "280px");
+          const rightW = rightIsStripe ? "44px" : "260px";
+          const gridTemplate = `${leftW} 1fr ${rightW}`;
+          // Déplier un bandeau : si on était en Lecture, on en sort en gardant
+          // l'autre bandeau replié pour préserver la sensation de focus.
+          const expandLeft = () => {
+            if (docsViewMode === "lecture") { setDocsViewMode("apercu"); setDocsRightCollapsed(true); }
+            setDocsLeftCollapsed(false);
+          };
+          const expandRight = () => {
+            if (docsViewMode === "lecture") { setDocsViewMode("apercu"); setDocsLeftCollapsed(true); }
+            setDocsRightCollapsed(false);
+          };
+          // Bouton « replier » discret posé dans l'en-tête d'un bandeau.
+          const CollapseBtn = ({ side, onClick }: { side: "left" | "right"; onClick: () => void }) => (
+            <button
+              type="button"
+              onClick={onClick}
+              title={`Replier le panneau ${side === "left" ? "de gauche" : "de droite"}`}
+              style={{
+                border: "1px solid #E2E8F0", background: "white", borderRadius: 6,
+                width: 22, height: 22, lineHeight: 1, cursor: "pointer", color: "#64748b",
+                fontSize: 12, fontWeight: 700, flexShrink: 0, padding: 0,
+                display: "inline-flex", alignItems: "center", justifyContent: "center",
+              }}
+            >
+              {side === "left" ? "‹" : "›"}
+            </button>
+          );
+          const stripeStyle: React.CSSProperties = {
+            background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 9,
+            display: "flex", flexDirection: "column", alignItems: "center",
+            justifyContent: "flex-start", padding: "14px 0", gap: 8,
+            cursor: "pointer", color: "#64748b",
+          };
+          const ModeBtn = ({ value, label, icon, title }: { value: "apercu" | "compare" | "lecture"; label: string; icon: string; title: string }) => (
+            <button
+              type="button"
+              onClick={() => setDocsViewMode(value)}
+              title={title}
+              style={{
+                padding: "5px 12px", border: "none",
+                borderLeft: value !== "apercu" ? "1px solid #E2E8F0" : "none",
+                background: docsViewMode === value ? "#4F46E5" : "white",
+                color: docsViewMode === value ? "white" : "#475569",
+                fontSize: 12, fontWeight: 600, cursor: "pointer",
+                display: "inline-flex", alignItems: "center", gap: 5,
+              }}
+            >
+              <span style={{ fontSize: 13 }}>{icon}</span>{label}
+            </button>
+          );
+
+          // Split pièce ↔ document réglementaire. Défini une seule fois puis
+          // rendu soit dans la grille, soit dans l'overlay grand écran — jamais
+          // les deux (un seul PdfAnnotator monté à la fois).
+          const compareSplit = (
+            <ResizableSplit
+              storageKey="heureka.docsCompareSplitPct"
+              left={
+                <div style={{ height: "100%", background: "#F8FAFC", display: "flex", flexDirection: "column" }}>
+                  <div style={{ padding: "8px 12px", borderBottom: "1px solid #E2E8F0", fontSize: 12, fontWeight: 600, color: "#1E293B", background: "white" }}>
+                    {sel?.nom ?? "Sélectionne une pièce à gauche"}
+                  </div>
+                  <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "stretch", justifyContent: "stretch", background: "#0F172A0A" }}>
+                    {sel ? (
+                      (sel.type ?? "").toLowerCase().startsWith("image/") ? (
+                        <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
+                          <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                        </div>
+                      ) : (sel.type === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf")) ? (
+                        <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+                          <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
+                        </div>
+                      ) : (
+                        <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, padding: 24, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}>Aperçu indisponible pour ce format</div>
+                      )
+                    ) : (
+                      <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center" }}>Sélectionne une pièce à gauche.</div>
+                    )}
+                  </div>
+                </div>
+              }
+              right={
+                <div style={{ height: "100%" }}>
+                  <RegulatoryDocViewer
+                    communeName={dossier.commune ?? ""}
+                    selectedDocId={docsRegulatoryDocId}
+                    onSelectDoc={(id) => {
+                      setDocsRegulatoryDocId(id);
+                      setDocsRegulatoryDocTypeHint(null);
+                      setDocsRegulatoryDocPage(null);
+                    }}
+                    preferredDocType={docsRegulatoryDocTypeHint}
+                    page={docsRegulatoryDocPage}
+                  />
+                </div>
+              }
+            />
+          );
+
           return (
-            <div style={{ display: "grid", gridTemplateColumns: "280px 1fr 260px", gap: 16 }}>
-              <div style={CARD}>
-                <SecTitle>Pièces du dossier</SecTitle>
+            <>
+              <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                {docsViewMode === "compare" && (
+                  <button
+                    type="button"
+                    onClick={() => setCompareFullscreen(true)}
+                    title="Ouvrir la comparaison en grand écran (Échap pour quitter)"
+                    style={{
+                      border: "1px solid #E2E8F0", background: "white", borderRadius: 8,
+                      padding: "5px 12px", fontSize: 12, fontWeight: 600, color: "#475569",
+                      cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5,
+                      boxShadow: "0 1px 2px rgba(0,0,0,0.04)",
+                    }}
+                  >
+                    <span style={{ fontSize: 13 }}>⛶</span>Grand écran
+                  </button>
+                )}
+                <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden", background: "white", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+                  <ModeBtn value="apercu"  label="Aperçu"   icon="⊞" title="Pièces · viewer · annotation" />
+                  <ModeBtn value="compare" label="Comparer" icon="❘❘" title="Pièce et document réglementaire côte à côte" />
+                  <ModeBtn value="lecture" label="Lecture"  icon="📖" title="Pièce plein écran, panneaux escamotés" />
+                </div>
+              </div>
+            <div style={{ display: "grid", gridTemplateColumns: gridTemplate, gap: 16, alignItems: "start" }}>
+              {leftIsStripe ? (
+                <div style={stripeStyle} onClick={expandLeft} title="Déplier le panneau Pièces">
+                  <span style={{ fontSize: 14 }}>›</span>
+                  <span style={{ fontSize: 10, letterSpacing: "0.08em", writingMode: "vertical-rl", transform: "rotate(180deg)", textTransform: "uppercase" }}>Pièces ({docs.length})</span>
+                </div>
+              ) : (
+              <div style={{ ...CARD, maxHeight: "calc(100vh - 220px)", overflowY: "auto" as const }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                  <SecTitle>Pièces du dossier</SecTitle>
+                  <CollapseBtn side="left" onClick={() => setDocsLeftCollapsed(true)} />
+                </div>
                 {documentsLoading ? (
                   <div style={{ textAlign: "center" as const, padding: "20px 0", fontSize: 12, color: "#64748b" }}>Chargement…</div>
                 ) : docs.length === 0 ? (
@@ -8503,8 +9265,31 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     Aucune pièce déposée.
                   </div>
                 ) : (
-                  <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
-                    {docs.map((doc, i) => {
+                  <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+                    {grouped.map((group) => {
+                    const isCollapsed = collapsedDocCategories.has(group.key);
+                    return (
+                    <div key={group.key}>
+                      <button
+                        type="button"
+                        onClick={() => toggleDocCategory(group.key)}
+                        style={{
+                          width: "100%", textAlign: "left" as const, background: "transparent", border: "none",
+                          padding: "4px 4px 6px", cursor: "pointer",
+                          display: "flex", alignItems: "center", gap: 6,
+                          fontSize: 10.5, fontWeight: 700, color: "#475569",
+                          textTransform: "uppercase" as const, letterSpacing: "0.06em",
+                          fontFamily: "inherit",
+                        }}
+                        title={isCollapsed ? "Déplier la catégorie" : "Replier la catégorie"}
+                      >
+                        <span style={{ fontSize: 9, color: "#94a3b8", display: "inline-block", width: 8, transition: "transform 0.15s", transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}>▾</span>
+                        <span>{group.label}</span>
+                        <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600 }}>({group.items.length})</span>
+                      </button>
+                      {!isCollapsed && (
+                      <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
+                    {group.items.map(({ doc, origIndex: i }) => {
                       const ext = extOf(doc.type, doc.nom);
                       const status = scoreToStatus(doc.analyse_ia?.score);
                       const instMeta: Record<string, { label: string; bg: string; color: string; border: string }> = {
@@ -8535,6 +9320,17 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                               {inst && (
                                 <span style={{ fontSize: 10.5, fontWeight: 700, color: inst.color, background: inst.bg, borderRadius: 5, padding: "1px 6px", border: `1px solid ${inst.border}` }}>{inst.label}</span>
                               )}
+                              {/* Badges de traitement IA — n'apparaissent que lors d'anomalies ou
+                                  d'attentes. Quand tout est OK le `status.label` ci-dessus suffit. */}
+                              {(doc.ocr_status === "processing" || doc.ocr_status === "pending") && (
+                                <span title="OCR en cours sur ce document" style={{ fontSize: 10.5, fontWeight: 700, color: "#C2410C", background: "#FFF7ED", borderRadius: 5, padding: "1px 6px", border: "1px solid #FED7AA" }}>↻ OCR</span>
+                              )}
+                              {doc.ocr_status === "failed" && (
+                                <span title="OCR échoué — l'IA ne peut pas lire ce document" style={{ fontSize: 10.5, fontWeight: 700, color: "#DC2626", background: "#FEE2E2", borderRadius: 5, padding: "1px 6px", border: "1px solid #FECACA" }}>⚠ OCR</span>
+                              )}
+                              {(doc.ocr_status === "done" || doc.ocr_status === "skipped") && !doc.analyse_ia && (
+                                <span title="OCR terminé, analyse IA en cours ou non lancée" style={{ fontSize: 10.5, fontWeight: 700, color: "#C2410C", background: "#FFF7ED", borderRadius: 5, padding: "1px 6px", border: "1px solid #FED7AA" }}>↻ IA</span>
+                              )}
                               {hasNote && (
                                 <span title="Annotation présente" style={{ fontSize: 10.5, color: "#4F46E5" }}>📝</span>
                               )}
@@ -8543,27 +9339,53 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         </button>
                       );
                     })}
+                      </div>
+                      )}
+                    </div>
+                    );
+                    })}
                   </div>
                 )}
               </div>
-              <div style={{ ...CARD, display: "flex", flexDirection: "column" as const }}>
+              )}
+              {docsViewMode === "compare" ? (
+              // Hauteur dynamique : la comparaison s'étire pour occuper toute la
+              // hauteur du cadre (au lieu d'un 640px figé). minHeight garde un
+              // viewer exploitable sur petit écran.
+              <div style={{ ...CARD, padding: 0, minWidth: 0, display: "flex", flexDirection: "column" as const, height: "calc(100vh - 210px)", minHeight: 460, overflow: "hidden" }}>
+                <div style={{ flex: 1, minHeight: 0 }}>
+                  {compareFullscreen ? (
+                    <div style={{ height: "100%", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 12, color: "#64748b", fontSize: 13 }}>
+                      <div style={{ fontSize: 34 }}>⛶</div>
+                      <div>Comparaison ouverte en grand écran</div>
+                      <button
+                        type="button"
+                        onClick={() => setCompareFullscreen(false)}
+                        style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, color: "#475569", cursor: "pointer" }}
+                      >
+                        Réduire
+                      </button>
+                    </div>
+                  ) : compareSplit}
+                </div>
+              </div>
+              ) : (
+              <div style={{ ...CARD, minWidth: 0, display: "flex", flexDirection: "column" as const }}>
                 <SecTitle>{`Aperçu : ${sel?.nom ?? "—"}`}</SecTitle>
-                <div style={{ flex: 1, background: "#F8FAFC", borderRadius: 11, minHeight: 340, border: "1px solid #EAECF0", overflow: "hidden", position: "relative" as const, display: "flex", flexDirection: "column" as const }}>
+                <div style={{ flex: 1, minWidth: 0, background: "#F8FAFC", borderRadius: 11, minHeight: 340, border: "1px solid #EAECF0", overflow: "hidden", position: "relative" as const, display: "flex", flexDirection: "column" as const }}>
                   {sel ? (() => {
                     const t = (sel.type ?? "").toLowerCase();
                     const isImage = t.startsWith("image/");
                     const isPdf = t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf");
                     return (
                       <>
-                        <div style={{ flex: 1, minHeight: 340, background: "#0F172A0A", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                        <div style={{ flex: 1, minHeight: 340, background: "#0F172A0A", display: "flex", alignItems: isImage ? "center" : "stretch", justifyContent: isImage ? "center" : "stretch" }}>
                           {isImage ? (
                             <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: 520, objectFit: "contain", display: "block" }} />
                           ) : isPdf ? (
-                            <iframe
-                              src={sel.url}
-                              title={sel.nom}
-                              style={{ width: "100%", height: 560, border: "none", background: "white" }}
-                            />
+                            <div style={{ flex: 1, minWidth: 0, minHeight: 560 }}>
+                              <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
+                            </div>
                           ) : (
                             <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 12, padding: 32, textAlign: "center" as const }}>
                               <div style={{ width: 64, height: 80, background: "white", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", boxShadow: "0 4px 12px rgba(0,0,0,0.1)", border: "1px solid #E2E8F0" }}>
@@ -8593,7 +9415,17 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   )}
                 </div>
               </div>
+              )}
+              {rightIsStripe ? (
+                <div style={stripeStyle} onClick={expandRight} title="Déplier le panneau Annotation">
+                  <span style={{ fontSize: 14 }}>‹</span>
+                  <span style={{ fontSize: 10, letterSpacing: "0.08em", writingMode: "vertical-rl", transform: "rotate(180deg)", textTransform: "uppercase" }}>Annotation</span>
+                </div>
+              ) : (
               <div style={CARD}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "flex-start", marginBottom: 10 }}>
+                  <CollapseBtn side="right" onClick={() => setDocsRightCollapsed(true)} />
+                </div>
                 {/* Annotation de l'instructeur — toujours en haut du panneau de droite */}
                 {sel && (() => {
                   const draftKey = sel.id;
@@ -8712,14 +9544,29 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                             )}
                             {e.echelle && <span style={{ marginLeft: 8 }}><span style={{ color: "#94a3b8" }}>Échelle :</span> <strong>{e.echelle}</strong></span>}
                           </div>
-                          {e.citations && e.citations.length > 0 && (
-                            <div style={{ marginTop: 6 }}>
-                              <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", letterSpacing: "0.04em", marginBottom: 3 }}>CITATIONS</div>
-                              <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, color: "#374151", lineHeight: 1.5 }}>
-                                {e.citations.slice(0, 6).map((c, i) => <li key={i}>{c}</li>)}
-                              </ul>
-                            </div>
-                          )}
+                          {(() => {
+                            const cites = (e.citations ?? [])
+                              .map((c) => {
+                                if (typeof c === "string") return { text: c, page: null as number | null };
+                                const text = typeof c?.text === "string" ? c.text : "";
+                                const page = typeof c?.page === "number" ? c.page : null;
+                                return text ? { text, page } : null;
+                              })
+                              .filter((c): c is { text: string; page: number | null } => c !== null);
+                            return cites.length > 0 && (
+                              <div style={{ marginTop: 6 }}>
+                                <div style={{ fontSize: 10.5, fontWeight: 700, color: "#475569", letterSpacing: "0.04em", marginBottom: 3 }}>CITATIONS</div>
+                                <ul style={{ margin: 0, paddingLeft: 16, fontSize: 11, color: "#374151", lineHeight: 1.5 }}>
+                                  {cites.slice(0, 6).map((c, i) => (
+                                    <li key={i}>
+                                      {c.text}
+                                      {c.page !== null && <span style={{ color: "#94a3b8" }}> (p. {c.page})</span>}
+                                    </li>
+                                  ))}
+                                </ul>
+                              </div>
+                            );
+                          })()}
                           {e.missing_elements && e.missing_elements.length > 0 && (
                             <div style={{ marginTop: 6, padding: "6px 9px", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 6 }}>
                               <div style={{ fontSize: 10.5, fontWeight: 700, color: "#92400E", letterSpacing: "0.04em", marginBottom: 3 }}>ÉLÉMENTS ABSENTS</div>
@@ -8755,7 +9602,40 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   );
                 })()}
               </div>
+              )}
             </div>
+            {/* Grand écran : overlay plein viewport réutilisant le même split.
+                Rendu hors de la grille pour un position:fixed propre. */}
+            {docsViewMode === "compare" && compareFullscreen && (
+              <div style={{ position: "fixed", inset: 0, zIndex: 2000, background: "white", display: "flex", flexDirection: "column" }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid #E2E8F0", background: "#F8FAFC" }}>
+                  <span style={{ fontSize: 13, fontWeight: 700, color: "#1E293B", whiteSpace: "nowrap" }}>⛶ Comparaison — grand écran</span>
+                  {docs.length > 0 && (
+                    <select
+                      value={selectedDoc}
+                      onChange={(e) => setSelectedDoc(Number(e.target.value))}
+                      title="Pièce comparée"
+                      style={{ maxWidth: 360, fontSize: 12, padding: "5px 8px", borderRadius: 7, border: "1px solid #E2E8F0", background: "white", color: "#374151", cursor: "pointer" }}
+                    >
+                      {docs.map((doc, i) => (
+                        <option key={doc.id} value={i}>{doc.nom}</option>
+                      ))}
+                    </select>
+                  )}
+                  <div style={{ flex: 1 }} />
+                  <span style={{ fontSize: 11, color: "#94a3b8" }}>Échap pour quitter</span>
+                  <button
+                    type="button"
+                    onClick={() => setCompareFullscreen(false)}
+                    style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 600, color: "#475569", cursor: "pointer" }}
+                  >
+                    Quitter ✕
+                  </button>
+                </div>
+                <div style={{ flex: 1, minHeight: 0 }}>{compareSplit}</div>
+              </div>
+            )}
+            </>
           );
         })()}
 
@@ -9023,39 +9903,407 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 }
 
 
-function NouveauDossierModal({ onClose }: { onClose: () => void }) {
-  const [mode, setMode] = useState<"choose" | "manual" | "ocr">("choose");
-  const [ocrFile, setOcrFile] = useState<string | null>(null);
-  const [ocrScanning, setOcrScanning] = useState(false);
-  const [ocrDone, setOcrDone] = useState(false);
+type NouveauDossierType =
+  | "permis_de_construire"
+  | "permis_de_construire_mi"
+  | "declaration_prealable"
+  | "permis_amenager"
+  | "permis_demolir"
+  | "permis_lotir"
+  | "certificat_urbanisme"
+  | "certificat_urbanisme_a"
+  | "certificat_urbanisme_b";
 
-  const handleOcrFile = (e: React.ChangeEvent<HTMLInputElement>) => {
-    if (e.target.files?.[0]) {
-      setOcrFile(e.target.files[0].name);
-      setOcrScanning(true);
-      setTimeout(() => { setOcrScanning(false); setOcrDone(true); }, 2000);
-    }
-  };
+type NouveauDossierForm = {
+  type: NouveauDossierType;
+  petitionnaire_prenom: string;
+  petitionnaire_nom: string;
+  petitionnaire_email: string;
+  adresse: string;
+  code_postal: string;
+  commune: string;
+  parcelle: string;
+  surface_plancher: string;
+  description: string;
+  date_depot: string;
+  instructeur_id: string;
+};
 
-  const Overlay = ({ children }: { children: React.ReactNode }) => (
+const DOSSIER_TYPE_OPTIONS: { value: NouveauDossierType; label: string }[] = [
+  { value: "permis_de_construire_mi", label: "Permis de construire — Maison individuelle (PCMI)" },
+  { value: "permis_de_construire", label: "Permis de construire (PC)" },
+  { value: "declaration_prealable", label: "Déclaration préalable (DP)" },
+  { value: "permis_amenager", label: "Permis d'aménager (PA)" },
+  { value: "permis_demolir", label: "Permis de démolir (PD)" },
+  { value: "certificat_urbanisme_a", label: "Certificat d'urbanisme informatif (CUa)" },
+  { value: "certificat_urbanisme_b", label: "Certificat d'urbanisme opérationnel (CUb)" },
+];
+
+type OcrExtraction = {
+  type: NouveauDossierType | null;
+  numero_cerfa: string | null;
+  petitionnaire_prenom: string | null;
+  petitionnaire_nom: string | null;
+  petitionnaire_email: string | null;
+  siret: string | null;
+  adresse: string | null;
+  code_postal: string | null;
+  commune: string | null;
+  parcelle: string | null;
+  surface_plancher: string | null;
+  description: string | null;
+  confidence: number;
+};
+
+// Heuristique : à quel code_piece (DP/PC*) correspond le fichier d'après son nom ?
+// Permet de pré-coder la pièce avant upload pour que l'extracteur côté serveur
+// reçoive un hint pertinent (plan_masse, plan_facade, etc.).
+function guessCodePieceFromName(name: string): string {
+  const n = name.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
+  if (/cerfa|13406|13703|13409|13405|13410/.test(n)) return "CERFA";
+  if (/situation|dp1\b|pc1\b/.test(n)) return "DP1";
+  if (/masse|dp2\b|pc2\b/.test(n)) return "DP2";
+  if (/coupe|dp3\b|pc3\b/.test(n)) return "DP3";
+  if (/notice|dp4\b|pc4\b/.test(n)) return "DP4";
+  if (/facade|dp5\b|pc5\b/.test(n)) return "DP5";
+  if (/insertion|paysag|pc6\b/.test(n)) return "PC6";
+  if (/photo.*proche|dp7\b|pc7\b/.test(n)) return "PC7";
+  if (/photo.*lointain|dp8\b|pc8\b/.test(n)) return "PC8";
+  return "";
+}
+
+type StagedFile = {
+  id: string;
+  file: File;
+  isCerfa: boolean;
+  status: "queued" | "uploading" | "done" | "error";
+  error?: string | null;
+};
+
+// Hoistés hors du composant : redéfinis à chaque render, React voyait un nouveau
+// type → unmount/remount complet du sous-arbre à chaque setState, ce qui faisait
+// "fermer" la modale (clic accidentel sur le backdrop pendant la reconstruction
+// du DOM, perte du focus, flickering).
+function NouveauDossierOverlay({ children, onClose }: { children: React.ReactNode; onClose: () => void }) {
+  return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
       <div style={{ background: "white", borderRadius: 16, width: 580, maxWidth: "92vw", boxShadow: "0 20px 60px rgba(0,0,0,0.22)", maxHeight: "90vh", overflowY: "auto" }} onClick={e => e.stopPropagation()}>
         {children}
       </div>
     </div>
   );
+}
 
-  const ModalHeader = ({ title, back }: { title: string; back?: () => void }) => (
+function NouveauDossierModalHeader({ title, back, onClose }: { title: string; back?: () => void; onClose: () => void }) {
+  return (
     <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "18px 24px", borderBottom: "1px solid #E2E8F0" }}>
       {back && <button onClick={back} style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 18, lineHeight: 1, padding: 0 }}>←</button>}
       <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", flex: 1 }}>{title}</div>
       <button onClick={onClose} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 20, color: "#94a3b8", lineHeight: 1 }}>×</button>
     </div>
   );
+}
+
+function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commune: string }) {
+  const [mode, setMode] = useState<"choose" | "manual" | "ocr">("choose");
+  const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
+
+  const emptyForm: NouveauDossierForm = {
+    type: "permis_de_construire",
+    petitionnaire_prenom: "",
+    petitionnaire_nom: "",
+    petitionnaire_email: "",
+    adresse: "",
+    code_postal: "",
+    commune,
+    parcelle: "",
+    surface_plancher: "",
+    description: "",
+    date_depot: today,
+    instructeur_id: "",
+  };
+  const [form, setForm] = useState<NouveauDossierForm>(emptyForm);
+  const [instructeurs, setInstructeurs] = useState<{ id: string; prenom: string; nom: string }[]>([]);
+  const [submitting, setSubmitting] = useState(false);
+  const [submitError, setSubmitError] = useState<string | null>(null);
+  const [uploadProgress, setUploadProgress] = useState<{ done: number; total: number } | null>(null);
+  // Une fois le dossier créé et les pièces déposées, on reste sur cet écran
+  // de confirmation : l'OCR/IA tourne en arrière-plan et la cloche notifiera
+  // l'instructeur quand tout sera prêt. On ne redirige plus immédiatement
+  // vers le détail du dossier pour ne pas laisser croire qu'il est déjà
+  // analysable.
+  const [createdSummary, setCreatedSummary] = useState<{ id: string; numero: string; piecesCount: number } | null>(null);
+
+  // OCR state — multi-fichiers : le CERFA pré-remplit le formulaire, les
+  // autres pièces sont mises en attente et uploadées après création du dossier.
+  const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
+  const [cerfaScanning, setCerfaScanning] = useState(false);
+  const [cerfaDone, setCerfaDone] = useState(false);
+  const [ocrError, setOcrError] = useState<string | null>(null);
+  const [ocrNumero, setOcrNumero] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.get<{ id: string; prenom: string; nom: string }[]>("/mairie/instructeurs")
+      .then(setInstructeurs)
+      .catch(() => setInstructeurs([]));
+  }, []);
+
+  // Garde le champ "commune" du formulaire en phase avec la commune active
+  // si l'opérateur change de commune dans la sidebar tant que la modale est ouverte.
+  useEffect(() => {
+    setForm(prev => prev.commune ? prev : { ...prev, commune });
+  }, [commune]);
+
+  const setField = <K extends keyof NouveauDossierForm>(key: K, value: NouveauDossierForm[K]) =>
+    setForm(prev => ({ ...prev, [key]: value }));
+
+  // Lance l'extraction CERFA sur le fichier marqué comme CERFA. Appelé soit
+  // au moment où l'utilisateur ajoute des fichiers (le premier CERFA détecté
+  // est extrait), soit quand l'utilisateur change le fichier désigné CERFA.
+  const runCerfaExtract = async (file: File) => {
+    setOcrError(null);
+    setCerfaScanning(true);
+    setCerfaDone(false);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const res = await fetch("/api/mairie/ocr-cerfa", {
+        method: "POST",
+        credentials: "include",
+        body: formData,
+      });
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({})) as { error?: string };
+        // 413 = Payload Too Large (proxy ou multer 60 Mo). Inutile d'afficher
+        // un code HTTP brut au déposant : on traduit en message actionnable.
+        if (res.status === 413) {
+          throw new Error("Fichier trop volumineux pour l'extraction (limite ~60 Mo).");
+        }
+        throw new Error(body.error ?? `Erreur ${res.status}`);
+      }
+      const data = await res.json() as OcrExtraction;
+      setForm(prev => ({
+        ...prev,
+        type: data.type ?? prev.type,
+        petitionnaire_prenom: data.petitionnaire_prenom ?? prev.petitionnaire_prenom,
+        petitionnaire_nom: data.petitionnaire_nom ?? prev.petitionnaire_nom,
+        petitionnaire_email: data.petitionnaire_email ?? prev.petitionnaire_email,
+        adresse: data.adresse ?? prev.adresse,
+        code_postal: data.code_postal ?? prev.code_postal,
+        commune: data.commune ?? prev.commune,
+        parcelle: data.parcelle ?? prev.parcelle,
+        surface_plancher: data.surface_plancher ?? prev.surface_plancher,
+        description: data.description ?? prev.description,
+      }));
+      setOcrNumero(data.numero_cerfa);
+      setCerfaDone(true);
+    } catch (err) {
+      setOcrError(err instanceof Error ? err.message : "Échec de l'extraction OCR");
+    } finally {
+      setCerfaScanning(false);
+    }
+  };
+
+  const addFiles = (files: FileList | File[]) => {
+    const arr = Array.from(files);
+    if (arr.length === 0) return;
+    setStagedFiles(prev => {
+      const next = [...prev];
+      const hasCerfa = next.some(f => f.isCerfa);
+      for (const file of arr) {
+        // Évite les doublons exacts (nom + taille) si l'opérateur ré-importe.
+        if (next.some(f => f.file.name === file.name && f.file.size === file.size)) continue;
+        const guessed = guessCodePieceFromName(file.name);
+        const looksLikeCerfa = guessed === "CERFA";
+        next.push({
+          id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+          file,
+          // Premier CERFA détecté → marqué CERFA ; sinon si on n'a encore rien
+          // de désigné CERFA et que c'est un PDF, on prend le 1er PDF par défaut.
+          isCerfa: looksLikeCerfa && !hasCerfa,
+          status: "queued",
+        });
+      }
+      // Si toujours pas de CERFA désigné, prend le premier PDF (fallback).
+      if (!next.some(f => f.isCerfa)) {
+        const firstPdf = next.find(f => /\.pdf$/i.test(f.file.name));
+        if (firstPdf) firstPdf.isCerfa = true;
+      }
+      return next;
+    });
+  };
+
+  // Quand le CERFA désigné change, déclenche l'extraction. On lit la liste
+  // mise à jour via la callback de setStagedFiles pour ne pas dépendre de
+  // l'état périmé.
+  useEffect(() => {
+    const cerfa = stagedFiles.find(f => f.isCerfa);
+    if (!cerfa) {
+      setCerfaDone(false);
+      setOcrNumero(null);
+      return;
+    }
+    // Re-extraction uniquement quand la cible change.
+    void runCerfaExtract(cerfa.file);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [stagedFiles.find(f => f.isCerfa)?.id]);
+
+  const setCerfa = (id: string) => {
+    setStagedFiles(prev => prev.map(f => ({ ...f, isCerfa: f.id === id })));
+  };
+  const removeFile = (id: string) => {
+    setStagedFiles(prev => {
+      const next = prev.filter(f => f.id !== id);
+      // Si on a retiré le CERFA, promeut le premier fichier restant.
+      if (!next.some(f => f.isCerfa) && next.length > 0) next[0]!.isCerfa = true;
+      return next;
+    });
+  };
+
+  const submit = async () => {
+    if (submitting) return;
+    setSubmitError(null);
+    if (!form.petitionnaire_nom.trim()) {
+      setSubmitError("Le nom du pétitionnaire est obligatoire.");
+      return;
+    }
+    setSubmitting(true);
+    try {
+      const payload: Record<string, unknown> = {
+        type: form.type,
+        petitionnaire_nom: form.petitionnaire_nom.trim(),
+        petitionnaire_prenom: form.petitionnaire_prenom.trim() || undefined,
+        petitionnaire_email: form.petitionnaire_email.trim() || undefined,
+        adresse: form.adresse.trim() || undefined,
+        code_postal: form.code_postal.trim() || undefined,
+        commune: form.commune.trim() || undefined,
+        parcelle: form.parcelle.trim() || undefined,
+        surface_plancher: form.surface_plancher.trim() || undefined,
+        description: form.description.trim() || undefined,
+        date_depot: form.date_depot || undefined,
+        instructeur_id: form.instructeur_id || undefined,
+      };
+      if (ocrNumero) {
+        payload["metadata"] = { numero_cerfa: ocrNumero, created_via: "ocr" };
+      } else if (mode === "manual") {
+        payload["metadata"] = { created_via: "manual" };
+      }
+      const created = await api.post<{ id: string; numero: string }>("/mairie/dossiers", payload);
+
+      // Upload séquentiel des pièces : on évite de saturer la bande passante
+      // côté navigateur (CERFAs scannés à 15 Mo par fichier × N pièces) et on
+      // garde un feedback de progression simple. Une erreur sur une pièce
+      // n'empêche pas les suivantes : le dossier est déjà créé, l'opérateur
+      // pourra rejouer l'ajout depuis l'écran du dossier.
+      //
+      // Note : depuis le passage de l'OCR en asynchrone côté back, chaque
+      // upload retourne en quelques centaines de ms (le temps d'écrire le
+      // fichier en stockage et la ligne en DB). L'analyse IA tourne ensuite
+      // en arrière-plan et l'instructeur est notifié quand toutes les pièces
+      // sont analysées — voir finalize-upload-session ci-dessous.
+      if (stagedFiles.length > 0) {
+        setUploadProgress({ done: 0, total: stagedFiles.length });
+        let done = 0;
+        const errors: string[] = [];
+        for (const f of stagedFiles) {
+          try {
+            const fd = new FormData();
+            fd.append("file", f.file);
+            const code = f.isCerfa ? "CERFA" : guessCodePieceFromName(f.file.name);
+            if (code) fd.append("code_piece", code);
+            fd.append("nom_piece", f.file.name);
+            const res = await fetch(`/api/mairie/dossiers/${created.id}/pieces/upload`, {
+              method: "POST",
+              credentials: "include",
+              body: fd,
+            });
+            if (!res.ok) {
+              const body = await res.json().catch(() => ({})) as { error?: string };
+              errors.push(`${f.file.name} : ${body.error ?? `Erreur ${res.status}`}`);
+            }
+          } catch (err) {
+            errors.push(`${f.file.name} : ${err instanceof Error ? err.message : "échec"}`);
+          } finally {
+            done += 1;
+            setUploadProgress({ done, total: stagedFiles.length });
+          }
+        }
+        if (errors.length > 0) {
+          // Best-effort : on prévient mais on continue vers le détail du dossier
+          // pour que l'opérateur voie l'état réel et rejoue les uploads ratés.
+          console.warn("[NouveauDossier] uploads en échec :", errors);
+        }
+
+        // Signale au back que l'agent a fini de déposer les pièces. Tant que
+        // cet appel n'a pas eu lieu, la notification "dossier prêt" reste
+        // bloquée — ça évite le faux positif quand l'OCR de la pièce 1 finit
+        // avant que la pièce 2 ne soit uploadée.
+        try {
+          await api.post(`/mairie/dossiers/${created.id}/pieces/finalize-upload-session`, {});
+        } catch (err) {
+          // Best-effort : l'instructeur recevra quand même la notification au
+          // prochain événement sur le dossier, et l'agent voit l'état réel
+          // sur l'écran du dossier.
+          console.warn("[NouveauDossier] finalize-upload-session:", err);
+        }
+      }
+
+      // On NE redirige PAS vers le détail du dossier : l'OCR/IA des pièces
+      // tourne en arrière-plan et l'instructeur recevra une notification
+      // « Dossier prêt à instruire » dès que toutes les pièces seront
+      // analysées (cf. pieceOcrQueue.maybeNotifyDossierReady côté API).
+      // L'agent au comptoir voit une confirmation et peut fermer la modale.
+      setCreatedSummary({ id: created.id, numero: created.numero, piecesCount: stagedFiles.length });
+    } catch (err) {
+      setSubmitError(err instanceof Error ? err.message : "Erreur lors de la création");
+    } finally {
+      setSubmitting(false);
+      setUploadProgress(null);
+    }
+  };
+
+
+  const inputStyle = { width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const, background: "white" };
+
+  // Confirmation post-création : dossier persisté, pièces uploadées, OCR/IA
+  // en cours côté worker. On reste sur la modale pour rappeler à l'agent que
+  // la suite arrive via la cloche de notification.
+  if (createdSummary) return (
+    <NouveauDossierOverlay onClose={onClose}>
+      <NouveauDossierModalHeader title="Dossier enregistré" onClose={onClose} />
+      <div style={{ padding: "24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 10, padding: "14px 16px" }}>
+          <span style={{ fontSize: 22, lineHeight: 1 }}>✅</span>
+          <div style={{ fontSize: 13, color: "#065F46", lineHeight: 1.55 }}>
+            Dossier <strong>{createdSummary.numero}</strong> enregistré
+            {createdSummary.piecesCount > 0 && (
+              <> avec {createdSummary.piecesCount} pièce{createdSummary.piecesCount > 1 ? "s" : ""}</>
+            )}.
+          </div>
+        </div>
+        <div style={{ display: "flex", gap: 12, alignItems: "flex-start", background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 10, padding: "14px 16px" }}>
+          <span style={{ fontSize: 18, lineHeight: 1 }}>⏳</span>
+          <div style={{ fontSize: 13, color: "#075985", lineHeight: 1.6 }}>
+            L'analyse OCR et IA des pièces tourne en arrière-plan.
+            <strong> Vous (ou l'instructeur assigné) recevrez une notification dans la cloche dès que le dossier sera prêt à instruire.</strong>
+            <div style={{ marginTop: 6, fontSize: 12, color: "#0C4A6E" }}>
+              Inutile d'ouvrir le dossier maintenant : tant que la notification n'est pas arrivée, les analyses ne sont pas finalisées.
+            </div>
+          </div>
+        </div>
+        <div style={{ display: "flex", justifyContent: "flex-end", paddingTop: 4 }}>
+          <button onClick={onClose}
+            style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "10px 20px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            Fermer
+          </button>
+        </div>
+      </div>
+    </NouveauDossierOverlay>
+  );
 
   if (mode === "choose") return (
-    <Overlay>
-      <ModalHeader title="Nouveau dossier" />
+    <NouveauDossierOverlay onClose={onClose}>
+      <NouveauDossierModalHeader title="Nouveau dossier" onClose={onClose} />
       <div style={{ padding: "24px", display: "flex", flexDirection: "column" as const, gap: 12 }}>
         <p style={{ fontSize: 13, color: "#64748b", margin: 0 }}>Choisissez le mode de saisie du dossier.</p>
         <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 4 }}>
@@ -9073,85 +10321,198 @@ function NouveauDossierModal({ onClose }: { onClose: () => void }) {
           </button>
         </div>
       </div>
-    </Overlay>
+    </NouveauDossierOverlay>
+  );
+
+  const formFields = (
+    <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Type de dossier</label>
+        <select value={form.type} onChange={e => setField("type", e.target.value as NouveauDossierType)} style={inputStyle}>
+          {DOSSIER_TYPE_OPTIONS.map(o => <option key={o.value} value={o.value}>{o.label}</option>)}
+        </select>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Prénom du pétitionnaire</label>
+          <input value={form.petitionnaire_prenom} onChange={e => setField("petitionnaire_prenom", e.target.value)} placeholder="Jean" style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Nom du pétitionnaire *</label>
+          <input value={form.petitionnaire_nom} onChange={e => setField("petitionnaire_nom", e.target.value)} placeholder="DUPONT" style={inputStyle} />
+        </div>
+      </div>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Email du pétitionnaire</label>
+        <input type="email" value={form.petitionnaire_email} onChange={e => setField("petitionnaire_email", e.target.value)} placeholder="jean.dupont@example.com" style={inputStyle} />
+      </div>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Adresse du projet</label>
+        <input value={form.adresse} onChange={e => setField("adresse", e.target.value)} placeholder="12 rue des Lilas" style={inputStyle} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "120px 1fr", gap: 10 }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Code postal</label>
+          <input value={form.code_postal} onChange={e => setField("code_postal", e.target.value)} placeholder="37510" style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Commune</label>
+          <input value={form.commune} onChange={e => setField("commune", e.target.value)} placeholder={commune || "Ballan-Miré"} style={inputStyle} />
+        </div>
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 140px", gap: 10 }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Références cadastrales</label>
+          <input value={form.parcelle} onChange={e => setField("parcelle", e.target.value)} placeholder="AB 142" style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Surface plancher (m²)</label>
+          <input value={form.surface_plancher} onChange={e => setField("surface_plancher", e.target.value)} placeholder="95" style={inputStyle} />
+        </div>
+      </div>
+      <div>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Description du projet</label>
+        <textarea value={form.description} onChange={e => setField("description", e.target.value)} rows={2} placeholder="Construction d'une maison individuelle de 95 m²…" style={{ ...inputStyle, resize: "vertical" as const, fontFamily: "inherit" }} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "150px 1fr", gap: 10 }}>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Date de dépôt</label>
+          <input type="date" value={form.date_depot} onChange={e => setField("date_depot", e.target.value)} style={inputStyle} />
+        </div>
+        <div>
+          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Instructeur assigné</label>
+          <select value={form.instructeur_id} onChange={e => setField("instructeur_id", e.target.value)} style={inputStyle}>
+            <option value="">— Non assigné —</option>
+            {instructeurs.map(i => <option key={i.id} value={i.id}>{i.prenom} {i.nom}</option>)}
+          </select>
+        </div>
+      </div>
+    </div>
+  );
+
+  const submitLabel = submitting
+    ? (uploadProgress ? `Dépôt ${uploadProgress.done}/${uploadProgress.total}…` : "Création…")
+    : (mode === "ocr" && stagedFiles.length > 0 ? `Créer le dossier (${stagedFiles.length} pièce${stagedFiles.length > 1 ? "s" : ""})` : "Créer le dossier");
+
+  const footer = (
+    <div style={{ padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
+      {submitError && (
+        <div style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 12, padding: "8px 12px", borderRadius: 6, marginBottom: 10, border: "1px solid #FECACA" }}>{submitError}</div>
+      )}
+      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
+        <button onClick={onClose} disabled={submitting} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: submitting ? "not-allowed" : "pointer", fontWeight: 500, opacity: submitting ? 0.6 : 1 }}>Annuler</button>
+        <button onClick={submit} disabled={submitting} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: submitting ? "not-allowed" : "pointer", opacity: submitting ? 0.7 : 1 }}>
+          {submitLabel}
+        </button>
+      </div>
+    </div>
+  );
+
+  const fileList = stagedFiles.length > 0 && (
+    <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" }}>
+      <div style={{ padding: "8px 12px", background: "#F8FAFC", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase" as const, letterSpacing: 0.4, display: "flex", justifyContent: "space-between" }}>
+        <span>{stagedFiles.length} fichier{stagedFiles.length > 1 ? "s" : ""}</span>
+        <span style={{ textTransform: "none" as const, letterSpacing: 0, fontWeight: 500 }}>Choisissez le CERFA</span>
+      </div>
+      {stagedFiles.map(f => {
+        const code = f.isCerfa ? "CERFA" : guessCodePieceFromName(f.file.name);
+        return (
+          <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderTop: "1px solid #F1F5F9", fontSize: 13 }}>
+            <input type="radio" checked={f.isCerfa} onChange={() => setCerfa(f.id)} title="Désigner comme CERFA" />
+            <span style={{ fontSize: 16 }}>{/\.pdf$/i.test(f.file.name) ? "📄" : "🖼️"}</span>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ color: "#0F172A", whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" as const }}>{f.file.name}</div>
+              <div style={{ fontSize: 11, color: "#94a3b8" }}>
+                {(f.file.size / 1024).toFixed(0)} Ko
+                {code && <> · <span style={{ color: f.isCerfa ? "#4F46E5" : "#64748b", fontWeight: 600 }}>{code}</span></>}
+              </div>
+            </div>
+            <button onClick={() => removeFile(f.id)} title="Retirer" style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 16, padding: 4 }}>×</button>
+          </div>
+        );
+      })}
+      <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 12px", borderTop: "1px solid #F1F5F9", background: "#F8FAFC", cursor: "pointer", fontSize: 12, color: "#4F46E5", fontWeight: 600 }}>
+        ＋ Ajouter d'autres fichiers
+        <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onChange={e => { if (e.target.files) { addFiles(e.target.files); e.target.value = ""; } }} style={{ display: "none" }} />
+      </label>
+    </div>
   );
 
   if (mode === "ocr") return (
-    <Overlay>
-      <ModalHeader title="Reconnaissance OCR" back={() => setMode("choose")} />
+    <NouveauDossierOverlay onClose={onClose}>
+      <NouveauDossierModalHeader title="Reconnaissance OCR" onClose={onClose} back={() => { setMode("choose"); setStagedFiles([]); setCerfaDone(false); setOcrError(null); setOcrNumero(null); }} />
       <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
-        {!ocrFile ? (
-          <label style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", border: "2px dashed #CBD5E1", borderRadius: 12, padding: "40px 24px", cursor: "pointer", gap: 10, background: "#F8FAFC" }}>
-            <span style={{ fontSize: 36 }}>📂</span>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>Déposez votre fichier ici</div>
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>PDF, JPG ou PNG — CERFA, plan de situation, pièces complémentaires</div>
-            <div style={{ background: "#4F46E5", color: "white", borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 600 }}>Choisir un fichier</div>
-            <input type="file" accept=".pdf,.jpg,.jpeg,.png" onChange={handleOcrFile} style={{ display: "none" }} />
-          </label>
-        ) : ocrScanning ? (
-          <div style={{ textAlign: "center", padding: "32px 0" }}>
-            <div style={{ fontSize: 36, marginBottom: 12 }}>🔍</div>
-            <div style={{ fontSize: 14, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>Analyse en cours…</div>
-            <div style={{ fontSize: 12, color: "#64748b" }}>Extraction des données de {ocrFile}</div>
-            <div style={{ marginTop: 16, height: 4, background: "#E2E8F0", borderRadius: 2, overflow: "hidden" }}>
-              <div style={{ height: "100%", background: "linear-gradient(90deg,#4F46E5,#6366F1)", borderRadius: 2, animation: "none", width: "60%" }} />
+        {stagedFiles.length > 0 && !submitting && (
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 8, padding: "10px 14px" }}>
+            <span style={{ fontSize: 16 }}>⚡</span>
+            <div style={{ fontSize: 12.5, color: "#075985", lineHeight: 1.5 }}>
+              Le dépôt prend quelques secondes — l'analyse OCR des pièces tourne ensuite en arrière-plan.
+              <strong> L'instructeur reçoit une notification dès que le dossier est entièrement constitué.</strong>
             </div>
           </div>
-        ) : ocrDone ? (
-          <div>
-            <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 16, background: "#F0FDF4", borderRadius: 8, padding: "10px 14px", border: "1px solid #BBF7D0" }}>
-              <span style={{ fontSize: 18 }}>✅</span>
-              <div style={{ fontSize: 13, color: "#15803D", fontWeight: 500 }}>Données extraites de {ocrFile}</div>
+        )}
+        {submitting && uploadProgress && uploadProgress.done >= uploadProgress.total && uploadProgress.total > 0 && (
+          <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "#ECFDF5", border: "1px solid #A7F3D0", borderRadius: 8, padding: "10px 14px" }}>
+            <span style={{ fontSize: 16 }}>✅</span>
+            <div style={{ fontSize: 12.5, color: "#065F46", lineHeight: 1.5 }}>
+              Pièces déposées. L'analyse OCR se poursuit en arrière-plan — vous (ou l'instructeur assigné) recevrez une notification dès que tout est prêt.
             </div>
-            <div style={{ display: "flex", flexDirection: "column" as const, gap: 10 }}>
-              {[["Type de dossier", "Permis de construire"], ["Pétitionnaire", "Jean Dupont"], ["Adresse", "12 rue des Lilas, Ballan-Miré"], ["CERFA n°", "13406*08"], ["SIRET", "—"]].map(([label, value]) => (
-                <div key={label} style={{ display: "flex", gap: 12, alignItems: "center" }}>
-                  <div style={{ width: 160, fontSize: 12, fontWeight: 600, color: "#374151", flexShrink: 0 }}>{label}</div>
-                  <input defaultValue={value} style={{ flex: 1, padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none" }} />
+          </div>
+        )}
+        {stagedFiles.length === 0 ? (
+          <>
+            <label style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", justifyContent: "center", border: "2px dashed #CBD5E1", borderRadius: 12, padding: "40px 24px", cursor: "pointer", gap: 10, background: "#F8FAFC" }}>
+              <span style={{ fontSize: 36 }}>📂</span>
+              <div style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>Déposez vos fichiers ici</div>
+              <div style={{ fontSize: 12, color: "#94a3b8" }}>CERFA + plans + photos — PDF, JPG, PNG (max 25 Mo / fichier)</div>
+              <div style={{ background: "#4F46E5", color: "white", borderRadius: 8, padding: "7px 16px", fontSize: 13, fontWeight: 600 }}>Choisir des fichiers</div>
+              <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onChange={e => { if (e.target.files) addFiles(e.target.files); }} style={{ display: "none" }} />
+            </label>
+            {ocrError && (
+              <div style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 13, padding: "12px 14px", borderRadius: 8, border: "1px solid #FECACA" }}>
+                <strong>Échec de l'extraction.</strong> {ocrError}
+              </div>
+            )}
+          </>
+        ) : (
+          <>
+            {fileList}
+            {cerfaScanning ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#EEF2FF", borderRadius: 8, padding: "10px 14px", border: "1px solid #C7D2FE" }}>
+                <span style={{ fontSize: 18 }}>🔍</span>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#3730A3" }}>Analyse du CERFA en cours…</div>
+                  <div style={{ marginTop: 6, height: 4, background: "#E0E7FF", borderRadius: 2, overflow: "hidden" }}>
+                    <div style={{ height: "100%", background: "linear-gradient(90deg,#4F46E5,#6366F1)", borderRadius: 2, width: "60%" }} />
+                  </div>
                 </div>
-              ))}
-            </div>
-          </div>
-        ) : null}
+              </div>
+            ) : ocrError ? (
+              <div style={{ background: "#FEF2F2", color: "#B91C1C", fontSize: 13, padding: "12px 14px", borderRadius: 8, border: "1px solid #FECACA" }}>
+                <strong>L'extraction du CERFA a échoué.</strong> {ocrError} Vous pouvez quand même remplir le formulaire à la main et créer le dossier — toutes les pièces seront jointes.
+              </div>
+            ) : cerfaDone ? (
+              <div style={{ display: "flex", alignItems: "center", gap: 8, background: "#F0FDF4", borderRadius: 8, padding: "10px 14px", border: "1px solid #BBF7D0" }}>
+                <span style={{ fontSize: 18 }}>✅</span>
+                <div style={{ fontSize: 13, color: "#15803D", fontWeight: 500 }}>
+                  Données extraites du CERFA{ocrNumero ? ` n° ${ocrNumero}` : ""}. Vérifiez et corrigez si besoin.
+                </div>
+              </div>
+            ) : null}
+            {formFields}
+          </>
+        )}
       </div>
-      {ocrDone && (
-        <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
-          <button onClick={onClose} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: "pointer" }}>Annuler</button>
-          <button onClick={onClose} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Créer le dossier</button>
-        </div>
-      )}
-    </Overlay>
+      {stagedFiles.length > 0 && footer}
+    </NouveauDossierOverlay>
   );
 
   return (
-    <Overlay>
-      <ModalHeader title="Nouveau dossier — Saisie manuelle" back={() => setMode("choose")} />
-      <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 14 }}>
-        {[
-          { label: "Type de dossier", el: <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}><option>Permis de construire</option><option>Déclaration préalable</option><option>Permis d'aménager</option><option>Certificat d'urbanisme</option></select> },
-          { label: "Pétitionnaire", el: <input placeholder="Nom du pétitionnaire" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} /> },
-          { label: "Adresse du projet", el: <input placeholder="Adresse" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} /> },
-          { label: "Date de dépôt", el: <input type="date" style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const }} /> },
-          { label: "Instructeur assigné", el: <select style={{ width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", background: "white", outline: "none" }}><option>Marie Lambert</option><option>Pierre Martin</option><option>Sophie Dubois</option></select> },
-        ].map(({ label, el }) => (
-          <div key={label}>
-            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>{label}</label>
-            {el}
-          </div>
-        ))}
-        <div>
-          <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Pièces jointes</label>
-          <label style={{ display: "flex", alignItems: "center", gap: 8, border: "1px dashed #CBD5E1", borderRadius: 8, padding: "10px 14px", cursor: "pointer", fontSize: 12, color: "#64748b" }}>
-            <span style={{ fontSize: 18 }}>📎</span> Ajouter des pièces (PDF, JPG, PNG)
-            <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" style={{ display: "none" }} />
-          </label>
-        </div>
-      </div>
-      <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
-        <button onClick={onClose} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, color: "#374151", cursor: "pointer", fontWeight: 500 }}>Annuler</button>
-        <button onClick={onClose} style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Créer le dossier</button>
-      </div>
-    </Overlay>
+    <NouveauDossierOverlay onClose={onClose}>
+      <NouveauDossierModalHeader title="Nouveau dossier — Saisie manuelle" onClose={onClose} back={() => setMode("choose")} />
+      <div style={{ padding: "20px 24px" }}>{formFields}</div>
+      {footer}
+    </NouveauDossierOverlay>
   );
 }
 
@@ -9316,7 +10677,21 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
             : null,
         });
       })
-      .catch(() => routerNavigate("/mairie/dossiers", { replace: true }))
+      .catch((err) => {
+        // 423 = dossier verrouillé tant que l'OCR/IA des pièces n'est pas
+        // terminée (dépôt comptoir mairie). On renvoie l'instructeur sur la
+        // liste avec un message explicite : il sera notifié dans la cloche
+        // quand le dossier sera consultable.
+        if (err instanceof ApiError && err.status === 423) {
+          const body = (err.body ?? {}) as { numero?: string; ocr_remaining?: number; ocr_total?: number };
+          const piecesInfo = (body.ocr_remaining != null && body.ocr_total != null)
+            ? ` (${body.ocr_total - body.ocr_remaining}/${body.ocr_total} pièces analysées)`
+            : "";
+          const ref = body.numero ? `Dossier ${body.numero}` : "Ce dossier";
+          alert(`${ref} : analyse OCR/IA en cours${piecesInfo}.\nVous recevrez une notification dès qu'il sera prêt à instruire.`);
+        }
+        routerNavigate("/mairie/dossiers", { replace: true });
+      })
       .finally(() => setLoading(false));
   }, [id]);
 
@@ -9503,7 +10878,7 @@ export function MairieApp() {
           </Routes>
         </div>
       </div>
-      {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} />}
+      {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} commune={commune} />}
     </div>
   );
 }

@@ -7,11 +7,16 @@
  *
  * Doc : https://docs.mistral.ai/capabilities/vision/
  *
- * Limites connues à valider par le benchmark :
+ * Limites connues :
  * - Pixtral 12B et Pixtral Large acceptent les images JPG/PNG mais PAS
- *   les PDF nativement → on doit pdf-to-image au préalable pour les CERFA
- *   et plans en PDF (à ajouter si besoin, ici on lève une erreur claire).
+ *   les PDF nativement. On tente une conversion automatique de la première
+ *   page via `pdftoppm` (poppler-utils, présent sur Linux/macOS) ; si la
+ *   commande n'est pas disponible on retourne une erreur explicite.
  */
+import { execFileSync } from "node:child_process";
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import type { BenchmarkProvider, PieceFixture, ProviderResponse } from "../types.js";
 import { SYSTEM_ANALYZE, SYSTEM_EXTRACT, buildContextText, extractFirstJson } from "../prompts.js";
 
@@ -50,14 +55,21 @@ export class MistralProvider implements BenchmarkProvider {
     system: string,
     maxTokens: number,
   ): Promise<ProviderResponse> {
+    let bytes = fileBuffer;
+    let mime: string = piece.mime;
     if (piece.mime === "application/pdf") {
-      return {
-        parsed: null, raw_text: "", input_tokens: 0, output_tokens: 0,
-        cost_eur: 0, duration_ms: 0, model_id: this.model,
-        error: "Mistral Pixtral n'accepte pas les PDF nativement — convertir en PNG avant benchmark.",
-      };
+      try {
+        bytes = convertPdfFirstPageToPng(fileBuffer);
+        mime = "image/png";
+      } catch (err) {
+        return {
+          parsed: null, raw_text: "", input_tokens: 0, output_tokens: 0,
+          cost_eur: 0, duration_ms: 0, model_id: this.model,
+          error: `Conversion PDF→PNG impossible : ${err instanceof Error ? err.message : String(err)}. Installer poppler-utils (\`apt install poppler-utils\` / \`brew install poppler\`) ou fournir un PNG.`,
+        };
+      }
     }
-    const dataUrl = `data:${piece.mime};base64,${fileBuffer.toString("base64")}`;
+    const dataUrl = `data:${mime};base64,${bytes.toString("base64")}`;
     const userText = [`Pièce demandée : ${piece.label}`, buildContextText(piece)].filter(Boolean).join("\n\n");
     const body = {
       model: this.model,
@@ -119,5 +131,25 @@ export class MistralProvider implements BenchmarkProvider {
         error: err instanceof Error ? err.message : String(err),
       };
     }
+  }
+}
+
+/**
+ * Convertit la première page d'un PDF en PNG via `pdftoppm` (poppler-utils).
+ * Choix de la première page seulement : suffisant pour les CERFA, plans uniques
+ * et photos. Pour des PDF multi-pages, prévoir une boucle côté appelant.
+ */
+function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
+  const dir = mkdtempSync(path.join(tmpdir(), "heureka-bench-"));
+  try {
+    const pdfPath = path.join(dir, "in.pdf");
+    const outPrefix = path.join(dir, "out");
+    writeFileSync(pdfPath, pdf);
+    execFileSync("pdftoppm", ["-png", "-r", "200", "-f", "1", "-l", "1", pdfPath, outPrefix], {
+      stdio: ["ignore", "ignore", "pipe"],
+    });
+    return readFileSync(`${outPrefix}-1.png`);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }

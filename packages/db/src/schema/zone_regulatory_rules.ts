@@ -1,10 +1,18 @@
-import { pgTable, text, timestamp, integer, doublePrecision, uuid, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, doublePrecision, uuid, jsonb, boolean } from "drizzle-orm/pg-core";
 import { zones } from "./zones.js";
+import { regulatory_documents } from "./regulatoryDocuments.js";
 
 export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
   id: uuid("id").primaryKey().defaultRandom(),
   zone_id: uuid("zone_id").notNull().references(() => zones.id, { onDelete: "cascade" }),
-  article_number: integer("article_number"),
+  // Document réglementaire d'origine (PLU communal, PLUi, PPRI…). Nullable :
+  // permet aux règles saisies manuellement sans source documentaire d'exister,
+  // et préserve la règle si son document est supprimé (ON DELETE SET NULL).
+  source_document_id: uuid("source_document_id").references(() => regulatory_documents.id, { onDelete: "set null" }),
+  // double precision (pas integer) : les PLU modernisés numérotent en
+  // décimal (« 12.1 », « 12.2 »…). Une colonne integer faisait planter
+  // l'ingestion sur ces articles (invalid input syntax for type integer).
+  article_number: doublePrecision("article_number"),
   article_title: text("article_title"),
   topic: text("topic").notNull().default("general"),
   rule_text: text("rule_text").notNull(),

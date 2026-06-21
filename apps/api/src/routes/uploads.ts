@@ -1,7 +1,6 @@
 import { Router } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import fs from "node:fs";
 import { db } from "../db.js";
 import { dossier_pieces_jointes, dossiers } from "@heureka-v1/db";
 import { eq, like } from "drizzle-orm";
@@ -68,24 +67,96 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
 
     const provider = getStorageProvider();
 
-    if (provider.name === "s3") {
-      // Redirection vers une URL signée à courte durée — le navigateur
-      // récupère le fichier directement depuis le bucket.
-      const signed = await provider.getDownloadUrl(key, 300);
-      return res.redirect(302, signed);
-    }
-
-    // Provider local : on stream depuis le disque.
+    // Garde-fou path traversal pour le provider local — sans effet sur S3 mais
+    // utile en defense-in-depth si l'on revient à un disque local.
     const filePath = path.join(UPLOADS_DIR, key);
     if (!filePath.startsWith(UPLOADS_DIR + path.sep)) {
       return res.status(400).json({ error: "Chemin invalide" });
     }
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Fichier absent du disque" });
 
-    res.setHeader("Content-Type", piece.type || "application/octet-stream");
+    // On stream le fichier en proxy à travers l'API, quel que soit le provider.
+    // Pas de redirection 302 vers une URL signée S3 : ces URL expirent au bout
+    // de quelques minutes et peuvent être mises en cache par le navigateur ou
+    // un CDN intermédiaire, ce qui fait disparaître la preview après quelques
+    // heures. En streamant ici, l'URL exposée au front reste /api/uploads/<key>
+    // et l'authentification est revérifiée à chaque accès.
+    //
+    // PDF compat : si une variante "compat" (re-encodée par pdftocairo pour
+    // contourner le JPEG 2000 incompatible pdf.js) existe en stockage, on
+    // la sert en priorité au viewer. L'original reste accessible pour le
+    // téléchargement, l'analyse IA, et comme filet de sécurité si la compat
+    // s'avère défaillante.
+    //
+    // Garde-fou réglementaire : ?variant=original force la lecture du fichier
+    // déposé tel quel, sans passer par la version compat. Utilisé par le
+    // bouton "Télécharger l'original" du viewer et par toute future
+    // procédure d'audit (preuve de la pièce officielle).
+    const forceOriginal = String(req.query.variant ?? "").toLowerCase() === "original";
+    const isPdf = key.toLowerCase().endsWith(".pdf");
+    const wantsCompat = !forceOriginal && isPdf && !key.includes(".compat.");
+    const tryKeys: string[] = wantsCompat
+      ? [(await import("../services/pdfCompat.js")).compatKeyFor(key), key]
+      : [key];
+
+    let streamRes;
+    let servedKey: string | null = null;
+    let lastErr: unknown = null;
+    for (const k of tryKeys) {
+      try {
+        streamRes = await provider.getStream(k);
+        servedKey = k;
+        break;
+      } catch (err) {
+        lastErr = err;
+        const code = (err as { name?: string; code?: string }).name
+          ?? (err as { code?: string }).code;
+        if (code !== "NoSuchKey" && code !== "NotFound" && code !== "ENOENT") {
+          throw err;
+        }
+        // Sinon on essaie la clé suivante (typiquement l'original après l'échec compat).
+      }
+    }
+    if (!streamRes) {
+      const code = (lastErr as { name?: string; code?: string } | null)?.name
+        ?? (lastErr as { code?: string } | null)?.code;
+      if (code === "NoSuchKey" || code === "NotFound" || code === "ENOENT") {
+        return res.status(404).json({ error: "Fichier absent du stockage" });
+      }
+      throw lastErr ?? new Error("Stream introuvable");
+    }
+
+    res.setHeader(
+      "Content-Type",
+      streamRes.contentType || piece.type || "application/octet-stream",
+    );
+    if (typeof streamRes.contentLength === "number") {
+      res.setHeader("Content-Length", String(streamRes.contentLength));
+    }
     res.setHeader("Cache-Control", "private, no-store");
-    res.setHeader("Content-Disposition", `inline; filename="${encodeURIComponent(piece.nom || key)}"`);
-    fs.createReadStream(filePath).pipe(res);
+    res.setHeader(
+      "Content-Disposition",
+      `inline; filename="${encodeURIComponent(piece.nom || key)}"`,
+    );
+    // Transparence sur la variante servie : le frontend peut afficher un
+    // tag visuel quand c'est le compat (et proposer le bouton "Télécharger
+    // l'original"). Header CORS-exposé pour être lisible côté JS.
+    const servedVariant = servedKey && servedKey.includes(".compat.") ? "compat" : "original";
+    res.setHeader("X-Pdf-Variant", servedVariant);
+    res.setHeader("Access-Control-Expose-Headers", "X-Pdf-Variant");
+    // Helmet pose globalement `Content-Security-Policy: frame-ancestors 'none'`
+    // et `X-Frame-Options: SAMEORIGIN`. Le frame-ancestors 'none' interdit
+    // l'embed du PDF dans l'<iframe> du PieceViewer — y compris depuis notre
+    // propre SPA — d'où l'aperçu inline vide alors que "Ouvrir dans un nouvel
+    // onglet" fonctionne (navigation top-level, pas un frame). On relâche à
+    // 'self' pour ce flux : embed autorisé depuis nos pages, refusé pour les
+    // tiers (anti-clickjacking conservé).
+    res.setHeader("Content-Security-Policy", "frame-ancestors 'self'");
+    streamRes.stream.on("error", (e) => {
+      console.error("[uploads] stream error", e);
+      if (!res.headersSent) res.status(500).end();
+      else res.destroy(e);
+    });
+    streamRes.stream.pipe(res);
   } catch (err) {
     console.error("[uploads]", err);
     res.status(500).json({ error: "Erreur serveur" });

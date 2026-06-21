@@ -42,7 +42,7 @@ describe("parseLooseArray", () => {
   });
 
   it("salvages a truncated response by keeping complete objects", () => {
-    // Simulates Claude hitting max_tokens mid-string in object #3
+    // Simulates the LLM hitting max_tokens mid-string in object #3
     const raw = '[{"a":1,"b":"ok"},{"a":2,"b":"ok"},{"a":3,"b":"truncated st';
     expect(parseLooseArray(raw)).toEqual([{ a: 1, b: "ok" }, { a: 2, b: "ok" }]);
   });

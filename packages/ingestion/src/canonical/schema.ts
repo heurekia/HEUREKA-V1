@@ -5,7 +5,7 @@
  * logiciel métier, éditeur de PLU) peut produire pour pousser un règlement
  * en HEUREKA SANS passer par l'extraction LLM. Bénéfices :
  *
- *  - Coût : zéro token Anthropic consommé sur l'ingestion.
+ *  - Coût : zéro token LLM consommé sur l'ingestion.
  *  - Certitude juridique : ce que l'instructeur écrit = ce qui est servi.
  *  - Versionnable : le JSON vit dans Git, audit trail natif.
  *  - Échange : un bureau d'études peut livrer le même JSON à plusieurs
@@ -50,7 +50,8 @@ export type CanonicalRuleCase = z.infer<typeof CanonicalRuleCaseSchema>;
 
 export const CanonicalRuleSchema = z.object({
   // Identité dans le règlement
-  article_number: z.number().int().nullable(),
+  // Décimal autorisé : les PLU modernisés numérotent en « 12.1 », « 12.2 »…
+  article_number: z.number().nullable(),
   article_title: z.string().default(""),
   sub_theme: z.string().nullable().default(null),
 

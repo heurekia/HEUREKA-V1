@@ -9,12 +9,15 @@ export type Role = "citoyen" | "mairie" | "instructeur" | "admin" | "service_ext
 // DossierStatus est défini dans dossierWorkflow.ts (réexporté ci-dessus) pour
 // garder la machine à états source de vérité.
 export type DossierType =
-  | "permis_de_construire"
+  | "permis_de_construire"        // PC (autre que maison individuelle)
+  | "permis_de_construire_mi"     // PCMI (maison individuelle)
   | "declaration_prealable"
   | "permis_amenager"
   | "permis_demolir"
   | "permis_lotir"
-  | "certificat_urbanisme";
+  | "certificat_urbanisme"        // legacy — équivaut à CUb
+  | "certificat_urbanisme_a"      // CUa (informatif)
+  | "certificat_urbanisme_b";     // CUb (opérationnel)
 export type NotificationChannel = "email" | "sms" | "push";
 export type NotificationEvent = "nouveau_dossier" | "changement_statut" | "message_recu" | "rappel_echeance" | "decision_rendue";
 export type ParcelleStatus = "conforme" | "non_conforme" | "a_verifier" | "en_attente";

@@ -149,9 +149,14 @@ const factLabel = (k: string) => FACT_LABELS[k] ?? k;
 // ─── Composant principal ─────────────────────────────────────────────
 interface Props {
   dossierId: string;
+  /** Handler appelé quand l'instructeur clique sur un fondement de type
+   *  « document_segment » pour ouvrir le passage cité dans le viewer
+   *  (onglet Instruction · mode Comparer). Conservé depuis la refonte
+   *  layout de main. Si non fourni, les fondements restent en texte simple. */
+  onJumpToCitation?: (ref: SourceRef) => void;
 }
 
-export function RegulatoryChecklist({ dossierId }: Props) {
+export function RegulatoryChecklist({ dossierId, onJumpToCitation }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<LatestResponse | null>(null);
@@ -328,6 +333,7 @@ export function RegulatoryChecklist({ dossierId }: Props) {
                         finding={f}
                         factsByKey={factsByKey}
                         onDecision={onDecision}
+                        onJumpToCitation={onJumpToCitation}
                       />
                     ))}
                   </div>
@@ -377,10 +383,12 @@ function FindingCard({
   finding,
   factsByKey,
   onDecision,
+  onJumpToCitation,
 }: {
   finding: RegulatoryFinding;
   factsByKey: Map<string, DossierFact>;
   onDecision: (f: RegulatoryFinding, d: InstructorDecision, comment?: string) => void;
+  onJumpToCitation?: (ref: SourceRef) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [rule, setRule] = useState<RuleDetail | null>(null);
@@ -447,6 +455,40 @@ function FindingCard({
       {open ? (
         <div className="px-[18px] pb-3.5 pl-12">
           {finding.explanation ? <p className="text-[12px] leading-relaxed text-gray-600">{finding.explanation}</p> : null}
+
+          {/* Fondements : les passages de document indexé sont cliquables et
+              ouvrent le viewer (onglet Instruction · Comparer). Conservé depuis
+              la refonte layout de main. */}
+          {finding.legal_basis.length > 0 ? (
+            <div className="mt-2 flex flex-wrap items-center gap-1 text-[11.5px] text-gray-500">
+              <span>Fondement :</span>
+              {finding.legal_basis.map((s, i) => {
+                const label = s.type === "zone_rule"
+                  ? (s.article ?? "Règle PLU")
+                  : s.type === "document_segment"
+                    ? `${s.doc_type ?? "Doc"}${s.page != null ? ` p.${s.page}` : ""}`
+                    : (s.ref ?? s.type);
+                const clickable = onJumpToCitation && s.type === "document_segment" && !!s.doc_type;
+                return (
+                  <span key={i} className="inline-flex items-center gap-1">
+                    {i > 0 ? <span className="text-gray-300">·</span> : null}
+                    {clickable ? (
+                      <button
+                        type="button"
+                        onClick={() => onJumpToCitation!(s)}
+                        title={s.quote ? `« ${s.quote.slice(0, 140)}${s.quote.length > 140 ? "…" : ""} »` : "Ouvrir le passage cité"}
+                        className="inline-flex items-center gap-0.5 rounded bg-indigo-50 px-1.5 py-0.5 text-indigo-700 hover:bg-indigo-100"
+                      >
+                        📖 {label}
+                      </button>
+                    ) : (
+                      <span>{label}</span>
+                    )}
+                  </span>
+                );
+              })}
+            </div>
+          ) : null}
 
           {ruleLoading ? <p className="mt-2 text-[11px] italic text-gray-400">Chargement de l'article…</p> : null}
           {rule ? (

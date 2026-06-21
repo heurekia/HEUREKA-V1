@@ -11,11 +11,11 @@
 import { db, document_segments } from "@heureka-v1/db";
 import { sql, eq } from "drizzle-orm";
 import { chunkPages, type ChunkOptions } from "./chunker.ts";
-import { embedTexts } from "../db/embedder.ts";
+import { embedTexts, type EmbedOptions } from "../db/embedder.ts";
 
 export interface IndexParams {
   /**
-   * Identifiant stable de la SOURCE (= un row commune_documents par exemple).
+   * Identifiant stable de la SOURCE (= un row regulatory_documents par exemple).
    * Sert à idempotenter : tous les chunks portent un id préfixé par ce
    * source_id, et on supprime d'abord tout ce qui était indexé sous ce
    * source_id avant de réinsérer.
@@ -36,6 +36,8 @@ export interface IndexParams {
   /** Métadonnées libres ajoutées à chaque segment (pour affichage / filtres). */
   extra_metadata?: Record<string, unknown>;
   chunk_options?: ChunkOptions;
+  /** Callback injecté par l'appelant pour tracer les embeddings dans ai_usage_events. */
+  embed_options?: EmbedOptions;
 }
 
 export interface IndexResult {
@@ -52,7 +54,7 @@ const SEGMENT_ID = (sourceId: string, chunkIndex: number) =>
  * Indexe un document complet. Effectue dans cet ordre :
  *  1. chunk_pages (pure)
  *  2. delete des anciens segments de ce source_id (idempotence)
- *  3. embed Voyage-3 par lots
+ *  3. embed Mistral `mistral-embed` par lots
  *  4. upsert pgvector
  */
 export async function indexDocument(p: IndexParams): Promise<IndexResult> {
@@ -71,10 +73,7 @@ export async function indexDocument(p: IndexParams): Promise<IndexResult> {
   await deleteIndexFor(p.source_id);
 
   // Embeddings par lots (le batcher interne de embedTexts gère MAX_BATCH=128).
-  const embeddings = await embedTexts(
-    chunks.map((c) => c.text),
-    "document",
-  );
+  const embeddings = await embedTexts(chunks.map((c) => c.text), p.embed_options);
 
   const rows = chunks.map((c, j) => ({
     id: SEGMENT_ID(p.source_id, c.index),

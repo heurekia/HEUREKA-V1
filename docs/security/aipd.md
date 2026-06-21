@@ -22,7 +22,7 @@ Aider le pétitionnaire à déposer un dossier d'urbanisme complet et lisible d�
 
 ### 1.2. Description fonctionnelle
 
-Lors du dépôt d'une pièce justificative dans le wizard de demande d'urbanisme, le contenu binaire du fichier (PDF, JPG, PNG…) est transmis à un modèle de langage multimodal (Claude d'Anthropic) qui produit :
+Lors du dépôt d'une pièce justificative dans le wizard de demande d'urbanisme, le contenu binaire du fichier (PDF, JPG, PNG…) est transmis à un modèle de langage multimodal (**Pixtral Large de Mistral AI**, Paris) qui produit :
 
 1. Un **score qualitatif** : `conforme | acceptable | incomplet | non_conforme`.
 2. Une **extraction structurée** de valeurs cotées sur les plans (recul, hauteur NGF, surface, échelle…).
@@ -47,17 +47,17 @@ Ces résultats sont stockés en base et présentés au pétitionnaire (au dépô
 |------|--------|
 | Responsable de traitement | La collectivité destinataire du dossier (commune ou EPCI) |
 | Sous-traitant principal | HEUREKIA SAS (éditeur de la plateforme) |
-| Sous-traitant ultérieur | Anthropic PBC (modèle Claude) — DPA + SCC |
-| Sous-traitant ultérieur | Railway Corporation (hébergement, données en UE) |
+| Sous-traitant ultérieur | Mistral AI SAS (Paris, France) — modèle Pixtral Large, DPA art. 28, pas de transfert hors UE |
+| Sous-traitant ultérieur | OVH SAS (hébergement VPS + Object Storage, datacenters France) |
 | Sous-traitant ultérieur | Resend (e-mails transactionnels) |
 
 ### 1.5. Cycle de vie
 
 1. Dépôt de la pièce → upload chiffré HTTPS, fichier stocké sur disque UE.
 2. Minimisation (suppression du nom de fichier, masquage de la parcelle).
-3. Envoi au modèle (Anthropic direct ou Bedrock UE selon `AI_PROVIDER`).
+3. Envoi au modèle Pixtral Large via Mistral La Plateforme (API directe, datacenters France).
 4. Stockage du résultat + empreinte SHA-256 dans `ai_usage_events`.
-5. Conservation 10 ans pour le dossier (obligation légale urbanisme), 30 jours côté Anthropic (rétention anti-abus, désactivable contractuellement).
+5. Conservation 10 ans pour le dossier (obligation légale urbanisme). Côté Mistral : pas de réentraînement, politique de rétention contractuelle (à formaliser au DPA).
 6. Effacement automatique à la suppression du compte (art. 17) OU à l'expiration de la rétention.
 
 ---
@@ -81,7 +81,7 @@ Ces résultats sont stockés en base et présentés au pétitionnaire (au dépô
 | Limitation des finalités | Aucun usage des données pour de l'entraînement, du marketing ou du profilage |
 | Minimisation | `sanitizePieceName` + `maskParcelle` + absence d'identifiants directs dans le prompt |
 | Exactitude | L'IA produit un avis indicatif, vérifié par l'instructeur humain |
-| Limitation de la conservation | Cron de purge audit_logs (12 m) + brouillons (180 j) ; rétention Anthropic 30 j |
+| Limitation de la conservation | Cron de purge audit_logs (12 m) + brouillons (180 j) ; rétention Mistral selon DPA (à formaliser, idéale 0) |
 | Intégrité et confidentialité | HTTPS, CSP, bcrypt, cookies HttpOnly, Drizzle paramétré, SHA-256 trace |
 | Responsabilité | Registre art. 30, AIPD, journal des appels IA traçable |
 
@@ -106,8 +106,8 @@ Ces résultats sont stockés en base et présentés au pétitionnaire (au dépô
 
 | Risque | Probabilité | Gravité | Mesures |
 |--------|-------------|---------|---------|
-| Fuite des fichiers depuis Anthropic (logs anti-abus 30 j) | Faible | Modérée | DPA + SCC + activation ZDR contractuelle |
-| Fuite depuis Railway (hébergeur UE) | Faible | Élevée | Chiffrement au repos, sauvegardes, DPA, accès journalisés |
+| Fuite des fichiers depuis Mistral (datacenters France) | Faible | Modérée | DPA art. 28 + politique no-training/no-retention contractuelle |
+| Fuite depuis le VPS OVH (Gravelines 🇫🇷) | Faible | Élevée | Chiffrement disque LUKS, sauvegardes 3-2-1 chiffrées GPG (cf. [dossier-exploitation.md](./dossier-exploitation.md)), accès SSH par clés uniquement, audit_logs applicatif, DPA OVH |
 | Vol de session côté navigateur | Faible | Modérée | Cookie HttpOnly / Secure / SameSite=Strict, CSP stricte |
 | Injection SQL | Très faible | Élevée | Drizzle ORM paramétré |
 | Exfiltration via XSS | Très faible | Modérée | CSP `script-src 'self'`, Helmet |
@@ -123,8 +123,8 @@ Ces résultats sont stockés en base et présentés au pétitionnaire (au dépô
 
 | Risque | Probabilité | Gravité | Mesures |
 |--------|-------------|---------|---------|
-| Indisponibilité Anthropic | Modérée | Faible | Le dépôt reste possible sans analyse (opt-out fonctionnel) |
-| Indisponibilité Railway | Faible | Modérée | Sauvegardes PostgreSQL automatiques, plan de reprise documenté |
+| Indisponibilité Mistral | Modérée | Faible | Le dépôt reste possible sans analyse (opt-out fonctionnel) |
+| Indisponibilité VPS OVH | Faible | Modérée | Sauvegardes 3-2-1 chiffrées (quotidien Postgres + uploads, miroir OVH Object Storage) — RPO 24h, RTO 4h. Procédure de reprise documentée dans [`dossier-exploitation.md`](./dossier-exploitation.md). |
 
 ### 3.4. Risques spécifiques IA
 
@@ -132,7 +132,7 @@ Ces résultats sont stockés en base et présentés au pétitionnaire (au dépô
 |--------|-------------|---------|---------|
 | Décision injuste rendue par l'IA | N/A — exclue par conception | Élevée | Aucune décision automatisée (art. 22) — instructeur humain |
 | Biais du modèle pénalisant certains pétitionnaires | Faible | Modérée | Score indicatif, instructeur en dernier ressort, audit a posteriori des verdicts |
-| Réentraînement du modèle sur les pièces | Très faible | Élevée | Anthropic ne ré-entraîne pas sur API ; ZDR activable |
+| Réentraînement du modèle sur les pièces | Très faible | Élevée | Mistral ne ré-entraîne pas sur les données API entreprise ; confirmation contractuelle au DPA |
 
 ---
 
@@ -140,8 +140,8 @@ Ces résultats sont stockés en base et présentés au pétitionnaire (au dépô
 
 | Action | Priorité | Statut | Échéance |
 |--------|----------|--------|----------|
-| Signer le DPA Anthropic + activer le ZDR | Haute | À faire | Avant mise en production |
-| Basculer en production sur `AI_PROVIDER=bedrock` (Francfort) | Haute | Implémenté (à activer) | Avant mise en production |
+| Signer le DPA Mistral AI (Paris) | Haute | À faire | Avant mise en production |
+| Vérifier en prod : `[aiUsage] 🇫🇷 Fournisseur d'inférence : Mistral La Plateforme (fr-paris)` au boot | Haute | Implémenté | Au déploiement |
 | Inscrire le traitement au registre art. 30 de la collectivité | Haute | Modèle fourni | Avant mise en production |
 | Publier la déclaration d'accessibilité RGAA | Moyenne | À faire | Sous 3 mois post-prod |
 | Revue annuelle de l'AIPD | Moyenne | Récurrent | T+12 mois |

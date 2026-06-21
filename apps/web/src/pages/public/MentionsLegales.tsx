@@ -40,10 +40,11 @@ export function MentionsLegales() {
       <section className="mb-8">
         <h2 className="text-lg font-semibold text-[#000020] mb-3">Hébergement</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
-          La plateforme est hébergée par <strong>Railway Corporation</strong>, 548 Market St PMB 59449,
-          San Francisco, CA 94104, États-Unis. Les bases de données et fichiers déposés par les usagers
-          sont stockés sur des serveurs situés <strong>dans l'Union Européenne (région eu-west-1, Irlande)</strong>.
-          Voir la politique de confidentialité pour le détail des sous-traitants techniques.
+          La plateforme est hébergée par <strong>OVH SAS</strong>, 2 rue Kellermann, 59100 Roubaix, France
+          (RCS Lille Métropole 424 761 419). L'application, la base de données et les fichiers déposés par
+          les usagers sont stockés sur des serveurs situés <strong>en France métropolitaine</strong>
+          (VPS OVH + Object Storage OVH pour les sauvegardes). Voir la politique de confidentialité pour
+          le détail des sous-traitants techniques.
         </p>
       </section>
 
@@ -51,11 +52,12 @@ export function MentionsLegales() {
         <h2 className="text-lg font-semibold text-[#000020] mb-3">Recours à l'intelligence artificielle</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
           Pour aider les pétitionnaires à déposer un dossier complet du premier coup, la plateforme soumet chaque
-          pièce déposée à une <strong>analyse automatique opérée par Anthropic, PBC</strong> (548 Market St PMB 90375,
-          San Francisco, CA 94104, États-Unis), au moyen de son modèle Claude, dans le cadre d'un contrat de
-          sous-traitance RGPD (Data Processing Agreement et clauses contractuelles types). L'usager peut s'opposer
-          à cette analyse à tout moment lors du dépôt. <strong>La décision sur le dossier est toujours prise par
-          un instructeur humain.</strong> Le détail figure dans la politique de confidentialité.
+          pièce déposée à une <strong>analyse automatique opérée par Mistral AI SAS</strong> (entreprise française
+          basée à Paris), au moyen de son modèle Pixtral Large, dans le cadre d'un contrat de sous-traitance RGPD
+          (Data Processing Agreement, article 28). <strong>L'inférence est réalisée en France</strong> — aucun
+          transfert hors UE. L'usager peut s'opposer à cette analyse à tout moment lors du dépôt.
+          <strong> La décision sur le dossier est toujours prise par un instructeur humain.</strong> Le détail
+          figure dans la politique de confidentialité.
         </p>
       </section>
 

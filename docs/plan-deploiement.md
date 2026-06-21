@@ -2,37 +2,41 @@
 
 | Champ | Valeur |
 |-------|--------|
-| Version | 1.0 |
+| Version | 3.0 (post-bascule VPS OVH) |
 | Date | Juin 2026 |
 | Auteur | Équipe technique HEUREKIA |
-| Statut | En cours d'exécution (Phase 0/1) |
+| Statut | LLM 🇫🇷 livré (PR #117). Hébergement 🇫🇷 livré (VPS OVH). Stockage objet, email, certificat OV : restent à traiter. |
 
 ## 1. Contexte et objectif
 
-HEUREKA est actuellement hébergé sur **Railway** (PaaS américain sur AWS) avec analyse IA via **Anthropic AWS Bedrock Francfort**. La conformité RGPD est atteinte (niveau 2 = données en UE, sous-traitants US sous DPA + SCC). Plusieurs DSI clientes — en particulier Tours Métropole — peuvent demander un niveau de souveraineté supérieur (niveau 3 = entreprises européennes).
+HEUREKA est désormais hébergé sur un **VPS OVH 🇫🇷** (PostgreSQL + nginx + Node sur la même machine), avec analyse IA via **Mistral La Plateforme** (Pixtral Large, datacenters France) et sauvegardes 3-2-1 vers **OVH Object Storage** (cf. [`docs/security/dossier-exploitation.md`](./security/dossier-exploitation.md)). Les briques LLM et hébergement sont entièrement souveraines 🇫🇷.
 
-Ce plan décrit la migration progressive vers une stack pleinement européenne, **sans interruption de service**, avec des phases indépendantes qu'on peut activer ou suspendre selon les arbitrages DSI / DPD / budget.
+Restent à traiter pour une stack 100 % souveraine : email transactionnel (Brevo), certificat SSL OV, fond de carte (IGN).
 
-## 2. État actuel (Niveau 2)
+Ce plan décrit la suite de la migration, avec des phases indépendantes qu'on peut activer ou suspendre selon les arbitrages DSI / DPD / budget. L'historique des phases déjà livrées (Phase 0 LLM, Phase 1 stockage objet, Phase 2 bascule hébergement) est conservé à titre de référence.
+
+## 2. État actuel (post-bascule OVH, juin 2026)
 
 | Brique | Fournisseur | Société | Données |
 |---|---|---|---|
-| Hébergement app + DB | Railway (sur AWS) | 🇺🇸 | 🇪🇺 Irlande |
-| LLM | Anthropic via Bedrock | 🇺🇸 | 🇪🇺 Francfort |
+| **Hébergement app + DB** | **VPS OVH** | **🇫🇷** | **🇫🇷** |
+| **Sauvegardes** | **OVH Object Storage** (S3, GRA) | **🇫🇷** | **🇫🇷** |
+| **LLM** | **Mistral La Plateforme** | **🇫🇷 Paris** | **🇫🇷 France** |
 | Email transactionnel | Resend | 🇺🇸 | 🇪🇺/🇺🇸 |
-| Stockage fichiers | Disque local Railway | éphémère | 🇪🇺 |
+| Stockage fichiers (PDF déposés) | Disque local du VPS OVH | 🇫🇷 | 🇫🇷 |
 | Fond de carte | CartoCDN | 🇺🇸 | n/a |
 | Recherche d'adresses | data.gouv.fr | 🇫🇷 | 🇫🇷 |
 | Cadastre / PLU | data.geopf.fr | 🇫🇷 | 🇫🇷 |
-| Certificat SSL | Let's Encrypt (DV) | 🇺🇸 nonprofit | n/a |
+| Certificat SSL | Let's Encrypt (DV) via certbot/nginx | 🇺🇸 nonprofit | n/a |
 
 ## 3. État cible (Niveau 3a — pragmatique)
 
 | Brique | Fournisseur cible | Société |
 |---|---|---|
-| Hébergement app + DB | Clever Cloud | 🇫🇷 Paris/Nantes |
-| Stockage fichiers | Cellar (Clever Cloud, S3-compatible) | 🇫🇷 |
-| LLM | Anthropic Bedrock UE OU Mistral La Plateforme (selon benchmark) | 🇺🇸/🇪🇺 ou 🇫🇷 |
+| Hébergement app + DB | ✅ VPS OVH | 🇫🇷 Gravelines |
+| Stockage fichiers | VPS OVH (volume) ou OVH Object Storage si volumétrie le justifie | 🇫🇷 |
+| Sauvegardes hors-site | ✅ OVH Object Storage (S3) | 🇫🇷 |
+| LLM | ✅ Mistral La Plateforme | 🇫🇷 Paris |
 | Email transactionnel | Brevo (ex-Sendinblue) | 🇫🇷 |
 | Fond de carte | IGN data.geopf.fr/wmts | 🇫🇷 |
 | Certificat SSL | CertEurope OV | 🇫🇷 |
@@ -43,32 +47,35 @@ Ce plan décrit la migration progressive vers une stack pleinement européenne, 
 
 ## 4. Phases détaillées
 
-### Phase 0 — Stabilisation Bedrock (en cours, ~1 jour)
+### Phase 0 — Bascule LLM vers Mistral La Plateforme ✅ LIVRÉ (PR #117)
 
-**Objectif** : confirmer que l'analyse IA via Bedrock Francfort fonctionne de bout en bout.
+**Objectif initial** (annulé) : stabiliser Bedrock UE.
+**Décision juin 2026** : on saute Bedrock UE et on bascule directement sur Mistral La Plateforme (Paris). Raisons : Pixtral indispensable pour la vision, indisponible sur Bedrock ; souveraineté française réelle (Mistral SAS Paris, droit français) plutôt que UE-via-AWS.
 
-**Pré-requis** :
-- ✅ Compte AWS créé, IAM user `heureka-bedrock-prod` avec policy `HeurekaBedrockInvoke`
-- ✅ Variables Railway : `AI_PROVIDER=bedrock`, `AWS_REGION=eu-central-1`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
-- ✅ Correction `BEDROCK_MODEL_MAP` (commit `c43f8ea`)
-- ✅ Logging explicite des erreurs `analyzePiece` / `extractPiece` (commit `a5094d9`)
+**Statut** :
+- ✅ Refonte `aiUsage.ts` Mistral-only — `callAi()` + `streamAi()` + tracking `ai_usage_events`
+- ✅ Portage des 8 call sites (citoyen + mairie + scripts CLI)
+- ✅ Suppression `@anthropic-ai/sdk` + `@anthropic-ai/bedrock-sdk` + chemins Bedrock
+- ✅ Variable d'environnement `MISTRAL_API_KEY` déployée sur le VPS
+- ✅ Variables `ANTHROPIC_*`, `AWS_*` (pour l'IA), `AI_PROVIDER`, `AI_USD_TO_EUR` retirées
 
 **Critère de validation** :
-- 1 dépôt de pièce test → bandeau de score `Conforme/Acceptable/...` affiché dans le wizard
-- Ligne `[aiUsage] 🇪🇺 Fournisseur d'inférence : AWS Bedrock` au boot Railway
-- Entrée `ai_usage_events` avec `cost_eur > 0` et `file_hash` non null
+- 1 dépôt de pièce test → bandeau de score `Conforme/Acceptable/…` affiché dans le wizard
+- Ligne `[aiUsage] 🇫🇷 Fournisseur d'inférence : Mistral La Plateforme (fr-paris)` au boot du service
+- Entrée `ai_usage_events` avec `model = pixtral-large-latest`, `cost_eur > 0`, `file_hash` non null
+- Conversion automatique PDF → PNG via `pdftoppm` (paquet `poppler-utils` installé sur le VPS)
 
-**Rollback** : retirer `AI_PROVIDER=bedrock` dans Railway → l'app retombe sur Anthropic API directe (US). Aucun risque applicatif.
+**Rollback** : non. Les chemins Anthropic sont supprimés. En cas de panne Mistral prolongée, désactivation de l'analyse IA côté wizard (équivalent au cas où le pétitionnaire refuse l'analyse).
 
-**Garde-fou facturation** : budget AWS 100 €/mois avec alerte à 50 % et 80 %.
+**Garde-fou facturation** : seuils par appel et journalier dans `ai_alert_config` (page admin Coûts IA), alerte Slack.
 
 ---
 
-### Phase 1 — Stockage objet S3-compatible (2-3 jours)
+### Phase 1 — Stockage objet S3-compatible ✅ CODÉ (activable à la demande)
 
-**Objectif** : décorréler le stockage des fichiers déposés de l'hébergeur applicatif. Pré-requis à toute migration ultérieure.
+**Statut** : l'abstraction `StorageProvider` (local | S3) est codée et testée dans `apps/api/src/services/storage.ts`. Sur le VPS OVH actuel, on tourne en `STORAGE_PROVIDER=local` car le disque du VPS est persistant. La bascule vers OVH Object Storage (via le même code) reste un simple changement de variables d'env, à activer si la volumétrie ou la stratégie de redondance le justifie.
 
-**Pourquoi maintenant** : Railway et tous les PaaS modernes (Clever, Render, Fly) utilisent des disques éphémères. Aujourd'hui les PDF uploadés vivent sur le disque local du container Railway → ils seraient perdus à un redéploiement / migration.
+**Pourquoi cette abstraction reste utile** : les sauvegardes du dossier uploads sont gérées par `infra/backup/backup-uploads.sh` (snapshot quotidien + miroir OVH Object Storage). Mais en cas de croissance forte des dépôts (> 50 Go) ou de besoin de servir les fichiers depuis plusieurs VPS, la bascule sur S3 deviendra rentable.
 
 **Tâches techniques** :
 1. Ajouter `@aws-sdk/client-s3` + `multer-s3` aux dépendances de `apps/api`.
@@ -84,52 +91,47 @@ Ce plan décrit la migration progressive vers une stack pleinement européenne, 
 5. Tests unitaires sur l'abstraction.
 6. Migration des fichiers existants en prod : script `scripts/migrate-uploads-to-s3.ts` qui parcourt `dossier_pieces_jointes`, lit chaque fichier local, l'upload sur S3, met à jour l'URL en base.
 
-**Provisionnement** :
-- Compte Clever Cloud créé.
-- Add-on **Cellar** activé (sans dépendre de migration applicative — Cellar est juste un endpoint S3 utilisable depuis n'importe où, y compris Railway).
+**Provisionnement à effectuer le jour de la bascule** :
+- Conteneur OVH Object Storage `heureka-uploads` (séparé du conteneur de sauvegardes `heureka-backups`).
+- Clé S3 dédiée (write pour le VPS de prod, scope conteneur uniquement).
 
-**Critères de validation** :
-- 121 tests API passent + nouveaux tests sur l'abstraction
-- Upload depuis le wizard → fichier visible dans Cellar
-- Suppression de compte → fichier supprimé de Cellar
+**Critères de validation (le jour où on active)** :
+- 121 tests API passent + tests sur l'abstraction
+- Upload depuis le wizard → fichier visible dans le conteneur OVH
+- Suppression de compte → fichier supprimé du conteneur
 - Téléchargement par instructeur → URL signée valide 15 min
+- Script `scripts/migrate-uploads-to-s3.ts` exécuté pour les fichiers historiques
 
-**Rollback** : `STORAGE_PROVIDER=local` → retour au disque local Railway. Les anciens fichiers (avant migration) restent sur disque, les nouveaux sur Cellar — gérer la cohabitation pendant la transition via le champ `url` de chaque pièce.
+**Rollback** : `STORAGE_PROVIDER=local` → retour au disque local du VPS. Les anciens fichiers (avant migration) restent sur disque, les nouveaux sur S3 — gérer la cohabitation pendant la transition via le champ `url` de chaque pièce.
 
 ---
 
-### Phase 2 — Migration Railway → Clever Cloud (1-2 jours)
+### Phase 2 — Migration vers hébergement français ✅ LIVRÉ (VPS OVH)
 
-**Objectif** : sortir l'hébergement applicatif + base de données d'une société américaine.
+**Décision finale** : choix d'un **VPS OVH** plutôt que Clever Cloud. Raisons :
+- Souveraineté équivalente (OVH 🇫🇷, datacenters Gravelines / Strasbourg / Roubaix).
+- Coût maîtrisé (~10-20 €/mois pour le VPS d'entrée de gamme vs ~55 €/mois Clever).
+- Disque persistant → le stockage des PDF déposés peut rester en `local` (cf. Phase 1) sans surcoût immédiat.
+- Contrepartie : on récupère la responsabilité de l'OS, des mises à jour, des sauvegardes — d'où la création du [Dossier d'Exploitation](./security/dossier-exploitation.md) et des scripts `infra/backup/`.
 
-**Tâches** :
-1. **Création app Clever Cloud** :
-   - 1 app **Node.js** pour `apps/api`
-   - 1 app **Node.js + static** pour `apps/web` (build Vite → servi par Express ou par CDN)
-   - 1 add-on **PostgreSQL** (taille `XS` à `S` selon volume — démarrer XS, scaler ensuite)
-   - Cellar déjà en place depuis Phase 1
-2. **Migration PostgreSQL** :
-   - `pg_dump` depuis Railway → `pg_restore` sur Clever Cloud (downtime ~10-30 min selon volume)
-   - Vérifier que l'extension `pgvector` est activée sur l'instance Clever (sinon contacter le support, c'est dispo)
-3. **Variables d'environnement** : recopier toutes les variables Railway dans Clever Cloud (`JWT_SECRET`, `DATABASE_URL` → fournie par l'add-on, `AI_PROVIDER`, `AWS_*`, `MISTRAL_API_KEY` si applicable, `S3_*` Cellar, `RESEND_API_KEY` ou `BREVO_API_KEY`).
-4. **Cron jobs** : `node-cron` continue de tourner dans le process API — pas de changement nécessaire. Optionnellement basculer vers le scheduler natif Clever Cloud pour la résilience.
-5. **DNS** : repointer `app.heurekia.com` (CNAME) vers Clever Cloud. TTL bas (300s) à mettre 24h avant pour rollback rapide.
-6. **Bascule** : déploiement Clever Cloud en parallèle de Railway, vérification du fonctionnement → bascule DNS → surveillance 24h → arrêt Railway.
+**Stack en place** :
+- 1 VPS OVH (Ubuntu LTS)
+- nginx (reverse proxy + TLS Let's Encrypt via certbot)
+- PostgreSQL installé localement, accédé en `127.0.0.1`
+- API Node lancée via systemd (`heureka-api.service`)
+- Frontend Vite buildé et servi par nginx
+- Sauvegardes 3-2-1 chiffrées GPG vers OVH Object Storage (cf. `infra/backup/`)
 
-**Critères de validation** :
-- Toutes les routes API répondent identiquement (smoke test : login, list dossiers, upload pièce, decision)
-- Cron logs visibles dans Clever (`[cron] Scheduled jobs started …`)
-- Stockage Cellar opérationnel
-- Aucune erreur dans Sentry/logs pendant 24h post-bascule
+**Variables d'environnement déployées** : `JWT_SECRET`, `DATABASE_URL`, `MISTRAL_API_KEY` (mutualisée inférence LLM + embeddings RAG depuis la bascule Voyage → Mistral), `RESEND_API_KEY` (en attente de bascule Brevo), `PISTE_CLIENT_ID/SECRET`. Stockées dans `/home/ubuntu/heurekia/apps/api/.env` (mode 600).
 
-**Rollback** : repointer le DNS sur Railway. La base PostgreSQL Railway reste en place pendant 1 semaine au cas où.
+**Budget effectif** :
+- VPS OVH `VPS Comfort` (4 vCPU, 8 Go RAM, 160 Go SSD) : ~12 €/mois
+- OVH Object Storage (sauvegardes ≤ 100 Go) : ~3 €/mois
+- **Total : ~15 €/mois** (vs ~30-50 €/mois Railway et ~55 €/mois Clever Cloud envisagé).
 
-**Budget** :
-- Clever Cloud app API : `S` (~25 €/mois)
-- Clever Cloud app Web (ou CDN) : `XS` (~10 €/mois)
-- PostgreSQL add-on `XS` (~15 €/mois)
-- Cellar : ~5 €/mois (premiers 25 Go inclus)
-- **Total : ~55 €/mois**, vs ~30-50 €/mois Railway. Léger surcoût acceptable pour la souveraineté.
+**Procédure de mise à jour applicative** : voir [`dossier-exploitation.md`](./security/dossier-exploitation.md) §8.
+
+**Rollback** : non — Railway a été arrêté. La base de données Railway a été dumpée et stockée sur le coffre froid de l'équipe avant arrêt.
 
 ---
 
@@ -158,69 +160,56 @@ Ce plan décrit la migration progressive vers une stack pleinement européenne, 
 
 #### 3.3 Certificat SSL OV → CertEurope (🇫🇷)
 
-**Pourquoi** : Annexe Technique n°2 §4.9 de la DSI Tours demande un certificat OV (Organization Validation) minimum, vs DV (Domain Validation) actuellement fourni gratuitement par Let's Encrypt via Railway/Clever.
+**Pourquoi** : Annexe Technique n°2 §4.9 de la DSI Tours demande un certificat OV (Organization Validation) minimum, vs DV (Domain Validation) actuellement fourni gratuitement par Let's Encrypt via certbot sur le VPS.
 
 **Tâches** :
 1. Commander un certificat OV chez CertEurope ou GlobalSign (FR) — délai ~3 jours ouvrés, ~150 €/an.
 2. Procédure de validation (vérification de l'organisation = HEUREKIA SAS via Kbis + appel téléphonique).
-3. Installation sur Clever Cloud : upload du certificat dans la console (Console Clever → app → Domain names → Custom SSL certificate).
+3. Installation sur le VPS : copier `fullchain.pem` et `privkey.pem` dans `/etc/nginx/ssl/`, mettre à jour le bloc `server` nginx (directives `ssl_certificate` / `ssl_certificate_key`), `nginx -t && systemctl reload nginx`. Désactiver le renouvellement Let's Encrypt sur ce domaine.
 4. Vérification : `curl -vI https://app.heurekia.com 2>&1 | grep -i "issued\|organization"` doit montrer CertEurope.
 
 **Effort** : 2 jours élapsés (dont 1 jour d'attente validation).
 
 ---
 
-### Phase 4 — Benchmark LLM + décision Mistral (1 semaine)
+### Phase 4 — Benchmark de validation Mistral (1 semaine, post-livraison)
 
-**Objectif** : décider si on bascule l'analyse IA d'Anthropic Bedrock à Mistral La Plateforme (🇫🇷), ou si on reste sur Bedrock UE (suffisant pour la majorité des collectivités).
+**Objectif** (mis à jour) : la bascule Mistral est déjà livrée. Cette phase devient une **phase de validation a posteriori** sur des fixtures réelles, pour confirmer que Pixtral Large tient les seuils de qualité et de coût attendus, et pour potentiellement descendre certains usages vers Pixtral 12B (économies de coût).
 
 **Pré-requis** :
-- Compte Mistral La Plateforme + `MISTRAL_API_KEY`
-- 15 à 30 pièces réelles **anonymisées** déposées dans `packages/ingestion/benchmark-fixtures/pieces/`
-- `manifest.json` complété avec les vérités-terrain (cf. README du dossier)
+- ✅ `MISTRAL_API_KEY` déployée (VPS OVH + dev)
+- 15 à 30 pièces réelles **anonymisées** dans `packages/ingestion/benchmark-fixtures/pieces/`
+- `manifest.json` complété avec les vérités-terrain (cf. `RUN-BENCHMARK.md`)
 
 **Exécution** :
 ```bash
-ANTHROPIC_API_KEY=...
 MISTRAL_API_KEY=...
 pnpm --filter @heureka-v1/ingestion benchmark:llm \
-  --providers anthropic,mistral \
+  --mistral-models pixtral-large,pixtral-12b \
   --out docs/security/benchmark-llm-resultats-2026-06.md
 ```
 
-**Critères de décision** (cf. `docs/security/benchmark-llm.md`) :
-- Si **F1 Pixtral ≥ 80 % du F1 Claude** sur les fixtures → bascule recommandée vers Mistral.
-- Si **F1 Pixtral < 80 % du F1 Claude** → rester sur Bedrock UE et documenter le choix au DPD avec le rapport de benchmark.
-
-**Si bascule Mistral** :
-1. Ajouter un provider `MistralProvider` côté production (déjà implémenté côté benchmark, à porter dans `aiUsage.ts` selon le même switch que Bedrock).
-2. Adapter les prompts si nécessaire (Pixtral peut être plus rigide sur la sortie JSON).
-3. Convertir les PDF en PNG côté serveur (Pixtral n'accepte pas le PDF nativement → utiliser `unpdf` déjà présent dans les dépendances).
-4. Mettre à jour `BEDROCK_MODEL_MAP` → `LLM_PROVIDER=mistral` + `MISTRAL_MODEL=pixtral-large-latest`.
-5. Mettre à jour le bandeau de consentement citoyen + politique de confidentialité + registre art. 30 + AIPD pour refléter le changement de sous-traitant.
+**Critères de décision** :
+- Si **F1 Pixtral Large ≥ 0,80** sur les fixtures → décision Mistral confirmée, documenter au DPD avec le rapport.
+- Si **F1 Pixtral Large < 0,75** → escalade : itérer sur les prompts, ré-évaluer le choix de modèle (Mistral Medium 3 vision quand disponible).
+- Si **F1 Pixtral 12B ≥ 0,80** sur les usages simples (`ai-fast`) → repointer `ai-fast` vers Pixtral 12B dans `MODEL_MAP` (économies x10 sur ces appels).
 
 ---
 
 ### Phase 5 — Finalisation DPA + signatures juridiques
 
-**Objectif** : verrouiller juridiquement les sous-traitants choisis.
+**Objectif** : verrouiller juridiquement les sous-traitants.
 
-**Selon décision Phase 4** :
+**LLM (décidé)** :
+- ✅ Mistral La Plateforme retenu (cf. Phase 0)
+- [ ] Signer le DPA Mistral AI (procédure dans `docs/security/dpa-mistral-checklist.md`)
+- [x] Localisation 🇫🇷 Paris des datacenters confirmée
+- [x] Aucun TIA nécessaire (pas de transfert hors UE)
+- [x] Fiche n°2 du registre art. 30 mise à jour
 
-**Si Anthropic Bedrock retenu** :
-- Signer le DPA Anthropic (procédure dans `docs/security/dpa-anthropic-checklist.md`)
-- Activer le Zero Data Retention contractuellement
-- Documenter le Transfer Impact Assessment (TIA) post-Schrems II
-
-**Si Mistral retenu** :
-- Signer le DPA Mistral (formulaire standard)
-- Confirmer la localisation 🇫🇷 Paris des datacenters
-- Aucun TIA nécessaire (pas de transfert hors UE)
-- Mettre à jour la fiche n°2 du registre art. 30
-
-**Dans tous les cas** :
+**Autres sous-traitants** :
 - DPA Brevo
-- DPA Clever Cloud
+- DPA OVH (hébergement VPS + Object Storage)
 - DPA CertEurope (si OV)
 
 **Effort** : 1-3 semaines élapsées (dépend de la réactivité des fournisseurs commerciaux).
@@ -250,7 +239,7 @@ pnpm --filter @heureka-v1/ingestion benchmark:llm \
 - Migration vers **3DS Outscale** (🇫🇷, Dassault Systèmes, SecNumCloud qualifié).
 - LLM auto-hébergé : **Mistral / Llama Vision sur GPU Outscale**, prompts et infra à maintenir en interne.
 - Email : **Tipimail** (en cours qualification HDS) ou self-hosted.
-- Sortie complète de Clever Cloud (qui n'est pas SecNumCloud).
+- Sortie du VPS OVH standard (qui n'est pas SecNumCloud — seule l'offre OVH "Hosted Private Cloud SecNumCloud" l'est, plus chère).
 - **Coût × 5 à × 10** vs niveau 3a (GPU H100 dédié ~3-5 k€/mois).
 - **Effort** : 1 à 3 mois de migration + maintenance opérationnelle continue (mises à jour modèles, monitoring, etc.).
 
@@ -261,41 +250,40 @@ pnpm --filter @heureka-v1/ingestion benchmark:llm \
 ## 5. Calendrier global
 
 ```
-Sem 1  │ [Phase 0] Stabilisation Bedrock ✓
-       │ [Phase 1] Stockage objet S3 — refactor + tests
-Sem 2  │ [Phase 1] Migration des fichiers existants vers Cellar
-       │ [Phase 3] Brevo (email) — 1/2 j
+Sem 1  │ [Phase 0] Bascule LLM Mistral La Plateforme ✓ (PR #117)
+Sem 2  │ [Phase 1] Stockage objet S3 — code livré (activable)
+Sem 3  │ [Phase 2] Bascule Railway → VPS OVH ✓
+       │ [Sauvegardes] Scripts infra/backup + Dossier d'Exploitation ✓
+Sem 4  │ [Phase 3] Brevo (email) — 1/2 j
        │ [Phase 3] IGN (carto) — 1/2 j
-Sem 3  │ [Phase 2] Provisionnement Clever Cloud + PostgreSQL
-       │ [Phase 2] Bascule DNS + surveillance 48h
        │ [Phase 3] Commande certificat OV CertEurope
-Sem 4  │ [Phase 4] Benchmark LLM (fixtures + Mistral)
+Sem 5  │ [Phase 4] Benchmark de validation Mistral (fixtures réelles)
        │ [Phase 3] Installation cert OV
-Sem 5  │ [Phase 5] Signatures DPA (Anthropic OU Mistral, Brevo, Clever)
-Sem 6+ │ [Phase 6] AIPD signée + registre déposé par chaque commune
+Sem 6  │ [Phase 5] Signatures DPA (Mistral, Brevo, OVH)
+Sem 7+ │ [Phase 6] AIPD signée + registre déposé par chaque commune
        │ — Production officielle —
 Après  │ [Phase 7] SecNumCloud si demandé
 ```
 
 ## 6. Budget mensuel projeté
 
-| Stack | Avant (Railway) | Pendant migration | Après (Clever) | SecNumCloud (optionnel) |
+| Stack | Avant (Railway) | Aujourd'hui (VPS OVH) | Après Brevo + OV | SecNumCloud (optionnel) |
 |---|---|---|---|---|
-| Hébergement + DB | ~40 € | ~80 € (double-run) | ~55 € | ~500 € |
-| Stockage fichiers | inclus | ~5 € | ~5 € | inclus |
-| LLM (volume 1k pièces/mois) | ~50 € (Anthropic direct) | ~50 € (Bedrock) | 50-120 € (Bedrock ou Mistral) | 3-5 k€ (GPU dédié) |
-| Email | ~20 € (Resend) | ~20 € | ~15 € (Brevo) | ~15 € |
-| SSL | gratuit (Let's Encrypt) | gratuit | ~12 €/mois (OV CertEurope) | ~12 € |
-| **Total** | **~110 €** | **~155 €** | **~140 €** | **~3,5-5,5 k€** |
+| Hébergement + DB | ~40 € | ~12 € (VPS Comfort) | ~12 € | ~500 € |
+| Stockage fichiers + sauvegardes | inclus | ~3 € (Object Storage) | ~3 € | inclus |
+| LLM (volume 1k pièces/mois) | ~50 € (Anthropic direct, historique) | ~30-60 € (Mistral Pixtral Large) | ~30-60 € | 3-5 k€ (GPU dédié) |
+| Email | ~20 € (Resend) | ~20 € (Resend) | ~15 € (Brevo) | ~15 € |
+| SSL | gratuit (Let's Encrypt) | gratuit (Let's Encrypt) | ~12 €/mois (OV CertEurope) | ~12 € |
+| **Total** | **~110 €** | **~65-95 €** | **~72-102 €** | **~3,5-5,5 k€** |
 
 ## 7. Risques principaux et mitigations
 
 | Risque | Probabilité | Impact | Mitigation |
 |---|---|---|---|
-| Indisponibilité Bedrock (Phase 0) | Faible | Moyen | Dégradation gracieuse : skip analyse, instructeur prévient |
-| Perte de fichiers pendant migration vers Cellar (Phase 1) | Faible | Élevé | Script `migrate-uploads-to-s3` idempotent + vérification d'intégrité par taille avant suppression |
-| Downtime PostgreSQL pendant dump/restore (Phase 2) | Certaine | Faible | Fenêtre de maintenance annoncée (créneau nuit), durée ~15-30 min |
-| Qualité Mistral insuffisante (Phase 4) | Modérée | Faible | Décision rationnelle basée sur le benchmark, fallback Bedrock |
+| Indisponibilité Mistral La Plateforme | Faible | Moyen | Dégradation gracieuse : skip analyse, instructeur prévient |
+| Perte de fichiers lors d'une future bascule vers OVH Object Storage | Faible | Élevé | Script `migrate-uploads-to-s3` idempotent + vérification d'intégrité par taille avant suppression |
+| Perte du VPS (incident OVH, erreur ops) | Faible | Élevé | Sauvegardes 3-2-1 chiffrées vers OVH Object Storage (RPO 24 h / RTO 4 h) — cf. `docs/security/dossier-exploitation.md` |
+| Qualité Pixtral Large insuffisante sur certains cas (Phase 4 validation) | Modérée | Faible | Itération sur les prompts, bascule vers Mistral Medium 3 vision quand disponible, ou Llama Vision via Scaleway en dernier recours |
 | Refus DPD d'une commune (Phase 6) | Faible | Bloquant local | AIPD pré-rédigée argumentée + démonstration en visio |
 | Évolution de la doctrine étatique vers SecNumCloud obligatoire | Modérée à 2-3 ans | Élevé | Architecture déjà préparée (LLM derrière abstraction, stockage S3 portable, app dockerisable) |
 
@@ -303,9 +291,9 @@ Après  │ [Phase 7] SecNumCloud si demandé
 
 | Sujet | Pour | Quand |
 |---|---|---|
-| Validation Phase 0 (Bedrock fonctionnel) | Toi | Maintenant |
-| Lancement Phase 1 (stockage S3) | Toi | Sous 48h |
-| Critère de décision LLM (seuil F1 Mistral) | Toi + DPD collectivité | Avant Phase 4 |
+| Validation Phase 0 (Mistral fonctionnel en prod) | Toi | ✅ Fait (PR #117) |
+| Activation Phase 1 (stockage objet OVH OS) | Toi | À déclencher si volumétrie uploads > 50 Go ou besoin multi-VPS |
+| Seuil F1 de validation Mistral | Toi + DPD collectivité | Avant Phase 4 (benchmark) |
 | Fournisseur SSL OV (CertEurope vs GlobalSign FR) | Toi | Sous 1 semaine |
 | Engagement Phase 7 (SecNumCloud) | DSI cliente | Sur demande formelle uniquement |
 | Designation du DPD HEUREKIA SAS officiel | Toi (interne) | Avant la prod officielle |
@@ -314,11 +302,11 @@ Après  │ [Phase 7] SecNumCloud si demandé
 
 La plateforme est **officiellement déployable en production pour les communes** lorsque :
 
-- ✅ Phase 0 : Bedrock fonctionnel et stable depuis 7 jours
-- ✅ Phase 1 : fichiers sur Cellar, anciens fichiers migrés
-- ✅ Phase 2 : Clever Cloud + PostgreSQL stables depuis 7 jours
-- ✅ Phase 3 : Brevo + IGN + SSL OV en place
-- ✅ Phase 5 : DPA signé avec le LLM retenu (Anthropic OU Mistral)
+- ✅ Phase 0 : Mistral La Plateforme fonctionnel et stable depuis 7 jours
+- ✅ Phase 1 : abstraction stockage objet codée et testée (activation S3 OVH différée tant que la volumétrie ne le justifie pas)
+- ✅ Phase 2 : VPS OVH (Postgres + nginx + PM2) + sauvegardes 3-2-1 vers OVH Object Storage, stables depuis 7 jours
+- ⚠️ Phase 3 : Brevo + IGN + SSL OV en place
+- ✅ Phase 5 : DPA Mistral AI signé
 - ✅ Phase 6 : AIPD signée par au moins la première commune cliente
 - ✅ Page admin Conformité affiche ≥ 90 % des mesures en "Actif"
 - ✅ Le benchmark LLM est documenté et joint à l'AIPD

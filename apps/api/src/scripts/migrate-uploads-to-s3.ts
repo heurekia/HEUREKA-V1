@@ -23,6 +23,7 @@
  * Sécurité : NE SUPPRIME PAS les fichiers locaux. Une seconde passe manuelle
  * de validation (ex : checksum, smoke test) est attendue avant nettoyage.
  */
+import "dotenv/config";
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -118,7 +119,7 @@ async function main() {
   }
   if (!dryRun && uploaded > 0) {
     console.log(`\n📋 Étape suivante :`);
-    console.log(`   1) Basculer STORAGE_PROVIDER=s3 dans les variables Railway/Clever Cloud.`);
+    console.log(`   1) Basculer STORAGE_PROVIDER=s3 dans /home/ubuntu/heurekia/apps/api/.env (puis systemctl restart heureka-api).`);
     console.log(`   2) Vérifier qu'un nouveau dépôt s'écrit bien sur S3 et que la lecture fonctionne.`);
     console.log(`   3) Après ~7 jours stables, supprimer le contenu de ${UPLOADS_DIR}.`);
   }

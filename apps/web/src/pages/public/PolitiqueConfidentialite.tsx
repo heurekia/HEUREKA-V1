@@ -20,7 +20,7 @@ export function PolitiqueConfidentialite() {
         </p>
         <p className="text-sm text-gray-600 mt-2">
           Contact technique HEUREKIA / DPD plateforme :{" "}
-          <a href="mailto:dpd@heurekia-urba.fr" className="text-heureka-500 hover:underline">dpd@heurekia-urba.fr</a>
+          <a href="mailto:dpd@heurekia.com" className="text-heureka-500 hover:underline">dpd@heurekia.com</a>
         </p>
       </section>
 
@@ -78,16 +78,15 @@ export function PolitiqueConfidentialite() {
         <h2 className="text-lg font-semibold text-[#000020] mb-3">4. Analyse automatisée par intelligence artificielle</h2>
         <p className="text-sm text-gray-600 leading-relaxed mb-3">
           Au moment du dépôt d'une pièce justificative, le contenu du fichier est transmis à un modèle d'IA opéré
-          par <strong>Anthropic, PBC</strong> (548 Market St PMB 90375, San Francisco, CA 94104, États-Unis) afin
-          d'évaluer sa lisibilité, sa complétude et de détecter d'éventuelles non-conformités PLU manifestes.
+          par <strong>Mistral AI SAS</strong> (entreprise française basée à Paris) afin d'évaluer sa lisibilité,
+          sa complétude et de détecter d'éventuelles non-conformités PLU manifestes.
         </p>
         <ul className="text-sm text-gray-600 space-y-2 list-disc list-inside mb-3">
-          <li><strong>Sous-traitant :</strong> Anthropic, PBC, lié par un Data Processing Agreement (DPA) et
-            les clauses contractuelles types (SCC) de la Commission Européenne pour le transfert hors UE.</li>
-          <li><strong>Rétention chez le sous-traitant :</strong> jusqu'à 30 jours sur les serveurs Anthropic
-            à des fins anti-abus. Option « Zero Data Retention » activable contractuellement.</li>
-          <li><strong>Aucun réentraînement :</strong> Anthropic ne ré-entraîne pas ses modèles sur les données
-            transmises par API, conformément à ses conditions commerciales.</li>
+          <li><strong>Sous-traitant :</strong> Mistral AI SAS (Paris, France), lié par un Data Processing
+            Agreement (DPA) au titre de l'article 28 du RGPD. <strong>Aucun transfert hors UE</strong> :
+            l'inférence est réalisée en France métropolitaine.</li>
+          <li><strong>Aucun réentraînement :</strong> Mistral ne ré-entraîne pas ses modèles sur les données
+            transmises par API (compte entreprise), conformément aux conditions contractuelles.</li>
           <li><strong>Données transmises au modèle :</strong> contenu du fichier + zone PLU + nature des
             travaux + commune. <strong>Aucune donnée d'identification directe</strong> (nom, prénom, e-mail,
             adresse postale, numéro de parcelle complet) n'est transmise au modèle — le nom de fichier
@@ -114,14 +113,14 @@ export function PolitiqueConfidentialite() {
             </thead>
             <tbody className="divide-y divide-gray-100">
               <tr>
-                <td className="py-2 pr-4">Railway Corporation (USA)</td>
-                <td className="py-2 pr-4">Hébergement applicatif et base de données</td>
-                <td className="py-2">UE — eu-west-1 (Irlande)</td>
+                <td className="py-2 pr-4">OVH SAS (France)</td>
+                <td className="py-2 pr-4">Hébergement applicatif, base de données et sauvegardes</td>
+                <td className="py-2">France — datacenters OVH (VPS + Object Storage)</td>
               </tr>
               <tr>
-                <td className="py-2 pr-4">Anthropic, PBC (USA)</td>
-                <td className="py-2 pr-4">Analyse automatisée des pièces (modèle Claude)</td>
-                <td className="py-2">USA — sous DPA + SCC</td>
+                <td className="py-2 pr-4">Mistral AI SAS (France)</td>
+                <td className="py-2 pr-4">Analyse automatisée des pièces (modèle Pixtral Large)</td>
+                <td className="py-2">France — Paris</td>
               </tr>
               <tr>
                 <td className="py-2 pr-4">Resend (USA)</td>
@@ -140,7 +139,7 @@ export function PolitiqueConfidentialite() {
           <p><strong>Dossiers d'urbanisme :</strong> 10 ans à compter de la décision (obligations légales en matière d'urbanisme).</p>
           <p><strong>Logs de connexion (audit_logs) :</strong> 12 mois (purge automatique).</p>
           <p><strong>Journal des appels IA (ai_usage_events) :</strong> conservé pour la durée du dossier, à des fins d'auditabilité.</p>
-          <p><strong>Inputs côté Anthropic :</strong> 30 jours maximum (logs anti-abus du sous-traitant), supprimables sur option contractuelle.</p>
+          <p><strong>Inputs côté Mistral AI :</strong> politique de rétention contractuelle (compte entreprise, no-training), à formaliser au DPA Mistral.</p>
         </div>
       </section>
 
@@ -165,7 +164,7 @@ export function PolitiqueConfidentialite() {
         </ul>
         <p className="text-sm text-gray-600 mt-3">
           Pour exercer ces droits, contactez en priorité le DPD de la commune destinataire de votre dossier,
-          ou à défaut <a href="mailto:dpd@heurekia-urba.fr" className="text-heureka-500 hover:underline">dpd@heurekia-urba.fr</a>.
+          ou à défaut <a href="mailto:dpd@heurekia.com" className="text-heureka-500 hover:underline">dpd@heurekia.com</a>.
           En cas de réclamation non résolue, vous pouvez saisir la <strong>CNIL</strong> (
           <a href="https://www.cnil.fr" target="_blank" rel="noopener noreferrer" className="text-heureka-500 hover:underline">www.cnil.fr</a>).
         </p>
@@ -185,16 +184,14 @@ export function PolitiqueConfidentialite() {
       <section>
         <h2 className="text-lg font-semibold text-[#000020] mb-3">9. Transferts hors Union Européenne</h2>
         <p className="text-sm text-gray-600 leading-relaxed">
-          Le contenu des pièces déposées peut être transmis à Anthropic, PBC (États-Unis) dans le cadre de
-          l'analyse automatisée décrite à la section 4. Ce transfert est encadré par les <strong>clauses
-          contractuelles types</strong> (SCC) adoptées par la Commission Européenne (décision 2021/914) et un
-          Data Processing Agreement signé avec le sous-traitant. Le pétitionnaire dispose d'un droit
-          d'opposition activable lors du dépôt.
+          <strong>Aucun transfert de vos données hors de l'Union Européenne n'est effectué dans le cadre de
+          l'analyse IA.</strong> L'inférence est réalisée par Mistral AI SAS sur des datacenters situés en
+          France métropolitaine. Les articles 44 et suivants du RGPD ne sont donc pas engagés pour ce traitement.
         </p>
         <p className="text-sm text-gray-600 mt-2">
-          Les bases de données et les fichiers eux-mêmes restent hébergés dans l'Union Européenne.
-          Une bascule vers une infrastructure d'inférence IA en région UE (AWS Bedrock Francfort) est en cours
-          d'évaluation pour supprimer ce transfert.
+          L'hébergement applicatif et la base de données sont assurés depuis juin 2026 par OVH SAS, sur des
+          datacenters situés en France métropolitaine — aucune donnée ne quitte le territoire français pour
+          l'opération de la plateforme.
         </p>
       </section>
     </div>

@@ -4,9 +4,9 @@
  * Algorithm:
  *   1. Extract PDF text via pdftotext, split on form-feed (page boundaries)
  *   2. Filter pages: skip pages with < 300 chars (images, maps, schemas)
- *   3. Discover zones in the clean text (regex → Claude fallback)
+ *   3. Discover zones in the clean text (regex → LLM fallback)
  *   4. Segment text by zone
- *   5. Per zone: Claude tool_use with strict schema → one call, N rules
+ *   5. Per zone: LLM tool_use with strict schema → one call, N rules
  *   6. Detect "renvoi au schéma" → flag needs_vision for manual review
  *   7. Store as validation_status = "brouillon" (never used without human sign-off)
  *
@@ -29,7 +29,7 @@ import { zones, zone_regulatory_rules, communes } from "@heureka-v1/db";
 import { eq, and } from "drizzle-orm";
 import { execSync } from "child_process";
 import fs from "fs";
-import Anthropic from "@anthropic-ai/sdk";
+import { callAi, type AiToolDefinition } from "../services/aiUsage.js";
 
 // ── CLI ────────────────────────────────────────────────────────────────────────
 
@@ -68,73 +68,38 @@ type ZoneInput = {
   rules: RuleInput[];
 };
 
-// ── Claude tool definition ────────────────────────────────────────────────────
-// Strict schema: Claude cannot hallucinate a format. Each field is typed.
-// value_min / value_max / value_exact are optional so Claude can omit them
-// (treated as null) rather than inventing values.
+// ── Outil de fonction (format OpenAI / Mistral) ───────────────────────────────
+// Schéma strict : le modèle ne peut pas inventer le format. value_min /
+// value_max / value_exact sont optionnels pour qu'il puisse les omettre
+// (traité comme null) plutôt qu'inventer une valeur.
 
-const SAVE_RULE_TOOL: Anthropic.Tool = {
-  name: "save_rule",
-  description: "Enregistre une règle réglementaire extraite d'un article du PLU.",
-  input_schema: {
-    type: "object" as const,
-    properties: {
-      article_number: {
-        type: "integer",
-        description: "Numéro de l'article (6, 7, 9, 10…). Null si l'article n'est pas numéroté.",
+const SAVE_RULE_TOOL: AiToolDefinition = {
+  type: "function",
+  function: {
+    name: "save_rule",
+    description: "Enregistre une règle réglementaire extraite d'un article du PLU.",
+    parameters: {
+      type: "object",
+      properties: {
+        article_number: { type: "number", description: "Numéro de l'article, décimal autorisé pour les PLU modernisés (6, 7, 12.1, 12.2…). Null si l'article n'est pas numéroté." },
+        article_title: { type: "string", description: "Titre exact de l'article tel qu'il apparaît dans le texte." },
+        topic: {
+          type: "string",
+          enum: ["destinations","terrain_min","recul_voie","recul_limite","recul_batiments","emprise_sol","hauteur","aspect","stationnement","espaces_verts","cos","general"],
+          description: "Catégorie réglementaire.",
+        },
+        rule_text: { type: "string", description: "Texte fidèle de la règle, reformulé pour la clarté si nécessaire." },
+        not_regulated: { type: "boolean", description: "True si l'article indique explicitement 'sans objet', 'non réglementé', ou similaire." },
+        value_min: { type: "number", description: "Valeur minimale numérique (ex: recul minimal de 3m → 3). Omettre si absent." },
+        value_max: { type: "number", description: "Valeur maximale numérique (ex: hauteur max 9m → 9). Omettre si absent." },
+        value_exact: { type: "number", description: "Valeur unique exacte. Omettre si absent." },
+        unit: { type: "string", enum: ["m","%","m²","places"], description: "Unité de la valeur principale. Omettre si pas de valeur numérique." },
+        conditions: { type: "string", description: "Conditions, exceptions ou règles alternatives (ex: 'UBa: jamais en limite'). Omettre si aucune." },
+        summary: { type: "string", description: "Résumé de la règle en 10 mots maximum." },
+        needs_vision: { type: "boolean", description: "True si le texte renvoie à un schéma ou croquis pour la valeur numérique principale (ex: 'voir schéma ci-contre')." },
       },
-      article_title: {
-        type: "string",
-        description: "Titre exact de l'article tel qu'il apparaît dans le texte.",
-      },
-      topic: {
-        type: "string",
-        enum: [
-          "destinations", "terrain_min", "recul_voie", "recul_limite",
-          "recul_batiments", "emprise_sol", "hauteur", "aspect",
-          "stationnement", "espaces_verts", "cos", "general",
-        ],
-        description: "Catégorie réglementaire.",
-      },
-      rule_text: {
-        type: "string",
-        description: "Texte fidèle de la règle, reformulé pour la clarté si nécessaire.",
-      },
-      not_regulated: {
-        type: "boolean",
-        description: "True si l'article indique explicitement 'sans objet', 'non réglementé', ou similaire.",
-      },
-      value_min: {
-        type: "number",
-        description: "Valeur minimale numérique (ex: recul minimal de 3m → 3). Omettre si absent.",
-      },
-      value_max: {
-        type: "number",
-        description: "Valeur maximale numérique (ex: hauteur max 9m → 9). Omettre si absent.",
-      },
-      value_exact: {
-        type: "number",
-        description: "Valeur unique exacte. Omettre si absent.",
-      },
-      unit: {
-        type: "string",
-        enum: ["m", "%", "m²", "places"],
-        description: "Unité de la valeur principale. Omettre si pas de valeur numérique.",
-      },
-      conditions: {
-        type: "string",
-        description: "Conditions, exceptions ou règles alternatives (ex: 'UBa: jamais en limite'). Omettre si aucune.",
-      },
-      summary: {
-        type: "string",
-        description: "Résumé de la règle en 10 mots maximum.",
-      },
-      needs_vision: {
-        type: "boolean",
-        description: "True si le texte renvoie à un schéma ou croquis pour la valeur numérique principale (ex: 'voir schéma ci-contre').",
-      },
+      required: ["article_number","article_title","topic","rule_text","not_regulated","summary","needs_vision"],
     },
-    required: ["article_number", "article_title", "topic", "rule_text", "not_regulated", "summary", "needs_vision"],
   },
 };
 
@@ -157,7 +122,7 @@ function extractCleanText(pdfPath: string): string {
   console.log(`  → ${total} pages, ${skipped} ignorées (images/cartes/schémas), ${useful.length} pages réglementaires`);
 
   if (useful.length === 0) {
-    throw new Error("Aucune page textuelle détectée. Le document est peut-être entièrement scanné — utilisez Claude Vision.");
+    throw new Error("Aucune page textuelle détectée. Le document est peut-être entièrement scanné — utilisez Pixtral Vision via la route mairie/admin/ingest-plu-pdf.");
   }
 
   return useful.join("\n\n");
@@ -167,7 +132,6 @@ function extractCleanText(pdfPath: string): string {
 
 async function discoverZones(
   text: string,
-  client: Anthropic,
 ): Promise<Array<{ code: string; label: string; type: string }>> {
 
   // Regex scan first (fast, no API cost)
@@ -196,14 +160,16 @@ async function discoverZones(
     }));
   }
 
-  // Claude fallback on first 10 000 chars
-  console.log("  → Regex insuffisante — identification des zones par Claude…");
-  const msg = await client.messages.create({
-    model: "claude-sonnet-4-6",
-    max_tokens: 1000,
-    messages: [{
-      role: "user",
-      content: `Voici le début d'un règlement PLU français.
+  // Fallback Mistral sur les 10 000 premiers caractères
+  console.log("  → Regex insuffisante — identification des zones par Mistral…");
+  const msg = await callAi(
+    { purpose: "plu_zone_discover_cli" },
+    {
+      model: "ai-smart",
+      max_tokens: 1000,
+      messages: [{
+        role: "user",
+        content: `Voici le début d'un règlement PLU français.
 Liste toutes les zones qui ont un règlement distinct (UA, UB, 1AU, N, NI, A, etc.).
 Exclure les sous-secteurs sans règlement propre.
 Répondre UNIQUEMENT avec un JSON array :
@@ -212,12 +178,13 @@ Types : "U"=urbaine, "AU"=à urbaniser, "A"=agricole, "N"=naturelle.
 
 TEXTE :
 ${text.slice(0, 10000)}`,
-    }],
-  });
+      }],
+    },
+  );
 
   const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "[]";
   const arr = JSON.parse(raw.match(/\[[\s\S]*\]/)?.[0] ?? "[]") as Array<{ code: string; label: string; type: string }>;
-  console.log(`  → Claude : ${arr.length} zones (${arr.map(z => z.code).join(", ")})`);
+  console.log(`  → Mistral : ${arr.length} zones (${arr.map(z => z.code).join(", ")})`);
   return arr;
 }
 
@@ -258,13 +225,14 @@ function sliceZone(fullText: string, code: string, allCodes: string[]): string {
 async function extractRules(
   zoneCode: string,
   zoneText: string,
-  client: Anthropic,
 ): Promise<RuleInput[]> {
-  const msg = await client.messages.create({
-    model: "claude-sonnet-4-6",
+  const msg = await callAi(
+    { purpose: "plu_rule_extract_cli" },
+    {
+    model: "ai-smart",
     max_tokens: 4000,
     tools: [SAVE_RULE_TOOL],
-    tool_choice: { type: "any" },
+    tool_choice: "any",
     messages: [{
       role: "user",
       content: `Tu es expert en droit de l'urbanisme français.
@@ -285,10 +253,11 @@ Règles importantes :
 TEXTE DE LA ZONE ${zoneCode} :
 ${zoneText}`,
     }],
-  });
+    },
+  );
 
   const rules: RuleInput[] = msg.content
-    .filter((b): b is Anthropic.ToolUseBlock => b.type === "tool_use")
+    .filter((b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use")
     .map(b => b.input as RuleInput);
 
   return rules;
@@ -402,11 +371,9 @@ async function main() {
     console.error(`✗ ${e}`); process.exit(1);
   }
 
-  const client = new Anthropic();
-
   // Step 3: zone discovery
   console.log("\nIdentification des zones…");
-  const discoveredZones = await discoverZones(cleanText, client);
+  const discoveredZones = await discoverZones(cleanText);
   if (!discoveredZones.length) {
     console.error("✗ Aucune zone trouvée. Vérifiez le document (bon fichier ? règlement écrit ?)");
     process.exit(1);
@@ -427,9 +394,9 @@ async function main() {
 
     let rules: RuleInput[];
     try {
-      rules = await extractRules(zoneInfo.code, zoneText, client);
+      rules = await extractRules(zoneInfo.code, zoneText);
     } catch (e) {
-      console.log(` ✗ erreur Claude : ${e}`);
+      console.log(` ✗ erreur Mistral : ${e}`);
       continue;
     }
 

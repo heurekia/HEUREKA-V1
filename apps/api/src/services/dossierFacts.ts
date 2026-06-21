@@ -1,3 +1,4 @@
+import { randomUUID } from "crypto";
 import { db } from "../db.js";
 import { dossier_pieces_jointes, dossier_facts, dossiers } from "@heureka-v1/db";
 import { and, eq, isNull } from "drizzle-orm";
@@ -7,11 +8,23 @@ import type { PieceExtraction } from "./pieceExtractor.js";
 
 type FactSource = "citizen_declaration" | "document_extraction" | "instructor_entry" | "external_data";
 
+// Méthode d'obtention du fait — informative côté UI ("comment a-t-on
+// obtenu cette valeur ?"). N'influence pas la résolution des candidats.
+export type FactMethod = "ocr" | "vision" | "declarative" | "external_api" | "manual";
+
 export interface FactSourceRef {
   piece_id: string;
   field: string;
   piece_type: string;
   nom_piece?: string | null;
+  // Phase 1 — preuve par champ : page et zone du document, citation
+  // littérale, méthode d'obtention. Chaque champ est optionnel pour ne
+  // pas casser les sources qui ne portent pas naturellement ces infos
+  // (ex: faits issus du wizard / external_data).
+  page?: number | null;
+  bbox?: [number, number, number, number] | null;
+  citation?: string | null;
+  method?: FactMethod | null;
 }
 
 // Candidat émis par un seul couple (pièce, champ). `priority` permet de
@@ -60,11 +73,17 @@ export function extractFactsFromPiece(piece: PieceForFacts): FactCandidate[] {
   const ext = piece.extraction_ia;
   if (!ext) return [];
   const out: FactCandidate[] = [];
+  // Le CERFA est une déclaration : "declarative". Les autres pièces sont
+  // lues visuellement par le modèle : "vision". Cette annotation alimente
+  // les badges "comment a-t-on obtenu cette valeur ?" côté UI sans
+  // changer la résolution des candidats.
+  const method: FactMethod = ext.piece_type === "cerfa" ? "declarative" : "vision";
   const baseRef = (field: string): FactSourceRef => ({
     piece_id: piece.id,
     field,
     piece_type: ext.piece_type,
     nom_piece: piece.nom,
+    method,
   });
   const conf = ext.confidence_type;
 
@@ -184,6 +203,62 @@ export function resolveDossierFacts(candidates: FactCandidate[]): DesiredFact[] 
   }));
 }
 
+// ─── Phase 1 — Résolution avec conservation des candidats ────────────
+//
+// Différence vs resolveDossierFacts :
+//   - Tous les candidats sont conservés (pas seulement le gagnant).
+//   - Quand ≥ 2 candidats d'une même clé portent des valeurs DISTINCTES
+//     (après stringify JSON), un `conflict_group_id` partagé est attribué.
+//   - Le gagnant porte `is_winner=true`. Tri identique à resolveDossierFacts
+//     pour ne pas changer la sélection actuelle (rétro-compat verdicts).
+//
+// Sortie consommée par applyDossierFacts, qui persiste tout en base. Le
+// moteur de contradictions (Phase 3) lit les non-gagnants via
+// `conflict_group_id`.
+
+export interface PersistedFactCandidate extends DesiredFact {
+  is_winner: boolean;
+  conflict_group_id: string | null;
+}
+
+export function resolveDossierFactsWithConflicts(
+  candidates: FactCandidate[],
+): PersistedFactCandidate[] {
+  const byKey = new Map<string, FactCandidate[]>();
+  for (const c of candidates) {
+    const arr = byKey.get(c.key) ?? [];
+    arr.push(c);
+    byKey.set(c.key, arr);
+  }
+  const out: PersistedFactCandidate[] = [];
+  for (const [, group] of byKey) {
+    const sorted = [...group].sort((a, b) => {
+      if (b.priority !== a.priority) return b.priority - a.priority;
+      return (b.confidence ?? 0) - (a.confidence ?? 0);
+    });
+    const winner = sorted[0]!;
+    // Détection de conflit : on compare les valeurs sérialisées. Deux
+    // candidats avec la même valeur ne déclenchent pas de conflit, même
+    // s'ils viennent de pièces différentes (ils se confirment mutuellement).
+    const distinctValues = new Set<string>();
+    for (const c of sorted) distinctValues.add(JSON.stringify(c.value));
+    const conflict_group_id = distinctValues.size > 1 ? randomUUID() : null;
+    for (const c of sorted) {
+      out.push({
+        key: c.key,
+        value: c.value,
+        unit: c.unit,
+        source: c.source,
+        source_ref: c.source_ref,
+        confidence: c.confidence,
+        is_winner: c === winner,
+        conflict_group_id,
+      });
+    }
+  }
+  return out;
+}
+
 // ─── Application en base ─────────────────────────────────────────────
 //
 // Règles :
@@ -203,51 +278,107 @@ export interface SyncReport {
   superseded: number;
   skipped_instructor: number;
   kept_identical: number;
+  // Phase 1 — nombre de clés persistant ≥ 2 candidats avec valeurs distinctes
+  // (suivi observabilité ; le moteur de contradictions Phase 3 lira la table
+  // directement, pas ce compteur).
+  conflicts: number;
 }
 
 export async function applyDossierFacts(
   dossierId: string,
-  desired: DesiredFact[],
+  desired: PersistedFactCandidate[],
 ): Promise<SyncReport> {
-  const report: SyncReport = { inserted: 0, superseded: 0, skipped_instructor: 0, kept_identical: 0 };
+  const report: SyncReport = { inserted: 0, superseded: 0, skipped_instructor: 0, kept_identical: 0, conflicts: 0 };
   if (desired.length === 0) return report;
 
+  // On lit TOUS les actifs (gagnants + non-gagnants), regroupés par clé.
   const activeRows = await db
     .select()
     .from(dossier_facts)
     .where(and(eq(dossier_facts.dossier_id, dossierId), isNull(dossier_facts.superseded_at)));
-  const activeByKey = new Map(activeRows.map((r) => [r.key, r]));
+  const activeByKey = new Map<string, typeof activeRows>();
+  for (const r of activeRows) {
+    const arr = activeByKey.get(r.key) ?? [];
+    arr.push(r);
+    activeByKey.set(r.key, arr);
+  }
+
+  // Regroupement des candidats désirés par clé : on doit traiter une clé
+  // d'un seul tenant pour préserver l'invariant "un seul gagnant actif".
+  const desiredByKey = new Map<string, PersistedFactCandidate[]>();
+  for (const f of desired) {
+    const arr = desiredByKey.get(f.key) ?? [];
+    arr.push(f);
+    desiredByKey.set(f.key, arr);
+  }
 
   const now = new Date();
-  for (const fact of desired) {
-    const existing = activeByKey.get(fact.key);
+  for (const [key, group] of desiredByKey) {
+    const existing = activeByKey.get(key) ?? [];
+    if (group.some((c) => c.is_winner === false) || existing.some((r) => !r.is_winner)) {
+      // (compté plus bas)
+    }
 
-    if (existing) {
-      if (existing.source === "instructor_entry") {
-        report.skipped_instructor++;
-        continue;
-      }
-      if (existing.source === fact.source && jsonEqual(existing.value, fact.value)) {
-        report.kept_identical++;
-        continue;
-      }
+    // Règle d'or : une saisie instructeur sur le gagnant est gelée, on ne
+    // touche RIEN sur cette clé (ni gagnant ni non-gagnants). L'instructeur
+    // décidera explicitement de re-lancer s'il veut reconsidérer.
+    const existingWinner = existing.find((r) => r.is_winner);
+    if (existingWinner?.source === "instructor_entry") {
+      report.skipped_instructor++;
+      continue;
+    }
+
+    // Idempotence : si le multiset {(source_ref.piece_id, source_ref.field,
+    // source, value, is_winner)} matche entre existing et group, rien à faire.
+    // On évite la sérialisation profonde du source_ref complet — piece_id +
+    // field suffisent à identifier l'origine d'un candidat.
+    const signature = (r: { source: string; value: unknown; source_ref: unknown; is_winner: boolean }): string => {
+      const ref = r.source_ref as { piece_id?: string; field?: string } | null;
+      return JSON.stringify({
+        piece_id: ref?.piece_id ?? null,
+        field: ref?.field ?? null,
+        source: r.source,
+        value: r.value,
+        is_winner: r.is_winner,
+      });
+    };
+    const existingSigs = new Set(existing.map(signature));
+    const desiredSigs = new Set(group.map(signature));
+    const identical = existingSigs.size === desiredSigs.size
+      && [...existingSigs].every((s) => desiredSigs.has(s));
+
+    if (identical) {
+      report.kept_identical++;
+      if (group.some((c) => c.conflict_group_id)) report.conflicts++;
+      continue;
+    }
+
+    // Refresh complet : supersede tous les actifs de la clé, puis insère
+    // l'intégralité du nouveau groupe (gagnant + non-gagnants). Plus simple
+    // et plus sûr que le delta, et la pression d'écriture reste faible car
+    // les changements de candidats sont peu fréquents.
+    for (const r of existing) {
       await db
         .update(dossier_facts)
         .set({ superseded_at: now, updated_at: now })
-        .where(eq(dossier_facts.id, existing.id));
+        .where(eq(dossier_facts.id, r.id));
       report.superseded++;
     }
-
-    await db.insert(dossier_facts).values({
-      dossier_id: dossierId,
-      key: fact.key,
-      value: fact.value as object,
-      unit: fact.unit ?? null,
-      source: fact.source,
-      source_ref: fact.source_ref as object,
-      confidence: fact.confidence ?? null,
-    });
-    report.inserted++;
+    for (const fact of group) {
+      await db.insert(dossier_facts).values({
+        dossier_id: dossierId,
+        key: fact.key,
+        value: fact.value as object,
+        unit: fact.unit ?? null,
+        source: fact.source,
+        source_ref: fact.source_ref as object,
+        confidence: fact.confidence ?? null,
+        is_winner: fact.is_winner,
+        conflict_group_id: fact.conflict_group_id,
+      });
+      report.inserted++;
+    }
+    if (group.some((c) => c.conflict_group_id)) report.conflicts++;
   }
 
   return report;
@@ -284,11 +415,17 @@ const NATURE_TO_TAG: Record<string, string> = {
 
 export function extractFactsFromDossier(dossier: DossierForFacts): FactCandidate[] {
   const out: FactCandidate[] = [];
-  const dossierRef = (field: string): FactSourceRef => ({
+  // method "external_api" pour les données GPU/IGN, "declarative" pour les
+  // déclarations wizard (natures, surface_plancher, parcelle, commune…).
+  // Une seule baseRef paramétrée — on ne dérive pas la method champ par
+  // champ ici car le wizard et l'analyse parcellaire écrivent dans le même
+  // bloc `metadata`.
+  const dossierRef = (field: string, method: FactMethod = "declarative"): FactSourceRef => ({
     piece_id: dossier.id, // on garde un ID — au sens "source attachée au dossier"
     field,
     piece_type: "dossier",
     nom_piece: null,
+    method,
   });
   const meta = (dossier.metadata ?? {}) as Record<string, unknown>;
 
@@ -361,7 +498,7 @@ export function extractFactsFromDossier(dossier: DossierForFacts): FactCandidate
         key: "zonage_plu",
         value: [zoneCode.trim()],
         source: "external_data",
-        source_ref: dossierRef("metadata.parcel_analysis.plu_zone.zone_code"),
+        source_ref: dossierRef("metadata.parcel_analysis.plu_zone.zone_code", "external_api"),
         confidence: 1,
         priority: 100,
       });
@@ -377,7 +514,7 @@ export function extractFactsFromDossier(dossier: DossierForFacts): FactCandidate
           key: "risques",
           value: flagged,
           source: "external_data",
-          source_ref: dossierRef("metadata.parcel_analysis.risks"),
+          source_ref: dossierRef("metadata.parcel_analysis.risks", "external_api"),
           confidence: 0.9,
           priority: 100,
         });
@@ -396,7 +533,7 @@ export function extractFactsFromDossier(dossier: DossierForFacts): FactCandidate
         key: "secteur_abf",
         value: true,
         source: "external_data",
-        source_ref: dossierRef("metadata.parcel_analysis.sup_*"),
+        source_ref: dossierRef("metadata.parcel_analysis.sup_*", "external_api"),
         confidence: 1,
         priority: 100,
       });
@@ -409,7 +546,7 @@ export function extractFactsFromDossier(dossier: DossierForFacts): FactCandidate
         key: "servitudes",
         value: [...new Set(sectorList)],
         source: "external_data",
-        source_ref: dossierRef("metadata.parcel_analysis.sup_*"),
+        source_ref: dossierRef("metadata.parcel_analysis.sup_*", "external_api"),
         confidence: 1,
         priority: 100,
       });
@@ -443,14 +580,23 @@ export async function syncDossierFacts(dossierId: string): Promise<SyncReport> {
   const pieces = await db
     .select({ id: dossier_pieces_jointes.id, nom: dossier_pieces_jointes.nom, extraction_ia: dossier_pieces_jointes.extraction_ia })
     .from(dossier_pieces_jointes)
-    .where(eq(dossier_pieces_jointes.dossier_id, dossierId));
+    .where(and(
+      eq(dossier_pieces_jointes.dossier_id, dossierId),
+      isNull(dossier_pieces_jointes.archived_at),
+    ));
   for (const p of pieces) {
     const piece: PieceForFacts = { id: p.id, nom: p.nom, extraction_ia: p.extraction_ia as PieceExtraction | null };
     candidates.push(...extractFactsFromPiece(piece));
   }
 
-  const desired = resolveDossierFacts(candidates);
-  return applyDossierFacts(dossierId, desired);
+  // Phase 1 : on persiste TOUS les candidats (gagnants + non-gagnants),
+  // avec conflict_group_id quand les valeurs divergent. Les verdicts
+  // règles continuent à ne consommer que les gagnants (via l'index partiel
+  // `uniq_dossier_facts_active_winner_key`), donc aucune régression
+  // métier — mais le matériau brut nécessaire au moteur de contradictions
+  // (Phase 3) est maintenant disponible.
+  const persisted = resolveDossierFactsWithConflicts(candidates);
+  return applyDossierFacts(dossierId, persisted);
 }
 
 // Alias conservé pour les appelants existants ; pointe sur la sync

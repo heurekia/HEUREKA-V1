@@ -5,20 +5,21 @@ describe("classifyPermit", () => {
   describe("certificat d'urbanisme", () => {
     it("CUb par défaut quand le type n'est pas précisé", () => {
       const r = classifyPermit({ natures: ["certificat"] });
-      expect(r.type).toBe("certificat_urbanisme");
+      expect(r.type).toBe("certificat_urbanisme_b");
       expect(r.subtype).toBe("cu_b");
       expect(r.delai_moyen).toBe("2 mois");
     });
 
     it("CUa quand certificatType = a", () => {
       const r = classifyPermit({ natures: ["certificat"], certificatType: "a" });
+      expect(r.type).toBe("certificat_urbanisme_a");
       expect(r.subtype).toBe("cu_a");
       expect(r.delai_moyen).toBe("1 mois");
     });
 
     it("ne s'applique pas si combiné à une autre nature", () => {
       const r = classifyPermit({ natures: ["certificat", "maison_neuve"] });
-      expect(r.type).not.toBe("certificat_urbanisme");
+      expect(r.type).not.toMatch(/^certificat_urbanisme/);
     });
   });
 
@@ -37,7 +38,7 @@ describe("classifyPermit", () => {
 
     it("démolition + construction → ne reste pas un simple PD", () => {
       const r = classifyPermit({ natures: ["demolition", "maison_neuve"], surface: 120 });
-      expect(r.type).toBe("permis_de_construire");
+      expect(r.type).toBe("permis_de_construire_mi");
       expect(r.articles).toContain("R421-28 CU"); // PC vaut démolition
     });
   });
@@ -59,7 +60,7 @@ describe("classifyPermit", () => {
   describe("maison neuve", () => {
     it("≤ 150 m² → PCMI sans architecte", () => {
       const r = classifyPermit({ natures: ["maison_neuve"], surface: 120 });
-      expect(r.type).toBe("permis_de_construire");
+      expect(r.type).toBe("permis_de_construire_mi");
       expect(r.subtype).toBe("pcmi");
       expect(r.architecte_requis).toBe(false);
     });
@@ -96,6 +97,16 @@ describe("classifyPermit", () => {
     it("zone U : > 40 m² → PC", () => {
       const r = classifyPermit({ natures: ["agrandissement"], surface: 50, zone: "UB" });
       expect(r.type).toBe("permis_de_construire");
+      expect(r.subtype).toBe("pc");
+    });
+
+    it("zone U : > 40 m² sur maison individuelle existante → PCMI", () => {
+      const r = classifyPermit({
+        natures: ["agrandissement"], surface: 50, zone: "UB",
+        existingIsMaisonIndividuelle: true,
+      });
+      expect(r.type).toBe("permis_de_construire_mi");
+      expect(r.subtype).toBe("pcmi");
     });
 
     it("hors zone U : seuil DP abaissé à 20 m²", () => {
@@ -120,6 +131,7 @@ describe("classifyPermit", () => {
     it("piscine > 100 m² → PC", () => {
       const r = classifyPermit({ natures: ["amenagement"], amenagementType: "piscine", surface: 120 });
       expect(r.type).toBe("permis_de_construire");
+      expect(r.subtype).toBe("pc");
     });
 
     it("clôture → DP", () => {

@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from "react";
+import { useState, useEffect, useCallback, useMemo, Fragment } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
@@ -2265,6 +2265,17 @@ interface LegalMentionRow {
   fetched_at?: string;
 }
 
+interface MissingArticleRow {
+  id: string;
+  code_key: string;     // CU / CCH / CE
+  article_ref: string;
+  first_seen_at: string;
+  last_seen_at: string;
+  miss_count: number;
+  resolved_at: string | null;
+  resolution: "created" | "dismissed" | null;
+}
+
 // Map LEGITEXT id → clé courte (CU/CCH/CE) pour l'affichage et le filtrage.
 // Doit rester aligné avec apps/api/src/services/legifrance.ts → resolveCode.
 const CODE_KEY_BY_LEGITEXT: Record<string, "CU" | "CCH" | "CE"> = {
@@ -2322,7 +2333,7 @@ function Conformite() {
     {
       icone: "🤖",
       titre: "Analyse IA des pièces déposées",
-      sous_titre: "Encadrement du recours à un LLM tiers (Anthropic) sur le contenu des dossiers",
+      sous_titre: "Encadrement du recours à un LLM tiers (Mistral La Plateforme) sur le contenu des dossiers",
       couleur: "#4F46E5",
       bg: "#EEF2FF",
       mesures: [
@@ -2435,15 +2446,15 @@ function Conformite() {
           code_ref: "NouvelleDemandeWizard.tsx · step 7",
         },
         {
-          titre: "DPA avec Anthropic (sous-traitant LLM)",
-          description: "Checklist opérationnelle prête à exécuter (docs/security/dpa-anthropic-checklist.md) : DPA + SCC 2021/914 module 2 + Zero Data Retention + TIA + procédure d'incident. Reste l'acte de signature à la mise en production.",
-          reference: "RGPD art. 28 + 44-46",
+          titre: "DPA avec Mistral AI (sous-traitant LLM)",
+          description: "Sous-traitant Mistral AI (SAS française, Paris) — DPA disponible sur la console Mistral. Hébergement et inférence en UE (France), aucun transfert hors UE → pas de SCC requises. Reste l'acte de signature avec la collectivité avant mise en production.",
+          reference: "RGPD art. 28",
           statut: "doc",
-          code_ref: "docs/security/dpa-anthropic-checklist.md",
+          code_ref: "docs/security/dpa-mistral-checklist.md",
         },
         {
           titre: "Mentions légales & politique de confidentialité",
-          description: "Pages publiques /mentions-legales et /politique-confidentialite : responsable de traitement (collectivité), sous-traitants détaillés (Railway, Anthropic, Resend) avec localisation des données, section dédiée à l'analyse IA (sous-traitant, données transmises, rétention 30j, décision humaine art. 22), droits des personnes avec pointeurs vers les actions de l'espace Profil, transferts hors UE encadrés par SCC. Liens visibles depuis les footers public et connecté.",
+          description: "Pages publiques /mentions-legales et /politique-confidentialite : responsable de traitement (collectivité), sous-traitants détaillés (OVH SAS, Mistral AI, Resend) avec localisation des données, section dédiée à l'analyse IA (sous-traitant, données transmises, rétention 30j, décision humaine art. 22), droits des personnes avec pointeurs vers les actions de l'espace Profil. Inférence IA en France (Mistral AI Paris), hébergement applicatif en France (OVH). Liens visibles depuis les footers public et connecté.",
           reference: "RGPD art. 13-14",
           statut: "actif",
           code_ref: "MentionsLegales.tsx + PolitiqueConfidentialite.tsx",
@@ -2485,11 +2496,11 @@ function Conformite() {
           statut: "doc",
         },
         {
-          titre: "LLM Anthropic via région UE (Bedrock Francfort) — opt-in",
-          description: "Bascule disponible via la variable d'environnement AI_PROVIDER=bedrock (région AWS_REGION par défaut eu-central-1 / Francfort). Utilise les inference profiles cross-region eu.anthropic.* qui restent dans l'UE. Mapping centralisé dans aiUsage.ts : le code applicatif reste sur les noms canoniques. Activable au déploiement sans changement de code.",
-          reference: "RGPD art. 44",
+          titre: "LLM Mistral La Plateforme — hébergement en France",
+          description: "Tous les appels IA (analyse de pièces, extraction, verdicts de conformité, structuration PLU) passent par Mistral La Plateforme, entité française (Mistral AI SAS, Paris) hébergeant l'inférence en France. Aucun transfert hors UE, droit français applicable. Modèle vision Pixtral Large pour les pièces, format chat completions OpenAI-compatible.",
+          reference: "RGPD art. 28 + souveraineté numérique",
           statut: "actif",
-          code_ref: "aiUsage.ts · BEDROCK_MODEL_MAP",
+          code_ref: "aiUsage.ts · MISTRAL_API_BASE",
         },
         {
           titre: "Purge automatique des logs d'audit (12 mois)",
@@ -2648,6 +2659,136 @@ function Conformite() {
         Légende — <strong style={{ color: "#15803D" }}>Actif</strong> : mesure implémentée dans le code et opérationnelle. <strong style={{ color: "#92400E" }}>Documentaire</strong> : mesure organisationnelle (contrat, document, procédure) à formaliser avant mise en production officielle. <strong style={{ color: "#B91C1C" }}>À planifier</strong> : chantier identifié, non encore engagé.
       </div>
     </PageShell>
+  );
+}
+
+// ── Articles manquants ──────────────────────────────────────────────────────
+// Liste les références d'articles que les utilisateurs ont cliquées mais que
+// Légifrance n'a pas pu nous renvoyer (référence erronée, code non supporté,
+// API en panne…). L'admin peut soit créer l'article via l'API Légifrance
+// (re-tentative), soit ignorer la demande (faux positif).
+function MissingArticlesPanel({ onCreated }: { onCreated?: (row: LegalMentionRow) => void }) {
+  const [misses, setMisses] = useState<MissingArticleRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [actingId, setActingId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const rows = await api.get<MissingArticleRow[]>("/admin/legal-mentions/missing");
+      setMisses(rows);
+    } catch {
+      // ignore
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => { void load(); }, [load]);
+
+  const handleCreate = async (m: MissingArticleRow) => {
+    setActingId(m.id);
+    setError(null);
+    try {
+      const resp = await api.post<{ miss: MissingArticleRow; article: LegalMentionRow | null }>(
+        `/admin/legal-mentions/missing/${m.id}/create`, {},
+      );
+      setMisses(prev => prev.filter(x => x.id !== m.id));
+      if (resp.article && onCreated) onCreated(resp.article);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Création échouée");
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  const handleDismiss = async (m: MissingArticleRow) => {
+    setActingId(m.id);
+    setError(null);
+    try {
+      await api.post(`/admin/legal-mentions/missing/${m.id}/dismiss`, {});
+      setMisses(prev => prev.filter(x => x.id !== m.id));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Action échouée");
+    } finally {
+      setActingId(null);
+    }
+  };
+
+  // Tant qu'il n'y a aucune demande en attente, on garde la section discrète
+  // (un simple badge "tout est OK"). Elle apparaît dès qu'une référence cassée
+  // est cliquée par un utilisateur.
+  if (loading) {
+    return (
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <Spinner size={16} /><span style={{ fontSize: 13, color: C.textMuted }}>Chargement des demandes…</span>
+        </div>
+      </div>
+    );
+  }
+
+  const headerStyle: React.CSSProperties = { display: "flex", alignItems: "flex-start", gap: 16, marginBottom: misses.length === 0 ? 0 : 16 };
+  const iconBg = misses.length === 0 ? "#ECFDF5" : "#FEF3C7";
+  const iconColor = misses.length === 0 ? "#059669" : "#B45309";
+
+  return (
+    <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
+      <div style={headerStyle}>
+        <div style={{ width: 48, height: 48, background: iconBg, borderRadius: 12, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 22, flexShrink: 0, color: iconColor }}>
+          {misses.length === 0 ? "✓" : "⚠"}
+        </div>
+        <div style={{ flex: 1 }}>
+          <h3 style={{ margin: "0 0 4px", fontSize: 16, fontWeight: 700, color: C.text }}>
+            Articles manquants{misses.length > 0 ? ` (${misses.length})` : ""}
+          </h3>
+          <p style={{ margin: 0, fontSize: 13, color: C.textMuted }}>
+            {misses.length === 0
+              ? "Aucune demande en attente. Les articles cliqués dans le site qui ne sont pas en base apparaîtront ici pour création via Légifrance."
+              : "Références cliquées par les utilisateurs et introuvables côté Légifrance. Crée-les pour qu'elles ouvrent leur texte officiel, ou ignore-les si la référence est erronée."}
+          </p>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ marginTop: 12, padding: "8px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 7, fontSize: 12, color: "#7F1D1D" }}>
+          {error}
+        </div>
+      )}
+
+      {misses.length > 0 && (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {misses.map(m => (
+            <div key={m.id} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, padding: "10px 14px", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 8, flexWrap: "wrap" }}>
+              <div style={{ flex: 1, minWidth: 200 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                  <span style={{ padding: "2px 7px", background: "#1E293B", color: "white", borderRadius: 4, fontSize: 10, fontWeight: 700, letterSpacing: 0.3 }}>{m.code_key}</span>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>Art. {m.article_ref}</span>
+                  {m.miss_count > 1 && (
+                    <span style={{ padding: "1px 8px", background: "#FEF3C7", color: "#92400E", borderRadius: 999, fontSize: 11, fontWeight: 600 }}>
+                      cliqué {m.miss_count}×
+                    </span>
+                  )}
+                </div>
+                <div style={{ fontSize: 11.5, color: C.textMuted, marginTop: 2 }}>
+                  Dernière demande : {new Date(m.last_seen_at).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={() => void handleCreate(m)} disabled={actingId === m.id}
+                  style={{ padding: "6px 12px", background: actingId === m.id ? "#C7D2FE" : "#4F46E5", color: "white", border: "none", borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: actingId === m.id ? "default" : "pointer" }}>
+                  {actingId === m.id ? "Création…" : "Créer via Légifrance"}
+                </button>
+                <button onClick={() => void handleDismiss(m)} disabled={actingId === m.id}
+                  style={{ padding: "6px 12px", background: "white", color: C.textMuted, border: `1px solid ${C.border}`, borderRadius: 7, fontSize: 12, fontWeight: 600, cursor: actingId === m.id ? "default" : "pointer" }}>
+                  Ignorer
+                </button>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
@@ -2826,6 +2967,11 @@ function Configuration() {
         <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Configuration</h1>
         <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Paramètres avancés de la plateforme</p>
       </div>
+
+      {/* ── Demandes d'articles manquants (issues des clics utilisateurs) ── */}
+      <MissingArticlesPanel
+        onCreated={(row) => setArticles(prev => [...prev.filter(a => a.id !== row.id), row].sort((a, b) => a.article_ref.localeCompare(b.article_ref)))}
+      />
 
       {/* ── Articles juridiques (Code de l'urbanisme + CCH + CE) ── */}
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
@@ -3770,7 +3916,11 @@ function ServicesAnnexes() {
 interface AuditEntry {
   id: string;
   email: string | null;
+  role: string | null;
   action: string;
+  target_type: string | null;
+  target_id: string | null;
+  metadata: Record<string, unknown> | null;
   ip: string | null;
   user_agent: string | null;
   created_at: string;
@@ -3796,6 +3946,22 @@ const ACTION_STYLES: Record<string, { label: string; color: string; bg: string }
   admin_role_created:   { label: "Rôle créé",         color: "#4F46E5", bg: "#EEF2FF" },
   admin_role_updated:   { label: "Rôle modifié",      color: "#7C3AED", bg: "#F3E8FF" },
   admin_role_deleted:   { label: "Rôle supprimé",     color: "#B45309", bg: "#FEF3C7" },
+  address_search: { label: "Recherche adresse",   color: "#0EA5E9", bg: "#E0F2FE" },
+  mairie_request: { label: "Action mairie",       color: "#7C3AED", bg: "#F3E8FF" },
+  citoyen_request:{ label: "Action citoyen",      color: "#0284C7", bg: "#E0F2FE" },
+};
+
+const ROLE_OPTIONS = [
+  { value: "",          label: "Tous les rôles" },
+  { value: "citoyen",   label: "Citoyens" },
+  { value: "mairie",    label: "Mairie (mairie + instructeur)" },
+  { value: "admin",     label: "Admin" },
+  { value: "anonyme",   label: "Visiteur non connecté" },
+];
+
+// Map HTTP method → couleur pour la pastille methode dans la colonne "Détail".
+const METHOD_COLORS: Record<string, string> = {
+  GET: "#0284C7", POST: "#16A34A", PATCH: "#D97706", PUT: "#7C3AED", DELETE: "#DC2626",
 };
 
 const SINCE_OPTIONS = [
@@ -3806,20 +3972,67 @@ const SINCE_OPTIONS = [
   { label: "Tout",              value: () => "" },
 ];
 
+// Rend un détail synthétique par ligne d'audit : on privilégie l'info la plus
+// parlante du contexte (adresse cherchée, route mairie + méthode, etc.).
+function AuditDetail({ entry }: { entry: AuditEntry }) {
+  const meta = entry.metadata ?? null;
+  // Recherche d'adresse → la query/coords sont l'info clé.
+  if (entry.action === "address_search") {
+    const q = (meta?.["query"] as string | null) ?? null;
+    const coords = meta?.["coords"] as { lat?: number; lng?: number } | null;
+    const result = meta?.["result"] as { commune?: string | null; zone?: string | null; insee?: string | null } | null;
+    return (
+      <div style={{ fontSize: 13, color: C.text }}>
+        <div style={{ fontWeight: 500 }}>{q ?? (coords ? `${coords.lat?.toFixed(5)}, ${coords.lng?.toFixed(5)}` : "—")}</div>
+        {result && (result.commune || result.zone) && (
+          <div style={{ fontSize: 12, color: C.textMuted }}>
+            {result.commune ?? "?"}{result.insee ? ` (${result.insee})` : ""}{result.zone ? ` — zone ${result.zone}` : ""}
+          </div>
+        )}
+      </div>
+    );
+  }
+  // Mutation mairie / citoyen → route + méthode + cible.
+  if (entry.action === "mairie_request" || entry.action === "citoyen_request") {
+    const method = (meta?.["method"] as string | null) ?? "?";
+    const route = (meta?.["route"] as string | null) ?? "?";
+    const status = meta?.["status"] as number | null;
+    return (
+      <div style={{ fontSize: 13, color: C.text, display: "flex", alignItems: "center", gap: 8 }}>
+        <span style={{ display: "inline-block", padding: "1px 7px", borderRadius: 4, background: (METHOD_COLORS[method] ?? "#6B7280") + "22", color: METHOD_COLORS[method] ?? "#6B7280", fontSize: 11, fontWeight: 700, fontFamily: "monospace" }}>
+          {method}
+        </span>
+        <span style={{ fontFamily: "monospace", fontSize: 12 }}>{route}</span>
+        {status !== null && status !== undefined && (
+          <span style={{ fontSize: 11, color: status >= 400 ? "#DC2626" : C.textMuted }}>→ {status}</span>
+        )}
+      </div>
+    );
+  }
+  // Actions d'admin avec email (cible utilisateur).
+  if (entry.target_type === "dossier" && entry.target_id) {
+    return <div style={{ fontSize: 12, color: C.textMuted, fontFamily: "monospace" }}>dossier {entry.target_id.slice(0, 8)}…</div>;
+  }
+  return <div style={{ fontSize: 12, color: C.textMuted }}>—</div>;
+}
+
 function AuditLogs() {
   const [rows, setRows] = useState<AuditEntry[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true);
   const [actionFilter, setActionFilter] = useState("");
+  const [roleFilter, setRoleFilter] = useState("");
   const [sinceIdx, setSinceIdx] = useState(1); // default: 30 days
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  const load = async (p: number, action: string, idx: number) => {
+  const load = async (p: number, action: string, role: string, idx: number) => {
     setLoading(true);
     try {
       const since = SINCE_OPTIONS[idx]!.value();
       const qs = new URLSearchParams({ page: String(p) });
       if (action) qs.set("action", action);
+      if (role) qs.set("role", role);
       if (since) qs.set("since", since);
       const data = await api.get<{ rows: AuditEntry[]; total: number; page: number; limit: number }>(`/admin/audit-logs?${qs}`);
       setRows(data.rows);
@@ -3828,7 +4041,7 @@ function AuditLogs() {
     finally { setLoading(false); }
   };
 
-  useEffect(() => { load(page, actionFilter, sinceIdx); }, [page, actionFilter, sinceIdx]);
+  useEffect(() => { load(page, actionFilter, roleFilter, sinceIdx); }, [page, actionFilter, roleFilter, sinceIdx]);
 
   const totalPages = Math.ceil(total / 50);
 
@@ -3850,12 +4063,21 @@ function AuditLogs() {
         <div style={{ marginBottom: 24 }}>
           <h1 style={{ fontSize: 24, fontWeight: 800, color: C.text, margin: "0 0 4px" }}>Audit sécurité</h1>
           <p style={{ fontSize: 14, color: C.textMuted, margin: 0 }}>
-            Journal des connexions et actions sensibles — conservé 12 mois (CCSC §4.14) — {total} entrées
+            Journal des connexions, actions mairie et recherches d'adresses citoyens — conservé 12 mois (CCSC §4.14) — IP partiellement masquée (RGPD) — {total} entrées
           </p>
         </div>
 
         {/* Filters */}
         <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
+          <select
+            value={roleFilter}
+            onChange={e => { setRoleFilter(e.target.value); setPage(1); }}
+            style={{ padding: "7px 12px", border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 13, color: C.text, background: "white", cursor: "pointer" }}
+          >
+            {ROLE_OPTIONS.map((o) => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
           <select
             value={actionFilter}
             onChange={e => { setActionFilter(e.target.value); setPage(1); }}
@@ -3880,33 +4102,62 @@ function AuditLogs() {
           <table style={{ width: "100%", borderCollapse: "collapse" }}>
             <thead>
               <tr style={{ background: C.bg }}>
-                {["Date", "Action", "Utilisateur", "Adresse IP", "Navigateur"].map(h => (
-                  <th key={h} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: C.textMuted, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>
+                {["Date", "Action", "Détail", "Utilisateur", "IP", "Navigateur", ""].map((h, i) => (
+                  <th key={i} style={{ padding: "10px 16px", textAlign: "left", fontSize: 12, fontWeight: 600, color: C.textMuted, borderBottom: `1px solid ${C.border}`, whiteSpace: "nowrap" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {loading ? (
-                <tr><td colSpan={5} style={{ padding: 32, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Chargement…</td></tr>
+                <tr><td colSpan={7} style={{ padding: 32, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Chargement…</td></tr>
               ) : rows.length === 0 ? (
-                <tr><td colSpan={5} style={{ padding: 32, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Aucune entrée pour ces filtres</td></tr>
+                <tr><td colSpan={7} style={{ padding: 32, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Aucune entrée pour ces filtres</td></tr>
               ) : rows.map((r, i) => {
                 const style = ACTION_STYLES[r.action] ?? { label: r.action, color: "#6B7280", bg: "#F3F4F6" };
+                const expanded = expandedId === r.id;
+                const hasDetails = r.metadata && Object.keys(r.metadata).length > 0;
                 return (
-                  <tr key={r.id} style={{ borderBottom: i < rows.length - 1 ? `1px solid ${C.border}` : "none", background: i % 2 === 0 ? "white" : "#FAFAFA" }}>
-                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDate(r.created_at)}</td>
-                    <td style={{ padding: "10px 16px" }}>
-                      <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 20, background: style.bg, color: style.color, fontSize: 12, fontWeight: 700 }}>
-                        {style.label}
-                      </span>
-                    </td>
-                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.text }}>
-                      <div style={{ fontWeight: 500 }}>{r.user_prenom && r.user_nom ? `${r.user_prenom} ${r.user_nom}` : "—"}</div>
-                      <div style={{ fontSize: 12, color: C.textMuted }}>{r.email ?? "—"}</div>
-                    </td>
-                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted, fontFamily: "monospace" }}>{r.ip ?? "—"}</td>
-                    <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted }}>{truncateUA(r.user_agent)}</td>
-                  </tr>
+                  <Fragment key={r.id}>
+                    <tr style={{ borderBottom: !expanded && i < rows.length - 1 ? `1px solid ${C.border}` : "none", background: i % 2 === 0 ? "white" : "#FAFAFA" }}>
+                      <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted, whiteSpace: "nowrap" }}>{fmtDate(r.created_at)}</td>
+                      <td style={{ padding: "10px 16px" }}>
+                        <span style={{ display: "inline-block", padding: "2px 10px", borderRadius: 20, background: style.bg, color: style.color, fontSize: 12, fontWeight: 700 }}>
+                          {style.label}
+                        </span>
+                        {r.role && (
+                          <div style={{ fontSize: 11, color: C.textMuted, marginTop: 2, textTransform: "capitalize" }}>{r.role}</div>
+                        )}
+                      </td>
+                      <td style={{ padding: "10px 16px", maxWidth: 380, overflow: "hidden" }}>
+                        <AuditDetail entry={r} />
+                      </td>
+                      <td style={{ padding: "10px 16px", fontSize: 13, color: C.text }}>
+                        <div style={{ fontWeight: 500 }}>{r.user_prenom && r.user_nom ? `${r.user_prenom} ${r.user_nom}` : "—"}</div>
+                        <div style={{ fontSize: 12, color: C.textMuted }}>{r.email ?? "—"}</div>
+                      </td>
+                      <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted, fontFamily: "monospace" }}>{r.ip ?? "—"}</td>
+                      <td style={{ padding: "10px 16px", fontSize: 13, color: C.textMuted }}>{truncateUA(r.user_agent)}</td>
+                      <td style={{ padding: "10px 16px", fontSize: 12 }}>
+                        {hasDetails && (
+                          <button
+                            onClick={() => setExpandedId(expanded ? null : r.id)}
+                            style={{ padding: "4px 8px", background: "transparent", border: `1px solid ${C.border}`, borderRadius: 6, color: C.textMuted, cursor: "pointer", fontSize: 11 }}
+                          >
+                            {expanded ? "Replier" : "JSON"}
+                          </button>
+                        )}
+                      </td>
+                    </tr>
+                    {expanded && hasDetails && (
+                      <tr style={{ borderBottom: i < rows.length - 1 ? `1px solid ${C.border}` : "none", background: "#FAFAFA" }}>
+                        <td colSpan={7} style={{ padding: "12px 16px" }}>
+                          <pre style={{ margin: 0, fontSize: 11, fontFamily: "monospace", color: C.text, background: "white", padding: 12, borderRadius: 6, border: `1px solid ${C.border}`, maxHeight: 320, overflow: "auto" }}>
+                            {JSON.stringify(r.metadata, null, 2)}
+                          </pre>
+                        </td>
+                      </tr>
+                    )}
+                  </Fragment>
                 );
               })}
             </tbody>
@@ -3940,8 +4191,6 @@ interface AiCostSummary {
     cost_eur: number;
     input_tokens: number;
     output_tokens: number;
-    cache_read_tokens: number;
-    cache_creation_tokens: number;
   };
   by_purpose: { purpose: string; events: number; cost_eur: number }[];
   by_model: { model: string; events: number; cost_eur: number }[];
@@ -4140,6 +4389,229 @@ function AlertsCard() {
   );
 }
 
+interface AiPricingRow {
+  model: string;
+  kind: "chat" | "embedding";
+  input_eur_per_m: number;
+  output_eur_per_m: number;
+  note: string | null;
+  updated_at: string;
+}
+
+function PricingCard() {
+  const [rows, setRows] = useState<AiPricingRow[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [adding, setAdding] = useState(false);
+  const [toast, setToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+
+  // Brouillon par modèle pour permettre l'édition contrôlée des champs.
+  const [drafts, setDrafts] = useState<Record<string, { input: string; output: string; note: string; kind: "chat" | "embedding" }>>({});
+
+  const load = useCallback(() => {
+    setLoading(true);
+    api.get<AiPricingRow[]>("/admin/ai-cost/pricing")
+      .then((data) => {
+        setRows(data);
+        const d: Record<string, { input: string; output: string; note: string; kind: "chat" | "embedding" }> = {};
+        for (const r of data) {
+          d[r.model] = {
+            input: String(r.input_eur_per_m),
+            output: String(r.output_eur_per_m),
+            note: r.note ?? "",
+            kind: r.kind,
+          };
+        }
+        setDrafts(d);
+      })
+      .catch(() => setToast({ kind: "err", msg: "Impossible de charger la grille tarifaire." }))
+      .finally(() => setLoading(false));
+  }, []);
+
+  useEffect(() => { load(); }, [load]);
+
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
+
+  const save = async (model: string) => {
+    const d = drafts[model];
+    if (!d) return;
+    setSaving(model);
+    try {
+      await api.put<AiPricingRow>(`/admin/ai-cost/pricing/${encodeURIComponent(model)}`, {
+        kind: d.kind,
+        input_eur_per_m: Number(d.input),
+        output_eur_per_m: Number(d.output),
+        note: d.note.trim() || null,
+      });
+      setToast({ kind: "ok", msg: `Tarif ${model} mis à jour.` });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const del = async (model: string) => {
+    if (!confirm(`Retirer ${model} de la grille tarifaire ? (les anciens événements gardent leur coût)`)) return;
+    setSaving(model);
+    try {
+      await api.delete(`/admin/ai-cost/pricing/${encodeURIComponent(model)}`);
+      setToast({ kind: "ok", msg: `${model} retiré.` });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const addRow = async (form: { model: string; kind: "chat" | "embedding"; input: string; output: string; note: string }) => {
+    if (!form.model.trim()) {
+      setToast({ kind: "err", msg: "Identifiant Mistral requis (ex: pixtral-large-latest)." });
+      return;
+    }
+    setSaving(form.model);
+    try {
+      await api.put<AiPricingRow>(`/admin/ai-cost/pricing/${encodeURIComponent(form.model.trim())}`, {
+        kind: form.kind,
+        input_eur_per_m: Number(form.input),
+        output_eur_per_m: form.kind === "embedding" ? 0 : Number(form.output),
+        note: form.note.trim() || null,
+      });
+      setAdding(false);
+      setToast({ kind: "ok", msg: `Tarif ${form.model} ajouté.` });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 24 }}>
+      <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontWeight: 700, fontSize: 14, color: C.text }}>Tarifs Mistral (€ par million de tokens)</div>
+          <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>
+            Sert au calcul d'estimation. La facture réelle reste celle de la console <a href="https://console.mistral.ai/" target="_blank" rel="noreferrer" style={{ color: C.accent }}>Mistral</a> — pensez à recopier la grille publiée sur <a href="https://mistral.ai/pricing/" target="_blank" rel="noreferrer" style={{ color: C.accent }}>mistral.ai/pricing</a>.
+          </div>
+        </div>
+        <button onClick={() => setAdding((v) => !v)}
+          style={{ padding: "8px 14px", borderRadius: 8, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+          {adding ? "Annuler" : "+ Ajouter un modèle"}
+        </button>
+      </div>
+
+      {loading ? (
+        <div style={{ padding: 30, textAlign: "center" }}><Spinner size={18} /></div>
+      ) : (
+        <>
+          {adding && <AddPricingRow onSubmit={addRow} saving={saving !== null} />}
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Modèle</th>
+                <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Type</th>
+                <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Input €/M</th>
+                <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Output €/M</th>
+                <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Note</th>
+                <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Mis à jour</th>
+                <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}></th>
+              </tr>
+            </thead>
+            <tbody>
+              {(rows ?? []).map((r) => {
+                const d = drafts[r.model] ?? { input: String(r.input_eur_per_m), output: String(r.output_eur_per_m), note: r.note ?? "", kind: r.kind };
+                const dirty = d.input !== String(r.input_eur_per_m) || d.output !== String(r.output_eur_per_m) || (d.note ?? "") !== (r.note ?? "") || d.kind !== r.kind;
+                return (
+                  <tr key={r.model} style={{ borderTop: `1px solid ${C.border}` }}>
+                    <td style={{ padding: "10px 20px", color: C.text, fontFamily: "monospace", fontSize: 12 }}>{r.model}</td>
+                    <td style={{ padding: "10px 20px" }}>
+                      <select value={d.kind} onChange={(e) => setDrafts((s) => ({ ...s, [r.model]: { ...d, kind: e.target.value as "chat" | "embedding" } }))}
+                        style={{ padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}>
+                        <option value="chat">chat</option>
+                        <option value="embedding">embedding</option>
+                      </select>
+                    </td>
+                    <td style={{ padding: "10px 20px", textAlign: "right" }}>
+                      <input type="number" step="0.001" min="0" value={d.input}
+                        onChange={(e) => setDrafts((s) => ({ ...s, [r.model]: { ...d, input: e.target.value } }))}
+                        style={{ width: 80, padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, textAlign: "right" }} />
+                    </td>
+                    <td style={{ padding: "10px 20px", textAlign: "right" }}>
+                      <input type="number" step="0.001" min="0" value={d.output} disabled={d.kind === "embedding"}
+                        onChange={(e) => setDrafts((s) => ({ ...s, [r.model]: { ...d, output: e.target.value } }))}
+                        style={{ width: 80, padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, textAlign: "right", opacity: d.kind === "embedding" ? 0.4 : 1 }} />
+                    </td>
+                    <td style={{ padding: "10px 20px" }}>
+                      <input type="text" value={d.note} placeholder="ex: tarif officiel 2026-06"
+                        onChange={(e) => setDrafts((s) => ({ ...s, [r.model]: { ...d, note: e.target.value } }))}
+                        style={{ width: "100%", padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
+                    </td>
+                    <td style={{ padding: "10px 20px", color: C.textMuted, fontSize: 11, textAlign: "right" }}>{new Date(r.updated_at).toLocaleDateString("fr-FR")}</td>
+                    <td style={{ padding: "10px 20px", textAlign: "right", whiteSpace: "nowrap" }}>
+                      <button onClick={() => save(r.model)} disabled={!dirty || saving === r.model}
+                        style={{ padding: "4px 10px", marginRight: 6, borderRadius: 6, border: "none", background: dirty ? C.accent : C.border, color: dirty ? "white" : C.textMuted, fontSize: 12, fontWeight: 600, cursor: dirty ? "pointer" : "default" }}>
+                        {saving === r.model ? "…" : "OK"}
+                      </button>
+                      <button onClick={() => del(r.model)} disabled={saving === r.model}
+                        title="Retirer de la grille"
+                        style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: "white", color: C.red, fontSize: 12, cursor: "pointer" }}>×</button>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+          {toast && (
+            <div style={{
+              margin: 12, padding: "8px 12px", borderRadius: 8, fontSize: 13,
+              background: toast.kind === "ok" ? C.greenBg : C.redBg,
+              border: `1px solid ${toast.kind === "ok" ? C.green : C.red}`,
+              color: toast.kind === "ok" ? C.green : C.red,
+            }}>{toast.msg}</div>
+          )}
+        </>
+      )}
+    </div>
+  );
+}
+
+function AddPricingRow({ onSubmit, saving }: { onSubmit: (f: { model: string; kind: "chat" | "embedding"; input: string; output: string; note: string }) => void; saving: boolean }) {
+  const [model, setModel] = useState("");
+  const [kind, setKind] = useState<"chat" | "embedding">("chat");
+  const [input, setInput] = useState("");
+  const [output, setOutput] = useState("");
+  const [note, setNote] = useState("");
+  return (
+    <div style={{ padding: "12px 20px", background: C.accentLight, borderBottom: `1px solid ${C.border}`, display: "grid", gridTemplateColumns: "2fr 1fr 1fr 1fr 2fr auto", gap: 8, alignItems: "center" }}>
+      <input type="text" placeholder="id Mistral (ex: mistral-large-3)" value={model} onChange={(e) => setModel(e.target.value)}
+        style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, fontFamily: "monospace" }} />
+      <select value={kind} onChange={(e) => setKind(e.target.value as "chat" | "embedding")}
+        style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }}>
+        <option value="chat">chat</option>
+        <option value="embedding">embedding</option>
+      </select>
+      <input type="number" step="0.001" min="0" placeholder="input €/M" value={input} onChange={(e) => setInput(e.target.value)}
+        style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, textAlign: "right" }} />
+      <input type="number" step="0.001" min="0" placeholder="output €/M" value={output} onChange={(e) => setOutput(e.target.value)} disabled={kind === "embedding"}
+        style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12, textAlign: "right", opacity: kind === "embedding" ? 0.4 : 1 }} />
+      <input type="text" placeholder="note (source, version)" value={note} onChange={(e) => setNote(e.target.value)}
+        style={{ padding: "6px 10px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 12 }} />
+      <button onClick={() => onSubmit({ model, kind, input, output, note })} disabled={saving}
+        style={{ padding: "6px 12px", borderRadius: 6, border: "none", background: C.accent, color: "white", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+        Ajouter
+      </button>
+    </div>
+  );
+}
+
 function CoutsIA() {
   const navigate = useNavigate();
   // Deux modes de filtre exclusifs : quick (boutons 7j/30j/Tout) ou custom
@@ -4178,9 +4650,9 @@ function CoutsIA() {
 
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 24, gap: 16, flexWrap: "wrap" }}>
         <div>
-          <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Coûts IA</h1>
+          <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Coûts IA <span style={{ fontSize: 13, fontWeight: 600, color: C.textMuted, marginLeft: 8 }}>· estimés</span></h1>
           <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>
-            Suivi du coût des appels Claude par dossier et par usage métier.
+            Estimation calculée à partir des tokens retournés par Mistral et de la grille tarifaire ci-dessous. La facture officielle reste celle de la <a href="https://console.mistral.ai/" target="_blank" rel="noreferrer" style={{ color: C.accent }}>console Mistral</a>.
           </p>
         </div>
         <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -4236,6 +4708,9 @@ function CoutsIA() {
         <>
           {/* Alertes Slack */}
           <AlertsCard />
+
+          {/* Tarifs Mistral éditables */}
+          <PricingCard />
 
           {/* Totaux */}
           <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
@@ -4385,8 +4860,6 @@ interface AiCostDossierDetail {
     model: string;
     input_tokens: number;
     output_tokens: number;
-    cache_read_input_tokens: number;
-    cache_creation_input_tokens: number;
     cost_eur: number;
     duration_ms: number | null;
     created_at: string;
@@ -4479,7 +4952,6 @@ function CoutsIADossier() {
                     <th style={{ padding: "8px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted }}>Modèle</th>
                     <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>In</th>
                     <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Out</th>
-                    <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Cache R/W</th>
                     <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Durée</th>
                     <th style={{ padding: "8px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted }}>Coût</th>
                   </tr>
@@ -4492,7 +4964,6 @@ function CoutsIADossier() {
                       <td style={{ padding: "8px 16px", color: C.textMuted, fontFamily: "monospace" }}>{e.model}</td>
                       <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.input_tokens.toLocaleString("fr-FR")}</td>
                       <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.output_tokens.toLocaleString("fr-FR")}</td>
-                      <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.cache_read_input_tokens}/{e.cache_creation_input_tokens}</td>
                       <td style={{ padding: "8px 16px", color: C.textMuted, textAlign: "right" }}>{e.duration_ms ? `${(e.duration_ms / 1000).toFixed(1)}s` : "—"}</td>
                       <td style={{ padding: "8px 16px", color: C.text, fontWeight: 700, textAlign: "right" }}>{fmtEur(e.cost_eur)}</td>
                     </tr>
@@ -4516,8 +4987,6 @@ interface AiCostCommuneDetail {
     model: string;
     input_tokens: number;
     output_tokens: number;
-    cache_read_input_tokens: number;
-    cache_creation_input_tokens: number;
     cost_eur: number;
     duration_ms: number | null;
     created_at: string;

@@ -122,6 +122,15 @@ export function scoreExtraction(
     "nord_visible", "legende_visible", "missing_elements",
     "citations", "notes", "score", "commentaire", "suggestions",
     "non_conformites", "reglementaire",
+    // Phase 5/2.3 : nouveaux champs structurels. Comme `graphics` et
+    // `parcelles_observees` sont des sous-arbres, leurs feuilles sont
+    // scorées via leur chemin complet (ex: "graphics.orientation.kind")
+    // — pas via le nom de feuille seul. On exclut donc seulement les
+    // étiquettes intermédiaires qui apparaîtraient comme leaf.
+    "graphics", "parcelles_observees",
+    "orientation", "echelle_graphique", "legende", "limites",
+    "acces", "emprise", "cotes_completes", "altimetries", "prises_de_vue",
+    "kind", "visible", "evidence",
   ]);
   for (const [k, v] of Object.entries(flatGot)) {
     if (v === null || v === undefined) continue;

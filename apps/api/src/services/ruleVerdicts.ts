@@ -1,6 +1,6 @@
 import { extractFirstJson } from "./pieceAnalyzer.js";
 import type { PieceExtraction } from "./pieceExtractor.js";
-import { anthropicClient, callClaude } from "./aiUsage.js";
+import { callAi } from "./aiUsage.js";
 
 /**
  * Moteur de verdict par règle PLU.
@@ -318,7 +318,10 @@ function buildCitationIndex(pieces: VerdictPieceInput[]): Map<string, Set<string
   for (const p of pieces) {
     const set = new Set<string>();
     if (p.extraction?.citations) {
-      for (const c of p.extraction.citations) set.add(c.trim());
+      // Phase 1 : `citations` est désormais `CitationRef[]` (objet avec
+      // `text`, `page`, `bbox`). On indexe uniquement le `text` car le
+      // matching de provenance est purement textuel.
+      for (const c of p.extraction.citations) set.add(c.text.trim());
     }
     idx.set(p.id, set);
   }
@@ -412,17 +415,14 @@ ${formatRegulatoryHitsForPrompt(args.regulatoryHits ?? [])}
 ==================== INSTRUCTIONS ====================
 Rends UN verdict par règle ci-dessus. Cite uniquement des extraits qui figurent dans le bloc "citations" de la pièce concernée. À défaut, verdict "non_verifiable" + précise "manquant".`;
 
-  const model = "claude-sonnet-4-6";
-  const client = anthropicClient({ maxRetries: 2, timeout: 120_000 });
-  const msg = await callClaude(
+  const msg = await callAi(
     { purpose: "rule_verdicts", dossierId: args.trace?.dossierId, communeId: args.trace?.communeId, userId: args.trace?.userId },
     {
-      model,
+      model: "ai-smart",
       max_tokens: 8000,
       system: SYSTEM_PROMPT,
       messages: [{ role: "user", content: [{ type: "text", text: userText }] }],
     },
-    client,
   );
 
   const raw = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
@@ -547,7 +547,7 @@ Rends UN verdict par règle ci-dessus. Cite uniquement des extraits qui figurent
     counts,
     pieces_used,
     documents_commune_used,
-    model,
+    model: msg.model,
     duration_ms: Date.now() - startedAt,
     warnings,
   };

@@ -29,12 +29,15 @@ const STATUS: Record<string, { label: string; bg: string; color: string; dot: st
 };
 
 const TYPE_LABELS: Record<string, string> = {
-  permis_de_construire:  "Permis de Construire",
-  declaration_prealable: "Déclaration Préalable",
-  permis_amenager:       "Permis d'Aménager",
-  permis_demolir:        "Permis de Démolir",
-  permis_lotir:          "Permis de Lotir",
-  certificat_urbanisme:  "Certificat d'Urbanisme",
+  permis_de_construire:    "Permis de Construire",
+  permis_de_construire_mi: "Permis de Construire (Maison individuelle)",
+  declaration_prealable:   "Déclaration Préalable",
+  permis_amenager:         "Permis d'Aménager",
+  permis_demolir:          "Permis de Démolir",
+  permis_lotir:            "Permis de Lotir",
+  certificat_urbanisme:    "Certificat d'Urbanisme",
+  certificat_urbanisme_a:  "Certificat d'Urbanisme (informatif)",
+  certificat_urbanisme_b:  "Certificat d'Urbanisme (opérationnel)",
 };
 
 function fmtDate(iso: string) {

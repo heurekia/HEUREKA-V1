@@ -1,6 +1,6 @@
 import path from "path";
 import { fileURLToPath } from "url";
-import { and, eq } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
   dossiers,
@@ -11,10 +11,12 @@ import { buildPiecesContext, getPiecesForType } from "../data/piecesRequises.js"
 import { getStorageProvider } from "./storage.js";
 import {
   analyzePiece,
+  analyzePieceGroup,
   type PieceAnalysis,
   type PieceScore,
   type PieceContext,
   type RegulatoryRuleHint,
+  type PieceGroupDoc,
 } from "./pieceAnalyzer.js";
 import { loadZoneRulesWithInheritance } from "./zoneRules.js";
 import {
@@ -27,7 +29,7 @@ import {
 } from "./ruleVerdicts.js";
 import { ilike } from "drizzle-orm";
 // `and`, `eq` déjà importés en haut.
-import { communes, commune_documents } from "@heureka-v1/db";
+import { communes, regulatory_documents } from "@heureka-v1/db";
 import type { PieceExtraction } from "./pieceExtractor.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -35,7 +37,7 @@ const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
 
 // ── Mapping pièce → thèmes PLU vérifiables sur la pièce ──────────────────────
 // Pour chaque famille de pièce, on liste les "topics" de règles que ce document
-// peut effectivement servir à vérifier. Évite que Claude reçoive l'intégralité du
+// peut effectivement servir à vérifier. Évite que le LLM reçoive l'intégralité du
 // PLU pour une simple photographie. Les topics correspondent à
 // zone_regulatory_rules.topic et zone_regulatory_rules.sub_theme.
 const PIECE_TOPICS: Record<string, string[]> = {
@@ -244,9 +246,13 @@ export function buildSynthese(
 
 // ── Orchestrateur principal ──────────────────────────────────────────────────
 
-const MODEL_ID = "claude-haiku-4-5-20251001";
+// Modèle utilisé pour l'analyse de conformité. Référence symbolique côté
+// service `aiUsage` (résolue vers le modèle Mistral réel : pixtral-large par
+// défaut). Stocké tel quel dans le `model` du rapport ConformiteReport pour
+// l'audit ; n'est plus utilisé comme clé API.
+const MODEL_ID = "ai-smart";
 // Garde-fou : analyse séquentielle des pièces avec un petit niveau de parallélisme
-// pour ne pas saturer l'API Anthropic. Limite RPM Claude Haiku ~50/min.
+// pour ne pas saturer l'API Mistral. Quotas par défaut La Plateforme : ~5 req/s.
 const MAX_PARALLEL = 3;
 
 async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
@@ -274,9 +280,33 @@ async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T,
  * Persiste le résultat dans `dossiers.conformite_analysis` et met à jour le statut
  * `conformite_status`. Sans pour autant changer le statut métier du dossier.
  */
-export async function runDossierConformityAnalysis(dossierId: string): Promise<ConformiteReport> {
+/**
+ * Erreur levée quand l'analyse finale est demandée mais que des pièces ne
+ * sont pas dans un état permettant la délivrance d'un arrêté (statut absent
+ * ou complément en attente). Sert au routeur à renvoyer un 422 structuré.
+ */
+export class ConformityFinalPreconditionError extends Error {
+  constructor(
+    public readonly reason: string,
+    public readonly blockers: {
+      pieces_sans_statut: Array<{ id: string; nom: string; code_piece: string | null }>;
+      pieces_complement_en_attente: Array<{ id: string; nom: string; code_piece: string | null }>;
+      aucune_piece_validee: boolean;
+    },
+  ) {
+    super(reason);
+    this.name = "ConformityFinalPreconditionError";
+  }
+}
+
+export async function runDossierConformityAnalysis(
+  dossierId: string,
+  opts?: { mode?: "interim" | "final"; triggeredBy?: string },
+): Promise<ConformiteReport> {
   const startedAt = Date.now();
   const warnings: string[] = [];
+  const mode = opts?.mode ?? "interim";
+  const isFinal = mode === "final";
 
   // 1. Charge le dossier
   const [dossier] = await db.select().from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
@@ -284,13 +314,49 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
     throw new Error("Dossier non trouvé");
   }
 
-  // 2. Verrou : refuse les exécutions concurrentes
-  if (dossier.conformite_status === "running") {
-    throw new Error("Une analyse est déjà en cours pour ce dossier");
+  // 1bis. Pré-conditions de l'analyse FINALE : l'instructeur ne peut la
+  // lancer que si toutes les pièces ont été examinées et qu'aucune n'est
+  // en attente de complément. Sinon il pourrait délivrer un arrêté basé
+  // sur un dossier dont une partie n'a pas été statuée. Garde-fou juridique.
+  if (isFinal) {
+    const allActives = await db
+      .select({
+        id: dossier_pieces_jointes.id,
+        nom: dossier_pieces_jointes.nom,
+        code_piece: dossier_pieces_jointes.code_piece,
+        instructeur_status: dossier_pieces_jointes.instructeur_status,
+      })
+      .from(dossier_pieces_jointes)
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossierId),
+        isNull(dossier_pieces_jointes.archived_at),
+      ));
+    const sansStatut = allActives.filter((p) => !p.instructeur_status).map(({ id, nom, code_piece }) => ({ id, nom, code_piece }));
+    const complementsEnAttente = allActives.filter((p) => p.instructeur_status === "complement_demande").map(({ id, nom, code_piece }) => ({ id, nom, code_piece }));
+    const validees = allActives.filter((p) => p.instructeur_status === "valide");
+    if (sansStatut.length > 0 || complementsEnAttente.length > 0 || validees.length === 0) {
+      const motifs: string[] = [];
+      if (sansStatut.length > 0) motifs.push(`${sansStatut.length} pièce(s) à examiner`);
+      if (complementsEnAttente.length > 0) motifs.push(`${complementsEnAttente.length} complément(s) en attente`);
+      if (validees.length === 0) motifs.push(`aucune pièce validée`);
+      throw new ConformityFinalPreconditionError(
+        `Analyse finale impossible : ${motifs.join(" · ")}.`,
+        { pieces_sans_statut: sansStatut, pieces_complement_en_attente: complementsEnAttente, aucune_piece_validee: validees.length === 0 },
+      );
+    }
+  }
+
+  // 2. Verrou : refuse les exécutions concurrentes (sur la colonne de statut
+  // correspondant au mode — on autorise une interim et une finale en parallèle
+  // si jamais ça arrivait, elles ne se marchent pas dessus).
+  const statusColumn = isFinal ? "conformite_final_status" : "conformite_status";
+  const currentStatus = isFinal ? dossier.conformite_final_status : dossier.conformite_status;
+  if (currentStatus === "running") {
+    throw new Error(`Une analyse ${isFinal ? "finale" : "interim"} est déjà en cours pour ce dossier`);
   }
   await db
     .update(dossiers)
-    .set({ conformite_status: "running", updated_at: new Date() })
+    .set({ [statusColumn]: "running", updated_at: new Date() })
     .where(eq(dossiers.id, dossierId));
 
   try {
@@ -311,11 +377,24 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
     const piecesCtx = buildPiecesContext(natures, surface, servitudes, undefined, situational);
     const piecesAttendues = getPiecesForType(dossier.type, piecesCtx).filter((p) => p.requis);
 
-    // 4. Pièces déposées
+    // 4. Pièces déposées prises en compte par l'IA :
+    //   - hors archivées (remplacées suite à un complément, elles ne pèsent
+    //     plus dans le décompte) ;
+    //   - en mode INTERIM (3.C.5a) : hors rejetées — une pièce qu'instructeur
+    //     a explicitement écartée ne doit pas pourrir l'analyse de son slot.
+    //   - en mode FINAL (3.C.5b) : on ne garde QUE les pièces explicitement
+    //     validées par l'instructeur — c'est ce qui sert d'ancrage juridique
+    //     à la décision finale, donc rien ne doit y entrer par défaut.
     const piecesDeposees = await db
       .select()
       .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.dossier_id, dossierId));
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossierId),
+        isNull(dossier_pieces_jointes.archived_at),
+        isFinal
+          ? eq(dossier_pieces_jointes.instructeur_status, "valide")
+          : sql`(${dossier_pieces_jointes.instructeur_status} IS NULL OR ${dossier_pieces_jointes.instructeur_status} != 'rejete')`,
+      ));
     const piecesParCode = new Map<string, typeof piecesDeposees[number]>();
     for (const p of piecesDeposees) if (p.code_piece) piecesParCode.set(p.code_piece, p);
 
@@ -349,9 +428,48 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
     // 7. Construit l'index des pièces attendues par code (pour récupérer l'aide)
     const attenduesParCode = new Map(piecesAttendues.map((p) => [p.code, p]));
 
-    // 8. Analyse pièce par pièce
-    const piecesAnalyses = await mapWithConcurrency(piecesDeposees, MAX_PARALLEL, async (p) => {
+    // 8. Regroupement par emplacement (code_piece)
+    //
+    // Le citoyen peut déposer plusieurs fichiers dans la même case (ex : PC5 —
+    // un PDF par façade). On veut que l'IA évalue chaque emplacement COMME UN
+    // TOUT : l'info présente sur "Plan façade Sud" ne doit pas faire signaler
+    // comme manquante l'info qui figure sur "Plan façade Ouest" du même lot.
+    //
+    // Les fichiers sans code_piece (annexes libres) sont analysés
+    // individuellement (clé interne unique par pièce pour préserver le
+    // comportement existant).
+    interface PieceGroup {
+      key: string;                 // identifiant du regroupement
+      code_piece: string;          // code "officiel" du slot, "" si annexe libre
+      pieces: typeof piecesDeposees;
+    }
+    const groupsByKey = new Map<string, PieceGroup>();
+    for (const p of piecesDeposees) {
       const code = p.code_piece ?? "";
+      // Annexes sans code : chaque fichier reste son propre "lot" — pas de
+      // regroupement arbitraire qui mélangerait des documents sans rapport.
+      const key = code ? `code:${code}` : `lone:${p.id}`;
+      let g = groupsByKey.get(key);
+      if (!g) {
+        g = { key, code_piece: code, pieces: [] };
+        groupsByKey.set(key, g);
+      }
+      g.pieces.push(p);
+    }
+    const groups = Array.from(groupsByKey.values());
+
+    // Lit un buffer depuis le StorageProvider (avec fallback disque legacy).
+    const storage = getStorageProvider();
+    const readBuffer = async (url: string): Promise<Buffer | null> => {
+      try { return await storage.getBuffer(storage.keyFromUrl(url)); } catch {}
+      const diskPath = urlToDiskPath(url);
+      if (!diskPath) return null;
+      try { return await (await import("node:fs")).promises.readFile(diskPath); } catch { return null; }
+    };
+
+    // 9. Analyse par groupe, puis mapping du résultat à chaque pièce du groupe
+    const piecesAnalysesNested = await mapWithConcurrency(groups, MAX_PARALLEL, async (group) => {
+      const code = group.code_piece;
       const attendue = code ? attenduesParCode.get(code) : undefined;
       const reglesPiece = filterRulesForPiece(rules, code);
       const ctx: PieceContext = {
@@ -365,24 +483,77 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
         hasABF: piecesCtx.hasABF,
         regles: reglesPiece,
       };
-      // Lecture du fichier via StorageProvider (local OU S3). On retombe sur
-      // le chemin disque pour les très anciens enregistrements si jamais
-      // l'URL est cassée.
-      const storage = getStorageProvider();
-      let pieceBuffer: Buffer | null = null;
-      try {
-        pieceBuffer = await storage.getBuffer(storage.keyFromUrl(p.url));
-      } catch {
-        // Fallback legacy : tente le chemin disque historique.
-        const diskPath = urlToDiskPath(p.url);
-        if (diskPath) {
-          try { pieceBuffer = await import("node:fs").then((fs) => fs.promises.readFile(diskPath)); }
-          catch { pieceBuffer = null; }
-        }
+
+      // Charge tous les fichiers du groupe. Les fichiers introuvables ressortent
+      // en non_conforme individuellement et ne polluent pas l'analyse du lot.
+      const loaded: Array<{ p: typeof piecesDeposees[number]; buf: Buffer | null }> = [];
+      for (const p of group.pieces) {
+        loaded.push({ p, buf: await readBuffer(p.url) });
       }
-      let result: ConformitePieceReport;
-      if (!pieceBuffer) {
-        result = {
+      const available = loaded.filter((x) => x.buf !== null) as Array<{ p: typeof piecesDeposees[number]; buf: Buffer }>;
+      const missing = loaded.filter((x) => x.buf === null);
+
+      // Cas dégradé : aucun fichier lisible.
+      if (available.length === 0) {
+        return loaded.map(({ p }) => ({
+          piece_id: p.id,
+          code_piece: p.code_piece,
+          nom: p.nom,
+          score: "non_conforme" as PieceScore,
+          commentaire: "Fichier non localisable sur le serveur.",
+          suggestions: ["Re-déposer la pièce."],
+          non_conformites: undefined,
+          reglementaire: false,
+          error: "FILE_NOT_FOUND",
+        } satisfies ConformitePieceReport));
+      }
+
+      let groupAnalysis: PieceAnalysis;
+      let analysisError: string | null = null;
+      try {
+        const docs: PieceGroupDoc[] = available.map(({ p, buf }) => ({
+          buf,
+          mimeType: p.type,
+          nom: p.nom,
+        }));
+        groupAnalysis = await analyzePieceGroup(docs, code, ctx, { dossierId, communeId: resolvedCommuneId });
+      } catch (err) {
+        analysisError = err instanceof Error ? err.message : String(err);
+        groupAnalysis = {
+          score: "acceptable",
+          commentaire: "Analyse automatique indisponible — vérification manuelle requise.",
+          suggestions: [],
+          reglementaire: false,
+        };
+      }
+
+      // Persiste l'analyse de groupe sur CHAQUE pièce du lot : l'UI dépôt
+      // (citoyen ET mairie) montre la même conclusion à tous les fichiers du
+      // même emplacement, ce qui reflète bien que l'évaluation est collective.
+      if (!analysisError) {
+        await Promise.all(available.map(({ p }) =>
+          db.update(dossier_pieces_jointes)
+            .set({ analyse_ia: groupAnalysis })
+            .where(eq(dossier_pieces_jointes.id, p.id)),
+        ));
+      }
+
+      const reports: ConformitePieceReport[] = [];
+      for (const { p } of available) {
+        reports.push({
+          piece_id: p.id,
+          code_piece: p.code_piece,
+          nom: p.nom,
+          score: groupAnalysis.score,
+          commentaire: groupAnalysis.commentaire,
+          suggestions: groupAnalysis.suggestions,
+          non_conformites: groupAnalysis.non_conformites,
+          reglementaire: groupAnalysis.reglementaire ?? false,
+          ...(analysisError ? { error: analysisError.slice(0, 200) } : {}),
+        });
+      }
+      for (const { p } of missing) {
+        reports.push({
           piece_id: p.id,
           code_piece: p.code_piece,
           nom: p.nom,
@@ -392,42 +563,11 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
           non_conformites: undefined,
           reglementaire: false,
           error: "FILE_NOT_FOUND",
-        };
-      } else {
-        try {
-          const analysis = await analyzePiece(pieceBuffer, p.type, p.nom, code, ctx, { dossierId, communeId: resolvedCommuneId });
-          result = {
-            piece_id: p.id,
-            code_piece: p.code_piece,
-            nom: p.nom,
-            score: analysis.score,
-            commentaire: analysis.commentaire,
-            suggestions: analysis.suggestions,
-            non_conformites: analysis.non_conformites,
-            reglementaire: analysis.reglementaire ?? false,
-          };
-          // Persiste l'analyse mise à jour sur la pièce (utilisable côté UI dépôt aussi)
-          await db
-            .update(dossier_pieces_jointes)
-            .set({ analyse_ia: analysis })
-            .where(eq(dossier_pieces_jointes.id, p.id));
-        } catch (err) {
-          const msg = err instanceof Error ? err.message : String(err);
-          result = {
-            piece_id: p.id,
-            code_piece: p.code_piece,
-            nom: p.nom,
-            score: "acceptable",
-            commentaire: "Analyse automatique indisponible — vérification manuelle requise.",
-            suggestions: [],
-            non_conformites: undefined,
-            reglementaire: false,
-            error: msg.slice(0, 200),
-          };
-        }
+        });
       }
-      return result;
+      return reports;
     });
+    const piecesAnalyses = piecesAnalysesNested.flat();
 
     // 9. Score global
     const scores = piecesAnalyses.map((p) => p.score);
@@ -492,15 +632,15 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
             // verdict d'instruction.
             const docs = await db
               .select({
-                id: commune_documents.id,
-                name: commune_documents.name,
-                type: commune_documents.type,
-                synthese: commune_documents.synthese,
+                id: regulatory_documents.id,
+                name: regulatory_documents.name,
+                type: regulatory_documents.type,
+                synthese: regulatory_documents.synthese,
               })
-              .from(commune_documents)
+              .from(regulatory_documents)
               .where(and(
-                eq(commune_documents.commune_id, comm.id),
-                eq(commune_documents.validation_status, "valide"),
+                eq(regulatory_documents.commune_id, comm.id),
+                eq(regulatory_documents.validation_status, "valide"),
               ));
             documentsCommune = docs;
           }
@@ -510,7 +650,7 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
         // sont sémantiquement proches du contexte du dossier (zone + nature).
         // Plus précis et moins coûteux que d'envoyer les PDFs entiers ;
         // intègre aussi les annotations chunk-level validées. Best-effort :
-        // une panne Voyage ne bloque pas le verdict.
+        // une panne Mistral ne bloque pas le verdict.
         let regulatoryHits: VerdictRegulatoryHit[] = [];
         if (communeInsee) {
           try {
@@ -522,7 +662,10 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
             ].filter(Boolean);
             const query = queryParts.join(" ").trim();
             if (query.length > 5) {
-              const hits = await searchInCommune({ query, insee: communeInsee, top_k: 6 });
+              const hits = await searchInCommune({
+                query, insee: communeInsee, top_k: 6,
+                tracking: { purpose: "rag_search_conformity", dossierId, communeId: resolvedCommuneId },
+              });
               regulatoryHits = hits.map((h) => ({
                 segment_id: h.segment_id,
                 doc_type: h.doc_type,
@@ -588,34 +731,58 @@ export async function runDossierConformityAnalysis(dossierId: string): Promise<C
       warnings,
     };
 
+    // Stockage : colonnes interim vs finale (3.C.5b). En mode finale on
+    // mémorise aussi le user_id qui a déclenché pour l'audit pré-arrêté.
+    const writePayload: Record<string, unknown> = isFinal
+      ? {
+          conformite_final_analysis: report,
+          conformite_final_status: "done",
+          conformite_final_analyzed_at: new Date(),
+          conformite_final_triggered_by: opts?.triggeredBy ?? null,
+          updated_at: new Date(),
+        }
+      : {
+          conformite_analysis: report,
+          conformite_status: "done",
+          conformite_analyzed_at: new Date(),
+          updated_at: new Date(),
+        };
     await db
       .update(dossiers)
-      .set({
-        conformite_analysis: report,
-        conformite_status: "done",
-        conformite_analyzed_at: new Date(),
-        updated_at: new Date(),
-      })
+      .set(writePayload as never)
       .where(eq(dossiers.id, dossierId));
-
     return report;
   } catch (err) {
+    // Idem au catch : on écrit sur la bonne colonne selon le mode.
+    const errorPayload: Record<string, unknown> = isFinal
+      ? {
+          conformite_final_status: "failed",
+          conformite_final_analyzed_at: new Date(),
+          conformite_final_analysis: {
+            schema_version: 1,
+            error: err instanceof Error ? err.message : String(err),
+            analyzed_at: new Date().toISOString(),
+          },
+          updated_at: new Date(),
+        }
+      : {
+          conformite_status: "failed",
+          conformite_analyzed_at: new Date(),
+          conformite_analysis: {
+            schema_version: 1,
+            error: err instanceof Error ? err.message : String(err),
+            analyzed_at: new Date().toISOString(),
+          },
+          updated_at: new Date(),
+        };
     await db
       .update(dossiers)
-      .set({
-        conformite_status: "failed",
-        conformite_analyzed_at: new Date(),
-        conformite_analysis: {
-          schema_version: 1,
-          error: err instanceof Error ? err.message : String(err),
-          analyzed_at: new Date().toISOString(),
-        },
-        updated_at: new Date(),
-      })
+      .set(errorPayload as never)
       .where(eq(dossiers.id, dossierId));
     throw err;
   }
 }
+
 
 /**
  * Lance l'analyse en tâche de fond, sans bloquer l'appelant. Retourne immédiatement.

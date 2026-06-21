@@ -76,12 +76,10 @@ const PIECES_DP: Piece[] = [
     requis: (ctx) => ctx.hasConstruction || ctx.hasABF || ctx.hasChangementDestination || ctx.hasModifAspect,
     aide: "Photo de la façade concernée depuis la rue (environnement proche) et vue plus large du quartier ou de la rue (environnement lointain). Doit permettre de situer le projet dans son contexte.",
   },
-  {
-    code: "DP8",
-    nom: "Consultation ABF — Architecte des Bâtiments de France",
-    requis: (ctx) => ctx.hasABF,
-    aide: "Votre terrain est en périmètre ABF. La mairie saisit l'ABF automatiquement — vous n'avez rien à joindre. L'ABF peut imposer couleurs, matériaux, menuiseries, divisions de vitrages et type de baies. Délai d'instruction prolongé de 1 mois (R.423-24 b du Code de l'Urbanisme).",
-  },
+  // NB : pas de pièce « Consultation ABF » côté pétitionnaire. La saisine de
+  // l'ABF est faite par la mairie (R.423-24 b) — le citoyen n'a rien à joindre.
+  // Le contexte ABF (saisine auto + délai +1 mois) est exposé via le bandeau
+  // ABF du wizard et les alertes de /classify, pas via une pièce obligatoire.
   // ── Pièces recommandées ABF ──
   {
     code: "DP-ABF-NDA",
@@ -295,9 +293,12 @@ export function getPiecesForType(
   let pieces: Piece[];
   switch (type) {
     case "declaration_prealable": pieces = PIECES_DP; break;
-    case "permis_de_construire": pieces = PIECES_PC; break;
+    case "permis_de_construire":
+    case "permis_de_construire_mi": pieces = PIECES_PC; break;
     case "permis_demolir": pieces = PIECES_DEMOLIR; break;
-    case "certificat_urbanisme": pieces = PIECES_CU; break;
+    case "certificat_urbanisme":
+    case "certificat_urbanisme_a":
+    case "certificat_urbanisme_b": pieces = PIECES_CU; break;
     default: pieces = PIECES_DP;
   }
 

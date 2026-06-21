@@ -1,3 +1,23 @@
+-- ============================================================================
+-- ⚠️  OBSOLÈTE — NE PAS UTILISER POUR INITIALISER UNE BASE
+-- ============================================================================
+--
+-- Snapshot historique du schéma à un instant donné. N'est PLUS la source de
+-- vérité : ce script ne contient PAS les colonnes ajoutées par les migrations
+-- successives (source_document_id, cases, applies_if, citizen_*, porteur_*,
+-- regulatory_documents, document_communes, etc.).
+--
+-- Initialiser une base avec ce fichier produit un schéma incomplet → l'app
+-- échoue à l'insertion (cf. incident OVH où source_document_id manquait dans
+-- zone_regulatory_rules).
+--
+-- SOURCE DE VÉRITÉ : packages/db/src/migrate.ts (lancé via `pnpm --filter
+-- @heureka-v1/db migrate`). Le script TypeScript est idempotent et applique
+-- TOUTES les évolutions du schéma dans l'ordre.
+--
+-- Ce fichier est conservé pour archive uniquement.
+-- ============================================================================
+
 -- HEUREKA V1 - Migration SQL
 -- Généré depuis les schémas Drizzle
 
@@ -8,9 +28,12 @@ EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
 
 DO $$ BEGIN
-  CREATE TYPE dossier_type AS ENUM ('permis_de_construire', 'declaration_prealable', 'permis_amenager', 'permis_demolir', 'permis_lotir', 'certificat_urbanisme');
+  CREATE TYPE dossier_type AS ENUM ('permis_de_construire', 'permis_de_construire_mi', 'declaration_prealable', 'permis_amenager', 'permis_demolir', 'permis_lotir', 'certificat_urbanisme', 'certificat_urbanisme_a', 'certificat_urbanisme_b');
 EXCEPTION WHEN duplicate_object THEN NULL;
 END $$;
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'permis_de_construire_mi';
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'certificat_urbanisme_a';
+ALTER TYPE dossier_type ADD VALUE IF NOT EXISTS 'certificat_urbanisme_b';
 
 DO $$ BEGIN
   CREATE TYPE dossier_status AS ENUM ('brouillon', 'soumis', 'pre_instruction', 'incomplet', 'en_instruction', 'decision_en_cours', 'accepte', 'refuse', 'accord_prescription');
@@ -176,3 +199,19 @@ CREATE INDEX IF NOT EXISTS idx_pieces_jointes_user_id ON dossier_pieces_jointes(
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 CREATE INDEX IF NOT EXISTS idx_instruction_events_dossier_id ON instruction_events(dossier_id);
 CREATE INDEX IF NOT EXISTS idx_calendar_events_dossier_id ON calendar_events(dossier_id);
+
+-- Documentation Favoris (onglet Documentation contextuelle pendant l'instruction)
+CREATE TABLE IF NOT EXISTS documentation_favoris (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  user_id uuid NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  reference_id text NOT NULL,
+  reference_type text NOT NULL,
+  titre text NOT NULL,
+  source text,
+  created_at timestamp NOT NULL DEFAULT now()
+);
+CREATE UNIQUE INDEX IF NOT EXISTS documentation_favoris_user_ref_uniq
+  ON documentation_favoris(dossier_id, user_id, reference_id);
+CREATE INDEX IF NOT EXISTS idx_documentation_favoris_dossier_id
+  ON documentation_favoris(dossier_id);

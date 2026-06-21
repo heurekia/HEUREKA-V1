@@ -2,13 +2,12 @@
  * Abstraction du stockage des fichiers déposés par les pétitionnaires.
  *
  * Deux implémentations interchangeables via STORAGE_PROVIDER :
- *  - "local" (défaut)  → disque local sous apps/api/uploads/ (dev + Railway legacy)
- *  - "s3"              → service S3-compatible (Cellar/Scaleway/OVH OS/AWS S3)
+ *  - "local" (défaut)  → disque local sous apps/api/uploads/ (dev + VPS OVH actuel)
+ *  - "s3"              → service S3-compatible (OVH Object Storage / Scaleway / AWS S3)
  *
  * Pourquoi cette abstraction :
- *  - Railway et tous les PaaS modernes utilisent des conteneurs avec un
- *    disque éphémère → les fichiers déposés sont perdus à chaque redéploiement.
- *  - Pré-requis pour migrer vers Clever Cloud (Phase 2 du plan).
+ *  - Découpler la persistance des fichiers du système de fichiers de l'hôte,
+ *    pour pouvoir basculer sans changer le code applicatif.
  *  - Pré-requis pour SecNumCloud / 3DS Outscale (Phase 7).
  *
  * Tous les chemins applicatifs (routes/dossiers, auth, jobs/scheduler,
@@ -54,6 +53,14 @@ export interface PutInput {
   mime: string;
 }
 
+/** Descripteur d'un flux de lecture — utilisé par la route /api/uploads
+ *  pour streamer le fichier sans exposer d'URL S3 expirante au navigateur. */
+export interface StoredStream {
+  stream: Readable;
+  contentType?: string;
+  contentLength?: number;
+}
+
 export interface StorageProvider {
   /** Identifiant du provider, pour logs et probes. */
   readonly name: "local" | "s3";
@@ -64,6 +71,11 @@ export interface StorageProvider {
   /** Récupère le contenu binaire d'un fichier — utilisé par les services
    *  d'analyse IA qui doivent passer le buffer au LLM. */
   getBuffer(key: string): Promise<Buffer>;
+
+  /** Ouvre un flux de lecture sur le fichier — utilisé par la route Express
+   *  qui sert les pièces jointes en proxy (pas de redirection vers une URL
+   *  signée qui expirerait dans le cache navigateur). */
+  getStream(key: string): Promise<StoredStream>;
 
   /** Génère une URL signée (temporaire) pour téléchargement direct par le
    *  navigateur. Sur le provider "local", retourne simplement l'URL publique
@@ -93,7 +105,7 @@ function keyFromLegacyUrl(url: string): string {
   return tail;
 }
 
-// ── Provider LOCAL (disque local, legacy Railway / dev) ─────────────────────
+// ── Provider LOCAL (disque local — défaut sur le VPS OVH et en dev) ─────────
 
 export class LocalStorageProvider implements StorageProvider {
   readonly name = "local" as const;
@@ -112,6 +124,15 @@ export class LocalStorageProvider implements StorageProvider {
 
   async getBuffer(key: string): Promise<Buffer> {
     return fs.promises.readFile(path.join(this.dir, key));
+  }
+
+  async getStream(key: string): Promise<StoredStream> {
+    const filePath = path.join(this.dir, key);
+    const stat = await fs.promises.stat(filePath);
+    return {
+      stream: fs.createReadStream(filePath),
+      contentLength: stat.size,
+    };
   }
 
   async getDownloadUrl(key: string): Promise<string> {
@@ -209,6 +230,19 @@ export class S3StorageProvider implements StorageProvider {
       chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as Uint8Array));
     }
     return Buffer.concat(chunks);
+  }
+
+  async getStream(key: string): Promise<StoredStream> {
+    const res = await this.client.send(new GetObjectCommand({
+      Bucket: this.bucket,
+      Key: key,
+    }));
+    if (!res.Body) throw new Error(`Body vide pour ${key}`);
+    return {
+      stream: res.Body as Readable,
+      contentType: res.ContentType,
+      contentLength: typeof res.ContentLength === "number" ? res.ContentLength : undefined,
+    };
   }
 
   async getDownloadUrl(key: string, expiresInSeconds = 900): Promise<string> {

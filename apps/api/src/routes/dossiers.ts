@@ -4,8 +4,9 @@ import { db } from "../db.js";
 import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events, dossier_courriers, users } from "@heureka-v1/db";
 import { eq, desc, and, ilike, gt, sql, isNull } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
+import { auditMutations } from "../middlewares/auditMutations.js";
 import crypto from "crypto";
-import { callClaude } from "../services/aiUsage.js";
+import { callAi } from "../services/aiUsage.js";
 import path from "path";
 import multer from "multer";
 import { classifyPermit } from "../services/classificationEngine.js";
@@ -17,9 +18,10 @@ import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../ser
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
 import { syncDossierFactsFromPieces } from "../services/dossierFacts.js";
 import { autoReopenAfterCitizenUpload } from "../services/dossierWorkflow.js";
-import { computeInstructionDelay } from "../services/instructionDelays.js";
+import { computeInstructionDelay, applyMonthsToDate } from "../services/instructionDelays.js";
 import { getStorageProvider } from "../services/storage.js";
 import { attachCerfaToDossier } from "../services/cerfaAttachment.js";
+import { archivePreviousComplementDemande } from "../services/pieceArchive.js";
 
 // Multer stocke le fichier en MÉMOIRE (Buffer) plutôt que sur disque local.
 // On délègue l'écriture finale au StorageProvider (local OU S3), ce qui
@@ -68,6 +70,16 @@ const NATURE_LABELS: Record<string, string> = {
 export const dossiersRouter = Router();
 
 dossiersRouter.use(requireAuth);
+// Traçabilité super admin : tout dépôt/modification de dossier par un citoyen
+// (création, upload de pièce, soumission, messages) est journalisé. Le label
+// d'acteur est dérivé du rôle réel du user au moment de la requête, donc une
+// mairie qui agit ici sera taggée "mairie".
+dossiersRouter.use(auditMutations({
+  actor: "citoyen",
+  ignorePaths: new Set([
+    "/:id/messages/read",
+  ]),
+}));
 
 // Verify that a dossier exists AND belongs to the authenticated user.
 // Returns the dossier when owned, otherwise null (caller replies 404).
@@ -81,7 +93,7 @@ async function getOwnedDossier(dossierId: string, userId: string) {
 }
 
 // ── Classification de la procédure d'urbanisme ──
-// Moteur déterministe pour type/libellé/articles — Claude pour explication+alertes
+// Moteur déterministe pour type/libellé/articles — LLM pour explication+alertes
 dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
   try {
     const {
@@ -94,6 +106,7 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       description,
       certificatType,
       hasVoirieCommune,
+      existingIsMaisonIndividuelle,
     } = req.body as {
       nature?: string;
       natures?: string[];
@@ -104,6 +117,7 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       description?: string;
       certificatType?: "a" | "b";
       hasVoirieCommune?: boolean;
+      existingIsMaisonIndividuelle?: boolean;
     };
 
     const naturesToUse: string[] = naturesArr ?? (nature ? [nature] : []);
@@ -122,6 +136,7 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       amenagementType,
       certificatType,
       hasVoirieCommune,
+      existingIsMaisonIndividuelle,
     });
 
     // ── 2. Pièces requises (déterministe) ─────────────────────────────────────
@@ -133,12 +148,12 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
     );
     const pieces_requises = getPiecesForType(det.type, piecesCtx);
 
-    // ── 3. Explication citoyenne + alertes via Claude ─────────────────────────
+    // ── 3. Explication citoyenne + alertes via LLM ─────────────────────────
     let explication = "";
     let alertes: string[] = [];
 
     // Délai légal pré-calculé pour CE dossier (base + extensions). On le
-    // fournit à Claude pour qu'il n'invente PAS de durée — il doit reprendre
+    // fournit au modèle pour qu'il n'invente PAS de durée — il doit reprendre
     // exactement les composantes qu'on lui donne.
     const delaiCalc = computeInstructionDelay(
       det.type,
@@ -168,10 +183,10 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
           det.architecte_requis ? "Architecte obligatoire : oui (surface totale > 150 m²)" : null,
         ].filter(Boolean).join("\n");
 
-        const msg = await callClaude(
+        const msg = await callAi(
           { purpose: "procedure_explain", userId: req.user?.id ?? null },
           {
-            model: "claude-haiku-4-5-20251001",
+            model: "ai-fast",
             max_tokens: 800,
             system: `Tu es conseiller en urbanisme expert. La procédure a déjà été déterminée — tu n'as pas à la remettre en question.
 
@@ -204,7 +219,7 @@ Règles strictes :
           alertes = parsed.alertes ?? [];
         }
       } catch {
-        // Claude failure is non-blocking — proceed with empty explanation
+        // LLM failure is non-blocking — proceed with default explanation
         explication = `Votre projet nécessite une ${det.libelle}. Délai moyen : ${det.delai_moyen}.`;
         if (hasABF) alertes = ["Votre terrain est en périmètre ABF : prévoyez un délai supplémentaire d'environ 1 mois."];
       }
@@ -269,13 +284,23 @@ dossiersRouter.post("/pieces", async (req: AuthRequest, res) => {
 });
 
 // ── Lister mes dossiers ──
+// Pagination défensive (mêmes bornes que la route mairie) : un citoyen aura
+// rarement plus de quelques dizaines de dossiers, mais la limite serveur
+// garantit qu'aucun client mal formé ne peut demander un volume arbitraire.
 dossiersRouter.get("/", async (req: AuthRequest, res) => {
   try {
+    const rawLimit = Number.parseInt((req.query.limit as string | undefined) ?? "", 10);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 500) : 100;
+    const rawOffset = Number.parseInt((req.query.offset as string | undefined) ?? "", 10);
+    const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
+
     const list = await db
       .select()
       .from(dossiers)
       .where(eq(dossiers.user_id, req.user!.id))
-      .orderBy(desc(dossiers.created_at));
+      .orderBy(desc(dossiers.created_at))
+      .limit(limit)
+      .offset(offset);
     res.json(list);
   } catch (err) {
     console.error(err);
@@ -348,20 +373,45 @@ dossiersRouter.post("/:id/soumettre", async (req: AuthRequest, res) => {
     const uploadedPieces = await db
       .select()
       .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.dossier_id, dossier.id));
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossier.id),
+        isNull(dossier_pieces_jointes.archived_at),
+      ));
     const uploadedCodes = new Set(uploadedPieces.map((p) => p.code_piece).filter(Boolean));
     const manquantes = piecesRequises.filter((p) => !uploadedCodes.has(p.code));
     if (manquantes.length > 0) {
       return res.status(422).json({ error: "Dossier incomplet", manquantes });
     }
 
+    const depotDate = new Date();
+    const dossierMeta = (dossier.metadata as Record<string, unknown> | null) ?? {};
+    const dossierServitudes = (dossierMeta as { servitudes?: Array<{ categorie?: string; libelle?: string }> }).servitudes ?? null;
+    const delaiCalc = computeInstructionDelay(
+      dossier.type,
+      dossierMeta as { natures?: string[]; certificatType?: "a" | "b" },
+      dossierServitudes,
+    );
+    const dateLimite = applyMonthsToDate(depotDate, delaiCalc.total_mois);
+    const metadataWithDelai = {
+      ...dossierMeta,
+      delai: {
+        total_mois: delaiCalc.total_mois,
+        breakdown: delaiCalc.breakdown,
+        base_date: depotDate.toISOString(),
+        base_date_source: "depot",
+        computed_at: depotDate.toISOString(),
+      },
+    };
+
     const [updated] = await db
       .update(dossiers)
       .set({
         status: "soumis",
-        date_depot: new Date(),
+        date_depot: depotDate,
+        date_limite_instruction: dateLimite,
+        metadata: metadataWithDelai,
         conformite_status: "pending",
-        updated_at: new Date(),
+        updated_at: depotDate,
       })
       .where(eq(dossiers.id, req.params.id as string))
       .returning();
@@ -399,7 +449,10 @@ dossiersRouter.get("/:id/completude", async (req: AuthRequest, res) => {
     const uploadedPieces = await db
       .select()
       .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.dossier_id, dossier.id));
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, dossier.id),
+        isNull(dossier_pieces_jointes.archived_at),
+      ));
     const uploadedCodes = new Set(uploadedPieces.map((p) => p.code_piece).filter(Boolean));
     const manquantes = piecesRequises.filter((p) => !uploadedCodes.has(p.code));
 
@@ -792,10 +845,15 @@ dossiersRouter.get("/:id/pieces", async (req: AuthRequest, res) => {
   try {
     const dossier = await getOwnedDossier(req.params.id as string, req.user!.id);
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+    // Les versions archivées (remplacées suite à un complément) sont masquées
+    // côté citoyen — la pièce active est seule visible dans son espace.
     const pieces = await db
       .select()
       .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.dossier_id, req.params.id as string))
+      .where(and(
+        eq(dossier_pieces_jointes.dossier_id, req.params.id as string),
+        isNull(dossier_pieces_jointes.archived_at),
+      ))
       .orderBy(desc(dossier_pieces_jointes.uploaded_at));
     res.json(pieces);
   } catch (err) {
@@ -861,6 +919,24 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       mime: req.file.mimetype,
     });
 
+    // 1bis) Conversion compat PDF en arrière-plan si le fichier contient
+    // du JPEG 2000 (incompatible avec le décodeur pdf.js du viewer mairie).
+    // Capture explicite des champs nécessaires : req.file peut être ré-
+    // affecté par d'autres handlers après le res.json.
+    const compatSourceBuffer = req.file.buffer;
+    const compatSourceMime = req.file.mimetype;
+    void (async () => {
+      try {
+        const { maybeBuildCompatPdf, compatKeyFor } = await import("../services/pdfCompat.js");
+        const compatBuf = await maybeBuildCompatPdf(compatSourceBuffer, compatSourceMime);
+        if (!compatBuf) return; // Pas de JPX → rien à faire.
+        await storage.put({ key: compatKeyFor(fileKey), body: compatBuf, mime: "application/pdf" });
+        console.log(`[pdf-compat] généré pour ${fileKey} (${compatBuf.length} octets)`);
+      } catch (err) {
+        console.warn(`[pdf-compat] échec pour ${fileKey} : ${err instanceof Error ? err.message : err}`);
+      }
+    })();
+
     const [piece] = await db
       .insert(dossier_pieces_jointes)
       .values({
@@ -874,6 +950,24 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       })
       .returning();
 
+    // Si l'instructeur avait demandé un complément sur une pièce du même
+    // emplacement, on archive cette ancienne version : elle disparaît de la
+    // liste d'instruction principale (consultable via les versions précédentes
+    // de la rubrique). Best-effort — un échec ne doit pas annuler l'upload.
+    if (piece) {
+      try {
+        await archivePreviousComplementDemande({
+          dossier_id: req.params.id as string,
+          code_piece: code_piece || null,
+          new_piece_nom: nom_piece,
+          new_piece_id: piece.id,
+          user_id: req.user!.id,
+        });
+      } catch (e) {
+        console.warn("[pieces/upload] archivePreviousComplementDemande:", e);
+      }
+    }
+
     // RGPD : persiste le consentement au niveau du dossier (dernière valeur
     // explicite du pétitionnaire). Permet l'audit "ce dossier a-t-il été
     // soumis à l'analyse automatisée ?".
@@ -886,6 +980,10 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
 
     let analyse_ia: Awaited<ReturnType<typeof analyzePiece>> | null = null;
     let extraction_ia: PieceExtraction | null = null;
+    // Remonté au client quand l'IA était attendue mais a échoué (clé Mistral
+    // manquante, pdftoppm absent, time-out…). Permet au wizard d'afficher
+    // « analyse indisponible » au lieu d'un silence trompeur.
+    let ai_error: string | null = null;
 
     if (runAi) {
       // Deux passes IA en parallèle, non-bloquantes :
@@ -906,13 +1004,20 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       // chemin disque. Les services prennent en charge local ET S3 via le
       // StorageProvider en relisant la key si besoin (cf. signature *FromBuffer).
       // Diagnostic : on log explicitement les erreurs au lieu de les avaler
-      // silencieusement, sinon un échec Bedrock (model ID invalide,
-      // AccessDenied, etc.) reste invisible.
+      // silencieusement, sinon un échec Mistral (modèle inconnu, 401, rate
+      // limit, etc.) reste invisible.
       const fileBuffer = req.file.buffer;
       const mimeType = req.file.mimetype;
+      const captureErr = (label: string) => (err: unknown) => {
+        const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+        console.error(`[upload] ${label} a échoué:`, msg);
+        // Première erreur rencontrée = celle qu'on remonte. On masque la clé
+        // API au passage si elle a fuité dans le message (paranoïa).
+        if (!ai_error) ai_error = msg.replace(/Bearer\s+[A-Za-z0-9._-]+/g, "Bearer ***");
+      };
       [analyse_ia, extraction_ia] = await Promise.all([
         analyzePiece(fileBuffer, mimeType, nom_piece, code_piece, undefined, trace).catch((err) => {
-          console.error("[upload] analyzePiece a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+          captureErr("analyzePiece")(err);
           return null;
         }),
         extractPiece(fileBuffer, mimeType, {
@@ -920,7 +1025,7 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
           nom_piece,
           code_piece,
         }, trace).catch((err) => {
-          console.error("[upload] extractPiece a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+          captureErr("extractPiece")(err);
           return null as PieceExtraction | null;
         }),
       ]);
@@ -958,7 +1063,14 @@ dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest,
       }
     }
 
-    res.status(201).json({ ...piece, analyse_ia, extraction_ia, ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null) });
+    res.status(201).json({
+      ...piece,
+      analyse_ia,
+      extraction_ia,
+      ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null),
+      ai_requested: runAi,
+      ai_error,
+    });
   } catch (err) {
     // Si le fichier a été écrit dans le storage avant l'erreur, on le retire
     // pour éviter les orphelins. Best-effort.

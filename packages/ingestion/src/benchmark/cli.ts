@@ -1,16 +1,13 @@
 /**
- * CLI du harnais de benchmark.
+ * CLI du harnais de benchmark — Mistral La Plateforme.
  *
- *   pnpm benchmark:llm                       → exécute toutes les fixtures
- *   pnpm benchmark:llm --limit 3             → smoke test sur 3 fixtures
- *   pnpm benchmark:llm --out rapport.md      → chemin du rapport
- *   pnpm benchmark:llm --providers anthropic,mistral
+ *   pnpm benchmark:llm                                    → exécute toutes les fixtures
+ *   pnpm benchmark:llm --limit 3                          → smoke test sur 3 fixtures
+ *   pnpm benchmark:llm --out rapport.md                   → chemin du rapport
+ *   pnpm benchmark:llm --mistral-models pixtral-large,pixtral-12b
  *
- * Variables d'environnement requises :
- *   ANTHROPIC_API_KEY          → pour provider "anthropic"
- *   AI_PROVIDER=bedrock        → pour basculer Anthropic sur Bedrock UE
- *   AWS_REGION + AWS_ACCESS_KEY_ID + AWS_SECRET_ACCESS_KEY → si Bedrock
- *   MISTRAL_API_KEY            → pour provider "mistral"
+ * Variable d'environnement requise :
+ *   MISTRAL_API_KEY            → clé API Mistral La Plateforme
  */
 import fs from "node:fs";
 import path from "node:path";
@@ -30,40 +27,40 @@ const fixturesDir = arg("--dir") ?? DEFAULT_FIXTURES;
 const outPath = arg("--out") ?? path.join(REPO_ROOT, "docs/security/benchmark-llm-resultats.md");
 const limitArg = arg("--limit");
 const limit = limitArg ? Number(limitArg) : undefined;
-const providersSelected = (arg("--providers") ?? "anthropic,mistral").split(",").map((s) => s.trim());
 
-async function loadProviders(names: string[]): Promise<BenchmarkProvider[]> {
-  const providers: BenchmarkProvider[] = [];
-  for (const name of names) {
-    try {
-      if (name === "anthropic") {
-        const { AnthropicProvider } = await import("./providers/anthropic.js");
-        providers.push(new AnthropicProvider("claude-haiku-4-5-20251001"));
-        providers.push(new AnthropicProvider("claude-sonnet-4-6"));
-      } else if (name === "mistral") {
-        const { MistralProvider } = await import("./providers/mistral.js");
-        providers.push(new MistralProvider("pixtral-large-latest"));
-      } else {
-        console.warn(`Provider inconnu : ${name}`);
-      }
-    } catch (err) {
-      console.error(`⚠️  Provider ${name} ignoré : ${err instanceof Error ? err.message : err}`);
+const MISTRAL_MODELS = {
+  "pixtral-large": "pixtral-large-latest",
+  "pixtral-12b": "pixtral-12b-2409",
+} as const;
+type MistralModel = (typeof MISTRAL_MODELS)[keyof typeof MISTRAL_MODELS];
+
+function resolveMistralModels(flag: string | undefined): MistralModel[] {
+  if (!flag) return [MISTRAL_MODELS["pixtral-large"]];
+  return flag.split(",").map((s) => s.trim()).map((alias) => {
+    const resolved = MISTRAL_MODELS[alias as keyof typeof MISTRAL_MODELS]
+      ?? (Object.values(MISTRAL_MODELS).includes(alias as MistralModel) ? (alias as MistralModel) : null);
+    if (!resolved) {
+      throw new Error(`Modèle inconnu \`${alias}\`. Valeurs supportées : ${Object.keys(MISTRAL_MODELS).join(", ")}`);
     }
-  }
-  return providers;
+    return resolved;
+  });
+}
+
+async function loadProviders(): Promise<BenchmarkProvider[]> {
+  const { MistralProvider } = await import("./providers/mistral.js");
+  return resolveMistralModels(arg("--mistral-models")).map((m) => new MistralProvider(m));
 }
 
 async function main() {
-  console.log(`\n🔬 Benchmark LLM HEUREKA`);
+  console.log(`\n🔬 Benchmark LLM HEUREKA (Mistral La Plateforme)`);
   console.log(`   fixtures   : ${fixturesDir}`);
-  console.log(`   providers  : ${providersSelected.join(", ")}`);
   console.log(`   sortie     : ${outPath}`);
   if (limit) console.log(`   limit      : ${limit} fixtures`);
   console.log("");
 
-  const providers = await loadProviders(providersSelected);
+  const providers = await loadProviders();
   if (providers.length === 0) {
-    console.error("Aucun provider chargé — vérifier les variables d'environnement (ANTHROPIC_API_KEY, MISTRAL_API_KEY).");
+    console.error("Aucun provider chargé — vérifier la variable d'environnement MISTRAL_API_KEY.");
     process.exit(1);
   }
 

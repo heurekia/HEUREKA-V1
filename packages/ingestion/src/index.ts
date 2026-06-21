@@ -4,11 +4,13 @@
  *   pnpm ingest --file seeds/37261_reglement.pdf --adapter plu-reglement \
  *     --insee 37261 --commune "Tours" --version "M1_20220627"
  */
+import path from "node:path";
 import { runIngestion } from "./engine/pipeline.ts";
 import { loadSegments } from "./db/loader.ts";
 import { structureSegments } from "./structure/structurer.ts";
-import { anthropicLlm } from "./structure/anthropic-llm.ts";
+import { mistralLlm } from "./structure/mistral-llm.ts";
 import { loadRules } from "./db/rules-loader.ts";
+import { trackIngestionUsage } from "./db/usage-tracker.ts";
 
 function arg(flag: string): string | undefined {
   const i = process.argv.indexOf(flag);
@@ -46,22 +48,53 @@ async function main() {
   }
   if (files) console.log(`\n📄 ${files.json}\n   ${files.csv}\n   ${files.reportPath}`);
 
-  // --rules : structuration par article (agent Claude) → tables citoyennes
-  // (zones + zone_regulatory_rules, statut brouillon). Le LLM ne voit que le
-  // texte COURT des articles d'une zone, jamais le PDF entier.
+  // --rules : structuration par article (agent Mistral Pixtral Large) → tables
+  // citoyennes (zones + zone_regulatory_rules, statut brouillon). Le LLM ne voit
+  // que le texte COURT des articles d'une zone, jamais le PDF entier.
   if (flag("--rules")) {
-    console.log(`\n🤖 Structuration des règles par article (Claude)…`);
-    const zoneRules = await structureSegments(segments, anthropicLlm(), {
+    console.log(`\n🤖 Structuration des règles par article (Mistral)…`);
+    const zoneRules = await structureSegments(segments, mistralLlm({
+      onUsage: (u) => trackIngestionUsage({
+        purpose: "plu_structure_cli",
+        model: u.model,
+        endpoint: "chat",
+        input_tokens: u.prompt_tokens,
+        output_tokens: u.completion_tokens,
+        duration_ms: u.duration_ms,
+      }),
+    }), {
       onZone: (zone, count) => console.log(`   ${zone} → ${count} règles`),
     });
-    const res = await loadRules(insee, commune, zoneRules, { zipCode: arg("--zip") });
+    const res = await loadRules(insee, commune, zoneRules, {
+      zipCode: arg("--zip"),
+      document: {
+        // Cibler explicitement un document existant : utile pour re-ingérer
+        // depuis un upload réalisé via l'UI mairie.
+        id: arg("--doc-id"),
+        type: arg("--doc-type"),
+        name: arg("--doc-name"),
+        originalFilename: arg("--doc-filename") ?? path.basename(file),
+      },
+    });
     console.log(`✓ ${res.zones} zones · ${res.rules} règles écrites (brouillon) dans zone_regulatory_rules.`);
+    console.log(`  document=${res.document_id}`);
   }
 
-  // --load : pousse les segments + embeddings (voyage-3) dans pgvector.
+  // --load : pousse les segments + embeddings (mistral-embed) dans pgvector.
   if (flag("--load")) {
     console.log(`\n🔗 Chargement en base (pgvector)…`);
-    const { upserted } = await loadSegments(segments);
+    const { upserted } = await loadSegments(segments, {
+      embed_options: {
+        onUsage: (u) => trackIngestionUsage({
+          purpose: "plu_embed_cli",
+          model: u.model,
+          endpoint: "embedding",
+          input_tokens: u.prompt_tokens,
+          output_tokens: 0,
+          duration_ms: u.duration_ms,
+        }),
+      },
+    });
     console.log(`✓ ${upserted} segments chargés dans document_segments.`);
   }
 

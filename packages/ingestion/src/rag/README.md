@@ -25,7 +25,7 @@ pages: string[]
    ▼
 chunks: { index, page, text }[]
    │
-   │  embedTexts(input_type="document")   (Voyage-3)
+   │  embedTexts()   (Mistral mistral-embed, hébergé France)
    ▼
 embeddings: number[][]  (1024 dims)
    │
@@ -34,19 +34,38 @@ embeddings: number[][]  (1024 dims)
 [ requêtes RAG ]
    │
    │  searchSegments(query, insee, doc_types)
-   │   ├─ embed query (input_type="query")
+   │   ├─ embed query (même fonction, Mistral n'a qu'un seul espace)
    │   └─ ORDER BY embedding <=> :query_vec LIMIT k
    ▼
 SearchHit[] : passages + page + source_id + distance
 ```
 
-## Coût indicatif (Voyage-3)
+## Coût indicatif (Mistral `mistral-embed`)
 
 | Étape | Coût | Fréquence |
 |---|---|---|
-| Indexation d'un PLU 200 pages | ~0,005 $ | 1× à l'upload |
-| Indexation d'un PPRI 80 pages | ~0,002 $ | 1× à l'upload |
-| Requête au moment d'un verdict | ~0,00001 $ | par dossier |
+| Indexation d'un PLU 200 pages | ~0,005 € | 1× à l'upload |
+| Indexation d'un PPRI 80 pages | ~0,002 € | 1× à l'upload |
+| Requête au moment d'un verdict | ~0,00001 € | par dossier |
+
+## Souveraineté
+
+L'embedder utilise `mistral-embed` (Mistral La Plateforme, hébergement
+France). Aucune donnée mairie ne sort de l'UE. Couvert par le DPA Mistral
+(cf. `docs/security/dpa-mistral-checklist.md`). La clé `MISTRAL_API_KEY`
+sert à la fois pour l'inférence LLM et les embeddings — un seul fournisseur
+à auditer côté RGPD / IA Act.
+
+## Bascule depuis Voyage AI (historique)
+
+Le RAG tournait initialement sur Voyage AI (US, racheté par MongoDB).
+La bascule vers Mistral s'est faite à dimension identique (1024 dims), donc
+**sans migration du schéma pgvector**. En revanche les vecteurs Voyage et
+Mistral vivent dans des espaces différents : un corpus indexé avec Voyage
+doit être **réindexé** avant d'être interrogé avec Mistral, sinon les
+distances cosine renvoient des résultats incohérents. Procédure : re-trigger
+`indexCommuneDocument()` sur chaque `regulatory_documents` après la bascule
+(les `pdf_content` sont conservés en base à cette fin).
 
 ## API
 
@@ -71,7 +90,7 @@ page, source_id et metadata.
 ## Endpoints HTTP exposés (apps/api)
 
 - `POST /api/mairie/documents` — déclenche l'indexation en arrière-plan
-  après création du `commune_documents`. Statut `uploaded → indexing →
+  après création du `regulatory_documents`. Statut `uploaded → indexing →
   indexed | indexing_empty | indexing_error`.
 - `DELETE /api/mairie/documents/:id` — nettoie l'index avant suppression.
 - `GET /api/mairie/documents/search?q=...&insee=...&doc_types=PPRI,OAP&top_k=5` —
@@ -85,7 +104,7 @@ page, source_id et metadata.
   remontera dans le prompt à côté du chunk → l'IA peut intégrer la nuance
   dans son verdict.
 - **Intégration dans `ruleVerdicts`** : remplacer (ou compléter) l'injection
-  des `commune_documents.synthese` par `searchSegments()` filtré sur la
+  des `regulatory_documents.synthese` par `searchSegments()` filtré sur la
   zone PLU du dossier.
 - **Adapter `PLU_REGLEMENT`** : indexer aussi le règlement PLU lui-même
   pour les citations type "PLU Ballan, zone UB, art. 7, p. 42".
