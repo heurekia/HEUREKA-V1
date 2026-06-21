@@ -85,6 +85,19 @@ dossiersRouter.get("/dossiers", async (req: AuthRequest, res) => {
         : sql`1=1`;
 
     const instructeurU = alias(users, "instructeur_user");
+    // OCR/IA en arrière-plan (dépôt mairie au comptoir) : tant qu'une pièce
+    // est encore `pending` ou `processing`, on considère le dossier comme
+    // « en cours de chargement » — il sera masqué/grisé dans la liste et son
+    // détail renverra 423 (cf. GET /dossiers/:id). Le flag tombe à false
+    // automatiquement dès que le worker pieceOcrQueue a fini la dernière
+    // pièce, ce qui déclenche aussi la notification « Dossier prêt ».
+    const ocrProcessingExpr = sql<boolean>`EXISTS (
+      SELECT 1
+        FROM dossier_pieces_jointes p
+       WHERE p.dossier_id = dossiers.id
+         AND p.archived_at IS NULL
+         AND p.ocr_status IN ('pending', 'processing')
+    )`;
     const sel = {
       id: dossiers.id, numero: dossiers.numero, type: dossiers.type, status: dossiers.status,
       adresse: dossiers.adresse, commune: dossiers.commune, code_postal: dossiers.code_postal,
@@ -97,6 +110,7 @@ dossiersRouter.get("/dossiers", async (req: AuthRequest, res) => {
       created_at: dossiers.created_at,
       demandeur_prenom: users.prenom, demandeur_nom: users.nom,
       instructeur_prenom: instructeurU.prenom, instructeur_nom: instructeurU.nom,
+      ocr_processing: ocrProcessingExpr,
     };
 
     const whereClause = search
@@ -230,6 +244,31 @@ dossiersRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
       .where(eq(dossiers.id, req.params.id as string))
       .limit(1);
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    // Verrou OCR : tant qu'au moins une pièce est en attente/traitement, on
+    // refuse l'accès au détail. Le dossier reste visible dans la liste mais
+    // marqué « Analyse OCR en cours… ». L'instructeur sera notifié via la
+    // cloche quand tout sera prêt (cf. pieceOcrQueue.maybeNotifyDossierReady).
+    // 423 Locked plutôt que 404 : on signale explicitement que la ressource
+    // existe mais n'est pas encore consultable, l'UI peut afficher un toast.
+    const ocrPendingProbe = await pgClient<{ remaining: number; total: number }[]>`
+      SELECT
+        COUNT(*) FILTER (WHERE ocr_status IN ('pending','processing'))::int AS remaining,
+        COUNT(*)::int AS total
+        FROM dossier_pieces_jointes
+       WHERE dossier_id = ${dossier.id}
+         AND archived_at IS NULL
+    `;
+    const ocrRow = ocrPendingProbe[0] ?? { remaining: 0, total: 0 };
+    if (ocrRow.remaining > 0) {
+      return res.status(423).json({
+        error: "Le dossier n'est pas encore consultable : analyse OCR en cours.",
+        ocr_processing: true,
+        ocr_remaining: ocrRow.remaining,
+        ocr_total: ocrRow.total,
+        numero: dossier.numero,
+      });
+    }
 
     // Backfill paresseux : les dossiers antérieurs au calcul automatique à la
     // création peuvent avoir une date_limite_instruction NULL. On la calcule
