@@ -105,6 +105,27 @@ export interface PieceExtraction {
   // ── Phase 5 : checklist graphique étendue ───────────────────────────────
   graphics?: GraphicsChecklist | null;
 
+  // ── Orientation de lecture (anti-erreur de rotation) ────────────────────
+  // rotation_deg : rotation (0/90/180/270) à appliquer à la page pour la
+  // redresser, déterminée par cascade d'indices (cartouche → texte → gravité
+  // du dessin). `indice` décrit la preuve retenue. Sert à interpréter les
+  // cotes dans le bon repère ET à signaler une pièce pivotée.
+  orientation_lecture?: { rotation_deg: number; indice: string | null } | null;
+
+  // ── Cartouche / encart descriptif ───────────────────────────────────────
+  // Métadonnées lues dans le cartouche (auteur/architecte, titre de planche,
+  // échelle, date, maître d'ouvrage). Le cartouche est la référence
+  // d'orientation la plus fiable quand il existe ; ses infos sont aussi utiles
+  // au dossier. `present=false` pour une pièce sans cartouche (croquis citoyen).
+  cartouche?: {
+    present: boolean;
+    auteur?: string | null;
+    titre?: string | null;
+    echelle?: string | null;
+    date?: string | null;
+    maitre_ouvrage?: string | null;
+  } | null;
+
   // ── Phase 2.3 : observations cadastrales sur le document ────────────────
   parcelles_observees?: ParcelleObservee[] | null;
 
@@ -210,6 +231,14 @@ RÈGLE D'OR — N'INVENTE RIEN :
 - Si une dimension est mesurable à la règle mais n'est PAS cotée sur le plan → null + missing_elements. Tu ne mesures jamais.
 - Si tu lis une cote mais elle est ambiguë (mal lisible, contradictoire avec une autre) → null + note explicite dans "notes".
 
+ÉTAPE 0 — REDRESSE MENTALEMENT LA PIÈCE (avant toute lecture de cote) :
+Détermine l'orientation correcte de lecture en remontant cette CASCADE d'indices (du plus fiable au moins fiable), puis lis tout le reste dans ce repère redressé :
+  1. CARTOUCHE / encart (titre de planche, nom de l'architecte ou du pétitionnaire, échelle, date, maître d'ouvrage) : son texte est fait pour être lu à l'horizontale. L'orientation qui rend le cartouche lisible normalement = l'orientation correcte de la planche.
+  2. À DÉFAUT de cartouche (croquis manuscrit, pièce citoyenne) : appuie-toi sur TOUT autre texte (légendes, libellés de cotes, "TN", "sol naturel", niveaux) dont la ligne de base donne le sens de lecture.
+  3. À DÉFAUT de texte exploitable : utilise la SÉMANTIQUE du dessin et la gravité — sur une coupe/façade, le sol/terrain naturel est en bas (souvent hachuré), la toiture/faîtage en haut ; arbres, personnages, descentes d'eau pointent le "haut". Sur un plan masse, réfère-toi au Nord.
+Renseigne "orientation_lecture" = { "rotation_deg": 0|90|180|270 (rotation à appliquer pour redresser), "indice": "<preuve retenue, ex. 'cartouche en bas, texte tourné de 90°'>" }.
+Renseigne aussi "cartouche" si présent. IMPORTANT : la rotation de la page ne change PAS la nature d'une cote — applique le redressement AVANT de décider ce qui est une hauteur (vertical) ou une longueur (horizontal).
+
 ÉTAPE 1 — Identifie le type :
 - "cerfa" : formulaire administratif (DP, PC, PA, …) avec cases et champs.
 - "plan_situation" : extrait de carte / cadastre / IGN à petite échelle (1/2000+), localisant la parcelle dans la commune.
@@ -266,6 +295,8 @@ SORTIE — UNIQUEMENT du JSON valide, sans markdown, sans préambule :
   "echelle": "1/200" | null,
   "nord_visible": true|false|null,
   "legende_visible": true|false|null,
+  "orientation_lecture": { "rotation_deg": 0, "indice": "cartouche en bas à droite, texte horizontal" } | null,
+  "cartouche": { "present": true, "auteur": "Cabinet X / M. Dupont", "titre": "Coupe AA", "echelle": "1/100", "date": "2024-03", "maitre_ouvrage": "M. et Mme Martin" } | null,
   "graphics": {
     "orientation": { "kind": "fleche_nord|rose_des_vents|boussole|absent|inconnu", "visible": true|false, "evidence": "rose des vents en bas à droite" | null } | null,
     "echelle_graphique": "present|absent|inconnu" | null,
@@ -370,6 +401,35 @@ function parseOrientation(v: unknown): OrientationInfo | null {
     visible,
     evidence: s(o.evidence),
   };
+}
+
+// Rotation de redressement : on n'accepte que les multiples de 90°.
+const VALID_ROTATIONS = new Set([0, 90, 180, 270]);
+function parseOrientationLecture(v: unknown): { rotation_deg: number; indice: string | null } | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const raw = n(o.rotation_deg);
+  // Normalise dans [0,360) puis valide le multiple de 90.
+  const rot = raw == null ? null : ((Math.round(raw) % 360) + 360) % 360;
+  if (rot == null || !VALID_ROTATIONS.has(rot)) {
+    // rotation absente/invalide mais indice présent → on garde l'indice à 0°.
+    const indice = s(o.indice);
+    return indice ? { rotation_deg: 0, indice } : null;
+  }
+  return { rotation_deg: rot, indice: s(o.indice) };
+}
+
+function parseCartouche(v: unknown): PieceExtraction["cartouche"] {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const auteur = s(o.auteur);
+  const titre = s(o.titre);
+  const echelle = s(o.echelle);
+  const date = s(o.date);
+  const maitre_ouvrage = s(o.maitre_ouvrage);
+  const present = o.present === true || !!(auteur || titre || echelle || date || maitre_ouvrage);
+  if (!present) return { present: false };
+  return { present: true, auteur, titre, echelle, date, maitre_ouvrage };
 }
 
 function parsePrisesDeVue(v: unknown): PriseDeVue[] | null {
@@ -595,7 +655,15 @@ export function parseExtraction(raw: string): PieceExtraction {
   } : null;
 
   const graphics = parseGraphics(obj.graphics);
+  const orientation_lecture = parseOrientationLecture(obj.orientation_lecture);
+  const cartouche = parseCartouche(obj.cartouche);
   const parcelles_observees = parseParcellesObservees(obj.parcelles_observees);
+
+  // Une pièce détectée comme pivotée est journalisée : utile pour l'instructeur
+  // et pour pondérer la confiance dans les cotes lues.
+  const rotationNote = orientation_lecture && orientation_lecture.rotation_deg !== 0
+    ? `Pièce pivotée (~${orientation_lecture.rotation_deg}°) redressée pour lecture${orientation_lecture.indice ? ` — ${orientation_lecture.indice}` : ""}.`
+    : null;
 
   return {
     piece_type,
@@ -608,6 +676,8 @@ export function parseExtraction(raw: string): PieceExtraction {
     nord_visible: deriveNordVisible(graphics, obj.nord_visible),
     legende_visible: deriveLegendeVisible(graphics, obj.legende_visible),
     graphics,
+    orientation_lecture,
+    cartouche,
     parcelles_observees,
     cerfa,
     plan_masse,
@@ -618,7 +688,7 @@ export function parseExtraction(raw: string): PieceExtraction {
     missing_elements: arrS(obj.missing_elements) ?? [],
     citations: parseCitations(obj.citations),
     page_count: n(obj.page_count),
-    notes: mergeNotes(s(obj.notes), coupeNote),
+    notes: mergeNotes(s(obj.notes), rotationNote, coupeNote),
   };
 }
 
