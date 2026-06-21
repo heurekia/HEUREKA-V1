@@ -2,7 +2,6 @@ import { Router } from "express";
 import { db } from "../../db.js";
 import { dossier_pieces_jointes, instruction_events } from "@heureka-v1/db";
 import { eq, desc, and, isNull } from "drizzle-orm";
-import fs from "fs";
 import path from "path";
 import multer from "multer";
 import crypto from "crypto";
@@ -12,7 +11,7 @@ import { extractPiece, expectedTypeFromCode } from "../../services/pieceExtracto
 import { getStorageProvider } from "../../services/storage.js";
 import { archivePreviousComplementDemande } from "../../services/pieceArchive.js";
 import { queuePieceOcr, notifyIfAlreadyComplete } from "../../services/pieceOcrQueue.js";
-import { resolveCommuneIdFromUser, UPLOADS_DIR_MAIRIE } from "./_shared.js";
+import { resolveCommuneIdFromUser } from "./_shared.js";
 import { sql } from "drizzle-orm";
 
 export const piecesRouter = Router();
@@ -366,13 +365,17 @@ piecesRouter.post("/dossiers/:id/pieces/:pieceId/extract", async (req: AuthReque
       .limit(1);
     if (!piece) return res.status(404).json({ error: "Pièce non trouvée" });
 
-    const filename = piece.url.split("/").pop();
-    if (!filename) return res.status(404).json({ error: "Fichier non localisable" });
-    const filePath = path.join(UPLOADS_DIR_MAIRIE, filename);
-    if (!fs.existsSync(filePath)) return res.status(404).json({ error: "Fichier non trouvé sur le disque" });
+    const storage = getStorageProvider();
+    let fileBuffer: Buffer;
+    try {
+      fileBuffer = await storage.getBuffer(storage.keyFromUrl(piece.url));
+    } catch (err) {
+      console.warn("[pieces/extract] fichier introuvable dans le storage:", err);
+      return res.status(404).json({ error: "Fichier non trouvé dans le stockage" });
+    }
 
     const communeIdForPiece = await resolveCommuneIdFromUser(req);
-    const extraction = await extractPiece(filePath, piece.type, {
+    const extraction = await extractPiece(fileBuffer, piece.type, {
       expected_type: expectedTypeFromCode(piece.code_piece),
       nom_piece: piece.nom,
       code_piece: piece.code_piece ?? "",
