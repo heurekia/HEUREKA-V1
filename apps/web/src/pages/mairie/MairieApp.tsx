@@ -7346,6 +7346,10 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [documents, setDocuments] = useState<DossierPiece[] | null>(null);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<number>(0);
+  // Pièce à sélectionner une fois l'onglet Documents chargé. Permet d'ouvrir
+  // une pièce justificative depuis un autre onglet (checklist, verdicts) même
+  // quand `documents` n'est pas encore chargé : la sélection est différée.
+  const [pendingPieceId, setPendingPieceId] = useState<string | null>(null);
   // Catégories repliées dans l'onglet Documents (3.C.4 — affinage suite à
   // dossiers avec 30+ pièces). Persisté entre les rerenders mais pas en
   // localStorage : c'est un état de session, l'instructeur déplie ce qu'il
@@ -7364,10 +7368,23 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     if (activeTab !== "Documents" || documents !== null) return;
     setDocumentsLoading(true);
     api.get<DossierPiece[]>(`/mairie/dossiers/${dossier.id}/pieces`)
-      .then((data) => { setDocuments(data); setSelectedDoc(0); })
+      // Ne réinitialise pas la sélection à 0 si une pièce précise est en
+      // attente d'ouverture (clic depuis un autre onglet) — l'effet ci-dessous
+      // la résout dès que `documents` est disponible.
+      .then((data) => { setDocuments(data); if (!pendingPieceId) setSelectedDoc(0); })
       .catch(() => setDocuments([]))
       .finally(() => setDocumentsLoading(false));
-  }, [activeTab, documents, dossier.id]);
+  }, [activeTab, documents, dossier.id, pendingPieceId]);
+
+  // Résout une demande d'ouverture de pièce différée : dès que `documents` est
+  // chargé, on sélectionne la pièce ciblée puis on purge la demande (qu'elle
+  // ait abouti ou non — une pièce archivée/superseded peut être absente).
+  useEffect(() => {
+    if (!pendingPieceId || documents === null) return;
+    const idx = documents.findIndex((d) => d.id === pendingPieceId);
+    if (idx >= 0) setSelectedDoc(idx);
+    setPendingPieceId(null);
+  }, [pendingPieceId, documents]);
 
   const reExtractPiece = useCallback(async (pieceId: string) => {
     setExtractingPieceId(pieceId);
@@ -7406,10 +7423,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   // Documents et sélectionne la pièce. Utilisé par la checklist réglementaire
   // pour rendre cliquable la valeur « Fait utilisé » et remonter à la preuve.
   const openPieceById = useCallback((pieceId: string) => {
-    const idx = (documents ?? []).findIndex((d) => d.id === pieceId);
-    if (idx < 0) return;
+    // Bascule TOUJOURS sur l'onglet Documents. Si les pièces sont déjà
+    // chargées, on sélectionne immédiatement ; sinon on diffère via
+    // pendingPieceId (l'effet de résolution s'en charge au chargement).
     setActiveTab("Documents");
-    setSelectedDoc(idx);
+    const idx = (documents ?? []).findIndex((d) => d.id === pieceId);
+    if (idx >= 0) setSelectedDoc(idx);
+    else setPendingPieceId(pieceId);
   }, [documents]);
 
   // ── Chronologie : instruction events ──
