@@ -7436,6 +7436,16 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     }
   }, [dossier.id]);
 
+  // Ouvre une pièce justificative par son identifiant : bascule sur l'onglet
+  // Documents et sélectionne la pièce. Utilisé par la checklist réglementaire
+  // pour rendre cliquable la valeur « Fait utilisé » et remonter à la preuve.
+  const openPieceById = useCallback((pieceId: string) => {
+    const idx = (documents ?? []).findIndex((d) => d.id === pieceId);
+    if (idx < 0) return;
+    setActiveTab("Documents");
+    setSelectedDoc(idx);
+  }, [documents]);
+
   // ── Chronologie : instruction events ──
   type InstructionEvent = {
     id: string;
@@ -8987,7 +8997,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               )}
             </div>
             <div style={{ marginBottom: 20 }}>
-              <RegulatoryChecklist dossierId={dossier.id} onJumpToCitation={jumpFromCitation} />
+              <RegulatoryChecklist dossierId={dossier.id} onJumpToCitation={jumpFromCitation} onOpenPiece={openPieceById} />
             </div>
           </>
         )}

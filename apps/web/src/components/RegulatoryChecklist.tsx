@@ -74,7 +74,14 @@ interface DossierFact {
   value: unknown;
   unit: string | null;
   source: "citizen_declaration" | "document_extraction" | "instructor_entry" | "external_data";
-  source_ref: { piece_id?: string; nom_piece?: string | null; field?: string } | null;
+  source_ref: {
+    piece_id?: string;
+    nom_piece?: string | null;
+    field?: string;
+    piece_type?: string | null;
+    page?: number | null;
+    citation?: string | null;
+  } | null;
   confidence: number | null;
   validated_at: string | null;
 }
@@ -146,6 +153,50 @@ const FACT_LABELS: Record<string, string> = {
 };
 const factLabel = (k: string) => FACT_LABELS[k] ?? k;
 
+// ─── Provenance d'un fait ────────────────────────────────────────────
+// Affiché systématiquement à côté de la valeur pour que l'instructeur
+// sache TOUJOURS d'où vient la donnée (pièce extraite, déclaration, saisie,
+// donnée externe) — et puisse remonter à la pièce justificative d'un clic.
+const SOURCE_LABELS: Record<DossierFact["source"], string> = {
+  document_extraction: "extrait de",
+  citizen_declaration: "déclaré par le demandeur",
+  instructor_entry: "saisi par l'instructeur",
+  external_data: "donnée externe (cadastre / GPU)",
+};
+
+// Indice lisible dérivé du champ technique du source_ref
+// (ex. "plan_coupe.hauteur_faitage_m" → "faîtage"). Sert à lever l'ambiguïté
+// sur les mesures multiples d'une même clé (faîtage vs égout, etc.).
+const FIELD_HINTS: Array<[RegExp, string]> = [
+  [/faitage/i, "faîtage"],
+  [/egout/i, "égout"],
+  [/acrotere/i, "acrotère"],
+  [/recul_voie/i, "recul voie"],
+  [/reculs?_limites/i, "limites séparatives"],
+  [/emprise/i, "emprise au sol"],
+  [/sol_naturel/i, "sol naturel"],
+];
+function factFieldHint(field: string | null | undefined): string | null {
+  if (!field) return null;
+  for (const [re, label] of FIELD_HINTS) if (re.test(field)) return label;
+  return null;
+}
+
+// Construit le libellé de provenance + le piece_id cliquable éventuel.
+function factProvenance(fact: DossierFact): { label: string; pieceId: string | null; title: string } {
+  const ref = fact.source_ref;
+  const base = SOURCE_LABELS[fact.source] ?? "source inconnue";
+  const pieceName = ref?.nom_piece ?? null;
+  const hint = factFieldHint(ref?.field);
+  const parts: string[] = [base];
+  if (fact.source === "document_extraction" && pieceName) parts.push(pieceName);
+  else if (fact.source === "citizen_declaration" && pieceName) parts.push(`(${pieceName})`);
+  if (hint) parts.push(`· ${hint}`);
+  if (ref?.page != null) parts.push(`· p. ${ref.page}`);
+  const title = ref?.citation ? `« ${ref.citation} »` : ref?.field ? `Champ : ${ref.field}` : "";
+  return { label: parts.join(" "), pieceId: ref?.piece_id ?? null, title };
+}
+
 // ─── Composant principal ─────────────────────────────────────────────
 interface Props {
   dossierId: string;
@@ -154,9 +205,12 @@ interface Props {
    *  (onglet Documents · mode Comparer). Conservé depuis la refonte
    *  layout de main. Si non fourni, les fondements restent en texte simple. */
   onJumpToCitation?: (ref: SourceRef) => void;
+  /** Ouvre la pièce justificative d'un fait (onglet Documents) à partir de son
+   *  identifiant. Rend la valeur « Fait utilisé » cliquable. */
+  onOpenPiece?: (pieceId: string) => void;
 }
 
-export function RegulatoryChecklist({ dossierId, onJumpToCitation }: Props) {
+export function RegulatoryChecklist({ dossierId, onJumpToCitation, onOpenPiece }: Props) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<LatestResponse | null>(null);
@@ -334,6 +388,7 @@ export function RegulatoryChecklist({ dossierId, onJumpToCitation }: Props) {
                         factsByKey={factsByKey}
                         onDecision={onDecision}
                         onJumpToCitation={onJumpToCitation}
+                        onOpenPiece={onOpenPiece}
                       />
                     ))}
                   </div>
@@ -384,11 +439,13 @@ function FindingCard({
   factsByKey,
   onDecision,
   onJumpToCitation,
+  onOpenPiece,
 }: {
   finding: RegulatoryFinding;
   factsByKey: Map<string, DossierFact>;
   onDecision: (f: RegulatoryFinding, d: InstructorDecision, comment?: string) => void;
   onJumpToCitation?: (ref: SourceRef) => void;
+  onOpenPiece?: (pieceId: string) => void;
 }) {
   const [open, setOpen] = useState(false);
   const [rule, setRule] = useState<RuleDetail | null>(null);
@@ -434,13 +491,27 @@ function FindingCard({
           </div>
           <div className="text-[13.5px] font-semibold leading-snug text-gray-900">{finding.title}</div>
           {usedFacts.length > 0 ? (
-            <div className="mt-1 text-[11.5px] text-gray-500">
-              Fait utilisé :{" "}
-              {usedFacts.map((f) => (
-                <span key={f.id} className="mr-1 rounded bg-gray-100 px-1.5 py-0.5 text-[11px] text-gray-600">
-                  {factLabel(f.key)} = {formatFactValue(f)}
-                </span>
-              ))}
+            <div className="mt-1 space-y-1">
+              {usedFacts.map((f) => {
+                const prov = factProvenance(f);
+                const clickable = !!(prov.pieceId && onOpenPiece);
+                return (
+                  <div key={f.id} className="flex flex-wrap items-center gap-1.5 text-[11.5px] text-gray-500">
+                    <span>Fait utilisé :</span>
+                    <span
+                      title={clickable ? `Ouvrir la pièce justificative${prov.title ? ` — ${prov.title}` : ""}` : (prov.title || undefined)}
+                      onClick={clickable ? (e) => { e.stopPropagation(); onOpenPiece!(prov.pieceId!); } : undefined}
+                      className={`rounded px-1.5 py-0.5 text-[11px] ${clickable
+                        ? "cursor-pointer bg-indigo-50 text-indigo-700 underline decoration-dotted underline-offset-2 hover:bg-indigo-100"
+                        : "bg-gray-100 text-gray-600"}`}
+                    >
+                      {factLabel(f.key)} = {formatFactValue(f)}{clickable ? " ↗" : ""}
+                    </span>
+                    {/* Provenance affichée systématiquement */}
+                    <span className="text-gray-400">{prov.label}</span>
+                  </div>
+                );
+              })}
             </div>
           ) : null}
           {finding.missing_facts.length > 0 ? (
