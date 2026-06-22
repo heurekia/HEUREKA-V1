@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import type { Geometry } from "geojson";
-import { parseHeightTxt, resolveParcelHeight, type HeightFeatureCollection } from "./heightLayer.js";
+import { parseHeightTxt, resolveParcelHeight, heightFromPrescriptions, type HeightFeatureCollection } from "./heightLayer.js";
 
 function square(minLng: number, minLat: number, maxLng: number, maxLat: number) {
   return [[
@@ -27,6 +27,8 @@ describe("parseHeightTxt", () => {
     expect(parseHeightTxt("9 m")).toEqual({ hauteur_m: 9, categorie: "metres" });
     expect(parseHeightTxt("65 m")).toEqual({ hauteur_m: 65, categorie: "metres" });
     expect(parseHeightTxt("12,5 m")).toEqual({ hauteur_m: 12.5, categorie: "metres" });
+    // Tolère un libellé verbeux (txtpsc GPU).
+    expect(parseHeightTxt("Hauteur maximale : 7 m")).toEqual({ hauteur_m: 7, categorie: "metres" });
   });
   it("classe les renvois et cas spéciaux", () => {
     expect(parseHeightTxt("art. 10 RU").categorie).toBe("article_10_reglement");
@@ -68,5 +70,41 @@ describe("resolveParcelHeight", () => {
     expect(resolveParcelHeight(null, poly(0, 0, 1, 1))).toBeNull();
     expect(resolveParcelHeight(layer, null)).toBeNull();
     expect(resolveParcelHeight({ type: "FeatureCollection", features: [] }, poly(0, 0, 1, 1))).toBeNull();
+  });
+
+  it("porte source = plan_hauteurs (résolu contre la géométrie)", () => {
+    expect(resolveParcelHeight(layer, poly(0.2, 0.2, 0.8, 0.8))!.source).toBe("plan_hauteurs");
+  });
+});
+
+describe("heightFromPrescriptions (repli GPU type 39)", () => {
+  it("extrait la hauteur d'une prescription type 39 (txtpsc)", () => {
+    const r = heightFromPrescriptions([
+      { typepsc: "05", libelle: "Emplacement réservé", txtpsc: "V10" },
+      { typepsc: "39", libelle: "Hauteur maximale", txtpsc: "7 m" },
+    ]);
+    expect(r).not.toBeNull();
+    expect(r!.hauteur_m).toBe(7);
+    expect(r!.categorie).toBe("metres");
+    expect(r!.source).toBe("gpu_prescription");
+  });
+
+  it("reconnaît la hauteur via le libellé quand txtpsc est verbeux", () => {
+    const r = heightFromPrescriptions([{ typepsc: "39", libelle: "Hauteur maximale", txtpsc: "Hauteur maximale : 12 m" }]);
+    expect(r!.hauteur_m).toBe(12);
+  });
+
+  it("préfère la prescription chiffrée parmi plusieurs type 39", () => {
+    const r = heightFromPrescriptions([
+      { typepsc: "39", libelle: "Hauteur maximale", txtpsc: "art. 10 RU" },
+      { typepsc: "39", libelle: "Hauteur maximale", txtpsc: "16 m" },
+    ]);
+    expect(r!.hauteur_m).toBe(16);
+  });
+
+  it("renvoie null sans prescription de hauteur", () => {
+    expect(heightFromPrescriptions([{ typepsc: "01", libelle: "EBC", txtpsc: null }])).toBeNull();
+    expect(heightFromPrescriptions([])).toBeNull();
+    expect(heightFromPrescriptions(null)).toBeNull();
   });
 });
