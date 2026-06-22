@@ -374,7 +374,12 @@ export async function runDossierConformityAnalysis(
           isClimateResilience?: boolean;
         }
       : undefined);
-    const piecesCtx = buildPiecesContext(natures, surface, servitudes, undefined, situational);
+    // Risques persistés (Géorisques) — déclenchent les attestations parasismique
+    // et retrait-gonflement des argiles au dépôt (décret n°2023-1173 du 12/12/2023).
+    const risks = (meta.risks && typeof meta.risks === "object")
+      ? (meta.risks as { seismic_zone?: string; clay_risk?: string })
+      : undefined;
+    const piecesCtx = buildPiecesContext(natures, surface, servitudes, undefined, situational, risks);
     const piecesAttendues = getPiecesForType(dossier.type, piecesCtx).filter((p) => p.requis);
 
     // 4. Pièces déposées prises en compte par l'IA :

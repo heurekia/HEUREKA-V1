@@ -111,7 +111,7 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       nature?: string;
       natures?: string[];
       surface?: number;
-      parcelData?: { zone?: string; commune?: string; servitudes?: Array<{ categorie?: string; libelle?: string }> };
+      parcelData?: { zone?: string; commune?: string; servitudes?: Array<{ categorie?: string; libelle?: string }>; risks?: { seismic_zone?: string; clay_risk?: string } };
       empriseExistante?: string;
       amenagementType?: string;
       description?: string;
@@ -145,6 +145,8 @@ dossiersRouter.post("/classify", async (req: AuthRequest, res) => {
       surface ?? 0,
       parcelData?.servitudes,
       amenagementType,
+      undefined,
+      parcelData?.risks,
     );
     const pieces_requises = getPiecesForType(det.type, piecesCtx);
 
@@ -260,6 +262,7 @@ dossiersRouter.post("/pieces", async (req: AuthRequest, res) => {
       servitudes,
       amenagementType,
       situational,
+      risks,
     } = req.body as {
       type: string;
       natures?: string[];
@@ -273,8 +276,9 @@ dossiersRouter.post("/pieces", async (req: AuthRequest, res) => {
         isNatura2000?: boolean;
         isClimateResilience?: boolean;
       };
+      risks?: { seismic_zone?: string; clay_risk?: string };
     };
-    const ctx = buildPiecesContext(natures ?? [], surface ?? 0, servitudes, amenagementType, situational);
+    const ctx = buildPiecesContext(natures ?? [], surface ?? 0, servitudes, amenagementType, situational, risks);
     const pieces = getPiecesForType(type ?? "declaration_prealable", ctx);
     res.json({ pieces_requises: pieces });
   } catch (err) {
