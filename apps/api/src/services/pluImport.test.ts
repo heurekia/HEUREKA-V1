@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode } from "./pluImport.ts";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode } from "./pluImport.ts";
 
 describe("partitionPagesByZone", () => {
   it("découpe les zones en plages fermées [start, end] selon la zone suivante", () => {
@@ -343,5 +343,50 @@ describe("mergeRulesByZoneCode", () => {
     const groups = mergeRulesByZoneCode([{ code: "UA", label: "UA", type: "U", rules: src }]);
     groups[0]!.rules.push({ rule_text: "y" });
     expect(src).toHaveLength(1);
+  });
+});
+
+describe("normalizeZoneCode", () => {
+  it("met le préfixe à 2 lettres en majuscules quelle que soit la casse d'entrée", () => {
+    expect(normalizeZoneCode("ua")).toBe("UA");
+    expect(normalizeZoneCode("Ua")).toBe("UA");
+    expect(normalizeZoneCode("UA")).toBe("UA");
+    expect(normalizeZoneCode(" uc ")).toBe("UC");
+  });
+
+  it("garde AU majuscule et met le suffixe en minuscule", () => {
+    expect(normalizeZoneCode("aus")).toBe("AUs");
+    expect(normalizeZoneCode("AUS")).toBe("AUs");
+    expect(normalizeZoneCode("1au")).toBe("1AU");
+    expect(normalizeZoneCode("2AUb")).toBe("2AUb");
+  });
+
+  it("normalise les sous-zones N/A avec suffixe minuscule", () => {
+    expect(normalizeZoneCode("nj")).toBe("Nj");
+    expect(normalizeZoneCode("NJ")).toBe("Nj");
+    expect(normalizeZoneCode("ah")).toBe("Ah");
+  });
+
+  it("rend identiques deux casses différentes issues de sources distinctes (natif vs Pixtral)", () => {
+    // C'est l'invariant qui permet à mergeRulesByZoneCode de fusionner.
+    expect(normalizeZoneCode("UA")).toBe(normalizeZoneCode("ua"));
+    expect(normalizeZoneCode("AUs")).toBe(normalizeZoneCode("AUS"));
+  });
+
+  it("renvoie une chaîne vide pour une entrée vide", () => {
+    expect(normalizeZoneCode("   ")).toBe("");
+    expect(normalizeZoneCode("")).toBe("");
+  });
+});
+
+describe("zoneTypeFromCode", () => {
+  it("déduit le type depuis le code normalisé", () => {
+    expect(zoneTypeFromCode("UA")).toBe("U");
+    expect(zoneTypeFromCode("AUs")).toBe("AU");
+    expect(zoneTypeFromCode("1AU")).toBe("AU");
+    expect(zoneTypeFromCode("A")).toBe("A");
+    expect(zoneTypeFromCode("Ah")).toBe("A");
+    expect(zoneTypeFromCode("N")).toBe("N");
+    expect(zoneTypeFromCode("Nj")).toBe("N");
   });
 });
