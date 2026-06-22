@@ -1,7 +1,9 @@
-import { Card, CardContent, CardHeader } from "../../components/ui/card";
+import { useState, useEffect } from "react";
+import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "../../lib/utils";
+import { api } from "../../lib/api";
 import { FileText, Plus, Download, Trash2 } from "lucide-react";
 
 const subNav = [
@@ -18,8 +20,54 @@ const subNav = [
   { to: "/mairie/infos-perso/centre-aide", label: "Centre d'aide" },
 ];
 
+interface Template {
+  id: string;
+  name: string;
+  category: string;
+  body: string;
+  updated_at: string;
+}
+
 export function InfosPersoModeles() {
   const loc = useLocation();
+  const [templates, setTemplates] = useState<Template[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  const load = () => {
+    setLoading(true);
+    api.get<Template[]>("/mairie/templates")
+      .then(setTemplates)
+      .catch(() => setTemplates([]))
+      .finally(() => setLoading(false));
+  };
+
+  useEffect(() => { load(); }, []);
+
+  // Les modèles sont stockés en texte (pas de fichier côté serveur) : le
+  // téléchargement exporte le corps du modèle en .html généré côté client.
+  const handleDownload = (tpl: Template) => {
+    const blob = new Blob([tpl.body ?? ""], { type: "text/html;charset=utf-8" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `${tpl.name || "modele"}.html`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  };
+
+  const handleDelete = async (tpl: Template) => {
+    if (!window.confirm(`Supprimer le modèle « ${tpl.name} » ?`)) return;
+    try {
+      await api.delete(`/mairie/templates/${tpl.id}`);
+      setTemplates((prev) => prev.filter((t) => t.id !== tpl.id));
+    } catch (err) {
+      console.error(err);
+      alert(err instanceof Error ? err.message : "Suppression impossible.");
+    }
+  };
+
   return (
     <div>
       <div className="mb-6">
@@ -38,18 +86,24 @@ export function InfosPersoModeles() {
           </div>
           <Card className="border-gray-200/80">
             <CardContent className="p-0 divide-y divide-gray-100">
-              {["Arrêté de permis de construire", "Certificat de conformité", "Courrier de refus", "Accusé de réception"].map((m) => (
-                <div key={m} className="flex items-center justify-between px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <FileText className="w-5 h-5 text-gray-400" />
-                    <span className="text-sm font-medium text-[#000020]">{m}</span>
+              {loading ? (
+                <div className="px-6 py-10 text-center text-gray-400 text-sm">Chargement…</div>
+              ) : templates.length === 0 ? (
+                <div className="px-6 py-10 text-center text-gray-400 text-sm">Aucun modèle de document</div>
+              ) : (
+                templates.map((tpl) => (
+                  <div key={tpl.id} className="flex items-center justify-between px-6 py-4">
+                    <div className="flex items-center gap-3">
+                      <FileText className="w-5 h-5 text-gray-400" />
+                      <span className="text-sm font-medium text-[#000020]">{tpl.name}</span>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Button variant="ghost" size="sm" onClick={() => handleDownload(tpl)} title="Télécharger"><Download className="w-4 h-4" /></Button>
+                      <Button variant="ghost" size="sm" className="text-red-500" onClick={() => void handleDelete(tpl)} title="Supprimer"><Trash2 className="w-4 h-4" /></Button>
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Button variant="ghost" size="sm"><Download className="w-4 h-4" /></Button>
-                    <Button variant="ghost" size="sm" className="text-red-500"><Trash2 className="w-4 h-4" /></Button>
-                  </div>
-                </div>
-              ))}
+                ))
+              )}
             </CardContent>
           </Card>
         </div>

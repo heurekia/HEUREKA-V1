@@ -1,8 +1,10 @@
-import { Card, CardContent, CardHeader } from "../../components/ui/card";
+import { useState, useEffect } from "react";
+import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Badge } from "../../components/ui/badge";
 import { Link, useLocation } from "react-router-dom";
 import { cn } from "../../lib/utils";
+import { api } from "../../lib/api";
 import { PenSquare, Plus, Download } from "lucide-react";
 
 const subNav = [
@@ -19,8 +21,39 @@ const subNav = [
   { to: "/mairie/infos-perso/centre-aide", label: "Centre d'aide" },
 ];
 
+// Les signatures/tampons de la commune sont stockés sur l'en-tête (letterhead)
+// sous forme d'URL d'image (signature_image / tampon_image).
+interface Letterhead {
+  commune_configured?: boolean;
+  signature_image?: string | null;
+  tampon_image?: string | null;
+}
+
+interface SignatureItem {
+  key: string;
+  name: string;
+  type: string;
+  url: string;
+}
+
 export function InfosPersoSignatures() {
   const loc = useLocation();
+  const [items, setItems] = useState<SignatureItem[]>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    setLoading(true);
+    api.get<Letterhead>("/mairie/commune-letterhead")
+      .then((lh) => {
+        const next: SignatureItem[] = [];
+        if (lh.signature_image) next.push({ key: "signature", name: "Signature", type: "Image de signature", url: lh.signature_image });
+        if (lh.tampon_image) next.push({ key: "tampon", name: "Tampon / Cachet", type: "Image de tampon", url: lh.tampon_image });
+        setItems(next);
+      })
+      .catch(() => setItems([]))
+      .finally(() => setLoading(false));
+  }, []);
+
   return (
     <div>
       <div className="mb-6">
@@ -39,24 +72,29 @@ export function InfosPersoSignatures() {
           </div>
           <Card className="border-gray-200/80">
             <CardContent className="p-0 divide-y divide-gray-100">
-              {[
-                { name: "Signature principale", type: "Numérique", date: "15/05/2026" },
-                { name: "Signature secondaire", type: "Manuscrite", date: "10/05/2026" },
-              ].map((s) => (
-                <div key={s.name} className="flex items-center justify-between px-6 py-4">
-                  <div className="flex items-center gap-3">
-                    <PenSquare className="w-5 h-5 text-gray-400" />
-                    <div>
-                      <p className="text-sm font-medium text-[#000020]">{s.name}</p>
-                      <p className="text-xs text-gray-400">{s.type} · Ajoutée le {s.date}</p>
+              {loading ? (
+                <div className="px-6 py-10 text-center text-gray-400 text-sm">Chargement…</div>
+              ) : items.length === 0 ? (
+                <div className="px-6 py-10 text-center text-gray-400 text-sm">Aucune signature enregistrée</div>
+              ) : (
+                items.map((s) => (
+                  <div key={s.key} className="flex items-center justify-between px-6 py-4">
+                    <div className="flex items-center gap-3">
+                      <PenSquare className="w-5 h-5 text-gray-400" />
+                      <div>
+                        <p className="text-sm font-medium text-[#000020]">{s.name}</p>
+                        <p className="text-xs text-gray-400">{s.type}</p>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <Badge variant="success">Active</Badge>
+                      <a href={s.url} download={s.name} target="_blank" rel="noopener noreferrer">
+                        <Button variant="ghost" size="sm" title="Télécharger"><Download className="w-4 h-4" /></Button>
+                      </a>
                     </div>
                   </div>
-                  <div className="flex items-center gap-2">
-                    <Badge variant="success">Active</Badge>
-                    <Button variant="ghost" size="sm"><Download className="w-4 h-4" /></Button>
-                  </div>
-                </div>
-              ))}
+                ))
+              )}
             </CardContent>
           </Card>
         </div>
