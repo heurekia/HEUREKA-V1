@@ -22,7 +22,7 @@ import { calculateBuildability, type BuildabilityInput } from "./buildability.js
 import { computeBuiltFootprintM2 } from "./buildingFootprint.js";
 import { loadZoneRulesWithInheritance, pickMostSpecificRule } from "./zoneRules.js";
 import { resolveCommuneZoneIds } from "./communeZones.js";
-import { getCommunePluContext, findZoneAtPoint, type PluCommuneContext } from "./pluZones.js";
+import { getCommunePluContext, findZoneAtPoint, findZonesForParcel, type PluCommuneContext } from "./pluZones.js";
 import { buildParcelSynthesis, type ParcelSynthesis } from "./parcelSynthesis.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -138,6 +138,13 @@ export interface ParcelAnalysis {
   data_sources: string[];
   warnings: string[];
   available_zones?: Array<{ zone_code: string; zone_label: string; zone_type: string }>;
+  // Zonage SURFACIQUE de la parcelle (parcelle ∩ zones). Complète `plu_zone`
+  // (résolue au point) sans le remplacer : `zone_a_cheval` = la parcelle couvre
+  // ≥ 2 zones de façon matérielle ; `zones_touchees` détaille la répartition par
+  // % d'aire, triée par couverture décroissante. Sert à appliquer « la règle la
+  // plus stricte par partie » et à repérer un point tombé en limite de zone.
+  zone_a_cheval?: boolean;
+  zones_touchees?: Array<{ zone_code: string; zone_label: string; zone_type: string; couverture_pct: number }>;
   municipality?: MunicipalityResult | null;
   prescriptions?: PrescriptionResult[];
   servitudes?: ServitudeResult[];
@@ -1575,6 +1582,50 @@ export async function analyseParcel(
       existingFootprintM2: existingFootprintM2 ?? 0,
       calculationVariables: calcVars,
     });
+  }
+
+  // ── Zonage surfacique de la parcelle (parcelle ∩ zones) ────────────────────
+  // Le zonage primaire (result.plu_zone) est résolu au POINT (adresse géocodée
+  // ou centroïde) : il masque les parcelles à cheval et peut désigner la
+  // mauvaise zone en limite. Quand on a la géométrie parcellaire, on calcule la
+  // part d'aire couverte par CHAQUE zone : on remonte la répartition + un
+  // drapeau `zone_a_cheval`, et on alerte l'instructeur quand la parcelle
+  // chevauche plusieurs zones, ou quand la zone couvrant la parcelle diffère de
+  // la zone résolue au point. On NE remplace PAS le zonage primaire ici (aucune
+  // régression de verdict, les règles sont déjà chargées) — on rend visible une
+  // information aujourd'hui invisible. La sélection de règle par emprise du
+  // projet est un lot ultérieur.
+  const parcelGeomForZoning = result.parcel?.geometry ?? null;
+  if (
+    code_insee &&
+    parcelGeomForZoning &&
+    (parcelGeomForZoning.type === "Polygon" || parcelGeomForZoning.type === "MultiPolygon")
+  ) {
+    const zoningCtx = await getCommunePluContext(code_insee);
+    const zoning = findZonesForParcel(zoningCtx.zones, parcelGeomForZoning);
+    if (zoning.zones.length > 0) {
+      result.zone_a_cheval = zoning.a_cheval;
+      result.zones_touchees = zoning.zones.map((z) => ({
+        zone_code: z.zone_code,
+        zone_label: z.zone_label,
+        zone_type: z.zone_type,
+        couverture_pct: z.couverture_pct,
+      }));
+      if (zoning.a_cheval) {
+        const repartition = zoning.zones.map((z) => `${z.zone_code} ${z.couverture_pct}%`).join(", ");
+        result.warnings.push(
+          `Parcelle à cheval sur plusieurs zones PLU (${repartition}). La règle la plus stricte s'applique par partie : vérifiez la zone applicable à l'emprise du projet.`,
+        );
+      } else if (
+        result.plu_zone?.zone_code &&
+        zoning.dominant &&
+        zoning.dominant.zone_code !== result.plu_zone.zone_code
+      ) {
+        result.warnings.push(
+          `La zone PLU résolue au point (${result.plu_zone.zone_code}) diffère de la zone couvrant la parcelle (${zoning.dominant.zone_code}, ${zoning.dominant.couverture_pct}%). À vérifier — le point a pu tomber en limite de zone.`,
+        );
+      }
+    }
   }
 
   // Step 7: Synthèse thématique bi-audience — pure, dérivée de tout ce qui

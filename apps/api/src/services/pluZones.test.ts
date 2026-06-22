@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { findZoneAtPoint, filterZonesByInsee, clipZonesToCommune } from "./pluZones.js";
+import { findZoneAtPoint, findZonesForParcel, filterZonesByInsee, clipZonesToCommune } from "./pluZones.js";
 
 // Helpers de construction de zones GeoJSON minimales — uniquement les champs
 // que findZoneAtPoint et filterZonesByInsee inspectent (libelle, typezone,
@@ -265,5 +265,85 @@ describe("clipZonesToCommune", () => {
     // La zone dans le trou disparaît ; celle hors trou reste.
     expect(clipped.features).toHaveLength(1);
     expect((clipped.features![0] as { properties: { libelle: string } }).properties.libelle).toBe("UB");
+  });
+});
+
+describe("findZonesForParcel", () => {
+  // Deux zones adjacentes : UA = [0,1]×[0,1], UB = [1,2]×[0,1].
+  const zones = {
+    type: "FeatureCollection",
+    features: [
+      { type: "Feature", properties: { libelle: "UA", libelong: "Centre", typezone: "U", insee: "37261" },
+        geometry: { type: "Polygon", coordinates: square(0, 0, 1, 1) } },
+      { type: "Feature", properties: { libelle: "UB", libelong: "Péricentre", typezone: "U", insee: "37261" },
+        geometry: { type: "Polygon", coordinates: square(1, 0, 2, 1) } },
+    ],
+  };
+  const parcel = (a: number, b: number, c: number, d: number) =>
+    ({ type: "Polygon" as const, coordinates: square(a, b, c, d) });
+
+  it("parcelle entièrement dans une zone : une seule zone, pas à cheval, ~100%", () => {
+    const z = findZonesForParcel(zones, parcel(0.2, 0.2, 0.8, 0.8));
+    expect(z.zones).toHaveLength(1);
+    expect(z.dominant?.zone_code).toBe("UA");
+    expect(z.a_cheval).toBe(false);
+    expect(z.zones[0]!.couverture_pct).toBeGreaterThanOrEqual(99);
+  });
+
+  it("parcelle à cheval 50/50 : deux zones, drapeau à cheval, ~50% chacune", () => {
+    const z = findZonesForParcel(zones, parcel(0.5, 0, 1.5, 1));
+    expect(z.a_cheval).toBe(true);
+    expect(z.zones).toHaveLength(2);
+    expect(new Set(z.zones.map((x) => x.zone_code))).toEqual(new Set(["UA", "UB"]));
+    for (const x of z.zones) {
+      expect(x.couverture_pct).toBeGreaterThan(45);
+      expect(x.couverture_pct).toBeLessThan(55);
+    }
+  });
+
+  it("ignore les slivers de numérisation (< 1%) : pas de faux drapeau à cheval", () => {
+    // Parcelle [0, 1.005] : ~99.5% en UA, ~0.5% en UB → le sliver UB est retiré.
+    const z = findZonesForParcel(zones, parcel(0, 0, 1.005, 1));
+    expect(z.a_cheval).toBe(false);
+    expect(z.zones).toHaveLength(1);
+    expect(z.zones[0]!.zone_code).toBe("UA");
+  });
+
+  it("trie par couverture décroissante et expose la zone dominante", () => {
+    // Parcelle [0, 1.4] : ~71% UA, ~29% UB.
+    const z = findZonesForParcel(zones, parcel(0, 0, 1.4, 1));
+    expect(z.a_cheval).toBe(true);
+    expect(z.zones.map((x) => x.zone_code)).toEqual(["UA", "UB"]);
+    expect(z.dominant?.zone_code).toBe("UA");
+    expect(z.zones[0]!.couverture_pct).toBeGreaterThan(z.zones[1]!.couverture_pct);
+  });
+
+  it("parcelle hors de toute zone : zonage vide", () => {
+    const z = findZonesForParcel(zones, parcel(5, 5, 6, 6));
+    expect(z.zones).toHaveLength(0);
+    expect(z.dominant).toBeNull();
+    expect(z.a_cheval).toBe(false);
+  });
+
+  it("signature défensive : zones ou géométrie absentes → zonage vide", () => {
+    expect(findZonesForParcel(null, parcel(0, 0, 1, 1)).zones).toHaveLength(0);
+    expect(findZonesForParcel(zones, null).zones).toHaveLength(0);
+    expect(findZonesForParcel(zones, undefined).a_cheval).toBe(false);
+  });
+
+  it("ignore une géométrie de parcelle non surfacique (Point)", () => {
+    const z = findZonesForParcel(zones, { type: "Point", coordinates: [0.5, 0.5] });
+    expect(z.zones).toHaveLength(0);
+    expect(z.dominant).toBeNull();
+  });
+
+  it("gère une parcelle MultiPolygon répartie sur deux zones", () => {
+    const multi = {
+      type: "MultiPolygon" as const,
+      coordinates: [square(0.1, 0.1, 0.4, 0.4), square(1.6, 0.1, 1.9, 0.4)],
+    };
+    const z = findZonesForParcel(zones, multi);
+    expect(z.a_cheval).toBe(true);
+    expect(new Set(z.zones.map((x) => x.zone_code))).toEqual(new Set(["UA", "UB"]));
   });
 });
