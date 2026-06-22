@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
-import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events, dossier_courriers, users } from "@heureka-v1/db";
+import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events, dossier_courriers, users, dossierTypeEnum } from "@heureka-v1/db";
 import { eq, desc, and, ilike, gt, sql, isNull } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import { auditMutations } from "../middlewares/auditMutations.js";
@@ -659,7 +659,14 @@ dossiersRouter.get("/:id", async (req: AuthRequest, res) => {
 
 // ── Créer un dossier ──
 const createSchema = z.object({
-  type: z.enum(["permis_de_construire", "declaration_prealable", "permis_amenager", "permis_demolir", "permis_lotir", "certificat_urbanisme"]),
+  // Dérivé directement de l'enum SQL `dossier_type` (source de vérité unique)
+  // pour rester aligné sur TOUTES les sorties du moteur de classification
+  // (classificationEngine.ts). Une liste figée ici avait divergé : les
+  // variantes fines PCMI / CUa / CUb manquaient, si bien qu'un parcours
+  // citoyen aboutissant à un CUb (`certificat_urbanisme_b`) ou une maison
+  // individuelle (`permis_de_construire_mi`) échouait à la création avec un
+  // 400 « Données invalides ».
+  type: z.enum(dossierTypeEnum.enumValues),
   parcelle: z.string().optional(),
   adresse: z.string().optional(),
   commune: z.string().optional(),
