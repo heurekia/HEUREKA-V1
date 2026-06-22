@@ -1,7 +1,7 @@
 import type { Response, NextFunction } from "express";
 import { db } from "../db.js";
 import { dossiers, users, communes, user_communes } from "@heureka-v1/db";
-import { eq } from "drizzle-orm";
+import { eq, sql, type SQL } from "drizzle-orm";
 import type { AuthRequest } from "./auth.js";
 
 // Résultat de la résolution du périmètre d'un agent : noms de communes (en
@@ -51,6 +51,31 @@ export function communeInScope(commune: string | null | undefined, scope: Commun
   if (scope === null) return true;
   if (!commune) return false;
   return scope.has(commune.trim().toLowerCase());
+}
+
+/**
+ * Construit un filtre SQL restreignant une colonne « commune » (texte) au
+ * périmètre de l'agent, éventuellement réduit à une commune demandée (?commune=).
+ *
+ * - Admin (scope === null) : aucune restriction de périmètre ; seul le filtre
+ *   `?commune=` éventuel s'applique.
+ * - Périmètre vide (aucune commune rattachée) : ne voit rien (`1=0`).
+ * - Sinon : la commune doit appartenir au périmètre (comparaison insensible à la
+ *   casse et aux espaces, cohérente avec getCommuneScope) ET, si demandé,
+ *   correspondre à `?commune=`.
+ *
+ * À utiliser sur les routes de LISTE / EXPORT / STATS (dossiers, dashboard) qui,
+ * sinon, se contenteraient du `?commune=` fourni par le client — lequel n'est
+ * PAS une frontière de sécurité (cf. enforceDossierAccess qui ne couvre que le
+ * détail /dossiers/:id). `communeColumn` est l'expression de colonne à filtrer
+ * (ex. sql`dossiers.commune`).
+ */
+export function communeScopeFilter(communeColumn: SQL, scope: CommuneScope, requestedCommune?: string | null): SQL {
+  const requested = requestedCommune ? sql`${communeColumn} ILIKE ${requestedCommune}` : null;
+  if (scope === null) return requested ?? sql`1=1`;
+  if (scope.size === 0) return sql`1=0`;
+  const inScope = sql`lower(trim(${communeColumn})) = ANY(${[...scope]})`;
+  return requested ? sql`(${inScope}) AND (${requested})` : inScope;
 }
 
 /**
