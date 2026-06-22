@@ -9,6 +9,7 @@
  */
 import { z } from "zod";
 import type { Segment } from "../adapters/interface.ts";
+import { calibrationFewShot } from "./calibration.ts";
 
 export const RULE_TOPICS = [
   "interdictions", "conditions", "desserte_voies", "desserte_reseaux", "terrain_min",
@@ -130,7 +131,7 @@ Règles :
 - Une règle par article présent. Si "non réglementé"/"sans objet" → garde-la avec value_* null.
 - VALEUR PRINCIPALE (value_min/max/exact + unit) = le seuil PRINCIPAL du thème, dans une unité COHÉRENTE (emprise_sol/espaces_verts/cos → %, hauteur/reculs → m, terrain_min → m², stationnement → places). Ne prends PAS "le plus grand nombre". Respecte min ("≥/minimum") vs max ("≤/maximum"). Ne mélange JAMAIS valeur et unité. Les mesures secondaires ou d'autres unités (épaisseurs en cm, ratios…) vont UNIQUEMENT dans "cases". Si rien de cohérent → value_* null.
 - topic 'aspect' (article 11) : capture matériaux, couleurs, toitures, menuiseries, clôtures dans rule_text.
-- N'invente AUCUNE valeur : si incertain, value_* = null.`;
+- N'invente AUCUNE valeur : si incertain, value_* = null.${calibrationFewShot()}`;
 
 function buildUserPrompt(zone: { code: string; label: string }, articles: Array<{ number: string; title: string; text: string }>): string {
   const body = articles
