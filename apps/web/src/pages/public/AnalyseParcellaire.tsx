@@ -65,18 +65,6 @@ const TOPIC_LABEL: Record<string, string> = {
 // couvre matériaux, couleurs, toitures, menuiseries/huisseries et clôtures.
 const QUALITATIVE_TOPICS = new Set(["aspect", "destinations", "general"]);
 
-// Rubriques grand public (icône + libellé), regroupant les thèmes techniques.
-const RUBRIQUES: Array<{ key: string; icon: string; label: string; topics: string[] }> = [
-  { key: "construire", icon: "🏗️", label: "Ce que vous pouvez construire", topics: ["emprise_sol", "hauteur", "cos", "terrain_min"] },
-  { key: "implanter", icon: "📐", label: "Où implanter la construction", topics: ["recul_voie", "recul_limite", "recul_batiments"] },
-  { key: "aspect", icon: "🎨", label: "Aspect & matériaux", topics: ["aspect"] },
-  { key: "stationnement", icon: "🅿️", label: "Stationnement", topics: ["stationnement"] },
-  { key: "verts", icon: "🌳", label: "Espaces verts & plantations", topics: ["espaces_verts"] },
-  { key: "acces", icon: "🚗", label: "Accès & réseaux", topics: ["desserte_voies", "desserte_reseaux"] },
-  { key: "usages", icon: "🚦", label: "Usages autorisés ou interdits", topics: ["interdictions", "conditions", "destinations"] },
-  { key: "autres", icon: "📋", label: "Autres dispositions", topics: ["general"] },
-];
-
 // Libellés des tags d'applicabilité (affichage citoyen).
 const APPLIES_LABEL_PUB: Record<string, string> = {
   protege_l151_19: "si élément protégé (L.151-19)", unesco: "si périmètre UNESCO", abf: "si périmètre ABF",
@@ -736,50 +724,24 @@ export function AnalyseParcellaire() {
                   );
                 })()}
 
-                {/* Synthèse thématique « en clair » — vue citoyen, transversale
-                    (règles PLU + risques + servitudes), avec sources repliées. */}
-                {analysis.synthesis && analysis.synthesis.themes.length > 0 && (
-                  <ParcelSynthese audience="citizen" synthesis={analysis.synthesis} />
-                )}
+                {/* La synthèse citoyenne « en clair » ne vit plus dans le corps
+                    principal : elle est désormais accessible via le panneau
+                    « Que puis-je construire ici ? » ci-dessous. */}
 
-                {/* Regulatory rules */}
-                {analysis.rules.length > 0 ? (() => {
-                  // Vue citoyen : on masque les règles marquées non pertinentes pour un
-                  // particulier (citizen_relevant === false) ainsi que les règles exclues.
-                  const citizenVisible = analysis.rules.filter(r => r.citizen_relevant !== false);
-                  // Filet de sécurité : on masque les dispositions « sans objet » / abrogées
-                  // (art. 5 superficie min., art. 14 COS — loi ALUR), même si d'anciennes
-                  // données n'ont pas encore citizen_relevant=false. Aucun intérêt citoyen.
-                  const isVoid = (r: typeof analysis.rules[number]) =>
-                    /sans objet|abrog|\bcos\b|coefficient d'occupation/i.test(`${r.citizen_summary ?? ""} ${r.summary ?? ""} ${r.rule_text}`);
-                  const relevant = citizenVisible.filter(r => !isVoid(r));
-                  const applies = relevant.filter(r => r.relevance !== "excluded" && r.relevance !== "conditional");
-                  const cond = relevant.filter(r => r.relevance === "conditional");
-                  const topicRub = (t: string) => RUBRIQUES.find(r => r.topics.includes(t))?.key ?? "autres";
-                  const ruleLine = (rule: typeof analysis.rules[number]) => {
-                    const v = rule.value_exact != null ? `${rule.value_exact}` : rule.value_max != null ? `≤ ${rule.value_max}` : rule.value_min != null ? `≥ ${rule.value_min}` : null;
-                    // Priorité au texte « citoyen » rédigé par l'IA ; repli sur le résumé technique.
-                    const titre = rule.citizen_title?.trim();
-                    const phrase = rule.citizen_summary?.trim() || rule.summary || rule.rule_text;
-                    return (
-                      <div key={rule.id} style={{ padding: "9px 0", borderTop: "1px solid #F3F4F6" }}>
-                        {titre && <div style={{ fontSize: 12.5, fontWeight: 700, color: "#1E1B4B", marginBottom: 2 }}>{titre}</div>}
-                        <div style={{ fontSize: 13, color: "#111827", lineHeight: 1.55 }}>{phrase}</div>
-                        {v && <div style={{ fontSize: 12.5, color: "#4F46E5", fontWeight: 700, marginTop: 3 }}>{v} {rule.unit ?? ""}</div>}
-                        {rule.exceptions && (
-                          // Le détail des dérogations est replié : il alourdit la lecture
-                          // pour un citoyen, qui peut le déployer s'il en a besoin.
-                          <details style={{ marginTop: 4 }}>
-                            <summary style={{ fontSize: 11.5, color: "#B45309", cursor: "pointer", fontWeight: 600, listStyle: "none" }}>
-                              Des exceptions existent ›
-                            </summary>
-                            <div style={{ fontSize: 11.5, color: "#92400E", marginTop: 3, lineHeight: 1.5 }}>{rule.exceptions}</div>
-                          </details>
-                        )}
+                {/* Que puis-je construire ici ? — panneau de synthèse citoyenne */}
+                {(() => {
+                  // La synthèse citoyenne (règles PLU + risques + servitudes, déjà
+                  // filtrée et mise « en clair » côté serveur) est la matière du panneau.
+                  // On n'affiche le bouton que s'il y a au moins un point citoyen à montrer.
+                  const citizenThemes = analysis.synthesis?.themes.filter(t => t.citizen.points.length > 0) ?? [];
+                  if (citizenThemes.length === 0) {
+                    return analysis.rules.length === 0 ? (
+                      <div style={{ border: "1px dashed #E5E7EB", borderRadius: 10, padding: "16px", textAlign: "center", color: "#9CA3AF", fontSize: 12 }}>
+                        Aucune règle enregistrée dans la base HEUREKIA pour cette zone.
                       </div>
-                    );
-                  };
-                  const rubs = RUBRIQUES.map(rub => ({ ...rub, rules: applies.filter(r => topicRub(r.topic) === rub.key) })).filter(rub => rub.rules.length > 0);
+                    ) : null;
+                  }
+                  const pointCount = citizenThemes.reduce((n, t) => n + t.citizen.points.length, 0);
                   return (
                     <>
                       <button onClick={() => setRulesOpen(true)}
@@ -787,54 +749,30 @@ export function AnalyseParcellaire() {
                         <span style={{ fontSize: 28, flexShrink: 0 }}>📖</span>
                         <span style={{ flex: 1, minWidth: 0 }}>
                           <span style={{ display: "block", fontSize: 15, fontWeight: 800, color: "#1E1B4B" }}>Que puis-je construire ici ?</span>
-                          <span style={{ display: "block", fontSize: 12.5, color: "#4F46E5", marginTop: 2 }}>Voir les {applies.length} règle{applies.length > 1 ? "s" : ""} d'urbanisme, en clair</span>
+                          <span style={{ display: "block", fontSize: 12.5, color: "#4F46E5", marginTop: 2 }}>Voir les {pointCount} règle{pointCount > 1 ? "s" : ""} d'urbanisme, en clair</span>
                         </span>
                         <span style={{ fontSize: 13, fontWeight: 700, color: "white", background: "#4F46E5", borderRadius: 999, padding: "8px 16px", flexShrink: 0 }}>Voir →</span>
                       </button>
 
-                      {rulesOpen && (
+                      {rulesOpen && analysis.synthesis && (
                         <div onClick={() => setRulesOpen(false)} style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.35)", display: "flex", alignItems: "stretch", justifyContent: "flex-start", padding: 0, zIndex: 1100 }}>
                           <div onClick={e => e.stopPropagation()} style={{ background: "white", width: "min(460px, 92vw)", height: "100vh", overflow: "auto", boxShadow: "8px 0 40px rgba(0,0,0,0.25)" }}>
                             <div style={{ padding: "16px 18px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: "white", zIndex: 1 }}>
                               <div>
-                                <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>Règles d'urbanisme</div>
+                                <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>Que puis-je construire ici ?</div>
                                 <div style={{ fontSize: 12, color: "#6B7280" }}>{analysis.plu_zone?.zone_label ?? analysis.parcel?.commune ?? "Votre parcelle"}</div>
                               </div>
                               <button onClick={() => setRulesOpen(false)} style={{ border: "none", background: "#F1F5F9", borderRadius: 10, width: 34, height: 34, cursor: "pointer", fontSize: 16 }}>✕</button>
                             </div>
-                            <div style={{ padding: "4px 14px 18px" }}>
-                              <p style={{ fontSize: 12, color: "#9CA3AF", padding: "8px 4px 2px", margin: 0 }}>Touchez une rubrique pour voir les règles.</p>
-                              {rubs.map(rub => (
-                                <details key={rub.key} style={{ borderTop: "1px solid #F3F4F6" }}>
-                                  <summary style={{ padding: "14px 4px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, listStyle: "none" }}>
-                                    <span style={{ fontSize: 24 }}>{rub.icon}</span>
-                                    <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: "#111827" }}>{rub.label}</span>
-                                    <span style={{ fontSize: 12, color: "#9CA3AF" }}>{rub.rules.length} ›</span>
-                                  </summary>
-                                  <div style={{ padding: "0 4px 12px 48px" }}>{rub.rules.map(ruleLine)}</div>
-                                </details>
-                              ))}
-                              {cond.length > 0 && (
-                                <details style={{ borderTop: "1px solid #F3F4F6" }}>
-                                  <summary style={{ padding: "14px 4px", cursor: "pointer", display: "flex", alignItems: "center", gap: 12, listStyle: "none" }}>
-                                    <span style={{ fontSize: 24 }}>📌</span>
-                                    <span style={{ flex: 1, fontSize: 14, fontWeight: 600, color: "#92400E" }}>Selon votre projet</span>
-                                    <span style={{ fontSize: 12, color: "#9CA3AF" }}>{cond.length} ›</span>
-                                  </summary>
-                                  <div style={{ padding: "0 4px 12px 48px" }}>{cond.map(ruleLine)}</div>
-                                </details>
-                              )}
+                            <div style={{ padding: "14px" }}>
+                              <ParcelSynthese audience="citizen" synthesis={analysis.synthesis} />
                             </div>
                           </div>
                         </div>
                       )}
                     </>
                   );
-                })() : analysis && !loading && (
-                  <div style={{ border: "1px dashed #E5E7EB", borderRadius: 10, padding: "16px", textAlign: "center", color: "#9CA3AF", fontSize: 12 }}>
-                    Aucune règle enregistrée dans la base HEUREKIA pour cette zone.
-                  </div>
-                )}
+                })()}
 
                 {/* CTA */}
                 <button

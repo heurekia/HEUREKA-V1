@@ -165,8 +165,82 @@ function ruleLabel(r: RegDbRule): string {
   return r.citizen_title?.trim() || r.sub_theme?.trim() || TOPIC_LABEL[r.topic] || "Règle";
 }
 
+// ── Précision des hauteurs et des reculs ────────────────────────────────────────
+// Une hauteur « 6,5 m » ou un recul « 0 m » n'ont de sens qu'avec leur référentiel :
+// à quel point la hauteur se mesure-t-elle (égout / faîtage / acrotère…) ? de quelle
+// limite parle-t-on, peut-on bâtir en limite ? On lève cette ambiguïté pour le citoyen
+// à partir des champs disponibles (sous-thème, conditions, cas chiffrés, texte fidèle).
+const HEIGHT_REF_PATTERNS: Array<[RegExp, string]> = [
+  [/fa[iî]tage/i, "au faîtage"],
+  [/acrot[èe]re/i, "à l'acrotère"],
+  [/sabli[èe]re/i, "à la sablière"],
+  [/[ée]gout/i, "à l'égout"],
+];
+
+// requireUnique : pour qualifier UNE valeur unique, on n'attache un référentiel que
+// s'il est sans ambiguïté. Un texte fidèle citant à la fois « égout » ET « faîtage »
+// ne dit pas auquel des deux se rapporte la valeur — mieux vaut alors rester neutre.
+function heightRefIn(text: string | null | undefined, requireUnique = false): string | null {
+  if (!text) return null;
+  const hits = HEIGHT_REF_PATTERNS.filter(([re]) => re.test(text));
+  if (hits.length === 0 || (requireUnique && hits.length > 1)) return null;
+  return hits[0]![1];
+}
+
+/**
+ * Cas chiffrés d'une hauteur portant chacun un référentiel distinct (ex:
+ * 6,5 m à l'égout / 9 m au faîtage, stockés dans `cases`). Renvoie null s'il n'y
+ * a pas au moins deux valeurs dont une au moins est rattachée à un référentiel
+ * reconnu — sinon on ne saurait pas lever l'ambiguïté et on reste sur la valeur nue.
+ */
+function heightCases(r: RegDbRule): Array<{ ref: string | null; value: number; unit: string }> | null {
+  const mapped = (r.cases ?? [])
+    .filter((c) => c.value != null)
+    .map((c) => ({ ref: heightRefIn(c.condition), value: c.value as number, unit: c.unit ?? r.unit ?? "m" }));
+  if (mapped.length < 2) return null;
+  return mapped.some((m) => m.ref) ? mapped : null;
+}
+
+const SETBACK_PATTERNS: Array<[RegExp, string]> = [
+  [/lat[ée]ral/i, "limites latérales"],
+  [/fond (de |du )?(parcelle|terrain)|limite de fond/i, "fond de parcelle"],
+  [/(en|sur) limite|mitoyen|jointif|contig|adoss/i, "en limite séparative"],
+];
+
+/** Qualifieur citoyen d'un recul : quelle limite ? implantation possible en limite ? */
+function setbackQualifier(r: RegDbRule): string | null {
+  const text = `${r.sub_theme ?? ""} ${r.conditions ?? ""} ${r.citizen_title ?? ""}`;
+  for (const [re, label] of SETBACK_PATTERNS) if (re.test(text)) return label;
+  // Un recul affiché de 0 m signifie qu'on peut bâtir en limite : on l'explicite.
+  const shown = r.value_exact ?? r.value_max ?? r.value_min;
+  if (r.topic === "recul_limite" && shown === 0) return "implantation en limite possible";
+  return null;
+}
+
 /** Puce citoyen : libellé + chiffre, ou phrase rédigée si qualitatif. */
 function citizenPoint(r: RegDbRule): string {
+  // Hauteur : lever l'ambiguïté du référentiel de mesure (égout / faîtage / acrotère).
+  if (r.topic === "hauteur") {
+    const hLabel = TOPIC_LABEL.hauteur ?? "Hauteur maximale";
+    const cases = heightCases(r);
+    if (cases) {
+      const parts = cases.map((c) => `${fmtNum(c.value)} ${c.unit}${c.ref ? ` ${c.ref}` : ""}`);
+      return `${hLabel} : ${parts.join(" · ")}`;
+    }
+    const v = citizenValue(r);
+    if (v) {
+      const ref = heightRefIn(r.sub_theme) ?? heightRefIn(r.conditions, true) ?? heightRefIn(r.rule_text, true);
+      return `${hLabel}${ref ? ` ${ref}` : ""} : ${v}`;
+    }
+  }
+  // Reculs : préciser la limite concernée (ou l'implantation en limite) si possible.
+  if (r.topic === "recul_limite" || r.topic === "recul_voie") {
+    const v = citizenValue(r);
+    if (v) {
+      const q = setbackQualifier(r);
+      return `${TOPIC_LABEL[r.topic] ?? ruleLabel(r)}${q ? ` (${q})` : ""} : ${v}`;
+    }
+  }
   const v = citizenValue(r);
   if (v && !QUALITATIVE_TOPICS.has(r.topic)) {
     return `${TOPIC_LABEL[r.topic] ?? ruleLabel(r)} : ${v}`;

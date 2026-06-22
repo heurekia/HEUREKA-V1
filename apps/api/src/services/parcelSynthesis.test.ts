@@ -80,6 +80,76 @@ describe("buildParcelSynthesis — regroupement par thème", () => {
   });
 });
 
+describe("buildParcelSynthesis — précision des hauteurs et des reculs", () => {
+  it("développe les cas chiffrés d'une hauteur (égout / faîtage) en un seul point", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({
+        topic: "hauteur", article_number: 10, unit: "m",
+        cases: [
+          { condition: "à l'égout", value: 6.5, unit: "m", kind: "parametre" },
+          { condition: "au faîtage", value: 9, unit: "m", kind: "parametre" },
+        ],
+      })],
+    }));
+    const p = r.themes.find((t) => t.key === "construire")!.citizen.points;
+    expect(p[0]).toBe("Hauteur maximale : 6,5 m à l'égout · 9 m au faîtage");
+  });
+
+  it("qualifie une hauteur unique à partir du référentiel cité dans le texte (acrotère)", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({
+        topic: "hauteur", article_number: 10, value_max: 7, unit: "m",
+        rule_text: "La hauteur maximale est fixée à 7 m mesurés à l'acrotère.",
+      })],
+    }));
+    expect(r.themes.find((t) => t.key === "construire")!.citizen.points[0]).toBe("Hauteur maximale à l'acrotère : 7 m");
+  });
+
+  it("préfère le sous-thème au texte pour qualifier la hauteur (faîtage)", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({ topic: "hauteur", article_number: 10, value_max: 12, unit: "m", sub_theme: "Hauteur au faîtage" })],
+    }));
+    expect(r.themes.find((t) => t.key === "construire")!.citizen.points[0]).toBe("Hauteur maximale au faîtage : 12 m");
+  });
+
+  it("laisse la hauteur nue quand aucun référentiel n'est disponible", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({ topic: "hauteur", article_number: 10, value_max: 9, unit: "m" })],
+    }));
+    expect(r.themes.find((t) => t.key === "construire")!.citizen.points[0]).toBe("Hauteur maximale : 9 m");
+  });
+
+  it("reste neutre si le texte d'une hauteur unique cite plusieurs référentiels (ambigu)", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({
+        topic: "hauteur", article_number: 10, value_max: 6.5, unit: "m",
+        rule_text: "Hauteur maximale : 6,5 m à l'égout, 9 m au faîtage.",
+      })],
+    }));
+    // Une seule valeur (6,5 m) mais deux référentiels cités → on n'invente pas
+    // l'association, on laisse la valeur nue plutôt que de risquer un faux libellé.
+    expect(r.themes.find((t) => t.key === "construire")!.citizen.points[0]).toBe("Hauteur maximale : 6,5 m");
+  });
+
+  it("explicite qu'un recul de 0 m autorise l'implantation en limite", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({ topic: "recul_limite", article_number: 7, value_exact: 0, unit: "m" })],
+    }));
+    expect(r.themes.find((t) => t.key === "implanter")!.citizen.points[0]).toBe(
+      "Recul par rapport aux limites (implantation en limite possible) : 0 m",
+    );
+  });
+
+  it("précise la limite concernée par un recul à partir des conditions", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({ topic: "recul_limite", article_number: 7, value_min: 3, unit: "m", conditions: "en limite séparative latérale" })],
+    }));
+    expect(r.themes.find((t) => t.key === "implanter")!.citizen.points[0]).toBe(
+      "Recul par rapport aux limites (limites latérales) : 3 m",
+    );
+  });
+});
+
 describe("buildParcelSynthesis — filtrage de la vue citoyen", () => {
   it("masque les règles citizen_relevant=false côté citoyen mais les garde côté instructeur", () => {
     const r = buildParcelSynthesis(synth({
