@@ -4,7 +4,7 @@ import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/Ma
 import { api, ApiError } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
-import { RegulatoryChecklist } from "../../components/RegulatoryChecklist";
+import { RegulatoryChecklist, type RegulatoryChecklistHandle } from "../../components/RegulatoryChecklist";
 import { PieceRegulatoryLinks } from "../../components/PieceRegulatoryLinks";
 import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
 import { ResizableSplit } from "../../components/ResizableSplit";
@@ -7585,6 +7585,15 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [conformiteFinale, setConformiteFinale] = useState<ConformiteFinale | null>(null);
   const [conformiteFinaleLaunching, setConformiteFinaleLaunching] = useState(false);
   const [finaleBlockers, setFinaleBlockers] = useState<{ reason: string; blockers: FinaleBlockers } | null>(null);
+  // Erreur de l'analyse de travail, affichée inline dans le bloc d'action
+  // (remplace l'ancien alert() pour rester cohérent avec le reste du panneau).
+  const [conformiteError, setConformiteError] = useState<string | null>(null);
+  // Pilotage du moteur réglementaire (constats) depuis le bloc d'action unifié :
+  // la relance « de travail » déclenche en une fois la conformité interim ET
+  // les constats réglementaires. Le composant remonte son état via onStatusChange.
+  const regulatoryRef = useRef<RegulatoryChecklistHandle>(null);
+  const [regulatoryStatus, setRegulatoryStatus] = useState<{ running: boolean; hasData: boolean; lastRunAt: string | null }>({ running: false, hasData: false, lastRunAt: null });
+  const onRegulatoryStatus = useCallback((s: { running: boolean; hasData: boolean; lastRunAt: string | null }) => setRegulatoryStatus(s), []);
 
   useEffect(() => {
     if (activeTab !== "Instruction" || conformite !== null) return;
@@ -7603,17 +7612,34 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
   const launchConformite = useCallback(async () => {
     setConformiteLaunching(true);
+    setConformiteError(null);
     try {
-      await api.post(`/mairie/dossiers/${dossier.id}/conformite/analyse`, { async: false }, { timeoutMs: 240_000 });
+      // Synchrone (sync: true) : on attend le résultat puis on rafraîchit, afin
+      // que la relance combinée affiche directement la synthèse à jour (sinon le
+      // mode tâche de fond renverrait un statut "pending" et l'instructeur
+      // devrait recharger l'onglet pour voir le résultat).
+      await api.post(`/mairie/dossiers/${dossier.id}/conformite/analyse`, { sync: true }, { timeoutMs: 240_000 });
       const fresh = await api.get<{ status: string; report: ConformiteReport | null; analyzed_at: string | null }>(`/mairie/dossiers/${dossier.id}/conformite`);
       setConformite(fresh);
     } catch (e) {
-      const msg = e instanceof Error ? e.message : "Échec du lancement";
-      alert(msg);
+      // On n'émet pas d'exception : la relance combinée doit laisser l'autre
+      // moteur (réglementaire) aller au bout. L'erreur est rendue inline.
+      setConformiteError(e instanceof Error ? e.message : "Échec de l'analyse de conformité");
     } finally {
       setConformiteLaunching(false);
     }
   }, [dossier.id]);
+
+  // Relance « de travail » : déclenche en une seule action les deux moteurs
+  // recalculables pendant l'instruction (conformité interim + constats
+  // réglementaires), en parallèle. La finale reste une action distincte.
+  const relaunchWorkingAnalysis = useCallback(async () => {
+    setConformiteError(null);
+    await Promise.all([
+      launchConformite(),
+      regulatoryRef.current?.run() ?? Promise.resolve(),
+    ]);
+  }, [launchConformite]);
 
   const launchConformiteFinale = useCallback(async () => {
     setConformiteFinaleLaunching(true);
@@ -9035,93 +9061,149 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         })()}
 
         {/* ── CONFORMITÉ IA ── */}
-        {activeTab === "Instruction" && (
+        {activeTab === "Instruction" && (() => {
+          // Bloc d'action unifié : 2 actions hiérarchisées au lieu de 3 boutons
+          // concurrents. (1) « Relancer l'analyse » relance en une fois les deux
+          // moteurs recalculables pendant l'instruction (conformité interim +
+          // constats réglementaires). (2) « Analyse finale » reste détachée car
+          // elle n'opère que sur les pièces validées et engage juridiquement
+          // l'arrêté. Les blocs de résultats en dessous ne portent plus de bouton.
+          const workingLoading = conformiteLaunching || regulatoryStatus.running;
+          const hasWorkingData = !!conformite?.report || regulatoryStatus.hasData;
+          const workingTimes = [conformite?.analyzed_at, regulatoryStatus.lastRunAt]
+            .filter((d): d is string => !!d)
+            .map((d) => new Date(d).getTime())
+            .filter((t) => !Number.isNaN(t));
+          const lastWorkingRun = workingTimes.length ? new Date(Math.max(...workingTimes)) : null;
+          return (
           <>
-            {/* Bloc Analyse finale avant arrêté (3.C.5c) — affiché en tête
-                de l'onglet pour que l'instructeur sache à tout moment où il
-                en est sur cette étape juridique. */}
-            <div style={{ marginBottom: 16, padding: 16, borderRadius: 12, border: "1.5px solid #C7D2FE", background: "linear-gradient(135deg, #F5F3FF 0%, #EFF6FF 100%)" }}>
-              <div style={{ display: "flex", alignItems: "flex-start", gap: 12, flexWrap: "wrap" as const }}>
-                <div style={{ flex: 1, minWidth: 240 }}>
-                  <div style={{ fontSize: 12, fontWeight: 800, color: "#4F46E5", letterSpacing: "0.05em", textTransform: "uppercase" as const, marginBottom: 4 }}>
-                    🛡 Analyse finale avant arrêté
+            <div style={{ ...CARD, padding: 0, overflow: "hidden" as const, marginBottom: 16 }}>
+              {/* Tier 1 — analyse de travail : relance unique des deux moteurs */}
+              <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, padding: "18px 20px", flexWrap: "wrap" as const }}>
+                <div style={{ flex: 1, minWidth: 260 }}>
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 3 }}>Analyse de conformité</div>
+                  <div style={{ fontSize: 12.5, color: "#475569", lineHeight: 1.5, maxWidth: 680 }}>
+                    Croise les pièces du dossier avec les <strong>règles PLU</strong> de la zone{liveCommune ? ` (${liveCommune})` : ""} et les <strong>documents commune</strong> (OAP, PPRI…). Produit les constats à valider et la synthèse réglementaire.
                   </div>
-                  {conformiteFinale?.status === "done" && conformiteFinale.analyzed_at ? (
-                    <div style={{ fontSize: 12.5, color: "#312E81", lineHeight: 1.5 }}>
-                      Effectuée le <strong>{new Date(conformiteFinale.analyzed_at).toLocaleString("fr-FR")}</strong>.
-                      Cette analyse ne prend en compte que les pièces explicitement <strong>validées</strong> par l'instructeur, et sert d'ancrage juridique à la décision.
-                    </div>
-                  ) : conformiteFinale?.status === "failed" ? (
-                    <div style={{ fontSize: 12.5, color: "#DC2626", lineHeight: 1.5 }}>
-                      Une tentative précédente a échoué. Relance possible une fois les pièces examinées.
-                    </div>
-                  ) : (
-                    <div style={{ fontSize: 12.5, color: "#312E81", lineHeight: 1.5 }}>
-                      À déclencher juste avant la délivrance de l'arrêté.
-                      L'analyse ne prendra en compte <strong>que les pièces validées</strong> (les pièces sans statut ou en complément demandé bloquent le lancement).
+                  {lastWorkingRun && (
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
+                      Dernière analyse : {lastWorkingRun.toLocaleString("fr-FR")}
                     </div>
                   )}
                 </div>
                 <button
-                  onClick={() => void launchConformiteFinale()}
-                  disabled={conformiteFinaleLaunching}
+                  onClick={() => void relaunchWorkingAnalysis()}
+                  disabled={workingLoading}
                   style={{
-                    background: conformiteFinaleLaunching ? "#C7D2FE" : "#4F46E5",
-                    color: "white",
-                    border: "none",
+                    background: "white",
+                    border: "1px solid #C7D2FE",
+                    color: "#4F46E5",
                     borderRadius: 9,
                     padding: "9px 16px",
                     fontSize: 12.5,
                     fontWeight: 700,
-                    cursor: conformiteFinaleLaunching ? "default" : "pointer",
-                    boxShadow: "0 2px 6px rgba(79,70,229,0.25)",
+                    cursor: workingLoading ? "default" : "pointer",
                     whiteSpace: "nowrap" as const,
+                    opacity: workingLoading ? 0.6 : 1,
                   }}
                 >
-                  {conformiteFinaleLaunching
-                    ? "Analyse en cours…"
-                    : conformiteFinale?.status === "done"
-                      ? "↻ Relancer l'analyse finale"
-                      : "Lancer l'analyse finale"}
+                  {workingLoading ? "Analyse en cours…" : hasWorkingData ? "↻ Relancer l'analyse" : "Lancer l'analyse"}
                 </button>
               </div>
-              {finaleBlockers && (
-                <div style={{ marginTop: 12, padding: 12, borderRadius: 9, background: "#FEF2F2", border: "1px solid #FECACA" }}>
-                  <div style={{ fontSize: 12, fontWeight: 700, color: "#991B1B", marginBottom: 6 }}>
-                    ⚠ {finaleBlockers.reason}
-                  </div>
-                  {finaleBlockers.blockers.pieces_sans_statut.length > 0 && (
-                    <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 4 }}>
-                      <strong>{finaleBlockers.blockers.pieces_sans_statut.length} pièce(s) à examiner :</strong>{" "}
-                      {finaleBlockers.blockers.pieces_sans_statut.slice(0, 5).map((p) => p.code_piece || p.nom).join(", ")}
-                      {finaleBlockers.blockers.pieces_sans_statut.length > 5 && ` (+${finaleBlockers.blockers.pieces_sans_statut.length - 5} autres)`}
-                    </div>
-                  )}
-                  {finaleBlockers.blockers.pieces_complement_en_attente.length > 0 && (
-                    <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 4 }}>
-                      <strong>{finaleBlockers.blockers.pieces_complement_en_attente.length} complément(s) en attente :</strong>{" "}
-                      {finaleBlockers.blockers.pieces_complement_en_attente.slice(0, 5).map((p) => p.code_piece || p.nom).join(", ")}
-                    </div>
-                  )}
-                  {finaleBlockers.blockers.aucune_piece_validee && (
-                    <div style={{ fontSize: 12, color: "#7F1D1D" }}>
-                      Aucune pièce n'a encore été validée. Au moins une validation explicite est requise.
-                    </div>
-                  )}
-                  <div style={{ fontSize: 11, color: "#991B1B", marginTop: 6, fontStyle: "italic" as const }}>
-                    Statue les pièces concernées dans l'onglet Documents, puis relance.
-                  </div>
+              {conformiteError && (
+                <div style={{ margin: "0 20px 14px", padding: "8px 12px", borderRadius: 8, background: "#FEF2F2", border: "1px solid #FECACA", fontSize: 12, color: "#991B1B" }}>
+                  {conformiteError}
                 </div>
               )}
+
+              {/* Séparateur entre l'action de travail et l'action finale */}
+              <div style={{ height: 1, background: "#EEF2F7" }} />
+
+              {/* Tier 2 — analyse finale avant arrêté (3.C.5c) : action terminale,
+                  volontairement détachée car elle engage juridiquement l'arrêté. */}
+              <div style={{ padding: "18px 20px", background: "linear-gradient(135deg, #F8F7FF 0%, #F3F7FF 100%)" }}>
+                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, flexWrap: "wrap" as const }}>
+                  <div style={{ flex: 1, minWidth: 260 }}>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "#4F46E5", letterSpacing: "0.05em", textTransform: "uppercase" as const, marginBottom: 4 }}>
+                      🛡 Analyse finale avant arrêté
+                    </div>
+                    {conformiteFinale?.status === "done" && conformiteFinale.analyzed_at ? (
+                      <div style={{ fontSize: 12.5, color: "#312E81", lineHeight: 1.5 }}>
+                        Effectuée le <strong>{new Date(conformiteFinale.analyzed_at).toLocaleString("fr-FR")}</strong>.
+                        Ne prend en compte que les pièces explicitement <strong>validées</strong> par l'instructeur, et sert d'ancrage juridique à la décision.
+                      </div>
+                    ) : conformiteFinale?.status === "failed" ? (
+                      <div style={{ fontSize: 12.5, color: "#DC2626", lineHeight: 1.5 }}>
+                        Une tentative précédente a échoué. Relance possible une fois les pièces examinées.
+                      </div>
+                    ) : (
+                      <div style={{ fontSize: 12.5, color: "#312E81", lineHeight: 1.5 }}>
+                        À déclencher juste avant la délivrance de l'arrêté.
+                        Ne prendra en compte <strong>que les pièces validées</strong> (les pièces sans statut ou en complément demandé bloquent le lancement).
+                      </div>
+                    )}
+                  </div>
+                  <button
+                    onClick={() => void launchConformiteFinale()}
+                    disabled={conformiteFinaleLaunching}
+                    style={{
+                      background: conformiteFinaleLaunching ? "#C7D2FE" : "#4F46E5",
+                      color: "white",
+                      border: "none",
+                      borderRadius: 9,
+                      padding: "10px 18px",
+                      fontSize: 13,
+                      fontWeight: 700,
+                      cursor: conformiteFinaleLaunching ? "default" : "pointer",
+                      boxShadow: "0 2px 6px rgba(79,70,229,0.25)",
+                      whiteSpace: "nowrap" as const,
+                    }}
+                  >
+                    {conformiteFinaleLaunching
+                      ? "Analyse en cours…"
+                      : conformiteFinale?.status === "done"
+                        ? "↻ Relancer l'analyse finale"
+                        : "Lancer l'analyse finale"}
+                  </button>
+                </div>
+                {finaleBlockers && (
+                  <div style={{ marginTop: 12, padding: 12, borderRadius: 9, background: "#FEF2F2", border: "1px solid #FECACA" }}>
+                    <div style={{ fontSize: 12, fontWeight: 700, color: "#991B1B", marginBottom: 6 }}>
+                      ⚠ {finaleBlockers.reason}
+                    </div>
+                    {finaleBlockers.blockers.pieces_sans_statut.length > 0 && (
+                      <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 4 }}>
+                        <strong>{finaleBlockers.blockers.pieces_sans_statut.length} pièce(s) à examiner :</strong>{" "}
+                        {finaleBlockers.blockers.pieces_sans_statut.slice(0, 5).map((p) => p.code_piece || p.nom).join(", ")}
+                        {finaleBlockers.blockers.pieces_sans_statut.length > 5 && ` (+${finaleBlockers.blockers.pieces_sans_statut.length - 5} autres)`}
+                      </div>
+                    )}
+                    {finaleBlockers.blockers.pieces_complement_en_attente.length > 0 && (
+                      <div style={{ fontSize: 12, color: "#7F1D1D", marginBottom: 4 }}>
+                        <strong>{finaleBlockers.blockers.pieces_complement_en_attente.length} complément(s) en attente :</strong>{" "}
+                        {finaleBlockers.blockers.pieces_complement_en_attente.slice(0, 5).map((p) => p.code_piece || p.nom).join(", ")}
+                      </div>
+                    )}
+                    {finaleBlockers.blockers.aucune_piece_validee && (
+                      <div style={{ fontSize: 12, color: "#7F1D1D" }}>
+                        Aucune pièce n'a encore été validée. Au moins une validation explicite est requise.
+                      </div>
+                    )}
+                    <div style={{ fontSize: 11, color: "#991B1B", marginTop: 6, fontStyle: "italic" as const }}>
+                      Statue les pièces concernées dans l'onglet Documents, puis relance.
+                    </div>
+                  </div>
+                )}
+              </div>
             </div>
             <div style={{ marginBottom: 20 }}>
-              <RegulatoryChecklist dossierId={dossier.id} onJumpToCitation={jumpFromCitation} onOpenPiece={openPieceById} />
+              <RegulatoryChecklist ref={regulatoryRef} dossierId={dossier.id} onJumpToCitation={jumpFromCitation} onOpenPiece={openPieceById} hideHeaderButton onStatusChange={onRegulatoryStatus} />
             </div>
           </>
-        )}
+          );
+        })()}
         {activeTab === "Instruction" && (() => {
           const report = conformite?.report ?? null;
-          const status = conformite?.status ?? "absent";
           const verdicts = report?.rule_verdicts?.verdicts ?? [];
           const counts = report?.rule_verdicts?.counts ?? null;
           const verdictMeta: Record<string, { label: string; color: string; bg: string; border: string; icon: string }> = {
@@ -9131,35 +9213,16 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             applicable_conditionnel: { label: "Selon projet", color: "#92400E", bg: "#FEF3C7", border: "#FDE68A", icon: "📌" },
             non_applicable: { label: "Non applicable", color: "#64748B", bg: "#F1F5F9", border: "#E2E8F0", icon: "—" },
           };
-          const launchButton = (
-            <button
-              onClick={() => void launchConformite()}
-              disabled={conformiteLaunching || status === "running"}
-              style={{
-                padding: "9px 18px",
-                background: conformiteLaunching || status === "running" ? "#C7D2FE" : "linear-gradient(135deg,#4F46E5,#6366F1)",
-                color: "white", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 600,
-                cursor: conformiteLaunching || status === "running" ? "default" : "pointer",
-                boxShadow: "0 2px 6px rgba(79,70,229,0.3)",
-              }}>
-              {conformiteLaunching ? "Analyse en cours…" : report ? "Relancer l'analyse" : "Lancer l'analyse"}
-            </button>
-          );
 
           if (!report) {
             return (
               <div style={CARD}>
-                <div style={{ textAlign: "center" as const, padding: "32px 20px", color: "#64748b" }}>
-                  <div style={{ fontSize: 44, marginBottom: 12 }}>🔍</div>
-                  <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>
-                    Analyse détaillée non encore lancée
-                  </div>
-                  <p style={{ fontSize: 13, maxWidth: 520, margin: "0 auto 16px", lineHeight: 1.55 }}>
-                    L'analyse croise les <strong>extractions des pièces déposées</strong> avec les <strong>règles PLU</strong> de la zone
-                    {liveCommune ? ` (${liveCommune})` : ""} et les <strong>synthèses des documents commune</strong> (OAP, PPRI…).
-                    Elle peut prendre 1 à 3 minutes selon le nombre de pièces.
-                  </p>
-                  {launchButton}
+                <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase" as const, marginBottom: 6 }}>
+                  Résultat · synthèse & verdicts règle par règle
+                </div>
+                <div style={{ fontSize: 13, color: "#64748b", lineHeight: 1.55 }}>
+                  La synthèse de conformité et les verdicts règle par règle s'afficheront ici après le lancement.
+                  Utilisez <strong>« Lancer l'analyse »</strong> en haut de l'onglet — le croisement pièces × règles PLU{liveCommune ? ` (${liveCommune})` : ""} × documents commune (OAP, PPRI…) prend 1 à 3 minutes selon le nombre de pièces.
                 </div>
               </div>
             );
@@ -9167,19 +9230,19 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
           return (
             <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
-              {/* Header — synthèse + bouton */}
+              {/* Header — synthèse (résultat ; la relance est pilotée par le bloc d'action en tête d'onglet) */}
               <div style={CARD}>
-                <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 14, marginBottom: 12 }}>
-                  <div>
-                    <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Synthèse</div>
-                    <div style={{ fontSize: 12.5, color: "#374151", lineHeight: 1.55, maxWidth: 760 }}>{report.synthese}</div>
-                    {report.analyzed_at && (
-                      <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
-                        Analyse du {new Date(report.analyzed_at).toLocaleString("fr-FR")}
-                      </div>
-                    )}
+                <div style={{ marginBottom: 12 }}>
+                  <div style={{ fontSize: 11, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase" as const, marginBottom: 6 }}>
+                    Résultat · synthèse & verdicts règle par règle
                   </div>
-                  {launchButton}
+                  <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Synthèse</div>
+                  <div style={{ fontSize: 12.5, color: "#374151", lineHeight: 1.55, maxWidth: 760 }}>{report.synthese}</div>
+                  {report.analyzed_at && (
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>
+                      Analyse du {new Date(report.analyzed_at).toLocaleString("fr-FR")}
+                    </div>
+                  )}
                 </div>
                 {counts && (
                   <div style={{ display: "flex", gap: 8, flexWrap: "wrap" as const, marginTop: 8 }}>

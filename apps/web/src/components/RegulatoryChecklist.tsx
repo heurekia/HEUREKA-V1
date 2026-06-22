@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useState } from "react";
 import { api } from "../lib/api";
 
 // ─── Types alignés sur l'API régulatoire ────────────────────────────
@@ -208,9 +208,25 @@ interface Props {
   /** Ouvre la pièce justificative d'un fait (onglet Documents) à partir de son
    *  identifiant. Rend la valeur « Fait utilisé » cliquable. */
   onOpenPiece?: (pieceId: string) => void;
+  /** Masque le bouton de relance interne : utilisé quand le déclenchement est
+   *  piloté depuis un bloc d'action parent (cf. onglet Instruction, qui
+   *  regroupe la relance des moteurs de travail en une seule action). */
+  hideHeaderButton?: boolean;
+  /** Remonte l'état de l'analyse au parent (en cours, présence de résultats,
+   *  date du dernier run) pour qu'il pilote le libellé et l'état du bouton. */
+  onStatusChange?: (s: { running: boolean; hasData: boolean; lastRunAt: string | null }) => void;
 }
 
-export function RegulatoryChecklist({ dossierId, onJumpToCitation, onOpenPiece }: Props) {
+/** Handle impératif exposé au parent pour déclencher l'analyse réglementaire
+ *  sans dupliquer la logique de fetch/POST du composant. */
+export interface RegulatoryChecklistHandle {
+  run: () => Promise<void>;
+}
+
+export const RegulatoryChecklist = forwardRef<RegulatoryChecklistHandle, Props>(function RegulatoryChecklist(
+  { dossierId, onJumpToCitation, onOpenPiece, hideHeaderButton, onStatusChange }: Props,
+  ref,
+) {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [data, setData] = useState<LatestResponse | null>(null);
@@ -246,6 +262,16 @@ export function RegulatoryChecklist({ dossierId, onJumpToCitation, onOpenPiece }
       setRunning(false);
     }
   }, [dossierId, loadLatest]);
+
+  // Permet au parent (onglet Instruction) de déclencher l'analyse via une
+  // action unique partagée avec les autres moteurs de travail.
+  useImperativeHandle(ref, () => ({ run: launchAnalysis }), [launchAnalysis]);
+
+  // Remonte l'état courant : le parent en a besoin pour le libellé du bouton
+  // (« Lancer » vs « Relancer »), l'état chargé et la date du dernier run.
+  useEffect(() => {
+    onStatusChange?.({ running, hasData: data != null, lastRunAt: data?.analysis.created_at ?? null });
+  }, [running, data, onStatusChange]);
 
   const onDecision = useCallback(
     async (finding: RegulatoryFinding, decision: InstructorDecision, comment?: string) => {
@@ -297,6 +323,9 @@ export function RegulatoryChecklist({ dossierId, onJumpToCitation, onOpenPiece }
       <div className="rounded-xl border border-gray-200 bg-white">
         <div className="flex items-center justify-between border-b border-gray-100 px-5 py-3">
           <div>
+            {hideHeaderButton ? (
+              <div className="mb-0.5 text-[11px] font-semibold uppercase tracking-wide text-gray-400">Résultat · constats à valider</div>
+            ) : null}
             <div className="text-base font-semibold text-gray-900">Analyse réglementaire</div>
             {data?.analysis ? (
               <div className="text-xs text-gray-500">
@@ -306,13 +335,15 @@ export function RegulatoryChecklist({ dossierId, onJumpToCitation, onOpenPiece }
               <div className="text-xs text-gray-500">Aucune analyse pour le moment.</div>
             )}
           </div>
-          <button
-            onClick={launchAnalysis}
-            disabled={running}
-            className="rounded-lg border border-indigo-200 bg-white px-4 py-2 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
-          >
-            {running ? "Analyse en cours…" : data ? "↻ Relancer l'analyse" : "Lancer l'analyse"}
-          </button>
+          {!hideHeaderButton ? (
+            <button
+              onClick={launchAnalysis}
+              disabled={running}
+              className="rounded-lg border border-indigo-200 bg-white px-4 py-2 text-xs font-semibold text-indigo-600 hover:bg-indigo-50 disabled:opacity-50"
+            >
+              {running ? "Analyse en cours…" : data ? "↻ Relancer l'analyse" : "Lancer l'analyse"}
+            </button>
+          ) : null}
         </div>
 
         {data?.analysis.summary ? (
@@ -410,7 +441,7 @@ export function RegulatoryChecklist({ dossierId, onJumpToCitation, onOpenPiece }
       ) : null}
     </div>
   );
-}
+});
 
 // ─── Synthèse en pastilles ───────────────────────────────────────────
 function SynthBar({ summary, bySection }: { summary: AnalysisSummary; bySection: Map<Section, RegulatoryFinding[]> }) {
