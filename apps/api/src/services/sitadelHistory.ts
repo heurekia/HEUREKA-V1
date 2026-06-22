@@ -195,33 +195,55 @@ function matchesStreet(p: SitadelPermit, streetNorm: string): boolean {
   return candidates.some((c) => c.includes(streetNorm) || streetNorm.includes(c));
 }
 
+// Taille de page de l'API tabulaire data.gouv. La pagination est séquentielle
+// par source ; on s'arrête dès qu'une page ramène moins de PAGE_SIZE lignes
+// (dernière page) ou que `maxRows` est atteint.
+const PAGE_SIZE = 50;
+
 async function fetchResource(
   rid: string,
   source: SitadelPermit["source"],
   inseeCode: string,
   maxRows: number,
 ): Promise<{ rows: SitadelPermit[]; failed: boolean }> {
-  // L'API tabulaire accepte des filtres `<COL>__exact=<val>` directement
-  // dans la query string. COMM (code INSEE de la commune) est le filtre
-  // serveur le plus efficace ; le reste (matching cadastral) se fait en
-  // mémoire pour éviter des requêtes paginées coûteuses.
-  const params = new URLSearchParams({
-    COMM__exact: inseeCode,
-    page_size: String(Math.min(maxRows, 50)),
-    page: "1",
-  });
-  const url = `${TABULAR_API}/${rid}/data/?${params.toString()}`;
-  try {
-    const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return { rows: [], failed: true };
-    const json = await r.json() as { data?: Array<Record<string, unknown>> };
-    const rows = (json.data ?? [])
-      .map((row) => normalize(row, source))
-      .filter((p): p is SitadelPermit => p !== null);
-    return { rows, failed: false };
-  } catch {
-    return { rows: [], failed: true };
+  // L'API tabulaire accepte des filtres `<COL>__exact=<val>` directement dans
+  // la query string. COMM (code INSEE) est le seul filtre serveur assez
+  // sélectif ; le reste (matching cadastral / rue) se fait en mémoire. Comme
+  // l'API ne trie pas les lignes, un unique appel page=1 plafonné à 50 lignes
+  // masquait silencieusement toute autorisation au-delà (ex. une DP de 2022
+  // « introuvable » alors qu'elle existe). On pagine donc jusqu'à `maxRows`
+  // lignes ramenées (ou épuisement de la commune).
+  const maxPages = Math.max(1, Math.ceil(maxRows / PAGE_SIZE));
+  const rows: SitadelPermit[] = [];
+
+  for (let page = 1; page <= maxPages; page++) {
+    const params = new URLSearchParams({
+      COMM__exact: inseeCode,
+      page_size: String(PAGE_SIZE),
+      page: String(page),
+    });
+    const url = `${TABULAR_API}/${rid}/data/?${params.toString()}`;
+
+    let batch: Array<Record<string, unknown>>;
+    try {
+      const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+      // Échec sur la 1re page = source indisponible. Échec sur une page
+      // suivante = on conserve ce qui a déjà été ramené (best-effort).
+      if (!r.ok) return { rows, failed: page === 1 };
+      const json = (await r.json()) as { data?: Array<Record<string, unknown>> };
+      batch = json.data ?? [];
+    } catch {
+      return { rows, failed: page === 1 };
+    }
+
+    for (const row of batch) {
+      const p = normalize(row, source);
+      if (p) rows.push(p);
+    }
+    if (batch.length < PAGE_SIZE) break; // dernière page atteinte
   }
+
+  return { rows: rows.slice(0, maxRows), failed: false };
 }
 
 // ── API publique ────────────────────────────────────────────────────────────
