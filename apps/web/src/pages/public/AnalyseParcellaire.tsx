@@ -5,6 +5,7 @@ import { MapLeaflet } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 import type { BaseLayer } from "../../components/MapLeaflet";
 import { Seo } from "../../components/Seo";
+import { seismicShortLabel } from "@heureka-v1/shared";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -575,7 +576,7 @@ export function AnalyseParcellaire() {
                       )}
                       {/* Sismique */}
                       <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, fontWeight: 600, background: "#F9FAFB", color: "#374151", borderRadius: 6, padding: "6px 10px" }}>
-                        <span>🌍 Sismique</span><span>Zone {analysis.risks.seismic_zone}</span>
+                        <span>🌍 Sismique</span><span>{seismicShortLabel(analysis.risks.seismic_zone) ?? `Zone ${analysis.risks.seismic_zone}`} (zone {analysis.risks.seismic_zone})</span>
                       </div>
                     </div>
                   </div>

@@ -1,6 +1,7 @@
 // ── Re-exports ──
 export * from "./legalArticlesCatalog.js";
 export * from "./dossierWorkflow.js";
+export * from "./riskTriage.js";
 
 import type { DossierStatus } from "./dossierWorkflow.js";
 
