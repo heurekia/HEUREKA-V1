@@ -7,6 +7,7 @@ import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
 import { runAnalysis } from "@heureka-v1/regulatory-engine";
 import { syncDossierFactsFromPieces } from "../services/dossierFacts.js";
+import { enrichAnalysisCitations } from "../services/citationResolver.js";
 import { EDITABLE_FACT_KEYS, isEditableKey } from "../services/dossierFactsAllowlist.js";
 
 export const regulatoryRouter = Router();
@@ -60,12 +61,27 @@ regulatoryRouter.post(
       const { analysis_id, run } = await runAnalysis(dossierId, {
         triggered_by: req.user!.id,
       });
+
+      // Enrichissement best-effort : pour chaque finding, on tente de retrouver
+      // dans l'index RAG le PASSAGE officiel correspondant au verbatim de la
+      // règle (page réelle + type de document matchable par le viewer), avec
+      // validation verbatim — pas de lien fabriqué. Une panne RAG ne bloque
+      // pas l'analyse : les findings gardent leur verbatim affiché en texte.
+      const citations_enriched = await enrichAnalysisCitations(analysis_id, dossierId, {
+        dossierId,
+        userId: req.user!.id,
+      }).catch((err) => {
+        console.warn("[regulatory] enrichAnalysisCitations a échoué (non bloquant):", err);
+        return 0;
+      });
+
       res.json({
         analysis_id,
         status: "done",
         summary: run.summary,
         findings_count: run.findings.length,
         facts_sync: factsSync,
+        citations_enriched,
       });
     } catch (err) {
       if (err instanceof z.ZodError) {

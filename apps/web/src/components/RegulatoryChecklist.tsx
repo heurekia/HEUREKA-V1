@@ -537,7 +537,7 @@ function FindingCard({
                 const label = s.type === "zone_rule"
                   ? (s.article ?? "Règle PLU")
                   : s.type === "document_segment"
-                    ? `${s.doc_type ?? "Doc"}${s.page != null ? ` p.${s.page}` : ""}`
+                    ? `${(s.doc_type ?? "Doc").toUpperCase()}${s.page != null ? ` p.${s.page}` : ""}`
                     : (s.ref ?? s.type);
                 const clickable = onJumpToCitation && s.type === "document_segment" && !!s.doc_type;
                 return (
