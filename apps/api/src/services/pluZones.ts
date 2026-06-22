@@ -525,6 +525,116 @@ export function findZoneAtPoint(zones: PluZonesGeoJson | null | undefined, lat: 
   return null;
 }
 
+// ── Résolution surfacique : zones d'une parcelle (parcelle ∩ zones) ──────────
+// findZoneAtPoint résout au POINT : il renvoie la PREMIÈRE zone contenant un
+// point (centroïde/adresse), ce qui (a) masque les parcelles à cheval et (b)
+// peut désigner la mauvaise zone quand le point tombe en limite. findZonesForParcel
+// intersecte la GÉOMÉTRIE de la parcelle avec chaque zone et renvoie TOUTES les
+// zones touchées avec leur part d'aire — déterministe, et fidèle à la règle
+// « la plus stricte s'applique par partie ».
+
+// Aire géodésique (m²), formule d'excès sphérique — identique à `turf.area` et à
+// buildingFootprint.polygonAreaM2. Gardée locale : ce module porte déjà ses
+// propres primitives géométriques (cf. pointInRing) pour rester autonome. Seul
+// le RATIO d'aires nous intéresse ici, donc l'approximation sphérique suffit
+// largement à l'échelle parcellaire. Anneaux en [lng, lat] degrés.
+const EARTH_RADIUS_M = 6378137;
+function ringAreaM2(ring: number[][]): number {
+  if (ring.length < 3) return 0;
+  let total = 0;
+  for (let i = 0; i < ring.length; i++) {
+    const p1 = ring[i]!, p2 = ring[(i + 1) % ring.length]!;
+    total += ((p2[0]! - p1[0]!) * Math.PI / 180) *
+      (2 + Math.sin((p1[1]! * Math.PI) / 180) + Math.sin((p2[1]! * Math.PI) / 180));
+  }
+  return Math.abs((total * EARTH_RADIUS_M * EARTH_RADIUS_M) / 2);
+}
+function polygonAreaM2(geom: Polygon | MultiPolygon): number {
+  const polys: number[][][][] = geom.type === "Polygon" ? [geom.coordinates] : geom.coordinates;
+  let area = 0;
+  for (const poly of polys) {
+    if (!poly.length) continue;
+    let a = ringAreaM2(poly[0]!);
+    for (let i = 1; i < poly.length; i++) a -= ringAreaM2(poly[i]!); // soustrait les trous
+    area += Math.max(0, a);
+  }
+  return area;
+}
+
+export type ZoneCoverage = ZoneAtPoint & {
+  /** Part de l'aire de la parcelle couverte par cette zone, en % (0..100). */
+  couverture_pct: number;
+};
+
+export type ParcelZoning = {
+  /** Zones couvrant une part matérielle de la parcelle, triées par couverture décroissante. */
+  zones: ZoneCoverage[];
+  /** Zone de plus grande couverture (null si la parcelle n'intersecte aucune zone). */
+  dominant: ZoneCoverage | null;
+  /** Vrai si ≥ 2 zones couvrent chacune une part matérielle (parcelle à cheval). */
+  a_cheval: boolean;
+};
+
+// En-deçà de ce seuil, une intersection parcelle∩zone est un artefact de
+// numérisation (bords de polygones quasi-confondus), pas un vrai chevauchement.
+// On la retire pour ne pas lever de faux drapeau « à cheval ».
+const COVERAGE_SLIVER_PCT = 1;
+
+/**
+ * Résout TOUTES les zones PLU touchées par une parcelle, avec leur % de
+ * couverture surfacique. Corrige le biais du point unique : détecte les
+ * parcelles à cheval et désigne une zone dominante stable (par aire) au lieu de
+ * la première zone contenant un point. Pur et déterministe ; renvoie un zonage
+ * vide si la géométrie parcellaire manque ou n'est pas surfacique.
+ */
+export function findZonesForParcel(
+  zones: PluZonesGeoJson | null | undefined,
+  parcelGeom: Geometry | null | undefined,
+): ParcelZoning {
+  const empty: ParcelZoning = { zones: [], dominant: null, a_cheval: false };
+  if (!parcelGeom || (parcelGeom.type !== "Polygon" && parcelGeom.type !== "MultiPolygon")) return empty;
+  const parcel = parcelGeom as Polygon | MultiPolygon;
+  const parcelArea = polygonAreaM2(parcel);
+  if (parcelArea <= 0) return empty;
+
+  type Geom = Parameters<typeof polygonClipping.intersection>[0];
+  const parcelClip = parcel.coordinates as unknown as Geom;
+  const parcelBbox = geomBbox(parcel);
+
+  const feats = (zones?.features ?? []) as Array<Feature & { properties?: ZoneFeature["properties"] }>;
+  const covered: ZoneCoverage[] = [];
+  for (const f of feats) {
+    const g = f.geometry;
+    if (!g || (g.type !== "Polygon" && g.type !== "MultiPolygon")) continue;
+    if (!bboxOverlap(geomBbox(g as Polygon | MultiPolygon), parcelBbox)) continue; // rejet rapide
+    let interArea = 0;
+    try {
+      const inter = polygonClipping.intersection(parcelClip, g.coordinates as unknown as Geom);
+      if (inter.length > 0) {
+        interArea = polygonAreaM2({ type: "MultiPolygon", coordinates: inter as unknown as Position[][][] });
+      }
+    } catch {
+      continue; // géométrie pathologique : zone ignorée plutôt que crash
+    }
+    if (interArea <= 0) continue;
+    const pct = Math.min(100, (interArea / parcelArea) * 100);
+    if (pct < COVERAGE_SLIVER_PCT) continue; // artefact de numérisation
+    const p = f.properties ?? {};
+    const code = p.libelle ?? "";
+    covered.push({
+      zone_code: code,
+      zone_label: p.libelong || code,
+      zone_type: (p.typezone ?? "U").charAt(0) || "U",
+      plu_nom: p.nomfic,
+      plu_etat: p.urba_etat,
+      geometry: g,
+      couverture_pct: Math.round(pct * 10) / 10,
+    });
+  }
+  covered.sort((a, b) => b.couverture_pct - a.couverture_pct);
+  return { zones: covered, dominant: covered[0] ?? null, a_cheval: covered.length >= 2 };
+}
+
 // ── Contexte PLU d'une commune (cache-aside, robuste) ────────────────────────
 // Source de vérité unique pour parcelAnalysis : renvoie partition + zones +
 // raison d'indisponibilité, en rafraîchissant uniquement quand nécessaire.

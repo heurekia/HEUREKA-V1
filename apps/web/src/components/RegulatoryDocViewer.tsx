@@ -15,7 +15,7 @@ import { PdfAnnotator } from "./PdfAnnotator";
 
 const DOC_TYPE_LABELS: Record<string, string> = {
   plu: "PLU", ppri: "PPRI", oap: "OAP", peb: "PEB",
-  pprt: "PPRT", plh: "PLH", zac: "ZAC", autre: "Autre",
+  pprt: "PPRT", plh: "PLH", zac: "ZAC", plan_hauteurs: "Plan des hauteurs", autre: "Autre",
 };
 
 interface CommuneDoc {
