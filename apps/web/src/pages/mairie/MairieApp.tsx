@@ -17,6 +17,13 @@ import {
   primaryNextAction as primaryNextActionFor,
   type DossierStatus,
   type NextAction,
+  describeSeismicZone,
+  describeFloodRisk,
+  describeClayRisk,
+  describeRadonLevel,
+  seismicShortLabel,
+  supConsequence,
+  prescriptionConsequence,
 } from "@heureka-v1/shared";
 
 const COMMUNE_INSEE: Record<string, string> = {
@@ -7183,7 +7190,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
     address?: { label: string; lat: number; lng: number; city: string; postcode: string };
     parcel?: { parcelle_id: string; section: string; numero: string; surface_m2: number; commune: string; code_insee: string };
     plu_zone?: { zone_code: string; zone_label: string; zone_type: string; plu_nom?: string };
-    risks?: { flood_risk: string; seismic_zone: string; clay_risk: string };
+    risks?: { flood_risk: string; seismic_zone: string; clay_risk: string; radon_level?: string };
     db_zone?: { id: string; code: string; label: string | null; type: string | null } | null;
     rules: Array<{
       id: string; topic: string; rule_text: string;
@@ -8428,7 +8435,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           // surfaciques), une constructibilité synthétique, et l'historique SITADEL/ADS
           // de la parcelle. Le règlement détaillé et les PDF d'OAP/PPRI sont dans
           // l'onglet Instruction — c'est là que se fait la confrontation pièce ↔ règle.
-          const floodColor = (v: string) => v === "fort" ? { c: "#C2410C", bg: "#FFF7ED" } : v === "moyen" ? { c: "#C2410C", bg: "#FFF7ED" } : v === "faible" ? { c: "#B45309", bg: "#FFFBEB" } : { c: "#15803D", bg: "#F0FDF4" };
           const zoneColor = (t?: string) => t === "N" || t === "A" ? { c: "#15803D", bg: "#F0FDF4" } : { c: "#4F46E5", bg: "#EEF2FF" };
           const pa = parcelAnalysis;
 
@@ -8595,24 +8601,25 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   {/* Risques & servitudes */}
                   <div style={CARD}>
                     <SecTitle>Risques & servitudes</SecTitle>
-                    {/* Synthèse — pastilles « d'un coup d'œil » */}
+                    {/* Synthèse — pastilles « d'un coup d'œil ».
+                        Anti-bruit : seuls les signaux exploitables émettent une
+                        pastille ; les « non déterminé » sont tus (cf. riskTriage). */}
                     {(() => {
-                      const flood = pa?.risks?.flood_risk ?? "inconnu";
-                      const floodPill: Record<string, { label: string; tone: Tone }> = {
-                        fort:    { label: "Inondable — aléa fort", tone: "danger" },
-                        moyen:   { label: "Inondable — aléa moyen", tone: "warn" },
-                        faible:  { label: "Inondable — aléa faible", tone: "warn" },
-                        nul:     { label: "Hors zone inondable", tone: "ok" },
-                        inconnu: { label: "Inondation non déterminée", tone: "neutral" },
-                      };
-                      const fp: { label: string; tone: Tone } = floodPill[flood] ?? { label: "Inondation non déterminée", tone: "neutral" };
+                      const hasPpri = (pa?.servitudes ?? []).some((s) => (s.categorie ?? "").toUpperCase().startsWith("PM"));
+                      const flood = describeFloodRisk(pa?.risks?.flood_risk, hasPpri);
+                      const clay = describeClayRisk(pa?.risks?.clay_risk);
+                      const radon = describeRadonLevel(pa?.risks?.radon_level);
+                      const seismicShort = seismicShortLabel(pa?.risks?.seismic_zone);
                       const supCount = pa?.servitudes?.length ?? 0;
                       const pscCount = pa?.prescriptions?.length ?? 0;
                       return (
                         <div style={{ display: "flex", flexWrap: "wrap" as const, gap: 7, marginBottom: 14 }}>
-                          <Pill icon="🌊" label={fp.label} tone={fp.tone} />
                           {hasABFServitude && <Pill icon="⚜️" label="Périmètre ABF" tone="abf" />}
-                          {pa?.risks?.seismic_zone && <Pill icon="〰️" label={`Sismicité ${pa.risks.seismic_zone}`} tone="neutral" />}
+                          {/* Inondation : pastille seulement si aléa avéré (tiers 1-2). */}
+                          {flood.show && flood.tier <= 2 && <Pill icon="🌊" label={flood.label} tone={flood.tone as Tone} />}
+                          {clay.show && <Pill icon="🟤" label="Argiles" tone={clay.tone as Tone} />}
+                          {radon.show && radon.tier <= 2 && <Pill icon="☢️" label="Radon élevé" tone={radon.tone as Tone} />}
+                          {seismicShort && <Pill icon="🌍" label={seismicShort} tone="neutral" />}
                           {supCount > 0 && <Pill icon="📜" label={`${supCount} servitude${supCount > 1 ? "s" : ""}`} tone="info" />}
                           {pscCount > 0 && <Pill icon="🌳" label={`${pscCount} prescription${pscCount > 1 ? "s" : ""}`} tone="ok" />}
                         </div>
@@ -8639,25 +8646,46 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       </div>
                     )}
                     <div style={{ display: "flex", flexDirection: "column" as const, gap: 8 }}>
-                      {/* Risque inondation */}
+                      {/* Risques naturels — lignes « parlantes » : libellé + conséquence
+                          d'instruction, triées par niveau (opposable → vigilance →
+                          contexte). Les « non déterminé » sont masqués (anti-bruit). */}
                       {(() => {
-                        const flood = pa?.risks?.flood_risk ?? "inconnu";
-                        const col = floodColor(flood);
-                        const labels: Record<string, string> = { fort: "Aléa fort – PPRI", moyen: "Aléa moyen", faible: "Aléa faible", nul: "Hors zone inondable", inconnu: "Non déterminé" };
-                        return (
-                          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: col.bg, borderRadius: 9, border: `1px solid ${col.c}22` }}>
-                            <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>Zone inondable</span>
-                            <span style={{ fontSize: 11.5, fontWeight: 600, color: col.c }}>{labels[flood] ?? flood}</span>
-                          </div>
-                        );
+                        const hasPpri = (pa?.servitudes ?? []).some((s) => (s.categorie ?? "").toUpperCase().startsWith("PM"));
+                        const readings: Array<{ icon: string; key: string; theme: string; r: ReturnType<typeof describeSeismicZone> }> = [
+                          { icon: "🌊", key: "flood", theme: "Inondation", r: describeFloodRisk(pa?.risks?.flood_risk, hasPpri) },
+                          { icon: "🟤", key: "clay", theme: "Retrait-gonflement des argiles", r: describeClayRisk(pa?.risks?.clay_risk) },
+                          { icon: "☢️", key: "radon", theme: "Radon", r: describeRadonLevel(pa?.risks?.radon_level) },
+                          { icon: "🌍", key: "seismic", theme: "Sismicité", r: describeSeismicZone(pa?.risks?.seismic_zone) },
+                        ].filter((x) => x.r.show).sort((a, b) => a.r.tier - b.r.tier);
+                        const oppoBadge: Record<string, { txt: string; c: string } | undefined> = {
+                          opposable: { txt: "Opposable", c: "#B91C1C" },
+                          porter_a_connaissance: { txt: "Porter à connaissance", c: "#B45309" },
+                          informatif: undefined,
+                        };
+                        return readings.map(({ icon, key, theme, r }) => {
+                          const t = tones[r.tone as Tone];
+                          const badge = oppoBadge[r.opposabilite];
+                          return (
+                            <div key={key} style={{ padding: "9px 14px", background: t.bg, borderRadius: 9, border: `1px solid ${t.bd}` }}>
+                              <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                                <span style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A" }}>{icon} {theme}</span>
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: 6 }}>
+                                  {badge && <span style={{ fontSize: 9.5, fontWeight: 700, color: badge.c, background: "#FFFFFF", border: `1px solid ${badge.c}33`, borderRadius: 5, padding: "1px 5px", textTransform: "uppercase" as const, letterSpacing: "0.03em" }}>{badge.txt}</span>}
+                                  <span style={{ fontSize: 11.5, fontWeight: 600, color: t.c }}>{r.label}</span>
+                                </span>
+                              </div>
+                              {r.consequence && (
+                                <div style={{ marginTop: 5, fontSize: 11, color: "#475569", lineHeight: 1.5 }}>
+                                  <span style={{ color: "#94a3b8", fontWeight: 600 }}>Pour l'instruction : </span>{r.consequence}
+                                </div>
+                              )}
+                              <div style={{ marginTop: 3, fontSize: 10, color: "#94a3b8" }}>
+                                {r.maille === "parcelle" ? "Évalué à la parcelle" : "Donnée communale"}
+                              </div>
+                            </div>
+                          );
+                        });
                       })()}
-                      {/* Zone sismique */}
-                      {pa?.risks?.seismic_zone && (
-                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "9px 14px", background: "#F8FAFC", borderRadius: 9, border: "1px solid #E2E8F022" }}>
-                          <span style={{ fontSize: 12.5, fontWeight: 600, color: "#374151" }}>Zone sismique</span>
-                          <span style={{ fontSize: 11.5, fontWeight: 600, color: "#374151" }}>Zone {pa.risks.seismic_zone}</span>
-                        </div>
-                      )}
                       {/* Servitudes d'utilité publique */}
                       {pa?.servitudes && pa.servitudes.length > 0 && pa.servitudes.map((s, i) => {
                         // Familles SUP (R.151-43 du Code de l'Urbanisme)
@@ -8685,6 +8713,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         };
                         const friendly = supLabels[s.categorie] ?? s.libelle ?? `SUP ${s.categorie}`;
                         const isABF = s.categorie?.startsWith("AC");
+                        const meta = supConsequence(s.categorie);
                         const valueRows: Array<[string, string]> = [];
                         if (s.nomsup) valueRows.push(["Élément protégé", s.nomsup]);
                         if (s.typeprotect && s.typeprotect !== s.nomsup) valueRows.push(["Type de protection", s.typeprotect]);
@@ -8713,21 +8742,29 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                               </>
                             }
                           >
-                            {(valueRows.length > 0 || s.dessup) && (
-                              <div style={{ display: "flex", flexDirection: "column" as const, gap: 4 }}>
-                                {valueRows.map(([label, value]) => (
-                                  <div key={label} style={{ display: "flex", gap: 8, fontSize: 11.5, lineHeight: 1.5 }}>
-                                    <span style={{ color: "#94a3b8", flexShrink: 0, minWidth: 120 }}>{label}</span>
-                                    <span style={{ color: "#334155", fontWeight: 500 }}>{value}</span>
-                                  </div>
-                                ))}
-                                {s.dessup && (
-                                  <div style={{ marginTop: valueRows.length > 0 ? 4 : 0, fontSize: 11.5, color: "#475569", lineHeight: 1.55, fontStyle: "italic" as const }}>
-                                    {s.dessup}
-                                  </div>
-                                )}
-                              </div>
-                            )}
+                            <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
+                              {/* Conséquence d'instruction — ce qui fait passer la SUP
+                                  du « bruit » à l'information actionnable. */}
+                              {meta && (
+                                <div style={{ display: "flex", gap: 7, fontSize: 11.5, lineHeight: 1.5, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 7, padding: "7px 9px" }}>
+                                  <span style={{ flexShrink: 0 }}>⚖️</span>
+                                  <span style={{ color: "#334155" }}>
+                                    <span style={{ color: "#94a3b8", fontWeight: 700 }}>Pour l'instruction : </span>{meta.consequence}
+                                  </span>
+                                </div>
+                              )}
+                              {valueRows.map(([label, value]) => (
+                                <div key={label} style={{ display: "flex", gap: 8, fontSize: 11.5, lineHeight: 1.5 }}>
+                                  <span style={{ color: "#94a3b8", flexShrink: 0, minWidth: 120 }}>{label}</span>
+                                  <span style={{ color: "#334155", fontWeight: 500 }}>{value}</span>
+                                </div>
+                              ))}
+                              {s.dessup && (
+                                <div style={{ fontSize: 11.5, color: "#475569", lineHeight: 1.55, fontStyle: "italic" as const }}>
+                                  {s.dessup}
+                                </div>
+                              )}
+                            </div>
                           </ConstraintItem>
                         );
                       })}
@@ -8761,10 +8798,11 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         };
                         const def = pscLabels[p.typepsc] ?? { titre: "Prescription PLU", icon: "📋" };
                         const title = p.libelle || def.titre;
+                        const pscMeta = prescriptionConsequence(p.typepsc);
                         return (
                           <ConstraintItem
                             key={i}
-                            rail="#22C55E"
+                            rail={pscMeta.tier === 1 ? "#F59E0B" : "#22C55E"}
                             icon={def.icon}
                             title={title}
                             code={`PSC ${p.typepsc}`}
@@ -8775,15 +8813,23 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                               />
                             }
                           >
-                            {p.txtpsc ? (
-                              <div style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>
-                                {p.txtpsc}
+                            <div style={{ display: "flex", flexDirection: "column" as const, gap: 6 }}>
+                              <div style={{ display: "flex", gap: 7, fontSize: 11.5, lineHeight: 1.5, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 7, padding: "7px 9px" }}>
+                                <span style={{ flexShrink: 0 }}>⚖️</span>
+                                <span style={{ color: "#334155" }}>
+                                  <span style={{ color: "#94a3b8", fontWeight: 700 }}>Pour l'instruction : </span>{pscMeta.consequence}
+                                </span>
                               </div>
-                            ) : (
-                              <div style={{ fontSize: 11, color: "#94a3b8", fontStyle: "italic" as const }}>
-                                Texte réglementaire non publié dans le GPU — se référer au règlement de zone.
-                              </div>
-                            )}
+                              {p.txtpsc ? (
+                                <div style={{ fontSize: 11.5, color: "#334155", lineHeight: 1.55, whiteSpace: "pre-wrap" as const }}>
+                                  {p.txtpsc}
+                                </div>
+                              ) : (
+                                <div style={{ fontSize: 11, color: "#94a3b8", fontStyle: "italic" as const }}>
+                                  Texte réglementaire non publié dans le GPU — se référer au règlement de zone.
+                                </div>
+                              )}
+                            </div>
                           </ConstraintItem>
                         );
                       })}
