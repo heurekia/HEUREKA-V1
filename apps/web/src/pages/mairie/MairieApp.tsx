@@ -7742,6 +7742,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       `Vous pouvez consulter le dossier et nous répondre directement via cette messagerie.\n\nCordialement,`,
     );
     setShowMissionModal(true);
+    // La modale n'est rendue que dans l'onglet « Consultations ». On bascule
+    // donc dessus pour que le missionnement déclenché depuis l'onglet
+    // « Terrain » (bouton « Missionner l'ABF ») soit visible — sinon l'état est
+    // activé mais la fenêtre ne s'affiche pas. Sur l'onglet Consultations,
+    // c'est un no-op.
+    setActiveTab("Consultations");
     const preselect = (list: AvailableService[]) => {
       if (preferType) {
         const match = list.find(s => s.type === preferType);
