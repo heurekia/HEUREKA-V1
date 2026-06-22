@@ -7357,6 +7357,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [consultations, setConsultations] = useState<Consultation[] | null>(null);
   const [consultationsLoading, setConsultationsLoading] = useState(false);
   const [consultationsMissioning, setConsultationsMissioning] = useState(false);
+  // Étape "Consultations" du suivi d'avancement (Résumé) : terminée quand au
+  // moins une consultation a été lancée et qu'aucune n'est encore en attente
+  // d'avis. (Avant : câblée en dur sur `false`, donc jamais validée.)
+  const consultationsDone =
+    consultations != null && consultations.length > 0 &&
+    consultations.every((c) => c.status !== "en_attente");
   const [selectedConsultation, setSelectedConsultation] = useState<string | null>(null);
   // ── Missionner un service annexe (modale de sélection + message) ──
   type AvailableService = { id: string; name: string; type: string; email: string | null };
@@ -7751,10 +7757,12 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       .finally(() => setConsultationsLoading(false));
   }, [dossier.id, selectedConsultation]);
 
+  // Chargé au montage (et plus seulement sur l'onglet Consultations) : le suivi
+  // d'avancement du Résumé a besoin de l'état des consultations dès l'ouverture.
   useEffect(() => {
-    if (activeTab !== "Consultations" || consultations !== null) return;
+    if (consultations !== null) return;
     fetchConsultations();
-  }, [activeTab, consultations, fetchConsultations]);
+  }, [consultations, fetchConsultations]);
 
   const hasABFServitude = parcelAnalysis?.servitudes?.some(s => s.categorie?.startsWith("AC")) ?? false;
 
@@ -8385,7 +8393,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     { label: "Dépôt", done: true, tab: null },
                     { label: "Complétude", done: !["brouillon","soumis"].includes(dossier.status), tab: "Documents" },
                     { label: "Instruction", done: ["en_instruction","decision_en_cours","accepte","refuse","accord_prescription"].includes(dossier.status), tab: "Instruction" },
-                    { label: "Consultations", done: false, tab: "Consultations" },
+                    { label: "Consultations", done: consultationsDone, tab: "Consultations" },
                     { label: "Décision", done: ["accepte","refuse","accord_prescription"].includes(dossier.status), tab: "Décision" },
                   ] as Array<{ label: string; done: boolean; tab: DetailTab | null }>).map((step, i) => (
                     <div
