@@ -7,6 +7,7 @@ import { requireRole } from "../../middlewares/auth.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
 import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
 import { PLU_SAVE_RULE_TOOL, PLU_EXTRACTION_CALIBRATION, coerceCases, coerceAppliesIf, type PluRuleInput } from "./pluSaveRuleTool.js";
+import { normalizeSecteur } from "@heureka-v1/ingestion/secteur";
 import { PDFDocument } from "pdf-lib";
 import {
   computeInstructionDelay,
@@ -557,6 +558,7 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
         const zoneId = created!.id;
         for (const rule of rules) {
           const articleInt = toArticleInt(rule.article_number);
+          const sect = normalizeSecteur(rule);
           await tx.insert(zone_regulatory_rules).values({
             zone_id: zoneId,
             article_number: articleInt,
@@ -572,13 +574,14 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
             citizen_title: rule.citizen_title?.trim() || null,
             citizen_summary: rule.citizen_summary?.trim() || null,
             citizen_relevant: rule.citizen_relevant !== false,
-            sub_theme: rule.sub_theme?.trim() || null,
+            sub_theme: sect.sub_theme,
             exceptions: rule.exceptions?.trim() || null,
             cases: coerceCases(rule.cases),
-            applies_if: coerceAppliesIf(rule.applies_if),
+            applies_if: coerceAppliesIf([...(Array.isArray(rule.applies_if) ? rule.applies_if : []), ...sect.appliesIfAdd]),
             instructor_note: [
               rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
               rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
+              sect.note,
             ].filter(Boolean).join(" | ") || null,
             validation_status: "brouillon" as const,
           });
@@ -1213,6 +1216,7 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
         const zoneId = created!.id;
         for (const rule of rules) {
           const articleInt = toArticleInt(rule.article_number);
+          const sect = normalizeSecteur(rule);
           await tx.insert(zone_regulatory_rules).values({
             zone_id: zoneId,
             source_document_id: sourceDocumentId,
@@ -1229,13 +1233,14 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
             citizen_title: rule.citizen_title?.trim() || null,
             citizen_summary: rule.citizen_summary?.trim() || null,
             citizen_relevant: rule.citizen_relevant !== false,
-            sub_theme: rule.sub_theme?.trim() || null,
+            sub_theme: sect.sub_theme,
             exceptions: rule.exceptions?.trim() || null,
             cases: coerceCases(rule.cases),
-            applies_if: coerceAppliesIf(rule.applies_if),
+            applies_if: coerceAppliesIf([...(Array.isArray(rule.applies_if) ? rule.applies_if : []), ...sect.appliesIfAdd]),
             instructor_note: [
               rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
               rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
+              sect.note,
             ].filter(Boolean).join(" | ") || null,
             validation_status: "brouillon" as const,
           });
