@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Maquette — Découpage par zone (mairie)</title>
+<style>
+  :root{
+    --ink:#111827; --ink2:#374151; --muted:#6b7280; --faint:#9ca3af;
+    --line:#e5e7eb; --bg:#f3f4f6; --card:#ffffff;
+    --indigo:#4f46e5; --indigo50:#eef2ff; --indigo700:#4338ca;
+    --green50:#ecfdf5; --green700:#047857; --amber50:#fffbeb; --amber700:#b45309;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    font-size:13px;line-height:1.45}
+  .wrap{max-width:1180px;margin:24px auto;padding:0 16px}
+  .screen{background:var(--card);border:1px solid var(--line);border-radius:14px;overflow:hidden;
+    box-shadow:0 1px 2px rgba(0,0,0,.04),0 8px 24px rgba(0,0,0,.05)}
+  /* top bar */
+  .top{display:flex;align-items:center;justify-content:space-between;gap:16px;
+    padding:14px 18px;border-bottom:1px solid var(--line)}
+  .top .crumb{font-size:11px;color:var(--faint);text-transform:uppercase;letter-spacing:.04em}
+  .top h1{margin:2px 0 0;font-size:16px;font-weight:700}
+  .top .doc{font-size:12px;color:var(--muted)}
+  .progress{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--muted)}
+  .bar{width:140px;height:7px;border-radius:99px;background:#eef0f3;overflow:hidden}
+  .bar > i{display:block;height:100%;width:44%;background:var(--indigo)}
+  .btn{border:1px solid var(--line);background:#fff;border-radius:8px;padding:7px 12px;font-size:12px;
+    font-weight:600;color:var(--ink2);cursor:pointer}
+  .btn.primary{background:var(--indigo);border-color:var(--indigo);color:#fff}
+  /* explain banner */
+  .why{display:flex;gap:10px;align-items:flex-start;margin:14px 18px;padding:11px 13px;
+    background:var(--indigo50);border:1px solid #e0e3ff;border-radius:10px;color:#3730a3;font-size:12px}
+  .why b{font-weight:700}
+  /* split */
+  .split{display:grid;grid-template-columns:1.05fr .95fr;gap:0;border-top:1px solid var(--line)}
+  /* pdf side */
+  .pdf{background:#fafafb;border-right:1px solid var(--line);padding:16px 16px 22px}
+  .pdfbar{display:flex;align-items:center;justify-content:space-between;margin-bottom:12px}
+  .pager{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--muted)}
+  .pager .pg{font-weight:700;color:var(--ink)}
+  .chev{width:26px;height:26px;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--muted);
+    display:grid;place-items:center;cursor:pointer}
+  .page{background:#fff;border:1px solid var(--line);border-radius:8px;padding:26px 30px;min-height:430px;
+    box-shadow:0 1px 0 rgba(0,0,0,.03)}
+  .page .pp{font-size:10.5px;color:var(--faint);text-align:right;margin-bottom:18px}
+  .page h2{font-size:14px;margin:0 0 4px}
+  .page h3{font-size:12.5px;margin:16px 0 4px;color:var(--ink)}
+  .page p{font-size:11.5px;color:#4b5563;margin:5px 0;text-align:justify}
+  mark{background:#fff3bf;padding:0 2px;border-radius:2px}
+  .selrange{margin-top:14px;padding:9px 11px;border:1px dashed #c7d2fe;background:#f5f7ff;border-radius:8px;
+    font-size:11.5px;color:#3730a3;display:flex;align-items:center;justify-content:space-between}
+  /* zones side */
+  .zones{padding:14px 16px 18px}
+  .zhead{display:flex;align-items:center;justify-content:space-between;margin:2px 2px 10px}
+  .zhead .t{font-size:12.5px;font-weight:700}
+  .zhead .s{font-size:11px;color:var(--faint)}
+  .zlist{display:flex;flex-direction:column;gap:9px}
+  .z{border:1px solid var(--line);border-radius:11px;padding:11px 12px;background:#fff}
+  .z.active{border-color:#c7d2fe;box-shadow:0 0 0 3px #eef2ff}
+  .zrow{display:flex;align-items:center;gap:10px}
+  .code{min-width:46px;height:30px;padding:0 9px;border-radius:8px;background:#111827;color:#fff;
+    font-weight:700;font-size:12px;display:grid;place-items:center}
+  .code.u{background:#1f2937}.code.au{background:#6d28d9}.code.a{background:#15803d}.code.n{background:#0f766e}
+  .zmeta{flex:1;min-width:0}
+  .zmeta .nm{font-size:12.5px;font-weight:600;line-height:1.2}
+  .zmeta .sub{font-size:11px;color:var(--muted);margin-top:1px}
+  .pill{font-size:10.5px;font-weight:700;border-radius:99px;padding:2px 8px;white-space:nowrap}
+  .pill.ok{background:var(--green50);color:var(--green700)}
+  .pill.draft{background:var(--amber50);color:var(--amber700)}
+  .pages{display:flex;align-items:center;gap:7px;margin-top:10px}
+  .pages label{font-size:11px;color:var(--muted)}
+  .inp{width:54px;border:1px solid var(--line);border-radius:7px;padding:5px 8px;font-size:12px;
+    text-align:center;color:var(--ink)}
+  .inp.filled{border-color:#c7d2fe;background:#f8f9ff}
+  .arrow{color:var(--faint)}
+  .setcur{margin-left:auto;font-size:11px;font-weight:600;color:var(--indigo700);background:#eef2ff;
+    border:1px solid #e0e3ff;border-radius:7px;padding:5px 9px;cursor:pointer}
+  .preview{margin-top:9px;font-size:11px;color:var(--muted);display:flex;align-items:center;gap:6px}
+  .tag{display:inline-flex;align-items:center;gap:4px;background:#eef2ff;color:var(--indigo700);
+    border-radius:6px;padding:2px 7px;font-weight:600;font-size:11px}
+  .foot{display:flex;align-items:center;justify-content:space-between;margin-top:14px;padding-top:12px;
+    border-top:1px solid var(--line)}
+  .foot .hint{font-size:11px;color:var(--faint)}
+  .caption{max-width:1180px;margin:10px auto 30px;padding:0 18px;color:var(--muted);font-size:12px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="screen">
+
+    <!-- TOP BAR -->
+    <div class="top">
+      <div>
+        <div class="crumb">Réglementation · Découpage</div>
+        <h1>Découpage par zone</h1>
+        <div class="doc">PLU de Ballan-Miré · règlement littéral · <span style="color:#9ca3af">PLU_2020_01_29.pdf · 86 pages</span></div>
+      </div>
+      <div style="display:flex;align-items:center;gap:16px">
+        <div class="progress">
+          <span>4 / 9 zones rattachées</span>
+          <span class="bar"><i></i></span>
+        </div>
+        <button class="btn">Tout détecter</button>
+        <button class="btn primary">Valider le découpage</button>
+      </div>
+    </div>
+
+    <!-- WHY -->
+    <div class="why">
+      <span>💡</span>
+      <div><b>Pourquoi ?</b> Confirmer la plage de pages de chaque zone fiabilise le lien « document officiel »
+      des constats d'instruction : un clic ouvre alors le PLU exactement à la bonne page
+      (ex. <span class="tag">📖 PLU p.12</span>). Les zones sont détectées automatiquement — vous n'avez qu'à corriger.</div>
+    </div>
+
+    <!-- SPLIT -->
+    <div class="split">
+
+      <!-- PDF PREVIEW -->
+      <div class="pdf">
+        <div class="pdfbar">
+          <div class="pager">
+            <span class="chev">‹</span>
+            <span>page <span class="pg">12</span> / 86</span>
+            <span class="chev">›</span>
+          </div>
+          <button class="btn">Ouvrir en grand</button>
+        </div>
+
+        <div class="page">
+          <div class="pp">PLU Ballan-Miré — 12</div>
+          <h2>Zone UA — Dispositions applicables</h2>
+          <p>La zone UA correspond au centre ancien, à vocation principale d'habitat, de commerces et de services.
+          Elle est caractérisée par un bâti dense, souvent implanté à l'alignement des voies.</p>
+          <h3>Article UA 10 — Hauteur des constructions</h3>
+          <p><mark>La hauteur des constructions ne peut excéder 9 mètres au faîtage</mark>, soit R+2+combles.
+          En cas de toiture-terrasse, la hauteur à l'acrotère est limitée à 7 mètres.</p>
+          <h3>Article UA 7 — Implantation par rapport aux limites séparatives</h3>
+          <p>Les constructions doivent être implantées soit en limite séparative, soit à une distance au moins
+          égale à la moitié de leur hauteur (L = H/2) sans pouvoir être inférieure à 3 mètres.</p>
+          <div class="selrange">
+            <span>Pages 12 → 18 sélectionnées pour la zone <b>UA</b></span>
+            <span style="color:#4338ca;font-weight:700;cursor:pointer">Ajuster</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- ZONES -->
+      <div class="zones">
+        <div class="zhead">
+          <span class="t">Zones détectées</span>
+          <span class="s">9 zones · 64 règles</span>
+        </div>
+
+        <div class="zlist">
+
+          <!-- active / editing -->
+          <div class="z active">
+            <div class="zrow">
+              <div class="code u">UA</div>
+              <div class="zmeta">
+                <div class="nm">Centre ancien</div>
+                <div class="sub">12 règles · urbaine</div>
+              </div>
+              <span class="pill draft">à confirmer</span>
+            </div>
+            <div class="pages">
+              <label>Pages</label>
+              <input class="inp filled" value="12" />
+              <span class="arrow">→</span>
+              <input class="inp filled" value="18" />
+              <button class="setcur">Depuis la page courante (12)</button>
+            </div>
+            <div class="preview">Aperçu citation : <span class="tag">📖 PLU p.12</span> « La hauteur des constructions ne peut excéder 9 m… »</div>
+          </div>
+
+          <!-- validated -->
+          <div class="z">
+            <div class="zrow">
+              <div class="code u">UB</div>
+              <div class="zmeta">
+                <div class="nm">Extensions pavillonnaires</div>
+                <div class="sub">10 règles · urbaine</div>
+              </div>
+              <span class="pill ok">✓ rattachée</span>
+            </div>
+            <div class="pages">
+              <label>Pages</label>
+              <input class="inp filled" value="19" />
+              <span class="arrow">→</span>
+              <input class="inp filled" value="24" />
+              <button class="setcur">Depuis la page courante</button>
+            </div>
+          </div>
+
+          <div class="z">
+            <div class="zrow">
+              <div class="code au">1AU</div>
+              <div class="zmeta">
+                <div class="nm">À urbaniser — secteur Nord</div>
+                <div class="sub">8 règles · à urbaniser</div>
+              </div>
+              <span class="pill ok">✓ rattachée</span>
+            </div>
+            <div class="pages">
+              <label>Pages</label>
+              <input class="inp filled" value="31" />
+              <span class="arrow">→</span>
+              <input class="inp filled" value="36" />
+              <button class="setcur">Depuis la page courante</button>
+            </div>
+          </div>
+
+          <!-- not yet mapped -->
+          <div class="z">
+            <div class="zrow">
+              <div class="code a">A</div>
+              <div class="zmeta">
+                <div class="nm">Zone agricole</div>
+                <div class="sub">9 règles · agricole</div>
+              </div>
+              <span class="pill draft">à confirmer</span>
+            </div>
+            <div class="pages">
+              <label>Pages</label>
+              <input class="inp" placeholder="—" />
+              <span class="arrow">→</span>
+              <input class="inp" placeholder="—" />
+              <button class="setcur">Depuis la page courante</button>
+            </div>
+            <div class="preview" style="color:#b45309">⚠ Sans pages confirmées, la citation se résout au mieux automatiquement (page parfois absente).</div>
+          </div>
+
+          <div class="z">
+            <div class="zrow">
+              <div class="code n">N</div>
+              <div class="zmeta">
+                <div class="nm">Zone naturelle</div>
+                <div class="sub">7 règles · naturelle</div>
+              </div>
+              <span class="pill draft">à confirmer</span>
+            </div>
+            <div class="pages">
+              <label>Pages</label>
+              <input class="inp" placeholder="—" />
+              <span class="arrow">→</span>
+              <input class="inp" placeholder="—" />
+              <button class="setcur">Depuis la page courante</button>
+            </div>
+          </div>
+
+        </div>
+
+        <div class="foot">
+          <span class="hint">+ 4 autres zones (UC, 2AU, Ah, Nh)…</span>
+          <button class="btn primary">Valider le découpage</button>
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  <div class="caption">
+    Maquette statique — écran mairie « Découpage par zone ». À gauche : aperçu du PLU officiel (le vrai PDF
+    via <code>/api/mairie/documents/:id/pdf</code>). À droite : zones détectées automatiquement, chacune
+    rattachée à une plage de pages confirmée par la mairie. Cette confirmation alimente la page exacte des
+    citations « 📖 PLU p.X » dans les constats d'instruction.
+  </div>
+</div>
+</body>
+</html>
