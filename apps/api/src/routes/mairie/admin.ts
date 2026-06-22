@@ -5,7 +5,7 @@ import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock, type AiToolDefinition } from "../../services/aiUsage.js";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, type TocEntry } from "../../services/pluImport.js";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, type TocEntry } from "../../services/pluImport.js";
 import { PDFDocument } from "pdf-lib";
 import {
   computeInstructionDelay,
@@ -684,10 +684,33 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
 // /start — c'est acceptable (les écritures DB n'ont pas encore eu lieu, le
 // référentiel existant n'est pas affecté).
 
-type IngestJob = {
-  jobId: string;
+// Un segment = UN PDF du PLUi. Un PLUi peut être livré en plusieurs fichiers
+// (découpé par type de zone : U / AU / A / N, ou par tomes). Chaque PDF est
+// autonome : sa propre numérotation de pages (1-indexée sur SON buffer) et son
+// propre sommaire. Les règles de tous les segments sont accumulées puis écrites
+// en UNE seule transaction (cf. runIngestJob), purge comprise — sinon ingérer
+// un 2e PDF effacerait les zones du 1er.
+type IngestSegment = {
+  segmentIndex: number;
   pdfBuffer: Buffer;
   totalPages: number;
+  zones: Array<{
+    code: string;
+    label: string;
+    type: string;
+    startPage: number;
+    endPage: number;
+    batches: Array<{ index: number; firstPage: number; lastPage: number }>;
+  }>;
+};
+
+type IngestJob = {
+  jobId: string;
+  // Liste des PDF du PLUi (1 ou plusieurs). Mono-PDF = un seul segment.
+  segments: IngestSegment[];
+  // Sommaire global = union des sommaires de chaque segment, dédupliqué par
+  // code de zone. Sert au garde-fou assertTocCoverage : la couverture est
+  // évaluée sur l'ENSEMBLE des zones attendues, tous PDF confondus.
   toc: TocEntry[];
   // Commune de référence : sert au logging/imputation des coûts IA et au mode
   // legacy (PLU communal sans document explicite). En mode document, c'est
@@ -706,20 +729,15 @@ type IngestJob = {
     communeIds: string[];
   };
   userId: string | null;
-  zones: Array<{
-    code: string;
-    label: string;
-    type: string;
-    startPage: number;
-    endPage: number;
-    batches: Array<{ index: number; firstPage: number; lastPage: number }>;
-  }>;
   // État du worker en arrière-plan (cf. runIngestJob). Le client interroge
   // /status pour suivre l'avancée sans tenir une connexion HTTP longue, ce qui
   // permet de fermer l'onglet ou de changer de page sans interrompre
   // l'extraction.
   status: "running" | "done" | "error";
   phase: string;
+  // Clé composite `${segmentIndex}::${code}` : deux PDF peuvent porter le même
+  // code de zone (ou être simplement traités séparément), on isole donc leur
+  // état d'avancement par segment. La fusion par code intervient au commit.
   zoneState: Map<string, { doneBatches: number; rules: PluRuleInput[]; visionCount: number }>;
   result?: { zones: number; rules: number; needs_review: number; detail: Array<{ zone: string; rules: number; vision: number }> };
   error?: string;
@@ -750,6 +768,89 @@ function renderPagesAsBlocksFor(pdfBuffer: Buffer, firstPage: number, maxPages: 
   }));
 }
 
+// Détecte le sommaire (liste des zones + page de début) d'UN PDF de PLU.
+// Voie rapide : texte natif via pdftotext (~1 s, couvre la quasi-totalité des
+// PLU français). Repli Pixtral si pdftotext absent ou sommaire inhabituel (PDF
+// scanné). Extrait en helper pour être appelé une fois par segment quand un
+// PLUi est livré en plusieurs PDF (cf. IngestSegment).
+async function detectPluToc(
+  pdfBuffer: Buffer,
+  totalPages: number,
+  ctx: { userId: string | null; communeId: string },
+  manualEntries: Array<{ code?: unknown; label?: unknown; type?: unknown; startPage?: unknown }> = [],
+): Promise<TocEntry[]> {
+  // Voie manuelle prioritaire : si l'opérateur a saisi les ancres zone→page
+  // (PLUi volumineux ou sommaire atypique/scanné que la détection auto ne sait
+  // pas lire), on les utilise telles quelles et on saute la détection.
+  if (manualEntries.length > 0) {
+    const manual = manualEntries.flatMap((e) => {
+      const code = typeof e?.code === "string" ? e.code.trim().toUpperCase() : "";
+      const startPage = Number(e?.startPage);
+      if (!code || !Number.isInteger(startPage) || startPage < 1 || startPage > totalPages) return [];
+      const type = typeof e?.type === "string" && e.type ? e.type
+        : /^[12]?AU/i.test(code) ? "AU"
+        : code.startsWith("U") ? "U"
+        : code.startsWith("A") ? "A"
+        : code.startsWith("N") ? "N" : "U";
+      const label = typeof e?.label === "string" && e.label.trim() ? e.label.trim() : `Zone ${code}`;
+      return [{ code, label, type, startPage }];
+    });
+    // Retour direct (même vide → le caller traduit en 400 "sommaire manuel
+    // invalide"). On ne retombe pas sur l'auto-détection : l'opérateur a fait
+    // un choix explicite.
+    return manual;
+  }
+
+  const tocPages = Math.min(15, totalPages);
+  const nativeText = extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
+  let toc: TocEntry[] = nativeText ? parseTocFromNativeText(nativeText) : [];
+
+  if (toc.length === 0) {
+    // Bascule Pixtral. Sur PDF normal, on n'arrive ici que pour des PLU à
+    // sommaire inhabituel — coût modéré et acceptable.
+    const TOC_PAGES = Math.min(5, totalPages);
+    const tocBlocks = renderPagesAsBlocksFor(pdfBuffer, 1, TOC_PAGES);
+    const tocMsg = await callAi(
+      { purpose: "plu_toc_detect", userId: ctx.userId, communeId: ctx.communeId },
+      {
+        model: "ai-smart",
+        max_tokens: 2000,
+        messages: [{
+          role: "user",
+          content: [
+            ...tocBlocks,
+            { type: "text", text: `Ces ${TOC_PAGES} pages sont le début d'un règlement PLU français. Lis le SOMMAIRE et renvoie la liste de TOUTES les zones (UA, UC, UJ, UL, UM, UP, UX, AUs, A, N, Ni, Nj, 1AU…) avec leur page de DÉBUT de section dans le document (numérotation 1-indexée, alignée sur les pages PDF physiques).
+
+Inclus les sous-zones ayant un règlement distinct. Pour chaque zone, type = "U" (urbaine) | "AU" (à urbaniser) | "A" (agricole) | "N" (naturelle).
+
+Réponds UNIQUEMENT avec un JSON array, sans autre texte :
+[{"code":"UA","label":"Zone UA – Centre ancien","type":"U","startPage":7}, …]
+
+Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
+          ],
+        }],
+      },
+    );
+    const tocRaw = tocMsg.content[0]?.type === "text" ? tocMsg.content[0].text : "[]";
+    const tocParsed = JSON.parse(tocRaw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{
+      code?: unknown; label?: unknown; type?: unknown; startPage?: unknown;
+    }>;
+    toc = tocParsed.flatMap((e) => {
+      const code = typeof e.code === "string" ? e.code.trim() : "";
+      const startPage = Number(e.startPage);
+      if (!code || !Number.isInteger(startPage)) return [];
+      return [{
+        code,
+        label: typeof e.label === "string" ? e.label : code,
+        type: typeof e.type === "string" ? e.type : "U",
+        startPage,
+      }];
+    });
+  }
+
+  return toc;
+}
+
 // POST /admin/ingest-plu-pdf/start
 //
 // Deux modes de déclenchement, mutuellement exclusifs :
@@ -764,15 +865,22 @@ function renderPagesAsBlocksFor(pdfBuffer: Buffer, firstPage: number, maxPages: 
 adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) => {
   try {
     gcIngestJobs();
-    const { commune_name, insee_code, zip_code, pdf_base64, doc_id, manual_toc } = req.body as {
+    const { commune_name, insee_code, zip_code, pdf_base64, pdfs_base64, doc_id, manual_toc } = req.body as {
       commune_name?: string; insee_code?: string; zip_code?: string;
-      pdf_base64?: string; doc_id?: string;
+      pdf_base64?: string; pdfs_base64?: string[]; doc_id?: string;
       // Saisie manuelle des ancres zone→page : repli quand la détection auto du
       // sommaire échoue (PLUi volumineux, sommaire atypique ou scanné).
       manual_toc?: Array<{ code?: unknown; label?: unknown; type?: unknown; startPage?: unknown }>;
     };
-    if (!pdf_base64) {
-      return res.status(400).json({ error: "pdf_base64 requis" });
+    // Un PLUi peut arriver en plusieurs PDF (découpé par type de zone ou par
+    // tome). `pdfs_base64` est le contrat multi-fichiers ; `pdf_base64` reste
+    // accepté pour la rétrocompatibilité (mono-PDF) → toujours ramené à un
+    // tableau de buffers.
+    const pdfList = Array.isArray(pdfs_base64) && pdfs_base64.length > 0
+      ? pdfs_base64
+      : pdf_base64 ? [pdf_base64] : [];
+    if (pdfList.length === 0) {
+      return res.status(400).json({ error: "pdf_base64 ou pdfs_base64 requis" });
     }
 
     // Résolution du contexte d'ingestion : document explicite ou commune legacy.
@@ -822,123 +930,89 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
       }
     }
 
-    const pdfBuffer = Buffer.from(pdf_base64, "base64");
-    const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
-    const totalPages = pdfDoc.getPageCount();
-
-    // Phase 1 — Sommaire.
-    //
-    // Voie manuelle prioritaire : si l'opérateur a saisi les ancres zone→page
-    // (PLUi volumineux ou sommaire atypique/scanné que la détection auto ne
-    // sait pas lire), on les utilise telles quelles et on saute la détection.
-    let toc: TocEntry[] = [];
+    // Phase 1 — Sommaire, segment par segment (un segment = un PDF).
+    // Chaque PDF est autonome : sa propre numérotation et son propre sommaire.
+    // PAGE_BATCH = 3 : marge confortable sous les 60 s du proxy nginx. Pixtral
+    // sur 3 images répond en 15-20 s typiquement.
+    const PAGE_BATCH = 3;
+    const userId = req.user?.id ?? null;
+    // Saisie manuelle des ancres zone→page : repli quand la détection auto
+    // échoue. Les pages saisies dépendent de la numérotation d'UN fichier →
+    // on ne l'applique qu'en mode mono-PDF.
     const manualEntries = Array.isArray(manual_toc) ? manual_toc : [];
-    if (manualEntries.length > 0) {
-      toc = manualEntries.flatMap((e) => {
-        const code = typeof e?.code === "string" ? e.code.trim().toUpperCase() : "";
-        const startPage = Number(e?.startPage);
-        if (!code || !Number.isInteger(startPage) || startPage < 1 || startPage > totalPages) return [];
-        const type = typeof e?.type === "string" && e.type ? e.type
-          : /^[12]?AU/i.test(code) ? "AU"
-          : code.startsWith("U") ? "U"
-          : code.startsWith("A") ? "A"
-          : code.startsWith("N") ? "N" : "U";
-        const label = typeof e?.label === "string" && e.label.trim() ? e.label.trim() : `Zone ${code}`;
-        return [{ code, label, type, startPage }];
-      });
-      if (toc.length === 0) {
-        return res.status(400).json({
-          error: `Sommaire manuel invalide : indiquez au moins une zone avec un code et une page de début comprise entre 1 et ${totalPages}.`,
-        });
+    const singlePdf = pdfList.length === 1;
+    const segments: IngestSegment[] = [];
+    const unionToc: TocEntry[] = [];
+    const seenTocCodes = new Set<string>();
+    let lastTotalPages = 0;
+
+    for (const b64 of pdfList) {
+      const pdfBuffer = Buffer.from(b64, "base64");
+      const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
+      const totalPages = pdfDoc.getPageCount();
+      lastTotalPages = totalPages;
+
+      const toc = await detectPluToc(
+        pdfBuffer, totalPages,
+        { userId, communeId: commune.id },
+        singlePdf ? manualEntries : [],
+      );
+      // Un PDF sans sommaire exploitable est ignoré silencieusement : c'est
+      // souvent une annexe (pièces graphiques, OAP) glissée dans le lot. Le
+      // garde-fou final (assertTocCoverage) reste seul juge de la couverture.
+      if (toc.length === 0) continue;
+
+      const zoneRanges = partitionPagesByZone(toc, totalPages);
+      // segmentIndex = position dans le tableau retenu → routage /batch fiable
+      // même si des PDF intermédiaires ont été écartés faute de sommaire.
+      const segmentIndex = segments.length;
+      const zones_out = zoneRanges.map((z) => ({
+        code: z.code, label: z.label, type: z.type,
+        startPage: z.startPage, endPage: z.endPage,
+        batches: chunkPages(z.startPage, z.endPage, PAGE_BATCH)
+          .map(([first, last], i) => ({ index: i, firstPage: first, lastPage: last })),
+      }));
+      segments.push({ segmentIndex, pdfBuffer, totalPages, zones: zones_out });
+
+      for (const t of toc) {
+        if (seenTocCodes.has(t.code)) continue;
+        seenTocCodes.add(t.code);
+        unionToc.push(t);
       }
     }
 
-    // Voie rapide : texte natif via pdftotext (~1 s). Couvre la quasi-totalité
-    // des PLU français (sommaire structuré "Dispositions applicables à la
-    // zone XX ... page N"). Évite l'appel Pixtral qui faisait dépasser /start
-    // de la limite proxy nginx (60 s → 504 Gateway Time-out).
-    // Fallback Pixtral si pdftotext n'est pas installé OU si le sommaire
-    // natif n'identifie pas au moins 3 zones (PDF scanné, ou structure
-    // inhabituelle).
-    if (toc.length === 0) {
-      const tocPages = Math.min(15, totalPages);
-      const nativeText = extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
-      toc = nativeText ? parseTocFromNativeText(nativeText) : [];
+    if (segments.length === 0) {
+      // Mode mono-PDF : on préserve les retours fins du flux historique pour
+      // que le front sache réagir (sommaire manuel invalide → 400 ; aucune
+      // détection → 422 no_toc + totalPages pour proposer la saisie manuelle).
+      if (singlePdf && manualEntries.length > 0) {
+        return res.status(400).json({
+          error: `Sommaire manuel invalide : indiquez au moins une zone avec un code et une page de début comprise entre 1 et ${lastTotalPages}.`,
+        });
+      }
+      if (singlePdf) {
+        return res.status(422).json({
+          error: "Aucun sommaire détecté dans les premières pages. Vérifiez que c'est bien un règlement PLU avec sommaire.",
+          code: "no_toc",
+          totalPages: lastTotalPages,
+        });
+      }
+      // Multi-PDF : aucun fichier exploitable.
+      return res.status(422).json({ error: "Aucun sommaire détecté dans les PDF fournis. Vérifiez que ce sont bien des règlements PLU avec sommaire." });
     }
-
-    if (toc.length === 0) {
-      // Bascule Pixtral. Sur PDF normal, on n'arrive ici que pour des PLU à
-      // sommaire inhabituel — coût modéré et acceptable.
-      const TOC_PAGES = Math.min(5, totalPages);
-      const tocBlocks = renderPagesAsBlocksFor(pdfBuffer, 1, TOC_PAGES);
-      const tocMsg = await callAi(
-        { purpose: "plu_toc_detect", userId: req.user?.id ?? null, communeId: commune.id },
-        {
-          model: "ai-smart",
-          max_tokens: 2000,
-          messages: [{
-            role: "user",
-            content: [
-              ...tocBlocks,
-              { type: "text", text: `Ces ${TOC_PAGES} pages sont le début d'un règlement PLU français. Lis le SOMMAIRE et renvoie la liste de TOUTES les zones (UA, UC, UJ, UL, UM, UP, UX, AUs, A, N, Ni, Nj, 1AU…) avec leur page de DÉBUT de section dans le document (numérotation 1-indexée, alignée sur les pages PDF physiques).
-
-Inclus les sous-zones ayant un règlement distinct. Pour chaque zone, type = "U" (urbaine) | "AU" (à urbaniser) | "A" (agricole) | "N" (naturelle).
-
-Réponds UNIQUEMENT avec un JSON array, sans autre texte :
-[{"code":"UA","label":"Zone UA – Centre ancien","type":"U","startPage":7}, …]
-
-Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
-            ],
-          }],
-        },
-      );
-      const tocRaw = tocMsg.content[0]?.type === "text" ? tocMsg.content[0].text : "[]";
-      const tocParsed = JSON.parse(tocRaw.match(/\[[\s\S]*?\]/)?.[0] ?? "[]") as Array<{
-        code?: unknown; label?: unknown; type?: unknown; startPage?: unknown;
-      }>;
-      toc = tocParsed.flatMap((e) => {
-        const code = typeof e.code === "string" ? e.code.trim() : "";
-        const startPage = Number(e.startPage);
-        if (!code || !Number.isInteger(startPage)) return [];
-        return [{
-          code,
-          label: typeof e.label === "string" ? e.label : code,
-          type: typeof e.type === "string" ? e.type : "U",
-          startPage,
-        }];
-      });
-    }
-
-    if (toc.length === 0) {
-      // code + totalPages : permettent au front de basculer sur la saisie
-      // manuelle des pages (formulaire zone→page) plutôt qu'un simple message.
-      return res.status(422).json({
-        error: "Aucun sommaire détecté dans les premières pages. Vérifiez que c'est bien un règlement PLU avec sommaire.",
-        code: "no_toc",
-        totalPages,
-      });
-    }
-
-    const zoneRanges = partitionPagesByZone(toc, totalPages);
-    // PAGE_BATCH = 3 : marge confortable sous les 60 s du proxy nginx. Pixtral
-    // sur 3 images répond en 15-20 s typiquement. Le nombre de batches monte
-    // (Tours ≈ 70) mais le client orchestre CONCURRENCY=4 → temps total OK.
-    const PAGE_BATCH = 3;
-    const zones_out = zoneRanges.map((z) => ({
-      code: z.code, label: z.label, type: z.type,
-      startPage: z.startPage, endPage: z.endPage,
-      batches: chunkPages(z.startPage, z.endPage, PAGE_BATCH)
-        .map(([first, last], i) => ({ index: i, firstPage: first, lastPage: last })),
-    }));
 
     const jobId = `${commune.insee_code}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-    const zoneState = new Map(zones_out.map((z) => [z.code, { doneBatches: 0, rules: [] as PluRuleInput[], visionCount: 0 }]));
+    const zoneState = new Map<string, { doneBatches: number; rules: PluRuleInput[]; visionCount: number }>();
+    for (const seg of segments) {
+      for (const z of seg.zones) {
+        zoneState.set(`${seg.segmentIndex}::${z.code}`, { doneBatches: 0, rules: [], visionCount: 0 });
+      }
+    }
     const job: IngestJob = {
-      jobId, pdfBuffer, totalPages, toc,
+      jobId, segments, toc: unionToc,
       commune: { id: commune.id, name: commune.name, insee_code: commune.insee_code },
       document: documentCtx,
-      userId: req.user?.id ?? null,
-      zones: zones_out,
+      userId,
       status: "running",
       phase: "Extraction des règles…",
       zoneState,
@@ -957,11 +1031,17 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
       job.phase = "Erreur";
     });
 
+    // Liste à plat des zones (avec leur segment) — le front n'en lit que la
+    // longueur pour l'affichage, mais segmentIndex permet aussi à un client
+    // d'orchestrer /batch lui-même.
+    const zonesFlat = segments.flatMap((s) =>
+      s.zones.map((z) => ({ segmentIndex: s.segmentIndex, ...z })));
     res.json({
       jobId,
       commune: { id: commune.id, name: commune.name, insee_code: commune.insee_code },
-      totalPages,
-      zones: zones_out,
+      segments: segments.map((s) => ({ segmentIndex: s.segmentIndex, totalPages: s.totalPages })),
+      totalPages: segments.reduce((acc, s) => acc + s.totalPages, 0),
+      zones: zonesFlat,
     });
   } catch (err) {
     console.error("[ingest-plu-pdf/start]", err);
@@ -980,9 +1060,14 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
 // /status. Tant que le process Node tourne, le job continue, indépendamment
 // de la connexion HTTP qui a lancé /start (l'utilisateur peut fermer l'onglet).
 async function runIngestJob(job: IngestJob): Promise<void> {
-  // Aplatit tous les lots en une queue, traité par un pool de workers.
-  const queue: Array<{ zoneCode: string; batchIndex: number }> = [];
-  for (const z of job.zones) for (const b of z.batches) queue.push({ zoneCode: z.code, batchIndex: b.index });
+  // Aplatit tous les lots de tous les segments en une queue, traité par un
+  // pool de workers. Chaque entrée porte son segmentIndex pour rendre les pages
+  // depuis le bon PDF.
+  const queue: Array<{ segmentIndex: number; zoneCode: string; batchIndex: number }> = [];
+  for (const seg of job.segments)
+    for (const z of seg.zones)
+      for (const b of z.batches)
+        queue.push({ segmentIndex: seg.segmentIndex, zoneCode: z.code, batchIndex: b.index });
 
   let next = 0;
   let firstError: Error | null = null;
@@ -991,10 +1076,11 @@ async function runIngestJob(job: IngestJob): Promise<void> {
   const SERVER_CONCURRENCY = 3;
   const MAX_RETRY = 2;
 
-  const processBatch = async (zoneCode: string, batchIndex: number): Promise<void> => {
-    const zone = job.zones.find((z) => z.code === zoneCode)!;
+  const processBatch = async (segmentIndex: number, zoneCode: string, batchIndex: number): Promise<void> => {
+    const seg = job.segments[segmentIndex]!;
+    const zone = seg.zones.find((z) => z.code === zoneCode)!;
     const batch = zone.batches[batchIndex]!;
-    const blocks = renderPagesAsBlocksFor(job.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
+    const blocks = renderPagesAsBlocksFor(seg.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
     const ruleMsg = await callAi(
       { purpose: "plu_rule_extract", userId: job.userId, communeId: job.commune.id },
       {
@@ -1035,7 +1121,7 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
       .filter((b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use")
       .map((b) => b.input as PluRuleInput);
     const visionCount = rules.filter((r) => r.needs_vision || r.needs_external_doc).length;
-    const st = job.zoneState.get(zoneCode)!;
+    const st = job.zoneState.get(`${segmentIndex}::${zoneCode}`)!;
     st.rules.push(...rules);
     st.visionCount += visionCount;
     st.doneBatches += 1;
@@ -1046,11 +1132,11 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
       if (firstError) return;
       const i = next++;
       if (i >= queue.length) return;
-      const { zoneCode, batchIndex } = queue[i]!;
+      const { segmentIndex, zoneCode, batchIndex } = queue[i]!;
       let attempt = 0;
       while (true) {
         try {
-          await processBatch(zoneCode, batchIndex);
+          await processBatch(segmentIndex, zoneCode, batchIndex);
           break;
         } catch (e) {
           const status = (e as { status?: number })?.status;
@@ -1072,15 +1158,25 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
     await Promise.all(Array.from({ length: SERVER_CONCURRENCY }, worker));
     if (firstError) throw firstError;
 
+    // Fusion inter-segments par code de zone : un PLUi en plusieurs PDF produit
+    // un état par (segment, zone) ; on regroupe les règles d'un même code (cf.
+    // mergeRulesByZoneCode) avant déduplication.
     // Déduplication finale par texte de règle (cf. dedupeRules). Crucial :
     // on NE déduplique PAS par (article, topic) — un même article peut porter
     // plusieurs règles distinctes (article 12 stationnement par destination,
     // article 11 aspect par élément, etc.).
-    const merged = job.zones.map((zoneDef) => {
-      const st = job.zoneState.get(zoneDef.code)!;
-      const rules = dedupeRules(st.rules);
+    const groups = mergeRulesByZoneCode(
+      job.segments.flatMap((seg) =>
+        seg.zones.map((z) => ({
+          code: z.code, label: z.label, type: z.type,
+          rules: job.zoneState.get(`${seg.segmentIndex}::${z.code}`)!.rules,
+        })),
+      ),
+    );
+    const merged = groups.map((g) => {
+      const rules = dedupeRules(g.rules);
       const visionCount = rules.filter(r => r.needs_vision || r.needs_external_doc).length;
-      return { zoneDef, rules, visionCount };
+      return { zoneDef: g.zoneDef, rules, visionCount };
     });
 
     assertTocCoverage(job.toc, merged.map((e) => ({ code: e.zoneDef.code, ruleCount: e.rules.length })));
@@ -1167,9 +1263,9 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
     };
     job.status = "done";
     job.phase = "Terminé";
-    // Libère le PDF (mémoire) — le résultat reste consultable via /status le
+    // Libère les PDF (mémoire) — le résultat reste consultable via /status le
     // temps que le client le récupère, puis le GC TTL nettoie le job.
-    job.pdfBuffer = Buffer.alloc(0);
+    for (const seg of job.segments) seg.pdfBuffer = Buffer.alloc(0);
   } catch (e) {
     job.status = "error";
     job.error = e instanceof Error ? e.message : String(e);
@@ -1185,20 +1281,26 @@ adminRouter.get("/admin/ingest-plu-pdf/status", async (req: AuthRequest, res) =>
   const job = INGEST_JOBS.get(jobId);
   if (!job) return res.status(404).json({ error: "Job introuvable ou expiré" });
 
-  const zonesStatus = job.zones.map((z) => {
-    const st = job.zoneState.get(z.code);
-    const done_batches = st?.doneBatches ?? 0;
-    return {
-      code: z.code,
-      label: z.label,
-      type: z.type,
-      total_batches: z.batches.length,
-      done_batches,
-      rules_so_far: st?.rules.length ?? 0,
-      vision_so_far: st?.visionCount ?? 0,
-      done: done_batches >= z.batches.length,
-    };
-  });
+  // Une entrée par (segment, zone). Le front somme total_batches/done_batches
+  // pour la barre de progression — l'agrégation par somme reste correcte même
+  // quand un même code apparaît dans plusieurs PDF.
+  const zonesStatus = job.segments.flatMap((seg) =>
+    seg.zones.map((z) => {
+      const st = job.zoneState.get(`${seg.segmentIndex}::${z.code}`);
+      const done_batches = st?.doneBatches ?? 0;
+      return {
+        segmentIndex: seg.segmentIndex,
+        code: z.code,
+        label: z.label,
+        type: z.type,
+        total_batches: z.batches.length,
+        done_batches,
+        rules_so_far: st?.rules.length ?? 0,
+        vision_so_far: st?.visionCount ?? 0,
+        done: done_batches >= z.batches.length,
+      };
+    }),
+  );
   res.json({
     jobId: job.jobId,
     status: job.status,
@@ -1213,19 +1315,22 @@ adminRouter.get("/admin/ingest-plu-pdf/status", async (req: AuthRequest, res) =>
 // POST /admin/ingest-plu-pdf/batch — extrait UN lot de pages.
 adminRouter.post("/admin/ingest-plu-pdf/batch", async (req: AuthRequest, res) => {
   try {
-    const { jobId, zoneCode, batchIndex } = req.body as { jobId?: string; zoneCode?: string; batchIndex?: number };
+    const { jobId, segmentIndex = 0, zoneCode, batchIndex } = req.body as { jobId?: string; segmentIndex?: number; zoneCode?: string; batchIndex?: number };
     if (!jobId || !zoneCode || !Number.isInteger(batchIndex)) {
       return res.status(400).json({ error: "jobId, zoneCode et batchIndex (int) requis" });
     }
     const job = INGEST_JOBS.get(jobId);
     if (!job) return res.status(404).json({ error: "Job introuvable ou expiré. Reprenez à l'étape /start." });
 
-    const zone = job.zones.find((z) => z.code === zoneCode);
-    if (!zone) return res.status(404).json({ error: `Zone ${zoneCode} absente du job` });
+    // segmentIndex par défaut 0 → rétrocompatible avec un client mono-PDF.
+    const seg = job.segments[segmentIndex];
+    if (!seg) return res.status(404).json({ error: `Segment ${segmentIndex} absent du job` });
+    const zone = seg.zones.find((z) => z.code === zoneCode);
+    if (!zone) return res.status(404).json({ error: `Zone ${zoneCode} absente du segment ${segmentIndex}` });
     const batch = zone.batches[batchIndex!];
     if (!batch) return res.status(404).json({ error: `Lot ${batchIndex} absent de la zone ${zoneCode}` });
 
-    const blocks = renderPagesAsBlocksFor(job.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
+    const blocks = renderPagesAsBlocksFor(seg.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
     const ruleMsg = await callAi(
       { purpose: "plu_rule_extract", userId: job.userId, communeId: job.commune.id },
       {
@@ -1293,16 +1398,27 @@ adminRouter.post("/admin/ingest-plu-pdf/commit", async (req: AuthRequest, res) =
     const job = INGEST_JOBS.get(jobId);
     if (!job) return res.status(404).json({ error: "Job introuvable ou expiré." });
 
+    // Fusion inter-segments par code de zone (cf. mergeRulesByZoneCode) : on
+    // résout label/type depuis le segment qui porte ce code, puis on regroupe
+    // les règles d'un même code issues de PDF différents.
     // Déduplication par texte de règle (cf. dedupeRules) intra-zone.
     // Pas par (article, topic) — sinon l'article 12 stationnement, qui porte
     // typiquement 6+ règles distinctes (habitation, commerce, bureaux,
     // artisanat, hôtellerie…), serait réduit à une seule.
-    const merged = zoneResults.map((zr) => {
-      const rules = dedupeRules(zr.rules);
+    const groups = mergeRulesByZoneCode(
+      zoneResults.flatMap((zr) => {
+        for (const seg of job.segments) {
+          const z = seg.zones.find((z) => z.code === zr.zoneCode);
+          if (z) return [{ code: z.code, label: z.label, type: z.type, rules: zr.rules }];
+        }
+        return [];
+      }),
+    );
+    const merged = groups.map((g) => {
+      const rules = dedupeRules(g.rules);
       const visionCount = rules.filter(r => r.needs_vision || r.needs_external_doc).length;
-      const zoneDef = job.zones.find((z) => z.code === zr.zoneCode);
-      return { zoneDef, rules, visionCount };
-    }).filter((e): e is { zoneDef: NonNullable<typeof e.zoneDef>; rules: PluRuleInput[]; visionCount: number } => !!e.zoneDef);
+      return { zoneDef: g.zoneDef, rules, visionCount };
+    });
 
     // Garde-fou : si l'IA n'a réussi à extraire des règles que pour une
     // poignée de zones, on REFUSE d'écraser le référentiel existant.

@@ -1504,7 +1504,9 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
   const [manualToc, setManualToc] = useState<{
     docId: string;
     docName: string;
-    pdfBase64: string;
+    // Repli sommaire manuel : déclenché uniquement en mono-PDF (le no_toc du
+    // backend) → un seul élément, mais typé tableau pour réutiliser startIngest.
+    pdfsBase64: string[];
     totalPages: number;
     rows: Array<{ code: string; startPage: string }>;
     submitting: boolean;
@@ -1762,7 +1764,7 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
   const startIngest = async (
     docId: string,
     docName: string,
-    pdfBase64: string,
+    pdfsBase64: string[],
     manualTocEntries?: Array<{ code: string; startPage: number }>,
   ) => {
     setIngest({
@@ -1775,9 +1777,12 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
       error: null,
     });
     try {
+      // Un PLUi peut être livré en plusieurs PDF → on envoie toujours
+      // pdfs_base64[] (le backend l'accepte même à un seul élément, et c'est
+      // dans ce cas mono-PDF qu'il propose le repli sommaire manuel no_toc).
       const startResp = await api.post<{ jobId: string; zones: Array<{ code: string }> }>(
         "/mairie/admin/ingest-plu-pdf/start",
-        { doc_id: docId, pdf_base64: pdfBase64, ...(manualTocEntries ? { manual_toc: manualTocEntries } : {}) },
+        { doc_id: docId, pdfs_base64: pdfsBase64, ...(manualTocEntries ? { manual_toc: manualTocEntries } : {}) },
         { timeoutMs: 120_000 },
       );
       setManualToc(null);
@@ -1792,14 +1797,14 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
       } : prev);
       pollIngestStatus(startResp.jobId, docId, docName);
     } catch (e) {
-      // Détection auto du sommaire impossible → on bascule sur la saisie
-      // manuelle plutôt que d'afficher une erreur sans issue.
+      // Détection auto du sommaire impossible (mono-PDF) → on bascule sur la
+      // saisie manuelle plutôt que d'afficher une erreur sans issue.
       if (e instanceof ApiError && e.status === 422 && (e.body as { code?: string })?.code === "no_toc") {
         const totalPages = Number((e.body as { totalPages?: number })?.totalPages) || 0;
         setIngest(null);
         setManualToc((prev) => prev
           ? { ...prev, totalPages: totalPages || prev.totalPages, submitting: false }
-          : { docId, docName, pdfBase64, totalPages, rows: [{ code: "", startPage: "" }], submitting: false, error: null });
+          : { docId, docName, pdfsBase64, totalPages, rows: [{ code: "", startPage: "" }], submitting: false, error: null });
         return;
       }
       const msg = e instanceof Error ? e.message : "Erreur lors du démarrage";
@@ -1814,33 +1819,40 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
     }
   };
 
-  const handleFileSelected = async (file: File | null) => {
-    if (!file || !ingestTargetRef.current) return;
+  const handleFileSelected = async (files: FileList | null) => {
+    const selected = files ? Array.from(files) : [];
+    if (selected.length === 0 || !ingestTargetRef.current) return;
     const target = ingestTargetRef.current;
     ingestTargetRef.current = null;
     if (fileInputRef.current) fileInputRef.current.value = ""; // permet de re-sélectionner le même fichier
 
+    const multi = selected.length > 1;
     setIngest({
       docId: target.id,
       docName: target.name,
       jobId: null,
-      phase: "Lecture du PDF…",
+      phase: multi ? `Lecture des ${selected.length} PDF…` : "Lecture du PDF…",
       zonesDone: 0,
       zonesTotal: 0,
       error: null,
     });
 
+    // Un PLUi peut être livré en plusieurs PDF (découpé par type de zone ou par
+    // tome) → on encode chaque fichier et on envoie pdfs_base64[].
     // Conversion ArrayBuffer → base64 par chunks pour gérer ~30 Mo sans
     // saturer la stack JS (apply spread limité aux gros tableaux).
-    const buf = new Uint8Array(await file.arrayBuffer());
     const CHUNK = 32768;
-    const chunks: string[] = [];
-    for (let i = 0; i < buf.length; i += CHUNK) {
-      chunks.push(String.fromCharCode(...buf.subarray(i, i + CHUNK)));
+    const pdfs_base64: string[] = [];
+    for (const file of selected) {
+      const buf = new Uint8Array(await file.arrayBuffer());
+      const chunks: string[] = [];
+      for (let i = 0; i < buf.length; i += CHUNK) {
+        chunks.push(String.fromCharCode(...buf.subarray(i, i + CHUNK)));
+      }
+      pdfs_base64.push(btoa(chunks.join("")));
     }
-    const pdf_base64 = btoa(chunks.join(""));
 
-    await startIngest(target.id, target.name, pdf_base64);
+    await startIngest(target.id, target.name, pdfs_base64);
   };
 
   // ── Helpers de la saisie manuelle du sommaire ──────────────────────────────
@@ -1865,8 +1877,8 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
       return;
     }
     setManualToc((p) => p ? { ...p, submitting: true, error: null } : p);
-    const { docId, docName, pdfBase64 } = manualToc;
-    await startIngest(docId, docName, pdfBase64, entries);
+    const { docId, docName, pdfsBase64 } = manualToc;
+    await startIngest(docId, docName, pdfsBase64, entries);
     // Si startIngest a re-déclenché un no_toc (improbable en manuel) ou une
     // erreur, manualToc est déjà ré-armé/effacé par startIngest. On retombe ici
     // seulement en cas de succès (manualToc null) — rien à faire.
@@ -1900,8 +1912,9 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
         ref={fileInputRef}
         type="file"
         accept="application/pdf"
+        multiple
         style={{ display: "none" }}
-        onChange={(e) => handleFileSelected(e.target.files?.[0] ?? null)}
+        onChange={(e) => handleFileSelected(e.target.files)}
       />
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 12 }}>
         <h4 style={{ margin: 0, fontSize: 14, fontWeight: 700, color: C.text }}>

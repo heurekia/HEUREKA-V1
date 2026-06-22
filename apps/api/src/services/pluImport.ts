@@ -236,6 +236,53 @@ export function dedupeRules<R extends ExtractedRule>(rules: R[]): R[] {
   return [...m.values()];
 }
 
+/**
+ * Fusionne les règles extraites de PLUSIEURS segments (= plusieurs PDF d'un
+ * même PLUi) par code de zone.
+ *
+ * Un PLUi est parfois livré en plusieurs fichiers : soit découpé par type de
+ * zone (un PDF U, un PDF AU, un PDF A, un PDF N), soit en tomes. Chaque PDF est
+ * traité indépendamment (son propre sommaire, sa propre numérotation), ce qui
+ * produit un groupe de règles par (segment, zone). Avant l'écriture en base, on
+ * regroupe ces règles par `code` de zone :
+ *   - codes distincts entre PDF (cas du découpage par type de zone) → chaque
+ *     zone reste autonome ;
+ *   - code identique dans deux PDF (rare, ex. annexes répétées) → les règles
+ *     sont concaténées sous une seule zone ; le caller appliquera ensuite
+ *     `dedupeRules` pour écarter les doublons exacts.
+ *
+ * Le `label`/`type` retenu est celui du segment dont le libellé est le plus
+ * informatif (le plus long) — un sommaire détaillé prime sur un libellé nu
+ * « Zone UA ».
+ *
+ * Fonction pure (pas d'I/O) → couverte par pluImport.test.ts.
+ */
+export type ZoneRulesGroup<R> = {
+  zoneDef: { code: string; label: string; type: string };
+  rules: R[];
+};
+export function mergeRulesByZoneCode<R>(
+  segmentZones: Array<{ code: string; label: string; type: string; rules: R[] }>,
+): ZoneRulesGroup<R>[] {
+  const byCode = new Map<string, ZoneRulesGroup<R>>();
+  for (const sz of segmentZones) {
+    const entry = byCode.get(sz.code);
+    if (entry) {
+      entry.rules.push(...sz.rules);
+      if ((sz.label?.length ?? 0) > (entry.zoneDef.label?.length ?? 0)) {
+        entry.zoneDef.label = sz.label;
+        entry.zoneDef.type = sz.type;
+      }
+    } else {
+      byCode.set(sz.code, {
+        zoneDef: { code: sz.code, label: sz.label, type: sz.type },
+        rules: [...sz.rules],
+      });
+    }
+  }
+  return [...byCode.values()];
+}
+
 export function assertTocCoverage(
   toc: TocEntry[],
   extracted: Array<{ code: string; ruleCount: number }>,
