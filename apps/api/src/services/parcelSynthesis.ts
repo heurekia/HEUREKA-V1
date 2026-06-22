@@ -49,6 +49,9 @@ export interface ThemeItem {
   value: string | null;
   /** Texte court : résumé, conséquence d'instruction, ou texte de la règle. */
   detail: string | null;
+  /** Extrait verbatim de la règle (texte fidèle du PLU), citable tel quel — permet
+   *  au citoyen de « lire le texte exact » derrière une puce. null hors PLU. */
+  quote?: string | null;
   source: SynthesisSource;
   applies_if?: string[];
   exceptions?: string | null;
@@ -187,18 +190,39 @@ function heightRefIn(text: string | null | undefined, requireUnique = false): st
   return hits[0]![1];
 }
 
+// Présentation d'une clause de contexte : compacte et sans répéter le thème.
+function clip(s: string, max: number): string {
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
+// Première clause d'un texte de conditions (avant « ; » ou « . »), pour rester bref.
+function firstClause(s: string): string {
+  return (s.split(/[;.]/)[0] ?? s).trim() || s.trim();
+}
+// Le sous-thème ne doit pas se contenter de répéter le libellé du thème.
+function sameAsTopic(s: string, topic: string): boolean {
+  const norm = (x: string) => x.toLowerCase().normalize("NFD").replace(/[^a-z]/g, "");
+  const label = TOPIC_LABEL[topic];
+  return label != null && norm(s) === norm(label);
+}
+
 /**
- * Cas chiffrés d'une hauteur portant chacun un référentiel distinct (ex:
- * 6,5 m à l'égout / 9 m au faîtage, stockés dans `cases`). Renvoie null s'il n'y
- * a pas au moins deux valeurs dont une au moins est rattachée à un référentiel
- * reconnu — sinon on ne saurait pas lever l'ambiguïté et on reste sur la valeur nue.
+ * Plusieurs valeurs chiffrées d'un même thème, chacune rattachée à son critère
+ * (ex: 6,5 m à l'égout / 9 m au faîtage ; 1 place par logement / 2 places si T4).
+ * Pour la hauteur on NORMALISE le référentiel (égout/faîtage/acrotère) ; sinon on
+ * reprend le libellé du cas. Renvoie null s'il n'y a pas ≥2 valeurs dont une au
+ * moins porte un critère — sinon on ne lèverait aucune ambiguïté.
  */
-function heightCases(r: RegDbRule): Array<{ ref: string | null; value: number; unit: string }> | null {
-  const mapped = (r.cases ?? [])
-    .filter((c) => c.value != null)
-    .map((c) => ({ ref: heightRefIn(c.condition), value: c.value as number, unit: c.unit ?? r.unit ?? "m" }));
-  if (mapped.length < 2) return null;
-  return mapped.some((m) => m.ref) ? mapped : null;
+function numericCases(r: RegDbRule): Array<{ value: number; unit: string; cond: string | null }> | null {
+  const raw = (r.cases ?? []).filter((c) => c.value != null);
+  if (raw.length < 2) return null;
+  const isHeight = r.topic === "hauteur";
+  const mapped = raw.map((c) => ({
+    value: c.value as number,
+    unit: c.unit ?? r.unit ?? "",
+    cond: isHeight ? heightRefIn(c.condition) : c.condition?.trim() ? clip(c.condition, 48) : null,
+  }));
+  return mapped.some((m) => m.cond) ? mapped : null;
 }
 
 const SETBACK_PATTERNS: Array<[RegExp, string]> = [
@@ -217,37 +241,49 @@ function setbackQualifier(r: RegDbRule): string | null {
   return null;
 }
 
-/** Puce citoyen : libellé + chiffre, ou phrase rédigée si qualitatif. */
-function citizenPoint(r: RegDbRule): string {
-  // Hauteur : lever l'ambiguïté du référentiel de mesure (égout / faîtage / acrotère).
+/**
+ * Clause courte qui dit À QUOI correspond une valeur (le « critère »), tirée des
+ * champs les plus spécifiques disponibles, sans répéter le libellé du thème.
+ * Hauteur et reculs ont une normalisation dédiée ; sinon on reprend le sous-thème,
+ * puis à défaut la première clause des conditions.
+ */
+function distinguishingContext(r: RegDbRule): string | null {
   if (r.topic === "hauteur") {
-    const hLabel = TOPIC_LABEL.hauteur ?? "Hauteur maximale";
-    const cases = heightCases(r);
-    if (cases) {
-      const parts = cases.map((c) => `${fmtNum(c.value)} ${c.unit}${c.ref ? ` ${c.ref}` : ""}`);
-      return `${hLabel} : ${parts.join(" · ")}`;
-    }
-    const v = citizenValue(r);
-    if (v) {
-      const ref = heightRefIn(r.sub_theme) ?? heightRefIn(r.conditions, true) ?? heightRefIn(r.rule_text, true);
-      return `${hLabel}${ref ? ` ${ref}` : ""} : ${v}`;
-    }
+    const ref = heightRefIn(r.sub_theme) ?? heightRefIn(r.conditions, true) ?? heightRefIn(r.rule_text, true);
+    if (ref) return ref;
   }
-  // Reculs : préciser la limite concernée (ou l'implantation en limite) si possible.
   if (r.topic === "recul_limite" || r.topic === "recul_voie") {
+    const q = setbackQualifier(r);
+    if (q) return q;
+  }
+  const st = r.sub_theme?.trim();
+  if (st && !sameAsTopic(st, r.topic)) return clip(st, 60);
+  const cond = r.conditions?.trim();
+  if (cond) return clip(firstClause(cond), 70);
+  return null;
+}
+
+/** Puce citoyen : libellé + chiffre (+ critère distinctif), ou phrase si qualitatif. */
+function citizenPoint(r: RegDbRule): string {
+  const label = TOPIC_LABEL[r.topic] ?? ruleLabel(r);
+  if (!QUALITATIVE_TOPICS.has(r.topic)) {
+    // Plusieurs valeurs pour un même thème → on les déplie avec leur critère.
+    const cases = numericCases(r);
+    if (cases) {
+      const parts = cases.map((c) => [fmtNum(c.value), c.unit, c.cond].filter(Boolean).join(" "));
+      return `${label} : ${parts.join(" · ")}`;
+    }
+    // Valeur unique → on précise à quoi elle correspond si l'info existe.
     const v = citizenValue(r);
     if (v) {
-      const q = setbackQualifier(r);
-      return `${TOPIC_LABEL[r.topic] ?? ruleLabel(r)}${q ? ` (${q})` : ""} : ${v}`;
+      const ctx = distinguishingContext(r);
+      return `${label}${ctx ? ` (${ctx})` : ""} : ${v}`;
     }
-  }
-  const v = citizenValue(r);
-  if (v && !QUALITATIVE_TOPICS.has(r.topic)) {
-    return `${TOPIC_LABEL[r.topic] ?? ruleLabel(r)} : ${v}`;
   }
   const phrase = r.citizen_summary?.trim() || r.summary?.trim();
   if (phrase) return phrase;
-  return v ? `${ruleLabel(r)} : ${v}` : ruleLabel(r);
+  const fallback = citizenValue(r);
+  return fallback ? `${ruleLabel(r)} : ${fallback}` : ruleLabel(r);
 }
 
 function pluSource(r: RegDbRule, zoneCode: string | null): SynthesisSource {
@@ -362,6 +398,8 @@ function buildPluTheme(def: ThemeDef, rules: RegDbRule[], zoneCode: string | nul
       label: ruleLabel(r),
       value: instructorValue(r),
       detail: r.summary?.trim() || (r.rule_text.length > 220 ? `${r.rule_text.slice(0, 220)}…` : r.rule_text),
+      // Texte fidèle de l'article, pour « lire le texte exact » côté citoyen.
+      quote: r.rule_text?.trim() || null,
       source: pluSource(r, zoneCode),
       applies_if: r.applies_if ?? undefined,
       exceptions: r.exceptions ?? null,

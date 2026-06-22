@@ -102,14 +102,54 @@ describe("buildParcelSynthesis — précision des hauteurs et des reculs", () =>
         rule_text: "La hauteur maximale est fixée à 7 m mesurés à l'acrotère.",
       })],
     }));
-    expect(r.themes.find((t) => t.key === "construire")!.citizen.points[0]).toBe("Hauteur maximale à l'acrotère : 7 m");
+    expect(r.themes.find((t) => t.key === "construire")!.citizen.points[0]).toBe("Hauteur maximale (à l'acrotère) : 7 m");
   });
 
   it("préfère le sous-thème au texte pour qualifier la hauteur (faîtage)", () => {
     const r = buildParcelSynthesis(synth({
       rules: [rule({ topic: "hauteur", article_number: 10, value_max: 12, unit: "m", sub_theme: "Hauteur au faîtage" })],
     }));
-    expect(r.themes.find((t) => t.key === "construire")!.citizen.points[0]).toBe("Hauteur maximale au faîtage : 12 m");
+    expect(r.themes.find((t) => t.key === "construire")!.citizen.points[0]).toBe("Hauteur maximale (au faîtage) : 12 m");
+  });
+
+  it("précise le critère d'une valeur non-hauteur via le sous-thème (stationnement)", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({ topic: "stationnement", article_number: 12, value_exact: 2, unit: "places", sub_theme: "logements de plus de 80 m²" })],
+    }));
+    expect(r.themes.find((t) => t.key === "stationnement")!.citizen.points[0]).toBe(
+      "Stationnement (logements de plus de 80 m²) : 2 places",
+    );
+  });
+
+  it("précise le critère d'un accès via la première clause des conditions", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({ topic: "desserte_voies", article_number: 3, value_min: 6, unit: "m", conditions: "voie desservant plusieurs logements ; sauf impasse" })],
+    }));
+    expect(r.themes.find((t) => t.key === "acces")!.citizen.points[0]).toBe(
+      "Accès & voirie (voie desservant plusieurs logements) : 6 m",
+    );
+  });
+
+  it("déplie les cas chiffrés d'un thème non-hauteur avec leur critère (stationnement)", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({
+        topic: "stationnement", article_number: 12, unit: "places",
+        cases: [
+          { condition: "par logement", value: 1, unit: "places", kind: "parametre" },
+          { condition: "pour un T4 ou plus", value: 2, unit: "places", kind: "condition" },
+        ],
+      })],
+    }));
+    expect(r.themes.find((t) => t.key === "stationnement")!.citizen.points[0]).toBe(
+      "Stationnement : 1 places par logement · 2 places pour un T4 ou plus",
+    );
+  });
+
+  it("n'ajoute pas de critère redondant quand le sous-thème répète le thème", () => {
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({ topic: "espaces_verts", article_number: 13, value_min: 20, unit: "%", sub_theme: "Espaces verts à préserver" })],
+    }));
+    expect(r.themes.find((t) => t.key === "verts")!.citizen.points[0]).toBe("Espaces verts à préserver : 20 %");
   });
 
   it("laisse la hauteur nue quand aucun référentiel n'est disponible", () => {
@@ -147,6 +187,19 @@ describe("buildParcelSynthesis — précision des hauteurs et des reculs", () =>
     expect(r.themes.find((t) => t.key === "implanter")!.citizen.points[0]).toBe(
       "Recul par rapport aux limites (limites latérales) : 3 m",
     );
+  });
+});
+
+describe("buildParcelSynthesis — texte exact de la règle", () => {
+  it("expose le texte fidèle de l'article (quote) sur chaque élément PLU", () => {
+    const verbatim = "La hauteur des constructions ne peut excéder 9 mètres au faîtage.";
+    const r = buildParcelSynthesis(synth({
+      rules: [rule({ topic: "hauteur", article_number: 10, value_max: 9, unit: "m", rule_text: verbatim })],
+    }));
+    const item = r.themes.find((t) => t.key === "construire")!.instructor.items[0]!;
+    expect(item.quote).toBe(verbatim);
+    // La source reste tracée vers l'article (pour afficher « Article 10 »).
+    expect(item.source.label).toContain("art. 10");
   });
 });
 

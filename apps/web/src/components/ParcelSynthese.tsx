@@ -24,6 +24,8 @@ export interface SynthItem {
   label: string;
   value: string | null;
   detail: string | null;
+  /** Extrait verbatim de la règle (texte fidèle du PLU), citable tel quel. */
+  quote?: string | null;
   source: SynthSource;
   applies_if?: string[];
   exceptions?: string | null;
@@ -60,6 +62,11 @@ const REL_BADGE: Record<string, { label: string; fg: string; bg: string }> = {
   excluded: { label: "écartée pour cette parcelle", fg: "#64748B", bg: "#F1F5F9" },
   applicable: { label: "applicable", fg: "#15803D", bg: "#F0FDF4" },
 };
+
+function clipText(s: string, max: number): string {
+  const t = s.replace(/\s+/g, " ").trim();
+  return t.length > max ? `${t.slice(0, max - 1)}…` : t;
+}
 
 function ToneChip({ tone }: { tone: SynthTone }) {
   const t = TONE[tone];
@@ -99,16 +106,39 @@ function CitizenTheme({ theme }: { theme: SynthTheme }) {
             </li>
           ))}
         </ul>
-        {theme.instructor.sources.length > 0 && (
-          <details style={{ marginTop: 9 }}>
-            <summary style={{ fontSize: 11, color: "#6366F1", cursor: "pointer", fontWeight: 600, listStyle: "none" }}>
-              D'où vient cette règle ? ({theme.instructor.sources.length}) ›
-            </summary>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
-              {theme.instructor.sources.map((s, i) => <SourceChip key={i} s={s} />)}
-            </div>
-          </details>
-        )}
+        {theme.instructor.sources.length > 0 && (() => {
+          // Texte exact derrière les puces : on liste les règles pertinentes pour le
+          // citoyen (on écarte celles explicitement non applicables à la parcelle),
+          // chacune avec sa référence d'article et son extrait fidèle du PLU.
+          const cited = theme.instructor.items.filter((it) => it.relevance !== "excluded" && (it.quote || it.detail));
+          return (
+            <details style={{ marginTop: 9 }}>
+              <summary style={{ fontSize: 11, color: "#6366F1", cursor: "pointer", fontWeight: 600, listStyle: "none" }}>
+                D'où vient cette règle ? ({theme.instructor.sources.length}) ›
+              </summary>
+              <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginTop: 7 }}>
+                {theme.instructor.sources.map((s, i) => <SourceChip key={i} s={s} />)}
+              </div>
+              {cited.length > 0 && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 9, marginTop: 10 }}>
+                  <span style={{ fontSize: 10, fontWeight: 700, color: "#94A3B8", textTransform: "uppercase", letterSpacing: "0.05em" }}>
+                    Texte exact
+                  </span>
+                  {cited.map((it, i) => (
+                    <div key={i} style={{ borderLeft: "2px solid #C7D2FE", paddingLeft: 10 }}>
+                      <div style={{ fontSize: 10.5, fontWeight: 700, color: "#4338CA" }}>
+                        {it.source.label}{it.value ? ` · ${it.value}` : ""}
+                      </div>
+                      <p style={{ fontSize: 11.5, color: "#475569", margin: "2px 0 0", lineHeight: 1.5, fontStyle: "italic" }}>
+                        «&nbsp;{clipText(it.quote || it.detail || "", 360)}&nbsp;»
+                      </p>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </details>
+          );
+        })()}
       </div>
     </div>
   );
