@@ -95,7 +95,7 @@ reglementationRouter.delete("/reglementation", requireRole("mairie", "instructeu
 });
 
 // PATCH /mairie/reglementation/rules/:id — validate, edit or reject a rule
-reglementationRouter.patch("/reglementation/rules/:id", async (req: AuthRequest, res) => {
+reglementationRouter.patch("/reglementation/rules/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
     const { rule_text, validation_status, value_min, value_max, value_exact, unit, conditions, exceptions, summary, instructor_note, topic, article_number, article_title, cases, applies_if, sub_theme, citizen_title, citizen_summary, citizen_relevant } = req.body as Record<string, unknown>;
@@ -136,7 +136,7 @@ reglementationRouter.patch("/reglementation/rules/:id", async (req: AuthRequest,
 });
 
 // DELETE /mairie/reglementation/rules/:id
-reglementationRouter.delete("/reglementation/rules/:id", async (req: AuthRequest, res) => {
+reglementationRouter.delete("/reglementation/rules/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     await db.delete(zone_regulatory_rules).where(eq(zone_regulatory_rules.id, req.params.id as string));
     res.json({ ok: true });
@@ -147,7 +147,7 @@ reglementationRouter.delete("/reglementation/rules/:id", async (req: AuthRequest
 });
 
 // POST /mairie/reglementation/zones/:zoneId/rules — add a rule manually
-reglementationRouter.post("/reglementation/zones/:zoneId/rules", async (req: AuthRequest, res) => {
+reglementationRouter.post("/reglementation/zones/:zoneId/rules", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const zone_id = req.params.zoneId as string;
     const [zone] = await db.select({ id: zones.id }).from(zones).where(eq(zones.id, zone_id)).limit(1);
@@ -844,7 +844,7 @@ reglementationRouter.post(
   },
 );
 
-reglementationRouter.post("/reglementation/zones", async (req: AuthRequest, res) => {
+reglementationRouter.post("/reglementation/zones", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const { insee_code, commune_name, zone_code, zone_label, zone_type } = req.body as {
       insee_code?: string; commune_name?: string;
@@ -874,7 +874,7 @@ reglementationRouter.post("/reglementation/zones", async (req: AuthRequest, res)
 });
 
 // DELETE /mairie/reglementation/zones/:id — delete a zone and its rules
-reglementationRouter.delete("/reglementation/zones/:id", async (req: AuthRequest, res) => {
+reglementationRouter.delete("/reglementation/zones/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     await db.delete(zone_regulatory_rules).where(eq(zone_regulatory_rules.zone_id, req.params.id as string));
     await db.delete(zones).where(eq(zones.id, req.params.id as string));
@@ -885,7 +885,7 @@ reglementationRouter.delete("/reglementation/zones/:id", async (req: AuthRequest
 });
 
 // PATCH /mairie/reglementation/zones/:id — update zone label/summary
-reglementationRouter.patch("/reglementation/zones/:id", async (req: AuthRequest, res) => {
+reglementationRouter.patch("/reglementation/zones/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const { zone_label, summary } = req.body as { zone_label?: string; summary?: string };
     await db.update(zones)
