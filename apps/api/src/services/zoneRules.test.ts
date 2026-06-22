@@ -334,3 +334,63 @@ describe("pickMostSpecificRule", () => {
     expect(stripSiblingSecteurMentions(text, ["UB"])).toBe(text);
   });
 });
+
+// ── Scénario « gold » : parcelle en UBb ────────────────────────────────────────
+// Verrouille la composition réelle de loadZoneRulesWithInheritance (sans DB) :
+// une parcelle UBb hérite des règles UB, les surcharge avec ses propres règles,
+// et ne voit PAS les règles propres aux secteurs frères (UBa…).
+describe("héritage de secteur — parcelle UBb (gold)", () => {
+  // Règles telles qu'elles existeraient en base, regroupées par zone.
+  type GoldRule = {
+    article_number: number; topic: string; sub_theme: string | null;
+    value_max: number | null; rule_text: string;
+    citizen_title: string; citizen_summary: string | null; summary: string | null;
+  };
+  const ubb: GoldRule[] = [
+    { article_number: 10, topic: "hauteur", sub_theme: null, value_max: 9, rule_text: "Hauteur maximale : 9 m au faîtage.", citizen_title: "Hauteur des maisons", citizen_summary: null, summary: null },
+  ];
+  const ub: GoldRule[] = [
+    { article_number: 10, topic: "hauteur", sub_theme: null, value_max: 12, rule_text: "Hauteur maximale : 12 m au faîtage.", citizen_title: "Hauteur des maisons", citizen_summary: null, summary: null },
+    { article_number: 9, topic: "emprise_sol", sub_theme: null, value_max: 50, rule_text: "Emprise au sol maximale : 50 %.", citizen_title: "Emprise au sol", citizen_summary: null, summary: null },
+  ];
+  const uba: GoldRule[] = [
+    { article_number: 11, topic: "aspect", sub_theme: null, value_max: null, rule_text: "Dans le secteur UBa, les clôtures sur rue sont limitées à 1,20 m.", citizen_title: "Clôtures (UBa)", citizen_summary: null, summary: null },
+  ];
+
+  // Reproduit l'ordonnancement de loadZoneRulesWithInheritance : ascendance la
+  // plus profonde d'abord (UBb, UB), puis les frères (UBa).
+  const ancestry = walkZoneAncestry("UBb");
+  const ancestryCodes = ancestry; // UBb et UB présents en base
+  const merged = mergeRulesDeepestWins([ubb, ub, uba]);
+  const relevant = merged.filter((r) => !isRuleSiblingOnly(r, ancestryCodes));
+
+  it("résout l'ascendance UBb → UB (du plus précis au plus général)", () => {
+    expect(ancestry).toEqual(["UBb", "UB"]);
+  });
+
+  it("surcharge : la hauteur UBb (9 m) l'emporte sur celle de UB (12 m)", () => {
+    expect(relevant.find((r) => r.article_number === 10)?.value_max).toBe(9);
+  });
+
+  it("héritage : l'emprise non redéfinie en UBb est reprise de UB (50 %)", () => {
+    expect(relevant.find((r) => r.article_number === 9)?.value_max).toBe(50);
+  });
+
+  it("isolation : la règle propre au secteur frère UBa est écartée", () => {
+    // Détectée comme « propre à un frère »…
+    expect(isRuleSiblingOnly(uba[0]!, ancestryCodes)).toBe(true);
+    // …donc absente de la vue finale de la parcelle UBb.
+    expect(relevant.some((r) => r.topic === "aspect")).toBe(false);
+  });
+
+  it("vue finale UBb = exactement {hauteur 9 m, emprise 50 %}", () => {
+    expect(relevant).toHaveLength(2);
+    expect(relevant.map((r) => r.article_number).sort((a, b) => a - b)).toEqual([9, 10]);
+  });
+
+  it("nettoyage citoyen : une mention de secteur frère est retirée du texte citoyen", () => {
+    const ruleUB = { citizen_summary: "Hauteur 12 m. En UBa : 15 m.", citizen_title: "Hauteur des maisons" };
+    const scrubbed = applyParcelSecteurContext(ruleUB, ancestryCodes);
+    expect(scrubbed.citizen_summary).not.toMatch(/UBa/);
+  });
+});
