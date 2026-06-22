@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { MapLeaflet, type MapDossier, type BaseLayer } from "../../components/MapLeaflet";
 import { api, ApiError } from "../../lib/api";
+import { normalizeForSearch } from "../../lib/utils";
 import { useAuth } from "../../hooks/useAuth";
 import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 import { RegulatoryChecklist, type RegulatoryChecklistHandle } from "../../components/RegulatoryChecklist";
@@ -199,8 +200,9 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, sig
   const [search, setSearch] = useState("");
   const { logout, user } = useAuth();
   const manyCommunes = communes.length > 5;
+  const normalizedSearch = normalizeForSearch(search);
   const filtered = manyCommunes
-    ? communes.filter(c => c.toLowerCase().includes(search.toLowerCase()))
+    ? communes.filter(c => normalizeForSearch(c).includes(normalizedSearch))
     : communes;
   const visibleNavItems = NAV_ITEMS.filter(item => item.label !== "Signatures" || isSignataire);
   return (
