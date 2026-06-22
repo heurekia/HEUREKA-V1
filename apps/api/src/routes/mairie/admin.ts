@@ -5,7 +5,7 @@ import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock, type AiToolDefinition } from "../../services/aiUsage.js";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, type TocEntry } from "../../services/pluImport.js";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
 import { PDFDocument } from "pdf-lib";
 import {
   computeInstructionDelay,
@@ -668,21 +668,20 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
 // la requête est tuée par le proxy bien avant que la première zone ne finisse,
 // et Safari affiche "Load failed".
 //
-// Le découpage suivant rend chaque requête HTTP courte (≤ 60 s, généralement
-// < 30 s) :
-//   1) POST /admin/ingest-plu-pdf/start — uploade le PDF, extrait le sommaire,
-//      stocke le PDF en RAM sous un jobId, renvoie la liste des zones avec
-//      leurs lots de pages pré-calculés.
-//   2) POST /admin/ingest-plu-pdf/batch — extrait UN lot de pages (8 max) pour
-//      UNE zone, renvoie les règles. Le client orchestre ces appels avec sa
-//      propre concurrence (4-8 en parallèle) et affiche la progression.
-//   3) POST /admin/ingest-plu-pdf/commit — applique assertTocCoverage et écrit
-//      la transaction DB en une fois.
+// Le découpage suivant garde la requête HTTP courte et déporte le gros du
+// travail sur un worker serveur :
+//   1) POST /admin/ingest-plu-pdf/start — uploade le(s) PDF, détecte le(s)
+//      sommaire(s), stocke le job en RAM sous un jobId et LANCE le worker
+//      runIngestJob en arrière-plan (extraction de tous les lots → synthèse
+//      → assertTocCoverage → écriture DB en UNE transaction).
+//   2) GET /admin/ingest-plu-pdf/status?jobId=… — polling : avancée des lots,
+//      phase, puis résultat ou erreur. Le worker poursuit même si le client
+//      ferme l'onglet.
 //
-// Le PDF reste en mémoire sous jobId pendant l'ingestion, avec une TTL d'1 h.
-// Si l'API est redémarrée, le job est perdu et le client doit reprendre au
-// /start — c'est acceptable (les écritures DB n'ont pas encore eu lieu, le
-// référentiel existant n'est pas affecté).
+// Le(s) PDF reste(nt) en mémoire sous jobId pendant l'ingestion (TTL 1 h, libéré
+// dès la fin du worker). Si l'API redémarre, le job est perdu et le client
+// reprend au /start — acceptable, car la transaction DB n'a lieu qu'à la toute
+// fin : tant qu'elle n'a pas réussi, le référentiel existant n'est pas affecté.
 
 // Un segment = UN PDF du PLUi. Un PLUi peut être livré en plusieurs fichiers
 // (découpé par type de zone : U / AU / A / N, ou par tomes). Chaque PDF est
@@ -746,6 +745,9 @@ type IngestJob = {
 
 const INGEST_JOBS = new Map<string, IngestJob>();
 const INGEST_JOB_TTL_MS = 60 * 60 * 1000; // 1 h
+// Plafond du nombre de PDF par ingestion (un PLUi découpé tient largement
+// dedans : U/AU/A/N = 4, ou quelques tomes). Garde-fou mémoire + taille body.
+const MAX_PDFS_PER_INGEST = 20;
 
 function gcIngestJobs() {
   const now = Date.now();
@@ -784,21 +786,17 @@ async function detectPluToc(
   // pas lire), on les utilise telles quelles et on saute la détection.
   if (manualEntries.length > 0) {
     const manual = manualEntries.flatMap((e) => {
-      const code = typeof e?.code === "string" ? e.code.trim().toUpperCase() : "";
+      const code = typeof e?.code === "string" ? normalizeZoneCode(e.code) : "";
       const startPage = Number(e?.startPage);
       if (!code || !Number.isInteger(startPage) || startPage < 1 || startPage > totalPages) return [];
-      const type = typeof e?.type === "string" && e.type ? e.type
-        : /^[12]?AU/i.test(code) ? "AU"
-        : code.startsWith("U") ? "U"
-        : code.startsWith("A") ? "A"
-        : code.startsWith("N") ? "N" : "U";
+      const type = typeof e?.type === "string" && e.type ? e.type : zoneTypeFromCode(code);
       const label = typeof e?.label === "string" && e.label.trim() ? e.label.trim() : `Zone ${code}`;
       return [{ code, label, type, startPage }];
     });
     // Retour direct (même vide → le caller traduit en 400 "sommaire manuel
     // invalide"). On ne retombe pas sur l'auto-détection : l'opérateur a fait
     // un choix explicite.
-    return manual;
+    return dedupeTocByCode(manual);
   }
 
   const tocPages = Math.min(15, totalPages);
@@ -836,19 +834,34 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
       code?: unknown; label?: unknown; type?: unknown; startPage?: unknown;
     }>;
     toc = tocParsed.flatMap((e) => {
-      const code = typeof e.code === "string" ? e.code.trim() : "";
+      const code = typeof e.code === "string" ? normalizeZoneCode(e.code) : "";
       const startPage = Number(e.startPage);
       if (!code || !Number.isInteger(startPage)) return [];
       return [{
         code,
-        label: typeof e.label === "string" ? e.label : code,
-        type: typeof e.type === "string" ? e.type : "U",
+        label: typeof e.label === "string" ? e.label : `Zone ${code}`,
+        type: typeof e.type === "string" && e.type ? e.type : zoneTypeFromCode(code),
         startPage,
       }];
     });
   }
 
-  return toc;
+  // Dédup par code : deux ancres de même code dans UN segment (sommaire manuel
+  // au code répété, ou hallucination Pixtral) provoqueraient une collision de
+  // clé zoneState (`${segmentIndex}::${code}`) et un routage de lot ambigu
+  // (seg.zones.find renvoie le 1er). On garde l'ancre à la plus petite page.
+  return dedupeTocByCode(toc);
+}
+
+// Garde, par code, l'entrée à la plus petite startPage (le début réel de la
+// section ; une 2e occurrence du même code est une coquille de sommaire).
+function dedupeTocByCode(entries: TocEntry[]): TocEntry[] {
+  const byCode = new Map<string, TocEntry>();
+  for (const e of entries) {
+    const prev = byCode.get(e.code);
+    if (!prev || e.startPage < prev.startPage) byCode.set(e.code, e);
+  }
+  return [...byCode.values()];
 }
 
 // POST /admin/ingest-plu-pdf/start
@@ -881,6 +894,15 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
       : pdf_base64 ? [pdf_base64] : [];
     if (pdfList.length === 0) {
       return res.status(400).json({ error: "pdf_base64 ou pdfs_base64 requis" });
+    }
+    // Borne le nombre de PDF : chaque buffer est gardé en RAM pendant tout le
+    // job (INGEST_JOBS) et le body cumulé doit tenir sous la limite express.json
+    // de la route (cf. app.ts). Au-delà, on refuse proprement plutôt que de
+    // risquer un 413 opaque ou une pression mémoire.
+    if (pdfList.length > MAX_PDFS_PER_INGEST) {
+      return res.status(400).json({
+        error: `Trop de fichiers (${pdfList.length}). Maximum ${MAX_PDFS_PER_INGEST} PDF par ingestion — regroupez ou ingérez en plusieurs fois.`,
+      });
     }
 
     // Résolution du contexte d'ingestion : document explicite ou commune legacy.
@@ -946,25 +968,28 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
     const seenTocCodes = new Set<string>();
     let lastTotalPages = 0;
 
-    for (const b64 of pdfList) {
+    // Phase 1 — détection du sommaire, un segment = un PDF, EN PARALLÈLE.
+    // Chaque detectPluToc est indépendant et peut déclencher un appel Pixtral
+    // lent (~15-20 s) ; les enchaîner ferait dépasser le proxy nginx (60 s →
+    // 504) dès qu'on a plusieurs PDF scannés. Promise.all conserve l'ordre
+    // d'origine → segmentIndex stable.
+    const detected = await Promise.all(pdfList.map(async (b64) => {
       const pdfBuffer = Buffer.from(b64, "base64");
       const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
       const totalPages = pdfDoc.getPageCount();
-      lastTotalPages = totalPages;
-
       const toc = await detectPluToc(
         pdfBuffer, totalPages,
         { userId, communeId: commune.id },
         singlePdf ? manualEntries : [],
       );
-      // Un PDF sans sommaire exploitable est ignoré silencieusement : c'est
-      // souvent une annexe (pièces graphiques, OAP) glissée dans le lot. Le
-      // garde-fou final (assertTocCoverage) reste seul juge de la couverture.
-      if (toc.length === 0) continue;
+      return { pdfBuffer, totalPages, toc };
+    }));
 
-      const zoneRanges = partitionPagesByZone(toc, totalPages);
-      // segmentIndex = position dans le tableau retenu → routage /batch fiable
-      // même si des PDF intermédiaires ont été écartés faute de sommaire.
+    const failedSegments: number[] = []; // positions 1-indexées des PDF sans sommaire
+    detected.forEach((d, idx) => {
+      lastTotalPages = d.totalPages;
+      const zoneRanges = d.toc.length > 0 ? partitionPagesByZone(d.toc, d.totalPages) : [];
+      if (zoneRanges.length === 0) { failedSegments.push(idx + 1); return; }
       const segmentIndex = segments.length;
       const zones_out = zoneRanges.map((z) => ({
         code: z.code, label: z.label, type: z.type,
@@ -972,33 +997,46 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
         batches: chunkPages(z.startPage, z.endPage, PAGE_BATCH)
           .map(([first, last], i) => ({ index: i, firstPage: first, lastPage: last })),
       }));
-      segments.push({ segmentIndex, pdfBuffer, totalPages, zones: zones_out });
+      segments.push({ segmentIndex, pdfBuffer: d.pdfBuffer, totalPages: d.totalPages, zones: zones_out });
 
-      for (const t of toc) {
-        if (seenTocCodes.has(t.code)) continue;
-        seenTocCodes.add(t.code);
-        unionToc.push(t);
+      // unionToc = zones RÉELLEMENT retenues (zoneRanges), pas le toc brut : une
+      // ancre hors plage écartée par partitionPagesByZone ne doit pas être
+      // comptée comme « zone manquante » par assertTocCoverage.
+      for (const z of zoneRanges) {
+        if (seenTocCodes.has(z.code)) continue;
+        seenTocCodes.add(z.code);
+        unionToc.push({ code: z.code, label: z.label, type: z.type, startPage: z.startPage });
       }
-    }
+    });
 
-    if (segments.length === 0) {
-      // Mode mono-PDF : on préserve les retours fins du flux historique pour
-      // que le front sache réagir (sommaire manuel invalide → 400 ; aucune
-      // détection → 422 no_toc + totalPages pour proposer la saisie manuelle).
-      if (singlePdf && manualEntries.length > 0) {
-        return res.status(400).json({
-          error: `Sommaire manuel invalide : indiquez au moins une zone avec un code et une page de début comprise entre 1 et ${lastTotalPages}.`,
-        });
-      }
-      if (singlePdf) {
+    if (singlePdf) {
+      // Mode mono-PDF : retours fins du flux historique pour que le front
+      // bascule sur la saisie manuelle (sommaire manuel invalide → 400 ; aucune
+      // détection → 422 no_toc + totalPages pour proposer le formulaire).
+      if (segments.length === 0) {
+        if (manualEntries.length > 0) {
+          return res.status(400).json({
+            error: `Sommaire manuel invalide : indiquez au moins une zone avec un code et une page de début comprise entre 1 et ${lastTotalPages}.`,
+          });
+        }
         return res.status(422).json({
           error: "Aucun sommaire détecté dans les premières pages. Vérifiez que c'est bien un règlement PLU avec sommaire.",
           code: "no_toc",
           totalPages: lastTotalPages,
         });
       }
-      // Multi-PDF : aucun fichier exploitable.
-      return res.status(422).json({ error: "Aucun sommaire détecté dans les PDF fournis. Vérifiez que ce sont bien des règlements PLU avec sommaire." });
+    } else if (failedSegments.length > 0) {
+      // Multi-PDF : on REFUSE d'ignorer en silence un PDF sans sommaire — ce
+      // serait une perte de données, car le garde-fou de couverture est aveugle
+      // aux zones d'un PDF jamais analysé. On échoue en nommant les fichiers
+      // fautifs, sans rien écrire en base.
+      return res.status(422).json({
+        code: "segment_no_toc",
+        failedSegments,
+        error: `Sommaire introuvable dans ${failedSegments.length} PDF (position ${failedSegments.join(", ")}). `
+          + "Retirez les annexes sans règlement, ou importez ce(s) fichier(s) séparément pour saisir le sommaire à la main. "
+          + "Aucune donnée n'a été modifiée.",
+      });
     }
 
     const jobId = `${commune.insee_code}-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
@@ -1263,13 +1301,16 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
     };
     job.status = "done";
     job.phase = "Terminé";
-    // Libère les PDF (mémoire) — le résultat reste consultable via /status le
-    // temps que le client le récupère, puis le GC TTL nettoie le job.
-    for (const seg of job.segments) seg.pdfBuffer = Buffer.alloc(0);
   } catch (e) {
     job.status = "error";
     job.error = e instanceof Error ? e.message : String(e);
     job.phase = "Erreur";
+  } finally {
+    // Libère les PDF (mémoire) dans TOUS les cas — succès comme erreur. Sans le
+    // finally, un échec d'extraction laissait tous les buffers (potentiellement
+    // plusieurs dizaines de Mo × N segments) épinglés dans INGEST_JOBS jusqu'au
+    // GC TTL (1 h). Le résultat/erreur reste consultable via /status entre-temps.
+    for (const seg of job.segments) seg.pdfBuffer = Buffer.alloc(0);
   }
 }
 
@@ -1310,219 +1351,6 @@ adminRouter.get("/admin/ingest-plu-pdf/status", async (req: AuthRequest, res) =>
     result: job.result ?? null,
     error: job.error ?? null,
   });
-});
-
-// POST /admin/ingest-plu-pdf/batch — extrait UN lot de pages.
-adminRouter.post("/admin/ingest-plu-pdf/batch", async (req: AuthRequest, res) => {
-  try {
-    const { jobId, segmentIndex = 0, zoneCode, batchIndex } = req.body as { jobId?: string; segmentIndex?: number; zoneCode?: string; batchIndex?: number };
-    if (!jobId || !zoneCode || !Number.isInteger(batchIndex)) {
-      return res.status(400).json({ error: "jobId, zoneCode et batchIndex (int) requis" });
-    }
-    const job = INGEST_JOBS.get(jobId);
-    if (!job) return res.status(404).json({ error: "Job introuvable ou expiré. Reprenez à l'étape /start." });
-
-    // segmentIndex par défaut 0 → rétrocompatible avec un client mono-PDF.
-    const seg = job.segments[segmentIndex];
-    if (!seg) return res.status(404).json({ error: `Segment ${segmentIndex} absent du job` });
-    const zone = seg.zones.find((z) => z.code === zoneCode);
-    if (!zone) return res.status(404).json({ error: `Zone ${zoneCode} absente du segment ${segmentIndex}` });
-    const batch = zone.batches[batchIndex!];
-    if (!batch) return res.status(404).json({ error: `Lot ${batchIndex} absent de la zone ${zoneCode}` });
-
-    const blocks = renderPagesAsBlocksFor(seg.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
-    const ruleMsg = await callAi(
-      { purpose: "plu_rule_extract", userId: job.userId, communeId: job.commune.id },
-      {
-        model: "ai-smart",
-        max_tokens: 4000,
-        tools: [PLU_SAVE_RULE_TOOL],
-        tool_choice: "any",
-        messages: [{
-          role: "user",
-          content: [
-            ...blocks,
-            { type: "text", text: `Ces pages font partie d'un règlement PLU français, section "Zone ${zone.code}" (${zone.label}). Extrais les règles de la ZONE ${zone.code} uniquement.
-
-Pour CHAQUE article ou sous-article distinct présent dans ces pages, appelle save_rule UNE fois.
-Correspondance article → topic :
-  1/2 → destinations | 5 → terrain_min | 6 → recul_voie | 7 → recul_limite
-  8 → recul_batiments | 9 → emprise_sol | 10 → hauteur | 11 → aspect
-  12 → stationnement | 13 → espaces_verts | 14 → cos
-
-- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau = une règle distincte → un appel save_rule par ligne.
-- Un même article peut porter PLUSIEURS règles distinctes selon la destination (habitation, commerce, bureaux, artisanat, hôtellerie…). Émets UN save_rule par destination / catégorie, avec son propre rule_text et sa propre valeur. Ne fusionne pas tout dans une seule règle.
-- Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
-- Plusieurs valeurs selon sous-secteurs géographiques (UA1 vs UA2…) → 1 save_rule par sous-secteur si possible, sinon valeur principale dans value_max + variantes dans conditions.
-- Si la règle renvoie à un schéma/croquis graphique → needs_vision = true.
-- Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
-- N'invente aucune valeur. Si incertain, omets value_min/max/exact.
-
-CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à rédiger SOIGNEUSEMENT :
-- citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Stationnement pour logements individuels », « Hauteur maximale des annexes », « Implantation en limite de propriété ».
-- citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant, niveau « particulier qui veut construire chez lui ». Inclus EXPLICITEMENT : la règle, les conditions, les exceptions, les valeurs chiffrées avec unité, ET — si needs_vision = true — décris le schéma associé (ce qu'il montre, ce qu'il autorise, ce qu'il interdit). Phrases complètes, JAMAIS de version 10 mots compacte, pas de bullets, pas de jargon juridique.
-- Exemple acceptable (article 7, recul limites) : « Selon la profondeur par rapport à la voie, l'implantation est autorisée soit d'une limite à l'autre, soit avec un retrait minimal. Sur les 20 premiers mètres : retrait de 3 m minimum (ou H/2) pour moins de 3 logements ; 5 m (ou 1,5 × H) pour 3 logements et plus. Au-delà de 20 mètres, l'implantation en limite séparative est interdite. Exceptions : annexes, jumelages, extensions de constructions déjà en limite. Les piscines doivent rester à 3 m minimum. Le schéma associé illustre le calcul de H sur terrain plat ou en pente, et la zone des 20 mètres depuis la voie. »
-- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.` },
-          ],
-        }],
-      },
-    );
-    const rules = ruleMsg.content
-      .filter((b): b is Extract<typeof b, { type: "tool_use" }> => b.type === "tool_use")
-      .map((b) => b.input as PluRuleInput);
-    const visionCount = rules.filter((r) => r.needs_vision || r.needs_external_doc).length;
-    res.json({ rules, visionCount, batch });
-  } catch (err) {
-    console.error("[ingest-plu-pdf/batch]", err);
-    const status = (err as { status?: number })?.status;
-    const transient = status === 429 || status === 529 || (typeof status === "number" && status >= 500);
-    res.status(transient ? 503 : 500).json({
-      error: transient
-        ? "Service IA momentanément indisponible — réessayez ce lot."
-        : (err instanceof Error ? err.message : String(err)),
-      transient,
-    });
-  }
-});
-
-// POST /admin/ingest-plu-pdf/commit — écrit la transaction.
-adminRouter.post("/admin/ingest-plu-pdf/commit", async (req: AuthRequest, res) => {
-  try {
-    const { jobId, zoneResults } = req.body as {
-      jobId?: string;
-      zoneResults?: Array<{ zoneCode: string; rules: PluRuleInput[]; visionCount?: number }>;
-    };
-    if (!jobId || !Array.isArray(zoneResults)) {
-      return res.status(400).json({ error: "jobId et zoneResults requis" });
-    }
-    const job = INGEST_JOBS.get(jobId);
-    if (!job) return res.status(404).json({ error: "Job introuvable ou expiré." });
-
-    // Fusion inter-segments par code de zone (cf. mergeRulesByZoneCode) : on
-    // résout label/type depuis le segment qui porte ce code, puis on regroupe
-    // les règles d'un même code issues de PDF différents.
-    // Déduplication par texte de règle (cf. dedupeRules) intra-zone.
-    // Pas par (article, topic) — sinon l'article 12 stationnement, qui porte
-    // typiquement 6+ règles distinctes (habitation, commerce, bureaux,
-    // artisanat, hôtellerie…), serait réduit à une seule.
-    const groups = mergeRulesByZoneCode(
-      zoneResults.flatMap((zr) => {
-        for (const seg of job.segments) {
-          const z = seg.zones.find((z) => z.code === zr.zoneCode);
-          if (z) return [{ code: z.code, label: z.label, type: z.type, rules: zr.rules }];
-        }
-        return [];
-      }),
-    );
-    const merged = groups.map((g) => {
-      const rules = dedupeRules(g.rules);
-      const visionCount = rules.filter(r => r.needs_vision || r.needs_external_doc).length;
-      return { zoneDef: g.zoneDef, rules, visionCount };
-    });
-
-    // Garde-fou : si l'IA n'a réussi à extraire des règles que pour une
-    // poignée de zones, on REFUSE d'écraser le référentiel existant.
-    assertTocCoverage(
-      job.toc,
-      merged.map((e) => ({ code: e.zoneDef.code, ruleCount: e.rules.length })),
-    );
-
-    const num = (v: unknown): number | null =>
-      v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null;
-
-    // Deux régimes selon le mode du job :
-    //  - Mode document (PLUi/PLUm/PPRI/…) : purge par source_document_id,
-    //    insertion taguée source_document_id, commune_id NULL si porteur EPCI
-    //    (zones partagées) ou = commune.id si porteur commune. Les communes
-    //    rattachées via document_communes ont été posées au moment de la
-    //    création du document — on ne les retouche pas ici.
-    //  - Mode legacy : comportement historique préservé strictement
-    //    (purge par commune_id, pas de source_document_id). On garde ce mode
-    //    pour ne pas casser l'écran d'import PLU communal existant.
-    const isDocMode = !!job.document;
-    const isEpciDoc = job.document?.porteur === "epci";
-    const sourceDocumentId = job.document?.id ?? null;
-    const zoneCommuneId = isEpciDoc ? null : job.commune.id;
-
-    await db.transaction(async (tx) => {
-      if (isDocMode) {
-        const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.source_document_id, sourceDocumentId!));
-        if (oldZones.length > 0) {
-          await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
-          await tx.delete(zones).where(eq(zones.source_document_id, sourceDocumentId!));
-        }
-      } else {
-        const oldZones = await tx.select({ id: zones.id }).from(zones).where(eq(zones.commune_id, job.commune.id));
-        if (oldZones.length > 0) {
-          await tx.delete(zone_regulatory_rules).where(inArray(zone_regulatory_rules.zone_id, oldZones.map((z) => z.id)));
-          await tx.delete(zones).where(eq(zones.commune_id, job.commune.id));
-        }
-      }
-
-      for (const { zoneDef, rules } of merged) {
-        const [created] = await tx.insert(zones).values({
-          commune_id: isDocMode ? zoneCommuneId : job.commune.id,
-          source_document_id: sourceDocumentId,
-          zone_code: zoneDef.code,
-          zone_label: zoneDef.label,
-          zone_type: zoneDef.type,
-          summary: `Zone ${zoneDef.code} — extrait par IA, à valider`,
-          status: "active",
-          is_active: true,
-        }).returning();
-        const zoneId = created!.id;
-        for (const rule of rules) {
-          const articleInt = toArticleInt(rule.article_number);
-          await tx.insert(zone_regulatory_rules).values({
-            zone_id: zoneId,
-            source_document_id: sourceDocumentId,
-            article_number: articleInt,
-            article_title: rule.article_title ?? (articleInt != null ? `Article ${articleInt}` : ""),
-            topic: rule.topic,
-            rule_text: rule.rule_text,
-            value_min: num(rule.value_min),
-            value_max: num(rule.value_max),
-            value_exact: num(rule.value_exact),
-            unit: rule.unit ?? null,
-            conditions: rule.conditions ?? null,
-            summary: rule.summary,
-            citizen_title: rule.citizen_title?.trim() || null,
-            citizen_summary: rule.citizen_summary?.trim() || null,
-            citizen_relevant: rule.citizen_relevant !== false,
-            instructor_note: [
-              rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
-              rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
-            ].filter(Boolean).join(" | ") || null,
-            validation_status: "brouillon" as const,
-          });
-        }
-      }
-
-      // Marquage du document comme ingéré (mode document uniquement).
-      if (isDocMode) {
-        await tx.update(regulatory_documents)
-          .set({ status: "ingested", ingested_at: new Date(), updated_at: new Date() })
-          .where(eq(regulatory_documents.id, sourceDocumentId!));
-      }
-    });
-
-    // Job consommé — on libère la RAM (PDF buffer).
-    INGEST_JOBS.delete(jobId);
-
-    const detail = merged.map((e) => ({ zone: e.zoneDef.code, rules: e.rules.length, vision: e.visionCount }));
-    res.json({
-      ok: true,
-      commune: job.commune.name,
-      insee_code: job.commune.insee_code,
-      zones: detail.length,
-      rules: detail.reduce((s, z) => s + z.rules, 0),
-      needs_review: detail.reduce((s, z) => s + z.vision, 0),
-      detail,
-    });
-  } catch (err) {
-    console.error("[ingest-plu-pdf/commit]", err);
-    res.status(500).json({ error: err instanceof Error ? err.message : String(err) });
-  }
 });
 
 // GET /mairie/admin/reglementation-status

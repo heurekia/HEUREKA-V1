@@ -114,6 +114,41 @@ export function chunkPages(start: number, end: number, batchSize: number): Array
  * Si moins de `minZones` zones trouvées, retourne [] et le caller bascule sur
  * Pixtral. Codes reconnus : U[A-Z], 1AU/2AU/AU[a-z]?, A, A[a-z]?, N, N[a-z]?.
  */
+/**
+ * Normalise un code de zone PLU vers sa forme canonique, quelle que soit la
+ * casse en entrée. INDISPENSABLE pour que les codes issus de sources
+ * différentes (texte natif, sommaire manuel, vision Pixtral) fusionnent : sans
+ * ça, "UA" (natif) et "Ua"/"UA " (Pixtral) deviennent deux zones distinctes.
+ *
+ * Règles : AUS → AUs, NJ → Nj, UA → UA. Préfixe à 2 lettres (AU, UA, UC…)
+ * conservé en majuscules, suffixe en minuscules (sauf le 2e caractère des
+ * codes U[A-Z]).
+ */
+export function normalizeZoneCode(raw: string): string {
+  const s = raw.trim();
+  if (s.length === 0) return "";
+  if (/^[12]?AU/i.test(s)) {
+    // 1AU, 2AU, AUs, AUa : "AU" majuscule, suffixe minuscule.
+    const m = s.match(/^([12]?)AU(.*)$/i)!;
+    return (m[1] ?? "") + "AU" + (m[2] ?? "").toLowerCase();
+  }
+  const first = s[0]!.toUpperCase();
+  if (s.length === 1) return first; // A, N
+  // UA, UC : zone urbaine = deux lettres majuscules. Nj, Ah, Ni : 1re lettre
+  // majuscule + suffixe minuscule (notation conventionnelle des sous-zones).
+  return first === "U"
+    ? first + s[1]!.toUpperCase() + s.slice(2).toLowerCase()
+    : first + s.slice(1).toLowerCase();
+}
+
+/** Déduit le type de zone ("U" | "AU" | "A" | "N") à partir d'un code normalisé. */
+export function zoneTypeFromCode(code: string): string {
+  return /^[12]?AU/i.test(code) ? "AU"
+    : code.startsWith("U") ? "U"
+    : code.startsWith("A") ? "A"
+    : code.startsWith("N") ? "N" : "U";
+}
+
 export function parseTocFromNativeText(text: string, minZones = 3): TocEntry[] {
   if (!text) return [];
   const zoneCodeRe = /\bzone\s+(?<code>[12]?AU[a-z]{0,2}|U[A-Z][a-z]?|N[a-z]{0,2}|A[a-z]{0,2})\b/i;
@@ -125,36 +160,13 @@ export function parseTocFromNativeText(text: string, minZones = 3): TocEntry[] {
     if (line.length === 0) continue;
     const zm = line.match(zoneCodeRe);
     if (!zm?.groups?.code) continue;
-    // Normalise : AUS → AUs, NJ → Nj, UA → UA. Les codes commençant par
-    // un préfixe à 2 lettres majuscules (AU, parfois UA, UC…) conservent ce
-    // préfixe, seul le suffixe est mis en minuscule.
-    const raw = zm.groups.code;
-    let code: string;
-    if (raw.length <= 2) {
-      code = raw.toUpperCase();
-    } else if (/^[12]?AU/i.test(raw)) {
-      // 1AU, 2AU, AUs, AUa : "AU" majuscule, suffixe minuscule.
-      const m = raw.match(/^([12]?)AU(.*)$/i)!;
-      code = (m[1] ?? "") + "AU" + (m[2] ?? "").toLowerCase();
-    } else {
-      // UA, UC, Nh, Ah, Ni : 1re lettre majuscule + 2e majuscule si dans
-      // {UA-UZ}, sinon minuscule (Nh, Ni).
-      code = raw[0]!.toUpperCase() + (
-        raw[0]!.toUpperCase() === "U"
-          ? raw[1]!.toUpperCase() + raw.slice(2).toLowerCase()
-          : raw.slice(1).toLowerCase()
-      );
-    }
+    const code = normalizeZoneCode(zm.groups.code);
     const pm = line.match(pageRe);
     if (!pm) continue;
     const page = Number(pm[1]);
     if (!Number.isInteger(page) || page < 1 || page > 999) continue;
     if (seenCodes.has(code)) continue;
-    const type = /^[12]?AU/i.test(code) ? "AU"
-      : code.startsWith("U") ? "U"
-      : code.startsWith("A") ? "A"
-      : code.startsWith("N") ? "N" : "U";
-    seenCodes.set(code, { code, label: `Zone ${code}`, type, startPage: page });
+    seenCodes.set(code, { code, label: `Zone ${code}`, type: zoneTypeFromCode(code), startPage: page });
   }
   const entries = [...seenCodes.values()].sort((a, b) => a.startPage - b.startPage);
   return entries.length >= minZones ? entries : [];
