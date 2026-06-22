@@ -27,6 +27,9 @@ function rule(overrides: Partial<EvaluableRule> & { rule_id: string }): Evaluabl
     citizen_summary: overrides.citizen_summary ?? null,
     citizen_relevant: overrides.citizen_relevant ?? true,
     instructor_note: overrides.instructor_note ?? null,
+    source_segment_id: overrides.source_segment_id ?? null,
+    source_page: overrides.source_page ?? null,
+    source_quote: overrides.source_quote ?? null,
   };
 }
 
@@ -76,6 +79,36 @@ describe("evaluateHauteur", () => {
     it("cites the rule as legal_basis even when the fact is missing", () => {
       const finding = evaluateHauteur(rule({ rule_id: "r1", value_max: 9 }), ctx([]))!;
       expect(finding.legal_basis).toEqual([{ type: "zone_rule", rule_id: "r1", article: "Art. 10" }]);
+    });
+
+    it("retrace le passage source quand la provenance fine existe", () => {
+      const finding = evaluateHauteur(
+        rule({
+          rule_id: "r1",
+          value_max: 9,
+          source_segment_id: "37003_plu_reglement_UA",
+          source_page: 42,
+          source_quote: "La hauteur des constructions ne peut excéder 9 mètres.",
+        }),
+        ctx([fact({ key: "hauteur", value: 7.5, source: "document_extraction" })]),
+      )!;
+      // La règle reste citée ET un renvoi vers le segment/page/verbatim permet
+      // de rouvrir le bon document à la bonne page.
+      expect(finding.source_refs).toEqual([
+        { type: "zone_rule", rule_id: "r1", article: "Art. 10" },
+        {
+          type: "document_segment",
+          segment_id: "37003_plu_reglement_UA",
+          doc_type: "plu_reglement",
+          page: 42,
+          quote: "La hauteur des constructions ne peut excéder 9 mètres.",
+        },
+      ]);
+    });
+
+    it("n'ajoute pas de renvoi document_segment sans provenance fine", () => {
+      const finding = evaluateHauteur(rule({ rule_id: "r1", value_max: 9 }), ctx([]))!;
+      expect(finding.source_refs).toEqual([{ type: "zone_rule", rule_id: "r1", article: "Art. 10" }]);
     });
   });
 

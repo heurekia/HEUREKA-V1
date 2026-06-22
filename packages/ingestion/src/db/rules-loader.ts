@@ -227,6 +227,11 @@ export async function loadRules(
           applies_if: r.applies_if ?? [],
           sub_theme: r.sub_theme,
           instructor_note: r.instructor_note,
+          // Provenance fine : retrouver le passage source (segment + page) et
+          // le verbatim citable. source_quote retombe sur rule_text si absent.
+          source_segment_id: r.source_segment_id ?? null,
+          source_page: r.source_page ?? null,
+          source_quote: r.source_quote ?? r.rule_text,
           validation_status: "brouillon",
         });
         ruleCount++;

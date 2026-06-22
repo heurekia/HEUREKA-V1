@@ -27,6 +27,9 @@ function rule(overrides: Partial<EvaluableRule> & { rule_id: string }): Evaluabl
     citizen_summary: overrides.citizen_summary ?? null,
     citizen_relevant: overrides.citizen_relevant ?? true,
     instructor_note: overrides.instructor_note ?? null,
+    source_segment_id: overrides.source_segment_id ?? null,
+    source_page: overrides.source_page ?? null,
+    source_quote: overrides.source_quote ?? null,
   };
 }
 

@@ -84,6 +84,11 @@ describe("structureSegments", () => {
     // chaque appel ne contient QUE le texte de sa zone (pas tout le PLU)
     expect(calls[0]).toContain("En limite ou H/2");
     expect(calls[0]).not.toContain("faîtage");
+    // provenance fine : chaque règle pointe vers le segment de sa zone
+    // (= ligne document_segments) + verbatim citable.
+    expect(result[0]!.rules[0]!.source_segment_id).toBe("37261_PLU_REG_UA");
+    expect(result[0]!.rules[0]!.source_quote).toBe("H/2 min 3 m.");
+    expect(result[0]!.rules[0]!.source_page).toBeNull();
   });
 
   it("une zone dont le LLM échoue renvoie 0 règle sans casser le reste", async () => {

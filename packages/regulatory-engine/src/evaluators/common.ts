@@ -13,6 +13,25 @@ export function buildRuleSource(rule: EvaluableRule): SourceRef {
   };
 }
 
+// Sources citables d'un finding. Toujours la règle de zone ; et, quand la
+// provenance fine existe (gravée à l'ingestion), un renvoi vers le PASSAGE
+// source — segment RAG + page + extrait verbatim — pour retracer le document
+// jusqu'à l'endroit exact. Les évaluateurs déterministes travaillent sur des
+// règles de PLU/PLUi (R.123-9) → doc_type "plu_reglement".
+export function buildSourceRefs(rule: EvaluableRule, docType = "plu_reglement"): SourceRef[] {
+  const refs: SourceRef[] = [buildRuleSource(rule)];
+  if (rule.source_segment_id) {
+    refs.push({
+      type: "document_segment",
+      segment_id: rule.source_segment_id,
+      doc_type: docType,
+      page: rule.source_page ?? undefined,
+      quote: rule.source_quote ?? undefined,
+    });
+  }
+  return refs;
+}
+
 export function articleLabel(rule: EvaluableRule): string {
   return rule.article_number != null
     ? `Article ${rule.article_number} (zone ${rule.zone_code})`

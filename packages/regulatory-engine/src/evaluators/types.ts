@@ -28,4 +28,10 @@ export interface EvaluableRule extends RuleForApplicability {
   citizen_summary: string | null;
   citizen_relevant: boolean;
   instructor_note: string | null;
+  // Provenance fine vers le passage source (cf. zone_regulatory_rules) :
+  // permet aux findings de citer le segment + la page + le verbatim, et pas
+  // seulement la règle. Null pour les règles saisies manuellement.
+  source_segment_id: string | null;
+  source_page: number | null;
+  source_quote: string | null;
 }

@@ -1,7 +1,7 @@
 import { Router, type Response } from "express";
 import { z } from "zod";
 import { db } from "../db.js";
-import { dossiers, regulatory_analyses, regulatory_findings, dossier_facts, zone_regulatory_rules, zones, communes } from "@heureka-v1/db";
+import { dossiers, regulatory_analyses, regulatory_findings, dossier_facts, zone_regulatory_rules, zones, communes, document_segments, regulatory_documents } from "@heureka-v1/db";
 import { eq, and, desc, isNull } from "drizzle-orm";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
@@ -297,6 +297,74 @@ regulatoryRouter.get(
       }
       console.error("[regulatory] get rule failed:", err);
       res.status(500).json({ error: "Lecture de la règle impossible" });
+    }
+  },
+);
+
+// ── GET /api/regulatory/segment/:segmentId ─────────────────────────
+// Retrace un passage source à partir d'un SourceRef de type
+// "document_segment" (présent dans finding.source_refs). Renvoie le texte
+// du passage, sa page et le document officiel d'origine — de quoi rouvrir
+// "le bon passage dans le bon document" côté UI ("PLU X, p. 42 : …").
+// Même politique d'accès que /rules : un instructeur authentifié peut lire
+// le règlement ; le filtrage par scope porte sur les dossiers, pas sur les
+// règles/segments.
+regulatoryRouter.get(
+  "/segment/:segmentId",
+  requireRole(...INSTRUCTOR_ROLES),
+  async (req: AuthRequest, res: Response) => {
+    try {
+      // Les ids de segment sont "{insee}_{doc_type}_{code}", pas des UUID.
+      const segmentId = z.string().min(1).max(200).parse(req.params.segmentId);
+      const [seg] = await db
+        .select({
+          segment_id: document_segments.id,
+          doc_type: document_segments.doc_type,
+          doc_source_file: document_segments.doc_source_file,
+          doc_version: document_segments.doc_version,
+          title: document_segments.title,
+          raw_text: document_segments.raw_text,
+          metadata: document_segments.metadata,
+          commune_name: document_segments.commune_name,
+          // Document officiel rapproché (FK explicite) si disponible.
+          document_id: regulatory_documents.id,
+          document_name: regulatory_documents.name,
+          document_type: regulatory_documents.type,
+          document_filename: regulatory_documents.original_filename,
+        })
+        .from(document_segments)
+        // leftJoin : un segment pas encore rapproché (source_document_id NULL)
+        // doit quand même renvoyer son texte et sa page.
+        .leftJoin(regulatory_documents, eq(regulatory_documents.id, document_segments.source_document_id))
+        .where(eq(document_segments.id, segmentId))
+        .limit(1);
+      if (!seg) return res.status(404).json({ error: "Passage introuvable" });
+
+      // La page vit dans metadata.page (le RAG la préserve par chunk). On la
+      // remonte à plat pour l'affichage de la citation.
+      const meta = (seg.metadata ?? {}) as Record<string, unknown>;
+      const page = typeof meta.page === "number" ? meta.page : null;
+
+      res.json({
+        segment: {
+          segment_id: seg.segment_id,
+          doc_type: seg.doc_type,
+          title: seg.title,
+          page,
+          text: seg.raw_text,
+          commune_name: seg.commune_name,
+          // Nom officiel si rapproché, sinon le fichier source brut.
+          document: seg.document_id
+            ? { id: seg.document_id, name: seg.document_name, type: seg.document_type, filename: seg.document_filename }
+            : { id: null, name: null, type: seg.doc_type, filename: seg.doc_source_file },
+        },
+      });
+    } catch (err) {
+      if (err instanceof z.ZodError) {
+        return res.status(400).json({ error: "segmentId invalide" });
+      }
+      console.error("[regulatory] get segment failed:", err);
+      res.status(500).json({ error: "Lecture du passage impossible" });
     }
   },
 );

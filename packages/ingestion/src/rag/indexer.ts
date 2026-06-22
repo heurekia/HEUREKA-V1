@@ -47,6 +47,8 @@ export interface IndexResult {
   dropped_pages: number;
 }
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 const SEGMENT_ID = (sourceId: string, chunkIndex: number) =>
   `${sourceId}_CHUNK_${chunkIndex.toString().padStart(4, "0")}`;
 
@@ -75,6 +77,12 @@ export async function indexDocument(p: IndexParams): Promise<IndexResult> {
   // Embeddings par lots (le batcher interne de embedTexts gère MAX_BATCH=128).
   const embeddings = await embedTexts(chunks.map((c) => c.text), p.embed_options);
 
+  // Quand source_id EST l'UUID d'un regulatory_documents (cas RAG commune),
+  // on le grave aussi dans la FK explicite source_document_id pour pouvoir
+  // afficher le nom officiel du document à côté d'un passage cité. Si le
+  // source_id n'est pas un UUID (usage générique), on laisse la FK à null.
+  const sourceDocumentId = UUID_RE.test(p.source_id) ? p.source_id : null;
+
   const rows = chunks.map((c, j) => ({
     id: SEGMENT_ID(p.source_id, c.index),
     insee: p.insee,
@@ -83,6 +91,7 @@ export async function indexDocument(p: IndexParams): Promise<IndexResult> {
     doc_subtype: p.doc_subtype ?? null,
     doc_version: p.doc_version ?? null,
     doc_source_file: p.doc_source_file,
+    source_document_id: sourceDocumentId,
     segment_code: `CHUNK_${c.index.toString().padStart(4, "0")}`,
     segment_type: "chunk",
     parent_code: null,

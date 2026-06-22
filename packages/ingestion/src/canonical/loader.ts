@@ -41,6 +41,13 @@ export function canonicalToZoneRules(plu: CanonicalPLU): ZoneRules[] {
       })),
       sub_theme: r.sub_theme,
       applies_if: r.applies_if,
+      // Traçabilité : le canonique porte déjà un bloc `source` (document, page,
+      // paragraph). On le mappe vers la provenance fine. Pas de segment RAG ici
+      // (le canonique ne référence pas les document_segments) → source_segment_id
+      // reste null ; page et verbatim suffisent à citer "PLU X, p. 42".
+      source_segment_id: null,
+      source_page: r.source?.page ?? null,
+      source_quote: r.source?.paragraph ?? r.rule_text ?? null,
     })),
   }));
 }
