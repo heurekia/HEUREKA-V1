@@ -6,6 +6,7 @@ import { alias } from "drizzle-orm/pg-core";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { inArray } from "drizzle-orm";
 import { requireRole } from "../../middlewares/auth.js";
+import { getCommuneScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import multer from "multer";
 import crypto from "crypto";
 import path from "path";
@@ -78,7 +79,11 @@ dossiersRouter.get("/dossiers", async (req: AuthRequest, res) => {
     const rawOffset = Number.parseInt((req.query.offset as string | undefined) ?? "", 10);
     const offset = Number.isFinite(rawOffset) && rawOffset > 0 ? rawOffset : 0;
 
-    const communeFilter = commune ? sql`dossiers.commune ILIKE ${commune}` : sql`1=1`;
+    // Périmètre : le filtre `?commune=` du client est intersecté avec les
+    // communes réellement rattachées à l'agent (admin = toutes). Sans ça, un
+    // agent pouvait lister les dossiers de n'importe quelle commune.
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    const communeFilter = communeScopeFilter(sql`dossiers.commune`, scope, commune);
     const assignmentFilter = unassigned
       ? sql`dossiers.instructeur_id IS NULL`
       : mine && req.user?.id
@@ -185,8 +190,20 @@ dossiersRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
   res.write(headers.join(",") + "\n");
 
   try {
-    const cursor = commune
-      ? pgClient`
+    // Même règle de périmètre que la liste : on intersecte ?commune= avec les
+    // communes rattachées à l'agent (admin = toutes). postgres.js compose le
+    // fragment WHERE — un agent ne peut plus exporter une commune hors scope.
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    let whereClause;
+    if (scope === null) {
+      whereClause = commune ? pgClient`d.commune ILIKE ${commune}` : pgClient`true`;
+    } else {
+      const names = [...scope];
+      whereClause = commune
+        ? pgClient`lower(trim(d.commune)) = ANY(${names}) AND d.commune ILIKE ${commune}`
+        : pgClient`lower(trim(d.commune)) = ANY(${names})`;
+    }
+    const cursor = pgClient`
           SELECT
             d.numero, d.type, d.status, d.adresse, d.commune, d.code_postal,
             d.parcelle, d.surface_plancher, d.description,
@@ -195,18 +212,7 @@ dossiersRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
             u.prenom AS demandeur_prenom, u.nom AS demandeur_nom, u.email AS demandeur_email
           FROM dossiers d
           LEFT JOIN users u ON u.id = d.user_id
-          WHERE d.commune ILIKE ${commune}
-          ORDER BY d.created_at DESC
-        `.cursor(1000)
-      : pgClient`
-          SELECT
-            d.numero, d.type, d.status, d.adresse, d.commune, d.code_postal,
-            d.parcelle, d.surface_plancher, d.description,
-            d.date_depot, d.date_completude, d.date_limite_instruction,
-            d.is_tacite, d.created_at, d.updated_at,
-            u.prenom AS demandeur_prenom, u.nom AS demandeur_nom, u.email AS demandeur_email
-          FROM dossiers d
-          LEFT JOIN users u ON u.id = d.user_id
+          WHERE ${whereClause}
           ORDER BY d.created_at DESC
         `.cursor(1000);
 

@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { dossiers, dossier_consultations, notifications, users } from "@heureka-v1/db";
 import { eq, desc, sql } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { getCommuneScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 
 export const dashboardRouter = Router();
 
@@ -10,7 +11,8 @@ export const dashboardRouter = Router();
 dashboardRouter.get("/dashboard", async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
-    const communeFilter = commune ? sql`commune ILIKE ${commune}` : sql`1=1`;
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    const communeFilter = communeScopeFilter(sql`commune`, scope, commune);
 
     const total = await db.select({ count: sql<number>`count(*)` }).from(dossiers).where(communeFilter);
     const parStatut = await db
@@ -63,7 +65,8 @@ const STATUTS_DECIDES = ["accepte", "refuse", "accord_prescription"] as const;
 dashboardRouter.get("/stats", async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
-    const cf = commune ? sql`commune ILIKE ${commune}` : sql`1=1`;
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    const cf = communeScopeFilter(sql`commune`, scope, commune);
 
     // KPIs agrégés
     const kpiRow = await db
@@ -150,7 +153,8 @@ dashboardRouter.get("/stats", async (req: AuthRequest, res) => {
 dashboardRouter.get("/stats/delais", async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
-    const cf = commune ? sql`commune ILIKE ${commune}` : sql`1=1`;
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    const cf = communeScopeFilter(sql`commune`, scope, commune);
 
     // Délai moyen actuel par type
     const parType = await db
@@ -229,9 +233,12 @@ dashboardRouter.get("/stats/delais", async (req: AuthRequest, res) => {
 dashboardRouter.get("/stats/services", async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
-    const cf = commune
-      ? sql`exists(select 1 from dossiers d where d.id = dossier_consultations.dossier_id and d.commune ILIKE ${commune})`
-      : sql`1=1`;
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    // Admin sans filtre = tout ; sinon on restreint via le dossier rattaché à
+    // la consultation, en intersectant ?commune= avec le périmètre de l'agent.
+    const cf = scope === null && !commune
+      ? sql`1=1`
+      : sql`exists(select 1 from dossiers d where d.id = dossier_consultations.dossier_id and (${communeScopeFilter(sql`d.commune`, scope, commune)}))`;
 
     const rows = await db
       .select({

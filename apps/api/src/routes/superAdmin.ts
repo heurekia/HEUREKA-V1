@@ -9,6 +9,7 @@ import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
 import { requireAuth, requireRole } from "../middlewares/auth.js";
+import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
 import { logAudit } from "../services/audit.js";
 
 export const superAdminRouter = Router();
@@ -1069,6 +1070,9 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
       });
 
     if (!updated) return res.status(404).json({ error: "Utilisateur introuvable" });
+    // Rôle et/ou commune ont pu changer → purger le cache de périmètre de cet
+    // agent, sinon il garde son ancien scope jusqu'au redémarrage du process.
+    invalidateCommuneScope(id);
     await logAudit(req, "admin_user_updated", { email: updated.email });
     res.json(updated);
   } catch (err) {
@@ -1106,6 +1110,9 @@ superAdminRouter.put("/users/:id/communes", async (req, res) => {
         await tx.update(users).set({ commune: null, commune_insee: null, updated_at: new Date() }).where(eq(users.id, id));
       }
     });
+    // Le périmètre de communes de l'agent vient de changer → purger son cache
+    // de scope (cf. getCommuneScope) pour que l'accès prenne effet immédiatement.
+    invalidateCommuneScope(id);
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
