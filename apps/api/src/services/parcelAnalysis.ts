@@ -23,6 +23,7 @@ import { computeBuiltFootprintM2 } from "./buildingFootprint.js";
 import { loadZoneRulesWithInheritance, pickMostSpecificRule } from "./zoneRules.js";
 import { resolveCommuneZoneIds } from "./communeZones.js";
 import { getCommunePluContext, findZoneAtPoint, type PluCommuneContext } from "./pluZones.js";
+import { buildParcelSynthesis, type ParcelSynthesis } from "./parcelSynthesis.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -144,6 +145,9 @@ export interface ParcelAnalysis {
   scot?: string;                       // nom du SCoT couvrant la parcelle
   address_certified?: boolean | null;  // adresse certifiée par la commune (BAL) ; null = inconnu
   parcel_confidence?: "exact" | "approximate"; // exact = parcelle contenant le bâtiment (RNB) ; approximate = heuristique
+  // Synthèse thématique bi-audience (citoyen + instructeur), transversale entre
+  // documents (PLU + risques + servitudes). Dérivée des champs ci-dessus.
+  synthesis?: ParcelSynthesis;
 }
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
@@ -1572,6 +1576,11 @@ export async function analyseParcel(
       calculationVariables: calcVars,
     });
   }
+
+  // Step 7: Synthèse thématique bi-audience — pure, dérivée de tout ce qui
+  // précède (règles PLU, risques, servitudes, prescriptions). Sert à la fois la
+  // vue citoyen « clair » et la vue instructeur « tracée & transversale ».
+  result.synthesis = buildParcelSynthesis(result);
 
   return result;
 }
