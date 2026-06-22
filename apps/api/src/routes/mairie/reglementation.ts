@@ -9,6 +9,7 @@ import { parseLooseArray } from "../../services/jsonExtract.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 import { resolveCommuneActiveZoneIds } from "../../services/communeZones.js";
 import { calibrationFewShot } from "@heureka-v1/ingestion/calibration";
+import { normalizeSecteur } from "@heureka-v1/ingestion/secteur";
 
 export const reglementationRouter = Router();
 
@@ -345,8 +346,15 @@ AUTRES RÈGLES :
     const APPLIES = new Set(["protege_l151_19", "unesco", "abf", "inondable", "extension", "surelevation", "ravalement", "demolition", "cloture_sur_rue", "cloture_limite", "annexe", "devanture_commerciale", "equipement_public"]);
     let rules = (Array.isArray(arr) ? arr : [])
       .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
-      .map((r) => ({
-        sub_theme: str(r.sub_theme),
+      .map((r) => {
+        // Normalisation déterministe du secteur : promotion en sub_theme +
+        // inférence applies_if sûre (cf. secteur-normalizer).
+        const sect = normalizeSecteur({ sub_theme: str(r.sub_theme), conditions: str(r.conditions), rule_text: str(r.rule_text) });
+        const baseApplies = Array.isArray(r.applies_if)
+          ? (r.applies_if as unknown[]).map(str).filter((t): t is string => !!t && APPLIES.has(t))
+          : [];
+        return {
+        sub_theme: sect.sub_theme,
         article_number: num(r.article_number) ?? (article_number ? Number(article_number) : null),
         article_title: str(r.article_title) ?? "",
         topic: str(r.topic) ?? "general",
@@ -363,13 +371,12 @@ AUTRES RÈGLES :
               // une énumération qualitative ou un seuil sans nombre reste dans rule_text).
               .filter((c) => c.condition && c.value != null)
           : [],
-        applies_if: Array.isArray(r.applies_if)
-          ? (r.applies_if as unknown[]).map(str).filter((t): t is string => !!t && APPLIES.has(t))
-          : [],
+        applies_if: [...new Set([...baseApplies, ...sect.appliesIfAdd.filter((t) => APPLIES.has(t))])],
         citizen_title: str(r.citizen_title),
         citizen_summary: str(r.citizen_summary),
         citizen_relevant: r.citizen_relevant !== false,
-      }))
+        };
+      })
       .filter((r) => r.rule_text || r.summary);
 
     // Repli : rien d'exploitable → une sous-règle brute avec le texte collé.
@@ -510,8 +517,13 @@ RÈGLES DE STRUCTURATION :
     const APPLIES = new Set(["protege_l151_19", "unesco", "abf", "inondable", "extension", "surelevation", "ravalement", "demolition", "cloture_sur_rue", "cloture_limite", "annexe", "devanture_commerciale", "equipement_public"]);
     const rules = (Array.isArray(arr) ? arr : [])
       .filter((r): r is Record<string, unknown> => !!r && typeof r === "object")
-      .map((r) => ({
-        sub_theme: str(r.sub_theme),
+      .map((r) => {
+        const sect = normalizeSecteur({ sub_theme: str(r.sub_theme), conditions: str(r.conditions), rule_text: str(r.rule_text) });
+        const baseApplies = Array.isArray(r.applies_if)
+          ? (r.applies_if as unknown[]).map(str).filter((t): t is string => !!t && APPLIES.has(t))
+          : [];
+        return {
+        sub_theme: sect.sub_theme,
         article_number: num(r.article_number),
         article_title: str(r.article_title) ?? "",
         topic: str(r.topic) ?? "general",
@@ -526,13 +538,12 @@ RÈGLES DE STRUCTURATION :
               .map((c) => ({ condition: str(c.condition) ?? "", value: num(c.value), unit: str(c.unit), kind: c.kind === "condition" ? "condition" : "parametre" }))
               .filter((c) => c.condition && c.value != null)
           : [],
-        applies_if: Array.isArray(r.applies_if)
-          ? (r.applies_if as unknown[]).map(str).filter((t): t is string => !!t && APPLIES.has(t))
-          : [],
+        applies_if: [...new Set([...baseApplies, ...sect.appliesIfAdd.filter((t) => APPLIES.has(t))])],
         citizen_title: str(r.citizen_title),
         citizen_summary: str(r.citizen_summary),
         citizen_relevant: r.citizen_relevant !== false,
-      }))
+        };
+      })
       .filter((r) => r.rule_text || r.summary);
 
     // Diagnostic explicite quand 0 règle : permet au front d'expliquer

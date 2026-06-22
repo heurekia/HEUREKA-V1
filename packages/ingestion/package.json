@@ -8,6 +8,7 @@
     ".": "./src/index.ts",
     "./canonical": "./src/canonical/index.ts",
     "./calibration": "./src/structure/calibration.ts",
+    "./secteur": "./src/structure/secteur-normalizer.ts",
     "./rag": "./src/rag/index.ts"
   },
   "scripts": {
