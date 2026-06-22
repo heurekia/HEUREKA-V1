@@ -4,8 +4,9 @@ import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_doc
 import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
-import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock, type AiToolDefinition } from "../../services/aiUsage.js";
+import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
 import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
+import { PLU_SAVE_RULE_TOOL, PLU_EXTRACTION_CALIBRATION, coerceCases, coerceAppliesIf, type PluRuleInput } from "./pluSaveRuleTool.js";
 import { PDFDocument } from "pdf-lib";
 import {
   computeInstructionDelay,
@@ -271,60 +272,9 @@ adminRouter.post("/admin/compute-deadlines", async (req: AuthRequest, res) => {
 });
 
 // ── Ingestion PLU depuis PDF (IA — admin uniquement) ──────────────────────────
-type PluRuleInput = {
-  article_number?: number | null;
-  article_title?: string;
-  topic: string;
-  rule_text: string;
-  not_regulated?: boolean;
-  value_min?: number | null;
-  value_max?: number | null;
-  value_exact?: number | null;
-  unit?: string | null;
-  conditions?: string | null;
-  summary: string;
-  citizen_title?: string | null;
-  citizen_summary?: string | null;
-  citizen_relevant?: boolean;
-  needs_vision?: boolean;
-  needs_external_doc?: boolean;
-  external_doc_name?: string | null;
-};
-
-const PLU_SAVE_RULE_TOOL: AiToolDefinition = {
-  type: "function",
-  function: {
-    name: "save_rule",
-    description: "Enregistre une règle réglementaire extraite d'un article du PLU.",
-    parameters: {
-      type: "object",
-      properties: {
-        article_number: { type: "number", description: "Numéro de l'article, décimal autorisé pour les PLU modernisés (6, 12.1, 12.2…). Null si non numéroté." },
-        article_title: { type: "string", description: "Titre exact de l'article." },
-        topic: {
-          type: "string",
-          enum: ["destinations","terrain_min","recul_voie","recul_limite","recul_batiments","emprise_sol","hauteur","aspect","stationnement","espaces_verts","cos","general"],
-          description: "Catégorie réglementaire.",
-        },
-        rule_text: { type: "string", description: "Texte fidèle de la règle." },
-        not_regulated: { type: "boolean", description: "True si article dit 'sans objet' ou 'non réglementé'." },
-        value_min: { type: "number", description: "Valeur minimale numérique. Omettre si absent." },
-        value_max: { type: "number", description: "Valeur maximale numérique. Omettre si absent." },
-        value_exact: { type: "number", description: "Valeur unique exacte. Omettre si absent." },
-        unit: { type: "string", enum: ["m","%","m²","places"], description: "Unité. Omettre si pas de valeur numérique." },
-        conditions: { type: "string", description: "Conditions ou exceptions. Omettre si aucune." },
-        summary: { type: "string", description: "Résumé technique en 10 mots maximum (usage interne instructeur)." },
-        citizen_title: { type: "string", description: "Titre court de la règle, en langage courant, destiné aux particuliers (≤ 8 mots, sans jargon juridique). Ex: « Stationnement pour logements individuels »." },
-        citizen_summary: { type: "string", description: "Explication COMPLÈTE de la règle en langage courant, 3 à 6 phrases. Inclut explicitement : la règle de fond, les conditions et exceptions, les valeurs chiffrées avec leur unité, et — si needs_vision = true — une description précise du schéma/croquis (ce qu'il représente, ce qu'il autorise/interdit). Phrases complètes, pas de bullets, pas de compact, pas de jargon." },
-        citizen_relevant: { type: "boolean", description: "False seulement si la disposition n'a aucune utilité pour un particulier (procédure administrative pure, articles internes à l'administration). True par défaut." },
-        needs_vision: { type: "boolean", description: "True si la règle renvoie à un schéma/croquis graphique du document (calcul de hauteur, implantation, types de lucarnes, etc.)." },
-        needs_external_doc: { type: "boolean", description: "True si la règle renvoie explicitement à un document externe (PPRI, PLH, cahier des charges ZAC, servitude…)." },
-        external_doc_name: { type: "string", description: "Nom du document externe référencé (ex: 'PPRI', 'PLH', 'cahier des charges ZAC'). Remplir si needs_external_doc = true." },
-      },
-      required: ["article_number","article_title","topic","rule_text","not_regulated","summary","citizen_title","citizen_summary","needs_vision","needs_external_doc"],
-    },
-  },
-};
+// Type, outil `save_rule` et helpers de coercion : voir ./pluSaveRuleTool.ts
+// (partagé entre les sous-pipelines, aligné sur le format canonique +
+// calibration UC).
 
 adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
   // Endpoint legacy SSE. Conservé pour rétrocompat ; le nouveau front utilise
@@ -518,7 +468,7 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
 - citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Stationnement pour logements individuels », « Hauteur maximale des annexes », « Implantation en limite de propriété ».
 - citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant, niveau « particulier qui veut construire chez lui ». Inclus EXPLICITEMENT : la règle, les conditions, les exceptions, les valeurs chiffrées avec unité, ET — si needs_vision = true — décris le schéma associé (ce qu'il montre, ce qu'il autorise, ce qu'il interdit). Phrases complètes, JAMAIS de version 10 mots compacte, pas de bullets, pas de jargon juridique.
 - Exemple acceptable (article 7, recul limites) : « Selon la profondeur par rapport à la voie, l'implantation est autorisée soit d'une limite à l'autre, soit avec un retrait minimal. Sur les 20 premiers mètres : retrait de 3 m minimum (ou H/2) pour moins de 3 logements ; 5 m (ou 1,5 × H) pour 3 logements et plus. Au-delà de 20 mètres, l'implantation en limite séparative est interdite. Exceptions : annexes, jumelages, extensions de constructions déjà en limite. Les piscines doivent rester à 3 m minimum. Le schéma associé illustre le calcul de H sur terrain plat ou en pente, et la zone des 20 mètres depuis la voie. »
-- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.`,
+- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.${PLU_EXTRACTION_CALIBRATION}`,
                   },
                 ],
               }],
@@ -622,6 +572,10 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
             citizen_title: rule.citizen_title?.trim() || null,
             citizen_summary: rule.citizen_summary?.trim() || null,
             citizen_relevant: rule.citizen_relevant !== false,
+            sub_theme: rule.sub_theme?.trim() || null,
+            exceptions: rule.exceptions?.trim() || null,
+            cases: coerceCases(rule.cases),
+            applies_if: coerceAppliesIf(rule.applies_if),
             instructor_note: [
               rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
               rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
@@ -1150,7 +1104,7 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
 - citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Stationnement pour logements individuels », « Hauteur maximale des annexes », « Implantation en limite de propriété ».
 - citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant, niveau « particulier qui veut construire chez lui ». Inclus EXPLICITEMENT : la règle, les conditions, les exceptions, les valeurs chiffrées avec unité, ET — si needs_vision = true — décris le schéma associé (ce qu'il montre, ce qu'il autorise, ce qu'il interdit). Phrases complètes, JAMAIS de version 10 mots compacte, pas de bullets, pas de jargon juridique.
 - Exemple acceptable (article 7, recul limites) : « Selon la profondeur par rapport à la voie, l'implantation est autorisée soit d'une limite à l'autre, soit avec un retrait minimal. Sur les 20 premiers mètres : retrait de 3 m minimum (ou H/2) pour moins de 3 logements ; 5 m (ou 1,5 × H) pour 3 logements et plus. Au-delà de 20 mètres, l'implantation en limite séparative est interdite. Exceptions : annexes, jumelages, extensions de constructions déjà en limite. Les piscines doivent rester à 3 m minimum. Le schéma associé illustre le calcul de H sur terrain plat ou en pente, et la zone des 20 mètres depuis la voie. »
-- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.` },
+- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.${PLU_EXTRACTION_CALIBRATION}` },
           ],
         }],
       },
@@ -1275,6 +1229,10 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
             citizen_title: rule.citizen_title?.trim() || null,
             citizen_summary: rule.citizen_summary?.trim() || null,
             citizen_relevant: rule.citizen_relevant !== false,
+            sub_theme: rule.sub_theme?.trim() || null,
+            exceptions: rule.exceptions?.trim() || null,
+            cases: coerceCases(rule.cases),
+            applies_if: coerceAppliesIf(rule.applies_if),
             instructor_note: [
               rule.needs_vision ? "⚠ Valeur dans un schéma graphique — à vérifier manuellement." : null,
               rule.needs_external_doc ? `⚠ Valeur définie dans un document externe : ${rule.external_doc_name ?? "document non identifié"} — à reporter manuellement.` : null,
