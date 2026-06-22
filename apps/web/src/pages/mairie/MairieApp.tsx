@@ -6560,6 +6560,10 @@ function DecisionPanel({ dossier, liveCommune, currentUserId }: {
   const [showRefuseModal, setShowRefuseModal] = useState(false);
   const [refuseMotif, setRefuseMotif] = useState("");
   const [editingPrescriptions, setEditingPrescriptions] = useState(false);
+  // Erreur de la dernière action (enregistrer/soumettre/signer/refuser/notifier).
+  // Sans ça, un échec serveur/réseau était avalé silencieusement et l'instructeur
+  // pouvait croire l'arrêté signé alors qu'il ne l'était pas.
+  const [actionError, setActionError] = useState<string | null>(null);
 
   // Editable form state
   const [localType, setLocalType] = useState("");
@@ -6596,67 +6600,54 @@ function DecisionPanel({ dossier, liveCommune, currentUserId }: {
       .catch(() => {});
   }, [communeName]);
 
-  const handleSave = async () => {
+  // Exécuteur commun : pose l'état "en cours", remonte toute erreur serveur/
+  // réseau à l'écran (message API si disponible) et renvoie le succès pour que
+  // l'appelant enchaîne (ex. fermer la modale de refus).
+  const runDecisionAction = async (fn: () => Promise<DecisionData>): Promise<boolean> => {
     setSaving(true);
+    setActionError(null);
     try {
-      const saved = await api.post<DecisionData>(`/decisions/dossier/${dossier.id}`, {
-        type: localType || decisionOptions[0]?.key,
-        motif: localMotif || null,
-        prescriptions: localPrescriptions,
-        conditions: localConditions || null,
-        signataire_id: localSignataireId,
-        commune: communeName,
-      });
-      setDecision(saved);
-    } catch { /* ignore */ } finally {
+      setDecision(await fn());
+      return true;
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : "L'opération a échoué. Vérifiez votre connexion et réessayez.");
+      return false;
+    } finally {
       setSaving(false);
     }
   };
 
-  const handleSubmit = async () => {
+  const handleSave = () => runDecisionAction(() => api.post<DecisionData>(`/decisions/dossier/${dossier.id}`, {
+    type: localType || decisionOptions[0]?.key,
+    motif: localMotif || null,
+    prescriptions: localPrescriptions,
+    conditions: localConditions || null,
+    signataire_id: localSignataireId,
+    commune: communeName,
+  }));
+
+  const handleSubmit = () => {
     if (!decision) return;
-    setSaving(true);
-    try {
-      const updated = await api.post<DecisionData>(`/decisions/${decision.id}/submit`, {});
-      setDecision(updated);
-    } catch { /* ignore */ } finally {
-      setSaving(false);
-    }
+    void runDecisionAction(() => api.post<DecisionData>(`/decisions/${decision.id}/submit`, {}));
   };
 
-  const handleSign = async () => {
+  const handleSign = () => {
     if (!decision) return;
-    setSaving(true);
-    try {
-      const updated = await api.post<DecisionData>(`/decisions/${decision.id}/sign`, {});
-      setDecision(updated);
-    } catch { /* ignore */ } finally {
-      setSaving(false);
-    }
+    void runDecisionAction(() => api.post<DecisionData>(`/decisions/${decision.id}/sign`, {}));
   };
 
   const handleRefuse = async () => {
     if (!decision || !refuseMotif.trim()) return;
-    setSaving(true);
-    try {
-      const updated = await api.post<DecisionData>(`/decisions/${decision.id}/refuse-signature`, { motif: refuseMotif });
-      setDecision(updated);
+    const ok = await runDecisionAction(() => api.post<DecisionData>(`/decisions/${decision.id}/refuse-signature`, { motif: refuseMotif }));
+    if (ok) {
       setShowRefuseModal(false);
       setRefuseMotif("");
-    } catch { /* ignore */ } finally {
-      setSaving(false);
     }
   };
 
-  const handleNotify = async () => {
+  const handleNotify = () => {
     if (!decision) return;
-    setSaving(true);
-    try {
-      const updated = await api.post<DecisionData>(`/decisions/${decision.id}/notify`, {});
-      setDecision(updated);
-    } catch { /* ignore */ } finally {
-      setSaving(false);
-    }
+    void runDecisionAction(() => api.post<DecisionData>(`/decisions/${decision.id}/notify`, {}));
   };
 
   const stepIdx = decision ? decisionStepIndex(decision.status) : 0;
@@ -6673,6 +6664,13 @@ function DecisionPanel({ dossier, liveCommune, currentUserId }: {
   return (
     <div style={{ display: "grid", gridTemplateColumns: "1fr 320px", gap: 16, alignItems: "flex-start" }}>
       <div style={{ display: "flex", flexDirection: "column" as const, gap: 16 }}>
+        {actionError && (
+          <div role="alert" style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 14px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 9, fontSize: 12.5, color: "#991B1B" }}>
+            <span style={{ fontWeight: 700 }}>⚠</span>
+            <span style={{ flex: 1 }}>{actionError}</span>
+            <button onClick={() => setActionError(null)} aria-label="Fermer" style={{ border: "none", background: "none", color: "#991B1B", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>
+          </div>
+        )}
         {/* Workflow status bar */}
         <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "16px 20px" }}>
           <div style={{ display: "flex", alignItems: "center", gap: 0 }}>
@@ -6917,7 +6915,7 @@ function DecisionPanel({ dossier, liveCommune, currentUserId }: {
                 <svg width={15} height={15} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><polyline points="20 6 9 17 4 12" /></svg>
                 {saving ? "Signature…" : "Signer l'arrêté"}
               </button>
-              <button onClick={() => setShowRefuseModal(true)} style={{ background: "white", color: "#EF4444", border: "1.5px solid #FECACA", borderRadius: 11, padding: "12px 0", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
+              <button onClick={() => { setActionError(null); setShowRefuseModal(true); }} style={{ background: "white", color: "#EF4444", border: "1.5px solid #FECACA", borderRadius: 11, padding: "12px 0", fontSize: 13, fontWeight: 600, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 7 }}>
                 <svg width={14} height={14} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round"><line x1="18" y1="6" x2="6" y2="18" /><line x1="6" y1="6" x2="18" y2="18" /></svg>
                 Refuser — demander révision
               </button>
@@ -6948,6 +6946,9 @@ function DecisionPanel({ dossier, liveCommune, currentUserId }: {
             <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 6 }}>Refuser la signature</div>
             <div style={{ fontSize: 12.5, color: "#64748b", marginBottom: 16 }}>Précisez le motif du refus. L'instructeur sera notifié et devra réviser le projet d'arrêté.</div>
             <textarea value={refuseMotif} onChange={e => setRefuseMotif(e.target.value)} rows={4} placeholder="Ex : Le type de décision ne correspond pas à l'avis de la DDT. Article L.424-1 non respecté…" style={{ width: "100%", border: "1.5px solid #E2E8F0", borderRadius: 9, padding: "10px 12px", fontSize: 12.5, outline: "none", resize: "vertical" as const, fontFamily: "inherit", boxSizing: "border-box" as const, marginBottom: 16 }} />
+            {actionError && (
+              <div role="alert" style={{ padding: "9px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, fontSize: 12, color: "#991B1B", marginBottom: 12 }}>{actionError}</div>
+            )}
             <div style={{ display: "flex", gap: 9, justifyContent: "flex-end" }}>
               <button onClick={() => setShowRefuseModal(false)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer", color: "#374151" }}>Annuler</button>
               <button onClick={handleRefuse} disabled={!refuseMotif.trim() || saving} style={{ background: "#EF4444", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: !refuseMotif.trim() ? "not-allowed" : "pointer" }}>Confirmer le refus</button>
