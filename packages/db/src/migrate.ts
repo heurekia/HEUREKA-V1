@@ -1168,6 +1168,47 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_users_fc_sub ON users(fc_sub) WHERE fc_su
 -- NOT NULL historique. Les comptes email/mot de passe gardent évidemment leur
 -- hash ; seuls les comptes issus de FranceConnect ont password_hash = NULL.
 ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
+
+-- ── Traçabilité fine règle → passage source ────────────────────────────────
+-- Jusqu'ici une règle ne pointait que vers son DOCUMENT (source_document_id).
+-- On ajoute de quoi retrouver le PASSAGE exact :
+--   source_segment_id : segment RAG (document_segments) d'origine → texte + page
+--   source_page       : n° de page si connu à l'extraction
+--   source_quote      : extrait verbatim (= rule_text), citable tel quel
+-- Renseignés à l'ingestion automatique ; NULL pour les règles saisies à la main.
+-- ON DELETE SET NULL : réindexer le RAG ne casse jamais une règle.
+ALTER TABLE zone_regulatory_rules
+  ADD COLUMN IF NOT EXISTS source_segment_id text
+  REFERENCES document_segments(id) ON DELETE SET NULL;
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS source_page integer;
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS source_quote text;
+CREATE INDEX IF NOT EXISTS idx_zone_regulatory_rules_source_segment
+  ON zone_regulatory_rules(source_segment_id);
+
+-- Backfill minimal : à défaut de provenance fine (héritée d'une ré-ingestion),
+-- on pose au moins le verbatim citable = rule_text pour le stock existant.
+UPDATE zone_regulatory_rules
+SET source_quote = rule_text
+WHERE source_quote IS NULL;
+
+-- Lien explicite segment → document (remplace le rapprochement implicite par
+-- doc_source_file + insee). Renseigné par le script de reindex/backfill ;
+-- NULL tant que non rapproché.
+ALTER TABLE document_segments
+  ADD COLUMN IF NOT EXISTS source_document_id uuid
+  REFERENCES regulatory_documents(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_document_segments_source_document
+  ON document_segments(source_document_id);
+
+-- Backfill exact pour le stock RAG déjà indexé : l'indexeur grave depuis
+-- toujours metadata.source_id = regulatory_documents.id. On le promeut en FK
+-- quand c'est un UUID valide pointant un document existant.
+UPDATE document_segments ds
+SET source_document_id = (ds.metadata->>'source_id')::uuid
+FROM regulatory_documents rd
+WHERE ds.source_document_id IS NULL
+  AND ds.metadata->>'source_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+  AND rd.id = (ds.metadata->>'source_id')::uuid;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

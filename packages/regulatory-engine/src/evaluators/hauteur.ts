@@ -1,5 +1,6 @@
 import type { DossierFact, InstructionContext } from "../context/types.js";
-import type { RegulatoryFinding, SourceRef } from "../findings/types.js";
+import type { RegulatoryFinding } from "../findings/types.js";
+import { buildRuleSource, buildSourceRefs } from "./common.js";
 import type { EvaluableRule } from "./types.js";
 
 // Tolérance numérique pour les comparaisons. 1 cm de marge évite qu'un
@@ -63,17 +64,16 @@ export function evaluateHauteur(
   if (rule.topic !== "hauteur") return null;
 
   const dossier_id = context.dossier.id;
-  const ruleSource: SourceRef = {
-    type: "zone_rule",
-    rule_id: rule.rule_id,
-    article: rule.article_number != null ? `Art. ${rule.article_number}` : undefined,
-  };
+  const ruleSource = buildRuleSource(rule);
+  // Sources du finding : règle de zone + passage source (segment/page/verbatim)
+  // si la provenance fine a été gravée à l'ingestion.
+  const sourceRefs = buildSourceRefs(rule);
   const baseFields = {
     dossier_id,
     rule_id: rule.rule_id,
     topic: "hauteur",
-    legal_basis: [ruleSource],
-    source_refs: [ruleSource],
+    legal_basis: sourceRefs,
+    source_refs: sourceRefs,
   } satisfies Pick<RegulatoryFinding, "dossier_id" | "rule_id" | "topic" | "legal_basis" | "source_refs">;
 
   // ── Fait manquant ─────────────────────────────────────────────────

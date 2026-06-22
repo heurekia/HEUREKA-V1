@@ -1,4 +1,5 @@
-import { pgTable, text, integer, jsonb, timestamp, vector, index } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, jsonb, timestamp, vector, uuid, index } from "drizzle-orm/pg-core";
+import { regulatory_documents } from "./regulatoryDocuments.js";
 
 // Segments réglementaires issus du moteur d'ingestion (@heureka-v1/ingestion).
 // Une ligne = un Segment (zone ou article). `id` = "{insee}_{doc}_{code}" → upsert
@@ -13,6 +14,11 @@ export const document_segments = pgTable(
     doc_subtype: text("doc_subtype"),
     doc_version: text("doc_version"),
     doc_source_file: text("doc_source_file"),
+    // Document réglementaire d'origine. Lien explicite (FK) qui remplace le
+    // rapprochement implicite par doc_source_file + insee : permet d'afficher
+    // le nom officiel du document à côté d'un passage cité. Renseigné par le
+    // backfill (script reindex) ; NULL tant que non rapproché.
+    source_document_id: uuid("source_document_id").references(() => regulatory_documents.id, { onDelete: "set null" }),
     segment_code: text("segment_code").notNull(),
     segment_type: text("segment_type").notNull(),
     parent_code: text("parent_code"),

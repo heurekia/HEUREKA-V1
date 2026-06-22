@@ -32,6 +32,9 @@ export async function loadEvaluableRulesByIds(ids: string[]): Promise<EvaluableR
       citizen_summary: zone_regulatory_rules.citizen_summary,
       citizen_relevant: zone_regulatory_rules.citizen_relevant,
       instructor_note: zone_regulatory_rules.instructor_note,
+      source_segment_id: zone_regulatory_rules.source_segment_id,
+      source_page: zone_regulatory_rules.source_page,
+      source_quote: zone_regulatory_rules.source_quote,
     })
     .from(zone_regulatory_rules)
     .innerJoin(zones, eq(zones.id, zone_regulatory_rules.zone_id))
@@ -60,6 +63,9 @@ export async function loadEvaluableRulesByIds(ids: string[]): Promise<EvaluableR
     citizen_summary: r.citizen_summary,
     citizen_relevant: r.citizen_relevant,
     instructor_note: r.instructor_note,
+    source_segment_id: r.source_segment_id,
+    source_page: r.source_page,
+    source_quote: r.source_quote,
   }));
 }
 

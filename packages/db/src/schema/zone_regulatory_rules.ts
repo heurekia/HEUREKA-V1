@@ -1,6 +1,7 @@
-import { pgTable, text, timestamp, doublePrecision, uuid, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, integer, timestamp, doublePrecision, uuid, jsonb, boolean } from "drizzle-orm/pg-core";
 import { zones } from "./zones.js";
 import { regulatory_documents } from "./regulatoryDocuments.js";
+import { document_segments } from "./documentSegments.js";
 
 export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
   id: uuid("id").primaryKey().defaultRandom(),
@@ -9,6 +10,19 @@ export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
   // permet aux règles saisies manuellement sans source documentaire d'exister,
   // et préserve la règle si son document est supprimé (ON DELETE SET NULL).
   source_document_id: uuid("source_document_id").references(() => regulatory_documents.id, { onDelete: "set null" }),
+  // Provenance fine de la règle dans le document source — permet de retracer
+  // le passage exact (et non plus seulement le document). Renseignés à
+  // l'ingestion automatique (cf. structurer/rules-loader) ; NULL pour les
+  // règles saisies manuellement.
+  //   source_segment_id : FK vers le segment RAG (document_segments) d'origine
+  //                       → donne accès au texte du passage + à la page.
+  //   source_page       : n° de page (1-based) si connu à l'extraction.
+  //   source_quote      : extrait verbatim de la règle (= rule_text fidèle),
+  //                       citable tel quel dans l'instruction.
+  // ON DELETE SET NULL : réindexer le RAG ne doit jamais casser une règle.
+  source_segment_id: text("source_segment_id").references(() => document_segments.id, { onDelete: "set null" }),
+  source_page: integer("source_page"),
+  source_quote: text("source_quote"),
   // double precision (pas integer) : les PLU modernisés numérotent en
   // décimal (« 12.1 », « 12.2 »…). Une colonne integer faisait planter
   // l'ingestion sur ces articles (invalid input syntax for type integer).

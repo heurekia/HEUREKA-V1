@@ -3,6 +3,7 @@ import type { RegulatoryFinding } from "../findings/types.js";
 import {
   articleLabel,
   buildRuleSource,
+  buildSourceRefs,
   formatNumber,
   formatThresholds,
 } from "./common.js";
@@ -28,12 +29,15 @@ export function evaluateReculLimite(
 
   const dossier_id = context.dossier.id;
   const ruleSource = buildRuleSource(rule);
+  // Sources du finding : règle de zone + passage source (segment/page/verbatim)
+  // si la provenance fine a été gravée à l'ingestion.
+  const sourceRefs = buildSourceRefs(rule);
   const baseFields = {
     dossier_id,
     rule_id: rule.rule_id,
     topic: "recul_limite",
-    legal_basis: [ruleSource],
-    source_refs: [ruleSource],
+    legal_basis: sourceRefs,
+    source_refs: sourceRefs,
   } satisfies Pick<RegulatoryFinding, "dossier_id" | "rule_id" | "topic" | "legal_basis" | "source_refs">;
 
   if (rule.cases && rule.cases.length > 0) {

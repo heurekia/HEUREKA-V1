@@ -39,6 +39,12 @@ export interface StructuredRule {
   cases: RuleCase[];
   sub_theme: string | null;
   applies_if: string[];
+  // Provenance fine (renseignée hors LLM) : permet de retracer le passage
+  // source. source_segment_id = id du segment RAG d'origine (= Segment.id,
+  // donc une ligne document_segments), source_quote = verbatim citable.
+  source_segment_id?: string | null;
+  source_page?: number | null;
+  source_quote?: string | null;
 }
 
 export interface ZoneRules {
@@ -196,6 +202,17 @@ export async function structureSegments(
       console.warn(`[structurer] zone ${zone.segment_code} : appel LLM échoué (${err instanceof Error ? err.message : String(err)})`);
       rules = [];
     }
+    // Provenance fine : toutes les règles d'une zone proviennent du segment de
+    // cette zone (zone.id = ligne document_segments après --load). On grave
+    // l'id du segment + la page si l'adaptateur l'a conservée, et le verbatim
+    // (rule_text) comme citation directe.
+    const sourcePage = typeof zone.metadata.page === "number" ? zone.metadata.page : null;
+    rules = rules.map((r) => ({
+      ...r,
+      source_segment_id: zone.id,
+      source_page: sourcePage,
+      source_quote: r.rule_text || null,
+    }));
     opts.onZone?.(zone.segment_code, rules.length);
     return {
       zone_code: zone.segment_code,
