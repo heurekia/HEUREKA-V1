@@ -212,9 +212,17 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
       }
 
       if (servitudesChanged || zoneChanged || !dossier.date_limite_instruction || breakdownStale) {
+        // Snapshot compact des risques (Géorisques) — clé canonique lue par le
+        // moteur de pièces pour déclencher les attestations parasismique / argiles
+        // (décret n°2023-1173 du 12/12/2023). Le détail complet reste dans
+        // parcel_analysis ; cette clé stable évite d'avoir à le re-parser.
+        const risks = analysis.risks
+          ? { seismic_zone: analysis.risks.seismic_zone, clay_risk: analysis.risks.clay_risk, flood_risk: analysis.risks.flood_risk }
+          : undefined;
         const newMeta: Record<string, unknown> = {
           ...prevMeta,
           servitudes,
+          ...(risks ? { risks } : {}),
           parcel_analysis: analysis,
           // metadata.zone reste la clé canonique lue par la conformité et la
           // classification : on la maintient synchronisée avec la zone résolue.

@@ -15,6 +15,16 @@ export interface PiecesContext {
   hasDefrichement?: boolean;
   isNatura2000?: boolean;
   isClimateResilience?: boolean;
+  // Contexte risques (Géorisques) — déclenche les attestations créées par le
+  // décret n°2023-1173 du 12 décembre 2023 (au dépôt du permis de construire).
+  seismicZone?: string;   // "1".."5" — zonage sismique (arrêté du 22 octobre 2010)
+  clayRisk?: string;      // "faible" | "moyen" | "fort" | … — aléa retrait-gonflement des argiles
+}
+
+// Construction d'un bâtiment neuf ou extension : périmètre des attestations
+// parasismique / argiles (exclut l'abri de jardin, catégorie d'importance I).
+function isNewBuilding(ctx: PiecesContext): boolean {
+  return ctx.natures.includes("maison_neuve") || ctx.natures.includes("agrandissement");
 }
 
 interface Piece {
@@ -164,6 +174,33 @@ const PIECES_PC: Piece[] = [
     requis: (ctx) => ctx.surface >= 50 && ctx.natures.includes("maison_neuve"),
     aide: "Attestation établie par un bureau d'étude thermique ou l'architecte certifiant la conformité à la Réglementation Environnementale 2020.",
   },
+  // ── Attestations « risques » au dépôt (décret n°2023-1173 du 12/12/2023) ──
+  {
+    code: "PC-PARASISMIQUE",
+    nom: "Attestation de prise en compte des règles parasismiques (au dépôt)",
+    // Art. R.431-16 g) du Code de l'urbanisme ; décret n°2023-1173 du 12/12/2023 ;
+    // arrêté du 22/12/2023. Champ : catégories d'importance II, III et IV en
+    // zones de sismicité 3, 4 et 5, et catégories III/IV en zone 2. `isERP`
+    // sert d'approximation des catégories III/IV (ERP / bâtiments sensibles)
+    // pour la zone 2 — une maison individuelle (cat. II) n'y est pas concernée.
+    requis: (ctx) =>
+      isNewBuilding(ctx) &&
+      (["3", "4", "5"].includes(ctx.seismicZone ?? "") ||
+        (ctx.seismicZone === "2" && !!ctx.isERP)),
+    aide: (ctx) =>
+      `Attestation établie par un contrôleur technique ou l'architecte certifiant la prise en compte des règles de construction parasismique au stade de la conception (art. R.431-16 g) du Code de l'urbanisme ; décret n°2023-1173 du 12 décembre 2023 ; arrêté du 22 décembre 2023). Obligatoire en zone de sismicité ${ctx.seismicZone ?? "concernée"}. À joindre au dépôt du permis.`,
+  },
+  {
+    code: "PC-RGA",
+    nom: "Attestation retrait-gonflement des argiles (étude géotechnique)",
+    // Décret n°2023-1173 du 12/12/2023 (volet argiles) ; loi ELAN n°2018-1021
+    // du 23/11/2018, art. L.112-20 à L.112-25 du Code de la construction et de
+    // l'habitation. Champ : construction d'un bâtiment d'habitation (≤ 2 logements)
+    // en zone d'aléa retrait-gonflement des argiles MOYEN ou FORT.
+    requis: (ctx) => isNewBuilding(ctx) && ["moyen", "fort"].includes((ctx.clayRisk ?? "").toLowerCase()),
+    aide: (ctx) =>
+      `Attestation que l'étude géotechnique de conception (type G2) a été respectée, OU justification d'une technique de construction tenant compte du risque (décret n°2023-1173 du 12 décembre 2023 ; loi ELAN n°2018-1021 ; art. L.112-20 et s. CCH). Exigée en zone d'aléa argiles ${ctx.clayRisk ?? "moyen/fort"}. L'étude préalable (G1) est, elle, annexée à la promesse de vente du terrain.`,
+  },
   // ── Pièces situationnelles ──
   {
     code: "PC16",
@@ -265,6 +302,7 @@ export function buildPiecesContext(
     isNatura2000?: boolean;
     isClimateResilience?: boolean;
   },
+  risks?: { seismic_zone?: string; clay_risk?: string },
 ): PiecesContext {
   return {
     natures,
@@ -283,6 +321,8 @@ export function buildPiecesContext(
     hasDefrichement: situational?.hasDefrichement,
     isNatura2000: situational?.isNatura2000,
     isClimateResilience: situational?.isClimateResilience,
+    seismicZone: risks?.seismic_zone,
+    clayRisk: risks?.clay_risk,
   };
 }
 
