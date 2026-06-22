@@ -54,14 +54,21 @@ export interface ParcelHeight {
   a_cheval: boolean;
   /** Répartition par secteur de hauteur touché, triée par couverture décroissante. */
   repartition: ParcelHeightShare[];
+  /**
+   * Origine de la hauteur :
+   *  - "plan_hauteurs"   : couche déposée, résolue contre la GÉOMÉTRIE parcellaire (fiable) ;
+   *  - "gpu_prescription": prescription GPU type 39, résolue AU POINT (à confirmer).
+   */
+  source: "plan_hauteurs" | "gpu_prescription";
 }
 
 // Interprète le libellé d'un secteur de hauteur. Aligné sur le parsing de
 // l'ingestion (script ingest-plan-hauteurs) : "18 m" → 18 / metres ; les renvois
-// (art. 10, plan masse) et "Non fixée" n'ont pas de valeur chiffrée.
+// (art. 10, plan masse) et "Non fixée" n'ont pas de valeur chiffrée. La valeur
+// chiffrée est cherchée n'importe où dans le texte (tolère "Hauteur maximale : 18 m").
 export function parseHeightTxt(txt: string | null | undefined): { hauteur_m: number | null; categorie: HeightCategory } {
   const t = (txt ?? "").trim();
-  const m = /^(\d+(?:[.,]\d+)?)\s*m/i.exec(t);
+  const m = /(\d+(?:[.,]\d+)?)\s*m\b/i.exec(t);
   if (m) return { hauteur_m: parseFloat(m[1]!.replace(",", ".")), categorie: "metres" };
   const tl = t.toLowerCase();
   if (tl.includes("art") && tl.includes("10")) return { hauteur_m: null, categorie: "article_10_reglement" };
@@ -120,6 +127,35 @@ export function resolveParcelHeight(
     categorie: dom.categorie,
     a_cheval: zoning.a_cheval,
     repartition,
+    source: "plan_hauteurs",
+  };
+}
+
+/**
+ * Repli LIVE : déduit la hauteur depuis les prescriptions surfaciques du GPU déjà
+ * récupérées (type CNIG 39 « Hauteur maximale »). Utile quand aucune couche
+ * `plan_hauteurs` n'est encore déposée. ⚠️ Résolu AU POINT par le GPU (pas contre
+ * la géométrie parcellaire) : moins fiable qu'une couche déposée — à confirmer.
+ */
+export function heightFromPrescriptions(
+  prescriptions: Array<{ libelle?: string | null; typepsc?: string | null; txtpsc?: string | null }> | null | undefined,
+): ParcelHeight | null {
+  if (!prescriptions?.length) return null;
+  const candidates = prescriptions.filter(
+    (p) => p.typepsc === "39" || /hauteur\s+max/i.test(p.libelle ?? ""),
+  );
+  if (!candidates.length) return null;
+  // Préfère une prescription qui porte une valeur chiffrée (txtpsc, ex. "7 m").
+  const chosen = candidates.find((c) => parseHeightTxt(c.txtpsc ?? c.libelle).hauteur_m != null) ?? candidates[0]!;
+  const txt = (chosen.txtpsc ?? chosen.libelle ?? "").trim();
+  const { hauteur_m, categorie } = parseHeightTxt(chosen.txtpsc ?? chosen.libelle);
+  return {
+    hauteur_m,
+    hauteur_txt: txt,
+    categorie,
+    a_cheval: false,
+    repartition: [{ hauteur_txt: txt, hauteur_m, categorie, couverture_pct: 100 }],
+    source: "gpu_prescription",
   };
 }
 

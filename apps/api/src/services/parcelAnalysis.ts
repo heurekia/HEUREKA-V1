@@ -24,7 +24,7 @@ import { loadZoneRulesWithInheritance, pickMostSpecificRule } from "./zoneRules.
 import { resolveCommuneZoneIds } from "./communeZones.js";
 import { getCommunePluContext, findZoneAtPoint, findZonesForParcel, type PluCommuneContext } from "./pluZones.js";
 import { buildParcelSynthesis, type ParcelSynthesis } from "./parcelSynthesis.js";
-import { loadCommuneHeightLayer, resolveParcelHeight, describeHeightCategory, type ParcelHeight } from "./heightLayer.js";
+import { loadCommuneHeightLayer, resolveParcelHeight, heightFromPrescriptions, describeHeightCategory, type ParcelHeight } from "./heightLayer.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -1542,9 +1542,18 @@ export async function analyseParcel(
       parcelHeight = resolveParcelHeight(layer, result.parcel.geometry);
     } catch { /* couche absente / DB indisponible → non bloquant */ }
   }
+  // Repli LIVE : si aucune couche déposée ne couvre la parcelle, on tente la
+  // prescription GPU type 39 « Hauteur maximale » déjà récupérée (résolue au
+  // point — moins fiable, mais évite l'absence d'info et l'incohérence avec le
+  // panneau « prescriptions » côté mairie).
+  if (!parcelHeight && result.prescriptions?.length) {
+    parcelHeight = heightFromPrescriptions(result.prescriptions);
+  }
   if (parcelHeight) {
     result.hauteur_plan = parcelHeight;
-    result.data_sources.push("Plan des hauteurs (PLU)");
+    result.data_sources.push(
+      parcelHeight.source === "plan_hauteurs" ? "Plan des hauteurs (PLU)" : "Hauteur GPU (prescription type 39)",
+    );
     if (parcelHeight.a_cheval) {
       const rep = parcelHeight.repartition.map((r) => `${r.hauteur_txt} ${r.couverture_pct}%`).join(", ");
       result.warnings.push(
@@ -1552,6 +1561,11 @@ export async function analyseParcel(
       );
     } else if (parcelHeight.categorie !== "metres") {
       result.warnings.push(`Plan des hauteurs : ${describeHeightCategory(parcelHeight.categorie)}.`);
+    } else if (parcelHeight.source === "gpu_prescription") {
+      // Résolu au point : on signale que la précision parcellaire suppose le dépôt de la couche.
+      result.warnings.push(
+        `Hauteur maximale ${parcelHeight.hauteur_txt} issue du GPU (résolue au point, à confirmer). Déposez le plan des hauteurs pour une résolution à la parcelle.`,
+      );
     }
   }
 
@@ -1602,10 +1616,12 @@ export async function analyseParcel(
     const parkingRule = pickMostSpecificRule(result.rules, "stationnement", matchedChain);
     if (parkingRule?.rule_text) calcVars.parkingRules = parkingRule.rule_text;
 
-    // Compléter la hauteur depuis le plan des hauteurs quand le règlement écrit
-    // ne la chiffre pas (renvoi au document graphique, ex. Tours). On ne
-    // SURCHARGE jamais une hauteur issue d'une règle écrite — complétion seule.
-    if (calcVars.maxHeightM == null && parcelHeight?.hauteur_m != null) {
+    // Hauteur depuis le plan des hauteurs / prescription type 39. Cette hauteur
+    // est PARCELLAIRE et fait foi (le règlement écrit y renvoie) : elle PRIME donc
+    // sur une éventuelle hauteur de ZONE, souvent générique voire erronée pour ces
+    // communes (sinon le moteur sert une hauteur uniforme fausse sur une parcelle
+    // précise). N'agit que si une hauteur parcellaire a été résolue.
+    if (parcelHeight?.hauteur_m != null) {
       calcVars.maxHeightM = parcelHeight.hauteur_m;
     }
     // Emprise au sol déjà bâtie sur la parcelle (BD TOPO® bâtiments). null si
