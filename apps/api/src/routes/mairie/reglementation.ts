@@ -8,6 +8,7 @@ import { streamAi, type AiContentBlock } from "../../services/aiUsage.js";
 import { parseLooseArray } from "../../services/jsonExtract.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 import { resolveCommuneActiveZoneIds } from "../../services/communeZones.js";
+import { calibrationFewShot } from "@heureka-v1/ingestion/calibration";
 
 export const reglementationRouter = Router();
 
@@ -313,7 +314,7 @@ AUTRES RÈGLES :
 - "cases" : à utiliser UNIQUEMENT pour des éléments porteurs d'une VALEUR chiffrée ou d'une vraie ALTERNATIVE conditionnelle au sein d'une MÊME sous-règle.
   NE crée PAS de cases pour une simple énumération QUALITATIVE sans valeur (liste d'occupations interdites, de matériaux…) : elle reste dans "rule_text".
 - N'invente AUCUNE valeur. Articles 5 et 14 → "sans objet" (loi ALUR) ET citizen_relevant=false.
-- VERSION CITOYEN ("citizen_title" + "citizen_summary") : OBLIGATOIRE par sous-règle, COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme. Phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol » → dis « la surface que votre maison occupe au sol ». Ne recopie PAS les exceptions juridiques dans citizen_summary (elles restent dans "exceptions").`,
+- VERSION CITOYEN ("citizen_title" + "citizen_summary") : OBLIGATOIRE par sous-règle, COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme. Phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol » → dis « la surface que votre maison occupe au sol ». Ne recopie PAS les exceptions juridiques dans citizen_summary (elles restent dans "exceptions").${calibrationFewShot()}`,
       messages: [{ role: "user", content: userContent }],
       },
     );
@@ -471,7 +472,7 @@ RÈGLES DE STRUCTURATION :
 - "cases" : pour les seuils/alternatives chiffrés multiples d'une même sous-règle (ex: voirie 10 m sens unique / 13 m double sens → 2 cases ; stationnement commerces 0/40 m²/30 m² → cases). kind "condition" = alternative exclusive ; "parametre" = valeur cumulative. Pas de case sans valeur chiffrée.
 - "applies_if" : tag de contexte (clôtures sur rue → cloture_sur_rue ; éléments protégés → protege_l151_19 ; UNESCO → unesco ; zone inondable → inondable ; extension → extension ; surélévation → surelevation).
 - N'invente AUCUNE valeur. Reste fidèle au texte fourni.
-- La version « citoyen » doit être COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme : phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol », dis « la surface que votre maison occupe au sol ».`,
+- La version « citoyen » doit être COMPRÉHENSIBLE par quelqu'un qui découvre l'urbanisme : phrases courtes, mots du quotidien, valeur concrète mise en avant. Évite « emprise au sol », dis « la surface que votre maison occupe au sol ».${calibrationFewShot()}`,
       messages: [{ role: "user", content: `${zone_code ? `Zone ${zone_code}.\n\n` : ""}${text}` }],
       },
     );
