@@ -442,6 +442,10 @@ ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_zones_cached_at timestamp;
 -- où le /document GPU est fragile sur un Point (voirie, bord de commune,
 -- conventions de nommage hétérogènes).
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS plu_partition text;
+
+-- Couche vectorielle d'annexe spatiale (ex. plan des hauteurs) portée par un
+-- document réglementaire, isolée du zonage PLU pour ne pas polluer la résolution.
+ALTER TABLE regulatory_documents ADD COLUMN IF NOT EXISTS geojson jsonb;
 -- Raison stable d'indisponibilité du PLU pour cette commune :
 --   'rnu' : commune en RNU, pas de PLU à chercher
 --   'not_in_gpu' : aucune partition trouvée côté Géoportail (commune sans PLU déposé)

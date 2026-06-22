@@ -3637,6 +3637,7 @@ const DOC_TYPES: { value: string; label: string; color: string }[] = [
   { value: "pprt",  label: "PPRT",  color: "#EC4899" },
   { value: "plh",   label: "PLH",   color: "#10B981" },
   { value: "zac",   label: "ZAC",   color: "#3B82F6" },
+  { value: "plan_hauteurs", label: "Plan des hauteurs", color: "#0EA5E9" },
   { value: "autre", label: "Autre", color: "#64748B" },
 ];
 

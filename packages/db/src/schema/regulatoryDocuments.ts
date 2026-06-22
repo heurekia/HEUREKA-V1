@@ -1,4 +1,4 @@
-import { integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
+import { integer, jsonb, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 
 // Documents réglementaires rattachés à une commune OU à un EPCI (cas PLUi).
 // Renommé depuis commune_documents au Lot 1b : la table n'est plus strictement
@@ -22,6 +22,12 @@ export const regulatory_documents = pgTable("regulatory_documents", {
   original_filename: text("original_filename").notNull(),
   file_size: integer("file_size"),
   pdf_content: text("pdf_content"), // base64 — conservé pour l'ingestion IA (Phase 2)
+  // Couche vectorielle (GeoJSON FeatureCollection) pour les annexes SPATIALES —
+  // ex. le « plan des hauteurs » (type plan_hauteurs) : polygones portant la
+  // hauteur maximale. Isolé du zonage PLU (table zones) pour ne PAS polluer la
+  // résolution de zone. Lu par le résolveur de hauteur (heightLayer.ts). null
+  // pour les documents purement textuels (PLU, PPRI…).
+  geojson: jsonb("geojson"),
   // Synthèse textuelle (rédigée par l'instructeur) sur laquelle l'outil s'appuie
   // pendant l'instruction des dossiers situés dans le périmètre concerné.
   // ⚠️ Ne sera lue par le moteur d'instruction QUE si validation_status = 'valide'.
@@ -61,6 +67,11 @@ export const REGULATORY_DOCUMENT_TYPES = [
   "peb",
   "plh",
   "zac",
+  // plan_hauteurs : annexe graphique « plan des hauteurs » du PLU, déposée comme
+  // couche vectorielle (geojson) — polygones portant la hauteur maximale. Sert à
+  // compléter la règle de hauteur et la constructibilité quand le règlement
+  // écrit renvoie au document graphique (ex. Tours).
+  "plan_hauteurs",
   "autre",
 ] as const;
 export type RegulatoryDocumentType = (typeof REGULATORY_DOCUMENT_TYPES)[number];
