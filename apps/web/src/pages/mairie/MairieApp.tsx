@@ -5,7 +5,8 @@ import { api, ApiError } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { CourrierModal, TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 import { DecisionPanel } from "./DecisionPanel";
-import { ROLE_LABELS, type DossierInfo, type WorkflowMeta, type DelaiBreakdown } from "./shared";
+import { ROLE_LABELS, STATUS_LABEL, TYPE_LABEL, fmtDate, stringToColor, nameInitials, fmtConvTime, type DossierInfo, type WorkflowMeta, type DelaiBreakdown } from "./shared";
+import { StatusBadge } from "./ui";
 import { RegulatoryChecklist, type RegulatoryChecklistHandle } from "../../components/RegulatoryChecklist";
 import { PieceRegulatoryLinks } from "../../components/PieceRegulatoryLinks";
 import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
@@ -514,34 +515,6 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
   );
 }
 
-const STATUS_LABEL: Record<string, string> = {
-  brouillon: "Brouillon",
-  soumis: "Nouveau",
-  pre_instruction: "Pré-instruction",
-  incomplet: "Incomplet",
-  en_instruction: "En instruction",
-  decision_en_cours: "Décision en cours",
-  accepte: "Accepté",
-  refuse: "Refusé",
-  accord_prescription: "Accord prescriptions",
-};
-
-const TYPE_LABEL: Record<string, string> = {
-  permis_de_construire: "Permis de construire (PC)",
-  permis_de_construire_mi: "Permis de construire — Maison individuelle (PCMI)",
-  declaration_prealable: "Déclaration préalable",
-  permis_amenager: "Permis d'aménager",
-  permis_demolir: "Permis de démolir",
-  permis_lotir: "Permis de lotir",
-  certificat_urbanisme: "Certificat d'urbanisme",
-  certificat_urbanisme_a: "Certificat d'urbanisme informatif (CUa)",
-  certificat_urbanisme_b: "Certificat d'urbanisme opérationnel (CUb)",
-};
-
-function fmtDate(d: string | Date | null | undefined): string {
-  if (!d) return "—";
-  return new Date(d).toLocaleDateString("fr-FR");
-}
 
 type ApiDossier = {
   id: string; numero: string; type: string; status: string;
@@ -556,47 +529,7 @@ type ApiDossier = {
   ocr_processing?: boolean;
 };
 
-function StatusBadge({ status }: { status: string }) {
-  const label = STATUS_LABEL[status] ?? status;
-  const styles: Record<string, { bg: string; color: string; dot: string }> = {
-    "En instruction": { bg: "#EFF6FF", color: "#1D4ED8", dot: "#3B82F6" },
-    "Nouveau": { bg: "#F0FDF4", color: "#15803D", dot: "#22C55E" },
-    "Pré-instruction": { bg: "#F0FDF4", color: "#15803D", dot: "#22C55E" },
-    "Incomplet": { bg: "#FFF7ED", color: "#C2410C", dot: "#F97316" },
-    "Décision en cours": { bg: "#FAF5FF", color: "#7E22CE", dot: "#9333EA" },
-    "Accepté": { bg: "#F0FDF4", color: "#15803D", dot: "#22C55E" },
-    "Refusé": { bg: "#FEF2F2", color: "#B91C1C", dot: "#EF4444" },
-    "Brouillon": { bg: "#F8FAFC", color: "#475569", dot: "#94A3B8" },
-    "Accord prescriptions": { bg: "#EFF6FF", color: "#1D4ED8", dot: "#3B82F6" },
-    "Actif": { bg: "#F0FDF4", color: "#15803D", dot: "#22C55E" },
-    "En attente": { bg: "#FFF7ED", color: "#C2410C", dot: "#F97316" },
-    "Désactivé": { bg: "#FEF2F2", color: "#B91C1C", dot: "#EF4444" },
-  };
-  const s = styles[label] ?? { bg: "#F1F5F9", color: "#475569", dot: "#94A3B8" };
-  return (
-    <span style={{ background: s.bg, color: s.color, borderRadius: 20, padding: "3px 10px", fontSize: 11, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 5 }}>
-      <span style={{ width: 6, height: 6, borderRadius: "50%", background: s.dot, display: "inline-block" }} />
-      {label}
-    </span>
-  );
-}
 
-function stringToColor(s: string): string {
-  const palette = ["#4F46E5","#22C55E","#F97316","#8B5CF6","#EC4899","#14B8A6","#EF4444","#3B82F6"];
-  let h = 0;
-  for (const c of s) h = (h * 31 + c.charCodeAt(0)) % palette.length;
-  return palette[h] ?? "#4F46E5";
-}
-function nameInitials(name: string): string {
-  return name.split(" ").slice(0, 2).map(w => w[0]?.toUpperCase() ?? "").join("");
-}
-function fmtConvTime(iso: string): string {
-  const d = new Date(iso), now = new Date();
-  if (d.toDateString() === now.toDateString()) return d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
-  const yesterday = new Date(now); yesterday.setDate(now.getDate() - 1);
-  if (d.toDateString() === yesterday.toDateString()) return "Hier";
-  return d.toLocaleDateString("fr-FR");
-}
 
 function DashboardScreen({ navigate, navigateDossiers, commune, inseeCode, onDossierClick }: { navigate: (s: string) => void; navigateDossiers: (filter: string) => void; commune: string; inseeCode?: string; onDossierClick: (d: DossierInfo) => void }) {
   const { user } = useAuth();
