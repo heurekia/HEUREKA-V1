@@ -13,6 +13,13 @@ import {
 } from "../../services/instructionDelays.js";
 import { refreshPluZones, pluEtagFor, filterZonesByInsee, PLU_CACHE_TTL_MS, type PluZonesGeoJson } from "../../services/pluZones.js";
 import { fetchSitadelHistory } from "../../services/sitadelHistory.js";
+import {
+  resolveSitadelQueryForDossier,
+  persistSitadelCache,
+  SITADEL_CACHE_TTL_MS,
+  INTERACTIVE_MAX_PER_SOURCE,
+  type SitadelHistoryCache,
+} from "../../services/sitadelPrefetch.js";
 
 export const parcelleRouter = Router();
 
@@ -273,52 +280,46 @@ parcelleRouter.get("/dossiers/:id/sitadel-history", async (req: AuthRequest, res
       scopeParam === "parcel" || scopeParam === "street" || scopeParam === "commune"
         ? scopeParam
         : "auto";
+    const refresh = req.query.refresh === "1" || req.query.refresh === "true";
 
+    // Cache : on sert le snapshot pré-chargé à la création du dossier (scope
+    // "auto") s'il est frais et qu'aucun rafraîchissement n'est forcé. Les
+    // scopes explicites (boutons parcelle/rue/commune) déclenchent un appel live.
     const meta = (dossier.metadata ?? {}) as Record<string, unknown>;
-    const pa = meta["parcel_analysis"] as
-      | { parcel?: { code_insee?: string; section?: string; numero?: string } }
-      | undefined;
-
-    // INSEE — priorité au cache analyse, sinon lookup nom commune.
-    let inseeCode: string | undefined = pa?.parcel?.code_insee;
-    if (!inseeCode && dossier.commune) {
-      const [communeRow] = await db
-        .select({ insee_code: communes.insee_code })
-        .from(communes)
-        .where(ilike(communes.name, dossier.commune))
-        .limit(1);
-      inseeCode = communeRow?.insee_code ?? undefined;
+    const cache = meta["sitadel_history"] as SitadelHistoryCache | undefined;
+    if (!refresh && scope === "auto" && cache?.result && cache.fetched_at) {
+      const ageMs = Date.now() - new Date(cache.fetched_at).getTime();
+      if (Number.isFinite(ageMs) && ageMs >= 0 && ageMs < SITADEL_CACHE_TTL_MS) {
+        return res.json(cache.result);
+      }
     }
-    if (!inseeCode) {
+
+    const q = await resolveSitadelQueryForDossier(dossier);
+    if (!q) {
       return res.status(422).json({ error: "Code INSEE introuvable pour ce dossier." });
     }
 
-    // Cadastre — section/numéro pour filtrer sur la parcelle.
-    const cadastre: Array<{ section: string; numero: string }> = [];
-    if (pa?.parcel?.section && pa?.parcel?.numero) {
-      cadastre.push({ section: pa.parcel.section, numero: pa.parcel.numero });
-    } else if (dossier.parcelle) {
-      // ex. "AB 142" ou "AB142" → { section: AB, numero: 142 }
-      const m = /^([A-Z]{1,2})\s*0*(\d{1,4})$/i.exec(dossier.parcelle.trim());
-      if (m && m[1] && m[2]) cadastre.push({ section: m[1].toUpperCase(), numero: m[2] });
-    }
-
-    // Rue / lieu-dit — extrait de l'adresse libre du dossier. Le service
-    // SITADEL re-normalise et compare à ADR_LIBVOIE_TER + ADR_LIEUDIT_TER.
-    // On découpe sur la virgule pour éviter d'embarquer le code postal et la
-    // commune dans le libellé (ex. "12 rue Pasteur, 37510 Ballan-Miré").
-    let street: string | null = null;
-    if (dossier.adresse) {
-      const firstPart = dossier.adresse.split(",")[0]?.trim() ?? "";
-      if (firstPart.length > 0) street = firstPart;
-    }
-
     const result = await fetchSitadelHistory({
-      insee_code: inseeCode,
-      cadastre,
-      street,
+      insee_code: q.insee_code,
+      cadastre: q.cadastre,
+      street: q.street,
       scope,
+      maxPerSource: INTERACTIVE_MAX_PER_SOURCE,
     });
+
+    // Rafraîchit le cache uniquement pour le scope "auto" (celui qui est
+    // pré-chargé et servi par défaut). Best-effort : un échec d'écriture ne
+    // doit pas masquer le résultat à l'instructeur.
+    if (scope === "auto") {
+      persistSitadelCache(dossier.id, {
+        result,
+        insee_code: q.insee_code,
+        scope: "auto",
+        fetched_at: new Date().toISOString(),
+      }).catch((e) =>
+        console.error("[mairie/sitadel-history] persist cache:", e instanceof Error ? e.message : e),
+      );
+    }
 
     res.json(result);
   } catch (err) {

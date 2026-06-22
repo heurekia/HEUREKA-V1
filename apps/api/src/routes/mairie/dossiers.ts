@@ -13,6 +13,7 @@ import { z } from "zod";
 import { callAi, convertPdfPagesToPng } from "../../services/aiUsage.js";
 import { extractFirstJson, sha256Buffer } from "../../services/pieceAnalyzer.js";
 import { attachCerfaToDossier } from "../../services/cerfaAttachment.js";
+import { prefetchSitadelHistory } from "../../services/sitadelPrefetch.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 import {
   computeInstructionDelay,
@@ -757,6 +758,13 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
     // Génération + attachement CERFA prérempli (best-effort, comme côté citoyen).
     attachCerfaToDossier(dossier!.id).catch((err) => {
       console.error("[mairie/dossiers] attachCerfaToDossier:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+    });
+
+    // Pré-chargement de l'historique SITADEL en tâche de fond (best-effort) :
+    // balayage complet de la commune mis en cache, pour que l'onglet Parcelle
+    // l'affiche instantanément sans rater une autorisation ancienne.
+    prefetchSitadelHistory(dossier!.id).catch((err) => {
+      console.error("[mairie/dossiers] prefetchSitadelHistory:", err instanceof Error ? `${err.name}: ${err.message}` : err);
     });
 
     res.status(201).json(dossier);

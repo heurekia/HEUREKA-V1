@@ -21,6 +21,7 @@ import { autoReopenAfterCitizenUpload } from "../services/dossierWorkflow.js";
 import { computeInstructionDelay, applyMonthsToDate } from "../services/instructionDelays.js";
 import { getStorageProvider } from "../services/storage.js";
 import { attachCerfaToDossier } from "../services/cerfaAttachment.js";
+import { prefetchSitadelHistory } from "../services/sitadelPrefetch.js";
 import { archivePreviousComplementDemande } from "../services/pieceArchive.js";
 
 // Multer stocke le fichier en MÉMOIRE (Buffer) plutôt que sur disque local.
@@ -681,6 +682,12 @@ dossiersRouter.post("/", async (req: AuthRequest, res) => {
       console.error("[dossiers] attachCerfaToDossier a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
     });
 
+    // Pré-chargement SITADEL best-effort (no-op tant que le brouillon n'a pas
+    // de commune/adresse exploitable ; relancé à la mise à jour ci-dessous).
+    prefetchSitadelHistory(dossier!.id).catch((err) => {
+      console.error("[dossiers] prefetchSitadelHistory a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+    });
+
     res.status(201).json(dossier);
   } catch (err) {
     if (err instanceof z.ZodError) {
@@ -749,6 +756,14 @@ dossiersRouter.patch("/:id", async (req: AuthRequest, res) => {
     if (needsRegen) {
       attachCerfaToDossier(updated!.id).catch((err) => {
         console.error("[dossiers] régénération CERFA a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+      });
+    }
+
+    // Si la localisation (adresse/parcelle/commune) a changé, l'historique
+    // SITADEL devient résolvable (ou différent) → on (re)pré-charge le cache.
+    if (sourceChanged) {
+      prefetchSitadelHistory(updated!.id).catch((err) => {
+        console.error("[dossiers] prefetchSitadelHistory a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
       });
     }
 
