@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules } from "./pluImport.ts";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode } from "./pluImport.ts";
 
 describe("partitionPagesByZone", () => {
   it("découpe les zones en plages fermées [start, end] selon la zone suivante", () => {
@@ -296,5 +296,52 @@ describe("dedupeRules", () => {
     ];
     const out = dedupeRules(rules);
     expect(out).toHaveLength(1);
+  });
+});
+
+describe("mergeRulesByZoneCode", () => {
+  it("garde les zones autonomes quand les codes sont disjoints entre PDF (découpage par type de zone)", () => {
+    // Cas typique : PLUi livré en 4 PDF (U / AU / A / N), chacun son sommaire.
+    const groups = mergeRulesByZoneCode([
+      { code: "UA", label: "Zone UA", type: "U", rules: [{ rule_text: "r1" }] },
+      { code: "UC", label: "Zone UC", type: "U", rules: [{ rule_text: "r2" }] },
+      { code: "A", label: "Zone A", type: "A", rules: [{ rule_text: "r3" }] },
+      { code: "N", label: "Zone N", type: "N", rules: [{ rule_text: "r4" }] },
+    ]);
+    expect(groups.map((g) => g.zoneDef.code)).toEqual(["UA", "UC", "A", "N"]);
+    expect(groups.every((g) => g.rules.length === 1)).toBe(true);
+  });
+
+  it("fusionne les règles d'un même code présent dans plusieurs PDF", () => {
+    const groups = mergeRulesByZoneCode([
+      { code: "UA", label: "Zone UA", type: "U", rules: [{ rule_text: "a" }, { rule_text: "b" }] },
+      { code: "UA", label: "Zone UA", type: "U", rules: [{ rule_text: "c" }] },
+    ]);
+    expect(groups).toHaveLength(1);
+    expect(groups[0]!.rules.map((r) => r.rule_text)).toEqual(["a", "b", "c"]);
+  });
+
+  it("retient le label le plus informatif lors d'une fusion", () => {
+    const groups = mergeRulesByZoneCode([
+      { code: "UA", label: "Zone UA", type: "U", rules: [] },
+      { code: "UA", label: "Zone UA – Centre ancien", type: "U", rules: [] },
+    ]);
+    expect(groups[0]!.zoneDef.label).toBe("Zone UA – Centre ancien");
+  });
+
+  it("préserve l'ordre de première apparition des codes", () => {
+    const groups = mergeRulesByZoneCode([
+      { code: "N", label: "N", type: "N", rules: [] },
+      { code: "UA", label: "UA", type: "U", rules: [] },
+      { code: "N", label: "N", type: "N", rules: [] },
+    ]);
+    expect(groups.map((g) => g.zoneDef.code)).toEqual(["N", "UA"]);
+  });
+
+  it("ne mute pas les tableaux de règles source", () => {
+    const src = [{ rule_text: "x" }];
+    const groups = mergeRulesByZoneCode([{ code: "UA", label: "UA", type: "U", rules: src }]);
+    groups[0]!.rules.push({ rule_text: "y" });
+    expect(src).toHaveLength(1);
   });
 });
