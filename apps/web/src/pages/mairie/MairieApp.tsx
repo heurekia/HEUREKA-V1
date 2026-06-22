@@ -9,6 +9,7 @@ import { PieceRegulatoryLinks } from "../../components/PieceRegulatoryLinks";
 import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
 import { ResizableSplit } from "../../components/ResizableSplit";
 import { PdfAnnotator } from "../../components/PdfAnnotator";
+import { ParcelSynthese, type ParcelSynthesisData } from "../../components/ParcelSynthese";
 import { useInstructionViewMode } from "../../hooks/useInstructionViewMode";
 import { useLocalStorageBool } from "../../hooks/useLocalStorageBool";
 import { linkifyArticles } from "../../utils/linkifyArticles";
@@ -7219,6 +7220,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
       datdecr?: string;
       typeprotect?: string;
     }>;
+    synthesis?: ParcelSynthesisData;
   };
   const [parcelAnalysis, setParcelAnalysis] = useState<ParcelAnalysis | null>(
     (dossier.cachedParcelAnalysis as ParcelAnalysis | null) ?? null
@@ -8873,6 +8875,15 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                           </div>
                         ))}
                       </div>
+                    </div>
+                  )}
+
+                  {/* Synthèse réglementaire par thème — vue instructeur : éléments
+                      tracés (article / document) regroupés et TRANSVERSAUX entre
+                      documents (PLU + risques + servitudes). */}
+                  {pa?.synthesis && pa.synthesis.themes.length > 0 && (
+                    <div style={CARD}>
+                      <ParcelSynthese audience="instructor" synthesis={pa.synthesis} />
                     </div>
                   )}
 

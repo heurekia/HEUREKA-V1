@@ -5,6 +5,7 @@ import { MapLeaflet } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 import type { BaseLayer } from "../../components/MapLeaflet";
 import { Seo } from "../../components/Seo";
+import { ParcelSynthese, type ParcelSynthesisData } from "../../components/ParcelSynthese";
 import { seismicShortLabel } from "@heureka-v1/shared";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -43,6 +44,7 @@ type ParcelAnalysis = {
   informations?: Array<{ libelle: string; typeinf?: string; txtinf?: string }>;
   municipality?: { is_rnu: boolean; libelle?: string } | null;
   scot?: string;
+  synthesis?: ParcelSynthesisData;
   data_sources: string[];
   warnings: string[];
 };
@@ -733,6 +735,12 @@ export function AnalyseParcellaire() {
                     </div>
                   );
                 })()}
+
+                {/* Synthèse thématique « en clair » — vue citoyen, transversale
+                    (règles PLU + risques + servitudes), avec sources repliées. */}
+                {analysis.synthesis && analysis.synthesis.themes.length > 0 && (
+                  <ParcelSynthese audience="citizen" synthesis={analysis.synthesis} />
+                )}
 
                 {/* Regulatory rules */}
                 {analysis.rules.length > 0 ? (() => {
