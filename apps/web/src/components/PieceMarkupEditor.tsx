@@ -5,7 +5,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 import {
   MousePointer2, Circle, Square, ArrowUpRight, Pen, Type as TypeIcon,
   Trash2, X, Eye, EyeOff, Save, Send, Download, ChevronLeft, ChevronRight, Loader2,
-  Ruler, MoveHorizontal,
+  Ruler, MoveHorizontal, Hexagon,
 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 
@@ -24,7 +24,7 @@ const PDF_OPTIONS = {
 } as const;
 
 // ── Modèle d'une marque (annotation vectorielle) ───────────────────────────
-type ToolKind = "ellipse" | "rect" | "arrow" | "freehand" | "text" | "scale" | "measure";
+type ToolKind = "ellipse" | "rect" | "arrow" | "freehand" | "text" | "scale" | "measure" | "polygon";
 type Tool = "select" | ToolKind;
 /** Segments (géométrie {x1,y1,x2,y2}) : flèche, échelle, mesure. */
 const SEGMENT_TOOLS = new Set<ToolKind>(["arrow", "scale", "measure"]);
@@ -110,7 +110,7 @@ function bboxOf(m: Mark): { x: number; y: number; w: number; h: number } {
     const x1 = num(g.x1), y1 = num(g.y1), x2 = num(g.x2), y2 = num(g.y2);
     return { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
   }
-  if (m.tool === "freehand") {
+  if (m.tool === "freehand" || m.tool === "polygon") {
     const ps = pts(g.points);
     if (ps.length === 0) return { x: 0, y: 0, w: 0, h: 0 };
     const xs = ps.map((p) => p.x), ys = ps.map((p) => p.y);
@@ -130,10 +130,58 @@ function translateGeometry(m: Mark, dx: number, dy: number): Geometry {
   if (SEGMENT_TOOLS.has(m.tool)) {
     return { ...g, x1: num(g.x1) + dx, y1: num(g.y1) + dy, x2: num(g.x2) + dx, y2: num(g.y2) + dy };
   }
-  if (m.tool === "freehand") {
+  if (m.tool === "freehand" || m.tool === "polygon") {
     return { points: pts(g.points).map((p) => ({ x: p.x + dx, y: p.y + dy })) };
   }
   return { x: num(g.x) + dx, y: num(g.y) + dy };
+}
+
+// ── Polygones : aire (shoelace) et périmètre en pixels du repère W,H ────────
+function polyAreaPx(ps: Pt[], W: number, H: number): number {
+  if (ps.length < 3) return 0;
+  let a = 0;
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i]!, q = ps[(i + 1) % ps.length]!;
+    a += (p.x / 100 * W) * (q.y / 100 * H) - (q.x / 100 * W) * (p.y / 100 * H);
+  }
+  return Math.abs(a) / 2;
+}
+function polyPerimeterPx(ps: Pt[], W: number, H: number): number {
+  let per = 0;
+  for (let i = 0; i < ps.length; i++) {
+    const p = ps[i]!, q = ps[(i + 1) % ps.length]!;
+    per += Math.hypot((q.x - p.x) / 100 * W, (q.y - p.y) / 100 * H);
+  }
+  return per;
+}
+function polyCentroid(ps: Pt[]): Pt {
+  if (ps.length === 0) return { x: 0, y: 0 };
+  const sx = ps.reduce((s, p) => s + p.x, 0), sy = ps.reduce((s, p) => s + p.y, 0);
+  return { x: sx / ps.length, y: sy / ps.length };
+}
+
+/** Sommets éditables d'une marque (polygone, ou extrémités d'un segment). */
+function handlesOf(m: Mark): { key: string; x: number; y: number }[] {
+  if (m.tool === "polygon") return pts(m.geometry.points).map((p, i) => ({ key: `p${i}`, x: p.x, y: p.y }));
+  if (SEGMENT_TOOLS.has(m.tool)) {
+    const g = m.geometry;
+    return [{ key: "a", x: num(g.x1), y: num(g.y1) }, { key: "b", x: num(g.x2), y: num(g.y2) }];
+  }
+  return [];
+}
+/** Repositionne un sommet identifié par `key` à la position `p` (en %). */
+function setVertex(m: Mark, key: string, p: Pt): Geometry {
+  if (m.tool === "polygon") {
+    const ps = [...pts(m.geometry.points)];
+    const i = parseInt(key.slice(1), 10);
+    if (i >= 0 && i < ps.length) ps[i] = { x: p.x, y: p.y };
+    return { points: ps };
+  }
+  if (SEGMENT_TOOLS.has(m.tool)) {
+    const g = m.geometry;
+    return key === "a" ? { ...g, x1: p.x, y1: p.y } : { ...g, x2: p.x, y2: p.y };
+  }
+  return m.geometry;
 }
 
 /** Dessine une marque sur un canvas 2D (export aplati). Coords % → px via W,H ;
@@ -191,6 +239,22 @@ function drawMarkOnCanvas(ctx: CanvasRenderingContext2D, m: Mark, W: number, H: 
       for (const p of ps.slice(1)) ctx.lineTo(px(p.x), py(p.y));
       ctx.stroke();
     }
+  } else if (m.tool === "polygon") {
+    const ps = pts(g.points);
+    if (ps.length >= 2) {
+      ctx.beginPath();
+      ctx.moveTo(px(ps[0]!.x), py(ps[0]!.y));
+      for (const p of ps.slice(1)) ctx.lineTo(px(p.x), py(p.y));
+      ctx.closePath();
+      ctx.save(); ctx.globalAlpha = 0.08; ctx.fill(); ctx.restore();
+      ctx.stroke();
+      if (mpp && ps.length >= 3) {
+        const c = polyCentroid(ps);
+        const area = polyAreaPx(ps, W, H) * mpp * mpp;
+        const per = polyPerimeterPx(ps, W, H) * mpp;
+        drawLabel(`${fmtArea(area)} · ${fmtLen(per)}`, px(c.x), py(c.y));
+      }
+    }
   } else if (m.tool === "scale" || m.tool === "measure") {
     const x1 = px(num(g.x1)), y1 = py(num(g.y1)), x2 = px(num(g.x2)), y2 = py(num(g.y2));
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
@@ -243,6 +307,11 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
   const svgRef = useRef<SVGSVGElement>(null);
   const draftRef = useRef<Mark | null>(null);
   const dragRef = useRef<{ id: string; startX: number; startY: number; orig: Geometry } | null>(null);
+  // Sommet en cours de déplacement (polygone / extrémité de segment).
+  const vertexDragRef = useRef<{ id: string; key: string } | null>(null);
+  // Polygone en cours de tracé (clic-à-clic) + position du curseur (élastique).
+  const [polyDraft, setPolyDraft] = useState<{ points: Pt[] } | null>(null);
+  const [hoverPt, setHoverPt] = useState<Pt | null>(null);
   const [, force] = useState(0);
 
   // Calibrage d'échelle : segment de référence en attente de saisie + champ.
@@ -346,6 +415,26 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
     } catch { /* silencieux : la marque reste en mémoire */ }
   };
 
+  // ── Polygone (tracé clic-à-clic) ──
+  const finalizePoly = async () => {
+    if (!polyDraft || polyDraft.points.length < 3) return;
+    const m: Mark = {
+      id: `tmp-${Date.now()}`,
+      tool: "polygon",
+      page,
+      geometry: { points: polyDraft.points },
+      style: { color, strokeWidth: width, fontSize: 14 },
+      comment: "",
+      visibility: "citoyen",
+    };
+    setPolyDraft(null);
+    setHoverPt(null);
+    setMarks((prev) => [...prev, m]);
+    setSelectedId(m.id);
+    await persistCreate(m);
+  };
+  const cancelPoly = () => { setPolyDraft(null); setHoverPt(null); };
+
   // ── Gestes de tracé / sélection ──
   const onPointerDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return;
@@ -354,7 +443,14 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
     svgRef.current?.setPointerCapture(e.pointerId);
 
     if (tool === "select") {
-      // Hit-test du plus récent au plus ancien.
+      // 1) Déplacement d'un sommet de la marque déjà sélectionnée (polygone /
+      //    extrémité de segment) : on teste les poignées en premier.
+      if (selected) {
+        const hitH = handlesOf(selected).find((h) =>
+          Math.hypot((p.x - h.x) / 100 * mediaSize.w, (p.y - h.y) / 100 * mediaSize.h) < 10);
+        if (hitH) { vertexDragRef.current = { id: selected.id, key: hitH.key }; return; }
+      }
+      // 2) Sélection + déplacement du corps (du plus récent au plus ancien).
       const hit = [...marksOnPage].reverse().find((m) => {
         const bb = bboxOf(m);
         const pad = 1.5;
@@ -362,6 +458,18 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
       });
       setSelectedId(hit?.id ?? null);
       if (hit) dragRef.current = { id: hit.id, startX: p.x, startY: p.y, orig: hit.geometry };
+      return;
+    }
+
+    // Polygone : clic pour ajouter un sommet ; clic sur le 1er sommet (ou Entrée)
+    // pour fermer ; Échap pour annuler.
+    if (tool === "polygon") {
+      setSelectedId(null);
+      if (!polyDraft) { setPolyDraft({ points: [p] }); setHoverPt(p); return; }
+      const first = polyDraft.points[0];
+      const closeDist = first ? Math.hypot((p.x - first.x) / 100 * mediaSize.w, (p.y - first.y) / 100 * mediaSize.h) : Infinity;
+      if (polyDraft.points.length >= 3 && closeDist < 12) { void finalizePoly(); return; }
+      setPolyDraft({ points: [...polyDraft.points, p] });
       return;
     }
 
@@ -397,6 +505,15 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
     const p = toPct(e);
     if (!p) return;
 
+    // Déplacement d'un sommet.
+    if (vertexDragRef.current) {
+      const { id, key } = vertexDragRef.current;
+      setMarks((prev) => prev.map((m) => (m.id === id ? { ...m, geometry: setVertex(m, key, p) } : m)));
+      return;
+    }
+    // Élastique du polygone en cours de tracé.
+    if (polyDraft) { setHoverPt(p); return; }
+
     if (dragRef.current) {
       const d = dragRef.current;
       const dx = p.x - d.startX, dy = p.y - d.startY;
@@ -425,6 +542,14 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
 
   const onPointerUp = (e: React.PointerEvent) => {
     svgRef.current?.releasePointerCapture(e.pointerId);
+    // Fin de déplacement d'un sommet → persistance.
+    if (vertexDragRef.current) {
+      const id = vertexDragRef.current.id;
+      vertexDragRef.current = null;
+      const m = marks.find((x) => x.id === id);
+      if (m) void persistUpdate(m);
+      return;
+    }
     if (dragRef.current) {
       const id = dragRef.current.id;
       dragRef.current = null;
@@ -507,6 +632,18 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
       try { await api.delete(`/mairie/dossiers/${dossierId}/pieces/${piece.id}/annotations/${id}`); } catch { /* ignore */ }
     }
   };
+
+  // Raccourcis pendant le tracé d'un polygone : Entrée = fermer, Échap = annuler.
+  useEffect(() => {
+    if (!polyDraft) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Enter") { e.preventDefault(); void finalizePoly(); }
+      else if (e.key === "Escape") { cancelPoly(); }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [polyDraft]);
 
   // ── Compositing → PNG → export GED ──
   const compositeToBlob = useCallback(async (): Promise<Blob> => {
@@ -613,6 +750,8 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
       );
     } else if (m.tool === "freehand") {
       shape = <polyline points={pts(g.points).map((p) => `${X(p.x)},${Y(p.y)}`).join(" ")} {...common} style={halo} />;
+    } else if (m.tool === "polygon") {
+      shape = <polygon points={pts(g.points).map((p) => `${X(p.x)},${Y(p.y)}`).join(" ")} {...common} fill={m.style.color} fillOpacity={0.08} style={halo} />;
     } else if (m.tool === "scale" || m.tool === "measure") {
       const x1 = X(num(g.x1)), y1 = Y(num(g.y1)), x2 = X(num(g.x2)), y2 = Y(num(g.y2));
       const ang = Math.atan2(y2 - y1, x2 - x1);
@@ -647,6 +786,13 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
       const d = rectMeters(g, pageMpp, W, H);
       measureText = `${fmtLen(d.w)} × ${fmtLen(d.h)} · ${fmtArea(d.area)}`;
       measureAt = { x: X(num(g.x)), y: Y(num(g.y)) - 6 };
+    } else if (m.tool === "polygon" && pageMpp) {
+      const ps = pts(g.points);
+      if (ps.length >= 3) {
+        const c = polyCentroid(ps);
+        measureText = `${fmtArea(polyAreaPx(ps, W, H) * pageMpp * pageMpp)} · ${fmtLen(polyPerimeterPx(ps, W, H) * pageMpp)}`;
+        measureAt = { x: X(c.x), y: Y(c.y) };
+      }
     }
     const measureLabel = measureText && measureAt ? (
       <text x={measureAt.x} y={measureAt.y} fill={m.style.color} fontSize={13} fontWeight={700} style={labelStyle}>{measureText}</text>
@@ -668,6 +814,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
     { key: "rect", icon: <Square size={16} />, label: "Encadrer" },
     { key: "arrow", icon: <ArrowUpRight size={16} />, label: "Flèche" },
     { key: "freehand", icon: <Pen size={16} />, label: "Dessin libre" },
+    { key: "polygon", icon: <Hexagon size={16} />, label: "Polygone — clic à clic, sommets déplaçables" },
     { key: "text", icon: <TypeIcon size={16} />, label: "Texte / commentaire" },
     { key: "scale", icon: <Ruler size={16} />, label: "Échelle — tracer un segment de longueur connue" },
     { key: "measure", icon: <MoveHorizontal size={16} />, label: "Mesurer une distance" },
@@ -697,7 +844,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
         <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "8px 16px", borderBottom: "1px solid #EEF2F7", flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 6 }}>
             {TOOLS.map((t) => (
-              <button key={t.key} type="button" title={t.label} onClick={() => { setTool(t.key); if (t.key !== "select") setSelectedId(null); }} style={btn(tool === t.key)}>
+              <button key={t.key} type="button" title={t.label} onClick={() => { setTool(t.key); if (t.key !== "select") setSelectedId(null); if (t.key !== "polygon" && polyDraft) cancelPoly(); }} style={btn(tool === t.key)}>
                 {t.icon}
               </button>
             ))}
@@ -782,6 +929,30 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
                   style={{ position: "absolute", top: 0, left: 0, cursor: tool === "select" ? "move" : "crosshair", touchAction: "none" }}
                 >
                   {marksOnPage.map(renderMark)}
+                  {/* Poignées de sommets de la marque sélectionnée (déplaçables). */}
+                  {selected && selected.page === page && handlesOf(selected).map((h) => (
+                    <circle key={h.key} cx={(h.x / 100) * mediaSize.w} cy={(h.y / 100) * mediaSize.h} r={5}
+                      fill="white" stroke={selected.style.color} strokeWidth={2} style={{ pointerEvents: "none" }} />
+                  ))}
+                  {/* Polygone en cours de tracé : segments posés + élastique + sommets. */}
+                  {polyDraft && (() => {
+                    const X = (v: number) => (v / 100) * mediaSize.w, Y = (v: number) => (v / 100) * mediaSize.h;
+                    const ptsArr = polyDraft.points;
+                    const last = ptsArr[ptsArr.length - 1];
+                    return (
+                      <g style={{ pointerEvents: "none" }}>
+                        {ptsArr.length > 1 && (
+                          <polyline points={ptsArr.map((p) => `${X(p.x)},${Y(p.y)}`).join(" ")} fill="none" stroke={color} strokeWidth={width} strokeLinejoin="round" strokeLinecap="round" />
+                        )}
+                        {hoverPt && last && (
+                          <line x1={X(last.x)} y1={Y(last.y)} x2={X(hoverPt.x)} y2={Y(hoverPt.y)} stroke={color} strokeWidth={width} strokeDasharray="5 4" opacity={0.7} />
+                        )}
+                        {ptsArr.map((p, i) => (
+                          <circle key={i} cx={X(p.x)} cy={Y(p.y)} r={i === 0 ? 6 : 4} fill={i === 0 ? color : "white"} stroke={color} strokeWidth={2} />
+                        ))}
+                      </g>
+                    );
+                  })()}
                 </svg>
               )}
             </div>
@@ -867,7 +1038,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
                   {marks.length} marque{marks.length > 1 ? "s" : ""} · {marks.filter((m) => m.visibility === "citoyen").length} visible(s) par le citoyen
                 </div>
                 <div style={{ marginTop: 14, padding: 10, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 11, color: "#64748b", lineHeight: 1.55 }}>
-                  <b>Mesures</b> : tracez d'abord une <b>Échelle</b> (segment de longueur connue — un mur coté, la barre d'échelle du plan), saisissez sa longueur réelle ; ensuite l'outil <b>Mesure</b> affiche les distances et les rectangles indiquent leur surface. Les polygones à sommets déplaçables arrivent à l'étape suivante.
+                  <b>Mesures</b> : tracez d'abord une <b>Échelle</b> (segment de longueur connue — un mur coté, la barre d'échelle du plan), saisissez sa longueur réelle ; ensuite l'outil <b>Mesure</b> donne les distances, et les <b>rectangles</b> comme les <b>polygones</b> affichent leur surface. <b>Polygone</b> : cliquez pour poser les sommets, cliquez le 1ᵉʳ point (ou Entrée) pour fermer ; sélectionnez-le ensuite pour déplacer ses sommets.
                 </div>
               </div>
             )}
@@ -929,6 +1100,13 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
           style={{ position: "fixed", bottom: 18, left: 18, zIndex: 1100, display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #E2E8F0", borderRadius: 999, padding: "8px 14px", fontSize: 12.5, fontWeight: 600, color: "#334155", boxShadow: "0 6px 20px rgba(0,0,0,0.18)", textDecoration: "none" }}>
           <Download size={15} /> {lastDoc.nom}
         </a>
+      )}
+
+      {/* Aide contextuelle pendant le tracé d'un polygone. */}
+      {polyDraft && (
+        <div style={{ position: "fixed", top: 96, left: "50%", transform: "translateX(-50%)", zIndex: 1150, background: "#0F172A", color: "white", padding: "7px 16px", borderRadius: 999, fontSize: 12, fontWeight: 600, boxShadow: "0 8px 24px rgba(0,0,0,0.3)" }}>
+          Polygone — cliquez pour ajouter des sommets · cliquez le 1ᵉʳ point ou <b>Entrée</b> pour fermer · <b>Échap</b> pour annuler ({polyDraft.points.length} pt{polyDraft.points.length > 1 ? "s" : ""})
+        </div>
       )}
 
       {toast && (

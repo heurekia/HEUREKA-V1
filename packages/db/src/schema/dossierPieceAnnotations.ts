@@ -39,7 +39,7 @@ export const dossier_piece_annotations = pgTable(
      *  - "scale"    : segment de référence d'échelle (calibrage) — `style.meters`
      *                 porte la longueur réelle ; définit le ratio m/px de la page
      *  - "measure"  : segment de mesure — longueur réelle calculée via l'échelle
-     *  - "polygon"  : polygone à sommets (réservé Phase 3 — sommets déplaçables)
+     *  - "polygon"  : polygone à sommets déplaçables (surface + périmètre via l'échelle)
      */
     tool: text("tool").notNull(),
     /**
