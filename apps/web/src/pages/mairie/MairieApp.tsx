@@ -12,6 +12,8 @@ import { CalendrierScreen } from "./CalendrierScreen";
 import { StatistiquesScreen } from "./StatistiquesScreen";
 import { RegulatoryChecklist, type RegulatoryChecklistHandle } from "../../components/RegulatoryChecklist";
 import { PieceRegulatoryLinks } from "../../components/PieceRegulatoryLinks";
+import BundleSplitModal from "./BundleSplitModal";
+import PieceReclassControl from "./PieceReclassControl";
 import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
 import { ResizableSplit } from "../../components/ResizableSplit";
 import { PdfAnnotator } from "../../components/PdfAnnotator";
@@ -6186,6 +6188,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [documents, setDocuments] = useState<DossierPiece[] | null>(null);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<number>(0);
+  // Dépôt groupé : PDF unique en attente d'éclatement (ouvre BundleSplitModal).
+  const [bundleFile, setBundleFile] = useState<File | null>(null);
   // Pièce à sélectionner une fois l'onglet Documents chargé. Permet d'ouvrir
   // une pièce justificative depuis un autre onglet (checklist, verdicts) même
   // quand `documents` n'est pas encore chargé : la sélection est différée.
@@ -8389,7 +8393,26 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
           return (
             <>
+              {bundleFile && (
+                <BundleSplitModal
+                  dossierId={dossier.id}
+                  file={bundleFile}
+                  onClose={(applied) => { setBundleFile(null); if (applied) setDocuments(null); }}
+                />
+              )}
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <label
+                  title="Déposer un dossier complet en un seul PDF — le système le découpe en pièces"
+                  style={{ border: "1px solid #C7D2FE", background: "#EEF2FF", color: "#4F46E5", borderRadius: 8, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, marginRight: "auto" }}
+                >
+                  <span style={{ fontSize: 13 }}>📦</span>Déposer un dossier complet (PDF)
+                  <input
+                    type="file"
+                    accept=".pdf,application/pdf"
+                    style={{ display: "none" }}
+                    onChange={(e) => { const f = e.target.files?.[0]; if (f) setBundleFile(f); e.target.value = ""; }}
+                  />
+                </label>
                 <button
                   type="button"
                   onClick={() => setDocsFullscreen(true)}
@@ -8621,6 +8644,16 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                             </button>
                           );
                         })}
+                      </div>
+                      <div style={{ marginBottom: 10 }}>
+                        <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 2 }}>
+                          Emplacement : <strong style={{ color: "#475569", fontFamily: "monospace" }}>{sel.code_piece ?? "non classé"}</strong>
+                        </div>
+                        <PieceReclassControl
+                          dossierId={dossier.id}
+                          piece={{ id: sel.id, code_piece: sel.code_piece, nom: sel.nom }}
+                          onUpdated={(u) => setDocuments((arr) => arr ? arr.map((d) => d.id === u.id ? { ...d, code_piece: u.code_piece, nom: u.nom } : d) : arr)}
+                        />
                       </div>
                       {sel.instructeur_status_at && (
                         <div style={{ fontSize: 10.5, color: "#94a3b8", marginBottom: 8 }}>

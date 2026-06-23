@@ -1213,6 +1213,36 @@ FROM regulatory_documents rd
 WHERE ds.source_document_id IS NULL
   AND ds.metadata->>'source_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   AND rd.id = (ds.metadata->>'source_id')::uuid;
+
+-- ── Dépôt groupé : un seul fichier OCR éclaté en plusieurs pièces ───────────
+-- Flux historique (1 fichier = 1 pièce) inchangé : ces objets sont additifs.
+CREATE TABLE IF NOT EXISTS dossier_piece_bundles (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  user_id uuid REFERENCES users(id),
+  nom text NOT NULL,
+  url text NOT NULL,
+  storage_key text NOT NULL,
+  type text NOT NULL,
+  taille integer NOT NULL,
+  page_count integer,
+  status text NOT NULL DEFAULT 'segmenting',
+  proposed_segments jsonb,
+  error text,
+  created_at timestamp NOT NULL DEFAULT now(),
+  segmented_at timestamp,
+  applied_at timestamp,
+  applied_by uuid
+);
+CREATE INDEX IF NOT EXISTS idx_dossier_piece_bundles_dossier ON dossier_piece_bundles(dossier_id);
+
+-- Traçabilité de l'éclatement sur chaque pièce créée à partir d'un bundle.
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS source_bundle_id uuid REFERENCES dossier_piece_bundles(id) ON DELETE SET NULL;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS source_pages jsonb;
+-- Provenance de la catégorisation : auto (IA) | instructeur (corrigée) | manuel.
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS code_piece_source text;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS nom_origine text;
+ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS classification_confidence real;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

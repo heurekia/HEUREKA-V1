@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, integer, uuid, jsonb, boolean } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, integer, uuid, jsonb, boolean, real } from "drizzle-orm/pg-core";
 import { dossiers } from "./dossiers.js";
 import { users } from "./users.js";
 
@@ -42,4 +42,20 @@ export const dossier_pieces_jointes = pgTable("dossier_pieces_jointes", {
   archived_at: timestamp("archived_at"),
   archived_by_piece_id: uuid("archived_by_piece_id"),
   uploaded_at: timestamp("uploaded_at").notNull().defaultNow(),
+  // ── Dépôt groupé (éclatement d'un PDF unique en plusieurs pièces) ──────────
+  // Colonnes additives/nullable : une pièce déposée par le flux historique
+  // (1 fichier = 1 pièce) les laisse toutes à NULL — aucun impact.
+  // Bundle source dont cette pièce est issue (NULL = upload individuel classique).
+  source_bundle_id: uuid("source_bundle_id"),
+  // Pages du PDF source couvertes par cette pièce (1-indexé). Une page peut
+  // figurer dans plusieurs pièces (planche partagée, ex. PCMI2 + PCMI5).
+  source_pages: jsonb("source_pages"),
+  // Provenance de la catégorisation : "auto" (IA) | "instructeur" (corrigée à
+  // la main) | "manuel" (déposée déjà étiquetée). Empêche un retraitement IA
+  // d'écraser une correction explicite de l'instructeur.
+  code_piece_source: text("code_piece_source"),
+  // Nom du fichier d'origine (bundle) avant renommage normalisé — audit.
+  nom_origine: text("nom_origine"),
+  // Confiance 0..1 de la classification IA au moment de l'éclatement.
+  classification_confidence: real("classification_confidence"),
 });
