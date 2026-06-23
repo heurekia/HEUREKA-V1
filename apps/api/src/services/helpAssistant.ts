@@ -1,19 +1,21 @@
 /**
- * Assistant d'aide intégré (module « ? »), partagé par deux audiences :
- *  - le back-office super-administrateur (interface /admin) ;
- *  - l'espace mairie / instructeur (interface /mairie), où il est branché sur
- *    le bouton « ? » de la barre du haut (ex-placeholder « Assistant FAQ »).
+ * Assistant d'aide intégré de l'espace mairie / instructeur (interface
+ * /mairie), branché sur le bouton « ? » de la barre du haut (ex-placeholder
+ * « Assistant FAQ »).
  *
- * Usage prioritaire : « Comment faire… » — guider l'utilisateur pas à pas dans
+ * Usage prioritaire : « Comment faire… » — guider l'agent pas à pas dans
  * l'utilisation concrète du site. Usage secondaire : questions techniques sur
  * la plateforme.
  *
  * Conception : la réponse est générée par le LLM (Mistral via streamAi) mais
- * STRICTEMENT ancrée sur la base de connaissances correspondant à l'audience,
- * injectée dans le prompt système. L'assistant ne doit pas inventer de
- * fonctionnalités absentes : quand il ne sait pas, il le dit et oriente vers la
- * bonne section. Aucune donnée nominative n'est exposée — les bases ne
- * contiennent que la description fonctionnelle et technique de la plateforme.
+ * STRICTEMENT ancrée sur la base de connaissances ci-dessous, injectée dans le
+ * prompt système. L'assistant ne doit pas inventer de fonctionnalités absentes :
+ * quand il ne sait pas, il le dit et oriente vers la bonne section. Aucune
+ * donnée nominative n'est exposée — la base ne contient que la description
+ * fonctionnelle et technique de la plateforme.
+ *
+ * Le constructeur de prompt est paramétré (intro/exemples/base) pour rester
+ * réutilisable si d'autres espaces ont besoin d'un assistant d'aide.
  */
 
 export interface AssistantTurn {
@@ -68,114 +70,7 @@ const PLATFORM_TECHNICAL_CONTEXT = `
   d'audit, purges RGPD automatiques.
 `.trim();
 
-// ─────────────────────────────────────────────────────────────────────────────
-// Audience 1 — Back-office SUPER-ADMINISTRATEUR (/admin)
-// ─────────────────────────────────────────────────────────────────────────────
-
-export const SUPERADMIN_KNOWLEDGE_BASE = `
-# HEUREKIA — Back-office super-administrateur
-
-HEUREKIA est une plateforme d'instruction dématérialisée des autorisations
-d'urbanisme (permis de construire, déclarations préalables, certificats
-d'urbanisme, permis de démolir). Le back-office super-admin sert à administrer
-la plateforme : communes clientes, agents, droits, services partenaires, suivi
-des coûts IA, sécurité et conformité.
-
-La navigation se fait par le menu latéral gauche. Sections disponibles :
-Vue d'ensemble · Communes · Groupements · Rôles · Utilisateurs · Services
-annexes · Coûts IA · Audit sécurité · Conformité RGPD · Configuration.
-
-## Vue d'ensemble (tableau de bord — /admin)
-Page d'accueil de l'admin. Affiche les compteurs clés : nombre de communes
-raccordées, nombre d'agents, dossiers en cours d'instruction, nombre d'EPCI
-(groupements). Donne un accès rapide à la liste des communes. Écran de synthèse
-en lecture seule.
-
-## Communes
-Liste de toutes les communes raccordées, avec pour chacune le nombre d'agents et
-de dossiers.
-- Ajouter une commune : bouton « Ajouter une commune ». On recherche la commune
-  par son nom ; la plateforme interroge le référentiel officiel INSEE et
-  pré-remplit le code INSEE, le code postal, le département et la région. On
-  complète l'email et le téléphone de la mairie, puis on enregistre.
-- Fiche commune (clic sur une ligne) : « Modifier les informations de la
-  commune » et « Modifier le PLU » (créer/éditer les zones et règles d'urbanisme).
-- Instruction mutualisée : une commune peut gérer son propre service urbanisme
-  OU déléguer l'instruction de ses dossiers au service d'un groupement (EPCI).
-
-## Groupements (EPCI)
-Intercommunalités qui mutualisent l'instruction pour plusieurs communes.
-- Créer un groupement : bouton « Créer un groupement » (nom + type).
-- Importer un EPCI officiel : bouton « Importer un EPCI officiel » — à partir du
-  SIREN / référentiel officiel, récupère l'EPCI et ses communes membres et peut
-  les créer / rattacher automatiquement.
-- Rattacher des communes : on sélectionne les communes membres ; en instruction
-  mutualisée, leurs dossiers sont instruits par le service du groupement.
-
-## Rôles & Permissions
-Rôles applicatifs et permissions pour les agents.
-- Créer un rôle : bouton « Créer un rôle » (nom, couleur, description, « rôle de
-  base », permissions : accès au dashboard, créer/éditer les zones et règles
-  PLU, gérer les agents, modifier les informations de la commune…).
-- Rôles système (par défaut). Supprimer un rôle personnalisé n'efface pas les
-  comptes : les utilisateurs gardent leur rôle de base.
-
-## Utilisateurs
-Comptes agents (mairie, instructeur, admin).
-- Ajouter : bouton « Ajouter un utilisateur » (prénom, nom, email, téléphone,
-  rôle, commune). Un email d'activation est envoyé ; tant qu'il n'est pas suivi,
-  le compte est « en attente d'activation ».
-- Modifier / désactiver / supprimer un agent depuis la liste (suppression
-  définitive).
-
-## Services annexes
-Accès des organismes consultatifs externes (ABF, SDIS, DDT, gestionnaires de
-réseaux…).
-- « Nouveau service annexe » décrit l'organisme ; « Créer l'accès » ouvre un
-  compte pour ses agents. Supprimer un service supprime ses comptes associés.
-
-## Coûts IA
-Suivi de la facturation estimée de l'inférence IA (Mistral), poste par poste
-(usage, modèle, dossier, commune). Widget de coût du jour en pied de menu.
-Grille tarifaire (€/M tokens) éditable. Alertes via webhook Slack + seuils (par
-appel / cumul quotidien).
-
-## Audit sécurité
-Journal d'audit : connexions (login), échecs (login_failed), déconnexions
-(logout), inscriptions (register), avec IP et user-agent. Rétention 12 mois
-(cron quotidien ; AUDIT_LOG_RETENTION_MONTHS).
-
-## Conformité RGPD & sécurité
-Traçabilité du traitement IA (booléen ai_processed par pièce), souveraineté
-(Mistral, entité française, inférence en France, pas de transfert hors UE),
-purges automatiques des journaux.
-
-## Configuration
-Réglages généraux ; mentions légales / références Légifrance (créer les
-références cliquées et introuvables, ou les ignorer) ; modèles de documents.
-`.trim();
-
-export const SUPERADMIN_ASSISTANT_SUGGESTIONS: string[] = [
-  "Comment ajouter une nouvelle commune ?",
-  "Comment créer un groupement (EPCI) et y rattacher des communes ?",
-  "Comment inviter un agent instructeur ?",
-  "Comment créer un rôle personnalisé avec des permissions ?",
-  "Comment ajouter un service annexe (ABF, SDIS…) ?",
-  "Comment suivre et plafonner les coûts IA ?",
-  "Où sont tracées les connexions pour l'audit de sécurité ?",
-];
-
-export function buildSuperAdminAssistantSystemPrompt(): string {
-  return buildSystemPrompt({
-    intro: "Tu es l'assistant d'aide intégré du back-office super-administrateur de la plateforme HEUREKIA (instruction dématérialisée des autorisations d'urbanisme en France). Tu réponds aux administrateurs de la plateforme.",
-    mission1Examples: "créer une commune, inviter un agent, configurer un rôle, suivre les coûts IA, etc.",
-    knowledgeBase: `${SUPERADMIN_KNOWLEDGE_BASE}\n\n${PLATFORM_TECHNICAL_CONTEXT}`,
-  });
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Audience 2 — Espace MAIRIE / INSTRUCTEUR (/mairie)
-// ─────────────────────────────────────────────────────────────────────────────
+// ── Base de connaissances — espace mairie / instructeur ──────────────────────
 
 export const MAIRIE_KNOWLEDGE_BASE = `
 # HEUREKIA — Espace mairie / instructeur
