@@ -351,12 +351,260 @@ function relTime(d: string) {
   return `Il y a ${Math.floor(ms / 86_400_000)}j`;
 }
 
+// ── Assistant d'aide (« ? » de la barre du haut) ──────────────────────────────
+// Chat connecté à POST /api/mairie/assistant (SSE). Usage prioritaire :
+// « Comment faire… » sur l'utilisation de l'espace mairie ; secondairement,
+// questions techniques. Remplace l'ancien placeholder « Assistant FAQ ».
+
+function faqRenderInline(text: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  let last = 0;
+  let key = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const tok = m[0];
+    if (tok.startsWith("**")) parts.push(<strong key={key++}>{tok.slice(2, -2)}</strong>);
+    else parts.push(<code key={key++} style={{ background: "#F1F5F9", borderRadius: 4, padding: "1px 5px", fontSize: 11.5, fontFamily: "ui-monospace, monospace" }}>{tok.slice(1, -1)}</code>);
+    last = m.index + tok.length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+function FaqRichText({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const blocks: React.ReactNode[] = [];
+  let list: { ordered: boolean; items: string[] } | null = null;
+  const flush = () => {
+    if (!list) return;
+    const items = list.items.map((it, i) => <li key={i} style={{ marginBottom: 3 }}>{faqRenderInline(it)}</li>);
+    blocks.push(
+      list.ordered
+        ? <ol key={`b${blocks.length}`} style={{ margin: "4px 0", paddingLeft: 18 }}>{items}</ol>
+        : <ul key={`b${blocks.length}`} style={{ margin: "4px 0", paddingLeft: 18 }}>{items}</ul>,
+    );
+    list = null;
+  };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    const ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    const ul = /^\s*[-*•]\s+(.*)$/.exec(line);
+    if (ol) { if (!list || !list.ordered) { flush(); list = { ordered: true, items: [] }; } list.items.push(ol[1] ?? ""); continue; }
+    if (ul) { if (!list || list.ordered) { flush(); list = { ordered: false, items: [] }; } list.items.push(ul[1] ?? ""); continue; }
+    flush();
+    if (line.trim() === "") continue;
+    blocks.push(<p key={`b${blocks.length}`} style={{ margin: "0 0 6px" }}>{faqRenderInline(line)}</p>);
+  }
+  flush();
+  return <>{blocks}</>;
+}
+
+type FaqTurn = { role: "user" | "assistant"; content: string };
+
+function faqSetLastAssistant(list: FaqTurn[], content: string): FaqTurn[] {
+  const copy = list.slice();
+  for (let i = copy.length - 1; i >= 0; i--) {
+    const item = copy[i];
+    if (item && item.role === "assistant") { copy[i] = { ...item, content }; break; }
+  }
+  return copy;
+}
+
+function FaqAssistant() {
+  const [messages, setMessages] = useState<FaqTurn[]>([]);
+  const [input, setInput] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef<FaqTurn[]>(messages);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  useEffect(() => {
+    api.get<{ suggestions: string[] }>("/mairie/assistant/suggestions")
+      .then((d) => setSuggestions(d.suggestions ?? []))
+      .catch(() => { /* l'UI fonctionne sans suggestions */ });
+  }, []);
+
+  useEffect(() => {
+    if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages]);
+
+  const send = useCallback(async (raw: string) => {
+    const question = raw.trim();
+    if (!question || streaming) return;
+    setError(null);
+    setInput("");
+    const history = messagesRef.current.map((m) => ({ role: m.role, content: m.content }));
+    setMessages((prev) => [...prev, { role: "user", content: question }, { role: "assistant", content: "" }]);
+    setStreaming(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let acc = "";
+    let streamErr: string | null = null;
+
+    try {
+      const res = await fetch("/api/mairie/assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ question, history }),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? `Erreur ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          for (const ln of chunk.split("\n")) {
+            if (!ln.startsWith("data:")) continue;
+            const data = ln.slice(5).trim();
+            if (!data) continue;
+            let evt: { type?: string; text?: string; message?: string };
+            try { evt = JSON.parse(data); } catch { continue; }
+            if (evt.type === "delta" && typeof evt.text === "string") {
+              acc += evt.text;
+              setMessages((prev) => faqSetLastAssistant(prev, acc));
+            } else if (evt.type === "error") {
+              streamErr = evt.message ?? "Erreur de l'assistant.";
+            }
+          }
+        }
+      }
+      if (streamErr && !acc) throw new Error(streamErr);
+    } catch (err) {
+      const aborted = err instanceof DOMException && err.name === "AbortError";
+      if (!aborted) setError(err instanceof Error ? err.message : "Échec de l'assistant — réessayez.");
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        return last && last.role === "assistant" && last.content === "" ? prev.slice(0, -1) : prev;
+      });
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  }, [streaming]);
+
+  const lastTurn = messages[messages.length - 1];
+  const showTyping = streaming && lastTurn?.role === "assistant" && lastTurn.content === "";
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", maxHeight: 520 }}>
+      <style>{`@keyframes faqDots { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }`}</style>
+      {/* Header */}
+      <div style={{ padding: "12px 16px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", gap: 8 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Assistant d'aide ✨</div>
+          <div style={{ fontSize: 11, color: "#94a3b8" }}>Comment faire ? · Questions techniques</div>
+        </div>
+        {messages.length > 0 && (
+          <button onClick={() => { abortRef.current?.abort(); setMessages([]); setError(null); }} title="Nouvelle conversation"
+            style={{ border: "1px solid #E2E8F0", background: "white", color: "#64748b", cursor: "pointer", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "4px 8px" }}>
+            Effacer
+          </button>
+        )}
+      </div>
+
+      {/* Messages */}
+      <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: 12, minHeight: 120, maxHeight: 360 }}>
+        {messages.length === 0 && (
+          <div>
+            <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.6, marginBottom: 12 }}>
+              Posez une question sur l'utilisation de l'espace mairie (<strong>« Comment faire… »</strong>) ou une question technique.
+            </div>
+            {suggestions.length > 0 && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                {suggestions.map((s) => (
+                  <button key={s} onClick={() => send(s)}
+                    style={{ textAlign: "left", border: "1px solid #E2E8F0", background: "white", borderRadius: 9, padding: "8px 10px", fontSize: 12, color: "#374151", cursor: "pointer", lineHeight: 1.4 }}>
+                    {s}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+
+        {messages.map((m, i) => (
+          <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 9 }}>
+            <div style={{
+              maxWidth: "88%", padding: "8px 11px", borderRadius: 11, fontSize: 12.5, lineHeight: 1.55,
+              background: m.role === "user" ? "#4F46E5" : "#F8FAFC",
+              color: m.role === "user" ? "white" : "#1e293b",
+              border: m.role === "user" ? "none" : "1px solid #EEF1F5",
+              borderBottomRightRadius: m.role === "user" ? 3 : 11,
+              borderBottomLeftRadius: m.role === "user" ? 11 : 3,
+              wordBreak: "break-word",
+            }}>
+              {m.role === "assistant" ? <FaqRichText text={m.content} /> : m.content}
+            </div>
+          </div>
+        ))}
+
+        {showTyping && (
+          <div style={{ display: "flex", justifyContent: "flex-start" }}>
+            <div style={{ background: "#F8FAFC", border: "1px solid #EEF1F5", borderRadius: 11, borderBottomLeftRadius: 3, padding: "10px 13px", display: "flex", gap: 4 }}>
+              {[0, 1, 2].map((d) => (
+                <span key={d} style={{ width: 6, height: 6, borderRadius: "50%", background: "#94a3b8", animation: `faqDots 1.2s infinite ${d * 0.2}s` }} />
+              ))}
+            </div>
+          </div>
+        )}
+
+        {error && (
+          <div style={{ background: "#FEF2F2", color: "#DC2626", border: "1px solid #FCA5A5", borderRadius: 9, padding: "8px 11px", fontSize: 11.5, marginTop: 4 }}>{error}</div>
+        )}
+      </div>
+
+      {/* Saisie */}
+      <div style={{ borderTop: "1px solid #F1F5F9", padding: 10 }}>
+        <div style={{ display: "flex", alignItems: "flex-end", gap: 6 }}>
+          <textarea
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
+            placeholder="Ex : Comment demander des pièces ?"
+            rows={1}
+            autoFocus
+            style={{ flex: 1, resize: "none", maxHeight: 88, minHeight: 36, padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 9, fontSize: 12.5, fontFamily: "inherit", outline: "none", color: "#374151", lineHeight: 1.4 }}
+            onFocus={(e) => { e.target.style.borderColor = "#4F46E5"; }}
+            onBlur={(e) => { e.target.style.borderColor = "#E2E8F0"; }}
+          />
+          {streaming ? (
+            <button onClick={() => abortRef.current?.abort()} title="Arrêter" style={{ flexShrink: 0, width: 36, height: 36, borderRadius: 9, border: "none", background: "#F1F5F9", color: "#64748b", cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+              <span style={{ width: 10, height: 10, background: "#64748b", borderRadius: 2, display: "block" }} />
+            </button>
+          ) : (
+            <button onClick={() => send(input)} disabled={!input.trim()} title="Envoyer"
+              style={{ flexShrink: 0, width: 36, height: 36, borderRadius: 9, border: "none", background: input.trim() ? "linear-gradient(135deg,#4F46E5,#6366F1)" : "#E2E8F0", color: "white", cursor: input.trim() ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15 }}>
+              →
+            </button>
+          )}
+        </div>
+        <div style={{ fontSize: 9.5, color: "#cbd5e1", marginTop: 5, textAlign: "center" }}>Réponses générées par IA — vérifiez les actions sensibles.</div>
+      </div>
+    </div>
+  );
+}
+
 function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick, commune = "", onViewAllNotifications }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void; commune?: string; onViewAllNotifications?: () => void }) {
   const routerNav = useNavigate();
   const [showNotifs, setShowNotifs] = useState(false);
   const [showFAQ, setShowFAQ] = useState(false);
-  const [faqQuery, setFaqQuery] = useState("");
-  const [faqAnswer, setFaqAnswer] = useState("");
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchResults, setSearchResults] = useState<ApiDossier[]>([]);
@@ -481,32 +729,8 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
             <HelpIcon size={20} />
           </button>
           {showFAQ && (
-            <div style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, width: 340, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.14)", zIndex: 200 }}>
-              <div style={{ padding: "12px 16px", borderBottom: "1px solid #F1F5F9" }}>
-                <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Assistant FAQ ✨</div>
-                <div style={{ fontSize: 11, color: "#94a3b8" }}>Posez une question sur la réglementation, les délais ou les procédures.</div>
-              </div>
-              <div style={{ padding: "12px 16px" }}>
-                {faqAnswer && (
-                  <div style={{ background: "#F0F4FF", borderRadius: 8, padding: "10px 12px", marginBottom: 10, fontSize: 12, color: "#374151", borderLeft: "3px solid #4F46E5" }}>{faqAnswer}</div>
-                )}
-                <div style={{ display: "flex", gap: 6 }}>
-                  <input
-                    value={faqQuery}
-                    onChange={e => setFaqQuery(e.target.value)}
-                    onKeyDown={e => { if (e.key === "Enter" && faqQuery.trim()) { setFaqAnswer("Recherche en cours sur « " + faqQuery + " »… Cette fonctionnalité sera connectée à la base réglementaire."); setFaqQuery(""); } }}
-                    placeholder="Ex : délai permis de construire..."
-                    style={{ flex: 1, padding: "7px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12, outline: "none", color: "#374151" }}
-                    autoFocus
-                  />
-                  <button onClick={() => { if (faqQuery.trim()) { setFaqAnswer("Recherche en cours sur « " + faqQuery + " »… Cette fonctionnalité sera connectée à la base réglementaire."); setFaqQuery(""); } }} style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 13px", fontSize: 13, cursor: "pointer" }}>→</button>
-                </div>
-                <div style={{ marginTop: 8, display: "flex", flexWrap: "wrap" as const, gap: 4 }}>
-                  {["Délai permis construire", "Consultation ABF", "Pièces CERFA"].map(s => (
-                    <button key={s} onClick={() => setFaqQuery(s)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 12, padding: "3px 8px", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>{s}</button>
-                  ))}
-                </div>
-              </div>
+            <div style={{ position: "absolute", top: "calc(100% + 8px)", right: 0, width: 360, background: "white", borderRadius: 12, border: "1px solid #E2E8F0", boxShadow: "0 8px 24px rgba(0,0,0,0.14)", zIndex: 200, overflow: "hidden" }}>
+              <FaqAssistant />
             </div>
           )}
         </div>

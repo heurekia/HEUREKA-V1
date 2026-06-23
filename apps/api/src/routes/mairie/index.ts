@@ -17,6 +17,7 @@ import { consultationsRouter } from "./consultations.js";
 import { documentationRouter } from "./documentation.js";
 import { pieceAnnotationsRouter } from "./pieceAnnotations.js";
 import { dossierDocumentsRouter } from "./documents.js";
+import { assistantRouter } from "./assistant.js";
 
 export const mairieRouter = Router();
 mairieRouter.use(requireAuth);
@@ -30,6 +31,8 @@ mairieRouter.use(auditMutations({
     "/conversations/:dossierId/read",
     "/conversations/:dossierId/unread",
     "/service-conversations/:consultationId/read",
+    // L'assistant d'aide n'est pas une mutation métier : on ne l'audite pas.
+    "/assistant",
   ]),
 }));
 mairieRouter.use("/dossiers/:id", enforceDossierAccess);
@@ -53,3 +56,4 @@ mairieRouter.use(consultationsRouter);
 mairieRouter.use(documentationRouter);
 mairieRouter.use(pieceAnnotationsRouter);
 mairieRouter.use(dossierDocumentsRouter);
+mairieRouter.use(assistantRouter);

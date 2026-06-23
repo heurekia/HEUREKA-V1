@@ -3,7 +3,7 @@ import { db } from "../db.js";
 import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { invalidatePricingCache, streamAi } from "../services/aiUsage.js";
-import { buildAdminAssistantSystemPrompt, sanitizeHistory, ADMIN_ASSISTANT_SUGGESTIONS } from "../services/adminAssistant.js";
+import { buildSuperAdminAssistantSystemPrompt, sanitizeHistory, SUPERADMIN_ASSISTANT_SUGGESTIONS } from "../services/helpAssistant.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, lt, inArray } from "drizzle-orm";
 import crypto from "crypto";
@@ -49,7 +49,7 @@ superAdminRouter.get("/dashboard", async (_req, res) => {
 
 // GET /admin/assistant/suggestions — questions d'amorce pour l'UI.
 superAdminRouter.get("/assistant/suggestions", (_req, res) => {
-  res.json({ suggestions: ADMIN_ASSISTANT_SUGGESTIONS });
+  res.json({ suggestions: SUPERADMIN_ASSISTANT_SUGGESTIONS });
 });
 
 // POST /admin/assistant — réponse en streaming SSE.
@@ -89,7 +89,7 @@ superAdminRouter.post("/assistant", async (req: AuthRequest, res) => {
         model: "ai-fast",
         max_tokens: 1200,
         temperature: 0.2,
-        system: buildAdminAssistantSystemPrompt(),
+        system: buildSuperAdminAssistantSystemPrompt(),
         messages: [
           ...history.map((t) => ({ role: t.role, content: t.content })),
           { role: "user" as const, content: question },
