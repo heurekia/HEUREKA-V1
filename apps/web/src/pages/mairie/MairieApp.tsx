@@ -9723,7 +9723,7 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
               <div style={{ display: "flex", alignItems: "center", gap: 10, background: "#EEF2FF", borderRadius: 8, padding: "10px 14px", border: "1px solid #C7D2FE" }}>
                 <span style={{ fontSize: 18 }}>🔍</span>
                 <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "#3730A3" }}>Analyse du CERFA en cours…</div>
+                  <div style={{ fontSize: 13, fontWeight: 600, color: "#3730A3" }}>Analyse des documents en cours…</div>
                   <div style={{ marginTop: 6, height: 4, background: "#E0E7FF", borderRadius: 2, overflow: "hidden" }}>
                     <div style={{ height: "100%", background: "linear-gradient(90deg,#4F46E5,#6366F1)", borderRadius: 2, width: "60%" }} />
                   </div>
