@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { dossiers, users, dossier_messages, dossier_consultations } from "@heureka-v1/db";
 import { eq, desc, and, sql, isNull } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { resolveAttachmentRefs } from "./documents.js";
 
 export const conversationsRouter = Router();
 
@@ -87,6 +88,7 @@ conversationsRouter.get("/conversations/:dossierId", async (req: AuthRequest, re
         content: dossier_messages.content,
         from_role: dossier_messages.from_role,
         created_at: dossier_messages.created_at,
+        attachments: dossier_messages.attachments,
         prenom: users.prenom,
         nom: users.nom,
       })
@@ -107,23 +109,30 @@ conversationsRouter.get("/conversations/:dossierId", async (req: AuthRequest, re
 // ── Envoyer un message à un citoyen depuis le dossier ──
 conversationsRouter.post("/conversations/:dossierId", async (req: AuthRequest, res) => {
   try {
-    const content = (req.body?.content as string | undefined)?.trim();
-    if (!content) return res.status(400).json({ error: "Contenu requis" });
+    const content = (req.body?.content as string | undefined)?.trim() ?? "";
+    const dossierId = req.params.dossierId as string;
+    // Pièces jointes GED jointes au message (ex : pièce annotée par l'instructeur).
+    // Un message peut être composé d'une pièce jointe seule (sans texte).
+    const attachments = await resolveAttachmentRefs(dossierId, req.body?.attachment_document_ids, "citoyen");
+    if (!content && attachments.length === 0) {
+      return res.status(400).json({ error: "Contenu ou pièce jointe requis" });
+    }
 
     const [dossier] = await db
       .select({ id: dossiers.id })
       .from(dossiers)
-      .where(eq(dossiers.id, req.params.dossierId as string))
+      .where(eq(dossiers.id, dossierId))
       .limit(1);
     if (!dossier) return res.status(404).json({ error: "Dossier introuvable" });
 
     const [msg] = await db
       .insert(dossier_messages)
       .values({
-        dossier_id: req.params.dossierId as string,
+        dossier_id: dossierId,
         from_user_id: req.user!.id,
         from_role: req.user!.role,
         content,
+        attachments,
       })
       .returning();
 

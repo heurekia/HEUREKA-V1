@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { Input } from "../../components/ui/input";
-import { Search, Send, MessageSquare, ArrowLeft } from "lucide-react";
+import { Search, Send, MessageSquare, ArrowLeft, FileText } from "lucide-react";
 import { Avatar } from "../../components/ui/avatar";
 import { Button } from "../../components/ui/button";
 import { api } from "../../lib/api";
@@ -17,12 +17,20 @@ interface Conversation {
   unread_count: number;
 }
 
+interface Attachment {
+  document_id: string;
+  nom: string;
+  url: string;
+  type: string;
+}
+
 interface Message {
   id: string;
   content: string;
   from_role: string;
   created_at: string;
   read_at: string | null;
+  attachments?: Attachment[] | null;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -242,7 +250,33 @@ export function MessagerieCitoyen() {
                             : "bg-gray-100 text-gray-800 rounded-bl-md"
                         }`}
                       >
-                        <p className="whitespace-pre-wrap">{msg.content}</p>
+                        {msg.content && <p className="whitespace-pre-wrap">{msg.content}</p>}
+                        {msg.attachments && msg.attachments.length > 0 && (
+                          <div className={`flex flex-col gap-2 ${msg.content ? "mt-2" : ""}`}>
+                            {msg.attachments.map((att) => {
+                              const isImg = (att.type ?? "").toLowerCase().startsWith("image/");
+                              return isImg ? (
+                                <a key={att.document_id} href={att.url} target="_blank" rel="noopener noreferrer" className="block">
+                                  <img src={att.url} alt={att.nom} className="max-h-48 rounded-lg border border-black/10" />
+                                  <span className={`block text-[11px] mt-1 ${isMe ? "text-white/80" : "text-gray-500"}`}>{att.nom}</span>
+                                </a>
+                              ) : (
+                                <a
+                                  key={att.document_id}
+                                  href={att.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className={`flex items-center gap-2 rounded-lg px-3 py-2 text-xs font-medium border ${
+                                    isMe ? "bg-white/15 border-white/25 text-white hover:bg-white/25" : "bg-white border-gray-200 text-gray-700 hover:bg-gray-50"
+                                  }`}
+                                >
+                                  <FileText className="w-4 h-4 shrink-0" />
+                                  <span className="truncate">{att.nom}</span>
+                                </a>
+                              );
+                            })}
+                          </div>
+                        )}
                         <p className={`text-[10px] mt-1 ${isMe ? "text-white/60" : "text-gray-400"}`}>
                           {new Date(msg.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
                         </p>

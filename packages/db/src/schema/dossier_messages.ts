@@ -14,6 +14,13 @@ export const dossier_messages = pgTable("dossier_messages", {
   content: text("content").notNull(),
   parent_id: integer("parent_id"),
   mentions: jsonb("mentions").default([]),
+  // Pièces jointes référençant des documents de la GED du dossier
+  // (dossier_documents). Format : DocumentAttachmentRef[]
+  //   { document_id, nom, url, type }
+  // Permet à l'instructeur de transmettre au citoyen une pièce annotée via la
+  // messagerie interne. Les fichiers ne sont jamais dupliqués ici : on ne porte
+  // qu'une référence vers la GED.
+  attachments: jsonb("attachments").notNull().default([]),
   created_at: timestamp("created_at").notNull().defaultNow(),
   read_at: timestamp("read_at"),
 });

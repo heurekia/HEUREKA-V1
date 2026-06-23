@@ -2,6 +2,10 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Spinner partagé (icônes Loader2 dans l'éditeur d'annotation, etc.). */
+@keyframes spin { to { transform: rotate(360deg); } }
+.spin { animation: spin 0.9s linear infinite; }
+
 :root {
   --background: 255 47% 94%;
   --foreground: 240 100% 6%;

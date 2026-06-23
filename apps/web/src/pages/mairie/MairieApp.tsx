@@ -17,6 +17,7 @@ import PieceReclassControl from "./PieceReclassControl";
 import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
 import { ResizableSplit } from "../../components/ResizableSplit";
 import { PdfAnnotator } from "../../components/PdfAnnotator";
+import { PieceMarkupEditor } from "../../components/PieceMarkupEditor";
 import { ParcelSynthese, type ParcelSynthesisData } from "../../components/ParcelSynthese";
 import { useInstructionViewMode } from "../../hooks/useInstructionViewMode";
 import { useLocalStorageBool } from "../../hooks/useLocalStorageBool";
@@ -721,6 +722,9 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   const [loading, setLoading] = useState(true);
   const [showColPicker, setShowColPicker] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  // Bounding box du bouton « ⋮ » cliqué : le menu se positionne en fixed par
+  // rapport à elle (cf. rendu) pour échapper à l'overflow:hidden de la carte.
+  const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
   const [rowActionBusy, setRowActionBusy] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -1000,20 +1004,34 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
                 <td style={{ padding: "12px 16px", position: "relative" }}>
                   <button
                     style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4, borderRadius: 4 }}
-                    onClick={e => { e.stopPropagation(); setMenuOpenId(prev => prev === r.id ? null : r.id); }}
+                    onClick={e => {
+                      e.stopPropagation();
+                      if (menuOpenId === r.id) { setMenuOpenId(null); setMenuAnchor(null); }
+                      else { setMenuAnchor(e.currentTarget.getBoundingClientRect()); setMenuOpenId(r.id); }
+                    }}
                     aria-label="Actions du dossier"
                   >
                     <DotsIcon />
                   </button>
-                  {menuOpenId === r.id && (
+                  {menuOpenId === r.id && menuAnchor && (() => {
+                    // Positionnement en fixed (relatif au viewport) pour ne pas être
+                    // rogné par l'overflow:hidden de la carte. Ancré sous le bouton,
+                    // aligné à droite, avec bascule vers le haut s'il manque de place.
+                    const MENU_W = 224;
+                    const itemCount = 1 + (isSupervisor && r.instructeur ? 1 : 0) + (isSupervisor ? 1 : 0);
+                    const estH = itemCount * 36 + (isSupervisor ? 9 : 0) + 8;
+                    const left = Math.max(8, Math.min(menuAnchor.right - MENU_W, window.innerWidth - MENU_W - 8));
+                    const openUp = menuAnchor.bottom + estH + 8 > window.innerHeight;
+                    const top = openUp ? Math.max(8, menuAnchor.top - estH - 4) : menuAnchor.bottom + 4;
+                    return (
                     <>
                       <div
-                        onClick={e => { e.stopPropagation(); setMenuOpenId(null); }}
+                        onClick={e => { e.stopPropagation(); setMenuOpenId(null); setMenuAnchor(null); }}
                         style={{ position: "fixed", inset: 0, zIndex: 98 }}
                       />
                       <div
                         onClick={e => e.stopPropagation()}
-                        style={{ position: "absolute", right: 12, top: 38, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, padding: 4, zIndex: 99, minWidth: 200, boxShadow: "0 8px 24px rgba(0,0,0,0.10)" }}
+                        style={{ position: "fixed", top, left, width: MENU_W, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, padding: 4, zIndex: 99, boxShadow: "0 8px 24px rgba(0,0,0,0.10)" }}
                       >
                         <button
                           onClick={async () => {
@@ -1048,9 +1066,39 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
                             Désassigner l'instructeur
                           </button>
                         )}
+                        {/* [TEMP_DELETE_DOSSIER] Bouton de suppression définitive — TEMPORAIRE,
+                            le temps de la base de test. À retirer avant la prod réelle
+                            (rechercher "TEMP_DELETE_DOSSIER" back + front). */}
+                        {isSupervisor && (
+                          <>
+                            <div style={{ height: 1, background: "#F1F5F9", margin: "4px 0" }} />
+                            <button
+                              disabled={rowActionBusy}
+                              onClick={async () => {
+                                if (!confirm(`Supprimer définitivement le dossier ${r.numero} ?\n\nCette action est irréversible : pièces, courriers, décisions et historique seront effacés.`)) return;
+                                setRowActionBusy(true);
+                                try {
+                                  await api.delete(`/mairie/dossiers/${r.id}`);
+                                  setRefreshKey(k => k + 1);
+                                } catch (err) {
+                                  alert(err instanceof Error ? err.message : "Suppression impossible");
+                                } finally {
+                                  setRowActionBusy(false);
+                                  setMenuOpenId(null);
+                                }
+                              }}
+                              style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: "8px 10px", fontSize: 13, color: "#B91C1C", cursor: rowActionBusy ? "wait" : "pointer", borderRadius: 6, opacity: rowActionBusy ? 0.6 : 1 }}
+                              onMouseEnter={e => (e.currentTarget.style.background = "#FEF2F2")}
+                              onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                            >
+                              Supprimer le dossier
+                            </button>
+                          </>
+                        )}
                       </div>
                     </>
-                  )}
+                    );
+                  })()}
                 </td>
               </tr>
             ))}
@@ -1089,7 +1137,8 @@ const COMMUNE_DOSSIERS: Record<string, { d1: string; d2: string; d3: string; d4:
 
 function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: string; onDossierClick: (d: DossierInfo) => void; onUnreadChange?: (n: number) => void }) {
   type Conv = { dossier_id: string; numero: string; type: string; status: string; petitionnaire: string; last_content: string; last_from_role: string; last_at: string; unread_count: number };
-  type Msg = { id: string; content: string; from_role: string; created_at: string; prenom: string | null; nom: string | null };
+  type MsgAttachment = { document_id: string; nom: string; url: string; type: string };
+  type Msg = { id: string; content: string; from_role: string; created_at: string; prenom: string | null; nom: string | null; attachments?: MsgAttachment[] | null };
   type ServiceConv = {
     consultation_id: string;
     dossier_id: string;
@@ -1414,15 +1463,38 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
                 <div key={msg.id} style={{ display: "flex", gap: 10, marginBottom: 16, justifyContent: isInstructeur ? "flex-end" : "flex-start" }}>
                   {!isInstructeur && <div style={{ width: 32, height: 32, borderRadius: "50%", background: stringToColor(selected.petitionnaire), color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{nameInitials(selected.petitionnaire)}</div>}
                   <div style={{ maxWidth: "60%" }}>
-                    {isInstructeur ? (
-                      <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", borderRadius: "12px 4px 12px 12px", padding: "12px 14px" }}>
-                        <p style={{ margin: 0, fontSize: 13, color: "white", lineHeight: 1.5 }}>{msg.content}</p>
-                      </div>
-                    ) : (
-                      <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "12px 14px", border: "1px solid #E2E8F0", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
-                        <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.5 }}>{msg.content}</p>
-                      </div>
-                    )}
+                    {(() => {
+                      const atts = msg.attachments ?? [];
+                      const renderAtts = (dark: boolean) => atts.length > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: msg.content ? 8 : 0 }}>
+                          {atts.map((att) => {
+                            const isImg = (att.type ?? "").toLowerCase().startsWith("image/");
+                            return isImg ? (
+                              <a key={att.document_id} href={att.url} target="_blank" rel="noopener noreferrer" style={{ display: "block" }}>
+                                <img src={att.url} alt={att.nom} style={{ maxHeight: 160, maxWidth: "100%", borderRadius: 8, border: dark ? "1px solid rgba(255,255,255,0.3)" : "1px solid #E2E8F0" }} />
+                              </a>
+                            ) : (
+                              <a key={att.document_id} href={att.url} target="_blank" rel="noopener noreferrer"
+                                style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, textDecoration: "none", padding: "6px 10px", borderRadius: 8,
+                                  background: dark ? "rgba(255,255,255,0.15)" : "#F8FAFC", color: dark ? "white" : "#334155", border: dark ? "1px solid rgba(255,255,255,0.25)" : "1px solid #E2E8F0" }}>
+                                📎 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>{att.nom}</span>
+                              </a>
+                            );
+                          })}
+                        </div>
+                      );
+                      return isInstructeur ? (
+                        <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", borderRadius: "12px 4px 12px 12px", padding: "12px 14px" }}>
+                          {msg.content && <p style={{ margin: 0, fontSize: 13, color: "white", lineHeight: 1.5 }}>{msg.content}</p>}
+                          {renderAtts(true)}
+                        </div>
+                      ) : (
+                        <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "12px 14px", border: "1px solid #E2E8F0", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+                          {msg.content && <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.5 }}>{msg.content}</p>}
+                          {renderAtts(false)}
+                        </div>
+                      );
+                    })()}
                     <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 4, display: "block", textAlign: isInstructeur ? "right" : "left" }}>{time}</span>
                   </div>
                   {isInstructeur && <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{nameInitials(senderName)}</div>}
@@ -6188,6 +6260,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [documents, setDocuments] = useState<DossierPiece[] | null>(null);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<number>(0);
+  // Pièce ouverte dans l'éditeur d'annotation (entourer/commenter → GED → envoi
+  // citoyen). Internalise le retravail aujourd'hui fait sous Inkscape/Foxit.
+  const [annotatePiece, setAnnotatePiece] = useState<DossierPiece | null>(null);
   // Pièce à sélectionner une fois l'onglet Documents chargé. Permet d'ouvrir
   // une pièce justificative depuis un autre onglet (checklist, verdicts) même
   // quand `documents` n'est pas encore chargé : la sélection est différée.
@@ -8391,7 +8466,38 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
           return (
             <>
+              {annotatePiece && (
+                <PieceMarkupEditor
+                  dossierId={dossier.id}
+                  piece={annotatePiece}
+                  onClose={() => setAnnotatePiece(null)}
+                />
+              )}
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 8, marginRight: "auto" }}>
+                  {(() => {
+                    const t = (sel?.type ?? "").toLowerCase();
+                    const annotatable = !!sel && (t.startsWith("image/") || t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf"));
+                    return (
+                      <button
+                        type="button"
+                        disabled={!annotatable}
+                        onClick={() => sel && setAnnotatePiece(sel)}
+                        title={annotatable ? "Annoter la pièce (entourer, commenter) puis l'envoyer au citoyen" : "Sélectionnez une pièce PDF ou image à annoter"}
+                        style={{
+                          border: "none", background: annotatable ? "#4F46E5" : "#E2E8F0",
+                          color: annotatable ? "white" : "#94a3b8", borderRadius: 8,
+                          padding: "5px 12px", fontSize: 12, fontWeight: 700,
+                          cursor: annotatable ? "pointer" : "not-allowed",
+                          display: "inline-flex", alignItems: "center", gap: 5,
+                          boxShadow: annotatable ? "0 1px 2px rgba(79,70,229,0.3)" : "none",
+                        }}
+                      >
+                        <span style={{ fontSize: 13 }}>✏️</span>Annoter / Envoyer
+                      </button>
+                    );
+                  })()}
+                </div>
                 <button
                   type="button"
                   onClick={() => setDocsFullscreen(true)}
