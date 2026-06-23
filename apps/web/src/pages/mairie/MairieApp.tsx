@@ -8462,6 +8462,8 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
         {activeTab === "Documents" && (() => {
           const docs = documents ?? [];
           const sel = docs[selectedDoc] ?? null;
+          // Pièce en cours d'annotation en place (éditeur intégré au visualiseur).
+          const annotating = !!sel && annotatePiece?.id === sel.id;
 
           // ── Regroupement des pièces par catégorie (3.C.4) ────────────────
           // Les pièces déposées partagent un préfixe de code (PC1, PC2,
@@ -8557,7 +8559,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           // Un bandeau passe en bande escamotée soit en mode Lecture (les deux),
           // soit quand l'instructeur l'a explicitement replié (n'importe quel mode).
           const leftIsStripe = docsViewMode === "lecture" || docsLeftCollapsed;
-          const rightIsStripe = docsViewMode === "lecture" || docsRightCollapsed;
+          // En annotation, on replie le panneau de droite : l'éditeur (qui liste
+          // lui-même les commentaires) gagne toute la largeur sans grand écran.
+          const rightIsStripe = docsViewMode === "lecture" || docsRightCollapsed || annotating;
           const leftW = leftIsStripe ? "44px" : (docsViewMode === "compare" ? "240px" : "280px");
           const rightW = rightIsStripe ? "44px" : "260px";
           const gridTemplate = `${leftW} 1fr ${rightW}`;
@@ -8619,7 +8623,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           // annotation, l'éditeur intégré remplace le visualiseur lecture seule
           // — dans la grille comme en grand écran. Les marques sont enregistrées
           // sur le dossier en continu ; l'éditeur gère l'avant/après et l'export.
-          const annotating = !!sel && annotatePiece?.id === sel.id;
           // Version finale (annotée) la plus récente pour la pièce sélectionnée
           // (gedDocs est trié du plus récent au plus ancien côté API).
           const finalDoc = sel ? gedDocs.find((d) => d.category === "annotation" && d.source_piece_id === sel.id) ?? null : null;

@@ -31,8 +31,9 @@ const SEGMENT_TOOLS = new Set<ToolKind>(["arrow", "scale", "measure"]);
 interface Pt { x: number; y: number }
 /** Géométrie en % de page (0–100). Forme selon le tool. */
 type Geometry = Record<string, number | Pt[]>;
-/** `meters` n'est porté que par l'outil "scale" : longueur réelle du segment. */
-interface MarkStyle { color: string; strokeWidth: number; fontSize?: number; meters?: number }
+/** `meters` (longueur réelle du segment de référence) et `ratio` (dénominateur
+ *  d'échelle normalisée 1:N, ex. 200) ne sont portés que par l'outil "scale". */
+interface MarkStyle { color: string; strokeWidth: number; fontSize?: number; meters?: number; ratio?: number }
 interface Mark {
   id: string;
   tool: ToolKind;
@@ -66,6 +67,13 @@ interface Props {
 
 const COLORS = ["#DC2626", "#EA580C", "#CA8A04", "#16A34A", "#2563EB", "#111827"];
 const WIDTHS = [2, 3, 5, 8];
+// Échelles normalisées des plans d'urbanisme / d'architecture (dénominateur N de 1:N).
+const STANDARD_SCALES = [50, 100, 200, 500, 1000, 2000, 5000];
+const PT_TO_M = 0.0254 / 72; // 1 point PDF = 1/72 pouce
+const TOOL_LABEL: Record<ToolKind, string> = {
+  ellipse: "Cercle", rect: "Cadre", arrow: "Flèche", freehand: "Tracé libre",
+  text: "Texte", scale: "Échelle", measure: "Mesure", polygon: "Polygone",
+};
 
 const num = (v: number | Pt[] | undefined, fb = 0): number => (typeof v === "number" ? v : fb);
 const pts = (v: number | Pt[] | undefined): Pt[] => (Array.isArray(v) ? v : []);
@@ -270,7 +278,7 @@ function drawMarkOnCanvas(ctx: CanvasRenderingContext2D, m: Mark, W: number, H: 
     ctx.moveTo(x2 - nx, y2 - ny); ctx.lineTo(x2 + nx, y2 + ny);
     ctx.stroke();
     const label = m.tool === "scale"
-      ? `Échelle : ${fmtLen(num(m.style.meters))}`
+      ? (typeof m.style.ratio === "number" ? `Échelle 1:${Math.round(m.style.ratio)}` : `Échelle : ${fmtLen(num(m.style.meters))}`)
       : (mpp ? fmtLen(segLenPx(g, W, H) * mpp) : "(échelle requise)");
     drawLabel(label, (x1 + x2) / 2, (y1 + y2) / 2 - 4 * k);
   }
@@ -325,6 +333,12 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
   // Calibrage d'échelle : segment de référence en attente de saisie + champ.
   const [scaleDraftId, setScaleDraftId] = useState<string | null>(null);
   const [scaleInput, setScaleInput] = useState("");
+  // Popover « Définir l'échelle » (par échelle normalisée 1:N ou par mesure).
+  const [scalePopoverOpen, setScalePopoverOpen] = useState(false);
+  const [ratioInput, setRatioInput] = useState("");
+  // Largeur physique de la page PDF (points, 1pt = 1/72") — connue pour un PDF,
+  // null pour une image. Permet de poser/afficher l'échelle au format 1:N.
+  const [pageWidthPt, setPageWidthPt] = useState<number | null>(null);
 
   const marksOnPage = useMemo(() => marks.filter((m) => m.page === page), [marks, page]);
   const selected = useMemo(() => marks.find((m) => m.id === selectedId) ?? null, [marks, selectedId]);
@@ -337,6 +351,25 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
     () => metersPerPx(pageScaleMark, mediaSize.w, mediaSize.h),
     [pageScaleMark, mediaSize.w, mediaSize.h],
   );
+  // Largeur réelle du papier (m) si la taille physique de la page est connue.
+  const paperWidthM = pageWidthPt ? pageWidthPt * PT_TO_M : null;
+  // Échelle normalisée 1:N de la page : prioritairement le ratio saisi, sinon
+  // dérivé du calibrage (mètres/px × largeur écran) rapporté à la largeur papier.
+  const scaleRatio = useMemo<number | null>(() => {
+    if (typeof pageScaleMark?.style.ratio === "number") return pageScaleMark.style.ratio;
+    if (pageMpp && paperWidthM && mediaSize.w > 0) {
+      const realWidthM = pageMpp * mediaSize.w;
+      const n = realWidthM / paperWidthM;
+      return Number.isFinite(n) && n > 0 ? n : null;
+    }
+    return null;
+  }, [pageScaleMark, pageMpp, paperWidthM, mediaSize.w]);
+  /** Libellé court de l'échelle courante pour le chip / les étiquettes. */
+  const scaleLabel = (() => {
+    if (!pageMpp) return "Échelle non définie";
+    if (scaleRatio) return `Échelle 1:${Math.round(scaleRatio)}`;
+    return `Échelle : ${fmtLen(num(pageScaleMark?.style.meters))}`;
+  })();
 
   // ── Chargement des annotations existantes ──
   useEffect(() => {
@@ -351,7 +384,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
             tool: r.tool,
             page: r.page ?? 1,
             geometry: (r.geometry ?? {}) as Geometry,
-            style: { color: st.color ?? "#DC2626", strokeWidth: st.strokeWidth ?? 3, fontSize: st.fontSize ?? 14, meters: typeof st.meters === "number" ? st.meters : undefined },
+            style: { color: st.color ?? "#DC2626", strokeWidth: st.strokeWidth ?? 3, fontSize: st.fontSize ?? 14, meters: typeof st.meters === "number" ? st.meters : undefined, ratio: typeof st.ratio === "number" ? st.ratio : undefined },
             comment: r.comment ?? "",
             visibility: r.visibility === "citoyen" ? "citoyen" : "interne",
           };
@@ -628,6 +661,34 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
     setScaleInput("");
     setSelectedId(null);
   };
+  // Définit l'échelle au format normalisé 1:N à partir de la taille physique de
+  // la page. On matérialise une barre d'échelle de référence (interne) dont la
+  // longueur réelle = sa fraction de largeur × largeur papier × N, ce qui fixe
+  // le ratio m/px pour toute la page.
+  const setScaleFromRatio = async (denominator: number) => {
+    if (!paperWidthM || !Number.isFinite(denominator) || denominator <= 0) return;
+    const frac = 0.4; // barre = 40 % de la largeur, en bas à gauche
+    const meters = frac * paperWidthM * denominator;
+    const m: Mark = {
+      id: `tmp-${Date.now()}`,
+      tool: "scale",
+      page,
+      geometry: { x1: 4, y1: 96, x2: 4 + frac * 100, y2: 96 },
+      style: { color, strokeWidth: width, meters, ratio: denominator },
+      comment: "",
+      visibility: "interne",
+    };
+    const stale = marks.filter((mk) => mk.tool === "scale" && mk.page === page);
+    setMarks((prev) => [...prev.filter((x) => !stale.some((s) => s.id === x.id)), m]);
+    setScalePopoverOpen(false);
+    setRatioInput("");
+    for (const s of stale) {
+      if (!s.id.startsWith("tmp-")) {
+        try { await api.delete(`/mairie/dossiers/${dossierId}/pieces/${piece.id}/annotations/${s.id}`); } catch { /* ignore */ }
+      }
+    }
+    await persistCreate(m);
+  };
 
   // ── Mutations sur la marque sélectionnée ──
   const updateSelected = (patch: Partial<Mark>) => {
@@ -790,7 +851,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
     let measureText: string | null = null;
     let measureAt: { x: number; y: number } | null = null;
     if (m.tool === "scale") {
-      measureText = `Échelle : ${fmtLen(num(m.style.meters))}`;
+      measureText = typeof m.style.ratio === "number" ? `Échelle 1:${Math.round(m.style.ratio)}` : `Échelle : ${fmtLen(num(m.style.meters))}`;
       measureAt = { x: (X(num(g.x1)) + X(num(g.x2))) / 2, y: (Y(num(g.y1)) + Y(num(g.y2))) / 2 - 6 };
     } else if (m.tool === "measure") {
       measureText = pageMpp ? fmtLen(segLenPx(g, W, H) * pageMpp) : "Définir l'échelle";
@@ -900,19 +961,59 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
             </>
           )}
           <div style={{ width: 1, height: 24, background: "#E2E8F0" }} />
-          <button
-            type="button"
-            onClick={() => { setTool("scale"); setSelectedId(null); }}
-            title="Tracez un segment de longueur connue (un mur coté, la barre d'échelle…) pour calibrer la page, puis utilisez l'outil Mesure"
-            style={{
-              display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 600,
-              borderRadius: 999, padding: "5px 10px", cursor: "pointer", border: "1px solid",
-              borderColor: pageMpp ? "#86EFAC" : "#FCD34D", background: pageMpp ? "#F0FDF4" : "#FFFBEB",
-              color: pageMpp ? "#15803D" : "#B45309",
-            }}
-          >
-            <Ruler size={14} /> {pageMpp ? `Échelle : ${fmtLen(num(pageScaleMark?.style.meters))}` : "Échelle non définie"}
-          </button>
+          <div style={{ position: "relative" }}>
+            <button
+              type="button"
+              onClick={() => { setRatioInput(scaleRatio ? String(Math.round(scaleRatio)) : ""); setScalePopoverOpen((v) => !v); }}
+              title="Définir l'échelle du plan (format normalisé 1:N) ou par mesure d'un segment connu"
+              style={{
+                display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 600,
+                borderRadius: 999, padding: "5px 10px", cursor: "pointer", border: "1px solid",
+                borderColor: pageMpp ? "#86EFAC" : "#FCD34D", background: pageMpp ? "#F0FDF4" : "#FFFBEB",
+                color: pageMpp ? "#15803D" : "#B45309",
+              }}
+            >
+              <Ruler size={14} /> {scaleLabel} <span style={{ opacity: 0.6 }}>▾</span>
+            </button>
+            {scalePopoverOpen && (
+              <div style={{ position: "absolute", top: "calc(100% + 6px)", left: 0, zIndex: 30, width: 280, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 12px 30px rgba(0,0,0,0.18)", padding: 12 }}>
+                <div style={{ fontSize: 12, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Définir l'échelle</div>
+                {paperWidthM ? (
+                  <>
+                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>Échelle normalisée du plan (1:N)</div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 8 }}>
+                      {STANDARD_SCALES.map((n) => (
+                        <button key={n} type="button" onClick={() => void setScaleFromRatio(n)}
+                          style={{ padding: "5px 9px", borderRadius: 7, fontSize: 12, fontWeight: 700, cursor: "pointer",
+                            border: scaleRatio === n ? "1px solid #16A34A" : "1px solid #E2E8F0",
+                            background: scaleRatio === n ? "#F0FDF4" : "white", color: scaleRatio === n ? "#15803D" : "#475569" }}>
+                          1:{n}
+                        </button>
+                      ))}
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: 10 }}>
+                      <span style={{ fontSize: 12, color: "#475569" }}>1:</span>
+                      <input type="number" min={1} value={ratioInput} onChange={(e) => setRatioInput(e.target.value)}
+                        placeholder="autre" style={{ width: 90, fontSize: 13, border: "1px solid #E2E8F0", borderRadius: 7, padding: "5px 8px" }} />
+                      <button type="button" onClick={() => { const n = parseInt(ratioInput, 10); if (Number.isFinite(n) && n > 0) void setScaleFromRatio(n); }}
+                        style={{ fontSize: 12, fontWeight: 600, border: "none", background: "#4F46E5", color: "white", borderRadius: 7, padding: "5px 10px", cursor: "pointer" }}>
+                        Définir
+                      </button>
+                    </div>
+                    <div style={{ height: 1, background: "#EEF2F7", margin: "4px 0 10px" }} />
+                  </>
+                ) : (
+                  <div style={{ fontSize: 11, color: "#94a3b8", marginBottom: 8 }}>
+                    Format 1:N disponible sur les plans PDF (taille de page connue). Pour une image, calibrez par mesure ci-dessous.
+                  </div>
+                )}
+                <button type="button" onClick={() => { setScalePopoverOpen(false); setTool("scale"); setSelectedId(null); }}
+                  style={{ width: "100%", display: "inline-flex", alignItems: "center", justifyContent: "center", gap: 6, fontSize: 12, fontWeight: 600, border: "1px solid #E2E8F0", background: "white", color: "#334155", borderRadius: 8, padding: "7px 10px", cursor: "pointer" }}>
+                  <Ruler size={14} /> Calibrer en traçant un segment connu
+                </button>
+              </div>
+            )}
+          </div>
           {/* Avant / Après : masque ou affiche le calque d'annotations. */}
           <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden" }} title="Comparer l'original (Avant) et la version annotée (Après)">
             <button type="button" onClick={() => setShowOriginal(true)}
@@ -948,7 +1049,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
                 <img ref={imgRef} src={piece.url} alt={piece.nom} onLoad={remeasureMedia} style={{ width: renderWidth, height: "auto", display: "block" }} />
               ) : isPdf ? (
                 <Document file={piece.url} options={PDF_OPTIONS} onLoadSuccess={({ numPages }) => setNumPages(numPages)} loading={<div style={{ padding: 40, fontSize: 13, color: "#64748b" }}>Chargement du PDF…</div>}>
-                  <Page pageNumber={page} width={renderWidth} renderTextLayer={false} renderAnnotationLayer={false} onRenderSuccess={remeasureMedia} />
+                  <Page pageNumber={page} width={renderWidth} renderTextLayer={false} renderAnnotationLayer={false} onLoadSuccess={(p) => setPageWidthPt(typeof p.originalWidth === "number" ? p.originalWidth : null)} onRenderSuccess={remeasureMedia} />
                 </Document>
               ) : (
                 <div style={{ padding: 40, fontSize: 13, color: "#94a3b8" }}>Format non annotable.</div>
@@ -996,8 +1097,9 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
 
           {/* Panneau latéral : marque sélectionnée */}
           <div style={{ width: 280, borderLeft: "1px solid #E2E8F0", padding: 14, overflowY: "auto", background: "white" }}>
-            {selected ? (
-              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+            <div style={{ display: "flex", flexDirection: "column", gap: 14 }}>
+              {selected && (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12, paddingBottom: 14, borderBottom: "1px solid #E2E8F0" }}>
                 <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#64748b" }}>
                   {selected.tool === "scale" ? "Échelle" : selected.tool === "measure" ? "Mesure" : "Annotation"}
                 </div>
@@ -1066,21 +1168,54 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
                   <Trash2 size={15} /> Supprimer
                 </button>
               </div>
-            ) : (
-              <div style={{ fontSize: 12.5, color: "#94a3b8", lineHeight: 1.6 }}>
-                <div style={{ fontWeight: 700, color: "#475569", marginBottom: 6 }}>Comment annoter</div>
-                Choisissez un outil, tracez sur le document. Cliquez « Sélectionner » pour déplacer une marque, lui ajouter un commentaire et choisir si le citoyen la verra.
-                <div style={{ marginTop: 8 }}>
-                  Vos annotations sont <b>enregistrées automatiquement sur le dossier</b> (aucun téléchargement requis). Basculez <b>Avant / Après</b> pour comparer à l'original, puis « Enregistrer sur le dossier » (version aplatie dans la GED) ou « Envoyer au citoyen ».
+              )}
+              {/* Liste des commentaires / annotations de la pièce (case de droite) */}
+              <div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#64748b" }}>Annotations ({marks.length})</div>
+                  {marks.length > 0 && (
+                    <span style={{ fontSize: 10.5, color: "#15803D", background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 999, padding: "1px 7px", fontWeight: 700 }}>{marks.filter((m) => m.visibility === "citoyen").length} citoyen</span>
+                  )}
                 </div>
-                <div style={{ marginTop: 10, fontSize: 11.5 }}>
-                  {marks.length} marque{marks.length > 1 ? "s" : ""} · {marks.filter((m) => m.visibility === "citoyen").length} visible(s) par le citoyen
-                </div>
-                <div style={{ marginTop: 14, padding: 10, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 11, color: "#64748b", lineHeight: 1.55 }}>
-                  <b>Mesures</b> : tracez d'abord une <b>Échelle</b> (segment de longueur connue — un mur coté, la barre d'échelle du plan), saisissez sa longueur réelle ; ensuite l'outil <b>Mesure</b> donne les distances, et les <b>rectangles</b> comme les <b>polygones</b> affichent leur surface. <b>Polygone</b> : cliquez pour poser les sommets, cliquez le 1ᵉʳ point (ou Entrée) pour fermer ; sélectionnez-le ensuite pour déplacer ses sommets.
-                </div>
+                {marks.length === 0 ? (
+                  <div style={{ fontSize: 12.5, color: "#94a3b8", lineHeight: 1.6 }}>
+                    <div style={{ fontWeight: 700, color: "#475569", marginBottom: 6 }}>Comment annoter</div>
+                    Choisissez un outil et tracez sur le document. Sélectionnez une marque pour la commenter, choisir si le citoyen la voit, ou déplacer ses points.
+                    <div style={{ marginTop: 8 }}>Vos annotations sont <b>enregistrées automatiquement sur le dossier</b>. Utilisez <b>Avant / Après</b> pour comparer à l'original.</div>
+                    <div style={{ marginTop: 12, padding: 10, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 11, color: "#64748b", lineHeight: 1.5 }}>
+                      <b>Échelle & mesures</b> : définissez l'échelle (format 1:N sur un PDF, ou en traçant un segment de longueur connue), puis l'outil <b>Mesure</b> donne les distances ; rectangles et polygones affichent leur surface.
+                    </div>
+                  </div>
+                ) : (
+                  <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+                    {marks.map((m) => {
+                      const isSel = m.id === selected?.id;
+                      const preview = m.comment && m.comment.trim()
+                        ? m.comment.trim()
+                        : m.tool === "scale"
+                          ? (typeof m.style.ratio === "number" ? `Échelle 1:${Math.round(m.style.ratio)}` : `Échelle ${fmtLen(num(m.style.meters))}`)
+                          : m.tool === "measure" && pageMpp
+                            ? fmtLen(segLenPx(m.geometry, mediaSize.w, mediaSize.h) * pageMpp)
+                            : `${TOOL_LABEL[m.tool]} (sans commentaire)`;
+                      return (
+                        <button key={m.id} type="button"
+                          onClick={() => { if (m.page !== page) setPage(m.page); setSelectedId(m.id); setShowOriginal(false); }}
+                          style={{ display: "flex", alignItems: "flex-start", gap: 8, textAlign: "left", width: "100%", padding: "7px 8px", borderRadius: 8, cursor: "pointer", border: isSel ? "1px solid #4F46E5" : "1px solid #E2E8F0", background: isSel ? "#EEF2FF" : "white" }}>
+                          <span style={{ width: 12, height: 12, borderRadius: 3, background: m.style.color, flexShrink: 0, marginTop: 2 }} />
+                          <span style={{ flex: 1, minWidth: 0 }}>
+                            <span style={{ display: "block", fontSize: 12, color: "#1E293B", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{preview}</span>
+                            <span style={{ fontSize: 10, color: "#94a3b8" }}>{TOOL_LABEL[m.tool]}{numPages > 1 ? ` · p.${m.page}` : ""}</span>
+                          </span>
+                          {m.visibility === "citoyen"
+                            ? <Eye size={13} style={{ color: "#16A34A", flexShrink: 0 }} />
+                            : <EyeOff size={13} style={{ color: "#7C3AED", flexShrink: 0 }} />}
+                        </button>
+                      );
+                    })}
+                  </div>
+                )}
               </div>
-            )}
+            </div>
           </div>
         </div>
       </div>
