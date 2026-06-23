@@ -1046,6 +1046,35 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
                             Désassigner l'instructeur
                           </button>
                         )}
+                        {/* [TEMP_DELETE_DOSSIER] Bouton de suppression définitive — TEMPORAIRE,
+                            le temps de la base de test. À retirer avant la prod réelle
+                            (rechercher "TEMP_DELETE_DOSSIER" back + front). */}
+                        {isSupervisor && (
+                          <>
+                            <div style={{ height: 1, background: "#F1F5F9", margin: "4px 0" }} />
+                            <button
+                              disabled={rowActionBusy}
+                              onClick={async () => {
+                                if (!confirm(`Supprimer définitivement le dossier ${r.numero} ?\n\nCette action est irréversible : pièces, courriers, décisions et historique seront effacés.`)) return;
+                                setRowActionBusy(true);
+                                try {
+                                  await api.delete(`/mairie/dossiers/${r.id}`);
+                                  setRefreshKey(k => k + 1);
+                                } catch (err) {
+                                  alert(err instanceof Error ? err.message : "Suppression impossible");
+                                } finally {
+                                  setRowActionBusy(false);
+                                  setMenuOpenId(null);
+                                }
+                              }}
+                              style={{ display: "block", width: "100%", textAlign: "left", border: "none", background: "none", padding: "8px 10px", fontSize: 13, color: "#B91C1C", cursor: rowActionBusy ? "wait" : "pointer", borderRadius: 6, opacity: rowActionBusy ? 0.6 : 1 }}
+                              onMouseEnter={e => (e.currentTarget.style.background = "#FEF2F2")}
+                              onMouseLeave={e => (e.currentTarget.style.background = "transparent")}
+                            >
+                              Supprimer le dossier
+                            </button>
+                          </>
+                        )}
                       </div>
                     </>
                   )}
