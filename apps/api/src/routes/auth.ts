@@ -202,7 +202,7 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, "login", req);
     res.json({
-      user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune, commune_insee: user.commune_insee },
+      user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune, commune_insee: user.commune_insee, onboarding_completed: !!user.onboarding_completed_at },
     });
   } catch (err) {
     console.error(err);
@@ -404,9 +404,26 @@ authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {
       telephone: user.telephone,
       avatar_url: user.avatar_url,
       created_at: user.created_at,
+      onboarding_completed: !!user.onboarding_completed_at,
     });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// POST /auth/onboarding/complete — marque l'onboarding (pop-up de bienvenue)
+// comme vu pour l'utilisateur courant. Idempotent : ne réécrit pas la date si
+// déjà renseignée (on garde la 1re complétion).
+authRouter.post("/onboarding/complete", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    await db
+      .update(users)
+      .set({ onboarding_completed_at: new Date(), updated_at: new Date() })
+      .where(and(eq(users.id, req.user!.id), isNull(users.onboarding_completed_at)));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[auth:onboarding:complete]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

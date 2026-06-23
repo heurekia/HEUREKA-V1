@@ -1160,6 +1160,13 @@ ALTER TABLE regulatory_documents ALTER COLUMN commune_id DROP NOT NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS email_verified_at timestamp;
 UPDATE users SET email_verified_at = created_at WHERE email_verified_at IS NULL;
 
+-- Onboarding (pop-up de bienvenue) : NULL = jamais vu → la modale s'affiche à
+-- la 1re connexion d'un agent mairie/instructeur. On NE rétro-remplit PAS :
+-- les agents existants la verront donc une fois (sert aussi à annoncer le
+-- module d'aide « ? »). Pour ne la réserver qu'aux nouveaux comptes, exécuter
+-- une fois : UPDATE users SET onboarding_completed_at = now();
+ALTER TABLE users ADD COLUMN IF NOT EXISTS onboarding_completed_at timestamp;
+
 -- ── FranceConnect (OpenID Connect) ─────────────────────────────────────────
 -- Identifiant pivot FranceConnect (claim « sub »). UNIQUE pour empêcher deux
 -- comptes locaux de pointer la même identité FranceConnect. Reste NULL pour
