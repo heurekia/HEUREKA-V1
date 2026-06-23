@@ -1,5 +1,6 @@
-import { useState, useEffect, useRef, type CSSProperties } from "react";
+import { useState, useEffect, useRef, useMemo, type CSSProperties } from "react";
 import { api } from "../../lib/api";
+import { PdfAnnotator } from "../../components/PdfAnnotator";
 
 // Validation du découpage d'un dépôt groupé (un seul PDF → plusieurs pièces).
 // L'agent dépose un dossier complet en un PDF ; le backend propose un découpage
@@ -7,8 +8,8 @@ import { api } from "../../lib/api";
 // Tant qu'il n'a pas validé, AUCUNE pièce n'est créée. Le flux d'upload pièce
 // par pièce (existant) n'est pas concerné.
 //
-// Lot 2 : l'instructeur peut éditer la répartition des pages (réaffecter,
-// scinder, fusionner, partager une page entre deux pièces, ajouter une pièce).
+// L'aperçu du PDF est affiché à gauche pour visualiser les pages pendant la
+// segmentation ; cliquer une page dans la matrice la fait défiler dans l'aperçu.
 
 type ProposedSegment = {
   code: string | null;
@@ -22,6 +23,7 @@ type ProposedSegment = {
 
 type BundleRow = {
   id: string;
+  url: string | null;
   status: "segmenting" | "pending_review" | "applied" | "discarded" | "failed";
   page_count: number | null;
   error: string | null;
@@ -66,12 +68,13 @@ const overlay: CSSProperties = {
   display: "flex", alignItems: "center", justifyContent: "center",
 };
 const panel: CSSProperties = {
-  background: "white", borderRadius: 16, width: 880, maxWidth: "95vw",
-  maxHeight: "92vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.22)",
+  background: "white", borderRadius: 16, width: 1160, maxWidth: "96vw",
+  height: "92vh", display: "flex", flexDirection: "column", overflow: "hidden",
+  boxShadow: "0 20px 60px rgba(0,0,0,0.22)",
 };
 const header: CSSProperties = {
-  display: "flex", alignItems: "center", gap: 10, padding: "18px 24px",
-  borderBottom: "1px solid #E2E8F0", position: "sticky", top: 0, background: "white", zIndex: 1,
+  display: "flex", alignItems: "center", gap: 10, padding: "16px 22px",
+  borderBottom: "1px solid #E2E8F0", flexShrink: 0,
 };
 const btnPrimary: CSSProperties = {
   background: "#4F46E5", color: "white", border: "none", borderRadius: 8,
@@ -85,7 +88,7 @@ const inputSt: CSSProperties = {
   border: "1.5px solid #E2E8F0", borderRadius: 7, padding: "6px 9px",
   fontSize: 12.5, outline: "none", fontFamily: "inherit", boxSizing: "border-box",
 };
-const sectionTitle: CSSProperties = { fontSize: 12, fontWeight: 700, color: "#374151", margin: "18px 0 8px" };
+const sectionTitle: CSSProperties = { fontSize: 12, fontWeight: 700, color: "#374151", margin: "16px 0 8px" };
 
 function confColor(c: number): { bg: string; color: string; label: string } {
   if (c >= 0.7) return { bg: "#F0FDF4", color: "#15803D", label: `${Math.round(c * 100)} %` };
@@ -124,19 +127,25 @@ export default function BundleSplitModal({
 }: {
   dossierId: string;
   file: File;
-  onClose: (applied: boolean) => void;
+  onClose: (applied: boolean, createdCount?: number) => void;
 }) {
   const [phase, setPhase] = useState<"uploading" | "segmenting" | "review" | "applying" | "error">("uploading");
   const [bundleId, setBundleId] = useState<string | null>(null);
   const [pageCount, setPageCount] = useState<number>(0);
   const [method, setMethod] = useState<string>("");
   const [segments, setSegments] = useState<EditableSegment[]>([]);
+  const [viewerPage, setViewerPage] = useState<number>(1);
   const [errorMsg, setErrorMsg] = useState<string>("");
 
   const startedRef = useRef(false);
   const cancelledRef = useRef(false);
   const seq = useRef(0);
   const nextKey = () => `seg-${seq.current++}`;
+
+  // Aperçu à partir du fichier local (blob) : instantané, sans round-trip
+  // serveur ni question d'ACL, et stable pendant toute la durée de la modale.
+  const previewUrl = useMemo(() => URL.createObjectURL(file), [file]);
+  useEffect(() => () => URL.revokeObjectURL(previewUrl), [previewUrl]);
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -233,7 +242,7 @@ export default function BundleSplitModal({
     if (!bundleId) return;
     setPhase("applying");
     try {
-      await api.post(`/mairie/dossiers/${dossierId}/pieces/bundles/${bundleId}/apply`, {
+      const result = await api.post<{ created: number }>(`/mairie/dossiers/${dossierId}/pieces/bundles/${bundleId}/apply`, {
         segments: segments
           .filter((s) => s.pages.length > 0)
           .map((s) => ({
@@ -244,7 +253,7 @@ export default function BundleSplitModal({
             confidence: s.confidence,
           })),
       }, { timeoutMs: 60_000 });
-      onClose(true);
+      onClose(true, result.created);
     } catch (e) {
       setErrorMsg(e instanceof Error ? e.message : "Échec de la création des pièces");
       setPhase("error");
@@ -263,9 +272,10 @@ export default function BundleSplitModal({
   const colorOf = (key: string) => PALETTE[segments.findIndex((s) => s.key === key) % PALETTE.length] ?? "#475569";
   const uncovered = allPages.filter((p) => !segments.some((s) => s.pages.includes(p)));
   const applicable = segments.filter((s) => s.pages.length > 0).length;
+  const closable = phase === "review" || phase === "error";
 
   return (
-    <div style={overlay} onClick={() => { if (phase === "review" || phase === "error") void cancelAll(); }}>
+    <div style={overlay} onClick={() => { if (closable) void cancelAll(); }}>
       <div style={panel} onClick={(e) => e.stopPropagation()}>
         <div style={header}>
           <span style={{ fontSize: 20 }}>📦</span>
@@ -273,125 +283,134 @@ export default function BundleSplitModal({
           <button onClick={() => void cancelAll()} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 20, color: "#94a3b8", lineHeight: 1 }}>×</button>
         </div>
 
-        <div style={{ padding: 24 }}>
-          {(phase === "uploading" || phase === "segmenting") && (
-            <div style={{ textAlign: "center", padding: "32px 0" }}>
-              <div style={{ fontSize: 32, marginBottom: 12 }}>⏳</div>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "#1E293B" }}>
-                {phase === "uploading" ? "Dépôt du fichier…" : "Analyse et découpage en cours…"}
-              </div>
-              <div style={{ fontSize: 12.5, color: "#64748b", marginTop: 6 }}>
-                Le système identifie les pièces contenues dans le PDF. Cela peut prendre quelques dizaines de secondes.
-              </div>
+        <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+          {/* ── Aperçu du PDF ── */}
+          <div style={{ flex: 1.25, minWidth: 0, borderRight: "1px solid #E2E8F0", background: "#0F172A0A", display: "flex" }}>
+            <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+              <PdfAnnotator key={previewUrl} fileUrl={previewUrl} initialPage={viewerPage} />
             </div>
-          )}
+          </div>
 
-          {phase === "error" && (
-            <div style={{ padding: "16px 0" }}>
-              <div style={{ fontSize: 14, fontWeight: 600, color: "#DC2626", marginBottom: 6 }}>Une erreur est survenue</div>
-              <div style={{ fontSize: 12.5, color: "#64748b", marginBottom: 18 }}>{errorMsg}</div>
-              <div style={{ display: "flex", justifyContent: "flex-end" }}>
-                <button onClick={() => onClose(false)} style={btnGhost}>Fermer</button>
-              </div>
-            </div>
-          )}
-
-          {(phase === "review" || phase === "applying") && (
-            <>
-              <div style={{ fontSize: 12.5, color: "#64748b", marginBottom: 4 }}>
-                {applicable} pièce(s) sur {pageCount} page(s)
-                {method === "text" ? " · lecture du texte" : method === "vision" ? " · lecture visuelle" : ""}.
-                {" "}Corrigez l'emplacement, le nom ou la répartition des pages, puis validez.
-              </div>
-              {uncovered.length > 0 && (
-                <div style={{ fontSize: 11.5, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 7, padding: "5px 9px", marginBottom: 6 }}>
-                  ⚠ {uncovered.length} page(s) non rattachée(s) : {uncovered.join(", ")}. Elles ne seront pas intégrées si vous validez en l'état.
+          {/* ── Panneau de segmentation ── */}
+          <div style={{ width: 470, flexShrink: 0, overflowY: "auto", padding: 20 }}>
+            {(phase === "uploading" || phase === "segmenting") && (
+              <div style={{ textAlign: "center", padding: "24px 0" }}>
+                <div style={{ fontSize: 30, marginBottom: 12 }}>⏳</div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#1E293B" }}>
+                  {phase === "uploading" ? "Dépôt du fichier…" : "Analyse et découpage en cours…"}
                 </div>
-              )}
-
-              {/* ── Liste des pièces ── */}
-              <div style={sectionTitle}>Pièces</div>
-              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
-                {segments.map((s) => {
-                  const cc = confColor(s.confidence);
-                  const flagged = s.confidence < 0.7 || s.pages.length === 0;
-                  return (
-                    <div key={s.key} style={{
-                      border: `1.5px solid ${flagged ? "#FDE68A" : "#E8EEF4"}`,
-                      background: flagged ? "#FFFBEB" : "white",
-                      borderRadius: 10, padding: "10px 12px",
-                      display: "grid", gridTemplateColumns: "10px 82px 120px 1fr auto 30px", gap: 8, alignItems: "center",
-                    }}>
-                      <span style={{ width: 10, height: 10, borderRadius: "50%", background: colorOf(s.key) }} title="Couleur de la pièce dans la grille des pages" />
-                      <input value={s.code} onChange={(e) => updateSeg(s.key, { code: e.target.value })} placeholder="Code" style={{ ...inputSt, fontFamily: "monospace", fontWeight: 600 }} />
-                      <select value={s.type} onChange={(e) => updateSeg(s.key, { type: e.target.value })} style={{ ...inputSt, cursor: "pointer" }}>
-                        {TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
-                      </select>
-                      <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 4 }}>
-                        <input value={s.nom} onChange={(e) => updateSeg(s.key, { nom: e.target.value })} style={{ ...inputSt, width: "100%" }} />
-                        <button onClick={() => regenName(s.key)} title="Régénérer le nom par défaut" style={{ ...inputSt, padding: "6px 8px", cursor: "pointer", background: "white" }}>↻</button>
-                      </div>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                        <span style={{ fontSize: 10.5, color: "#94a3b8", whiteSpace: "nowrap" }}>{pageSpan(s.pages)}</span>
-                        <span style={{ fontSize: 10.5, fontWeight: 700, color: cc.color, background: cc.bg, borderRadius: 5, padding: "2px 6px" }}>{cc.label}</span>
-                      </div>
-                      <button onClick={() => removeSeg(s.key)} title="Supprimer cette pièce" style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#cbd5e1" }}>×</button>
-                    </div>
-                  );
-                })}
+                <div style={{ fontSize: 12.5, color: "#64748b", marginTop: 6 }}>
+                  Le système identifie les pièces contenues dans le PDF. Vous pouvez déjà feuilleter le document à gauche.
+                </div>
               </div>
-              <button onClick={addSeg} style={{ ...btnGhost, marginTop: 8, fontSize: 12, padding: "6px 12px" }}>+ Ajouter une pièce</button>
+            )}
 
-              {/* ── Répartition des pages ── */}
-              {pageCount > 0 && (
-                <>
-                  <div style={sectionTitle}>
-                    Répartition des pages
-                    <span style={{ fontWeight: 400, color: "#94a3b8", marginLeft: 6 }}>
-                      cliquez pour (dé)rattacher une page ; une page peut appartenir à deux pièces (partagée).
-                    </span>
+            {phase === "error" && (
+              <div style={{ padding: "8px 0" }}>
+                <div style={{ fontSize: 14, fontWeight: 600, color: "#DC2626", marginBottom: 6 }}>Une erreur est survenue</div>
+                <div style={{ fontSize: 12.5, color: "#64748b", marginBottom: 18 }}>{errorMsg}</div>
+                <div style={{ display: "flex", justifyContent: "flex-end" }}>
+                  <button onClick={() => onClose(false)} style={btnGhost}>Fermer</button>
+                </div>
+              </div>
+            )}
+
+            {(phase === "review" || phase === "applying") && (
+              <>
+                <div style={{ fontSize: 12.5, color: "#64748b" }}>
+                  {applicable} pièce(s) sur {pageCount} page(s)
+                  {method === "text" ? " · lecture du texte" : method === "vision" ? " · lecture visuelle" : ""}.
+                </div>
+                {uncovered.length > 0 && (
+                  <div style={{ fontSize: 11.5, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 7, padding: "5px 9px", marginTop: 6 }}>
+                    ⚠ {uncovered.length} page(s) non rattachée(s) : {uncovered.join(", ")}.
                   </div>
-                  <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 260, overflowY: "auto", border: "1px solid #E8EEF4", borderRadius: 10, padding: 8 }}>
-                    {allPages.map((p) => {
-                      const owners = segments.filter((s) => s.pages.includes(p));
-                      return (
-                        <div key={p} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 4px" }}>
-                          <span style={{ width: 42, fontSize: 11.5, fontWeight: 600, color: "#475569", flexShrink: 0 }}>p. {p}</span>
-                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, flex: 1 }}>
-                            {segments.map((s) => {
-                              const on = s.pages.includes(p);
-                              const col = colorOf(s.key);
-                              return (
-                                <button key={s.key} onClick={() => togglePage(s.key, p)} title={s.nom}
-                                  style={{
-                                    border: `1px solid ${on ? col : "#E2E8F0"}`,
-                                    background: on ? col : "white",
-                                    color: on ? "white" : "#94a3b8",
-                                    borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 600, cursor: "pointer",
-                                  }}>
-                                  {chipLabel(s)}
-                                </button>
-                              );
-                            })}
-                          </div>
-                          {owners.length === 0 && <span style={{ fontSize: 10, color: "#92400E", fontWeight: 600 }}>non rattachée</span>}
-                          {owners.length > 1 && <span style={{ fontSize: 10, color: "#0891B2", fontWeight: 600 }}>partagée ×{owners.length}</span>}
+                )}
+
+                <div style={sectionTitle}>Pièces</div>
+                <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                  {segments.map((s) => {
+                    const cc = confColor(s.confidence);
+                    const flagged = s.confidence < 0.7 || s.pages.length === 0;
+                    return (
+                      <div key={s.key} style={{
+                        border: `1.5px solid ${flagged ? "#FDE68A" : "#E8EEF4"}`,
+                        background: flagged ? "#FFFBEB" : "white",
+                        borderRadius: 10, padding: "9px 10px",
+                        display: "flex", flexDirection: "column", gap: 6,
+                      }}>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ width: 10, height: 10, borderRadius: "50%", background: colorOf(s.key), flexShrink: 0 }} />
+                          <input value={s.code} onChange={(e) => updateSeg(s.key, { code: e.target.value })} placeholder="Code" style={{ ...inputSt, width: 78, fontFamily: "monospace", fontWeight: 600 }} />
+                          <select value={s.type} onChange={(e) => updateSeg(s.key, { type: e.target.value })} style={{ ...inputSt, cursor: "pointer", flex: 1, minWidth: 0 }}>
+                            {TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+                          </select>
+                          <span style={{ fontSize: 10.5, fontWeight: 700, color: cc.color, background: cc.bg, borderRadius: 5, padding: "2px 6px", flexShrink: 0 }}>{cc.label}</span>
+                          <button onClick={() => removeSeg(s.key)} title="Supprimer cette pièce" style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#cbd5e1", flexShrink: 0 }}>×</button>
                         </div>
-                      );
-                    })}
-                  </div>
-                </>
-              )}
+                        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                          <input value={s.nom} onChange={(e) => updateSeg(s.key, { nom: e.target.value })} style={{ ...inputSt, flex: 1, minWidth: 0 }} />
+                          <button onClick={() => regenName(s.key)} title="Régénérer le nom par défaut" style={{ ...inputSt, padding: "6px 8px", cursor: "pointer", background: "white" }}>↻</button>
+                        </div>
+                        <div style={{ fontSize: 10.5, color: "#94a3b8" }}>{pageSpan(s.pages)}</div>
+                      </div>
+                    );
+                  })}
+                </div>
+                <button onClick={addSeg} style={{ ...btnGhost, marginTop: 8, fontSize: 12, padding: "6px 12px" }}>+ Ajouter une pièce</button>
 
-              <div style={{ display: "flex", gap: 9, justifyContent: "flex-end", marginTop: 22 }}>
-                <button onClick={() => void cancelAll()} disabled={phase === "applying"} style={btnGhost}>Annuler</button>
-                <button onClick={() => void applySplit()} disabled={phase === "applying" || applicable === 0}
-                  style={{ ...btnPrimary, opacity: phase === "applying" || applicable === 0 ? 0.6 : 1 }}>
-                  {phase === "applying" ? "Création…" : `Valider et créer ${applicable} pièce(s)`}
-                </button>
-              </div>
-            </>
-          )}
+                {pageCount > 0 && (
+                  <>
+                    <div style={sectionTitle}>
+                      Répartition des pages
+                      <div style={{ fontWeight: 400, color: "#94a3b8", fontSize: 11, marginTop: 2 }}>
+                        cliquez le n° de page pour la voir à gauche ; cliquez une pastille pour (dé)rattacher (une page peut être partagée).
+                      </div>
+                    </div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 3 }}>
+                      {allPages.map((p) => {
+                        const owners = segments.filter((s) => s.pages.includes(p));
+                        const active = viewerPage === p;
+                        return (
+                          <div key={p} style={{ display: "flex", alignItems: "center", gap: 6, padding: "3px 4px", borderRadius: 6, background: active ? "#EEF2FF" : "transparent" }}>
+                            <button onClick={() => setViewerPage(p)} title="Afficher cette page à gauche"
+                              style={{ width: 40, fontSize: 11.5, fontWeight: 700, color: active ? "#4F46E5" : "#475569", flexShrink: 0, border: "none", background: "none", cursor: "pointer", textAlign: "left" }}>
+                              p. {p}
+                            </button>
+                            <div style={{ display: "flex", flexWrap: "wrap", gap: 4, flex: 1 }}>
+                              {segments.map((s) => {
+                                const on = s.pages.includes(p);
+                                const col = colorOf(s.key);
+                                return (
+                                  <button key={s.key} onClick={() => togglePage(s.key, p)} title={s.nom}
+                                    style={{
+                                      border: `1px solid ${on ? col : "#E2E8F0"}`, background: on ? col : "white",
+                                      color: on ? "white" : "#94a3b8", borderRadius: 6, padding: "2px 7px", fontSize: 10.5, fontWeight: 600, cursor: "pointer",
+                                    }}>
+                                    {chipLabel(s)}
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            {owners.length === 0 && <span style={{ fontSize: 9.5, color: "#92400E", fontWeight: 600 }}>non rattachée</span>}
+                            {owners.length > 1 && <span style={{ fontSize: 9.5, color: "#0891B2", fontWeight: 600 }}>partagée</span>}
+                          </div>
+                        );
+                      })}
+                    </div>
+                  </>
+                )}
+
+                <div style={{ display: "flex", gap: 9, justifyContent: "flex-end", marginTop: 20, position: "sticky", bottom: 0, background: "white", paddingTop: 10 }}>
+                  <button onClick={() => void cancelAll()} disabled={phase === "applying"} style={btnGhost}>Annuler</button>
+                  <button onClick={() => void applySplit()} disabled={phase === "applying" || applicable === 0}
+                    style={{ ...btnPrimary, opacity: phase === "applying" || applicable === 0 ? 0.6 : 1 }}>
+                    {phase === "applying" ? "Création…" : `Valider · ${applicable} pièce(s)`}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       </div>
     </div>
