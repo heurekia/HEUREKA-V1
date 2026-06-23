@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, client as pgClient } from "../../db.js";
-import { dossiers, users, instruction_events } from "@heureka-v1/db";
+import { dossiers, users, instruction_events, dossier_pieces_jointes } from "@heureka-v1/db";
 import { eq, desc, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { type AuthRequest } from "../../middlewares/auth.js";
@@ -15,6 +15,7 @@ import { callAi, convertPdfPagesToPng } from "../../services/aiUsage.js";
 import { extractFirstJson, sha256Buffer } from "../../services/pieceAnalyzer.js";
 import { attachCerfaToDossier } from "../../services/cerfaAttachment.js";
 import { prefetchSitadelHistory } from "../../services/sitadelPrefetch.js";
+import { getStorageProvider } from "../../services/storage.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 import {
   computeInstructionDelay,
@@ -591,6 +592,51 @@ dossiersRouter.delete("/dossiers/:id/assign", requireRole("mairie", "admin"), as
       const { status, body } = workflowErrorToHttp(err);
       return res.status(status).json(body);
     }
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────
+// [TEMP_DELETE_DOSSIER] Suppression définitive d'un dossier — TEMPORAIRE.
+//
+// Exposé côté mairie le temps que le système tourne sur une base de TEST :
+// permet de purger un dossier complet directement depuis la liste (menu « ⋮ »).
+// Toutes les lignes filles (pièces, courriers, décisions, consultations,
+// événements, facts, analyses…) partent via ON DELETE CASCADE ; les fichiers
+// physiques des pièces sont retirés du storage en best-effort.
+//
+// ⚠️ À RETIRER avant la mise en production réelle. Rechercher "TEMP_DELETE_DOSSIER"
+// (back + front) pour le retrait complet.
+// ─────────────────────────────────────────────────────────────────────────
+dossiersRouter.delete("/dossiers/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    // enforceDossierAccess (cf. mairie/index.ts) a déjà chargé le dossier et
+    // vérifié le périmètre commune : on arrive ici uniquement si l'agent y a
+    // accès. Un dossier inexistant aurait renvoyé 404 en amont.
+
+    // Purge best-effort des fichiers physiques des pièces jointes : le reste
+    // (lignes en base) part en cascade SQL au DELETE du dossier. Un échec
+    // storage ne doit pas empêcher la suppression en base.
+    try {
+      const pieces = await db
+        .select({ url: dossier_pieces_jointes.url })
+        .from(dossier_pieces_jointes)
+        .where(eq(dossier_pieces_jointes.dossier_id, dossierId));
+      const storage = getStorageProvider();
+      const keys = pieces
+        .map((p) => p.url)
+        .filter((u): u is string => !!u)
+        .map((u) => storage.keyFromUrl(u));
+      if (keys.length > 0) await storage.removeBulk(keys);
+    } catch (storageErr) {
+      console.error("[TEMP_DELETE_DOSSIER] purge storage échouée (poursuite suppression base)", storageErr);
+    }
+
+    await db.delete(dossiers).where(eq(dossiers.id, dossierId));
+    res.status(204).end();
+  } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
   }
