@@ -458,6 +458,16 @@ export function CourrierModal({
     });
   }, [allMentions.length, loadMentions, courrierType]);
 
+  // ── Phase 1.5 : pièces jointes GED (documents produits par l'instruction —
+  //    ex. plan annoté) joignables au courrier de demande. ──
+  const [gedDocs, setGedDocs] = useState<{ id: string; nom: string; type: string; url: string }[]>([]);
+  const [attachDocIds, setAttachDocIds] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    api.get<{ id: string; nom: string; type: string; url: string }[]>(`/mairie/dossiers/${dossier.id}/documents`)
+      .then(setGedDocs)
+      .catch(() => setGedDocs([]));
+  }, [dossier.id]);
+
   // ── Émission de la demande de pièces complémentaires ──
   // 1) POST courrier (snapshot + pièces + articles) — gère la transition de
   //    statut et le marquage des pièces côté serveur. 2) verrouille la modale
@@ -475,6 +485,7 @@ export function CourrierModal({
         body_snapshot: substitutedHtml || null,
         subject: selected?.name ?? "Demande de pièces complémentaires",
         delivery_method: "print",
+        attachment_document_ids: Array.from(attachDocIds),
       });
       setEmittedAt(new Date().toISOString());
       onEmitted?.();
@@ -483,7 +494,7 @@ export function CourrierModal({
     } finally {
       setEmitting(false);
     }
-  }, [dossier.id, requestedPieces, emitting, emittedAt, selectedRefs, substitutedHtml, selected, onEmitted]);
+  }, [dossier.id, requestedPieces, emitting, emittedAt, selectedRefs, substitutedHtml, selected, onEmitted, attachDocIds]);
 
   const handleInsertMentions = useCallback(() => {
     if (selectedRefs.size === 0) return;
@@ -950,6 +961,35 @@ export function CourrierModal({
                     style={{ width: "100%", padding: "6px 8px", background: "white", border: "1px dashed #CBD5E1", borderRadius: 6, fontSize: 11.5, color: "#64748b", cursor: "pointer" }}>
                     + Ajouter une pièce
                   </button>
+                </div>
+
+                {/* Pièces jointes GED — documents produits par l'instruction
+                    (ex. plan annoté) à joindre au courrier envoyé au citoyen. */}
+                <div style={{ padding: "12px 14px 4px", borderTop: "1px solid #EEF2F7" }}>
+                  <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase", marginBottom: 6 }}>
+                    Documents joints (GED) {attachDocIds.size > 0 ? `(${attachDocIds.size})` : ""}
+                  </div>
+                  {gedDocs.length === 0 ? (
+                    <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.4 }}>
+                      Aucun document dans la GED. Annotez une pièce (bouton « Annoter / Envoyer » dans l'onglet Pièces) et enregistrez-la pour pouvoir la joindre ici.
+                    </div>
+                  ) : (
+                    gedDocs.map((d) => {
+                      const checked = attachDocIds.has(d.id);
+                      return (
+                        <label key={d.id} style={{ display: "flex", alignItems: "center", gap: 8, padding: "5px 6px", borderRadius: 6, cursor: "pointer", background: checked ? "#EEF2FF" : "transparent" }}>
+                          <input type="checkbox" checked={checked}
+                            onChange={() => setAttachDocIds((prev) => {
+                              const next = new Set(prev);
+                              if (next.has(d.id)) next.delete(d.id); else next.add(d.id);
+                              return next;
+                            })}
+                            style={{ cursor: "pointer", flexShrink: 0 }} />
+                          <span style={{ fontSize: 11.5, color: "#334155", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>📄 {d.nom}</span>
+                        </label>
+                      );
+                    })
+                  )}
                 </div>
               </div>
 
