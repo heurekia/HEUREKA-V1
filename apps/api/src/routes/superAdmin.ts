@@ -2,14 +2,13 @@ import { Router } from "express";
 import { db } from "../db.js";
 import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
-import { invalidatePricingCache, streamAi } from "../services/aiUsage.js";
-import { buildSuperAdminAssistantSystemPrompt, sanitizeHistory, SUPERADMIN_ASSISTANT_SUGGESTIONS } from "../services/helpAssistant.js";
+import { invalidatePricingCache } from "../services/aiUsage.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
 import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, lt, inArray } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
-import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
+import { requireAuth, requireRole } from "../middlewares/auth.js";
 import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
 import { logAudit } from "../services/audit.js";
 
@@ -38,78 +37,6 @@ superAdminRouter.get("/dashboard", async (_req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
-  }
-});
-
-// ─── Assistant d'aide (module « ? ») ─────────────────────────────────────────
-//
-// Assistant conversationnel ancré sur la base de connaissances du back-office
-// (cf. services/adminAssistant.ts). Deux usages : « Comment faire… » (priorité)
-// et questions techniques sur la plateforme.
-
-// GET /admin/assistant/suggestions — questions d'amorce pour l'UI.
-superAdminRouter.get("/assistant/suggestions", (_req, res) => {
-  res.json({ suggestions: SUPERADMIN_ASSISTANT_SUGGESTIONS });
-});
-
-// POST /admin/assistant — réponse en streaming SSE.
-//
-// Body : { question: string, history?: { role: "user"|"assistant", content }[] }
-//
-// Streaming SSE pour la même raison que les agents de structuration PLU : la
-// passerelle nginx coupe une requête « silencieuse » longue (~100 s) et
-// l'utilisateur verrait un 502 alors que Mistral a déjà facturé. On forwarde
-// les deltas de texte au client (effet de frappe) et la passerelle voit du
-// trafic régulier. Le tracking ai_usage_events est automatique à finalMessage().
-superAdminRouter.post("/assistant", async (req: AuthRequest, res) => {
-  const body = (req.body ?? {}) as { question?: unknown; history?: unknown };
-  const question = typeof body.question === "string" ? body.question.trim() : "";
-  if (!question) return res.status(400).json({ error: "question requise" });
-  if (question.length > 2000) return res.status(400).json({ error: "Question trop longue (2000 caractères max)." });
-
-  const history = sanitizeHistory(body.history);
-
-  res.setHeader("Content-Type", "text/event-stream");
-  res.setHeader("Cache-Control", "no-cache");
-  res.setHeader("Connection", "keep-alive");
-  res.setHeader("X-Accel-Buffering", "no");
-  res.flushHeaders?.();
-
-  const send = (data: Record<string, unknown>) => {
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-    (res as unknown as { flush?: () => void }).flush?.();
-  };
-
-  try {
-    send({ type: "started" });
-
-    const stream = await streamAi(
-      { purpose: "admin_assistant", userId: req.user?.id ?? null },
-      {
-        model: "ai-fast",
-        max_tokens: 1200,
-        temperature: 0.2,
-        system: buildSuperAdminAssistantSystemPrompt(),
-        messages: [
-          ...history.map((t) => ({ role: t.role, content: t.content })),
-          { role: "user" as const, content: question },
-        ],
-      },
-    );
-
-    for await (const event of stream) {
-      if (event.type === "content_block_delta" && event.delta.type === "text_delta") {
-        send({ type: "delta", text: event.delta.text });
-      }
-    }
-
-    const finalMessage = await stream.finalMessage();
-    send({ type: "done", stop_reason: finalMessage.stop_reason });
-    res.end();
-  } catch (err) {
-    console.error("[admin-assistant]", err);
-    send({ type: "error", message: err instanceof Error ? err.message : "Échec de l'assistant — réessayez." });
-    res.end();
   }
 });
 
