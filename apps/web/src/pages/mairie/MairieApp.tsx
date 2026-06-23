@@ -722,6 +722,9 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
   const [loading, setLoading] = useState(true);
   const [showColPicker, setShowColPicker] = useState(false);
   const [menuOpenId, setMenuOpenId] = useState<string | null>(null);
+  // Bounding box du bouton « ⋮ » cliqué : le menu se positionne en fixed par
+  // rapport à elle (cf. rendu) pour échapper à l'overflow:hidden de la carte.
+  const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
   const [rowActionBusy, setRowActionBusy] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
 
@@ -1001,20 +1004,34 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
                 <td style={{ padding: "12px 16px", position: "relative" }}>
                   <button
                     style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4, borderRadius: 4 }}
-                    onClick={e => { e.stopPropagation(); setMenuOpenId(prev => prev === r.id ? null : r.id); }}
+                    onClick={e => {
+                      e.stopPropagation();
+                      if (menuOpenId === r.id) { setMenuOpenId(null); setMenuAnchor(null); }
+                      else { setMenuAnchor(e.currentTarget.getBoundingClientRect()); setMenuOpenId(r.id); }
+                    }}
                     aria-label="Actions du dossier"
                   >
                     <DotsIcon />
                   </button>
-                  {menuOpenId === r.id && (
+                  {menuOpenId === r.id && menuAnchor && (() => {
+                    // Positionnement en fixed (relatif au viewport) pour ne pas être
+                    // rogné par l'overflow:hidden de la carte. Ancré sous le bouton,
+                    // aligné à droite, avec bascule vers le haut s'il manque de place.
+                    const MENU_W = 224;
+                    const itemCount = 1 + (isSupervisor && r.instructeur ? 1 : 0) + (isSupervisor ? 1 : 0);
+                    const estH = itemCount * 36 + (isSupervisor ? 9 : 0) + 8;
+                    const left = Math.max(8, Math.min(menuAnchor.right - MENU_W, window.innerWidth - MENU_W - 8));
+                    const openUp = menuAnchor.bottom + estH + 8 > window.innerHeight;
+                    const top = openUp ? Math.max(8, menuAnchor.top - estH - 4) : menuAnchor.bottom + 4;
+                    return (
                     <>
                       <div
-                        onClick={e => { e.stopPropagation(); setMenuOpenId(null); }}
+                        onClick={e => { e.stopPropagation(); setMenuOpenId(null); setMenuAnchor(null); }}
                         style={{ position: "fixed", inset: 0, zIndex: 98 }}
                       />
                       <div
                         onClick={e => e.stopPropagation()}
-                        style={{ position: "absolute", right: 12, top: 38, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, padding: 4, zIndex: 99, minWidth: 200, boxShadow: "0 8px 24px rgba(0,0,0,0.10)" }}
+                        style={{ position: "fixed", top, left, width: MENU_W, background: "white", border: "1px solid #E2E8F0", borderRadius: 8, padding: 4, zIndex: 99, boxShadow: "0 8px 24px rgba(0,0,0,0.10)" }}
                       >
                         <button
                           onClick={async () => {
@@ -1080,7 +1097,8 @@ function DossiersScreen({ commune, onDossierClick }: { commune: string; onDossie
                         )}
                       </div>
                     </>
-                  )}
+                    );
+                  })()}
                 </td>
               </tr>
             ))}
