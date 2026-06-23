@@ -39,6 +39,17 @@ export const dossier_courriers = pgTable("dossier_courriers", {
   }>>().default([]),
   // Références d'articles juridiques citées (legal_mentions.article_ref).
   articles_cites: jsonb("articles_cites").$type<string[]>().default([]),
+  // Pièces jointes référençant des documents de la GED du dossier
+  // (dossier_documents) — distinctes de `pieces_jointes_ids` qui, lui, ne fait
+  // que désigner des pièces du citoyen à (re)compléter. Ici on porte des
+  // documents produits par l'instruction (ex : plan annoté) joints au courrier.
+  // Format : DocumentAttachmentRef[] { document_id, nom, url, type }.
+  attachments: jsonb("attachments").$type<Array<{
+    document_id: string;
+    nom: string;
+    url: string;
+    type: string;
+  }>>().default([]),
   // Suivi qui / quand. delivery_method reste libre pour évolutions ("print",
   // "email", "ar"). Aucune contrainte aujourd'hui — on enregistre ce que
   // l'instructeur déclare.

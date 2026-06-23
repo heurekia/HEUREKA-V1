@@ -1213,6 +1213,56 @@ FROM regulatory_documents rd
 WHERE ds.source_document_id IS NULL
   AND ds.metadata->>'source_id' ~ '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
   AND rd.id = (ds.metadata->>'source_id')::uuid;
+
+-- ── GED de dossier + annotation des pièces citoyen (3.D) ────────────────────
+-- Coffre des documents PRODUITS par l'instruction (export aplati d'une pièce
+-- annotée, plus tard les courriers PDF…), distinct de dossier_pieces_jointes
+-- (pièces DÉPOSÉES par le citoyen). shared_with_citizen est la garde de
+-- confidentialité : un document reste interne tant qu'il n'a pas été joint à un
+-- envoi citoyen (message/courrier) ; la route /api/uploads n'ouvre l'accès
+-- citoyen qu'à ce drapeau vrai.
+CREATE TABLE IF NOT EXISTS dossier_documents (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  nom text NOT NULL,
+  url text NOT NULL,
+  type text NOT NULL,
+  taille integer NOT NULL,
+  category text NOT NULL DEFAULT 'annotation',
+  source_piece_id uuid REFERENCES dossier_pieces_jointes(id) ON DELETE SET NULL,
+  note text,
+  shared_with_citizen boolean NOT NULL DEFAULT false,
+  created_by uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_dossier_documents_dossier ON dossier_documents(dossier_id);
+CREATE INDEX IF NOT EXISTS idx_dossier_documents_source_piece ON dossier_documents(source_piece_id);
+
+-- Calque d'annotation vectorielle des pièces du citoyen (internalise Inkscape/
+-- Foxit). Une ligne = une marque (forme + commentaire + visibilité). Les
+-- géométries sont en % de page. visibility ∈ { interne, citoyen }.
+CREATE TABLE IF NOT EXISTS dossier_piece_annotations (
+  id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  dossier_id uuid NOT NULL REFERENCES dossiers(id) ON DELETE CASCADE,
+  piece_id uuid NOT NULL REFERENCES dossier_pieces_jointes(id) ON DELETE CASCADE,
+  page integer NOT NULL DEFAULT 1,
+  tool text NOT NULL,
+  geometry jsonb NOT NULL DEFAULT '{}'::jsonb,
+  style jsonb NOT NULL DEFAULT '{}'::jsonb,
+  comment text,
+  visibility text NOT NULL DEFAULT 'interne',
+  author_user_id uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at timestamp NOT NULL DEFAULT now(),
+  updated_at timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_piece_annotations_piece ON dossier_piece_annotations(piece_id);
+CREATE INDEX IF NOT EXISTS idx_piece_annotations_dossier ON dossier_piece_annotations(dossier_id);
+
+-- Pièces jointes GED portées par messages et courriers (références vers
+-- dossier_documents — aucune duplication de fichier).
+ALTER TABLE dossier_messages ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS attachments jsonb DEFAULT '[]'::jsonb;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

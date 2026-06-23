@@ -5,6 +5,8 @@ export * from "./rolePermissions.js";
 export * from "./dossiers.js";
 export * from "./dossier_messages.js";
 export * from "./dossier_pieces_jointes.js";
+export * from "./dossierDocuments.js";
+export * from "./dossierPieceAnnotations.js";
 export * from "./notifications.js";
 export * from "./zones.js";
 export * from "./zone_regulatory_rules.js";
