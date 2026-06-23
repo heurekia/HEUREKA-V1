@@ -2,7 +2,7 @@ import { Router } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { db } from "../db.js";
-import { dossier_pieces_jointes, dossiers } from "@heureka-v1/db";
+import { dossier_pieces_jointes, dossier_documents, dossiers } from "@heureka-v1/db";
 import { eq, like } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
@@ -25,14 +25,27 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
       return res.status(400).json({ error: "Clé invalide" });
     }
 
-    // On retrouve la pièce via le suffixe d'URL stocké en base. Format
-    // historique : "/api/uploads/<key>".
+    // On retrouve la ressource via le suffixe d'URL stocké en base. Format
+    // historique : "/api/uploads/<key>". Deux sources possibles : une pièce
+    // déposée par le citoyen (dossier_pieces_jointes) OU un document produit
+    // par l'instruction (dossier_documents = GED, ex : pièce annotée).
     const urlSuffix = `/api/uploads/${key}`;
+
+    // Forme unifiée pour la décision d'accès, quelle que soit la source.
+    type Resource = {
+      type: string | null;
+      nom: string | null;
+      dossier_commune: string | null;
+      dossier_user_id: string | null;
+      /** Propriétaire direct (pièce citoyen) — null pour un document GED. */
+      owner_user_id: string | null;
+      /** GED : un document n'est accessible au citoyen qu'une fois partagé. */
+      shared_with_citizen: boolean;
+    };
+
     const [piece] = await db
       .select({
-        id: dossier_pieces_jointes.id,
         user_id: dossier_pieces_jointes.user_id,
-        dossier_id: dossier_pieces_jointes.dossier_id,
         type: dossier_pieces_jointes.type,
         nom: dossier_pieces_jointes.nom,
         dossier_commune: dossiers.commune,
@@ -43,7 +56,43 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
       .where(like(dossier_pieces_jointes.url, `%${urlSuffix}`))
       .limit(1);
 
-    if (!piece) return res.status(404).json({ error: "Fichier introuvable" });
+    let resource: Resource | null = piece
+      ? {
+          type: piece.type,
+          nom: piece.nom,
+          dossier_commune: piece.dossier_commune,
+          dossier_user_id: piece.dossier_user_id,
+          owner_user_id: piece.user_id,
+          shared_with_citizen: true, // une pièce citoyen est toujours visible de son propriétaire
+        }
+      : null;
+
+    if (!resource) {
+      const [doc] = await db
+        .select({
+          type: dossier_documents.type,
+          nom: dossier_documents.nom,
+          shared_with_citizen: dossier_documents.shared_with_citizen,
+          dossier_commune: dossiers.commune,
+          dossier_user_id: dossiers.user_id,
+        })
+        .from(dossier_documents)
+        .leftJoin(dossiers, eq(dossier_documents.dossier_id, dossiers.id))
+        .where(like(dossier_documents.url, `%${urlSuffix}`))
+        .limit(1);
+      if (doc) {
+        resource = {
+          type: doc.type,
+          nom: doc.nom,
+          dossier_commune: doc.dossier_commune,
+          dossier_user_id: doc.dossier_user_id,
+          owner_user_id: null,
+          shared_with_citizen: doc.shared_with_citizen,
+        };
+      }
+    }
+
+    if (!resource) return res.status(404).json({ error: "Fichier introuvable" });
 
     const userId = req.user!.id;
     const role = req.user!.role;
@@ -52,11 +101,14 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
     if (role === "admin") {
       allowed = true;
     } else if (role === "citoyen") {
-      // Le citoyen propriétaire du dossier (ou qui a déposé la pièce).
-      allowed = piece.user_id === userId || piece.dossier_user_id === userId;
+      // Le citoyen propriétaire du dossier (ou qui a déposé la pièce). Pour un
+      // document GED, l'accès n'est ouvert qu'une fois explicitement partagé
+      // (joint à un message/courrier citoyen) — garde anti-fuite des brouillons.
+      const isOwner = resource.owner_user_id === userId || resource.dossier_user_id === userId;
+      allowed = isOwner && resource.shared_with_citizen;
     } else if (role === "mairie" || role === "instructeur") {
       const scope = await getCommuneScope(userId, role);
-      allowed = communeInScope(piece.dossier_commune, scope);
+      allowed = communeInScope(resource.dossier_commune, scope);
     } else if (role === "service_externe") {
       // Les services externes accèdent via leurs propres routes de
       // consultation : pas d'accès direct aux pièces déposées.
@@ -127,7 +179,7 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
 
     res.setHeader(
       "Content-Type",
-      streamRes.contentType || piece.type || "application/octet-stream",
+      streamRes.contentType || resource.type || "application/octet-stream",
     );
     if (typeof streamRes.contentLength === "number") {
       res.setHeader("Content-Length", String(streamRes.contentLength));
@@ -135,7 +187,7 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
     res.setHeader("Cache-Control", "private, no-store");
     res.setHeader(
       "Content-Disposition",
-      `inline; filename="${encodeURIComponent(piece.nom || key)}"`,
+      `inline; filename="${encodeURIComponent(resource.nom || key)}"`,
     );
     // Transparence sur la variante servie : le frontend peut afficher un
     // tag visuel quand c'est le compat (et proposer le bouton "Télécharger
