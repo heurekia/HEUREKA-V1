@@ -5352,6 +5352,7 @@ const PURPOSE_LABELS: Record<string, string> = {
   plu_article_structure: "Structuration article PLU",
   plu_zone_structure: "Structuration zone PLU",
   admin_assistant: "Assistant d'aide (admin)",
+  mairie_assistant: "Assistant d'aide (mairie)",
 };
 
 function fmtEur(v: number): string {
