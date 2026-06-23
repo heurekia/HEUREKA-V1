@@ -826,10 +826,20 @@ export async function extractPiece(
 // Heuristique simple : depuis un code de pièce, déduire le type attendu.
 // Codes usuels CERFA : DP1/PC1 = situation, DP2/PC2 = masse, DP3 = coupe (PC3 = coupe),
 // DP4/PC4 = notice, DP5 = façade, DP6/PC6 = photo, DP7/PC7 = photo lointaine, PC8 = insertion.
+// PCMI (maison individuelle) : PCMI1=situation … PCMI5=façades, PCMI6=insertion,
+// PCMI7/8=photos. Ajout NON régressif (ces codes renvoyaient `undefined` avant).
 export function expectedTypeFromCode(code: string | null | undefined): PieceType | undefined {
   if (!code) return undefined;
   const c = code.toUpperCase().trim();
   if (c === "CERFA" || /CERFA/i.test(c)) return "cerfa";
+  // PCMI d'abord (plus spécifique que PC) — codes du permis maison individuelle.
+  if (/^PCMI0?1$/.test(c)) return "plan_situation";
+  if (/^PCMI0?2$/.test(c)) return "plan_masse";
+  if (/^PCMI0?3$/.test(c)) return "plan_coupe";
+  if (/^PCMI0?4$/.test(c)) return "notice";
+  if (/^PCMI0?5$/.test(c)) return "plan_facade";
+  if (/^PCMI0?6$/.test(c)) return "insertion";
+  if (/^PCMI0?7$/.test(c) || /^PCMI0?8$/.test(c)) return "photo";
   if (/^(DP|PC)0?1$/.test(c)) return "plan_situation";
   if (/^(DP|PC)0?2$/.test(c)) return "plan_masse";
   if (/^(DP|PC)0?3$/.test(c)) return "plan_coupe";
@@ -840,4 +850,74 @@ export function expectedTypeFromCode(code: string | null | undefined): PieceType
   if (/^(DP)0?7$/.test(c) || /^PC0?7$/.test(c)) return "photo";
   if (/^PC0?8$/.test(c)) return "insertion";
   return undefined;
+}
+
+// ── Mapping inverse type → code d'emplacement, dépendant du type de dossier ──
+// Sert à l'éclatement d'un dépôt groupé : une fois le type d'une pièce détecté,
+// on en déduit l'emplacement CERFA (PCMI2, PC2, DP2…) selon la nature du dossier.
+export type PieceCodeFamily = "PCMI" | "PC" | "DP";
+
+export function pieceCodeFamily(dossierType?: string | null): PieceCodeFamily | null {
+  switch (dossierType) {
+    case "permis_de_construire_mi": return "PCMI";
+    case "permis_de_construire":    return "PC";
+    case "declaration_prealable":   return "DP";
+    // PA / PD / lotissement / CU : pas de mapping automatique fiable en Lot 1 —
+    // les pièces ressortent sans code, l'instructeur les affecte à la main.
+    default: return null;
+  }
+}
+
+const CODE_BY_FAMILY: Record<PieceCodeFamily, Partial<Record<PieceType, string>>> = {
+  PCMI: { plan_situation: "PCMI1", plan_masse: "PCMI2", plan_coupe: "PCMI3", notice: "PCMI4", plan_facade: "PCMI5", insertion: "PCMI6", photo: "PCMI7" },
+  PC:   { plan_situation: "PC1",   plan_masse: "PC2",   plan_coupe: "PC3",   notice: "PC4",   plan_facade: "PC5",   insertion: "PC6",   photo: "PC7" },
+  DP:   { plan_situation: "DP1",   plan_masse: "DP2",   plan_coupe: "DP3",   notice: "DP4",   plan_facade: "DP5",   insertion: "DP6",   photo: "DP7" },
+};
+
+/**
+ * Déduit le code d'emplacement (PCMI2 / PC2 / DP2 / CERFA…) à partir du type
+ * détecté et de la nature du dossier. Renvoie null si non mappable (type
+ * "autre", ou famille de dossier sans convention gérée) → l'instructeur tranche.
+ * NB : pour les photos, on propose le code « proche » (…7) par défaut ; la
+ * distinction proche/lointaine (…8) est laissée à la validation manuelle.
+ */
+export function codeFromType(type: PieceType, dossierType?: string | null): string | null {
+  if (type === "cerfa") return "CERFA";
+  if (type === "autre") return null;
+  const fam = pieceCodeFamily(dossierType);
+  if (!fam) return null;
+  return CODE_BY_FAMILY[fam][type] ?? null;
+}
+
+const TYPE_LABELS: Record<PieceType, string> = {
+  cerfa: "Formulaire CERFA",
+  plan_situation: "Plan de situation",
+  plan_masse: "Plan de masse",
+  plan_coupe: "Plan de coupe",
+  plan_facade: "Plan des façades et toitures",
+  notice: "Notice descriptive",
+  photo: "Photographie",
+  insertion: "Document graphique d'insertion",
+  autre: "Pièce",
+};
+
+export function pieceTypeLabel(type: PieceType): string {
+  return TYPE_LABELS[type] ?? "Pièce";
+}
+
+/**
+ * Nom normalisé d'une pièce issue d'un éclatement : « PCMI2 – Plan de masse
+ * (p. 3-4) ». Le nom de fichier d'origine reste conservé séparément (audit).
+ */
+export function defaultPieceName(code: string | null, type: PieceType, pages?: number[]): string {
+  const label = pieceTypeLabel(type);
+  const base = code ? `${code} – ${label}` : label;
+  if (pages && pages.length > 0) {
+    const sorted = [...pages].sort((a, b) => a - b);
+    const first = sorted[0];
+    const last = sorted[sorted.length - 1];
+    const span = first === last ? `p. ${first}` : `p. ${first}-${last}`;
+    return `${base} (${span})`;
+  }
+  return base;
 }

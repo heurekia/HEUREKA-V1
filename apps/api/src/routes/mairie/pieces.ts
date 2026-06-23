@@ -1,16 +1,17 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossier_pieces_jointes, instruction_events } from "@heureka-v1/db";
+import { dossier_pieces_jointes, dossier_piece_bundles, instruction_events } from "@heureka-v1/db";
 import { eq, desc, and, isNull } from "drizzle-orm";
 import path from "path";
 import multer from "multer";
 import crypto from "crypto";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { autoAdvanceIfAllPiecesValid } from "../../services/dossierWorkflow.js";
-import { extractPiece, expectedTypeFromCode } from "../../services/pieceExtractor.js";
+import { extractPiece, expectedTypeFromCode, codeFromType, defaultPieceName, type PieceType } from "../../services/pieceExtractor.js";
 import { getStorageProvider } from "../../services/storage.js";
 import { archivePreviousComplementDemande } from "../../services/pieceArchive.js";
 import { queuePieceOcr, notifyIfAlreadyComplete } from "../../services/pieceOcrQueue.js";
+import { segmentBundle, applySegmentation, type SegmentationResult, type ApplySegmentInput } from "../../services/pieceSegmenter.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 import { sql } from "drizzle-orm";
 
@@ -393,5 +394,281 @@ piecesRouter.post("/dossiers/:id/pieces/:pieceId/extract", async (req: AuthReque
   } catch (err) {
     console.error("[pieces/extract]", err);
     res.status(500).json({ error: "Erreur serveur lors de l'extraction" });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Dépôt groupé : un seul PDF déposé → éclaté en plusieurs pièces.
+//
+// IMPORTANT : flux 100 % additif. La route /pieces/upload (1 fichier = 1 pièce)
+// reste l'unique chemin par défaut et n'est jamais modifiée. Ici, l'agent dépose
+// un dossier complet en UN PDF : le système propose un découpage, l'instructeur
+// le valide/corrige, PUIS les pièces sont créées (et repassent dans l'OCR).
+// ════════════════════════════════════════════════════════════════════════════
+
+const PIECE_TYPES = new Set<PieceType>([
+  "cerfa", "plan_situation", "plan_masse", "plan_coupe",
+  "plan_facade", "notice", "photo", "insertion", "autre",
+]);
+
+// Normalise/valide les segments (potentiellement édités par l'instructeur)
+// reçus du front avant application. Robuste aux entrées partielles.
+function sanitizeSegments(raw: unknown[], dossierType: string | null): ApplySegmentInput[] {
+  const out: ApplySegmentInput[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const s = item as Record<string, unknown>;
+    const pages = Array.isArray(s.pages)
+      ? [...new Set(s.pages.map((p) => Number(p)).filter((p) => Number.isInteger(p) && p >= 1))].sort((a, b) => a - b)
+      : [];
+    if (pages.length === 0) continue;
+    const type: PieceType = PIECE_TYPES.has(s.type as PieceType) ? (s.type as PieceType) : "autre";
+    let code: string | null;
+    if (s.code === null || s.code === "") code = null;
+    else if (typeof s.code === "string") code = s.code.toUpperCase().trim().slice(0, 16);
+    else code = codeFromType(type, dossierType); // dérivé si non fourni
+    const nom = typeof s.nom === "string" && s.nom.trim()
+      ? s.nom.trim().slice(0, 200)
+      : defaultPieceName(code, type, pages);
+    const confidence = typeof s.confidence === "number" ? s.confidence : null;
+    out.push({ code, type, pages, nom, confidence });
+  }
+  return out;
+}
+
+// ── Dépôt d'un dossier complet en un seul PDF (segmentation asynchrone) ──────
+piecesRouter.post("/dossiers/:id/pieces/upload-bundle", pieceUploadSingle, async (req: AuthRequest, res) => {
+  const storage = getStorageProvider();
+  const fileKey = req.file
+    ? `${crypto.randomUUID()}${path.extname(req.file.originalname)}`
+    : null;
+  try {
+    if (!req.file || !fileKey) return res.status(400).json({ error: "Fichier requis" });
+    const sniffed = sniffPieceType(req.file.buffer);
+    if (sniffed === null) {
+      return res.status(400).json({ error: "Le contenu du fichier ne correspond pas à un format supporté" });
+    }
+    // L'éclatement ne concerne que les PDF (multi-pages). Une image seule n'a
+    // rien à découper → on renvoie vers l'upload de pièce classique.
+    if (sniffed !== "pdf") {
+      return res.status(400).json({ error: "Le dépôt groupé attend un PDF. Pour une image seule, utilisez l'upload de pièce classique." });
+    }
+
+    const dossierId = req.params.id as string;
+    const dossier = (req as AuthRequest & { dossier?: { id: string; user_id: string; type: string; commune: string | null } }).dossier;
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    const nom = (req.body as Record<string, string>).nom_piece ?? req.file.originalname;
+    const stored = await storage.put({ key: fileKey, body: req.file.buffer, mime: req.file.mimetype });
+
+    const [bundle] = await db
+      .insert(dossier_piece_bundles)
+      .values({
+        dossier_id: dossierId,
+        user_id: req.user?.id ?? null,
+        nom,
+        url: stored.url,
+        storage_key: stored.key,
+        type: req.file.mimetype,
+        taille: req.file.size,
+        status: "segmenting",
+      })
+      .returning();
+    if (!bundle) return res.status(500).json({ error: "Création du bundle impossible" });
+
+    // Segmentation en arrière-plan (appel LLM long, jusqu'à plusieurs dizaines
+    // de secondes) : on rend la main immédiatement. Le front interroge
+    // GET .../bundles/:id jusqu'à status = pending_review (ou failed).
+    const buffer = req.file.buffer;
+    const mimeType = req.file.mimetype;
+    const dossierType = dossier.type;
+    const communeId = await resolveCommuneIdFromUser(req);
+    const userId = req.user?.id ?? null;
+    void (async () => {
+      try {
+        const result = await segmentBundle(buffer, mimeType, dossierType, { dossierId, communeId, userId });
+        await db.update(dossier_piece_bundles).set({
+          status: "pending_review",
+          page_count: result.page_count,
+          proposed_segments: result,
+          segmented_at: new Date(),
+        }).where(eq(dossier_piece_bundles.id, bundle.id));
+      } catch (err) {
+        console.error("[mairie/pieces/upload-bundle] segmentation:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+        await db.update(dossier_piece_bundles).set({
+          status: "failed",
+          error: err instanceof Error ? err.message.slice(0, 300) : "Échec de la segmentation",
+        }).where(eq(dossier_piece_bundles.id, bundle.id)).catch(() => { /* best-effort */ });
+      }
+    })();
+
+    res.status(201).json({ bundle_id: bundle.id, status: "segmenting" });
+  } catch (err) {
+    if (fileKey) {
+      try { await storage.remove(fileKey); } catch { /* ignore */ }
+    }
+    console.error("[mairie/pieces/upload-bundle]", err);
+    res.status(500).json({ error: "Erreur upload" });
+  }
+});
+
+// ── Récupère un bundle (statut + proposition de découpage) — polling front ──
+piecesRouter.get("/dossiers/:id/pieces/bundles/:bundleId", async (req: AuthRequest, res) => {
+  try {
+    const [bundle] = await db
+      .select()
+      .from(dossier_piece_bundles)
+      .where(and(
+        eq(dossier_piece_bundles.id, req.params.bundleId as string),
+        eq(dossier_piece_bundles.dossier_id, req.params.id as string),
+      ))
+      .limit(1);
+    if (!bundle) return res.status(404).json({ error: "Bundle non trouvé" });
+    res.json(bundle);
+  } catch (err) {
+    console.error("[mairie/pieces/bundles/get]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Applique le découpage validé → crée les pièces + relance l'OCR ──────────
+piecesRouter.post("/dossiers/:id/pieces/bundles/:bundleId/apply", async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const dossier = (req as AuthRequest & { dossier?: { id: string; user_id: string; type: string; commune: string | null } }).dossier;
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    const [bundle] = await db
+      .select()
+      .from(dossier_piece_bundles)
+      .where(and(
+        eq(dossier_piece_bundles.id, req.params.bundleId as string),
+        eq(dossier_piece_bundles.dossier_id, dossierId),
+      ))
+      .limit(1);
+    if (!bundle) return res.status(404).json({ error: "Bundle non trouvé" });
+    if (bundle.status === "applied") return res.status(409).json({ error: "Découpage déjà appliqué" });
+
+    // Segments validés par l'instructeur (corps de la requête), à défaut ceux
+    // proposés par l'IA.
+    const body = (req.body ?? {}) as { segments?: unknown };
+    const rawSegments = Array.isArray(body.segments)
+      ? body.segments
+      : ((bundle.proposed_segments as SegmentationResult | null)?.segments ?? []);
+    const segments = sanitizeSegments(rawSegments as unknown[], dossier.type);
+    if (segments.length === 0) return res.status(400).json({ error: "Aucun segment exploitable à appliquer" });
+
+    const communeId = await resolveCommuneIdFromUser(req);
+    const result = await applySegmentation({
+      bundle: { id: bundle.id, url: bundle.url, storage_key: bundle.storage_key, type: bundle.type, nom: bundle.nom },
+      segments,
+      dossierId,
+      dossierOwnerId: dossier.user_id,
+      appliedBy: req.user?.id ?? null,
+      trace: { dossierId, communeId, userId: req.user?.id ?? null },
+    });
+
+    // Réinitialise la session d'upload pour que la notification « dossier prêt »
+    // reparte proprement une fois toutes les pièces éclatées analysées.
+    await db.execute(sql`
+      UPDATE dossiers
+         SET metadata = (coalesce(metadata, '{}'::jsonb))
+                        - 'mairie_pieces_upload_finalized'
+                        - 'mairie_pieces_ocr_notified_at'
+       WHERE id = ${dossierId}
+    `).catch(() => { /* best-effort */ });
+
+    res.status(201).json(result);
+  } catch (err) {
+    console.error("[mairie/pieces/bundles/apply]", err);
+    res.status(500).json({ error: "Erreur lors de l'application du découpage" });
+  }
+});
+
+// ── Abandonne une proposition de découpage (le fichier source est conservé) ──
+piecesRouter.post("/dossiers/:id/pieces/bundles/:bundleId/discard", async (req: AuthRequest, res) => {
+  try {
+    const [bundle] = await db
+      .select()
+      .from(dossier_piece_bundles)
+      .where(and(
+        eq(dossier_piece_bundles.id, req.params.bundleId as string),
+        eq(dossier_piece_bundles.dossier_id, req.params.id as string),
+      ))
+      .limit(1);
+    if (!bundle) return res.status(404).json({ error: "Bundle non trouvé" });
+    if (bundle.status === "applied") return res.status(409).json({ error: "Découpage déjà appliqué, abandon impossible" });
+
+    await db.update(dossier_piece_bundles)
+      .set({ status: "discarded" })
+      .where(eq(dossier_piece_bundles.id, bundle.id));
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[mairie/pieces/bundles/discard]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Recatégorisation manuelle d'une pièce par l'instructeur (correction) ─────
+// Vaut aussi bien pour une pièce issue d'un éclatement que pour une pièce
+// déposée individuellement. Trace l'action dans la chronologie d'instruction.
+piecesRouter.patch("/dossiers/:id/pieces/:pieceId/classification", async (req: AuthRequest, res) => {
+  try {
+    const body = (req.body ?? {}) as { code_piece?: string | null; type?: string; nom?: string | null };
+    const [piece] = await db
+      .select()
+      .from(dossier_pieces_jointes)
+      .where(and(
+        eq(dossier_pieces_jointes.id, req.params.pieceId as string),
+        eq(dossier_pieces_jointes.dossier_id, req.params.id as string),
+      ))
+      .limit(1);
+    if (!piece) return res.status(404).json({ error: "Pièce non trouvée" });
+
+    // Nouveau code (null/"" = désaffecter).
+    let newCode: string | null = piece.code_piece ?? null;
+    if (body.code_piece !== undefined) {
+      newCode = (body.code_piece === null || body.code_piece === "")
+        ? null
+        : String(body.code_piece).toUpperCase().trim().slice(0, 16);
+    }
+    // Type : explicite si valide, sinon dérivé du nouveau code.
+    const newType: PieceType = (body.type && PIECE_TYPES.has(body.type as PieceType))
+      ? (body.type as PieceType)
+      : (expectedTypeFromCode(newCode) ?? "autre");
+
+    // Nom : explicite, sinon régénéré si le nom courant était auto-généré.
+    let newNom = piece.nom;
+    if (typeof body.nom === "string" && body.nom.trim()) {
+      newNom = body.nom.trim().slice(0, 200);
+    } else if (piece.code_piece_source === "auto" || piece.code_piece_source === "instructeur") {
+      newNom = defaultPieceName(newCode, newType, (piece.source_pages as number[] | null) ?? undefined);
+    }
+
+    const changed = newCode !== (piece.code_piece ?? null) || newNom !== piece.nom;
+    if (!changed) return res.json(piece);
+
+    const [updated] = await db
+      .update(dossier_pieces_jointes)
+      .set({ code_piece: newCode, nom: newNom, code_piece_source: "instructeur" })
+      .where(eq(dossier_pieces_jointes.id, piece.id))
+      .returning();
+
+    await db.insert(instruction_events).values({
+      dossier_id: piece.dossier_id,
+      type: "piece_reclassifiee",
+      user_id: req.user?.id ?? null,
+      description: `Pièce reclassée : ${updated?.nom ?? newNom}`,
+      metadata: {
+        piece_id: piece.id,
+        previous_code: piece.code_piece ?? null,
+        new_code: newCode,
+      },
+    }).catch((e) => console.warn("[pieces/classification] instruction_event:", e));
+
+    res.json(updated);
+  } catch (err) {
+    console.error("[mairie/pieces/classification]", err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
