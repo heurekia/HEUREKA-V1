@@ -15,7 +15,7 @@
 
 import { db } from "../db.js";
 import { dossier_pieces_jointes } from "@heureka-v1/db";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import { analyzePiece } from "./pieceAnalyzer.js";
 import { extractPiece, expectedTypeFromCode } from "./pieceExtractor.js";
 import { notifyDossierAgents } from "./notify.js";
@@ -44,7 +44,38 @@ const AUTO_FINALIZE_AFTER_LAST_UPLOAD_MS = 3 * 60 * 1000; // filet si /finalize-
 // pour l'agent à l'upload.
 let chain: Promise<void> = Promise.resolve();
 
+// Compteur EN MÉMOIRE des pièces encore en vol dans le worker (mises en file,
+// pas encore terminées) par dossier. Sert à distinguer deux états qui se
+// ressemblent en base mais n'ont rien à voir :
+//   • une pièce `pending` qui attend simplement son tour derrière d'autres
+//     (worker vivant, file FIFO globale) — surtout pas à reclasser en `failed` ;
+//   • une pièce `pending` orpheline laissée par un crash / restart (la file en
+//     mémoire est perdue, personne ne la traitera jamais) — à reclasser.
+// La file étant globale et sérielle, une pièce d'un gros dossier (ex. 28 pièces)
+// peut rester `pending` bien au-delà de STALE_PROCESSING_MS simplement parce
+// que le worker met >6 min à vider la file. Tant que ce compteur est > 0, le
+// worker va traiter les pièces : on ne touche pas à leur statut et la notif
+// « dossier prêt » reste en attente.
+const inflightByDossier = new Map<string, number>();
+
+export function trackPieceQueued(dossierId: string): void {
+  inflightByDossier.set(dossierId, (inflightByDossier.get(dossierId) ?? 0) + 1);
+}
+
+export function trackPieceSettled(dossierId: string): void {
+  const n = (inflightByDossier.get(dossierId) ?? 0) - 1;
+  if (n <= 0) inflightByDossier.delete(dossierId);
+  else inflightByDossier.set(dossierId, n);
+}
+
+export function hasInflightPieces(dossierId: string): boolean {
+  return (inflightByDossier.get(dossierId) ?? 0) > 0;
+}
+
 export function queuePieceOcr(input: QueueOcrInput): void {
+  // Incrémenté AVANT la mise en file pour qu'aucun balayage concurrent ne voie
+  // un compteur à 0 alors que la pièce est déjà destinée au worker.
+  trackPieceQueued(input.dossierId);
   chain = chain.then(() => processOne(input)).catch((err) => {
     console.error("[pieceOcrQueue] tâche en échec (avalée pour ne pas casser la file):",
       err instanceof Error ? `${err.name}: ${err.message}` : err);
@@ -114,6 +145,12 @@ async function processOne(input: QueueOcrInput): Promise<void> {
           err instanceof Error ? `${err.name}: ${err.message}` : err);
       });
 
+    // Cette pièce a quitté le worker (succès ou échec) : on la sort du compteur
+    // AVANT la tentative de notif. Pour la dernière pièce du dossier, le
+    // compteur retombe ainsi à 0 et maybeNotifyDossierReady voit un dossier
+    // réellement quiescent.
+    trackPieceSettled(dossierId);
+
     // À chaque complétion, on tente d'envoyer la notification "dossier prêt".
     // C'est un no-op tant que (a) l'agent n'a pas finalisé sa session d'upload
     // ou (b) d'autres pièces sont encore en file.
@@ -123,21 +160,52 @@ async function processOne(input: QueueOcrInput): Promise<void> {
   }
 }
 
-// Watchdog : si une pièce traîne en `processing` au-delà de STALE_PROCESSING_MS,
-// on considère que le worker s'est planté (timeout LLM non catché, restart du
-// process, etc.) et on la marque `failed` pour débloquer la suite. Le LLM
-// Pixtral met max ~1 min par pièce ; 6 min est très large.
+// Watchdog. Deux situations DISTINCTES à débloquer — surtout ne pas les
+// confondre, sous peine de reclasser à tort des pièces encore à traiter et de
+// déclencher prématurément la notif « dossier prêt » (bug observé sur un gros
+// dossier de 28 pièces : le worker mettait >6 min à vider la file, on marquait
+// `failed` les pièces encore en attente, la notif partait, puis le worker les
+// reprenait une à une en `processing` → dossier qui rebascule « en chargement »
+// après notification).
+//
+//  (a) Pièce bloquée EN COURS de traitement : le worker a démarré l'analyse
+//      (`ocr_started_at` posé) puis s'est planté (timeout LLM non catché,
+//      process tué). On l'horodate sur `ocr_started_at` : au-delà de
+//      STALE_PROCESSING_MS sans complétion, elle est HS. Toujours débloquée.
+//
+//  (b) Pièce restée EN ATTENTE (jamais démarrée, `ocr_started_at` NULL) :
+//      LÉGITIME tant que le worker en mémoire a encore du travail en file pour
+//      ce dossier (hasInflightPieces). On ne la reclasse `failed` QUE si plus
+//      aucune pièce n'est en vol (compteur à 0 = process redémarré, file en
+//      mémoire perdue → pièce orpheline que personne ne traitera). C'est le
+//      balayage cron qui couvre ce cas après un restart.
 async function reapStaleProcessing(dossierId: string): Promise<void> {
+  // (a) processing coincé — horodaté sur le DÉMARRAGE réel de l'analyse.
   await db.execute(sql`
     UPDATE dossier_pieces_jointes
        SET ocr_status = 'failed',
            ocr_completed_at = now()
      WHERE dossier_id = ${dossierId}
        AND archived_at IS NULL
-       AND ocr_status IN ('pending', 'processing')
-       AND coalesce(ocr_started_at, uploaded_at) < now() - (${STALE_PROCESSING_MS} || ' milliseconds')::interval
+       AND ocr_status = 'processing'
+       AND ocr_started_at < now() - (${STALE_PROCESSING_MS} || ' milliseconds')::interval
   `).catch((err) => {
-    console.warn("[pieceOcrQueue] reapStaleProcessing:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+    console.warn("[pieceOcrQueue] reapStaleProcessing(processing):", err instanceof Error ? `${err.name}: ${err.message}` : err);
+  });
+
+  // (b) pending orphelin — uniquement si le worker n'a plus rien en vol pour ce
+  //     dossier. Sinon ces pièces attendent juste leur tour : on les laisse.
+  if (hasInflightPieces(dossierId)) return;
+  await db.execute(sql`
+    UPDATE dossier_pieces_jointes
+       SET ocr_status = 'failed',
+           ocr_completed_at = now()
+     WHERE dossier_id = ${dossierId}
+       AND archived_at IS NULL
+       AND ocr_status = 'pending'
+       AND uploaded_at < now() - (${STALE_PROCESSING_MS} || ' milliseconds')::interval
+  `).catch((err) => {
+    console.warn("[pieceOcrQueue] reapStaleProcessing(pending):", err instanceof Error ? `${err.name}: ${err.message}` : err);
   });
 }
 
@@ -150,12 +218,18 @@ export async function maybeNotifyDossierReady(dossierId: string): Promise<void> 
   //    tombé, LLM bloqué). Sans ça la file de notif ne sort jamais.
   await reapStaleProcessing(dossierId);
 
-  // 2) Compte les pièces encore à traiter (pending ou processing, non archivées).
+  // 2) Compte les pièces encore à traiter (pending ou processing, non
+  //    archivées). Le filtre `archived_at IS NULL` est indispensable pour
+  //    rester ALIGNÉ avec le flag liste (dossiers.ts ocrProcessingExpr) et le
+  //    verrou 423 (GET /dossiers/:id) : sans lui, une ancienne version de pièce
+  //    restée en pending/processing avant d'être archivée bloquerait la notif
+  //    alors que l'UI considère déjà le dossier consultable.
   const pending = await db
     .select({ id: dossier_pieces_jointes.id })
     .from(dossier_pieces_jointes)
     .where(and(
       eq(dossier_pieces_jointes.dossier_id, dossierId),
+      isNull(dossier_pieces_jointes.archived_at),
       inArray(dossier_pieces_jointes.ocr_status, ["pending", "processing"]),
     ))
     .limit(1);
