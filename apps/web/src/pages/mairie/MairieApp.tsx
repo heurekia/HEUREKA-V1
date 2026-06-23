@@ -6263,8 +6263,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   // Pièce ouverte dans l'éditeur d'annotation (entourer/commenter → GED → envoi
   // citoyen). Internalise le retravail aujourd'hui fait sous Inkscape/Foxit.
   const [annotatePiece, setAnnotatePiece] = useState<DossierPiece | null>(null);
-  // Dépôt groupé : PDF unique en attente d'éclatement (ouvre BundleSplitModal).
-  const [bundleFile, setBundleFile] = useState<File | null>(null);
   // Pièce à sélectionner une fois l'onglet Documents chargé. Permet d'ouvrir
   // une pièce justificative depuis un autre onglet (checklist, verdicts) même
   // quand `documents` n'est pas encore chargé : la sélection est différée.
@@ -8475,13 +8473,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   onClose={() => setAnnotatePiece(null)}
                 />
               )}
-              {bundleFile && (
-                <BundleSplitModal
-                  dossierId={dossier.id}
-                  file={bundleFile}
-                  onClose={(applied) => { setBundleFile(null); if (applied) setDocuments(null); }}
-                />
-              )}
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 8, marginRight: "auto" }}>
                   {(() => {
@@ -8506,18 +8497,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       </button>
                     );
                   })()}
-                  <label
-                    title="Déposer un dossier complet en un seul PDF — le système le découpe en pièces"
-                    style={{ border: "1px solid #C7D2FE", background: "#EEF2FF", color: "#4F46E5", borderRadius: 8, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}
-                  >
-                    <span style={{ fontSize: 13 }}>📦</span>Déposer un dossier complet (PDF)
-                    <input
-                      type="file"
-                      accept=".pdf,application/pdf"
-                      style={{ display: "none" }}
-                      onChange={(e) => { const f = e.target.files?.[0]; if (f) setBundleFile(f); e.target.value = ""; }}
-                    />
-                  </label>
                 </div>
                 <button
                   type="button"
@@ -9381,6 +9360,10 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
   // vers le détail du dossier pour ne pas laisser croire qu'il est déjà
   // analysable.
   const [createdSummary, setCreatedSummary] = useState<{ id: string; numero: string; piecesCount: number } | null>(null);
+  // Dépôt groupé : quand l'agent dépose UN SEUL PDF, on confie le découpage en
+  // pièces à la modale de segmentation (ouverte juste après la création du
+  // dossier) au lieu d'attacher le PDF comme une pièce unique.
+  const [bundleSplit, setBundleSplit] = useState<{ dossierId: string; numero: string; file: File } | null>(null);
 
   // OCR state — multi-fichiers : le CERFA pré-remplit le formulaire, les
   // autres pièces sont mises en attente et uploadées après création du dossier.
@@ -9538,6 +9521,17 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
       }
       const created = await api.post<{ id: string; numero: string }>("/mairie/dossiers", payload);
 
+      // Dépôt groupé : un SEUL PDF déposé = très probablement le dossier complet.
+      // Plutôt que de l'attacher comme une pièce CERFA unique, on confie ce PDF
+      // à la modale de segmentation (découpage en pièces, validé par l'agent) —
+      // le découpage se fait ainsi pendant la phase de dépôt. Si c'était en
+      // réalité un simple CERFA, la modale proposera une seule pièce à confirmer.
+      const lone = stagedFiles.length === 1 ? stagedFiles[0] : null;
+      if (lone && (/pdf/i.test(lone.file.type) || /\.pdf$/i.test(lone.file.name))) {
+        setBundleSplit({ dossierId: created.id, numero: created.numero, file: lone.file });
+        return; // la suite (confirmation) se fait à la fermeture de la modale ; finally remet submitting à false
+      }
+
       // Upload séquentiel des pièces : on évite de saturer la bande passante
       // côté navigateur (CERFAs scannés à 15 Mo par fichier × N pièces) et on
       // garde un feedback de progression simple. Une erreur sur une pièce
@@ -9612,6 +9606,38 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
 
 
   const inputStyle = { width: "100%", padding: "9px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151", outline: "none", boxSizing: "border-box" as const, background: "white" };
+
+  // Dépôt groupé en cours de découpage : la modale de segmentation remplace le
+  // wizard. À sa fermeture, on bascule sur l'écran de confirmation. Si l'agent
+  // annule le découpage, on rattache quand même le PDF en pièce unique pour ne
+  // pas laisser le dossier sans pièce.
+  if (bundleSplit) {
+    const bs = bundleSplit;
+    return (
+      <BundleSplitModal
+        dossierId={bs.dossierId}
+        file={bs.file}
+        onClose={(applied, createdCount) => {
+          setBundleSplit(null);
+          setCreatedSummary({ id: bs.dossierId, numero: bs.numero, piecesCount: applied ? (createdCount ?? 0) : 1 });
+          void (async () => {
+            if (!applied) {
+              try {
+                const fd = new FormData();
+                fd.append("file", bs.file);
+                fd.append("code_piece", "CERFA");
+                fd.append("nom_piece", bs.file.name);
+                await fetch(`/api/mairie/dossiers/${bs.dossierId}/pieces/upload`, { method: "POST", credentials: "include", body: fd });
+              } catch (err) {
+                console.warn("[NouveauDossier] rattachement PDF après annulation du découpage:", err);
+              }
+            }
+            await api.post(`/mairie/dossiers/${bs.dossierId}/pieces/finalize-upload-session`, {}).catch(() => {});
+          })();
+        }}
+      />
+    );
+  }
 
   // Confirmation post-création : dossier persisté, pièces uploadées, OCR/IA
   // en cours côté worker. On reste sur la modale pour rappeler à l'agent que
