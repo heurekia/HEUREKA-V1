@@ -5,6 +5,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 import {
   MousePointer2, Circle, Square, ArrowUpRight, Pen, Type as TypeIcon,
   Trash2, X, Eye, EyeOff, Save, Send, Download, ChevronLeft, ChevronRight, Loader2,
+  Ruler, MoveHorizontal,
 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 
@@ -23,12 +24,15 @@ const PDF_OPTIONS = {
 } as const;
 
 // ── Modèle d'une marque (annotation vectorielle) ───────────────────────────
-type ToolKind = "ellipse" | "rect" | "arrow" | "freehand" | "text";
+type ToolKind = "ellipse" | "rect" | "arrow" | "freehand" | "text" | "scale" | "measure";
 type Tool = "select" | ToolKind;
+/** Segments (géométrie {x1,y1,x2,y2}) : flèche, échelle, mesure. */
+const SEGMENT_TOOLS = new Set<ToolKind>(["arrow", "scale", "measure"]);
 interface Pt { x: number; y: number }
 /** Géométrie en % de page (0–100). Forme selon le tool. */
 type Geometry = Record<string, number | Pt[]>;
-interface MarkStyle { color: string; strokeWidth: number; fontSize?: number }
+/** `meters` n'est porté que par l'outil "scale" : longueur réelle du segment. */
+interface MarkStyle { color: string; strokeWidth: number; fontSize?: number; meters?: number }
 interface Mark {
   id: string;
   tool: ToolKind;
@@ -63,13 +67,46 @@ const WIDTHS = [2, 3, 5, 8];
 const num = (v: number | Pt[] | undefined, fb = 0): number => (typeof v === "number" ? v : fb);
 const pts = (v: number | Pt[] | undefined): Pt[] => (Array.isArray(v) ? v : []);
 
+// ── Échelle & mesures ──────────────────────────────────────────────────────
+// Les coords sont en % de page (anisotrope) : on reconvertit en pixels via les
+// dimensions rendues W,H pour calculer une vraie longueur euclidienne. Le ratio
+// mètres/pixel est dérivé du segment d'échelle dans le MÊME repère W,H, donc le
+// résultat en mètres est invariant au zoom (W,H se simplifient).
+function segLenPx(g: Geometry, W: number, H: number): number {
+  const dx = (num(g.x2) - num(g.x1)) / 100 * W;
+  const dy = (num(g.y2) - num(g.y1)) / 100 * H;
+  return Math.hypot(dx, dy);
+}
+/** Mètres par pixel de la page, d'après le segment d'échelle calibré. */
+function metersPerPx(scaleMark: Mark | null, W: number, H: number): number | null {
+  if (!scaleMark || typeof scaleMark.style.meters !== "number" || scaleMark.style.meters <= 0) return null;
+  const len = segLenPx(scaleMark.geometry, W, H);
+  return len > 0 ? scaleMark.style.meters / len : null;
+}
+function fmtLen(m: number): string {
+  if (!Number.isFinite(m)) return "—";
+  if (m >= 1000) return `${(m / 1000).toLocaleString("fr-FR", { maximumFractionDigits: 2 })} km`;
+  return `${m.toLocaleString("fr-FR", { maximumFractionDigits: m < 10 ? 2 : 1 })} m`;
+}
+function fmtArea(a: number): string {
+  if (!Number.isFinite(a)) return "—";
+  if (a >= 10000) return `${(a / 10000).toLocaleString("fr-FR", { maximumFractionDigits: 2 })} ha`;
+  return `${a.toLocaleString("fr-FR", { maximumFractionDigits: 1 })} m²`;
+}
+/** Dimensions réelles d'un rectangle (largeur, hauteur, aire) si l'échelle est posée. */
+function rectMeters(g: Geometry, mpp: number, W: number, H: number): { w: number; h: number; area: number } {
+  const w = Math.abs(num(g.width)) / 100 * W * mpp;
+  const h = Math.abs(num(g.height)) / 100 * H * mpp;
+  return { w, h, area: w * h };
+}
+
 /** Boîte englobante d'une marque, en % — sert au hit-test et au placement du label. */
 function bboxOf(m: Mark): { x: number; y: number; w: number; h: number } {
   const g = m.geometry;
   if (m.tool === "ellipse" || m.tool === "rect") {
     return { x: num(g.x), y: num(g.y), w: num(g.width), h: num(g.height) };
   }
-  if (m.tool === "arrow") {
+  if (SEGMENT_TOOLS.has(m.tool)) {
     const x1 = num(g.x1), y1 = num(g.y1), x2 = num(g.x2), y2 = num(g.y2);
     return { x: Math.min(x1, x2), y: Math.min(y1, y2), w: Math.abs(x2 - x1), h: Math.abs(y2 - y1) };
   }
@@ -90,8 +127,8 @@ function translateGeometry(m: Mark, dx: number, dy: number): Geometry {
   if (m.tool === "ellipse" || m.tool === "rect") {
     return { ...g, x: num(g.x) + dx, y: num(g.y) + dy };
   }
-  if (m.tool === "arrow") {
-    return { x1: num(g.x1) + dx, y1: num(g.y1) + dy, x2: num(g.x2) + dx, y2: num(g.y2) + dy };
+  if (SEGMENT_TOOLS.has(m.tool)) {
+    return { ...g, x1: num(g.x1) + dx, y1: num(g.y1) + dy, x2: num(g.x2) + dx, y2: num(g.y2) + dy };
   }
   if (m.tool === "freehand") {
     return { points: pts(g.points).map((p) => ({ x: p.x + dx, y: p.y + dy })) };
@@ -100,8 +137,9 @@ function translateGeometry(m: Mark, dx: number, dy: number): Geometry {
 }
 
 /** Dessine une marque sur un canvas 2D (export aplati). Coords % → px via W,H ;
- *  `k` met l'épaisseur du trait à l'échelle de l'export. */
-function drawMarkOnCanvas(ctx: CanvasRenderingContext2D, m: Mark, W: number, H: number, k: number) {
+ *  `k` met l'épaisseur du trait à l'échelle de l'export ; `mpp` = mètres/px de
+ *  la page (échelle), `null` si non calibrée. */
+function drawMarkOnCanvas(ctx: CanvasRenderingContext2D, m: Mark, W: number, H: number, k: number, mpp: number | null) {
   const g = m.geometry;
   const px = (v: number) => (v / 100) * W;
   const py = (v: number) => (v / 100) * H;
@@ -111,6 +149,19 @@ function drawMarkOnCanvas(ctx: CanvasRenderingContext2D, m: Mark, W: number, H: 
   ctx.lineJoin = "round";
   ctx.lineCap = "round";
 
+  // Étiquette : fond blanc translucide + texte dans la couleur de la marque.
+  const drawLabel = (text: string, lx: number, ly: number) => {
+    const fontPx = (m.style.fontSize ?? 14) * k;
+    ctx.font = `600 ${fontPx}px system-ui, sans-serif`;
+    const w = ctx.measureText(text).width;
+    const padX = 6 * k, padY = 4 * k, lineH = fontPx * 1.25;
+    ctx.fillStyle = "rgba(255,255,255,0.9)";
+    ctx.fillRect(lx, ly - lineH, w + padX * 2, lineH + padY);
+    ctx.fillStyle = m.style.color;
+    ctx.textBaseline = "alphabetic";
+    ctx.fillText(text, lx + padX, ly - padY);
+  };
+
   if (m.tool === "ellipse") {
     const x = px(num(g.x)), y = py(num(g.y)), w = px(num(g.width)), h = py(num(g.height));
     ctx.beginPath();
@@ -118,6 +169,10 @@ function drawMarkOnCanvas(ctx: CanvasRenderingContext2D, m: Mark, W: number, H: 
     ctx.stroke();
   } else if (m.tool === "rect") {
     ctx.strokeRect(px(num(g.x)), py(num(g.y)), px(num(g.width)), py(num(g.height)));
+    if (mpp) {
+      const d = rectMeters(g, mpp, W, H);
+      drawLabel(`${fmtLen(d.w)} × ${fmtLen(d.h)} · ${fmtArea(d.area)}`, px(num(g.x)), py(num(g.y)) - 2 * k);
+    }
   } else if (m.tool === "arrow") {
     const x1 = px(num(g.x1)), y1 = py(num(g.y1)), x2 = px(num(g.x2)), y2 = py(num(g.y2));
     ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
@@ -136,21 +191,28 @@ function drawMarkOnCanvas(ctx: CanvasRenderingContext2D, m: Mark, W: number, H: 
       for (const p of ps.slice(1)) ctx.lineTo(px(p.x), py(p.y));
       ctx.stroke();
     }
+  } else if (m.tool === "scale" || m.tool === "measure") {
+    const x1 = px(num(g.x1)), y1 = py(num(g.y1)), x2 = px(num(g.x2)), y2 = py(num(g.y2));
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+    // Repères perpendiculaires aux extrémités (style cote).
+    const ang = Math.atan2(y2 - y1, x2 - x1);
+    const t = 6 * k + m.style.strokeWidth * k;
+    const nx = Math.cos(ang + Math.PI / 2) * t, ny = Math.sin(ang + Math.PI / 2) * t;
+    ctx.beginPath();
+    ctx.moveTo(x1 - nx, y1 - ny); ctx.lineTo(x1 + nx, y1 + ny);
+    ctx.moveTo(x2 - nx, y2 - ny); ctx.lineTo(x2 + nx, y2 + ny);
+    ctx.stroke();
+    const label = m.tool === "scale"
+      ? `Échelle : ${fmtLen(num(m.style.meters))}`
+      : (mpp ? fmtLen(segLenPx(g, W, H) * mpp) : "(échelle requise)");
+    drawLabel(label, (x1 + x2) / 2, (y1 + y2) / 2 - 4 * k);
   }
 
-  // Libellé du commentaire à côté de la marque (texte du citoyen).
+  // Libellé du commentaire à côté de la marque (texte du citoyen / contenu d'un
+  // outil « texte »). Les outils de mesure portent déjà leur propre étiquette.
   if (m.comment) {
-    const fontPx = (m.style.fontSize ?? 14) * k;
-    ctx.font = `600 ${fontPx}px system-ui, sans-serif`;
     const bb = bboxOf(m);
-    const lx = px(bb.x), ly = py(bb.y) - 4 * k;
-    const metrics = ctx.measureText(m.comment);
-    const padX = 6 * k, padY = 4 * k, lineH = fontPx * 1.25;
-    ctx.fillStyle = "rgba(255,255,255,0.9)";
-    ctx.fillRect(lx, ly - lineH, metrics.width + padX * 2, lineH + padY);
-    ctx.fillStyle = m.style.color;
-    ctx.textBaseline = "alphabetic";
-    ctx.fillText(m.comment, lx + padX, ly - padY);
+    drawLabel(m.comment, px(bb.x), py(bb.y) - 4 * k);
   }
 }
 
@@ -183,8 +245,21 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
   const dragRef = useRef<{ id: string; startX: number; startY: number; orig: Geometry } | null>(null);
   const [, force] = useState(0);
 
+  // Calibrage d'échelle : segment de référence en attente de saisie + champ.
+  const [scaleDraftId, setScaleDraftId] = useState<string | null>(null);
+  const [scaleInput, setScaleInput] = useState("");
+
   const marksOnPage = useMemo(() => marks.filter((m) => m.page === page), [marks, page]);
   const selected = useMemo(() => marks.find((m) => m.id === selectedId) ?? null, [marks, selectedId]);
+  // Segment d'échelle actif de la page (le plus récent calibré) + ratio m/px.
+  const pageScaleMark = useMemo(
+    () => [...marks].reverse().find((m) => m.tool === "scale" && m.page === page && typeof m.style.meters === "number" && (m.style.meters as number) > 0) ?? null,
+    [marks, page],
+  );
+  const pageMpp = useMemo(
+    () => metersPerPx(pageScaleMark, mediaSize.w, mediaSize.h),
+    [pageScaleMark, mediaSize.w, mediaSize.h],
+  );
 
   // ── Chargement des annotations existantes ──
   useEffect(() => {
@@ -199,7 +274,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
             tool: r.tool,
             page: r.page ?? 1,
             geometry: (r.geometry ?? {}) as Geometry,
-            style: { color: st.color ?? "#DC2626", strokeWidth: st.strokeWidth ?? 3, fontSize: st.fontSize ?? 14 },
+            style: { color: st.color ?? "#DC2626", strokeWidth: st.strokeWidth ?? 3, fontSize: st.fontSize ?? 14, meters: typeof st.meters === "number" ? st.meters : undefined },
             comment: r.comment ?? "",
             visibility: r.visibility === "citoyen" ? "citoyen" : "interne",
           };
@@ -296,11 +371,13 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
       page,
       style: { color, strokeWidth: width, fontSize: 14 },
       comment: "",
-      visibility: "citoyen",
+      // L'échelle est une aide de calibrage → interne par défaut. Le reste est
+      // destiné au citoyen (basculable ensuite).
+      visibility: tool === "scale" ? "interne" : "citoyen",
       geometry: {},
     };
     if (tool === "ellipse" || tool === "rect") base.geometry = { x: p.x, y: p.y, width: 0, height: 0 };
-    else if (tool === "arrow") base.geometry = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
+    else if ((SEGMENT_TOOLS as Set<string>).has(tool)) base.geometry = { x1: p.x, y1: p.y, x2: p.x, y2: p.y };
     else if (tool === "freehand") base.geometry = { points: [{ x: p.x, y: p.y }] };
     else if (tool === "text") base.geometry = { x: p.x, y: p.y };
 
@@ -334,8 +411,8 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
     const g = draft.geometry;
     if (draft.tool === "ellipse" || draft.tool === "rect") {
       draft.geometry = { x: num(g.x), y: num(g.y), width: p.x - num(g.x), height: p.y - num(g.y) };
-    } else if (draft.tool === "arrow") {
-      draft.geometry = { x1: num(g.x1), y1: num(g.y1), x2: p.x, y2: p.y };
+    } else if (SEGMENT_TOOLS.has(draft.tool)) {
+      draft.geometry = { ...g, x1: num(g.x1), y1: num(g.y1), x2: p.x, y2: p.y };
     } else if (draft.tool === "freehand") {
       const ps = pts(g.points);
       const last = ps[ps.length - 1];
@@ -360,7 +437,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
     if (!draft) return;
     // Normalise les rect/ellipse à dimensions négatives, ignore les tracés nuls.
     const bb = bboxOf({ ...draft });
-    if ((draft.tool === "ellipse" || draft.tool === "rect" || draft.tool === "arrow") && bb.w < 0.6 && bb.h < 0.6) {
+    if ((draft.tool === "ellipse" || draft.tool === "rect" || SEGMENT_TOOLS.has(draft.tool)) && bb.w < 0.6 && bb.h < 0.6) {
       setMarks((prev) => prev.filter((m) => m.id !== draft.id));
       setSelectedId(null);
       return;
@@ -373,7 +450,45 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
       normalized = { ...draft, geometry: { x, y, width: Math.abs(num(g.width)), height: Math.abs(num(g.height)) } };
       setMarks((prev) => prev.map((m) => (m.id === draft.id ? normalized : m)));
     }
+    // L'échelle exige la saisie de la longueur réelle → on ouvre le calibrage,
+    // la persistance se fait à la validation de la modale.
+    if (draft.tool === "scale") {
+      setScaleDraftId(draft.id);
+      setScaleInput("");
+      return;
+    }
     void persistCreate(normalized);
+  };
+
+  // ── Calibrage d'échelle ──
+  const confirmScale = async () => {
+    const meters = parseFloat(scaleInput.replace(",", "."));
+    if (!scaleDraftId || !Number.isFinite(meters) || meters <= 0) {
+      setError("Saisissez une longueur réelle valide (en mètres).");
+      return;
+    }
+    const draftMark = marks.find((m) => m.id === scaleDraftId);
+    if (!draftMark) { setScaleDraftId(null); return; }
+    const finalized: Mark = { ...draftMark, style: { ...draftMark.style, meters } };
+    // Une seule échelle active par page : on retire les anciennes (état + API).
+    const stale = marks.filter((m) => m.tool === "scale" && m.page === draftMark.page && m.id !== draftMark.id);
+    setMarks((prev) => prev
+      .filter((m) => !stale.some((s) => s.id === m.id))
+      .map((m) => (m.id === finalized.id ? finalized : m)));
+    setScaleDraftId(null);
+    setScaleInput("");
+    for (const s of stale) {
+      if (!s.id.startsWith("tmp-")) {
+        try { await api.delete(`/mairie/dossiers/${dossierId}/pieces/${piece.id}/annotations/${s.id}`); } catch { /* ignore */ }
+      }
+    }
+    await persistCreate(finalized);
+  };
+  const cancelScale = () => {
+    if (scaleDraftId) setMarks((prev) => prev.filter((m) => m.id !== scaleDraftId));
+    setScaleDraftId(null);
+    setScaleInput("");
+    setSelectedId(null);
   };
 
   // ── Mutations sur la marque sélectionnée ──
@@ -417,8 +532,12 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
     drawSource(ctx, srcW, srcH);
     // Épaisseur de trait à l'échelle de l'export (rendu écran → bitmap source).
     const k = mediaSize.w > 0 ? srcW / mediaSize.w : 1;
+    // Ratio m/px recalculé dans le repère du bitmap source (cohérent avec les
+    // longueurs dessinées au même W,H).
+    const scaleMark = [...marks].reverse().find((m) => m.tool === "scale" && m.page === page && typeof m.style.meters === "number" && (m.style.meters as number) > 0) ?? null;
+    const exportMpp = metersPerPx(scaleMark, srcW, srcH);
     const toDraw = marks.filter((m) => m.page === page && (includeInternal || m.visibility === "citoyen"));
-    for (const m of toDraw) drawMarkOnCanvas(ctx, m, srcW, srcH, k);
+    for (const m of toDraw) drawMarkOnCanvas(ctx, m, srcW, srcH, k, exportMpp);
     return await new Promise<Blob>((resolve, reject) =>
       out.toBlob((b) => (b ? resolve(b) : reject(new Error("Échec de la génération de l'image"))), "image/png"),
     );
@@ -494,6 +613,18 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
       );
     } else if (m.tool === "freehand") {
       shape = <polyline points={pts(g.points).map((p) => `${X(p.x)},${Y(p.y)}`).join(" ")} {...common} style={halo} />;
+    } else if (m.tool === "scale" || m.tool === "measure") {
+      const x1 = X(num(g.x1)), y1 = Y(num(g.y1)), x2 = X(num(g.x2)), y2 = Y(num(g.y2));
+      const ang = Math.atan2(y2 - y1, x2 - x1);
+      const t = 6 + m.style.strokeWidth;
+      const nx = Math.cos(ang + Math.PI / 2) * t, ny = Math.sin(ang + Math.PI / 2) * t;
+      shape = (
+        <g {...(halo ?? {})}>
+          <line x1={x1} y1={y1} x2={x2} y2={y2} {...common} />
+          <line x1={x1 - nx} y1={y1 - ny} x2={x1 + nx} y2={y1 + ny} {...common} strokeDasharray={undefined} />
+          <line x1={x2 - nx} y1={y2 - ny} x2={x2 + nx} y2={y2 + ny} {...common} strokeDasharray={undefined} />
+        </g>
+      );
     } else if (m.tool === "text") {
       shape = (
         <text x={X(num(g.x))} y={Y(num(g.y))} fill={m.style.color} fontSize={(m.style.fontSize ?? 14)} fontWeight={600} style={halo}>
@@ -501,14 +632,34 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
         </text>
       );
     }
+
+    // Étiquette de mesure (échelle / distance / surface) calculée à la volée.
+    const labelStyle = { paintOrder: "stroke" as const, stroke: "white", strokeWidth: 3 };
+    let measureText: string | null = null;
+    let measureAt: { x: number; y: number } | null = null;
+    if (m.tool === "scale") {
+      measureText = `Échelle : ${fmtLen(num(m.style.meters))}`;
+      measureAt = { x: (X(num(g.x1)) + X(num(g.x2))) / 2, y: (Y(num(g.y1)) + Y(num(g.y2))) / 2 - 6 };
+    } else if (m.tool === "measure") {
+      measureText = pageMpp ? fmtLen(segLenPx(g, W, H) * pageMpp) : "Définir l'échelle";
+      measureAt = { x: (X(num(g.x1)) + X(num(g.x2))) / 2, y: (Y(num(g.y1)) + Y(num(g.y2))) / 2 - 6 };
+    } else if (m.tool === "rect" && pageMpp) {
+      const d = rectMeters(g, pageMpp, W, H);
+      measureText = `${fmtLen(d.w)} × ${fmtLen(d.h)} · ${fmtArea(d.area)}`;
+      measureAt = { x: X(num(g.x)), y: Y(num(g.y)) - 6 };
+    }
+    const measureLabel = measureText && measureAt ? (
+      <text x={measureAt.x} y={measureAt.y} fill={m.style.color} fontSize={13} fontWeight={700} style={labelStyle}>{measureText}</text>
+    ) : null;
+
     // Étiquette du commentaire (hors marque texte) pour le repérage à l'écran.
     const bb = bboxOf(m);
     const label = m.comment && m.tool !== "text" ? (
-      <text x={X(bb.x)} y={Y(bb.y) - 4} fill={m.style.color} fontSize={12} fontWeight={600} style={{ paintOrder: "stroke", stroke: "white", strokeWidth: 3 }}>
+      <text x={X(bb.x)} y={Y(bb.y) - (measureText ? 22 : 4)} fill={m.style.color} fontSize={12} fontWeight={600} style={labelStyle}>
         {m.comment.length > 40 ? `${m.comment.slice(0, 40)}…` : m.comment}
       </text>
     ) : null;
-    return <g key={m.id}>{shape}{label}</g>;
+    return <g key={m.id}>{shape}{measureLabel}{label}</g>;
   };
 
   const TOOLS: { key: Tool; icon: React.ReactNode; label: string }[] = [
@@ -518,6 +669,8 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
     { key: "arrow", icon: <ArrowUpRight size={16} />, label: "Flèche" },
     { key: "freehand", icon: <Pen size={16} />, label: "Dessin libre" },
     { key: "text", icon: <TypeIcon size={16} />, label: "Texte / commentaire" },
+    { key: "scale", icon: <Ruler size={16} />, label: "Échelle — tracer un segment de longueur connue" },
+    { key: "measure", icon: <MoveHorizontal size={16} />, label: "Mesurer une distance" },
   ];
 
   const btn = (active: boolean): React.CSSProperties => ({
@@ -574,6 +727,20 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
               </div>
             </>
           )}
+          <div style={{ width: 1, height: 24, background: "#E2E8F0" }} />
+          <button
+            type="button"
+            onClick={() => { setTool("scale"); setSelectedId(null); }}
+            title="Tracez un segment de longueur connue (un mur coté, la barre d'échelle…) pour calibrer la page, puis utilisez l'outil Mesure"
+            style={{
+              display: "inline-flex", alignItems: "center", gap: 6, fontSize: 11.5, fontWeight: 600,
+              borderRadius: 999, padding: "5px 10px", cursor: "pointer", border: "1px solid",
+              borderColor: pageMpp ? "#86EFAC" : "#FCD34D", background: pageMpp ? "#F0FDF4" : "#FFFBEB",
+              color: pageMpp ? "#15803D" : "#B45309",
+            }}
+          >
+            <Ruler size={14} /> {pageMpp ? `Échelle : ${fmtLen(num(pageScaleMark?.style.meters))}` : "Échelle non définie"}
+          </button>
           <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
             <label style={{ fontSize: 11.5, color: "#64748b", display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
               <input type="checkbox" checked={includeInternal} onChange={(e) => setIncludeInternal(e.target.checked)} />
@@ -624,7 +791,43 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
           <div style={{ width: 280, borderLeft: "1px solid #E2E8F0", padding: 14, overflowY: "auto", background: "white" }}>
             {selected ? (
               <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
-                <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#64748b" }}>Annotation</div>
+                <div style={{ fontSize: 12, fontWeight: 700, textTransform: "uppercase", letterSpacing: "0.05em", color: "#64748b" }}>
+                  {selected.tool === "scale" ? "Échelle" : selected.tool === "measure" ? "Mesure" : "Annotation"}
+                </div>
+                {selected.tool === "scale" && (
+                  <div>
+                    <label style={{ fontSize: 11.5, color: "#475569", fontWeight: 600 }}>Longueur réelle du segment</label>
+                    <div style={{ display: "flex", alignItems: "center", gap: 6, marginTop: 4 }}>
+                      <input
+                        type="number" min={0} step="0.01"
+                        value={typeof selected.style.meters === "number" ? selected.style.meters : ""}
+                        onChange={(e) => { const v = parseFloat(e.target.value); updateSelected({ style: { ...selected.style, meters: Number.isFinite(v) && v > 0 ? v : undefined } }); }}
+                        style={{ width: 110, fontSize: 13, border: "1px solid #E2E8F0", borderRadius: 8, padding: "6px 8px" }}
+                      />
+                      <span style={{ fontSize: 13, color: "#475569" }}>mètres</span>
+                    </div>
+                    <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 6 }}>Définit le ratio de la page : toutes les mesures et surfaces s'y réfèrent.</div>
+                  </div>
+                )}
+                {selected.tool === "measure" && (
+                  <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, padding: 10 }}>
+                    <div style={{ fontSize: 11.5, color: "#64748b" }}>Distance</div>
+                    <div style={{ fontSize: 18, fontWeight: 800, color: "#0F172A" }}>
+                      {pageMpp ? fmtLen(segLenPx(selected.geometry, mediaSize.w, mediaSize.h) * pageMpp) : "—"}
+                    </div>
+                    {!pageMpp && <div style={{ fontSize: 11, color: "#B45309", marginTop: 4 }}>Définissez d'abord l'échelle de la page.</div>}
+                  </div>
+                )}
+                {selected.tool === "rect" && pageMpp && (() => {
+                  const d = rectMeters(selected.geometry, pageMpp, mediaSize.w, mediaSize.h);
+                  return (
+                    <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, padding: 10 }}>
+                      <div style={{ fontSize: 11.5, color: "#64748b" }}>Dimensions · surface</div>
+                      <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>{fmtLen(d.w)} × {fmtLen(d.h)}</div>
+                      <div style={{ fontSize: 16, fontWeight: 800, color: "#0F172A" }}>{fmtArea(d.area)}</div>
+                    </div>
+                  );
+                })()}
                 <div>
                   <label style={{ fontSize: 11.5, color: "#475569", fontWeight: 600 }}>Commentaire</label>
                   <textarea
@@ -663,14 +866,43 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
                 <div style={{ marginTop: 10, fontSize: 11.5 }}>
                   {marks.length} marque{marks.length > 1 ? "s" : ""} · {marks.filter((m) => m.visibility === "citoyen").length} visible(s) par le citoyen
                 </div>
-                <div style={{ marginTop: 14, padding: 10, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 11, color: "#64748b" }}>
-                  Échelle, mesures de distances et polygones à sommets déplaçables arrivent dans une prochaine étape.
+                <div style={{ marginTop: 14, padding: 10, background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 11, color: "#64748b", lineHeight: 1.55 }}>
+                  <b>Mesures</b> : tracez d'abord une <b>Échelle</b> (segment de longueur connue — un mur coté, la barre d'échelle du plan), saisissez sa longueur réelle ; ensuite l'outil <b>Mesure</b> affiche les distances et les rectangles indiquent leur surface. Les polygones à sommets déplaçables arrivent à l'étape suivante.
                 </div>
               </div>
             )}
           </div>
         </div>
       </div>
+
+      {/* Modale de calibrage d'échelle */}
+      {scaleDraftId && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1150 }}>
+          <div style={{ width: "min(440px, 92vw)", background: "white", borderRadius: 12, padding: 20, boxShadow: "0 24px 60px rgba(0,0,0,0.4)" }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4, display: "inline-flex", alignItems: "center", gap: 8 }}>
+              <Ruler size={18} /> Calibrer l'échelle
+            </div>
+            <div style={{ fontSize: 12.5, color: "#64748b", marginBottom: 14 }}>
+              Quelle est la longueur réelle du segment que vous venez de tracer ? (par ex. un mur coté à 10 m, ou la barre d'échelle du plan)
+            </div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <input
+                type="number" min={0} step="0.01" autoFocus
+                value={scaleInput}
+                onChange={(e) => setScaleInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter") void confirmScale(); if (e.key === "Escape") cancelScale(); }}
+                placeholder="ex. 10"
+                style={{ flex: 1, fontSize: 15, border: "1px solid #E2E8F0", borderRadius: 8, padding: "9px 12px" }}
+              />
+              <span style={{ fontSize: 14, fontWeight: 600, color: "#475569" }}>mètres</span>
+            </div>
+            <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 16 }}>
+              <button type="button" onClick={cancelScale} style={{ border: "1px solid #E2E8F0", background: "white", color: "#475569", borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Annuler</button>
+              <button type="button" onClick={() => void confirmScale()} style={{ border: "none", background: "#4F46E5", color: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>Définir l'échelle</button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Modale d'envoi citoyen */}
       {sendOpen && (

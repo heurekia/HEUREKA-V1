@@ -36,18 +36,22 @@ export const dossier_piece_annotations = pgTable(
      *  - "arrow"    : flèche de désignation
      *  - "freehand" : tracé libre (stylo)
      *  - "text"     : étiquette / bulle de texte
+     *  - "scale"    : segment de référence d'échelle (calibrage) — `style.meters`
+     *                 porte la longueur réelle ; définit le ratio m/px de la page
+     *  - "measure"  : segment de mesure — longueur réelle calculée via l'échelle
      *  - "polygon"  : polygone à sommets (réservé Phase 3 — sommets déplaçables)
      */
     tool: text("tool").notNull(),
     /**
      * Géométrie de la marque, en % de la page. Forme selon `tool` :
      *  - ellipse/rect : { x, y, width, height }
-     *  - arrow        : { x1, y1, x2, y2 }
+     *  - arrow/scale/measure : { x1, y1, x2, y2 }
      *  - freehand/polygon : { points: [{x,y}, …] }
      *  - text         : { x, y } (ancre du label)
      */
     geometry: jsonb("geometry").notNull().default({}),
-    /** Style de tracé : { color, strokeWidth, fill?, fontSize? }. */
+    /** Style de tracé : { color, strokeWidth, fill?, fontSize?, meters? }.
+     *  `meters` n'est utilisé que par `tool: "scale"` (longueur réelle du segment). */
     style: jsonb("style").notNull().default({}),
     /** Commentaire associé à la marque (optionnel). */
     comment: text("comment"),
@@ -67,9 +71,9 @@ export const dossier_piece_annotations = pgTable(
   }),
 );
 
-export type PieceAnnotationTool = "ellipse" | "rect" | "arrow" | "freehand" | "text" | "polygon";
+export type PieceAnnotationTool = "ellipse" | "rect" | "arrow" | "freehand" | "text" | "scale" | "measure" | "polygon";
 export const PIECE_ANNOTATION_TOOLS: ReadonlyArray<PieceAnnotationTool> = [
-  "ellipse", "rect", "arrow", "freehand", "text", "polygon",
+  "ellipse", "rect", "arrow", "freehand", "text", "scale", "measure", "polygon",
 ];
 
 export type PieceAnnotationVisibility = "interne" | "citoyen";
