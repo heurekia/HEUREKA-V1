@@ -6246,9 +6246,22 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   // citoyen). Internalise le retravail aujourd'hui fait sous Inkscape/Foxit.
   // L'éditeur est rendu EN PLACE dans le visualiseur (pas en fenêtre séparée).
   const [annotatePiece, setAnnotatePiece] = useState<DossierPiece | null>(null);
-  // Changer de pièce sélectionnée quitte le mode annotation (un seul éditeur à
-  // la fois, et on n'annote jamais la mauvaise pièce par inadvertance).
-  useEffect(() => { setAnnotatePiece(null); }, [selectedDoc]);
+  // Version affichée : "initiale" (pièce déposée par le citoyen) ou "finale"
+  // (pièce retravaillée/annotée par l'instructeur, enregistrée dans la GED).
+  const [pieceVersion, setPieceVersion] = useState<"initiale" | "finale">("initiale");
+  // GED du dossier : documents produits par l'instruction. Sert à savoir quelle
+  // pièce possède une version finale et à l'afficher / la comparer.
+  type GedDocLite = { id: string; nom: string; url: string; type: string; category: string; source_piece_id: string | null; created_at: string };
+  const [gedDocs, setGedDocs] = useState<GedDocLite[]>([]);
+  const refreshGed = useCallback(() => {
+    api.get<GedDocLite[]>(`/mairie/dossiers/${dossier.id}/documents`)
+      .then(setGedDocs)
+      .catch(() => setGedDocs([]));
+  }, [dossier.id]);
+  useEffect(() => { refreshGed(); }, [refreshGed]);
+  // Changer de pièce sélectionnée quitte le mode annotation et revient à la
+  // version initiale (un seul éditeur à la fois, pas d'annotation par erreur).
+  useEffect(() => { setAnnotatePiece(null); setPieceVersion("initiale"); }, [selectedDoc]);
   // Dépôt groupé : PDF unique en attente d'éclatement (ouvre BundleSplitModal).
   const [bundleFile, setBundleFile] = useState<File | null>(null);
   // Pièce à sélectionner une fois l'onglet Documents chargé. Permet d'ouvrir
@@ -8367,6 +8380,20 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           // — dans la grille comme en grand écran. Les marques sont enregistrées
           // sur le dossier en continu ; l'éditeur gère l'avant/après et l'export.
           const annotating = !!sel && annotatePiece?.id === sel.id;
+          // Version finale (annotée) la plus récente pour la pièce sélectionnée
+          // (gedDocs est trié du plus récent au plus ancien côté API).
+          const finalDoc = sel ? gedDocs.find((d) => d.category === "annotation" && d.source_piece_id === sel.id) ?? null : null;
+          const hasFinal = !!finalDoc;
+          const piecesWithFinal = new Set(
+            gedDocs.filter((d) => d.category === "annotation" && d.source_piece_id).map((d) => d.source_piece_id as string),
+          );
+          // Source affichée par le visualiseur lecture seule selon la version choisie.
+          const showingFinal = hasFinal && pieceVersion === "finale";
+          const viewUrl = showingFinal && finalDoc ? finalDoc.url : sel?.url;
+          const viewNom = showingFinal && finalDoc ? finalDoc.nom : sel?.nom;
+          const viewType = showingFinal && finalDoc ? finalDoc.type : sel?.type;
+          const viewIsImage = (viewType ?? "").toLowerCase().startsWith("image/");
+          const viewIsPdf = viewType === "application/pdf" || (viewNom ?? "").toLowerCase().endsWith(".pdf");
           const editorNode = sel ? (
             <PieceMarkupEditor
               embedded
@@ -8374,6 +8401,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               dossierId={dossier.id}
               piece={sel}
               onClose={() => setAnnotatePiece(null)}
+              onExported={() => { refreshGed(); setPieceVersion("finale"); }}
             />
           ) : null;
 
@@ -8391,13 +8419,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "stretch", justifyContent: "stretch", background: "#0F172A0A" }}>
                     {sel ? (
                       annotating ? editorNode :
-                      (sel.type ?? "").toLowerCase().startsWith("image/") ? (
+                      viewIsImage ? (
                         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                          <img src={viewUrl} alt={viewNom ?? ""} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
                         </div>
-                      ) : (sel.type === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf")) ? (
+                      ) : viewIsPdf ? (
                         <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-                          <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
+                          <PdfAnnotator key={viewUrl} fileUrl={viewUrl!} originalDownloadUrl={viewUrl!} />
                         </div>
                       ) : (
                         <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, padding: 24, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}>Aperçu indisponible pour ce format</div>
@@ -8432,16 +8460,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           const pieceFullscreenBody = (
             <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#0F172A0A" }}>
               {sel ? (annotating ? editorNode : (() => {
-                const t = (sel.type ?? "").toLowerCase();
-                const isImage = t.startsWith("image/");
-                const isPdf = t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf");
-                return isImage ? (
+                return viewIsImage ? (
                   <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                    <img src={viewUrl} alt={viewNom ?? ""} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
                   </div>
-                ) : isPdf ? (
+                ) : viewIsPdf ? (
                   <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-                    <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
+                    <PdfAnnotator key={viewUrl} fileUrl={viewUrl!} originalDownloadUrl={viewUrl!} />
                   </div>
                 ) : (
                   <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8", fontSize: 13 }}>Aperçu indisponible pour ce format</div>
@@ -8515,6 +8540,21 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     />
                   </label>
                 </div>
+                {/* Distinction version initiale (citoyen) / version finale
+                    (retravaillée par l'instructeur). Visible dès qu'une version
+                    finale existe et hors mode annotation. */}
+                {hasFinal && !annotating && (
+                  <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden" }} title="Comparer la version déposée par le citoyen et la version retravaillée par l'instructeur">
+                    <button type="button" onClick={() => setPieceVersion("initiale")}
+                      style={{ padding: "5px 11px", border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", background: pieceVersion === "initiale" ? "#0F172A" : "white", color: pieceVersion === "initiale" ? "white" : "#475569" }}>
+                      Version initiale
+                    </button>
+                    <button type="button" onClick={() => setPieceVersion("finale")}
+                      style={{ padding: "5px 11px", border: "none", borderLeft: "1px solid #E2E8F0", fontSize: 12, fontWeight: 600, cursor: "pointer", background: pieceVersion === "finale" ? "#16A34A" : "white", color: pieceVersion === "finale" ? "white" : "#475569" }}>
+                      Version finale ✓
+                    </button>
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => setDocsFullscreen(true)}
@@ -8623,6 +8663,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                               {hasNote && (
                                 <span title="Annotation présente" style={{ fontSize: 10.5, color: "#4F46E5" }}>📝</span>
                               )}
+                              {piecesWithFinal.has(doc.id) && (
+                                <span title="Une version finale (retravaillée par l'instructeur) existe pour cette pièce" style={{ fontSize: 10.5, fontWeight: 700, color: "#15803D", background: "#F0FDF4", borderRadius: 5, padding: "1px 6px", border: "1px solid #BBF7D0" }}>✓ finale</span>
+                              )}
                             </div>
                           </div>
                         </button>
@@ -8653,17 +8696,19 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   {docsFullscreen ? fullscreenPlaceholder : sel ? (annotating ? (
                     <div style={{ flex: 1, minHeight: 340, minWidth: 0, display: "flex" }}>{editorNode}</div>
                   ) : (() => {
-                    const t = (sel.type ?? "").toLowerCase();
-                    const isImage = t.startsWith("image/");
-                    const isPdf = t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf");
                     return (
                       <>
-                        <div style={{ flex: 1, minHeight: 340, background: "#0F172A0A", display: "flex", alignItems: isImage ? "center" : "stretch", justifyContent: isImage ? "center" : "stretch" }}>
-                          {isImage ? (
-                            <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: 520, objectFit: "contain", display: "block" }} />
-                          ) : isPdf ? (
+                        {showingFinal && (
+                          <div style={{ padding: "6px 12px", background: "#F0FDF4", borderBottom: "1px solid #BBF7D0", fontSize: 11.5, fontWeight: 600, color: "#15803D", display: "flex", alignItems: "center", gap: 6 }}>
+                            ✓ Version finale (retravaillée par l'instructeur) — {viewNom}
+                          </div>
+                        )}
+                        <div style={{ flex: 1, minHeight: 340, background: "#0F172A0A", display: "flex", alignItems: viewIsImage ? "center" : "stretch", justifyContent: viewIsImage ? "center" : "stretch" }}>
+                          {viewIsImage ? (
+                            <img src={viewUrl} alt={viewNom ?? ""} style={{ maxWidth: "100%", maxHeight: 520, objectFit: "contain", display: "block" }} />
+                          ) : viewIsPdf ? (
                             <div style={{ flex: 1, minWidth: 0, minHeight: 560 }}>
-                              <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
+                              <PdfAnnotator key={viewUrl} fileUrl={viewUrl!} originalDownloadUrl={viewUrl!} />
                             </div>
                           ) : (
                             <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 12, padding: 32, textAlign: "center" as const }}>
@@ -8680,10 +8725,10 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         {/* Barre d'actions */}
                         <div style={{ padding: "10px 14px", borderTop: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                           <div style={{ fontSize: 11.5, color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, flex: 1, minWidth: 0 }}>
-                            {extOf(sel.type, sel.nom)} · {fmtSize(sel.taille)} · déposé le {fmtUploaded(sel.uploaded_at)}
+                            {showingFinal ? "Version finale (GED)" : `${extOf(sel.type, sel.nom)} · ${fmtSize(sel.taille)} · déposé le ${fmtUploaded(sel.uploaded_at)}`}
                           </div>
-                          <a href={sel.url} target="_blank" rel="noopener noreferrer" style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.3)", textDecoration: "none", flexShrink: 0 }}>Ouvrir en plein écran ↗</a>
-                          <a href={sel.url} download style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "#374151", fontWeight: 500, textDecoration: "none", flexShrink: 0 }}>Télécharger</a>
+                          <a href={viewUrl} target="_blank" rel="noopener noreferrer" style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.3)", textDecoration: "none", flexShrink: 0 }}>Ouvrir en plein écran ↗</a>
+                          <a href={viewUrl} download style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "#374151", fontWeight: 500, textDecoration: "none", flexShrink: 0 }}>Télécharger</a>
                         </div>
                       </>
                     );
