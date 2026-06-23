@@ -551,6 +551,8 @@ dossiersRouter.get("/:id/pieces-a-completer", async (req: AuthRequest, res) => {
       emis_le: courrier.emis_le,
       subject: courrier.subject,
       pieces,
+      // Documents joints par l'instructeur (ex. plan annoté) — partagés au citoyen.
+      attachments: (courrier.attachments as Array<{ document_id: string; nom: string; url: string; type: string }>) ?? [],
     });
   } catch (err) {
     console.error(err);

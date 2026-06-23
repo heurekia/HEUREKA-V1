@@ -18,6 +18,7 @@ import { db } from "../db.js";
 import { dossier_pieces_jointes, dossier_courriers, instruction_events } from "@heureka-v1/db";
 import { eq, inArray } from "drizzle-orm";
 import { changeDossierStatus, WorkflowError } from "./dossierWorkflow.js";
+import { resolveAttachmentRefs } from "./gedAttachments.js";
 
 export interface PieceRequestItem {
   // Soit on demande une pièce déjà déposée (piece_id renseigné, manquante=false),
@@ -40,6 +41,8 @@ export interface EmitPieceRequestInput {
   body_snapshot?: string | null;
   subject?: string | null;
   delivery_method?: string | null;
+  // Documents de la GED à joindre au courrier (ex. plan annoté par l'instructeur).
+  attachment_document_ids?: string[];
   // Utilisateur émetteur. Toujours fourni par la route.
   emis_par: string;
 }
@@ -76,11 +79,14 @@ function escapeHtml(s: string): string {
 export async function emitPieceComplementRequest(
   input: EmitPieceRequestInput,
 ): Promise<EmitPieceRequestResult> {
-  const { dossier_id, pieces, articles_cites, body_snapshot, subject, delivery_method, emis_par } = input;
+  const { dossier_id, pieces, articles_cites, body_snapshot, subject, delivery_method, attachment_document_ids, emis_par } = input;
 
   if (pieces.length === 0) {
     throw new Error("Au moins une pièce doit être sélectionnée pour la demande de complément");
   }
+
+  // Documents GED joints (plan annoté…) : résolus + partagés au citoyen.
+  const attachments = await resolveAttachmentRefs(dossier_id, attachment_document_ids, "citoyen");
 
   // 1) Persiste le courrier (snapshot figé).
   const [courrier] = await db
@@ -98,6 +104,7 @@ export async function emitPieceComplementRequest(
         manquante: p.manquante ?? !p.piece_id,
       })),
       articles_cites,
+      attachments,
       emis_par,
       delivery_method: delivery_method ?? null,
     })

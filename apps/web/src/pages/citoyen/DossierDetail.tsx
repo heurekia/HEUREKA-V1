@@ -54,11 +54,19 @@ interface PieceACompleter {
   redepot: { id: string; nom: string; url: string; uploaded_at: string } | null;
 }
 
+interface CourrierAttachment {
+  document_id: string;
+  nom: string;
+  url: string;
+  type: string;
+}
+
 interface PiecesACompleterResponse {
   courrier_id: string | null;
   emis_le: string | null;
   subject?: string | null;
   pieces: PieceACompleter[];
+  attachments?: CourrierAttachment[];
 }
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -513,6 +521,31 @@ export function DossierDetail() {
               <p style={{ fontSize: 13, color: "#475569", lineHeight: 1.6, margin: "0 0 16px 0" }}>
                 Votre instructeur a demandé les pièces ci-dessous. Déposez-les ici, puis transmettez-les à la mairie pour reprise de l'instruction.
               </p>
+
+              {/* Documents joints par l'instructeur (ex. plan annoté) */}
+              {piecesACompleter.attachments && piecesACompleter.attachments.length > 0 && (
+                <div style={{ background: "#F8FAFC", border: "1px solid #E2E8F0", borderRadius: 10, padding: "12px 16px", marginBottom: 16 }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#334155", marginBottom: 8 }}>
+                    📎 Documents joints par l'instructeur
+                  </div>
+                  <div style={{ display: "flex", flexWrap: "wrap", gap: 12 }}>
+                    {piecesACompleter.attachments.map((att) => {
+                      const isImg = (att.type ?? "").toLowerCase().startsWith("image/");
+                      return isImg ? (
+                        <a key={att.document_id} href={att.url} target="_blank" rel="noopener noreferrer" style={{ display: "block", textDecoration: "none" }}>
+                          <img src={att.url} alt={att.nom} style={{ maxHeight: 160, maxWidth: 240, borderRadius: 8, border: "1px solid #E2E8F0", display: "block" }} />
+                          <span style={{ fontSize: 11, color: "#475569", display: "block", marginTop: 4 }}>{att.nom}</span>
+                        </a>
+                      ) : (
+                        <a key={att.document_id} href={att.url} target="_blank" rel="noopener noreferrer"
+                          style={{ display: "inline-flex", alignItems: "center", gap: 8, padding: "8px 12px", background: "white", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12.5, fontWeight: 600, color: "#334155", textDecoration: "none" }}>
+                          📄 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 220 }}>{att.nom}</span>
+                        </a>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
 
               <div
                 style={{

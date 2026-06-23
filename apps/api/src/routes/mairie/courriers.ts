@@ -21,6 +21,7 @@ courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires", async (re
       body_snapshot?: string | null;
       subject?: string | null;
       delivery_method?: string | null;
+      attachment_document_ids?: string[];
     };
 
     if (!Array.isArray(body.pieces) || body.pieces.length === 0) {
@@ -49,6 +50,7 @@ courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires", async (re
       body_snapshot: body.body_snapshot ?? null,
       subject: body.subject ?? null,
       delivery_method: body.delivery_method ?? null,
+      attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
       emis_par: req.user!.id,
     });
     res.status(201).json(result);
@@ -73,6 +75,7 @@ courriersRouter.get("/dossiers/:id/courriers", async (req: AuthRequest, res) => 
         subject: dossier_courriers.subject,
         pieces_jointes_ids: dossier_courriers.pieces_jointes_ids,
         articles_cites: dossier_courriers.articles_cites,
+        attachments: dossier_courriers.attachments,
         emis_par: dossier_courriers.emis_par,
         emis_le: dossier_courriers.emis_le,
         delivery_method: dossier_courriers.delivery_method,

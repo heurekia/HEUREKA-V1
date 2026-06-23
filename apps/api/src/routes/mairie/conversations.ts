@@ -3,7 +3,7 @@ import { db } from "../../db.js";
 import { dossiers, users, dossier_messages, dossier_consultations } from "@heureka-v1/db";
 import { eq, desc, and, sql, isNull } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
-import { resolveAttachmentRefs } from "./documents.js";
+import { resolveAttachmentRefs } from "../../services/gedAttachments.js";
 
 export const conversationsRouter = Router();
 
