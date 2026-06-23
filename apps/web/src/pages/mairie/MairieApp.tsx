@@ -6262,7 +6262,24 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [selectedDoc, setSelectedDoc] = useState<number>(0);
   // Pièce ouverte dans l'éditeur d'annotation (entourer/commenter → GED → envoi
   // citoyen). Internalise le retravail aujourd'hui fait sous Inkscape/Foxit.
+  // L'éditeur est rendu EN PLACE dans le visualiseur (pas en fenêtre séparée).
   const [annotatePiece, setAnnotatePiece] = useState<DossierPiece | null>(null);
+  // Version affichée : "initiale" (pièce déposée par le citoyen) ou "finale"
+  // (pièce retravaillée/annotée par l'instructeur, enregistrée dans la GED).
+  const [pieceVersion, setPieceVersion] = useState<"initiale" | "finale">("initiale");
+  // GED du dossier : documents produits par l'instruction. Sert à savoir quelle
+  // pièce possède une version finale et à l'afficher / la comparer.
+  type GedDocLite = { id: string; nom: string; url: string; type: string; category: string; source_piece_id: string | null; created_at: string };
+  const [gedDocs, setGedDocs] = useState<GedDocLite[]>([]);
+  const refreshGed = useCallback(() => {
+    api.get<GedDocLite[]>(`/mairie/dossiers/${dossier.id}/documents`)
+      .then(setGedDocs)
+      .catch(() => setGedDocs([]));
+  }, [dossier.id]);
+  useEffect(() => { refreshGed(); }, [refreshGed]);
+  // Changer de pièce sélectionnée quitte le mode annotation et revient à la
+  // version initiale (un seul éditeur à la fois, pas d'annotation par erreur).
+  useEffect(() => { setAnnotatePiece(null); setPieceVersion("initiale"); }, [selectedDoc]);
   // Pièce à sélectionner une fois l'onglet Documents chargé. Permet d'ouvrir
   // une pièce justificative depuis un autre onglet (checklist, verdicts) même
   // quand `documents` n'est pas encore chargé : la sélection est différée.
@@ -8374,6 +8391,36 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
             </button>
           );
 
+          // Annotation en place : si la pièce sélectionnée est en mode
+          // annotation, l'éditeur intégré remplace le visualiseur lecture seule
+          // — dans la grille comme en grand écran. Les marques sont enregistrées
+          // sur le dossier en continu ; l'éditeur gère l'avant/après et l'export.
+          const annotating = !!sel && annotatePiece?.id === sel.id;
+          // Version finale (annotée) la plus récente pour la pièce sélectionnée
+          // (gedDocs est trié du plus récent au plus ancien côté API).
+          const finalDoc = sel ? gedDocs.find((d) => d.category === "annotation" && d.source_piece_id === sel.id) ?? null : null;
+          const hasFinal = !!finalDoc;
+          const piecesWithFinal = new Set(
+            gedDocs.filter((d) => d.category === "annotation" && d.source_piece_id).map((d) => d.source_piece_id as string),
+          );
+          // Source affichée par le visualiseur lecture seule selon la version choisie.
+          const showingFinal = hasFinal && pieceVersion === "finale";
+          const viewUrl = showingFinal && finalDoc ? finalDoc.url : sel?.url;
+          const viewNom = showingFinal && finalDoc ? finalDoc.nom : sel?.nom;
+          const viewType = showingFinal && finalDoc ? finalDoc.type : sel?.type;
+          const viewIsImage = (viewType ?? "").toLowerCase().startsWith("image/");
+          const viewIsPdf = viewType === "application/pdf" || (viewNom ?? "").toLowerCase().endsWith(".pdf");
+          const editorNode = sel ? (
+            <PieceMarkupEditor
+              embedded
+              key={`edit-${sel.id}`}
+              dossierId={dossier.id}
+              piece={sel}
+              onClose={() => setAnnotatePiece(null)}
+              onExported={() => { refreshGed(); setPieceVersion("finale"); }}
+            />
+          ) : null;
+
           // Split pièce ↔ document réglementaire. Défini une seule fois puis
           // rendu soit dans la grille, soit dans l'overlay grand écran — jamais
           // les deux (un seul PdfAnnotator monté à la fois).
@@ -8387,13 +8434,14 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   </div>
                   <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "stretch", justifyContent: "stretch", background: "#0F172A0A" }}>
                     {sel ? (
-                      (sel.type ?? "").toLowerCase().startsWith("image/") ? (
+                      annotating ? editorNode :
+                      viewIsImage ? (
                         <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                          <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                          <img src={viewUrl} alt={viewNom ?? ""} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
                         </div>
-                      ) : (sel.type === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf")) ? (
+                      ) : viewIsPdf ? (
                         <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-                          <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
+                          <PdfAnnotator key={viewUrl} fileUrl={viewUrl!} originalDownloadUrl={viewUrl!} />
                         </div>
                       ) : (
                         <div style={{ flex: 1, color: "#94a3b8", fontSize: 12, padding: 24, textAlign: "center", display: "flex", alignItems: "center", justifyContent: "center" }}>Aperçu indisponible pour ce format</div>
@@ -8427,22 +8475,19 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
           // compareSplit). Évite de dupliquer la logique de rendu image/PDF.
           const pieceFullscreenBody = (
             <div style={{ height: "100%", display: "flex", flexDirection: "column", background: "#0F172A0A" }}>
-              {sel ? (() => {
-                const t = (sel.type ?? "").toLowerCase();
-                const isImage = t.startsWith("image/");
-                const isPdf = t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf");
-                return isImage ? (
+              {sel ? (annotating ? editorNode : (() => {
+                return viewIsImage ? (
                   <div style={{ flex: 1, minHeight: 0, display: "flex", alignItems: "center", justifyContent: "center" }}>
-                    <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
+                    <img src={viewUrl} alt={viewNom ?? ""} style={{ maxWidth: "100%", maxHeight: "100%", objectFit: "contain" }} />
                   </div>
-                ) : isPdf ? (
+                ) : viewIsPdf ? (
                   <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-                    <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
+                    <PdfAnnotator key={viewUrl} fileUrl={viewUrl!} originalDownloadUrl={viewUrl!} />
                   </div>
                 ) : (
                   <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8", fontSize: 13 }}>Aperçu indisponible pour ce format</div>
                 );
-              })() : (
+              })()) : (
                 <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8", fontSize: 13 }}>Sélectionnez une pièce à gauche.</div>
               )}
             </div>
@@ -8466,13 +8511,6 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
           return (
             <>
-              {annotatePiece && (
-                <PieceMarkupEditor
-                  dossierId={dossier.id}
-                  piece={annotatePiece}
-                  onClose={() => setAnnotatePiece(null)}
-                />
-              )}
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>
                 <div style={{ display: "inline-flex", alignItems: "center", gap: 8, marginRight: "auto" }}>
                   {(() => {
@@ -8482,22 +8520,38 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                       <button
                         type="button"
                         disabled={!annotatable}
-                        onClick={() => sel && setAnnotatePiece(sel)}
-                        title={annotatable ? "Annoter la pièce (entourer, commenter) puis l'envoyer au citoyen" : "Sélectionnez une pièce PDF ou image à annoter"}
+                        onClick={() => sel && setAnnotatePiece(annotating ? null : sel)}
+                        title={annotatable ? "Annoter la pièce en place (entourer, mesurer, commenter) puis l'enregistrer sur le dossier / l'envoyer au citoyen" : "Sélectionnez une pièce PDF ou image à annoter"}
                         style={{
-                          border: "none", background: annotatable ? "#4F46E5" : "#E2E8F0",
-                          color: annotatable ? "white" : "#94a3b8", borderRadius: 8,
+                          border: annotating ? "1px solid #4F46E5" : "none",
+                          background: !annotatable ? "#E2E8F0" : annotating ? "white" : "#4F46E5",
+                          color: !annotatable ? "#94a3b8" : annotating ? "#4F46E5" : "white", borderRadius: 8,
                           padding: "5px 12px", fontSize: 12, fontWeight: 700,
                           cursor: annotatable ? "pointer" : "not-allowed",
                           display: "inline-flex", alignItems: "center", gap: 5,
-                          boxShadow: annotatable ? "0 1px 2px rgba(79,70,229,0.3)" : "none",
+                          boxShadow: annotatable && !annotating ? "0 1px 2px rgba(79,70,229,0.3)" : "none",
                         }}
                       >
-                        <span style={{ fontSize: 13 }}>✏️</span>Annoter / Envoyer
+                        <span style={{ fontSize: 13 }}>✏️</span>{annotating ? "Fermer l'annotation" : "Annoter / Envoyer"}
                       </button>
                     );
                   })()}
                 </div>
+                {/* Distinction version initiale (citoyen) / version finale
+                    (retravaillée par l'instructeur). Visible dès qu'une version
+                    finale existe et hors mode annotation. */}
+                {hasFinal && !annotating && (
+                  <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden" }} title="Comparer la version déposée par le citoyen et la version retravaillée par l'instructeur">
+                    <button type="button" onClick={() => setPieceVersion("initiale")}
+                      style={{ padding: "5px 11px", border: "none", fontSize: 12, fontWeight: 600, cursor: "pointer", background: pieceVersion === "initiale" ? "#0F172A" : "white", color: pieceVersion === "initiale" ? "white" : "#475569" }}>
+                      Version initiale
+                    </button>
+                    <button type="button" onClick={() => setPieceVersion("finale")}
+                      style={{ padding: "5px 11px", border: "none", borderLeft: "1px solid #E2E8F0", fontSize: 12, fontWeight: 600, cursor: "pointer", background: pieceVersion === "finale" ? "#16A34A" : "white", color: pieceVersion === "finale" ? "white" : "#475569" }}>
+                      Version finale ✓
+                    </button>
+                  </div>
+                )}
                 <button
                   type="button"
                   onClick={() => setDocsFullscreen(true)}
@@ -8606,6 +8660,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                               {hasNote && (
                                 <span title="Annotation présente" style={{ fontSize: 10.5, color: "#4F46E5" }}>📝</span>
                               )}
+                              {piecesWithFinal.has(doc.id) && (
+                                <span title="Une version finale (retravaillée par l'instructeur) existe pour cette pièce" style={{ fontSize: 10.5, fontWeight: 700, color: "#15803D", background: "#F0FDF4", borderRadius: 5, padding: "1px 6px", border: "1px solid #BBF7D0" }}>✓ finale</span>
+                              )}
                             </div>
                           </div>
                         </button>
@@ -8633,18 +8690,22 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               <div style={{ ...CARD, minWidth: 0, display: "flex", flexDirection: "column" as const, height: colMaxH, minHeight: 460, overflow: "hidden" }}>
                 <SecTitle>{`Aperçu : ${sel?.nom ?? "—"}`}</SecTitle>
                 <div style={{ flex: 1, minWidth: 0, background: "#F8FAFC", borderRadius: 11, minHeight: 340, border: "1px solid #EAECF0", overflow: "hidden", position: "relative" as const, display: "flex", flexDirection: "column" as const }}>
-                  {docsFullscreen ? fullscreenPlaceholder : sel ? (() => {
-                    const t = (sel.type ?? "").toLowerCase();
-                    const isImage = t.startsWith("image/");
-                    const isPdf = t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf");
+                  {docsFullscreen ? fullscreenPlaceholder : sel ? (annotating ? (
+                    <div style={{ flex: 1, minHeight: 340, minWidth: 0, display: "flex" }}>{editorNode}</div>
+                  ) : (() => {
                     return (
                       <>
-                        <div style={{ flex: 1, minHeight: 340, background: "#0F172A0A", display: "flex", alignItems: isImage ? "center" : "stretch", justifyContent: isImage ? "center" : "stretch" }}>
-                          {isImage ? (
-                            <img src={sel.url} alt={sel.nom} style={{ maxWidth: "100%", maxHeight: 520, objectFit: "contain", display: "block" }} />
-                          ) : isPdf ? (
+                        {showingFinal && (
+                          <div style={{ padding: "6px 12px", background: "#F0FDF4", borderBottom: "1px solid #BBF7D0", fontSize: 11.5, fontWeight: 600, color: "#15803D", display: "flex", alignItems: "center", gap: 6 }}>
+                            ✓ Version finale (retravaillée par l'instructeur) — {viewNom}
+                          </div>
+                        )}
+                        <div style={{ flex: 1, minHeight: 340, background: "#0F172A0A", display: "flex", alignItems: viewIsImage ? "center" : "stretch", justifyContent: viewIsImage ? "center" : "stretch" }}>
+                          {viewIsImage ? (
+                            <img src={viewUrl} alt={viewNom ?? ""} style={{ maxWidth: "100%", maxHeight: 520, objectFit: "contain", display: "block" }} />
+                          ) : viewIsPdf ? (
                             <div style={{ flex: 1, minWidth: 0, minHeight: 560 }}>
-                              <PdfAnnotator key={sel.id} fileUrl={sel.url} originalDownloadUrl={sel.url} />
+                              <PdfAnnotator key={viewUrl} fileUrl={viewUrl!} originalDownloadUrl={viewUrl!} />
                             </div>
                           ) : (
                             <div style={{ display: "flex", flexDirection: "column" as const, alignItems: "center", gap: 12, padding: 32, textAlign: "center" as const }}>
@@ -8661,14 +8722,14 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         {/* Barre d'actions */}
                         <div style={{ padding: "10px 14px", borderTop: "1px solid #E2E8F0", background: "white", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 10 }}>
                           <div style={{ fontSize: 11.5, color: "#64748b", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" as const, flex: 1, minWidth: 0 }}>
-                            {extOf(sel.type, sel.nom)} · {fmtSize(sel.taille)} · déposé le {fmtUploaded(sel.uploaded_at)}
+                            {showingFinal ? "Version finale (GED)" : `${extOf(sel.type, sel.nom)} · ${fmtSize(sel.taille)} · déposé le ${fmtUploaded(sel.uploaded_at)}`}
                           </div>
-                          <a href={sel.url} target="_blank" rel="noopener noreferrer" style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.3)", textDecoration: "none", flexShrink: 0 }}>Ouvrir en plein écran ↗</a>
-                          <a href={sel.url} download style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "#374151", fontWeight: 500, textDecoration: "none", flexShrink: 0 }}>Télécharger</a>
+                          <a href={viewUrl} target="_blank" rel="noopener noreferrer" style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer", boxShadow: "0 2px 6px rgba(79,70,229,0.3)", textDecoration: "none", flexShrink: 0 }}>Ouvrir en plein écran ↗</a>
+                          <a href={viewUrl} download style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "#374151", fontWeight: 500, textDecoration: "none", flexShrink: 0 }}>Télécharger</a>
                         </div>
                       </>
                     );
-                  })() : (
+                  })()) : (
                     <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 13, color: "#94a3b8" }}>
                       Sélectionnez une pièce à gauche
                     </div>
@@ -8900,6 +8961,21 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                     </select>
                   )}
                   <div style={{ flex: 1 }} />
+                  {(() => {
+                    const t = (sel?.type ?? "").toLowerCase();
+                    const annotatable = !!sel && (t.startsWith("image/") || t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf"));
+                    if (!annotatable) return null;
+                    return (
+                      <button
+                        type="button"
+                        onClick={() => sel && setAnnotatePiece(annotating ? null : sel)}
+                        title="Annoter la pièce en place"
+                        style={{ border: annotating ? "1px solid #4F46E5" : "none", background: annotating ? "white" : "#4F46E5", color: annotating ? "#4F46E5" : "white", borderRadius: 8, padding: "6px 14px", fontSize: 12, fontWeight: 700, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}
+                      >
+                        ✏️ {annotating ? "Fermer l'annotation" : "Annoter"}
+                      </button>
+                    );
+                  })()}
                   <span style={{ fontSize: 11, color: "#94a3b8" }}>Échap pour quitter</span>
                   <button
                     type="button"
