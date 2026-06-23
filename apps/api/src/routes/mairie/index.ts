@@ -15,6 +15,8 @@ import { adminRouter } from "./admin.js";
 import { reglementationRouter } from "./reglementation.js";
 import { consultationsRouter } from "./consultations.js";
 import { documentationRouter } from "./documentation.js";
+import { pieceAnnotationsRouter } from "./pieceAnnotations.js";
+import { dossierDocumentsRouter } from "./documents.js";
 
 export const mairieRouter = Router();
 mairieRouter.use(requireAuth);
@@ -49,3 +51,5 @@ mairieRouter.use(adminRouter);
 mairieRouter.use(reglementationRouter);
 mairieRouter.use(consultationsRouter);
 mairieRouter.use(documentationRouter);
+mairieRouter.use(pieceAnnotationsRouter);
+mairieRouter.use(dossierDocumentsRouter);

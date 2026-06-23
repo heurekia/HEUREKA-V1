@@ -17,6 +17,7 @@ import PieceReclassControl from "./PieceReclassControl";
 import { RegulatoryDocViewer } from "../../components/RegulatoryDocViewer";
 import { ResizableSplit } from "../../components/ResizableSplit";
 import { PdfAnnotator } from "../../components/PdfAnnotator";
+import { PieceMarkupEditor } from "../../components/PieceMarkupEditor";
 import { ParcelSynthese, type ParcelSynthesisData } from "../../components/ParcelSynthese";
 import { useInstructionViewMode } from "../../hooks/useInstructionViewMode";
 import { useLocalStorageBool } from "../../hooks/useLocalStorageBool";
@@ -1118,7 +1119,8 @@ const COMMUNE_DOSSIERS: Record<string, { d1: string; d2: string; d3: string; d4:
 
 function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: string; onDossierClick: (d: DossierInfo) => void; onUnreadChange?: (n: number) => void }) {
   type Conv = { dossier_id: string; numero: string; type: string; status: string; petitionnaire: string; last_content: string; last_from_role: string; last_at: string; unread_count: number };
-  type Msg = { id: string; content: string; from_role: string; created_at: string; prenom: string | null; nom: string | null };
+  type MsgAttachment = { document_id: string; nom: string; url: string; type: string };
+  type Msg = { id: string; content: string; from_role: string; created_at: string; prenom: string | null; nom: string | null; attachments?: MsgAttachment[] | null };
   type ServiceConv = {
     consultation_id: string;
     dossier_id: string;
@@ -1443,15 +1445,38 @@ function MessageScreen({ commune, onDossierClick, onUnreadChange }: { commune: s
                 <div key={msg.id} style={{ display: "flex", gap: 10, marginBottom: 16, justifyContent: isInstructeur ? "flex-end" : "flex-start" }}>
                   {!isInstructeur && <div style={{ width: 32, height: 32, borderRadius: "50%", background: stringToColor(selected.petitionnaire), color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{nameInitials(selected.petitionnaire)}</div>}
                   <div style={{ maxWidth: "60%" }}>
-                    {isInstructeur ? (
-                      <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", borderRadius: "12px 4px 12px 12px", padding: "12px 14px" }}>
-                        <p style={{ margin: 0, fontSize: 13, color: "white", lineHeight: 1.5 }}>{msg.content}</p>
-                      </div>
-                    ) : (
-                      <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "12px 14px", border: "1px solid #E2E8F0", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
-                        <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.5 }}>{msg.content}</p>
-                      </div>
-                    )}
+                    {(() => {
+                      const atts = msg.attachments ?? [];
+                      const renderAtts = (dark: boolean) => atts.length > 0 && (
+                        <div style={{ display: "flex", flexDirection: "column", gap: 6, marginTop: msg.content ? 8 : 0 }}>
+                          {atts.map((att) => {
+                            const isImg = (att.type ?? "").toLowerCase().startsWith("image/");
+                            return isImg ? (
+                              <a key={att.document_id} href={att.url} target="_blank" rel="noopener noreferrer" style={{ display: "block" }}>
+                                <img src={att.url} alt={att.nom} style={{ maxHeight: 160, maxWidth: "100%", borderRadius: 8, border: dark ? "1px solid rgba(255,255,255,0.3)" : "1px solid #E2E8F0" }} />
+                              </a>
+                            ) : (
+                              <a key={att.document_id} href={att.url} target="_blank" rel="noopener noreferrer"
+                                style={{ display: "inline-flex", alignItems: "center", gap: 6, fontSize: 12, fontWeight: 600, textDecoration: "none", padding: "6px 10px", borderRadius: 8,
+                                  background: dark ? "rgba(255,255,255,0.15)" : "#F8FAFC", color: dark ? "white" : "#334155", border: dark ? "1px solid rgba(255,255,255,0.25)" : "1px solid #E2E8F0" }}>
+                                📎 <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", maxWidth: 200 }}>{att.nom}</span>
+                              </a>
+                            );
+                          })}
+                        </div>
+                      );
+                      return isInstructeur ? (
+                        <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", borderRadius: "12px 4px 12px 12px", padding: "12px 14px" }}>
+                          {msg.content && <p style={{ margin: 0, fontSize: 13, color: "white", lineHeight: 1.5 }}>{msg.content}</p>}
+                          {renderAtts(true)}
+                        </div>
+                      ) : (
+                        <div style={{ background: "white", borderRadius: "4px 12px 12px 12px", padding: "12px 14px", border: "1px solid #E2E8F0", boxShadow: "0 1px 2px rgba(0,0,0,0.04)" }}>
+                          {msg.content && <p style={{ margin: 0, fontSize: 13, color: "#374151", lineHeight: 1.5 }}>{msg.content}</p>}
+                          {renderAtts(false)}
+                        </div>
+                      );
+                    })()}
                     <span style={{ fontSize: 11, color: "#94a3b8", marginTop: 4, display: "block", textAlign: isInstructeur ? "right" : "left" }}>{time}</span>
                   </div>
                   {isInstructeur && <div style={{ width: 32, height: 32, borderRadius: "50%", background: "linear-gradient(135deg,#4F46E5,#7C3AED)", color: "white", fontSize: 11, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{nameInitials(senderName)}</div>}
@@ -6217,6 +6242,9 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [documents, setDocuments] = useState<DossierPiece[] | null>(null);
   const [documentsLoading, setDocumentsLoading] = useState(false);
   const [selectedDoc, setSelectedDoc] = useState<number>(0);
+  // Pièce ouverte dans l'éditeur d'annotation (entourer/commenter → GED → envoi
+  // citoyen). Internalise le retravail aujourd'hui fait sous Inkscape/Foxit.
+  const [annotatePiece, setAnnotatePiece] = useState<DossierPiece | null>(null);
   // Dépôt groupé : PDF unique en attente d'éclatement (ouvre BundleSplitModal).
   const [bundleFile, setBundleFile] = useState<File | null>(null);
   // Pièce à sélectionner une fois l'onglet Documents chargé. Permet d'ouvrir
@@ -8422,6 +8450,13 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
           return (
             <>
+              {annotatePiece && (
+                <PieceMarkupEditor
+                  dossierId={dossier.id}
+                  piece={annotatePiece}
+                  onClose={() => setAnnotatePiece(null)}
+                />
+              )}
               {bundleFile && (
                 <BundleSplitModal
                   dossierId={dossier.id}
@@ -8430,18 +8465,42 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                 />
               )}
               <div style={{ display: "flex", justifyContent: "flex-end", alignItems: "center", gap: 10, marginBottom: 10 }}>
-                <label
-                  title="Déposer un dossier complet en un seul PDF — le système le découpe en pièces"
-                  style={{ border: "1px solid #C7D2FE", background: "#EEF2FF", color: "#4F46E5", borderRadius: 8, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5, marginRight: "auto" }}
-                >
-                  <span style={{ fontSize: 13 }}>📦</span>Déposer un dossier complet (PDF)
-                  <input
-                    type="file"
-                    accept=".pdf,application/pdf"
-                    style={{ display: "none" }}
-                    onChange={(e) => { const f = e.target.files?.[0]; if (f) setBundleFile(f); e.target.value = ""; }}
-                  />
-                </label>
+                <div style={{ display: "inline-flex", alignItems: "center", gap: 8, marginRight: "auto" }}>
+                  {(() => {
+                    const t = (sel?.type ?? "").toLowerCase();
+                    const annotatable = !!sel && (t.startsWith("image/") || t === "application/pdf" || sel.nom.toLowerCase().endsWith(".pdf"));
+                    return (
+                      <button
+                        type="button"
+                        disabled={!annotatable}
+                        onClick={() => sel && setAnnotatePiece(sel)}
+                        title={annotatable ? "Annoter la pièce (entourer, commenter) puis l'envoyer au citoyen" : "Sélectionnez une pièce PDF ou image à annoter"}
+                        style={{
+                          border: "none", background: annotatable ? "#4F46E5" : "#E2E8F0",
+                          color: annotatable ? "white" : "#94a3b8", borderRadius: 8,
+                          padding: "5px 12px", fontSize: 12, fontWeight: 700,
+                          cursor: annotatable ? "pointer" : "not-allowed",
+                          display: "inline-flex", alignItems: "center", gap: 5,
+                          boxShadow: annotatable ? "0 1px 2px rgba(79,70,229,0.3)" : "none",
+                        }}
+                      >
+                        <span style={{ fontSize: 13 }}>✏️</span>Annoter / Envoyer
+                      </button>
+                    );
+                  })()}
+                  <label
+                    title="Déposer un dossier complet en un seul PDF — le système le découpe en pièces"
+                    style={{ border: "1px solid #C7D2FE", background: "#EEF2FF", color: "#4F46E5", borderRadius: 8, padding: "5px 12px", fontSize: 12, fontWeight: 600, cursor: "pointer", display: "inline-flex", alignItems: "center", gap: 5 }}
+                  >
+                    <span style={{ fontSize: 13 }}>📦</span>Déposer un dossier complet (PDF)
+                    <input
+                      type="file"
+                      accept=".pdf,application/pdf"
+                      style={{ display: "none" }}
+                      onChange={(e) => { const f = e.target.files?.[0]; if (f) setBundleFile(f); e.target.value = ""; }}
+                    />
+                  </label>
+                </div>
                 <button
                   type="button"
                   onClick={() => setDocsFullscreen(true)}

@@ -15,8 +15,11 @@ export class ApiError extends Error {
 }
 
 async function request<T>(path: string, options?: RequestInit & { timeoutMs?: number }): Promise<T> {
+  // Pour un envoi multipart (FormData), on laisse le navigateur poser lui-même
+  // le Content-Type avec la boundary : surtout ne pas forcer application/json.
+  const isFormData = typeof FormData !== "undefined" && options?.body instanceof FormData;
   const headers: Record<string, string> = {
-    "Content-Type": "application/json",
+    ...(isFormData ? {} : { "Content-Type": "application/json" }),
     ...(options?.headers as Record<string, string> ?? {}),
   };
 
@@ -57,6 +60,9 @@ export const api = {
   get: <T>(path: string) => request<T>(path),
   post: <T>(path: string, body?: unknown, opts?: { timeoutMs?: number }) =>
     request<T>(path, { method: "POST", body: JSON.stringify(body), timeoutMs: opts?.timeoutMs }),
+  // Upload multipart (FormData) — ne pas JSON.stringify le corps.
+  upload: <T>(path: string, form: FormData, opts?: { timeoutMs?: number }) =>
+    request<T>(path, { method: "POST", body: form, timeoutMs: opts?.timeoutMs ?? 180_000 }),
   patch: <T>(path: string, body?: unknown) =>
     request<T>(path, { method: "PATCH", body: JSON.stringify(body) }),
   put: <T>(path: string, body?: unknown) =>
