@@ -59,6 +59,9 @@ interface Props {
   onClose: () => void;
   /** Appelé après chaque export réussi vers la GED. */
   onExported?: (doc: GedDocument) => void;
+  /** Rendu intégré (remplit le conteneur parent) plutôt qu'en overlay plein
+   *  écran. Utilisé pour annoter directement dans le visualiseur de pièce. */
+  embedded?: boolean;
 }
 
 const COLORS = ["#DC2626", "#EA580C", "#CA8A04", "#16A34A", "#2563EB", "#111827"];
@@ -280,7 +283,7 @@ function drawMarkOnCanvas(ctx: CanvasRenderingContext2D, m: Mark, W: number, H: 
   }
 }
 
-export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Props) {
+export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embedded = false }: Props) {
   const isImage = (piece.type ?? "").toLowerCase().startsWith("image/");
   const isPdf = (piece.type === "application/pdf") || piece.nom.toLowerCase().endsWith(".pdf");
 
@@ -300,6 +303,11 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
   const [sendOpen, setSendOpen] = useState(false);
   const [sendText, setSendText] = useState("");
   const [toast, setToast] = useState<string | null>(null);
+  // Avant / après : masque le calque d'annotations pour comparer à l'original.
+  const [showOriginal, setShowOriginal] = useState(false);
+  // Indicateur de persistance d'une marque (les annotations sont enregistrées
+  // sur le dossier en continu — pas besoin de télécharger).
+  const [savingMark, setSavingMark] = useState(false);
 
   const stageRef = useRef<HTMLDivElement>(null);  // conteneur scrollable (mesure largeur)
   const mediaRef = useRef<HTMLDivElement>(null);   // wrapper média + svg (mesure taille rendue)
@@ -395,6 +403,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
   };
 
   const persistCreate = async (m: Mark) => {
+    setSavingMark(true);
     try {
       const created = await api.post<{ id: string }>(
         `/mairie/dossiers/${dossierId}/pieces/${piece.id}/annotations`,
@@ -404,15 +413,19 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
       setSelectedId((cur) => (cur === m.id ? created.id : cur));
     } catch {
       setError("Échec de l'enregistrement de l'annotation.");
+    } finally {
+      setSavingMark(false);
     }
   };
   const persistUpdate = async (m: Mark) => {
     if (m.id.startsWith("tmp-")) return;
+    setSavingMark(true);
     try {
       await api.patch(`/mairie/dossiers/${dossierId}/pieces/${piece.id}/annotations/${m.id}`, {
         geometry: m.geometry, style: m.style, comment: m.comment, visibility: m.visibility, page: m.page,
       });
     } catch { /* silencieux : la marque reste en mémoire */ }
+    finally { setSavingMark(false); }
   };
 
   // ── Polygone (tracé clic-à-clic) ──
@@ -696,8 +709,8 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
 
   const handleExport = async () => {
     setBusy("export"); setError(null);
-    try { await runExport(); flashToast("Document annoté enregistré dans la GED."); }
-    catch (e) { setError(e instanceof Error ? e.message : "Échec de l'export"); }
+    try { await runExport(); flashToast("Version annotée enregistrée sur le dossier (GED)."); }
+    catch (e) { setError(e instanceof Error ? e.message : "Échec de l'enregistrement"); }
     finally { setBusy(null); }
   };
 
@@ -826,16 +839,28 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
     borderColor: active ? "#4F46E5" : "#E2E8F0", background: active ? "#4F46E5" : "white",
   });
 
+  // Intégré : remplit le conteneur du visualiseur (pas d'overlay). Sinon :
+  // overlay plein écran autonome (fenêtre modale).
+  const rootStyle: React.CSSProperties = embedded
+    ? { position: "relative", width: "100%", height: "100%", minHeight: 0, display: "flex", flexDirection: "column" }
+    : { position: "fixed", inset: 0, zIndex: 1000, background: "rgba(15,23,42,0.55)", display: "flex", flexDirection: "column" };
+  const panelStyle: React.CSSProperties = embedded
+    ? { width: "100%", height: "100%", minHeight: 0, background: "white", overflow: "hidden", display: "flex", flexDirection: "column" }
+    : { margin: "2.5vh auto", width: "min(1500px, 96vw)", height: "95vh", background: "white", borderRadius: 14, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.4)" };
+
   return (
-    <div style={{ position: "fixed", inset: 0, zIndex: 1000, background: "rgba(15,23,42,0.55)", display: "flex", flexDirection: "column" }}>
-      <div style={{ margin: "2.5vh auto", width: "min(1500px, 96vw)", height: "95vh", background: "white", borderRadius: 14, overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 60px rgba(0,0,0,0.4)" }}>
+    <div style={rootStyle}>
+      <div style={panelStyle}>
         {/* En-tête */}
         <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 16px", borderBottom: "1px solid #E2E8F0" }}>
           <strong style={{ fontSize: 14, color: "#0F172A" }}>Annoter — {piece.nom}</strong>
-          <span style={{ fontSize: 11, color: "#64748b", background: "#F1F5F9", padding: "2px 8px", borderRadius: 999 }}>
-            Remplace Inkscape / Foxit · les marques « citoyen » seront envoyées
+          {/* Les annotations sont persistées sur le dossier à chaque geste : on
+              le rend visible pour lever l'idée qu'il faut « télécharger » pour
+              enregistrer. */}
+          <span style={{ fontSize: 11, fontWeight: 600, color: savingMark ? "#B45309" : "#15803D", background: savingMark ? "#FEF3C7" : "#F0FDF4", border: `1px solid ${savingMark ? "#FCD34D" : "#86EFAC"}`, padding: "2px 8px", borderRadius: 999, display: "inline-flex", alignItems: "center", gap: 5 }}>
+            {savingMark ? <Loader2 size={12} className="spin" /> : "✓"} {savingMark ? "Enregistrement…" : "Enregistré sur le dossier"}
           </span>
-          <button type="button" onClick={onClose} title="Fermer" style={{ marginLeft: "auto", border: "none", background: "transparent", cursor: "pointer", color: "#64748b" }}>
+          <button type="button" onClick={onClose} title="Fermer l'annotation (les marques restent enregistrées)" style={{ marginLeft: "auto", border: "none", background: "transparent", cursor: "pointer", color: "#64748b" }}>
             <X size={20} />
           </button>
         </div>
@@ -888,13 +913,24 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
           >
             <Ruler size={14} /> {pageMpp ? `Échelle : ${fmtLen(num(pageScaleMark?.style.meters))}` : "Échelle non définie"}
           </button>
+          {/* Avant / Après : masque ou affiche le calque d'annotations. */}
+          <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden" }} title="Comparer l'original (Avant) et la version annotée (Après)">
+            <button type="button" onClick={() => setShowOriginal(true)}
+              style={{ padding: "6px 10px", border: "none", fontSize: 11.5, fontWeight: 700, cursor: "pointer", background: showOriginal ? "#0F172A" : "white", color: showOriginal ? "white" : "#475569", display: "inline-flex", alignItems: "center", gap: 4 }}>
+              <Eye size={13} /> Avant
+            </button>
+            <button type="button" onClick={() => setShowOriginal(false)}
+              style={{ padding: "6px 10px", border: "none", borderLeft: "1px solid #E2E8F0", fontSize: 11.5, fontWeight: 700, cursor: "pointer", background: !showOriginal ? "#4F46E5" : "white", color: !showOriginal ? "white" : "#475569" }}>
+              Après
+            </button>
+          </div>
           <div style={{ marginLeft: "auto", display: "flex", gap: 8, alignItems: "center" }}>
             <label style={{ fontSize: 11.5, color: "#64748b", display: "inline-flex", alignItems: "center", gap: 5, cursor: "pointer" }}>
               <input type="checkbox" checked={includeInternal} onChange={(e) => setIncludeInternal(e.target.checked)} />
               Inclure mes notes internes à l'export
             </label>
-            <button type="button" onClick={handleExport} disabled={busy !== null} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid #E2E8F0", background: "white", color: "#334155", borderRadius: 8, padding: "7px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", opacity: busy ? 0.6 : 1 }}>
-              {busy === "export" ? <Loader2 size={15} className="spin" /> : <Save size={15} />} Enregistrer (GED)
+            <button type="button" onClick={handleExport} disabled={busy !== null} title="Enregistre la version annotée (aplatie) dans la GED du dossier — aucun téléchargement nécessaire" style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "1px solid #E2E8F0", background: "white", color: "#334155", borderRadius: 8, padding: "7px 12px", fontSize: 12.5, fontWeight: 600, cursor: "pointer", opacity: busy ? 0.6 : 1 }}>
+              {busy === "export" ? <Loader2 size={15} className="spin" /> : <Save size={15} />} Enregistrer sur le dossier
             </button>
             <button type="button" onClick={() => setSendOpen(true)} disabled={busy !== null} style={{ display: "inline-flex", alignItems: "center", gap: 6, border: "none", background: "#4F46E5", color: "white", borderRadius: 8, padding: "7px 14px", fontSize: 12.5, fontWeight: 700, cursor: "pointer", opacity: busy ? 0.6 : 1 }}>
               <Send size={15} /> Envoyer au citoyen
@@ -923,19 +959,19 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
                   ref={svgRef}
                   width={mediaSize.w}
                   height={mediaSize.h}
-                  onPointerDown={onPointerDown}
-                  onPointerMove={onPointerMove}
-                  onPointerUp={onPointerUp}
-                  style={{ position: "absolute", top: 0, left: 0, cursor: tool === "select" ? "move" : "crosshair", touchAction: "none" }}
+                  onPointerDown={showOriginal ? undefined : onPointerDown}
+                  onPointerMove={showOriginal ? undefined : onPointerMove}
+                  onPointerUp={showOriginal ? undefined : onPointerUp}
+                  style={{ position: "absolute", top: 0, left: 0, cursor: showOriginal ? "default" : tool === "select" ? "move" : "crosshair", touchAction: "none", pointerEvents: showOriginal ? "none" : "auto" }}
                 >
-                  {marksOnPage.map(renderMark)}
+                  {!showOriginal && marksOnPage.map(renderMark)}
                   {/* Poignées de sommets de la marque sélectionnée (déplaçables). */}
-                  {selected && selected.page === page && handlesOf(selected).map((h) => (
+                  {!showOriginal && selected && selected.page === page && handlesOf(selected).map((h) => (
                     <circle key={h.key} cx={(h.x / 100) * mediaSize.w} cy={(h.y / 100) * mediaSize.h} r={5}
                       fill="white" stroke={selected.style.color} strokeWidth={2} style={{ pointerEvents: "none" }} />
                   ))}
                   {/* Polygone en cours de tracé : segments posés + élastique + sommets. */}
-                  {polyDraft && (() => {
+                  {!showOriginal && polyDraft && (() => {
                     const X = (v: number) => (v / 100) * mediaSize.w, Y = (v: number) => (v / 100) * mediaSize.h;
                     const ptsArr = polyDraft.points;
                     const last = ptsArr[ptsArr.length - 1];
@@ -1034,6 +1070,9 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
               <div style={{ fontSize: 12.5, color: "#94a3b8", lineHeight: 1.6 }}>
                 <div style={{ fontWeight: 700, color: "#475569", marginBottom: 6 }}>Comment annoter</div>
                 Choisissez un outil, tracez sur le document. Cliquez « Sélectionner » pour déplacer une marque, lui ajouter un commentaire et choisir si le citoyen la verra.
+                <div style={{ marginTop: 8 }}>
+                  Vos annotations sont <b>enregistrées automatiquement sur le dossier</b> (aucun téléchargement requis). Basculez <b>Avant / Après</b> pour comparer à l'original, puis « Enregistrer sur le dossier » (version aplatie dans la GED) ou « Envoyer au citoyen ».
+                </div>
                 <div style={{ marginTop: 10, fontSize: 11.5 }}>
                   {marks.length} marque{marks.length > 1 ? "s" : ""} · {marks.filter((m) => m.visibility === "citoyen").length} visible(s) par le citoyen
                 </div>
@@ -1048,7 +1087,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
 
       {/* Modale de calibrage d'échelle */}
       {scaleDraftId && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1150 }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2150 }}>
           <div style={{ width: "min(440px, 92vw)", background: "white", borderRadius: 12, padding: 20, boxShadow: "0 24px 60px rgba(0,0,0,0.4)" }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4, display: "inline-flex", alignItems: "center", gap: 8 }}>
               <Ruler size={18} /> Calibrer l'échelle
@@ -1077,7 +1116,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
 
       {/* Modale d'envoi citoyen */}
       {sendOpen && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 1100 }} onClick={() => busy === null && setSendOpen(false)}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.4)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 2100 }} onClick={() => busy === null && setSendOpen(false)}>
           <div onClick={(e) => e.stopPropagation()} style={{ width: "min(520px, 92vw)", background: "white", borderRadius: 12, padding: 20, boxShadow: "0 24px 60px rgba(0,0,0,0.4)" }}>
             <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Envoyer la pièce annotée au citoyen</div>
             <div style={{ fontSize: 12.5, color: "#64748b", marginBottom: 12 }}>
@@ -1096,10 +1135,15 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
       )}
 
       {lastDoc && (
-        <a href={lastDoc.url} target="_blank" rel="noopener noreferrer" title="Ouvrir le dernier export"
-          style={{ position: "fixed", bottom: 18, left: 18, zIndex: 1100, display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #E2E8F0", borderRadius: 999, padding: "8px 14px", fontSize: 12.5, fontWeight: 600, color: "#334155", boxShadow: "0 6px 20px rgba(0,0,0,0.18)", textDecoration: "none" }}>
-          <Download size={15} /> {lastDoc.nom}
-        </a>
+        <div style={{ position: "fixed", bottom: 18, left: 18, zIndex: 2100, display: "inline-flex", alignItems: "center", gap: 10, background: "white", border: "1px solid #86EFAC", borderRadius: 999, padding: "8px 14px", fontSize: 12.5, fontWeight: 600, color: "#15803D", boxShadow: "0 6px 20px rgba(0,0,0,0.18)" }}>
+          <span style={{ display: "inline-flex", alignItems: "center", gap: 5 }}>✓ Enregistré sur le dossier</span>
+          <a href={lastDoc.url} target="_blank" rel="noopener noreferrer" title="Ouvrir la version annotée" style={{ display: "inline-flex", alignItems: "center", gap: 4, color: "#4F46E5", textDecoration: "none" }}>
+            <Eye size={14} /> Ouvrir
+          </a>
+          <a href={lastDoc.url} download title="Télécharger (optionnel)" style={{ display: "inline-flex", color: "#64748b" }}>
+            <Download size={14} />
+          </a>
+        </div>
       )}
 
       {/* Aide contextuelle pendant le tracé d'un polygone. */}
