@@ -595,7 +595,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported }: Pro
           <div ref={stageRef} style={{ flex: 1, minWidth: 0, overflow: "auto", background: "#0F172A0A", display: "flex", justifyContent: "center", padding: 16 }}>
             <div ref={mediaRef} style={{ position: "relative", alignSelf: "flex-start", lineHeight: 0 }}>
               {isImage ? (
-                <img ref={imgRef} src={piece.url} alt={piece.nom} crossOrigin="use-credentials" onLoad={remeasureMedia} style={{ width: renderWidth, height: "auto", display: "block" }} />
+                <img ref={imgRef} src={piece.url} alt={piece.nom} onLoad={remeasureMedia} style={{ width: renderWidth, height: "auto", display: "block" }} />
               ) : isPdf ? (
                 <Document file={piece.url} options={PDF_OPTIONS} onLoadSuccess={({ numPages }) => setNumPages(numPages)} loading={<div style={{ padding: 40, fontSize: 13, color: "#64748b" }}>Chargement du PDF…</div>}>
                   <Page pageNumber={page} width={renderWidth} renderTextLayer={false} renderAnnotationLayer={false} onRenderSuccess={remeasureMedia} />
