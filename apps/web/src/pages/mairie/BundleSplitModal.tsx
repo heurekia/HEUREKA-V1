@@ -6,6 +6,9 @@ import { api } from "../../lib/api";
 // (1 segment = 1 pièce) que l'instructeur valide/corrige AVANT création réelle.
 // Tant qu'il n'a pas validé, AUCUNE pièce n'est créée. Le flux d'upload pièce
 // par pièce (existant) n'est pas concerné.
+//
+// Lot 2 : l'instructeur peut éditer la répartition des pages (réaffecter,
+// scinder, fusionner, partager une page entre deux pièces, ajouter une pièce).
 
 type ProposedSegment = {
   code: string | null;
@@ -32,8 +35,6 @@ type EditableSegment = {
   nom: string;
   pages: number[];
   confidence: number;
-  shared: boolean;
-  needs_review: boolean;
 };
 
 const TYPE_OPTIONS: { value: string; label: string }[] = [
@@ -48,13 +49,25 @@ const TYPE_OPTIONS: { value: string; label: string }[] = [
   { value: "autre", label: "Autre / à classer" },
 ];
 
+const TYPE_LABELS: Record<string, string> = {
+  cerfa: "Formulaire CERFA", plan_situation: "Plan de situation", plan_masse: "Plan de masse",
+  plan_coupe: "Plan de coupe", plan_facade: "Plan des façades et toitures", notice: "Notice descriptive",
+  photo: "Photographie", insertion: "Document graphique d'insertion", autre: "Pièce",
+};
+const TYPE_SHORT: Record<string, string> = {
+  cerfa: "CERFA", plan_situation: "Situation", plan_masse: "Masse", plan_coupe: "Coupe",
+  plan_facade: "Façades", notice: "Notice", photo: "Photo", insertion: "Insertion", autre: "À classer",
+};
+
+const PALETTE = ["#4F46E5", "#0891B2", "#16A34A", "#D97706", "#DB2777", "#7C3AED", "#0EA5E9", "#65A30D", "#DC2626", "#475569"];
+
 const overlay: CSSProperties = {
   position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000,
   display: "flex", alignItems: "center", justifyContent: "center",
 };
 const panel: CSSProperties = {
-  background: "white", borderRadius: 16, width: 760, maxWidth: "94vw",
-  maxHeight: "90vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.22)",
+  background: "white", borderRadius: 16, width: 880, maxWidth: "95vw",
+  maxHeight: "92vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0,0,0,0.22)",
 };
 const header: CSSProperties = {
   display: "flex", alignItems: "center", gap: 10, padding: "18px 24px",
@@ -72,6 +85,7 @@ const inputSt: CSSProperties = {
   border: "1.5px solid #E2E8F0", borderRadius: 7, padding: "6px 9px",
   fontSize: 12.5, outline: "none", fontFamily: "inherit", boxSizing: "border-box",
 };
+const sectionTitle: CSSProperties = { fontSize: 12, fontWeight: 700, color: "#374151", margin: "18px 0 8px" };
 
 function confColor(c: number): { bg: string; color: string; label: string } {
   if (c >= 0.7) return { bg: "#F0FDF4", color: "#15803D", label: `${Math.round(c * 100)} %` };
@@ -80,13 +94,27 @@ function confColor(c: number): { bg: string; color: string; label: string } {
 }
 
 function pageSpan(pages: number[]): string {
-  if (!pages.length) return "—";
+  if (!pages.length) return "aucune page";
   const s = [...pages].sort((a, b) => a - b);
   const first = s[0]!;
   const last = s[s.length - 1]!;
   if (s.length === 1) return `p. ${first}`;
   const contiguous = last - first + 1 === s.length;
   return contiguous ? `p. ${first}–${last}` : `p. ${s.join(", ")}`;
+}
+
+function defaultName(code: string, type: string, pages: number[]): string {
+  const label = TYPE_LABELS[type] ?? "Pièce";
+  const base = code.trim() ? `${code.trim()} – ${label}` : label;
+  if (!pages.length) return base;
+  const s = [...pages].sort((a, b) => a - b);
+  const first = s[0]!;
+  const last = s[s.length - 1]!;
+  return `${base} (${first === last ? `p. ${first}` : `p. ${first}-${last}`})`;
+}
+
+function chipLabel(s: EditableSegment): string {
+  return s.code.trim() || TYPE_SHORT[s.type] || "Pièce";
 }
 
 export default function BundleSplitModal({
@@ -100,17 +128,17 @@ export default function BundleSplitModal({
 }) {
   const [phase, setPhase] = useState<"uploading" | "segmenting" | "review" | "applying" | "error">("uploading");
   const [bundleId, setBundleId] = useState<string | null>(null);
-  const [pageCount, setPageCount] = useState<number | null>(null);
+  const [pageCount, setPageCount] = useState<number>(0);
   const [method, setMethod] = useState<string>("");
   const [segments, setSegments] = useState<EditableSegment[]>([]);
   const [errorMsg, setErrorMsg] = useState<string>("");
 
   const startedRef = useRef(false);
   const cancelledRef = useRef(false);
+  const seq = useRef(0);
+  const nextKey = () => `seg-${seq.current++}`;
 
   useEffect(() => {
-    // StrictMode (dev) invoque l'effet deux fois : garde-fou pour ne pas
-    // déposer le bundle en double.
     if (startedRef.current) return;
     startedRef.current = true;
     void doUpload();
@@ -124,9 +152,7 @@ export default function BundleSplitModal({
       fd.append("file", file);
       fd.append("nom_piece", file.name);
       const res = await fetch(`/api/mairie/dossiers/${dossierId}/pieces/upload-bundle`, {
-        method: "POST",
-        credentials: "include",
-        body: fd,
+        method: "POST", credentials: "include", body: fd,
       });
       if (!res.ok) {
         const body = await res.json().catch(() => ({}));
@@ -151,17 +177,15 @@ export default function BundleSplitModal({
       if (cancelledRef.current) return;
       if (bundle.status === "pending_review") {
         const segs = bundle.proposed_segments?.segments ?? [];
-        setPageCount(bundle.page_count ?? bundle.proposed_segments?.page_count ?? null);
+        setPageCount(bundle.page_count ?? bundle.proposed_segments?.page_count ?? 0);
         setMethod(bundle.proposed_segments?.method ?? "");
-        setSegments(segs.map((s, i) => ({
-          key: `${i}-${Math.random().toString(36).slice(2, 7)}`,
+        setSegments(segs.map((s) => ({
+          key: nextKey(),
           code: s.code ?? "",
           type: s.type,
           nom: s.nom,
-          pages: s.pages,
+          pages: [...s.pages].sort((a, b) => a - b),
           confidence: s.confidence,
-          shared: s.shared,
-          needs_review: s.needs_review,
         })));
         setPhase("review");
         return;
@@ -171,7 +195,6 @@ export default function BundleSplitModal({
         setPhase("error");
         return;
       }
-      // segmenting : on continue à interroger (jusqu'à ~90 s).
       if (attempt > 45) {
         setErrorMsg("La segmentation prend trop de temps. Réessayez plus tard.");
         setPhase("error");
@@ -191,19 +214,35 @@ export default function BundleSplitModal({
   function removeSeg(key: string) {
     setSegments((arr) => arr.filter((s) => s.key !== key));
   }
+  function regenName(key: string) {
+    setSegments((arr) => arr.map((s) => (s.key === key ? { ...s, nom: defaultName(s.code, s.type, s.pages) } : s)));
+  }
+  function addSeg() {
+    setSegments((arr) => [...arr, { key: nextKey(), code: "", type: "autre", nom: "Nouvelle pièce", pages: [], confidence: 1 }]);
+  }
+  function togglePage(key: string, page: number) {
+    setSegments((arr) => arr.map((s) => {
+      if (s.key !== key) return s;
+      const has = s.pages.includes(page);
+      const pages = has ? s.pages.filter((p) => p !== page) : [...s.pages, page].sort((a, b) => a - b);
+      return { ...s, pages };
+    }));
+  }
 
   async function applySplit() {
     if (!bundleId) return;
     setPhase("applying");
     try {
       await api.post(`/mairie/dossiers/${dossierId}/pieces/bundles/${bundleId}/apply`, {
-        segments: segments.map((s) => ({
-          code: s.code.trim() ? s.code.trim() : null,
-          type: s.type,
-          nom: s.nom,
-          pages: s.pages,
-          confidence: s.confidence,
-        })),
+        segments: segments
+          .filter((s) => s.pages.length > 0)
+          .map((s) => ({
+            code: s.code.trim() ? s.code.trim() : null,
+            type: s.type,
+            nom: s.nom,
+            pages: s.pages,
+            confidence: s.confidence,
+          })),
       }, { timeoutMs: 60_000 });
       onClose(true);
     } catch (e) {
@@ -220,16 +259,17 @@ export default function BundleSplitModal({
     onClose(false);
   }
 
-  const reviewCount = segments.filter((s) => s.needs_review).length;
+  const allPages = Array.from({ length: pageCount }, (_, i) => i + 1);
+  const colorOf = (key: string) => PALETTE[segments.findIndex((s) => s.key === key) % PALETTE.length] ?? "#475569";
+  const uncovered = allPages.filter((p) => !segments.some((s) => s.pages.includes(p)));
+  const applicable = segments.filter((s) => s.pages.length > 0).length;
 
   return (
     <div style={overlay} onClick={() => { if (phase === "review" || phase === "error") void cancelAll(); }}>
       <div style={panel} onClick={(e) => e.stopPropagation()}>
         <div style={header}>
           <span style={{ fontSize: 20 }}>📦</span>
-          <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", flex: 1 }}>
-            Découpage du dossier déposé
-          </div>
+          <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", flex: 1 }}>Découpage du dossier déposé</div>
           <button onClick={() => void cancelAll()} style={{ border: "none", background: "none", cursor: "pointer", fontSize: 20, color: "#94a3b8", lineHeight: 1 }}>×</button>
         </div>
 
@@ -258,64 +298,96 @@ export default function BundleSplitModal({
 
           {(phase === "review" || phase === "applying") && (
             <>
-              <div style={{ fontSize: 12.5, color: "#64748b", marginBottom: 16 }}>
-                {segments.length} pièce(s) détectée(s) sur {pageCount ?? "?"} page(s)
+              <div style={{ fontSize: 12.5, color: "#64748b", marginBottom: 4 }}>
+                {applicable} pièce(s) sur {pageCount} page(s)
                 {method === "text" ? " · lecture du texte" : method === "vision" ? " · lecture visuelle" : ""}.
-                {reviewCount > 0 && (
-                  <span style={{ color: "#92400E", fontWeight: 600 }}> {reviewCount} à vérifier.</span>
-                )}
-                {" "}Corrigez l'emplacement ou le nom si besoin, puis validez.
+                {" "}Corrigez l'emplacement, le nom ou la répartition des pages, puis validez.
               </div>
+              {uncovered.length > 0 && (
+                <div style={{ fontSize: 11.5, color: "#92400E", background: "#FFFBEB", border: "1px solid #FDE68A", borderRadius: 7, padding: "5px 9px", marginBottom: 6 }}>
+                  ⚠ {uncovered.length} page(s) non rattachée(s) : {uncovered.join(", ")}. Elles ne seront pas intégrées si vous validez en l'état.
+                </div>
+              )}
 
+              {/* ── Liste des pièces ── */}
+              <div style={sectionTitle}>Pièces</div>
               <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
                 {segments.map((s) => {
                   const cc = confColor(s.confidence);
+                  const flagged = s.confidence < 0.7 || s.pages.length === 0;
                   return (
                     <div key={s.key} style={{
-                      border: s.needs_review ? "1.5px solid #FDE68A" : "1.5px solid #E8EEF4",
-                      background: s.needs_review ? "#FFFBEB" : "white",
+                      border: `1.5px solid ${flagged ? "#FDE68A" : "#E8EEF4"}`,
+                      background: flagged ? "#FFFBEB" : "white",
                       borderRadius: 10, padding: "10px 12px",
-                      display: "grid", gridTemplateColumns: "82px 120px 1fr 64px 30px", gap: 8, alignItems: "center",
+                      display: "grid", gridTemplateColumns: "10px 82px 120px 1fr auto 30px", gap: 8, alignItems: "center",
                     }}>
-                      <input
-                        value={s.code}
-                        onChange={(e) => updateSeg(s.key, { code: e.target.value })}
-                        placeholder="Code"
-                        style={{ ...inputSt, fontFamily: "monospace", fontWeight: 600 }}
-                      />
+                      <span style={{ width: 10, height: 10, borderRadius: "50%", background: colorOf(s.key) }} title="Couleur de la pièce dans la grille des pages" />
+                      <input value={s.code} onChange={(e) => updateSeg(s.key, { code: e.target.value })} placeholder="Code" style={{ ...inputSt, fontFamily: "monospace", fontWeight: 600 }} />
                       <select value={s.type} onChange={(e) => updateSeg(s.key, { type: e.target.value })} style={{ ...inputSt, cursor: "pointer" }}>
                         {TYPE_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
                       </select>
-                      <div style={{ minWidth: 0 }}>
-                        <input
-                          value={s.nom}
-                          onChange={(e) => updateSeg(s.key, { nom: e.target.value })}
-                          style={{ ...inputSt, width: "100%" }}
-                        />
-                        <div style={{ fontSize: 10.5, color: "#94a3b8", marginTop: 3, display: "flex", gap: 6 }}>
-                          <span>{pageSpan(s.pages)}</span>
-                          {s.shared && <span style={{ color: "#92400E", fontWeight: 600 }}>· page partagée</span>}
-                        </div>
+                      <div style={{ minWidth: 0, display: "flex", alignItems: "center", gap: 4 }}>
+                        <input value={s.nom} onChange={(e) => updateSeg(s.key, { nom: e.target.value })} style={{ ...inputSt, width: "100%" }} />
+                        <button onClick={() => regenName(s.key)} title="Régénérer le nom par défaut" style={{ ...inputSt, padding: "6px 8px", cursor: "pointer", background: "white" }}>↻</button>
                       </div>
-                      <span style={{ fontSize: 10.5, fontWeight: 700, color: cc.color, background: cc.bg, borderRadius: 5, padding: "2px 6px", textAlign: "center" }}>{cc.label}</span>
-                      <button
-                        onClick={() => removeSeg(s.key)}
-                        title="Retirer cette pièce du découpage"
-                        style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#cbd5e1" }}
-                      >×</button>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                        <span style={{ fontSize: 10.5, color: "#94a3b8", whiteSpace: "nowrap" }}>{pageSpan(s.pages)}</span>
+                        <span style={{ fontSize: 10.5, fontWeight: 700, color: cc.color, background: cc.bg, borderRadius: 5, padding: "2px 6px" }}>{cc.label}</span>
+                      </div>
+                      <button onClick={() => removeSeg(s.key)} title="Supprimer cette pièce" style={{ border: "none", background: "none", cursor: "pointer", fontSize: 16, color: "#cbd5e1" }}>×</button>
                     </div>
                   );
                 })}
               </div>
+              <button onClick={addSeg} style={{ ...btnGhost, marginTop: 8, fontSize: 12, padding: "6px 12px" }}>+ Ajouter une pièce</button>
+
+              {/* ── Répartition des pages ── */}
+              {pageCount > 0 && (
+                <>
+                  <div style={sectionTitle}>
+                    Répartition des pages
+                    <span style={{ fontWeight: 400, color: "#94a3b8", marginLeft: 6 }}>
+                      cliquez pour (dé)rattacher une page ; une page peut appartenir à deux pièces (partagée).
+                    </span>
+                  </div>
+                  <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 260, overflowY: "auto", border: "1px solid #E8EEF4", borderRadius: 10, padding: 8 }}>
+                    {allPages.map((p) => {
+                      const owners = segments.filter((s) => s.pages.includes(p));
+                      return (
+                        <div key={p} style={{ display: "flex", alignItems: "center", gap: 8, padding: "3px 4px" }}>
+                          <span style={{ width: 42, fontSize: 11.5, fontWeight: 600, color: "#475569", flexShrink: 0 }}>p. {p}</span>
+                          <div style={{ display: "flex", flexWrap: "wrap", gap: 4, flex: 1 }}>
+                            {segments.map((s) => {
+                              const on = s.pages.includes(p);
+                              const col = colorOf(s.key);
+                              return (
+                                <button key={s.key} onClick={() => togglePage(s.key, p)} title={s.nom}
+                                  style={{
+                                    border: `1px solid ${on ? col : "#E2E8F0"}`,
+                                    background: on ? col : "white",
+                                    color: on ? "white" : "#94a3b8",
+                                    borderRadius: 6, padding: "2px 8px", fontSize: 11, fontWeight: 600, cursor: "pointer",
+                                  }}>
+                                  {chipLabel(s)}
+                                </button>
+                              );
+                            })}
+                          </div>
+                          {owners.length === 0 && <span style={{ fontSize: 10, color: "#92400E", fontWeight: 600 }}>non rattachée</span>}
+                          {owners.length > 1 && <span style={{ fontSize: 10, color: "#0891B2", fontWeight: 600 }}>partagée ×{owners.length}</span>}
+                        </div>
+                      );
+                    })}
+                  </div>
+                </>
+              )}
 
               <div style={{ display: "flex", gap: 9, justifyContent: "flex-end", marginTop: 22 }}>
                 <button onClick={() => void cancelAll()} disabled={phase === "applying"} style={btnGhost}>Annuler</button>
-                <button
-                  onClick={() => void applySplit()}
-                  disabled={phase === "applying" || segments.length === 0}
-                  style={{ ...btnPrimary, opacity: phase === "applying" || segments.length === 0 ? 0.6 : 1 }}
-                >
-                  {phase === "applying" ? "Création…" : `Valider et créer ${segments.length} pièce(s)`}
+                <button onClick={() => void applySplit()} disabled={phase === "applying" || applicable === 0}
+                  style={{ ...btnPrimary, opacity: phase === "applying" || applicable === 0 ? 0.6 : 1 }}>
+                  {phase === "applying" ? "Création…" : `Valider et créer ${applicable} pièce(s)`}
                 </button>
               </div>
             </>
