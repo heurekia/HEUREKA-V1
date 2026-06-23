@@ -5351,6 +5351,7 @@ const PURPOSE_LABELS: Record<string, string> = {
   plu_rule_extract: "Extraction règles PLU",
   plu_article_structure: "Structuration article PLU",
   plu_zone_structure: "Structuration zone PLU",
+  admin_assistant: "Assistant d'aide (admin)",
 };
 
 function fmtEur(v: number): string {
@@ -6241,6 +6242,348 @@ function CoutsIACommune() {
   );
 }
 
+// ─── Assistant d'aide (module « ? ») ──────────────────────────────────────────
+// Bouton flottant + panneau de chat connecté à POST /api/admin/assistant (SSE).
+// Deux usages : « Comment faire… » (prioritaire) et questions techniques.
+
+function HelpIcon({ size = 24 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <circle cx="12" cy="12" r="10" /><path d="M9.09 9a3 3 0 015.83 1c0 2-3 3-3 3" /><line x1="12" y1="17" x2="12.01" y2="17" />
+    </svg>
+  );
+}
+
+function SendIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round">
+      <line x1="22" y1="2" x2="11" y2="13" /><polygon points="22 2 15 22 11 13 2 9 22 2" />
+    </svg>
+  );
+}
+
+// ── Rendu Markdown léger (sans dépendance) ───────────────────────────────────
+// Gère **gras**, `code`, listes à puces (-, *, •) et numérotées (1.). Suffisant
+// pour les réponses de l'assistant ; pas de HTML brut (sécurité).
+function renderInline(text: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  const re = /(\*\*[^*]+\*\*|`[^`]+`)/g;
+  let last = 0;
+  let key = 0;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    if (m.index > last) parts.push(text.slice(last, m.index));
+    const tok = m[0];
+    if (tok.startsWith("**")) {
+      parts.push(<strong key={key++}>{tok.slice(2, -2)}</strong>);
+    } else {
+      parts.push(<code key={key++} style={{ background: C.bg, borderRadius: 4, padding: "1px 5px", fontSize: 12, fontFamily: "ui-monospace, monospace" }}>{tok.slice(1, -1)}</code>);
+    }
+    last = m.index + tok.length;
+  }
+  if (last < text.length) parts.push(text.slice(last));
+  return parts;
+}
+
+function RichText({ text }: { text: string }) {
+  const lines = text.split("\n");
+  const blocks: React.ReactNode[] = [];
+  let list: { ordered: boolean; items: string[] } | null = null;
+  const flush = () => {
+    if (!list) return;
+    const items = list.items.map((it, i) => <li key={i} style={{ marginBottom: 3 }}>{renderInline(it)}</li>);
+    blocks.push(
+      list.ordered
+        ? <ol key={`b${blocks.length}`} style={{ margin: "4px 0", paddingLeft: 20 }}>{items}</ol>
+        : <ul key={`b${blocks.length}`} style={{ margin: "4px 0", paddingLeft: 20 }}>{items}</ul>,
+    );
+    list = null;
+  };
+  for (const raw of lines) {
+    const line = raw.replace(/\s+$/, "");
+    const ol = /^\s*\d+[.)]\s+(.*)$/.exec(line);
+    const ul = /^\s*[-*•]\s+(.*)$/.exec(line);
+    if (ol) {
+      if (!list || !list.ordered) { flush(); list = { ordered: true, items: [] }; }
+      list.items.push(ol[1] ?? "");
+      continue;
+    }
+    if (ul) {
+      if (!list || list.ordered) { flush(); list = { ordered: false, items: [] }; }
+      list.items.push(ul[1] ?? "");
+      continue;
+    }
+    flush();
+    if (line.trim() === "") continue;
+    blocks.push(<p key={`b${blocks.length}`} style={{ margin: "0 0 6px" }}>{renderInline(line)}</p>);
+  }
+  flush();
+  return <>{blocks}</>;
+}
+
+interface ChatTurn { role: "user" | "assistant"; content: string }
+
+function setLastAssistant(list: ChatTurn[], content: string): ChatTurn[] {
+  const copy = list.slice();
+  for (let i = copy.length - 1; i >= 0; i--) {
+    const item = copy[i];
+    if (item && item.role === "assistant") { copy[i] = { ...item, content }; break; }
+  }
+  return copy;
+}
+
+function AdminAssistant() {
+  const [open, setOpen] = useState(false);
+  const [messages, setMessages] = useState<ChatTurn[]>([]);
+  const [input, setInput] = useState("");
+  const [streaming, setStreaming] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const messagesRef = useRef<ChatTurn[]>(messages);
+  useEffect(() => { messagesRef.current = messages; }, [messages]);
+
+  // Suggestions chargées à la première ouverture (best-effort).
+  useEffect(() => {
+    if (!open || suggestions.length > 0) return;
+    api.get<{ suggestions: string[] }>("/admin/assistant/suggestions")
+      .then((d) => setSuggestions(d.suggestions ?? []))
+      .catch(() => { /* l'UI fonctionne sans suggestions */ });
+  }, [open, suggestions.length]);
+
+  // Auto-scroll en bas à chaque nouveau contenu.
+  useEffect(() => {
+    if (open && scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
+  }, [messages, open]);
+
+  // Échap ferme le panneau.
+  useEffect(() => {
+    if (!open) return;
+    const onKey = (e: KeyboardEvent) => { if (e.key === "Escape") setOpen(false); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [open]);
+
+  const send = useCallback(async (raw: string) => {
+    const question = raw.trim();
+    if (!question || streaming) return;
+    setError(null);
+    setInput("");
+    const history = messagesRef.current.map((m) => ({ role: m.role, content: m.content }));
+    setMessages((prev) => [...prev, { role: "user", content: question }, { role: "assistant", content: "" }]);
+    setStreaming(true);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    let acc = "";
+    let streamErr: string | null = null;
+
+    try {
+      const res = await fetch("/api/admin/assistant", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        credentials: "include",
+        body: JSON.stringify({ question, history }),
+        signal: controller.signal,
+      });
+      if (!res.ok || !res.body) {
+        const body = await res.json().catch(() => ({}));
+        throw new Error((body as { error?: string }).error ?? `Erreur ${res.status}`);
+      }
+      const reader = res.body.getReader();
+      const decoder = new TextDecoder();
+      let buf = "";
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        buf += decoder.decode(value, { stream: true });
+        let idx: number;
+        while ((idx = buf.indexOf("\n\n")) >= 0) {
+          const chunk = buf.slice(0, idx);
+          buf = buf.slice(idx + 2);
+          for (const ln of chunk.split("\n")) {
+            if (!ln.startsWith("data:")) continue;
+            const data = ln.slice(5).trim();
+            if (!data) continue;
+            let evt: { type?: string; text?: string; message?: string };
+            try { evt = JSON.parse(data); } catch { continue; }
+            if (evt.type === "delta" && typeof evt.text === "string") {
+              acc += evt.text;
+              setMessages((prev) => setLastAssistant(prev, acc));
+            } else if (evt.type === "error") {
+              streamErr = evt.message ?? "Erreur de l'assistant.";
+            }
+          }
+        }
+      }
+      if (streamErr && !acc) throw new Error(streamErr);
+    } catch (err) {
+      const aborted = err instanceof DOMException && err.name === "AbortError";
+      if (!aborted) setError(err instanceof Error ? err.message : "Échec de l'assistant — réessayez.");
+      // Toujours retirer une bulle assistant restée vide (erreur OU arrêt avant
+      // le 1er token) : sinon l'historique se terminerait par un tour vide et le
+      // tour suivant enchaînerait deux messages « user ».
+      setMessages((prev) => {
+        const last = prev[prev.length - 1];
+        return last && last.role === "assistant" && last.content === "" ? prev.slice(0, -1) : prev;
+      });
+    } finally {
+      setStreaming(false);
+      abortRef.current = null;
+    }
+  }, [streaming]);
+
+  const stop = () => { abortRef.current?.abort(); };
+  const reset = () => { abortRef.current?.abort(); setMessages([]); setError(null); };
+
+  const lastTurn = messages[messages.length - 1];
+  const showTyping = streaming && lastTurn?.role === "assistant" && lastTurn.content === "";
+
+  return (
+    <>
+      <style>{`
+        @keyframes assistDots { 0%, 80%, 100% { opacity: 0.25; } 40% { opacity: 1; } }
+        @keyframes assistPop { from { transform: translateY(12px) scale(0.98); opacity: 0; } to { transform: translateY(0) scale(1); opacity: 1; } }
+      `}</style>
+
+      {/* Bouton flottant « ? » */}
+      {!open && (
+        <button
+          onClick={() => setOpen(true)}
+          title="Assistant d'aide — Comment faire ?"
+          aria-label="Ouvrir l'assistant d'aide"
+          style={{
+            position: "fixed", bottom: 24, right: 24, zIndex: 7000,
+            width: 56, height: 56, borderRadius: "50%", border: "none", cursor: "pointer",
+            background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white",
+            display: "flex", alignItems: "center", justifyContent: "center",
+            boxShadow: "0 8px 24px rgba(79,70,229,0.45)",
+          }}
+        >
+          <HelpIcon size={26} />
+        </button>
+      )}
+
+      {/* Panneau de chat */}
+      {open && (
+        <div style={{
+          position: "fixed", bottom: 24, right: 24, zIndex: 7000,
+          width: "min(400px, calc(100vw - 32px))", height: "min(640px, calc(100vh - 48px))",
+          background: C.white, borderRadius: 16, border: `1px solid ${C.border}`,
+          boxShadow: "0 20px 60px rgba(15,23,42,0.28)", display: "flex", flexDirection: "column",
+          overflow: "hidden", animation: "assistPop 0.18s ease",
+        }}>
+          {/* Header */}
+          <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", padding: "14px 16px", display: "flex", alignItems: "center", gap: 10 }}>
+            <div style={{ width: 34, height: 34, borderRadius: 10, background: "rgba(255,255,255,0.18)", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+              <HelpIcon size={20} />
+            </div>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div style={{ fontSize: 14, fontWeight: 700 }}>Assistant d'aide ✨</div>
+              <div style={{ fontSize: 11, color: "rgba(255,255,255,0.8)" }}>Comment faire ? · Questions techniques</div>
+            </div>
+            {messages.length > 0 && (
+              <button onClick={reset} title="Nouvelle conversation" style={{ background: "rgba(255,255,255,0.15)", border: "none", color: "white", cursor: "pointer", fontSize: 11, fontWeight: 600, borderRadius: 6, padding: "5px 9px" }}>
+                Effacer
+              </button>
+            )}
+            <button onClick={() => setOpen(false)} aria-label="Fermer" style={{ background: "none", border: "none", color: "white", cursor: "pointer", fontSize: 22, lineHeight: 1, padding: "0 2px" }}>×</button>
+          </div>
+
+          {/* Zone messages */}
+          <div ref={scrollRef} style={{ flex: 1, overflowY: "auto", padding: 16, background: C.bg }}>
+            {messages.length === 0 && (
+              <div>
+                <div style={{ fontSize: 13, color: C.textMuted, lineHeight: 1.6, marginBottom: 14 }}>
+                  Bonjour 👋 Je vous aide à utiliser le back-office HEUREKIA. Posez-moi une question
+                  <strong> « Comment faire… »</strong> ou une question technique sur la plateforme.
+                </div>
+                {suggestions.length > 0 && (
+                  <>
+                    <div style={{ fontSize: 11, fontWeight: 700, color: C.textLight, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Suggestions</div>
+                    <div style={{ display: "flex", flexDirection: "column", gap: 7 }}>
+                      {suggestions.map((s) => (
+                        <button key={s} onClick={() => send(s)} style={{ textAlign: "left", border: `1px solid ${C.border}`, background: C.white, borderRadius: 10, padding: "9px 12px", fontSize: 12.5, color: C.text, cursor: "pointer", lineHeight: 1.4 }}>
+                          {s}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+
+            {messages.map((m, i) => (
+              <div key={i} style={{ display: "flex", justifyContent: m.role === "user" ? "flex-end" : "flex-start", marginBottom: 10 }}>
+                <div style={{
+                  maxWidth: "85%", padding: "9px 13px", borderRadius: 12, fontSize: 13, lineHeight: 1.55,
+                  background: m.role === "user" ? C.accent : C.white,
+                  color: m.role === "user" ? "white" : C.text,
+                  border: m.role === "user" ? "none" : `1px solid ${C.border}`,
+                  borderBottomRightRadius: m.role === "user" ? 4 : 12,
+                  borderBottomLeftRadius: m.role === "user" ? 12 : 4,
+                  wordBreak: "break-word",
+                }}>
+                  {m.role === "assistant" ? <RichText text={m.content} /> : m.content}
+                </div>
+              </div>
+            ))}
+
+            {showTyping && (
+              <div style={{ display: "flex", justifyContent: "flex-start", marginBottom: 10 }}>
+                <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, borderBottomLeftRadius: 4, padding: "11px 14px", display: "flex", gap: 4 }}>
+                  {[0, 1, 2].map((d) => (
+                    <span key={d} style={{ width: 6, height: 6, borderRadius: "50%", background: C.textLight, animation: `assistDots 1.2s infinite ${d * 0.2}s` }} />
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {error && (
+              <div style={{ background: C.redBg, color: C.red, border: `1px solid ${C.red}33`, borderRadius: 10, padding: "9px 12px", fontSize: 12, marginTop: 4 }}>
+                {error}
+              </div>
+            )}
+          </div>
+
+          {/* Saisie */}
+          <div style={{ borderTop: `1px solid ${C.border}`, padding: 12, background: C.white }}>
+            <div style={{ display: "flex", alignItems: "flex-end", gap: 8 }}>
+              <textarea
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(input); } }}
+                placeholder="Ex : Comment ajouter une commune ?"
+                rows={1}
+                style={{
+                  flex: 1, resize: "none", maxHeight: 96, minHeight: 38, padding: "9px 12px",
+                  border: `1px solid ${C.border}`, borderRadius: 10, fontSize: 13, fontFamily: "inherit",
+                  outline: "none", color: C.text, lineHeight: 1.4,
+                }}
+                onFocus={(e) => { e.target.style.borderColor = C.accent; }}
+                onBlur={(e) => { e.target.style.borderColor = C.border; }}
+              />
+              {streaming ? (
+                <button onClick={stop} title="Arrêter" style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 10, border: "none", background: C.bg, color: C.textMuted, cursor: "pointer", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <span style={{ width: 11, height: 11, background: C.textMuted, borderRadius: 2, display: "block" }} />
+                </button>
+              ) : (
+                <button onClick={() => send(input)} disabled={!input.trim()} title="Envoyer" style={{ flexShrink: 0, width: 38, height: 38, borderRadius: 10, border: "none", background: input.trim() ? C.accent : C.border, color: "white", cursor: input.trim() ? "pointer" : "default", display: "flex", alignItems: "center", justifyContent: "center" }}>
+                  <SendIcon size={16} />
+                </button>
+              )}
+            </div>
+            <div style={{ fontSize: 10, color: C.textLight, marginTop: 6, textAlign: "center" }}>
+              Réponses générées par IA — vérifiez les actions sensibles.
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
 // ─── App Root ─────────────────────────────────────────────────────────────────
 export function SuperAdminApp() {
   return (
@@ -6269,6 +6612,7 @@ export function SuperAdminApp() {
           <Route path="*" element={<Navigate to="/admin" replace />} />
         </Routes>
       </div>
+      <AdminAssistant />
     </div>
   );
 }
