@@ -925,18 +925,23 @@ async function fetchGasparAlea(lat: number, lng: number, code_insee: string): Pr
 
 // Zonage sismique réglementaire AU POINT (georisques) — plus précis que la table
 // départementale (le zonage descend à la commune). Best-effort : null si KO.
+// Le chemin exact varie selon les versions de l'API (underscore vs tiret) : on
+// tente les deux et on retient la première réponse exploitable.
 async function fetchSeismicZoneAtPoint(lat: number, lng: number): Promise<string | null> {
-  try {
-    const url = `https://georisques.gouv.fr/api/v1/zonage_sismique?latlon=${lng}%2C${lat}`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (!r.ok) return null;
-    const data = await r.json() as { data?: Array<{ code_zone?: string | number; zone_sismicite?: string }> };
-    const row = data.data?.[0];
-    const code = row?.code_zone != null ? String(row.code_zone).trim() : "";
-    return /^[1-5]$/.test(code) ? code : null;
-  } catch {
-    return null;
+  for (const path of ["zonage_sismique", "zonage-sismique"]) {
+    try {
+      const url = `https://georisques.gouv.fr/api/v1/${path}?latlon=${lng}%2C${lat}`;
+      const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+      if (!r.ok) continue;
+      const data = await r.json() as { data?: Array<{ code_zone?: string | number; zone_sismicite?: string }> };
+      const row = data.data?.[0];
+      const code = row?.code_zone != null ? String(row.code_zone).trim() : "";
+      if (/^[1-5]$/.test(code)) return code;
+    } catch {
+      // variante suivante
+    }
   }
+  return null;
 }
 
 // Retrait-gonflement des argiles AU POINT (georisques /rga) — exposition
