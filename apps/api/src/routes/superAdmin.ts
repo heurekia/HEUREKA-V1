@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, site_settings, billing_prestations, billing_items, billing_costs, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
-import { resolvePeriod, summarizeRevenue, summarizeCosts, computeMrr, recognizedRevenueHt, recognizedCostHt, type RevenueLine, type CostLine, type Period } from "../services/billing.js";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, site_settings, billing_prestations, billing_plans, billing_items, billing_costs, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
+import { resolvePeriod, summarizeRevenue, summarizeCosts, computeMrr, recognizedRevenueHt, recognizedCostHt, matchPlanForPopulation, matchPlanForEpci, parsePopulation, type RevenueLine, type CostLine, type Period } from "../services/billing.js";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { invalidatePricingCache } from "../services/aiUsage.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
@@ -2429,6 +2429,12 @@ function bdate(v: unknown, fallbackToday = false): string | null {
   if (!s) return fallbackToday ? new Date().toISOString().slice(0, 10) : null;
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 }
+// Entier nullable : "" / absent → null, sinon entier (chiffres only).
+function bint(v: unknown): number | null {
+  if (v === null || v === undefined || (typeof v === "string" && v.trim() === "")) return null;
+  const n = typeof v === "string" ? parseInt(v.replace(/[^\d-]/g, ""), 10) : Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
 function round2(v: number): number {
   return Math.round((v + Number.EPSILON) * 100) / 100;
 }
@@ -2529,6 +2535,7 @@ superAdminRouter.delete("/billing/prestations/:id", async (req, res) => {
 const billingItemSelect = {
   id: billing_items.id,
   prestation_id: billing_items.prestation_id,
+  plan_id: billing_items.plan_id,
   commune_id: billing_items.commune_id,
   epci_id: billing_items.epci_id,
   label: billing_items.label,
@@ -2596,6 +2603,7 @@ function parseItemBody(body: Record<string, unknown>): { error: string } | { val
   return {
     values: {
       prestation_id: bstr(body.prestation_id) || null,
+      plan_id: bstr(body.plan_id) || null,
       commune_id: communeId,
       epci_id: epciId,
       label,
@@ -2743,15 +2751,127 @@ superAdminRouter.delete("/billing/costs/:id", async (req, res) => {
 superAdminRouter.get("/billing/clients", async (_req, res) => {
   try {
     const [comm, grp] = await Promise.all([
-      db.select({ id: communes.id, name: communes.name, ref: communes.insee_code }).from(communes).orderBy(asc(communes.name)),
+      db.select({ id: communes.id, name: communes.name, ref: communes.insee_code, population: communes.population }).from(communes).orderBy(asc(communes.name)),
       db.select({ id: epci.id, name: epci.name, ref: epci.siren, type: epci.type }).from(epci).orderBy(asc(epci.name)),
     ]);
     res.json({
-      communes: comm.map((c) => ({ type: "commune", id: c.id, name: c.name, ref: c.ref })),
+      communes: comm.map((c) => ({ type: "commune", id: c.id, name: c.name, ref: c.ref, population: parsePopulation(c.population) })),
       epci: grp.map((e) => ({ type: "epci", id: e.id, name: e.name, ref: e.ref, epci_type: e.type })),
     });
   } catch (err) {
     console.error("[billing/clients GET]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Grille tarifaire (plans par palier de population) ───────────────────────
+const PLAN_APPLIES = ["commune", "epci"];
+
+function parsePlanBody(body: Record<string, unknown>): { error: string } | { values: typeof billing_plans.$inferInsert } {
+  const code = bstr(body.code);
+  const name = bstr(body.name);
+  if (!code || !name) return { error: "Code et nom requis." };
+  const applies = bstr(body.applies_to) || "commune";
+  if (!PLAN_APPLIES.includes(applies)) return { error: "Cible invalide (commune ou epci)." };
+  const popMin = bint(body.pop_min);
+  const popMax = bint(body.pop_max);
+  if (popMin != null && popMax != null && popMin > popMax) return { error: "Population min. supérieure à la population max." };
+  return {
+    values: {
+      code, name,
+      target_label: bstr(body.target_label) || null,
+      pop_min: popMin,
+      pop_max: popMax,
+      applies_to: applies,
+      monthly_price_eur: bnum(body.monthly_price_eur),
+      annual_price_eur: bnum(body.annual_price_eur),
+      onboarding_initial_eur: bnum(body.onboarding_initial_eur),
+      onboarding_intermediate_eur: bnum(body.onboarding_intermediate_eur),
+      dossiers_per_month: bint(body.dossiers_per_month),
+      agents_included: bint(body.agents_included),
+      support_level: bstr(body.support_level) || null,
+      vat_rate: bnum(body.vat_rate, 20),
+      active: body.active !== false,
+      sort_order: Math.trunc(bnum(body.sort_order)),
+    },
+  };
+}
+
+superAdminRouter.get("/billing/plans", async (_req, res) => {
+  try {
+    const rows = await db.select().from(billing_plans)
+      .orderBy(asc(billing_plans.sort_order), asc(billing_plans.name));
+    res.json(rows);
+  } catch (err) {
+    console.error("[billing/plans GET]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Rattachement automatique d'un client à son plan (par population pour une
+// commune, palier EPCI pour un groupement). Le front l'utilise pour pré-remplir
+// le prix d'une ligne facturée — l'admin garde la main pour modifier.
+superAdminRouter.get("/billing/plans/resolve", async (req, res) => {
+  try {
+    const communeId = bstr(req.query.commune_id);
+    const epciId = bstr(req.query.epci_id);
+    const plans = await db.select().from(billing_plans);
+    if (epciId) {
+      return res.json({ client_type: "epci", population: null, plan: matchPlanForEpci(plans) });
+    }
+    if (communeId) {
+      const [c] = await db.select({ population: communes.population })
+        .from(communes).where(eq(communes.id, communeId)).limit(1);
+      const population = parsePopulation(c?.population ?? null);
+      return res.json({ client_type: "commune", population, plan: matchPlanForPopulation(plans, population) });
+    }
+    res.status(400).json({ error: "commune_id ou epci_id requis." });
+  } catch (err) {
+    console.error("[billing/plans/resolve]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.post("/billing/plans", async (req, res) => {
+  try {
+    const parsed = parsePlanBody(req.body ?? {});
+    if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+    const [row] = await db.insert(billing_plans)
+      .values({ ...parsed.values, updated_by: actorId(req) }).returning();
+    await logAudit(req, "admin_billing_plan_created", { metadata: { code: parsed.values.code } });
+    res.status(201).json(row);
+  } catch (err) {
+    const dup = err instanceof Error && /unique|duplicate/i.test(err.message);
+    console.error("[billing/plans POST]", err);
+    res.status(dup ? 409 : 500).json({ error: dup ? "Ce code de plan existe déjà." : "Erreur serveur" });
+  }
+});
+
+superAdminRouter.put("/billing/plans/:id", async (req, res) => {
+  try {
+    const parsed = parsePlanBody(req.body ?? {});
+    if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+    const [row] = await db.update(billing_plans)
+      .set({ ...parsed.values, updated_by: actorId(req), updated_at: new Date() })
+      .where(eq(billing_plans.id, req.params.id)).returning();
+    if (!row) return res.status(404).json({ error: "Plan introuvable." });
+    await logAudit(req, "admin_billing_plan_updated", { metadata: { id: req.params.id } });
+    res.json(row);
+  } catch (err) {
+    const dup = err instanceof Error && /unique|duplicate/i.test(err.message);
+    console.error("[billing/plans PUT]", err);
+    res.status(dup ? 409 : 500).json({ error: dup ? "Ce code de plan existe déjà." : "Erreur serveur" });
+  }
+});
+
+superAdminRouter.delete("/billing/plans/:id", async (req, res) => {
+  try {
+    const [row] = await db.delete(billing_plans).where(eq(billing_plans.id, req.params.id)).returning();
+    if (!row) return res.status(404).json({ error: "Plan introuvable." });
+    await logAudit(req, "admin_billing_plan_deleted", { metadata: { id: req.params.id } });
+    res.status(204).end();
+  } catch (err) {
+    console.error("[billing/plans DELETE]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

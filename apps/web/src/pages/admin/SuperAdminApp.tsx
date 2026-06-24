@@ -6261,6 +6261,7 @@ interface BillingPrestation {
 interface BillingItem {
   id: string;
   prestation_id: string | null;
+  plan_id: string | null;
   commune_id: string | null;
   epci_id: string | null;
   label: string;
@@ -6287,7 +6288,27 @@ interface BillingCost {
   end_date: string | null;
   note: string | null;
 }
-interface BillingClient { type: string; id: string; name: string; ref: string | null }
+interface BillingClient { type: string; id: string; name: string; ref: string | null; population?: number | null }
+interface BillingPlan {
+  id: string;
+  code: string;
+  name: string;
+  target_label: string | null;
+  pop_min: number | null;
+  pop_max: number | null;
+  applies_to: string;
+  monthly_price_eur: number;
+  annual_price_eur: number;
+  onboarding_initial_eur: number;
+  onboarding_intermediate_eur: number;
+  dossiers_per_month: number | null;
+  agents_included: number | null;
+  support_level: string | null;
+  vat_rate: number;
+  active: boolean;
+  sort_order: number;
+}
+interface PlanResolve { client_type: string; population: number | null; plan: BillingPlan | null }
 interface BillingClientsResp { communes: BillingClient[]; epci: (BillingClient & { epci_type?: string })[] }
 interface BillingSummary {
   period: { preset: string; from: string | null; to: string | null };
@@ -6581,11 +6602,27 @@ function CaParClient({ qs }: { qs: string }) {
 
 // ── Onglet : prestations facturées (lignes par client) ───────────────────────
 const emptyItemForm = () => ({
-  id: "", prestation_id: "", client: "", label: "", quantity: "1", unit_price_eur: "0",
+  id: "", prestation_id: "", plan_id: "", client: "", label: "", quantity: "1", unit_price_eur: "0",
   vat_rate: "20", billing_cycle: "yearly", start_date: new Date().toISOString().slice(0, 10),
   end_date: "", status: "active", note: "",
 });
 type ItemForm = ReturnType<typeof emptyItemForm>;
+
+// Applique un plan tarifaire (palier) au formulaire de ligne : prix annuel ou
+// mensuel selon `cycle`. L'utilisateur garde la main pour modifier ensuite.
+function applyPlanToForm(form: ItemForm, plan: BillingPlan, cycle: "yearly" | "monthly"): ItemForm {
+  const price = cycle === "yearly" ? plan.annual_price_eur : plan.monthly_price_eur;
+  return {
+    ...form,
+    plan_id: plan.id,
+    prestation_id: "",
+    label: `Abonnement plateforme — ${plan.name} (${cycle === "yearly" ? "annuel" : "mensuel"})`,
+    unit_price_eur: String(price),
+    vat_rate: String(plan.vat_rate),
+    billing_cycle: cycle,
+    quantity: "1",
+  };
+}
 
 function PrestationsFacturees() {
   const [items, setItems] = useState<BillingItem[] | null>(null);
@@ -6593,6 +6630,7 @@ function PrestationsFacturees() {
   const [catalogue, setCatalogue] = useState<BillingPrestation[]>([]);
   const [filter, setFilter] = useState("");
   const [modal, setModal] = useState<ItemForm | null>(null);
+  const [suggestion, setSuggestion] = useState<PlanResolve | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const { toast, setToast } = useBillToast();
@@ -6607,13 +6645,37 @@ function PrestationsFacturees() {
   }, [setToast]);
   useEffect(() => { load(); }, [load]);
 
-  const openAdd = () => setModal(emptyItemForm());
-  const openEdit = (it: BillingItem) => setModal({
-    id: it.id, prestation_id: it.prestation_id ?? "", client: clientKey(it.client_type, it.client_id ?? ""),
+  const openAdd = () => { setSuggestion(null); setModal(emptyItemForm()); };
+  const openEdit = (it: BillingItem) => { setSuggestion(null); setModal({
+    id: it.id, prestation_id: it.prestation_id ?? "", plan_id: it.plan_id ?? "", client: clientKey(it.client_type, it.client_id ?? ""),
     label: it.label, quantity: String(it.quantity), unit_price_eur: String(it.unit_price_eur),
     vat_rate: String(it.vat_rate), billing_cycle: it.billing_cycle, start_date: it.start_date,
     end_date: it.end_date ?? "", status: it.status, note: it.note ?? "",
-  });
+  }); };
+
+  // Rattachement automatique du plan tarifaire selon le client sélectionné.
+  // En création, pré-remplit le prix (annuel) tant que rien n'a été saisi —
+  // sinon on se contente d'afficher la suggestion (l'admin garde la main).
+  const clientSel = modal?.client ?? "";
+  useEffect(() => {
+    if (!clientSel) { setSuggestion(null); return; }
+    const [ctype, cid] = clientSel.split(":");
+    if (!ctype || !cid) { setSuggestion(null); return; }
+    let cancelled = false;
+    const param = ctype === "commune" ? "commune_id" : "epci_id";
+    api.get<PlanResolve>(`/admin/billing/plans/resolve?${param}=${encodeURIComponent(cid)}`)
+      .then((r) => {
+        if (cancelled) return;
+        setSuggestion(r);
+        setModal((m) => {
+          if (!m || m.id || m.prestation_id || !r.plan) return m;
+          if (m.unit_price_eur && m.unit_price_eur !== "0") return m; // ne pas écraser une saisie
+          return applyPlanToForm(m, r.plan, "yearly");
+        });
+      })
+      .catch(() => { if (!cancelled) setSuggestion(null); });
+    return () => { cancelled = true; };
+  }, [clientSel]);
 
   const onPickPrestation = (prestationId: string) => {
     setModal((m) => {
@@ -6621,7 +6683,7 @@ function PrestationsFacturees() {
       const p = catalogue.find((x) => x.id === prestationId);
       if (!p) return { ...m, prestation_id: "" };
       return {
-        ...m, prestation_id: prestationId, label: p.label,
+        ...m, prestation_id: prestationId, plan_id: "", label: p.label,
         unit_price_eur: String(p.default_unit_price_eur), vat_rate: String(p.default_vat_rate),
         billing_cycle: p.billing_cycle,
       };
@@ -6636,6 +6698,7 @@ function PrestationsFacturees() {
     setSaving(true);
     const body = {
       prestation_id: modal.prestation_id || null,
+      plan_id: modal.plan_id || null,
       commune_id: ctype === "commune" ? cid : null,
       epci_id: ctype === "epci" ? cid : null,
       label: modal.label.trim(),
@@ -6741,16 +6804,38 @@ function PrestationsFacturees() {
         <Modal title={modal.id ? "Modifier la prestation facturée" : "Nouvelle prestation facturée"} onClose={() => setModal(null)} width={620}>
           <div style={{ display: "grid", gap: 14 }}>
             <Field label="Client (commune ou EPCI)">
-              <select value={modal.client} onChange={(e) => setModal({ ...modal, client: e.target.value })} style={billInput}>
+              <select value={modal.client} onChange={(e) => setModal({ ...modal, client: e.target.value, plan_id: "" })} style={billInput}>
                 <option value="">— Sélectionner —</option>
                 <optgroup label="Communes">
-                  {clients.communes.map((c) => <option key={c.id} value={clientKey("commune", c.id)}>{c.name}</option>)}
+                  {clients.communes.map((c) => <option key={c.id} value={clientKey("commune", c.id)}>{c.name}{c.population != null ? ` (${c.population.toLocaleString("fr-FR")} hab)` : ""}</option>)}
                 </optgroup>
                 <optgroup label="Groupements / EPCI">
                   {clients.epci.map((e) => <option key={e.id} value={clientKey("epci", e.id)}>{e.name}</option>)}
                 </optgroup>
               </select>
             </Field>
+            {suggestion && (suggestion.plan ? (
+              <div style={{ padding: "12px 14px", borderRadius: 10, background: C.accentLight, border: `1px solid ${C.accent}` }}>
+                <div style={{ fontSize: 13, color: C.text, fontWeight: 600 }}>
+                  🏘️ Plan tarifaire : {suggestion.plan.name}
+                  {suggestion.plan.target_label ? <span style={{ color: C.textMuted, fontWeight: 500 }}> · {suggestion.plan.target_label}</span> : null}
+                  {suggestion.client_type === "commune" ? <span style={{ color: C.textMuted, fontWeight: 500 }}> · population {suggestion.population != null ? suggestion.population.toLocaleString("fr-FR") : "non renseignée"}</span> : null}
+                </div>
+                <div style={{ display: "flex", gap: 8, marginTop: 8, alignItems: "center", flexWrap: "wrap" }}>
+                  <span style={{ fontSize: 13, color: C.text }}>{fmtEuro(suggestion.plan.annual_price_eur)}/an · {fmtEuro(suggestion.plan.monthly_price_eur)}/mois</span>
+                  <div style={{ flex: 1 }} />
+                  <button onClick={() => { const p = suggestion.plan; if (p) setModal((m) => m ? applyPlanToForm(m, p, "yearly") : m); }}
+                    style={{ padding: "6px 12px", borderRadius: 8, border: "none", background: C.accent, color: "white", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Appliquer (annuel)</button>
+                  <button onClick={() => { const p = suggestion.plan; if (p) setModal((m) => m ? applyPlanToForm(m, p, "monthly") : m); }}
+                    style={{ padding: "6px 12px", borderRadius: 8, border: `1px solid ${C.accent}`, background: "white", color: C.accent, fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Appliquer (mensuel)</button>
+                </div>
+                {modal.plan_id === suggestion.plan.id && <div style={{ fontSize: 11, color: C.green, marginTop: 6 }}>✓ Plan appliqué — montant modifiable ci-dessous.</div>}
+              </div>
+            ) : (
+              <div style={{ padding: "10px 14px", borderRadius: 10, background: C.orangeBg, border: `1px solid ${C.orange}`, fontSize: 12.5, color: C.text }}>
+                Aucun plan ne correspond {suggestion.client_type === "commune" ? "à la population de cette commune (population non renseignée ?)" : "à ce groupement"}. Saisis le prix manuellement, ou complète la grille tarifaire.
+              </div>
+            ))}
             <Field label="Prestation du catalogue (pré-remplit prix & cycle, optionnel)">
               <select value={modal.prestation_id} onChange={(e) => onPickPrestation(e.target.value)} style={billInput}>
                 <option value="">— Ligne libre (hors catalogue) —</option>
@@ -7119,9 +7204,225 @@ function ChargesPanel() {
   );
 }
 
+// ── Onglet : grille tarifaire (plans par palier de population) ───────────────
+const APPLIES_LABELS: Record<string, string> = {
+  commune: "Commune (population)", epci: "EPCI / intercommunalité",
+};
+const emptyPlanForm = () => ({
+  id: "", code: "", name: "", target_label: "", applies_to: "commune",
+  pop_min: "", pop_max: "", monthly_price_eur: "0", annual_price_eur: "0",
+  onboarding_initial_eur: "0", onboarding_intermediate_eur: "0",
+  dossiers_per_month: "", agents_included: "", support_level: "", vat_rate: "20",
+  active: true, sort_order: "0",
+});
+type PlanForm = ReturnType<typeof emptyPlanForm>;
+
+function planToForm(p: BillingPlan): PlanForm {
+  return {
+    id: p.id, code: p.code, name: p.name, target_label: p.target_label ?? "", applies_to: p.applies_to,
+    pop_min: p.pop_min == null ? "" : String(p.pop_min),
+    pop_max: p.pop_max == null ? "" : String(p.pop_max),
+    monthly_price_eur: String(p.monthly_price_eur), annual_price_eur: String(p.annual_price_eur),
+    onboarding_initial_eur: String(p.onboarding_initial_eur), onboarding_intermediate_eur: String(p.onboarding_intermediate_eur),
+    dossiers_per_month: p.dossiers_per_month == null ? "" : String(p.dossiers_per_month),
+    agents_included: p.agents_included == null ? "" : String(p.agents_included),
+    support_level: p.support_level ?? "", vat_rate: String(p.vat_rate), active: p.active, sort_order: String(p.sort_order),
+  };
+}
+function planFormToBody(f: PlanForm) {
+  return {
+    code: f.code.trim(), name: f.name.trim(), target_label: f.target_label.trim() || null, applies_to: f.applies_to,
+    pop_min: f.pop_min.trim() === "" ? null : Number(f.pop_min),
+    pop_max: f.pop_max.trim() === "" ? null : Number(f.pop_max),
+    monthly_price_eur: Number(f.monthly_price_eur) || 0, annual_price_eur: Number(f.annual_price_eur) || 0,
+    onboarding_initial_eur: Number(f.onboarding_initial_eur) || 0, onboarding_intermediate_eur: Number(f.onboarding_intermediate_eur) || 0,
+    dossiers_per_month: f.dossiers_per_month.trim() === "" ? null : Number(f.dossiers_per_month),
+    agents_included: f.agents_included.trim() === "" ? null : Number(f.agents_included),
+    support_level: f.support_level.trim() || null, vat_rate: Number(f.vat_rate) || 0, active: f.active, sort_order: Number(f.sort_order) || 0,
+  };
+}
+const fmtLimit = (v: number | null) => (v == null ? "Illimité" : v.toLocaleString("fr-FR"));
+
+function GrilleTarifaire() {
+  const [rows, setRows] = useState<BillingPlan[] | null>(null);
+  const [modal, setModal] = useState<PlanForm | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const { toast, setToast } = useBillToast();
+
+  const load = useCallback(() => {
+    api.get<BillingPlan[]>("/admin/billing/plans")
+      .then(setRows).catch((e) => setToast({ kind: "err", msg: (e as Error).message }));
+  }, [setToast]);
+  useEffect(() => { load(); }, [load]);
+
+  const save = async () => {
+    if (!modal) return;
+    if (!modal.code.trim() || !modal.name.trim()) { setToast({ kind: "err", msg: "Code et nom requis." }); return; }
+    setSaving(true);
+    try {
+      if (modal.id) await api.put(`/admin/billing/plans/${modal.id}`, planFormToBody(modal));
+      else await api.post("/admin/billing/plans", planFormToBody(modal));
+      setModal(null);
+      setToast({ kind: "ok", msg: "Plan enregistré." });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const del = async (id: string) => {
+    setConfirmId(null);
+    try {
+      await api.delete(`/admin/billing/plans/${id}`);
+      setToast({ kind: "ok", msg: "Plan supprimé." });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    }
+  };
+
+  if (!rows) return <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>;
+  const th: React.CSSProperties = { padding: "10px 14px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12, whiteSpace: "nowrap" };
+  const thr: React.CSSProperties = { ...th, textAlign: "right" };
+  return (
+    <>
+      <BillToast toast={toast} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 12, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, color: C.textMuted, maxWidth: 680 }}>
+          Paliers de prix selon la population. À l'ajout d'une ligne facturée, la commune est rattachée automatiquement au palier correspondant et le prix est pré-rempli (modifiable). Le palier « EPCI » s'applique aux groupements.
+        </div>
+        <button onClick={() => setModal(emptyPlanForm())} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>+ Ajouter un plan</button>
+      </div>
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+        <div style={{ overflowX: "auto" }}>
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13, minWidth: 980 }}>
+            <thead>
+              <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                <th style={th}>Plan</th>
+                <th style={th}>Cible</th>
+                <th style={thr}>Mensuel</th>
+                <th style={thr}>Annuel</th>
+                <th style={thr}>Onb. initial</th>
+                <th style={thr}>Onb. interm.</th>
+                <th style={thr}>Dossiers/mois</th>
+                <th style={thr}>Agents</th>
+                <th style={th}>Support</th>
+                <th style={th}>Actif</th>
+                <th style={th} />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((p) => (
+                <tr key={p.id} style={{ borderTop: `1px solid ${C.border}`, opacity: p.active ? 1 : 0.55 }}>
+                  <td style={{ padding: "11px 14px", color: C.text, fontWeight: 700 }}>{p.name}</td>
+                  <td style={{ padding: "11px 14px", color: C.textMuted, whiteSpace: "nowrap" }}>{p.target_label ?? (p.applies_to === "epci" ? "EPCI" : "—")}</td>
+                  <td style={{ padding: "11px 14px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{fmtEuro0(p.monthly_price_eur)}</td>
+                  <td style={{ padding: "11px 14px", textAlign: "right", color: C.text, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmtEuro0(p.annual_price_eur)}</td>
+                  <td style={{ padding: "11px 14px", textAlign: "right", color: C.textMuted, fontVariantNumeric: "tabular-nums" }}>{fmtEuro0(p.onboarding_initial_eur)}</td>
+                  <td style={{ padding: "11px 14px", textAlign: "right", color: C.textMuted, fontVariantNumeric: "tabular-nums" }}>{fmtEuro0(p.onboarding_intermediate_eur)}</td>
+                  <td style={{ padding: "11px 14px", textAlign: "right", color: C.textMuted }}>{fmtLimit(p.dossiers_per_month)}</td>
+                  <td style={{ padding: "11px 14px", textAlign: "right", color: C.textMuted }}>{fmtLimit(p.agents_included)}</td>
+                  <td style={{ padding: "11px 14px", color: C.textMuted, whiteSpace: "nowrap" }}>{p.support_level ?? "—"}</td>
+                  <td style={{ padding: "11px 14px" }}>{p.active ? <Badge label="Actif" color={C.green} bg={C.greenBg} /> : <Badge label="Inactif" color={C.textMuted} bg={C.bg} />}</td>
+                  <td style={{ padding: "11px 14px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button onClick={() => setModal(planToForm(p))} style={{ padding: "4px 10px", marginRight: 6, borderRadius: 6, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 12, cursor: "pointer" }}>Éditer</button>
+                    <button onClick={() => setConfirmId(p.id)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: "white", color: C.red, fontSize: 12, cursor: "pointer" }}>×</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      {modal && (
+        <Modal title={modal.id ? "Modifier le plan" : "Nouveau plan"} onClose={() => setModal(null)} width={640}>
+          <div style={{ display: "grid", gap: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Code (identifiant unique)">
+                <input value={modal.code} disabled={!!modal.id} onChange={(e) => setModal({ ...modal, code: e.target.value })} style={{ ...billInput, fontFamily: "monospace", background: modal.id ? C.bg : C.white }} placeholder="moyenne" />
+              </Field>
+              <Field label="Nom du plan">
+                <input value={modal.name} onChange={(e) => setModal({ ...modal, name: e.target.value })} style={billInput} placeholder="Commune moyenne" />
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 14 }}>
+              <Field label="Cible (libellé affiché)">
+                <input value={modal.target_label} onChange={(e) => setModal({ ...modal, target_label: e.target.value })} style={billInput} placeholder="3 001 à 5 000 hab" />
+              </Field>
+              <Field label="Rattachement">
+                <select value={modal.applies_to} onChange={(e) => setModal({ ...modal, applies_to: e.target.value })} style={billInput}>
+                  {Object.entries(APPLIES_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </Field>
+            </div>
+            {modal.applies_to === "commune" && (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+                <Field label="Population min. (vide = pas de borne)">
+                  <input type="number" step="1" min="0" value={modal.pop_min} onChange={(e) => setModal({ ...modal, pop_min: e.target.value })} style={billInput} placeholder="3001" />
+                </Field>
+                <Field label="Population max. (vide = pas de borne)">
+                  <input type="number" step="1" min="0" value={modal.pop_max} onChange={(e) => setModal({ ...modal, pop_max: e.target.value })} style={billInput} placeholder="5000" />
+                </Field>
+              </div>
+            )}
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Prix mensuel HT (€)">
+                <input type="number" step="0.01" min="0" value={modal.monthly_price_eur} onChange={(e) => setModal({ ...modal, monthly_price_eur: e.target.value })} style={billInput} />
+              </Field>
+              <Field label="Prix annuel HT (€)">
+                <input type="number" step="0.01" min="0" value={modal.annual_price_eur} onChange={(e) => setModal({ ...modal, annual_price_eur: e.target.value })} style={billInput} />
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Onboarding initial HT (€, one-shot)">
+                <input type="number" step="0.01" min="0" value={modal.onboarding_initial_eur} onChange={(e) => setModal({ ...modal, onboarding_initial_eur: e.target.value })} style={billInput} />
+              </Field>
+              <Field label="Onboarding intermédiaire HT (€)">
+                <input type="number" step="0.01" min="0" value={modal.onboarding_intermediate_eur} onChange={(e) => setModal({ ...modal, onboarding_intermediate_eur: e.target.value })} style={billInput} />
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Dossiers / mois (vide = illimité)">
+                <input type="number" step="1" min="0" value={modal.dossiers_per_month} onChange={(e) => setModal({ ...modal, dossiers_per_month: e.target.value })} style={billInput} placeholder="Illimité" />
+              </Field>
+              <Field label="Agents inclus (vide = illimité)">
+                <input type="number" step="1" min="0" value={modal.agents_included} onChange={(e) => setModal({ ...modal, agents_included: e.target.value })} style={billInput} placeholder="Illimité" />
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr 1fr", gap: 14, alignItems: "end" }}>
+              <Field label="Support">
+                <input value={modal.support_level} onChange={(e) => setModal({ ...modal, support_level: e.target.value })} style={billInput} placeholder="Prioritaire, SLA 99.9%…" />
+              </Field>
+              <Field label="TVA (%)">
+                <input type="number" step="0.1" min="0" value={modal.vat_rate} onChange={(e) => setModal({ ...modal, vat_rate: e.target.value })} style={billInput} />
+              </Field>
+              <Field label="Ordre">
+                <input type="number" step="1" value={modal.sort_order} onChange={(e) => setModal({ ...modal, sort_order: e.target.value })} style={billInput} />
+              </Field>
+            </div>
+            <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: C.text }}>
+              <input type="checkbox" checked={modal.active} onChange={(e) => setModal({ ...modal, active: e.target.checked })} />
+              Plan actif (proposé au rattachement automatique)
+            </label>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+              <button onClick={() => setModal(null)} style={{ padding: "10px 18px", borderRadius: 8, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Annuler</button>
+              <button onClick={save} disabled={saving} style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: C.accent, color: "white", fontSize: 14, fontWeight: 600, cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1 }}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {confirmId && <ConfirmDialog message="Supprimer ce plan tarifaire ? Les lignes déjà facturées sont conservées." onConfirm={() => del(confirmId)} onCancel={() => setConfirmId(null)} />}
+    </>
+  );
+}
+
 // ── Page Facturation (onglets) ───────────────────────────────────────────────
 function Facturation() {
-  const [tab, setTab] = useState<"resultat" | "clients" | "prestations" | "catalogue" | "charges">("resultat");
+  const [tab, setTab] = useState<"resultat" | "clients" | "prestations" | "grille" | "catalogue" | "charges">("resultat");
   const [preset, setPreset] = useState("year");
   const [from, setFrom] = useState("");
   const [to, setTo] = useState("");
@@ -7131,6 +7432,7 @@ function Facturation() {
     { key: "resultat", label: "Compte de résultat", icon: "📊" },
     { key: "clients", label: "CA par client", icon: "🏛" },
     { key: "prestations", label: "Prestations facturées", icon: "🧾" },
+    { key: "grille", label: "Grille tarifaire", icon: "📐" },
     { key: "catalogue", label: "Catalogue", icon: "📦" },
     { key: "charges", label: "Charges", icon: "📉" },
   ];
@@ -7170,6 +7472,7 @@ function Facturation() {
       {tab === "resultat" && <CompteDeResultat qs={qs} />}
       {tab === "clients" && <CaParClient qs={qs} />}
       {tab === "prestations" && <PrestationsFacturees />}
+      {tab === "grille" && <GrilleTarifaire />}
       {tab === "catalogue" && <Catalogue />}
       {tab === "charges" && <ChargesPanel />}
     </PageShell>

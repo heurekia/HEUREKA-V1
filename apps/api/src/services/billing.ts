@@ -247,6 +247,48 @@ export function summarizeCosts(costs: CostLine[], period: Period, now: Date): Co
   return { total_ht: round2(total_ht), vat_deductible: round2(vat_deductible) };
 }
 
+// ── Plans tarifaires (paliers de population) ─────────────────────────────────
+
+export interface PlanLike {
+  applies_to: string;
+  active?: boolean | null;
+  pop_min: number | null;
+  pop_max: number | null;
+  sort_order: number;
+}
+
+/** Parse une population stockée en texte ("12 345", "12345 hab") → nombre | null. */
+export function parsePopulation(v: string | number | null | undefined): number | null {
+  if (v == null) return null;
+  if (typeof v === "number") return Number.isFinite(v) ? v : null;
+  const digits = v.replace(/[^\d]/g, "");
+  if (!digits) return null;
+  const n = parseInt(digits, 10);
+  return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * Plan « commune » dont la tranche [pop_min, pop_max] (bornes incluses, NULL =
+ * ouvert) contient `population`. En cas de chevauchement, le plus petit
+ * sort_order gagne. Renvoie null si population inconnue ou aucun palier.
+ */
+export function matchPlanForPopulation<T extends PlanLike>(plans: T[], population: number | null): T | null {
+  if (population == null) return null;
+  const candidates = plans
+    .filter((p) => (p.active ?? true) && p.applies_to === "commune")
+    .filter((p) => (p.pop_min == null || population >= p.pop_min) && (p.pop_max == null || population <= p.pop_max))
+    .sort((a, b) => a.sort_order - b.sort_order);
+  return candidates[0] ?? null;
+}
+
+/** Plan « epci » (intercommunalité). Le plus petit sort_order gagne. */
+export function matchPlanForEpci<T extends PlanLike>(plans: T[]): T | null {
+  const candidates = plans
+    .filter((p) => (p.active ?? true) && p.applies_to === "epci")
+    .sort((a, b) => a.sort_order - b.sort_order);
+  return candidates[0] ?? null;
+}
+
 // ── Période ──────────────────────────────────────────────────────────────────
 
 /**
