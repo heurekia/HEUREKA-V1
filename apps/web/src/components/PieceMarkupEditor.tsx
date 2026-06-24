@@ -6,8 +6,10 @@ import {
   MousePointer2, Circle, Square, ArrowUpRight, Pen, Type as TypeIcon,
   Trash2, X, Eye, EyeOff, Save, Send, Download, ChevronLeft, ChevronRight, Loader2,
   Ruler, MoveHorizontal, Hexagon, ZoomIn, ZoomOut, Hand, Maximize2,
+  SlidersHorizontal, ChevronUp, ChevronDown,
 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
+import { usePersistentBoolean } from "../hooks/usePersistentBoolean";
 
 // Worker pdfjs embarqué par Vite (cf. PdfAnnotator) — pas de fetch CDN (CSP).
 pdfjs.GlobalWorkerOptions.workerSrc = new URL(
@@ -321,6 +323,9 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
   // Indicateur de persistance d'une marque (les annotations sont enregistrées
   // sur le dossier en continu — pas besoin de télécharger).
   const [savingMark, setSavingMark] = useState(false);
+  // Pli / dépli de la barre d'outils — préférence mémorisée. Replié, on garde
+  // le strict nécessaire (zoom, pages, actions) et le document gagne en hauteur.
+  const [toolsCollapsed, , toggleTools] = usePersistentBoolean("heureka.markupToolsCollapsed", false);
 
   const stageRef = useRef<HTMLDivElement>(null);  // conteneur scrollable (mesure largeur)
   const mediaRef = useRef<HTMLDivElement>(null);   // wrapper média + svg (mesure taille rendue)
@@ -941,6 +946,14 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
     borderColor: active ? "#4F46E5" : "#E2E8F0", background: active ? "#4F46E5" : "white",
   });
 
+  // Outils contextuels : on n'affiche couleur/épaisseur que lorsqu'on trace ou
+  // qu'une marque est sélectionnée (sinon ce sont des contrôles morts) ; le bloc
+  // échelle/mesures n'apparaît que dans son contexte (outil dédié ou échelle déjà
+  // posée). De quoi alléger la barre sans rien retirer de l'outillage.
+  const showStyle = tool !== "select" || selected != null;
+  const showMeasure = tool === "scale" || tool === "measure" || pageMpp != null;
+  const activeTool = TOOLS.find((t) => t.key === tool);
+
   // Intégré : remplit le conteneur du visualiseur (pas d'overlay). Sinon :
   // overlay plein écran autonome (fenêtre modale).
   const rootStyle: React.CSSProperties = embedded
@@ -969,6 +982,19 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
 
         {/* Barre d'outils */}
         <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "8px 16px", borderBottom: "1px solid #EEF2F7", flexWrap: "wrap" }}>
+          {/* Plier / déplier les outils — laisse plus de hauteur au document pour
+              consulter le plan. Préférence mémorisée entre dossiers. */}
+          <button type="button" onClick={toggleTools} aria-pressed={!toolsCollapsed}
+            title={toolsCollapsed ? "Déplier les outils d'annotation" : "Plier les outils — consultation épurée"}
+            style={{ display: "inline-flex", alignItems: "center", gap: 5, height: 34, padding: "0 9px", borderRadius: 8, cursor: "pointer", border: "1px solid #E2E8F0", background: "white", color: "#475569", fontSize: 11.5, fontWeight: 600, flexShrink: 0 }}>
+            <SlidersHorizontal size={15} /> Outils {toolsCollapsed ? <ChevronDown size={14} /> : <ChevronUp size={14} />}
+          </button>
+          {toolsCollapsed && activeTool && (
+            <span title={`Outil actif : ${activeTool.label}`} style={{ display: "inline-flex", alignItems: "center", gap: 6, color: "#64748b", fontSize: 12 }}>
+              {activeTool.icon}<span>{activeTool.label}</span>
+            </span>
+          )}
+          {!toolsCollapsed && (<>
           <div style={{ display: "flex", gap: 6 }}>
             {TOOLS.map((t) => (
               <button key={t.key} type="button" title={t.label} onClick={() => { setTool(t.key); setPanMode(false); if (t.key !== "select") setSelectedId(null); if (t.key !== "polygon" && polyDraft) cancelPoly(); }} style={btn(tool === t.key)}>
@@ -976,6 +1002,9 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
               </button>
             ))}
           </div>
+          {/* Couleur & épaisseur : pertinentes seulement en tracé ou sur une
+              marque sélectionnée → masquées sinon pour dégager la barre. */}
+          {showStyle && (<>
           <div style={{ width: 1, height: 24, background: "#E2E8F0" }} />
           <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
             {COLORS.map((c) => (
@@ -991,6 +1020,8 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
               </button>
             ))}
           </div>
+          </>)}
+          </>)}
           {/* Zoom + déplacement (pan) */}
           <div style={{ width: 1, height: 24, background: "#E2E8F0" }} />
           <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
@@ -1012,6 +1043,9 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
               </div>
             </>
           )}
+          {/* Échelle & mesures : repliées avec la barre, et hors de leur
+              contexte (outil échelle/mesure actif, ou échelle déjà calibrée). */}
+          {!toolsCollapsed && showMeasure && (<>
           <div style={{ width: 1, height: 24, background: "#E2E8F0" }} />
           <div style={{ position: "relative" }}>
             <button
@@ -1066,6 +1100,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
               </div>
             )}
           </div>
+          </>)}
           {/* Avant / Après : masque ou affiche le calque d'annotations. */}
           <div style={{ display: "inline-flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden" }} title="Comparer l'original (Avant) et la version annotée (Après)">
             <button type="button" onClick={() => setShowOriginal(true)}

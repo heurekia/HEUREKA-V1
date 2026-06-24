@@ -32,6 +32,11 @@ export type DossierInfo = {
   instructeur?: string;
   instructeur_id?: string;
   workflow?: WorkflowMeta;
+  // Email réel du pétitionnaire (null si compte interne/placeholder), état de son
+  // compte, et si la mairie peut l'inviter à activer son espace citoyen.
+  petitionnaire_email?: string | null;
+  petitionnaire_is_placeholder?: boolean;
+  petitionnaire_can_invite?: boolean;
   lat?: number; lng?: number;
   // Analyse parcellaire propagée depuis la création du dossier côté citoyen,
   // évite un re-fetch /analyse-parcelle à l'ouverture.
