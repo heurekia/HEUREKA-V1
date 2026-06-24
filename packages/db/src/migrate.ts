@@ -1428,6 +1428,34 @@ ON CONFLICT (code) DO NOTHING;
 -- Rattachement d'une ligne facturée au plan tarifaire appliqué (traçabilité).
 ALTER TABLE billing_items ADD COLUMN IF NOT EXISTS plan_id uuid REFERENCES billing_plans(id) ON DELETE SET NULL;
 
+-- Prestations catalogue générées depuis la grille tarifaire : un abonnement
+-- (annuel + mensuel) et l'onboarding (initial + intermédiaire) par palier.
+-- Maintenues en phase par l'API à chaque édition d'un plan ; supprimées en
+-- cascade si le plan disparaît.
+ALTER TABLE billing_prestations ADD COLUMN IF NOT EXISTS plan_id uuid REFERENCES billing_plans(id) ON DELETE CASCADE;
+ALTER TABLE billing_prestations ADD COLUMN IF NOT EXISTS plan_component text;
+CREATE INDEX IF NOT EXISTS idx_billing_prestations_plan ON billing_prestations(plan_id);
+
+INSERT INTO billing_prestations (code, label, description, default_unit_price_eur, unit, default_vat_rate, billing_cycle, active, sort_order, plan_id, plan_component)
+SELECT
+  'plan_' || p.code || '_' || comp.key,
+  p.name || ' — ' || comp.label,
+  'Généré depuis la grille tarifaire',
+  CASE comp.key
+    WHEN 'abo_annuel'  THEN p.annual_price_eur
+    WHEN 'abo_mensuel' THEN p.monthly_price_eur
+    WHEN 'onb_initial' THEN p.onboarding_initial_eur
+    ELSE p.onboarding_intermediate_eur END,
+  comp.unit, p.vat_rate, comp.cycle, p.active, p.sort_order * 10 + comp.ord, p.id, comp.key
+FROM billing_plans p
+CROSS JOIN (VALUES
+  ('abo_annuel',  'Abonnement annuel',        'an',      'yearly',   1),
+  ('abo_mensuel', 'Abonnement mensuel',       'mois',    'monthly',  2),
+  ('onb_initial', 'Onboarding initial',       'forfait', 'one_shot', 3),
+  ('onb_interm',  'Onboarding intermédiaire', 'forfait', 'one_shot', 4)
+) AS comp(key, label, unit, cycle, ord)
+ON CONFLICT (code) DO NOTHING;
+
 -- ── Réglages du site public (singleton id=1) ──────────────────────────────
 -- Pilote le mode « bientôt en ligne » : page vitrine + mot de passe d'accès
 -- sur le portail public (www.heurekia.com + apex), activable / désactivable
