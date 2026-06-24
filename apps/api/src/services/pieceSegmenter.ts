@@ -30,7 +30,7 @@ import { queuePieceOcr } from "./pieceOcrQueue.js";
 // ── Réglages ────────────────────────────────────────────────────────────────
 const REVIEW_THRESHOLD = 0.7;     // sous ce score, le segment est marqué « à vérifier »
 const MIN_CODE_CONFIDENCE = 0.35; // sous ce score, la page bascule en « autre »
-const VISION_DPI = 100;           // basse résolution = passe de classification éco
+const VISION_DPI = 130;           // assez net pour lire le petit texte du cartouche, sans exploser le payload
 const VISION_BATCH = 6;           // pages par appel vision (borne la taille du payload)
 const MAX_PAGES = 60;             // au-delà, on ne segmente pas page à page (filet)
 
@@ -80,6 +80,7 @@ interface Trace {
 const SEGMENT_SYSTEM = `Tu es un agent d'instruction d'urbanisme expérimenté. On te transmet, page par page, le contenu d'un dossier déposé en UN SEUL fichier (CERFA + pièces type PCMI/PC/DP). Pour CHAQUE page, identifie à quelle(s) pièce(s) réglementaire(s) elle appartient.
 
 PRIORITÉ AU CARTOUCHE — les plans d'architecte portent un CARTOUCHE (encadré, le plus souvent EN BAS de la planche) qui NOMME la pièce, très souvent avec son CODE officiel (« PCMI2 », « PCMI 7 - PCMI 8 », « PC5 », « DP4 ») et/ou son intitulé (« PLAN DE MASSE », « PRISES DE VUE », « FAÇADES »). LIS ce cartouche en priorité : c'est la source la plus fiable. Quand tu y vois un ou plusieurs codes, reporte-les TELS QUELS dans "codes" (ex. ["PCMI7","PCMI8"] pour une planche qui porte les deux). Une même planche peut porter deux codes = page partagée.
+ROTATION — la planche scannée peut être PIVOTÉE (90°, 180° ou 270°) : le cartouche se retrouve alors sur un côté ou en haut, et son texte est tourné. Lis-le quand même, quelle que soit l'orientation (lis le texte pivoté mentalement) ; cherche le cartouche le long des QUATRE bords de la page, pas seulement en bas.
 
 Types possibles pour "types" (et UNIQUEMENT ceux-là) :
 - "cerfa" : formulaire CERFA de demande
