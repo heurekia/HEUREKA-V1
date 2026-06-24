@@ -101,3 +101,28 @@ export function fmtConvTime(iso: string): string {
   if (d.toDateString() === yesterday.toDateString()) return "Hier";
   return d.toLocaleDateString("fr-FR");
 }
+
+// Carte commune → code INSEE. Amorce/repli codé en dur (fusionné puis
+// écrasé par /mairie/my-communes au runtime). À terme : 100% API.
+export const COMMUNE_INSEE: Record<string, string> = {
+  "Ballan-Miré": "37018",
+  "Berthenay": "37024",
+  "Tours": "37261",
+  "Saint-Avertin": "37208",
+  "Joué-lès-Tours": "37122",
+  "La Riche": "37195",
+};
+
+// Dossier tel que renvoyé par GET /mairie/dossiers (liste, recherche).
+export type ApiDossier = {
+  id: string; numero: string; type: string; status: string;
+  adresse: string | null; commune: string | null; description: string | null;
+  date_depot: string | null; date_limite_instruction: string | null;
+  demandeur: string;
+  instructeur_id?: string | null;
+  instructeur?: string | null;
+  // Vrai tant qu'une pièce du dossier est encore `pending`/`processing` côté
+  // worker OCR. La ligne est alors grisée et non cliquable dans la liste, et
+  // le détail renvoie 423.
+  ocr_processing?: boolean;
+};
