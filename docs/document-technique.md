@@ -280,9 +280,10 @@ Types métier transverses (`WorkflowError`, `legalArticlesCatalog`).
 | Sous-domaine | Public attendu | Espace |
 |---|---|---|
 | `www.heurekia.com` | Citoyens, presse, documentation publique | Pages publiques (login citoyen, mentions légales, politique de confidentialité) + espace citoyen authentifié |
-| `app.heurekia.com` | Agents (mairie, instructeur, admin), services externes | Espace mairie, admin, service externe |
+| `app.heurekia.com` | Agents (mairie, instructeur), services externes | Espace mairie, service externe |
+| `admin.heurekia.com` | Super-administrateurs Heurekia | Console d'administration (communes, groupements, rôles, utilisateurs, coûts IA, audit, conformité) |
 
-Le cookie JWT est segmenté par sous-domaine (`token_app` vs `token_www`) pour éviter qu'une fuite d'un espace contamine l'autre.
+Le cookie JWT est segmenté par sous-domaine (`token_admin` / `token_app` / `token_www`) pour éviter qu'une fuite d'un espace contamine l'autre. Le super-admin dispose ainsi d'une session **isolée** : il doit se connecter directement sur `admin.heurekia.com` (le portail est servi à la racine du sous-domaine ; en local il reste sous `/admin`). Les anciens liens `app.heurekia.com/admin/*` sont redirigés vers `admin.heurekia.com`.
 
 ### 6.2 Routes publiques (`www`)
 

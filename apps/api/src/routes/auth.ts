@@ -56,19 +56,27 @@ export const COOKIE_OPTIONS = {
   httpOnly: true,
   secure: IS_PROD,
   sameSite: "lax" as const,
-  // Shared across www/app subdomains in production
+  // Domaine partagé par les sous-domaines www/app/admin en production. Le
+  // cloisonnement des sessions est assuré par le NOM du cookie (cf. cookieNameFor),
+  // pas par le domaine.
   ...(IS_PROD ? { domain: ".heurekia.com" } : {}),
   maxAge: 7 * 24 * 60 * 60 * 1000, // 7 days
   path: "/",
 };
 
-// Distinct cookie names per portal so a citoyen session on www.heurekia.com
-// and a mairie session on app.heurekia.com can coexist in the same browser.
+// Distinct cookie names per portal so sessions of different portals can coexist
+// in the same browser WITHOUT bleeding into each other :
+//   - citoyen  sur www.heurekia.com   → token_www
+//   - mairie   sur app.heurekia.com   → token_app
+//   - super-admin sur admin.heurekia.com → token_admin (session isolée)
 // Primary signal: `req.hostname` (Host header, always present). Origin/Referer
 // are not always sent — e.g. browser does NOT send Origin on same-origin GETs.
-export function cookieNameFor(req: AuthRequest): "token_app" | "token_www" {
+// NB : "admin.heurekia.com" ne contient PAS "app.heurekia.com" comme sous-chaîne,
+// donc l'ordre des tests ne crée pas de collision.
+export function cookieNameFor(req: AuthRequest): "token_admin" | "token_app" | "token_www" {
   const host = (req.hostname ?? "").toLowerCase();
   const origin = ((req.headers.origin as string | undefined) ?? (req.headers.referer as string | undefined) ?? "").toLowerCase();
+  if (host.includes("admin.heurekia.com") || origin.includes("admin.heurekia.com")) return "token_admin";
   const isApp = host.includes("app.heurekia.com") || origin.includes("app.heurekia.com");
   return isApp ? "token_app" : "token_www";
 }

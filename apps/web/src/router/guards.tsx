@@ -1,6 +1,7 @@
 import { useEffect } from "react";
 import { Navigate, useLocation } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
+import { ADMIN_HOST, adminPath } from "./adminBase";
 
 const WWW = "www.heurekia.com";
 const APP = "app.heurekia.com";
@@ -38,34 +39,60 @@ export function CrossSubdomainRedirect({ to }: { to: string }) {
   return null;
 }
 
+// Compatibilité ascendante : les anciens liens app.heurekia.com/admin/* sont
+// renvoyés vers le portail dédié admin.heurekia.com en conservant le sous-chemin
+// (le préfixe /admin est retiré : /admin/communes → /communes) et la query.
+export function AdminPortalRedirect() {
+  useEffect(() => {
+    const sub = window.location.pathname.replace(/^\/admin/, "") || "/";
+    window.location.href = `https://${ADMIN_HOST}${sub}${window.location.search}`;
+  }, []);
+  return null;
+}
+
 export function ProtectedRoute({
   children,
   roles,
   loginPath = "/login",
+  deniedPath = "/",
 }: {
   children: React.ReactNode;
   roles?: string[];
   loginPath?: string;
+  // Destination quand l'utilisateur est connecté mais n'a pas le bon rôle.
+  // Défaut "/" (comportement historique). Sur le portail admin, "/" est
+  // lui-même protégé → on passe loginPath pour éviter une boucle de redirection.
+  deniedPath?: string;
 }) {
   const { user, loading } = useAuth();
   if (loading) return <Spinner />;
   if (!user) return <Navigate to={loginPath} replace />;
-  if (roles && !roles.includes(user.role)) return <Navigate to="/" replace />;
+  if (roles && !roles.includes(user.role)) return <Navigate to={deniedPath} replace />;
   return <>{children}</>;
 }
 
-// context="www" → public portal (www.heurekia.com)
-// context="app" → pro portal (app.heurekia.com)
+// context="www"   → public portal (www.heurekia.com)
+// context="app"   → pro portal (app.heurekia.com)
+// context="admin" → super-admin portal (admin.heurekia.com)
 export function PublicOnlyRoute({
   children,
   context,
 }: {
   children: React.ReactNode;
-  context: "www" | "app";
+  context: "www" | "app" | "admin";
 }) {
   const { user, loading } = useAuth();
   const location = useLocation();
   if (loading) return <Spinner />;
+
+  // Portail admin (session isolée par le cookie token_admin). On ne redirige
+  // que les ADMIN vers la console ; un éventuel non-admin porteur d'un
+  // token_admin résiduel reste sur le formulaire (sinon ProtectedRoute le
+  // renverrait ici en boucle).
+  if (context === "admin") {
+    if (user && user.role === "admin") return <Navigate to={adminPath()} replace />;
+    return <>{children}</>;
+  }
 
   if (user) {
     const params = new URLSearchParams(location.search);

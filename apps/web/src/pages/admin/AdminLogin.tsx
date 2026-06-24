@@ -3,12 +3,16 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { adminPath } from "../../router/adminBase";
 
-export function MairieLogin() {
+// Connexion du portail super-admin (admin.heurekia.com). La session est isolée
+// des portails www/app : la requête /auth/login pose ici le cookie `token_admin`
+// (cf. cookieNameFor côté API, qui s'appuie sur le host). Réservée aux comptes
+// `admin` ; tout autre rôle est renvoyé vers son portail.
+export function AdminLogin() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
-  const { login } = useAuth();
+  const { login, logout } = useAuth();
   const navigate = useNavigate();
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -17,15 +21,14 @@ export function MairieLogin() {
     setLoading(true);
     try {
       const u = await login(email, password);
-      if (u.role === "admin" && !u.commune) {
-        // Le portail super-admin a migré sur admin.heurekia.com (session isolée) :
-        // on dirige vers sa page de connexion dédiée. En prod app.heurekia.com,
-        // adminPath("/login") = "/admin/login" → redirigé vers le sous-domaine.
-        navigate(adminPath("/login"), { replace: true });
-      } else if (u.role === "mairie" || u.role === "instructeur" || u.role === "admin") {
-        navigate("/mairie", { replace: true });
+      if (u.role === "admin") {
+        navigate(adminPath(), { replace: true });
       } else {
-        setError("Ce portail est réservé aux agents de mairie et instructeurs.");
+        // /auth/login a déjà posé un cookie token_admin pour ce host : on le
+        // purge immédiatement pour ne pas laisser une session non-admin traîner
+        // sur le portail d'administration.
+        await logout();
+        setError("Ce portail est réservé aux administrateurs Heurekia.");
       }
     } catch (err) {
       setError(err instanceof Error ? err.message : "Identifiants incorrects");
@@ -69,14 +72,14 @@ export function MairieLogin() {
             </div>
             <div>
               <div style={{ color: "white", fontWeight: 800, fontSize: 20, letterSpacing: "0.05em", lineHeight: 1 }}>HEUREKIA</div>
-              <div style={{ color: "#64748b", fontSize: 11, marginTop: 2, letterSpacing: "0.08em", textTransform: "uppercase" }}>Espace Mairie</div>
+              <div style={{ color: "#64748b", fontSize: 11, marginTop: 2, letterSpacing: "0.08em", textTransform: "uppercase" }}>Administration</div>
             </div>
           </div>
 
           {/* Heading */}
           <h1 style={{ color: "white", fontSize: 24, fontWeight: 700, margin: "0 0 6px" }}>Connexion</h1>
           <p style={{ color: "#64748b", fontSize: 14, margin: "0 0 28px", lineHeight: 1.5 }}>
-            Accédez au portail de gestion des autorisations d'urbanisme.
+            Accédez à la console d'administration de la plateforme.
           </p>
 
           {/* Form */}
@@ -96,7 +99,7 @@ export function MairieLogin() {
                 value={email}
                 onChange={e => setEmail(e.target.value)}
                 required
-                placeholder="agent@mairie.fr"
+                placeholder="admin@heurekia.com"
                 style={{
                   width: "100%", boxSizing: "border-box",
                   background: "rgba(255,255,255,0.05)", border: "1px solid rgba(255,255,255,0.1)",
@@ -150,8 +153,8 @@ export function MairieLogin() {
           {/* Footer */}
           <div style={{ marginTop: 24, paddingTop: 20, borderTop: "1px solid rgba(255,255,255,0.06)", textAlign: "center" }}>
             <p style={{ color: "#475569", fontSize: 12, margin: 0 }}>
-              Portail réservé aux agents municipaux.{" "}
-              <a href="/login" style={{ color: "#818cf8", textDecoration: "none" }}>Accès citoyen →</a>
+              Console réservée aux administrateurs.{" "}
+              <a href="https://app.heurekia.com/mairie/login" style={{ color: "#818cf8", textDecoration: "none" }}>Espace mairie →</a>
             </p>
           </div>
         </div>
