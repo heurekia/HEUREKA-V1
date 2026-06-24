@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo, type CSSProperties } from "react";
+import { useState, useEffect, useRef, type CSSProperties } from "react";
 import { api } from "../../lib/api";
 import { PdfAnnotator } from "../../components/PdfAnnotator";
 
@@ -96,14 +96,23 @@ function confColor(c: number): { bg: string; color: string; label: string } {
   return { bg: "#FEE2E2", color: "#DC2626", label: `${Math.round(c * 100)} %` };
 }
 
-function pageSpan(pages: number[]): string {
-  if (!pages.length) return "aucune page";
-  const s = [...pages].sort((a, b) => a - b);
-  const first = s[0]!;
-  const last = s[s.length - 1]!;
-  if (s.length === 1) return `p. ${first}`;
-  const contiguous = last - first + 1 === s.length;
-  return contiguous ? `p. ${first}–${last}` : `p. ${s.join(", ")}`;
+// Saisie directe des pages d'une pièce : « 3-5, 8 » → [3,4,5,8], borné à [1, max].
+function parsePagesInput(input: string, max: number): number[] {
+  const out = new Set<number>();
+  for (const part of input.split(/[,\s]+/)) {
+    if (!part) continue;
+    const m = part.match(/^(\d+)(?:[-–](\d+))?$/);
+    if (!m) continue;
+    const a = parseInt(m[1]!, 10);
+    const b = m[2] ? parseInt(m[2], 10) : a;
+    for (let p = Math.min(a, b); p <= Math.max(a, b); p++) {
+      if (p >= 1 && (!max || p <= max)) out.add(p);
+    }
+  }
+  return [...out].sort((x, y) => x - y);
+}
+function formatPagesInput(pages: number[]): string {
+  return pages.length ? [...pages].sort((a, b) => a - b).join(", ") : "";
 }
 
 function defaultName(code: string, type: string, pages: number[]): string {
@@ -136,16 +145,19 @@ export default function BundleSplitModal({
   const [segments, setSegments] = useState<EditableSegment[]>([]);
   const [viewerPage, setViewerPage] = useState<number>(1);
   const [errorMsg, setErrorMsg] = useState<string>("");
+  const [bundleUrl, setBundleUrl] = useState<string | null>(null);
+  // Brouillon de saisie texte des pages par pièce (clé segment → texte en cours).
+  const [pageInput, setPageInput] = useState<Record<string, string>>({});
 
   const startedRef = useRef(false);
   const cancelledRef = useRef(false);
   const seq = useRef(0);
   const nextKey = () => `seg-${seq.current++}`;
 
-  // Aperçu à partir du fichier local (blob) : instantané, sans round-trip
-  // serveur ni question d'ACL, et stable pendant toute la durée de la modale.
-  const previewUrl = useMemo(() => URL.createObjectURL(file), [file]);
-  useEffect(() => () => URL.revokeObjectURL(previewUrl), [previewUrl]);
+  // Aperçu via l'URL serveur du bundle (servie comme les pièces, avec cookie
+  // d'auth) : PdfAnnotator/pdf.js ne sait pas charger un blob: local. L'URL est
+  // disponible dès le premier polling (le fichier est stocké avant l'analyse).
+  const previewUrl = bundleUrl;
 
   useEffect(() => {
     if (startedRef.current) return;
@@ -184,6 +196,7 @@ export default function BundleSplitModal({
     try {
       const bundle = await api.get<BundleRow>(`/mairie/dossiers/${dossierId}/pieces/bundles/${id}`);
       if (cancelledRef.current) return;
+      if (bundle.url) setBundleUrl(bundle.url);
       if (bundle.status === "pending_review") {
         const segs = bundle.proposed_segments?.segments ?? [];
         setPageCount(bundle.page_count ?? bundle.proposed_segments?.page_count ?? 0);
@@ -286,9 +299,13 @@ export default function BundleSplitModal({
         <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
           {/* ── Aperçu du PDF ── */}
           <div style={{ flex: 1.25, minWidth: 0, borderRight: "1px solid #E2E8F0", background: "#0F172A0A", display: "flex" }}>
-            <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
-              <PdfAnnotator key={previewUrl} fileUrl={previewUrl} initialPage={viewerPage} />
-            </div>
+            {previewUrl ? (
+              <div style={{ flex: 1, minWidth: 0, minHeight: 0 }}>
+                <PdfAnnotator key={previewUrl} fileUrl={previewUrl} originalDownloadUrl={previewUrl} initialPage={viewerPage} />
+              </div>
+            ) : (
+              <div style={{ flex: 1, display: "flex", alignItems: "center", justifyContent: "center", color: "#94a3b8", fontSize: 13 }}>Chargement du document…</div>
+            )}
           </div>
 
           {/* ── Panneau de segmentation ── */}
@@ -352,7 +369,23 @@ export default function BundleSplitModal({
                           <input value={s.nom} onChange={(e) => updateSeg(s.key, { nom: e.target.value })} style={{ ...inputSt, flex: 1, minWidth: 0 }} />
                           <button onClick={() => regenName(s.key)} title="Régénérer le nom par défaut" style={{ ...inputSt, padding: "6px 8px", cursor: "pointer", background: "white" }}>↻</button>
                         </div>
-                        <div style={{ fontSize: 10.5, color: "#94a3b8" }}>{pageSpan(s.pages)}</div>
+                        <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                          <span style={{ fontSize: 10.5, color: "#94a3b8", flexShrink: 0 }}>Pages</span>
+                          <input
+                            value={pageInput[s.key] ?? formatPagesInput(s.pages)}
+                            onChange={(e) => setPageInput((p) => ({ ...p, [s.key]: e.target.value }))}
+                            onBlur={() => {
+                              const draft = pageInput[s.key];
+                              if (draft === undefined) return;
+                              updateSeg(s.key, { pages: parsePagesInput(draft, pageCount) });
+                              setPageInput((p) => { const n = { ...p }; delete n[s.key]; return n; });
+                            }}
+                            onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+                            placeholder="ex. 3-5, 8"
+                            title="Pages de cette pièce — séparées par des virgules, plages avec un tiret (ex. 3-5, 8)"
+                            style={{ ...inputSt, flex: 1, minWidth: 0, fontSize: 11, padding: "4px 7px" }}
+                          />
+                        </div>
                       </div>
                     );
                   })}
