@@ -6149,12 +6149,76 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
   );
 }
 
+// Modale d'invitation du pétitionnaire à activer son espace citoyen. Régularise
+// un dossier dont le compte est un placeholder (email obligatoire) ou dont
+// l'email n'a jamais été activé (renvoi possible, adresse corrigeable).
+function InvitePetitionnaireModal({ dossierId, initialEmail, isPlaceholder, onClose, onInvited }: {
+  dossierId: string;
+  initialEmail: string;
+  isPlaceholder: boolean;
+  onClose: () => void;
+  onInvited: () => void;
+}) {
+  const [email, setEmail] = useState(initialEmail);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const submit = async () => {
+    if (busy) return;
+    const trimmed = email.trim();
+    if (!trimmed) { setError("Veuillez saisir une adresse email."); return; }
+    setError(null);
+    setBusy(true);
+    try {
+      const r = await api.post<{ action: string; emailSent?: boolean }>(
+        `/mairie/dossiers/${dossierId}/inviter-petitionnaire`, { email: trimmed });
+      if (r.action === "invited" && r.emailSent === false) {
+        setError("Le compte a été rattaché, mais l'email n'a pas pu être envoyé. Réessayez plus tard.");
+        setBusy(false);
+        return;
+      }
+      onInvited();
+    } catch (e) {
+      const msg = e instanceof ApiError
+        ? ((e.body as { error?: string } | undefined)?.error ?? "Échec de l'envoi.")
+        : "Échec de l'envoi.";
+      setError(msg);
+      setBusy(false);
+    }
+  };
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
+      <div style={{ background: "white", borderRadius: 14, width: 460, padding: 24 }} onClick={e => e.stopPropagation()}>
+        <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Inviter le pétitionnaire</div>
+        <p style={{ fontSize: 12.5, color: "#64748b", lineHeight: 1.6, margin: "0 0 16px" }}>
+          {isPlaceholder
+            ? "Ce dossier est rattaché à un compte interne non utilisable. Saisissez l'adresse du pétitionnaire : il recevra une invitation à activer son espace pour suivre son dossier en ligne (ou un rattachement si un compte existe déjà)."
+            : "Le pétitionnaire n'a pas encore activé son espace. Vous pouvez lui (re)envoyer l'invitation, et corriger l'adresse si nécessaire."}
+        </p>
+        <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Email du pétitionnaire</label>
+        <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="jean.dupont@example.com" autoFocus
+          style={{ width: "100%", border: "1.5px solid #E2E8F0", borderRadius: 9, padding: "10px 12px", fontSize: 12.5, outline: "none", boxSizing: "border-box" as const, marginBottom: error ? 8 : 16 }} />
+        {error && <div style={{ fontSize: 12, color: "#DC2626", marginBottom: 14, lineHeight: 1.5 }}>{error}</div>}
+        <div style={{ display: "flex", gap: 9, justifyContent: "flex-end" }}>
+          <button onClick={onClose} disabled={busy} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Annuler</button>
+          <button onClick={submit} disabled={busy || !email.trim()} style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: busy ? "default" : "pointer", opacity: busy || !email.trim() ? 0.6 : 1 }}>
+            {busy ? "Envoi…" : "Envoyer l'invitation"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function DossierDetailScreen({ dossier, onBack, navigate }: {
   dossier: DossierInfo;
   onBack: () => void;
   navigate: (s: string) => void;
 }) {
   const { user } = useAuth();
+  // Invitation du pétitionnaire (compte placeholder / jamais activé). `invited`
+  // bascule l'UI localement après envoi, sans re-fetch du détail.
+  const [showInvitePetitionnaire, setShowInvitePetitionnaire] = useState(false);
+  const [petitionnaireInvited, setPetitionnaireInvited] = useState(false);
   // Onglet actif persisté dans l'URL (?tab=) : un rechargement de page ou un lien
   // direct restitue l'onglet courant au lieu de revenir sur "Résumé".
   const [searchParams, setSearchParams] = useSearchParams();
@@ -7072,7 +7136,30 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
               <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }}>
                 <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M20 21v-2a4 4 0 00-4-4H8a4 4 0 00-4 4v2" /><circle cx="12" cy="7" r="4" /></svg>
                 <span style={{ fontWeight: 500 }}>{dossier.petitionnaire}</span>
+                {petitionnaireInvited ? (
+                  <span title="Invitation envoyée" style={{ fontSize: 11, color: "#16A34A", fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3 }}>✓ invité</span>
+                ) : dossier.petitionnaire_can_invite ? (
+                  <button
+                    title={dossier.petitionnaire_is_placeholder
+                      ? "Ce pétitionnaire n'a pas de compte exploitable — l'inviter à activer son espace"
+                      : "Renvoyer l'invitation à activer l'espace citoyen"}
+                    onClick={() => setShowInvitePetitionnaire(true)}
+                    style={{ padding: "1px 8px", fontSize: 10.5, color: "#B45309", background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: 5, cursor: "pointer", marginLeft: 2, fontWeight: 600, display: "inline-flex", alignItems: "center", gap: 3 }}
+                  >
+                    <svg width={11} height={11} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round"><path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" /><polyline points="22,6 12,13 2,6" /></svg>
+                    Inviter
+                  </button>
+                ) : null}
               </span>
+              {showInvitePetitionnaire && (
+                <InvitePetitionnaireModal
+                  dossierId={dossier.id}
+                  initialEmail={dossier.petitionnaire_email ?? ""}
+                  isPlaceholder={!!dossier.petitionnaire_is_placeholder}
+                  onClose={() => setShowInvitePetitionnaire(false)}
+                  onInvited={() => { setShowInvitePetitionnaire(false); setPetitionnaireInvited(true); }}
+                />
+              )}
               <span style={{ color: "#CBD5E1", fontSize: 12 }}>·</span>
               <span style={{ display: "flex", alignItems: "center", gap: 5, fontSize: 13, color: "#334155" }}>
                 <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="#94a3b8" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" /></svg>
@@ -9568,6 +9655,7 @@ type NouveauDossierForm = {
   description: string;
   date_depot: string;
   instructeur_id: string;
+  invite_petitionnaire: boolean;
 };
 
 const DOSSIER_TYPE_OPTIONS: { value: NouveauDossierType; label: string }[] = [
@@ -9662,6 +9750,7 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
     description: "",
     date_depot: today,
     instructeur_id: "",
+    invite_petitionnaire: true,
   };
   const [form, setForm] = useState<NouveauDossierForm>(emptyForm);
   const [instructeurs, setInstructeurs] = useState<{ id: string; prenom: string; nom: string }[]>([]);
@@ -9827,6 +9916,8 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
         description: form.description.trim() || undefined,
         date_depot: form.date_depot || undefined,
         instructeur_id: form.instructeur_id || undefined,
+        // N'a d'effet côté API que si un email est renseigné.
+        invite_petitionnaire: form.petitionnaire_email.trim() ? form.invite_petitionnaire : false,
       };
       if (ocrNumero) {
         payload["metadata"] = { numero_cerfa: ocrNumero, created_via: "ocr" };
@@ -10033,6 +10124,23 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
       <div>
         <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Email du pétitionnaire</label>
         <input type="email" value={form.petitionnaire_email} onChange={e => setField("petitionnaire_email", e.target.value)} placeholder="jean.dupont@example.com" style={inputStyle} />
+        {form.petitionnaire_email.trim() ? (
+          <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 8, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={form.invite_petitionnaire}
+              onChange={e => setField("invite_petitionnaire", e.target.checked)}
+              style={{ marginTop: 2, cursor: "pointer" }}
+            />
+            <span style={{ fontSize: 12, color: "#6B7280", lineHeight: 1.5 }}>
+              Inviter le pétitionnaire à suivre son dossier en ligne — un email d'activation de son espace citoyen lui sera envoyé (ou une notification s'il a déjà un compte).
+            </span>
+          </label>
+        ) : (
+          <p style={{ fontSize: 12, color: "#9CA3AF", margin: "8px 0 0", lineHeight: 1.5 }}>
+            Sans email, aucun espace citoyen n'est créé : le dossier est rattaché à un compte interne non utilisable par le pétitionnaire.
+          </p>
+        )}
       </div>
       <div>
         <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Adresse du projet</label>
@@ -10330,7 +10438,7 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
       date_completude: string | null;
       metadata: Record<string, unknown> | null;
       instructeur_id: string | null;
-      demandeur: { prenom?: string; nom?: string } | null;
+      demandeur: { prenom?: string; nom?: string; email?: string | null; email_verified?: boolean; is_placeholder?: boolean; can_invite?: boolean } | null;
       instructeur: { prenom?: string; nom?: string } | null;
       workflow?: WorkflowMeta;
     };
@@ -10344,6 +10452,9 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
           numero: data.numero,
           type: data.type,
           petitionnaire: data.demandeur ? ([data.demandeur.prenom, data.demandeur.nom].filter(Boolean).join(" ") || "—") : "—",
+          petitionnaire_email: data.demandeur?.email ?? null,
+          petitionnaire_is_placeholder: data.demandeur?.is_placeholder ?? false,
+          petitionnaire_can_invite: data.demandeur?.can_invite ?? false,
           adresse: data.adresse ?? "—",
           status: data.status,
           echeance: fmtDate(data.date_limite_instruction),
