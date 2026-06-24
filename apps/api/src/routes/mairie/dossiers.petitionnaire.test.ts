@@ -2,9 +2,41 @@ import { describe, it, expect } from "vitest";
 import {
   petitionnaireSideEffect,
   isPlaceholderEmail,
+  namesLikelyDiffer,
   PLACEHOLDER_EMAIL_DOMAIN,
   type PetitionnaireAccountState,
 } from "./petitionnaireInvite.js";
+
+describe("namesLikelyDiffer — garde-fou avant rattachement à un compte existant", () => {
+  it("ne signale pas une identité identique", () => {
+    expect(namesLikelyDiffer({ prenom: "Jean", nom: "Dupont" }, { prenom: "Jean", nom: "Dupont" })).toBe(false);
+  });
+
+  it("tolère accents, casse et tirets", () => {
+    expect(namesLikelyDiffer({ prenom: "Jean-Marie", nom: "DÜPONT" }, { prenom: "jean marie", nom: "dupont" })).toBe(false);
+  });
+
+  it("tolère l'inversion prénom/nom", () => {
+    expect(namesLikelyDiffer({ prenom: "Jean", nom: "Dupont" }, { prenom: "Dupont", nom: "Jean" })).toBe(false);
+  });
+
+  it("tolère un nom partiel (placeholder sans prénom)", () => {
+    // Côté dossier on n'a souvent que le nom de famille (prénom « — »).
+    expect(namesLikelyDiffer({ prenom: "—", nom: "Dupont" }, { prenom: "Jean", nom: "Dupont" })).toBe(false);
+  });
+
+  it("signale deux identités franchement différentes", () => {
+    expect(namesLikelyDiffer({ prenom: "Jean", nom: "Dupont" }, { prenom: "Marie", nom: "Martin" })).toBe(true);
+  });
+
+  it("signale un même nom mais un prénom incompatible", () => {
+    expect(namesLikelyDiffer({ prenom: "Jean", nom: "Dupont" }, { prenom: "Pierre", nom: "Dupont" })).toBe(true);
+  });
+
+  it("ne compare pas si une identité est vide", () => {
+    expect(namesLikelyDiffer({ prenom: "", nom: "" }, { prenom: "Jean", nom: "Dupont" })).toBe(false);
+  });
+});
 
 describe("isPlaceholderEmail — détection des comptes internes non joignables", () => {
   it("reconnaît un email synthétique de placeholder", () => {

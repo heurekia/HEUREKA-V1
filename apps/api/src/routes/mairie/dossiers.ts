@@ -20,6 +20,7 @@ import { sendPetitionnaireInvitationEmail } from "../../services/mailer.js";
 import {
   petitionnaireSideEffect,
   isPlaceholderEmail,
+  namesLikelyDiffer,
   PLACEHOLDER_EMAIL_DOMAIN,
   type PetitionnaireAccountState,
 } from "./petitionnaireInvite.js";
@@ -928,19 +929,26 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
 // Régularise a posteriori un dossier dont le pétitionnaire n'a pas de compte
 // exploitable (placeholder sans email, ou email jamais activé), ou le rattache
 // à un compte connu. L'agent fournit éventuellement une adresse :
-//   • placeholder → email obligatoire : on rattache le dossier à un compte
-//     existant portant cette adresse, sinon on convertit le compte placeholder
-//     en lui attribuant la vraie adresse — puis on envoie l'invitation ;
-//   • compte réel jamais activé → (ré)envoi de l'invitation (adresse modifiable) ;
-//   • compte déjà actif → notification in-app ; on refuse de changer l'adresse
-//     d'un compte vérifié (pour ne pas détourner le compte d'un tiers).
+//   • si l'adresse correspond à un compte EXISTANT (vérifié ou non) → on
+//     rattache le dossier à ce compte. Garde-fou : si le nom/prénom du compte
+//     diffère de l'identité saisie sur le dossier, on renvoie { action:
+//     "confirm", code: "name_mismatch" } et on n'agit qu'au second appel avec
+//     confirm:true (évite d'affilier le dossier à la mauvaise personne) ;
+//   • sinon, si le compte courant est « réclamable » (placeholder ou jamais
+//     activé) → on lui attribue l'adresse et on envoie l'invitation ;
+//   • un compte placeholder n'est JAMAIS considéré comme actif (pas d'adresse
+//     réelle), même s'il porte un email_verified_at résiduel ;
+//   • on ne change jamais l'adresse de connexion d'un compte réel déjà vérifié :
+//     on rattache à un compte existant ou, à défaut, on refuse explicitement.
 const invitePetitionnaireSchema = z.object({
   email: z.string().trim().email().optional().or(z.literal("")),
+  // Confirmation de l'agent malgré une divergence de nom/prénom détectée.
+  confirm: z.boolean().optional(),
 });
 
 dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", async (req: AuthRequest, res) => {
   try {
-    const { email: rawEmail } = invitePetitionnaireSchema.parse(req.body ?? {});
+    const { email: rawEmail, confirm } = invitePetitionnaireSchema.parse(req.body ?? {});
     const providedEmail = rawEmail?.trim().toLowerCase() || null;
 
     const dossierId = req.params.id as string;
@@ -955,16 +963,23 @@ dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", async (req: AuthReque
     if (!current) return res.status(404).json({ error: "Pétitionnaire introuvable" });
 
     const currentIsPlaceholder = isPlaceholderEmail(current.email);
+    // Un placeholder n'est jamais « actif » : il n'a pas d'adresse réelle, même
+    // s'il porte par accident un email_verified_at. Seul un compte non
+    // placeholder ET vérifié appartient à un tiers identifié et joignable.
+    const currentIsActive = !currentIsPlaceholder && !!current.email_verified_at;
 
-    // Compte déjà actif : rien à activer. On notifie et on refuse tout
-    // changement d'adresse (un compte vérifié appartient à un tiers identifié).
-    if (current.email_verified_at) {
-      if (providedEmail && providedEmail !== current.email) {
-        return res.status(409).json({
-          error: "Ce pétitionnaire a déjà un compte actif ; le rattacher à une autre adresse n'est pas autorisé ici.",
-          code: "account_active",
-        });
-      }
+    // Adresse cible : fournie par l'agent, sinon celle du compte courant (sauf
+    // placeholder, dont l'adresse synthétique n'est pas exploitable).
+    const targetEmail = providedEmail ?? (currentIsPlaceholder ? null : current.email);
+    if (!targetEmail) {
+      return res.status(400).json({
+        error: "Une adresse email est requise pour inviter ce pétitionnaire.",
+        code: "email_required",
+      });
+    }
+
+    // Compte courant déjà actif et on (re)vise sa propre adresse → simple rappel.
+    if (currentIsActive && targetEmail === current.email) {
       void notifyUser({
         user_id: current.id,
         dossier_id: dossier.id,
@@ -975,17 +990,7 @@ dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", async (req: AuthReque
       return res.json({ action: "notified" });
     }
 
-    // Compte non vérifié (placeholder OU réel jamais activé) : il faut une
-    // adresse cible. Pour un placeholder, elle doit être fournie par l'agent.
-    const targetEmail = providedEmail ?? (currentIsPlaceholder ? null : current.email);
-    if (!targetEmail) {
-      return res.status(400).json({
-        error: "Une adresse email est requise pour inviter ce pétitionnaire.",
-        code: "email_required",
-      });
-    }
-
-    // Un autre compte porte-t-il déjà cette adresse ? → rattachement.
+    // Un autre compte porte-t-il déjà l'adresse cible ?
     const [other] = await db
       .select({ id: users.id, prenom: users.prenom, nom: users.nom, email_verified_at: users.email_verified_at })
       .from(users)
@@ -997,7 +1002,19 @@ dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", async (req: AuthReque
     let account: PetitionnaireAccountState;
 
     if (other && other.id !== current.id) {
-      // Rattache le dossier au compte existant.
+      // Rattachement à un compte existant (une même personne peut avoir
+      // plusieurs adresses). Garde-fou identité : si le nom/prénom diffère de
+      // celui saisi sur le dossier, on demande confirmation avant d'agir.
+      if (!confirm && namesLikelyDiffer(
+        { prenom: current.prenom, nom: current.nom },
+        { prenom: other.prenom, nom: other.nom },
+      )) {
+        return res.json({
+          action: "confirm",
+          code: "name_mismatch",
+          existing: { prenom: other.prenom, nom: other.nom, verified: !!other.email_verified_at },
+        });
+      }
       await db.update(dossiers).set({ user_id: other.id, updated_at: new Date() }).where(eq(dossiers.id, dossier.id));
       targetUserId = other.id;
       targetPrenom = other.prenom;
@@ -1012,9 +1029,17 @@ dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", async (req: AuthReque
           await db.delete(users).where(eq(users.id, current.id));
         }
       }
+    } else if (currentIsActive) {
+      // Aucun compte sur l'adresse cible et le compte courant est déjà vérifié :
+      // on ne modifie pas l'adresse de connexion d'un compte réel. Pour changer
+      // de pétitionnaire, l'agent doit viser un compte existant.
+      return res.status(409).json({
+        error: `Ce pétitionnaire a déjà un compte actif (${[current.prenom, current.nom].filter(Boolean).join(" ").trim() || current.email}). Son adresse de connexion ne peut pas être modifiée ici.`,
+        code: "account_active",
+      });
     } else {
-      // Convertit le compte courant : on lui attribue la vraie adresse (si elle
-      // change). email_verified_at reste NULL → activation nécessaire.
+      // Compte « réclamable » (placeholder ou jamais activé) : on lui attribue
+      // l'adresse cible (si elle change). email_verified_at reste NULL.
       if (targetEmail !== current.email) {
         await db.update(users).set({ email: targetEmail, updated_at: new Date() }).where(eq(users.id, current.id));
       }
