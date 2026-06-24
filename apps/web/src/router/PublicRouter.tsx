@@ -1,7 +1,7 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { PublicLayout } from "../layouts/PublicLayout";
 import { CitoyenLayout } from "../layouts/CitoyenLayout";
-import { CrossSubdomainRedirect, ProtectedRoute, PublicOnlyRoute } from "./guards";
+import { AdminPortalRedirect, CrossSubdomainRedirect, ProtectedRoute, PublicOnlyRoute } from "./guards";
 import { Accueil } from "../pages/public/Accueil";
 import { AnalyseParcellaire } from "../pages/public/AnalyseParcellaire";
 import { Login } from "../pages/public/Login";
@@ -49,7 +49,8 @@ export function PublicRouter() {
 
       {/* Bridge routes: redirect pro paths to app subdomain */}
       <Route path="/mairie/*" element={<CrossSubdomainRedirect to={`${APP}/mairie`} />} />
-      <Route path="/admin/*" element={<CrossSubdomainRedirect to={`${APP}/admin`} />} />
+      {/* Le portail super-admin a son propre sous-domaine (admin.heurekia.com) */}
+      <Route path="/admin/*" element={<AdminPortalRedirect />} />
       <Route path="/service/*" element={<CrossSubdomainRedirect to={`${APP}/service`} />} />
 
       <Route path="*" element={<Navigate to="/" replace />} />

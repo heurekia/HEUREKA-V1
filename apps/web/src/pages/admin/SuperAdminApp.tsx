@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "rea
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
+import { adminPath } from "../../router/adminBase";
 import { CATEGORIES } from "@heureka-v1/shared";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -368,17 +369,17 @@ function InseeWidget({ onSelect }: { onSelect: (c: InseeCandidate) => void }) {
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
 const navItems = [
-  { path: "/admin", exact: true, icon: "⊞", label: "Vue d'ensemble" },
-  { path: "/admin/communes", icon: "🏛", label: "Communes" },
-  { path: "/admin/groupements", icon: "🤝", label: "Groupements" },
-  { path: "/admin/roles", icon: "🔑", label: "Rôles" },
-  { path: "/admin/utilisateurs", icon: "👥", label: "Utilisateurs" },
-  { path: "/admin/services", icon: "🔗", label: "Services annexes" },
-  { path: "/admin/couts-ia", icon: "💶", label: "Coûts IA" },
-  { path: "/admin/audit", icon: "🔒", label: "Audit sécurité" },
-  { path: "/admin/conformite", icon: "🛡", label: "Conformité RGPD" },
-  { path: "/admin/site", icon: "🚀", label: "Site public" },
-  { path: "/admin/configuration", icon: "⚙", label: "Configuration" },
+  { path: adminPath(), exact: true, icon: "⊞", label: "Vue d'ensemble" },
+  { path: adminPath("/communes"), icon: "🏛", label: "Communes" },
+  { path: adminPath("/groupements"), icon: "🤝", label: "Groupements" },
+  { path: adminPath("/roles"), icon: "🔑", label: "Rôles" },
+  { path: adminPath("/utilisateurs"), icon: "👥", label: "Utilisateurs" },
+  { path: adminPath("/services"), icon: "🔗", label: "Services annexes" },
+  { path: adminPath("/couts-ia"), icon: "💶", label: "Coûts IA" },
+  { path: adminPath("/audit"), icon: "🔒", label: "Audit sécurité" },
+  { path: adminPath("/conformite"), icon: "🛡", label: "Conformité RGPD" },
+  { path: adminPath("/site"), icon: "🚀", label: "Site public" },
+  { path: adminPath("/configuration"), icon: "⚙", label: "Configuration" },
 ];
 
 // ─── Indicateur temps réel d'activité IA ─────────────────────────────────────
@@ -430,7 +431,7 @@ function AiLiveWidget() {
         @keyframes aiPulse { 0%{box-shadow:0 0 0 0 rgba(16,185,129,0.6)} 70%{box-shadow:0 0 0 8px rgba(16,185,129,0)} 100%{box-shadow:0 0 0 0 rgba(16,185,129,0)} }
       `}</style>
       <button
-        onClick={() => navigate("/admin/couts-ia")}
+        onClick={() => navigate(adminPath("/couts-ia"))}
         title={data.last_event_at ? `Dernier appel : ${new Date(data.last_event_at).toLocaleString("fr-FR")}` : "Aucun appel IA aujourd'hui"}
         style={{
           width: "100%", display: "flex", alignItems: "center", gap: 10,
@@ -546,7 +547,7 @@ function Sidebar() {
       {/* Logout */}
       <div style={{ padding: "12px 12px 20px" }}>
         <button
-          onClick={() => { logout(); navigate("/mairie/login"); }}
+          onClick={() => { logout(); navigate(adminPath("/login")); }}
           style={{
             display: "flex", alignItems: "center", gap: 12, width: "100%",
             padding: "10px 14px", borderRadius: 8, border: "none",
@@ -647,7 +648,7 @@ function Dashboard() {
         <div style={{ padding: "16px 24px", borderBottom: `1px solid ${C.border}`, display: "flex", alignItems: "center", justifyContent: "space-between" }}>
           <h2 style={{ margin: 0, fontSize: 16, fontWeight: 700, color: C.text }}>Communes récentes</h2>
           <button
-            onClick={() => navigate("/admin/communes")}
+            onClick={() => navigate(adminPath("/communes"))}
             style={{ padding: "8px 16px", background: C.accentLight, color: C.accent, border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}
           >
             Gérer les communes →
@@ -659,7 +660,7 @@ function Dashboard() {
           <div style={{ padding: 40, textAlign: "center", color: C.textMuted }}>
             <div style={{ fontSize: 40, marginBottom: 12 }}>🏛</div>
             <p style={{ margin: 0 }}>Aucune commune pour le moment.</p>
-            <button onClick={() => navigate("/admin/communes")} style={{ marginTop: 12, padding: "8px 20px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
+            <button onClick={() => navigate(adminPath("/communes"))} style={{ marginTop: 12, padding: "8px 20px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
               Ajouter une commune
             </button>
           </div>
@@ -668,7 +669,7 @@ function Dashboard() {
             {communes.map((c) => (
               <div
                 key={c.id}
-                onClick={() => navigate(`/admin/communes/${c.id}`)}
+                onClick={() => navigate(adminPath(`/communes/${c.id}`))}
                 style={{ background: C.white, padding: 20, cursor: "pointer", transition: "background 0.1s" }}
                 onMouseEnter={(e) => (e.currentTarget.style.background = C.bg)}
                 onMouseLeave={(e) => (e.currentTarget.style.background = C.white)}
@@ -800,7 +801,7 @@ function CommunesList() {
                   <td style={{ padding: "14px 16px" }}><StatusBadge commune={c} /></td>
                   <td style={{ padding: "14px 16px" }}>
                     <button
-                      onClick={() => navigate(`/admin/communes/${c.id}`)}
+                      onClick={() => navigate(adminPath(`/communes/${c.id}`))}
                       style={{ padding: "6px 14px", background: C.accentLight, color: C.accent, border: "none", borderRadius: 6, cursor: "pointer", fontSize: 13, fontWeight: 600 }}
                     >
                       Paramétrer
@@ -982,7 +983,7 @@ function CommuneDetail() {
 
       {/* Header */}
       <div style={{ display: "flex", alignItems: "center", gap: 16, marginBottom: 28 }}>
-        <button onClick={() => navigate("/admin/communes")} style={{ padding: "8px 14px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", color: C.textMuted, fontSize: 13, fontWeight: 500 }}>
+        <button onClick={() => navigate(adminPath("/communes"))} style={{ padding: "8px 14px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", color: C.textMuted, fontSize: 13, fontWeight: 500 }}>
           ← Retour
         </button>
         <div>
@@ -5917,7 +5918,7 @@ function CoutsIA() {
                     <tr
                       key={c.commune_id}
                       style={{ borderTop: `1px solid ${C.border}`, cursor: "pointer" }}
-                      onClick={() => navigate(`/admin/couts-ia/commune/${c.commune_id}`)}
+                      onClick={() => navigate(adminPath(`/couts-ia/commune/${c.commune_id}`))}
                       onMouseEnter={(e) => (e.currentTarget.style.background = C.bg)}
                       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                     >
@@ -5958,7 +5959,7 @@ function CoutsIA() {
                     <tr
                       key={d.dossier_id}
                       style={{ borderTop: `1px solid ${C.border}`, cursor: "pointer" }}
-                      onClick={() => navigate(`/admin/couts-ia/${d.dossier_id}`)}
+                      onClick={() => navigate(adminPath(`/couts-ia/${d.dossier_id}`))}
                       onMouseEnter={(e) => (e.currentTarget.style.background = C.bg)}
                       onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}
                     >
@@ -6016,7 +6017,7 @@ function CoutsIADossier() {
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
       <button
-        onClick={() => navigate("/admin/couts-ia")}
+        onClick={() => navigate(adminPath("/couts-ia"))}
         style={{ background: "transparent", border: "none", color: C.accent, fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0, marginBottom: 12 }}
       >← Retour</button>
       <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 800, color: C.text }}>
@@ -6145,7 +6146,7 @@ function CoutsIACommune() {
       <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
 
       <button
-        onClick={() => navigate("/admin/couts-ia")}
+        onClick={() => navigate(adminPath("/couts-ia"))}
         style={{ background: "transparent", border: "none", color: C.accent, fontSize: 13, fontWeight: 600, cursor: "pointer", padding: 0, marginBottom: 12 }}
       >← Retour</button>
       <h1 style={{ margin: "0 0 4px", fontSize: 22, fontWeight: 800, color: C.text }}>
@@ -6222,7 +6223,7 @@ function CoutsIACommune() {
                       <td style={{ padding: "8px 16px", color: C.textMuted, fontFamily: "monospace" }}>{e.model}</td>
                       <td style={{ padding: "8px 16px", color: C.accent, fontSize: 11, fontFamily: "monospace" }}>
                         {e.dossier_id ? (
-                          <span style={{ cursor: "pointer" }} onClick={(ev) => { ev.stopPropagation(); navigate(`/admin/couts-ia/${e.dossier_id}`); }}>
+                          <span style={{ cursor: "pointer" }} onClick={(ev) => { ev.stopPropagation(); navigate(adminPath(`/couts-ia/${e.dossier_id}`)); }}>
                             {e.dossier_id.slice(0, 8)}…
                           </span>
                         ) : "—"}
@@ -6454,7 +6455,7 @@ export function SuperAdminApp() {
           <Route path="/conformite" element={<Conformite />} />
           <Route path="/site" element={<SitePublic />} />
           <Route path="/configuration" element={<Configuration />} />
-          <Route path="*" element={<Navigate to="/admin" replace />} />
+          <Route path="*" element={<Navigate to={adminPath()} replace />} />
         </Routes>
       </div>
     </div>

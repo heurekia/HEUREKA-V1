@@ -22,8 +22,11 @@ export function generateToken(payload: { id: string; email: string; role: string
 }
 
 function extractToken(req: Request): string | null {
-  // Per-portal cookie: a citoyen session on www.heurekia.com and a mairie
-  // session on app.heurekia.com must coexist WITHOUT bleeding into each other.
+  // Per-portal cookie: the citoyen (www), mairie (app) and super-admin (admin)
+  // sessions must coexist WITHOUT bleeding into each other.
+  //   admin.heurekia.com → token_admin
+  //   app.heurekia.com   → token_app
+  //   www / autre        → token_www
   //
   // Primary signal: `req.hostname` (from the Host header). Always present,
   // works on a `GET /api/auth/me` at page refresh where the browser does NOT
@@ -32,12 +35,16 @@ function extractToken(req: Request): string | null {
   //
   // IMPORTANT — there is NO cross-portal fallback : if the portal-specific
   // cookie is missing, the user is simply not authenticated on this portal.
-  // Falling back to the other portal's cookie would expose a mairie session
-  // on the citoyen portal (and vice-versa), which would be a privilege leak.
+  // Falling back to another portal's cookie would expose e.g. a super-admin
+  // session on the citoyen portal, which would be a privilege leak.
   const host = (req.hostname ?? "").toLowerCase();
   const origin = ((req.headers.origin as string | undefined) ?? (req.headers.referer as string | undefined) ?? "").toLowerCase();
-  const isApp = host.includes("app.heurekia.com") || origin.includes("app.heurekia.com");
-  const portalCookie = isApp ? "token_app" : "token_www";
+  const portalCookie =
+    host.includes("admin.heurekia.com") || origin.includes("admin.heurekia.com")
+      ? "token_admin"
+      : host.includes("app.heurekia.com") || origin.includes("app.heurekia.com")
+      ? "token_app"
+      : "token_www";
   const cookies = req.cookies as Record<string, string | undefined> | undefined;
   if (cookies?.[portalCookie]) return cookies[portalCookie] as string;
   // Legacy single-cookie fallback (sessions issued before the per-portal split).

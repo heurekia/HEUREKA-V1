@@ -2,6 +2,7 @@ import { useState, useEffect } from "react";
 import { useSearchParams, useNavigate, Link } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
+import { adminPath } from "../../router/adminBase";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { CheckCircle, XCircle, Eye, EyeOff } from "lucide-react";
@@ -73,7 +74,7 @@ export function ActiverCompte() {
       // Auto-redirect after 2s
       setTimeout(() => {
         const role = res.user.role;
-        navigate(role === "citoyen" ? "/citoyen" : role === "admin" ? "/admin" : "/mairie");
+        navigate(role === "citoyen" ? "/citoyen" : role === "admin" ? adminPath() : "/mairie");
       }, 2000);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Erreur lors de l'activation");

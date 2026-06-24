@@ -312,3 +312,77 @@ La plateforme est **officiellement déployable en production pour les communes**
 - ✅ Le benchmark LLM est documenté et joint à l'AIPD
 
 Tant que ces conditions ne sont pas remplies, la plateforme reste en **mode pilote** auprès de communes volontaires informées explicitement du statut.
+
+---
+
+## Annexe — Mise en service du sous-domaine `admin.heurekia.com`
+
+Le portail super-admin a été déplacé de `app.heurekia.com/admin` vers son propre
+sous-domaine `admin.heurekia.com` (session isolée, cookie `token_admin`). Le code
+front/back gère déjà l'aiguillage ; **3 étapes d'infra restent à faire sur le VPS**
+(elles ne sont pas versionnées dans le dépôt). La SPA est un build unique qui
+choisit le portail selon le `hostname` : le vhost admin sert donc **le même
+`dist/`** et proxifie le **même `/api`** que `app`.
+
+1. **DNS** — créer un enregistrement chez le registrar :
+   `admin.heurekia.com` → même IP que `app.heurekia.com` (A/AAAA, ou CNAME vers `app.heurekia.com`).
+
+2. **nginx** — ajouter un server block (le plus simple : copier celui d'`app`,
+   changer le `server_name`, garder le même `root` et le même `proxy_pass`) :
+
+   ```nginx
+   server {
+       listen 443 ssl http2;
+       server_name admin.heurekia.com;
+
+       # Même build Vite que les autres portails (le front route par hostname)
+       root /home/ubuntu/heurekia/apps/web/dist;
+       index index.html;
+
+       # API same-origin → proxy vers l'API Node locale
+       location /api/ {
+           proxy_pass http://127.0.0.1:3001;
+           proxy_set_header Host $host;                 # transmet admin.heurekia.com → cookie token_admin
+           proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+           proxy_set_header X-Forwarded-Proto $scheme;
+       }
+
+       # SPA fallback
+       location / { try_files $uri /index.html; }
+
+       # noindex défensif (le front pose déjà la balise meta)
+       add_header X-Robots-Tag "noindex, nofollow" always;
+
+       ssl_certificate     /etc/letsencrypt/live/admin.heurekia.com/fullchain.pem;
+       ssl_certificate_key /etc/letsencrypt/live/admin.heurekia.com/privkey.pem;
+   }
+   server {
+       listen 80;
+       server_name admin.heurekia.com;
+       return 301 https://$host$request_uri;
+   }
+   ```
+
+   > Important : `proxy_set_header Host $host;` est requis pour que l'API voie
+   > bien `admin.heurekia.com` et pose/relise le cookie `token_admin`.
+
+3. **TLS** — émettre le certificat puis recharger nginx :
+   ```bash
+   sudo certbot --nginx -d admin.heurekia.com
+   sudo nginx -t && sudo systemctl reload nginx
+   ```
+
+4. **Variable d'environnement API** — ajouter le sous-domaine à la whitelist CORS
+   dans `/home/ubuntu/heurekia/apps/api/.env` puis redémarrer l'API :
+   ```bash
+   FRONTEND_URLS=https://www.heurekia.com,https://app.heurekia.com,https://admin.heurekia.com
+   ```
+   ```bash
+   pm2 restart heurekia-api --update-env
+   ```
+
+**Vérification** :
+```bash
+curl -fsS https://admin.heurekia.com/api/health        # → {"status":"ok",...}
+# Puis dans le navigateur : https://admin.heurekia.com → page de connexion admin.
+```
