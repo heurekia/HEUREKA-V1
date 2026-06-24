@@ -313,6 +313,10 @@ function riskThemeItems(risks: RiskResult): { items: ThemeItem[]; points: string
   const points: string[] = [];
   let tone: SynthesisTone = "info";
   const src: SynthesisSource = { kind: "risque", label: "GéoRisques" };
+  // Altitude RGE ALTI® : surfacée uniquement là où elle est décisive (cote NGF
+  // du PPRI), pour ne pas ajouter de bruit hors contexte inondation.
+  const alti = risks.terrain_altitude_m;
+  const altiTxt = typeof alti === "number" && Number.isFinite(alti) ? `${String(alti).replace(".", ",")} m NGF` : null;
   const bump = (t: SynthesisTone) => {
     const order: SynthesisTone[] = ["favorable", "neutre", "info", "attention", "interdit"];
     if (order.indexOf(t) > order.indexOf(tone)) tone = t;
@@ -324,7 +328,7 @@ function riskThemeItems(risks: RiskResult): { items: ThemeItem[]; points: string
     items.push({
       label: "Risque inondation",
       value: `aléa ${risks.flood_risk}`,
-      detail: "Respect du PPRI : cote de plancher minimale, attestation de prise en compte du risque.",
+      detail: `Respect du PPRI : cote de plancher minimale, attestation de prise en compte du risque.${altiTxt ? ` Terrain à ~${altiTxt} (RGE ALTI®), à comparer à la cote de référence du PPRI.` : ""}`,
       source: { kind: "ppri", label: "PPRI / GéoRisques", ref: "inondation" },
       tone: "attention",
     });
