@@ -1444,6 +1444,37 @@ export async function analyseParcel(
     }
   }
 
+  // ── Parallélisation : on lance dès maintenant les traitements réseau qui ne
+  // dépendent QUE de la position (lat/lng/INSEE) ou de la géométrie parcellaire,
+  // pour qu'ils s'exécutent EN CONCURRENCE avec le bloc GPU ci-dessous (étape 3)
+  // au lieu de s'enchaîner derrière lui. On les attend à leur point d'usage
+  // (étapes 4 et 6). Ces fonctions échouent en douceur (jamais de rejet), donc une
+  // promesse lancée est toujours sûre à attendre — ou à ignorer.
+  //  - getRisks               : GéoRisques + RGE ALTI® (4 appels), dépend de lat/lng/INSEE
+  //  - getProtectedAreas      : espaces naturels protégés (apicarto Nature), dépend de lat/lng/géométrie
+  //  - computeBuiltFootprintM2 : BD TOPO® bâti, dépend de la seule géométrie parcellaire
+  const risksPromise =
+    lat !== undefined && lng !== undefined && code_insee
+      ? getRisks(lat, lng, code_insee)
+      : null;
+  const protectedPromise =
+    lat !== undefined && lng !== undefined
+      ? getProtectedAreas(lat, lng, result.parcel?.geometry ?? null)
+      : null;
+  const footprintPromise = result.parcel?.geometry
+    ? computeBuiltFootprintM2(result.parcel.geometry)
+    : null;
+
+  // Mémoïsation du contexte PLU communal pour la durée de cette analyse : le
+  // GeoJSON des zones est volumineux et était relu 2 à 3 fois (résolution de
+  // partition, repli zone au point, zonage surfacique). Une seule lecture suffit.
+  const communeCtxCache = new Map<string, Promise<PluCommuneContext>>();
+  const communePluContext = (insee: string): Promise<PluCommuneContext> => {
+    let p = communeCtxCache.get(insee);
+    if (!p) { p = getCommunePluContext(insee); communeCtxCache.set(insee, p); }
+    return p;
+  };
+
   // Step 3: GPU — resolve the real document partition first, then query zone + supplementary data
   // getGpuPartition handles both PLU (DU_<INSEE>) and PLUi (DU_<SIREN>) transparently.
   if (lat !== undefined && lng !== undefined) {
@@ -1482,15 +1513,25 @@ export async function analyseParcel(
       let communeCtx: PluCommuneContext | null = null;
       let resolvedPartition: string | null = pointPartition;
       if (!resolvedPartition && code_insee) {
-        communeCtx = await getCommunePluContext(code_insee);
+        communeCtx = await communePluContext(code_insee);
         resolvedPartition = communeCtx.partition;
       }
       const gpuPartition = resolvedPartition ?? (code_insee ? `DU_${code_insee}` : undefined);
-      const gpuAvailable = resolvedPartition !== null || await findPluZone(lat, lng, gpuPartition).then(z => z !== null).catch(() => false);
+      // Sonde d'availability : quand la partition n'a pas été résolue en amont, on
+      // interroge /zone-urba UNE fois — et on RÉUTILISE ce résultat comme zone
+      // ci-dessous, au lieu de relancer le même appel GPU une seconde fois.
+      let probedZone: PluZoneResult | null | undefined;
+      let gpuAvailable: boolean;
+      if (resolvedPartition !== null) {
+        gpuAvailable = true;
+      } else {
+        probedZone = await findPluZone(lat, lng, gpuPartition).catch(() => null);
+        gpuAvailable = probedZone !== null;
+      }
 
       if (gpuAvailable || !cached) {
         // GPU is responding — fetch all data
-        let zone = await findPluZone(lat, lng, gpuPartition);
+        let zone = probedZone !== undefined ? probedZone : await findPluZone(lat, lng, gpuPartition);
 
         // ── Validation INSEE ↔ zone ─────────────────────────────────────────
         // Le PLU COMMUNAL nomme ses fichiers <INSEE>_PLU_<date>.<ext>. Si le
@@ -1518,19 +1559,19 @@ export async function analyseParcel(
         // déterministe, gratuit, immunisé contre les bizarreries du filtre
         // spatial GPU et contre les conventions de nommage non-standard.
         if (!zone && code_insee) {
-          if (!communeCtx) communeCtx = await getCommunePluContext(code_insee);
+          if (!communeCtx) communeCtx = await communePluContext(code_insee);
           const local = findZoneAtPoint(communeCtx.zones, lat, lng);
           if (local) zone = local;
         }
         const parcelGeom = result.parcel?.geometry ?? null;
 
-        const [municipality, prescriptions, informations] = await Promise.all([
+        // Toutes ces couches GPU sont indépendantes les unes des autres : on les
+        // interroge en un seul lot parallèle (au lieu de deux salves séquentielles)
+        // → la latence est celle de l'appel le plus lent, et non leur somme.
+        const [municipality, prescriptions, informations, supSurf, supLin] = await Promise.all([
           getMunicipality(lat, lng),
           getPrescriptionsSurf(lat, lng, gpuPartition),
           getInfoSurf(lat, lng, gpuPartition),
-        ]);
-
-        const [supSurf, supLin] = await Promise.all([
           getServitudesSurf(lat, lng, parcelGeom),
           getServitudesLin(lat, lng, parcelGeom),
         ]);
@@ -1645,16 +1686,13 @@ export async function analyseParcel(
     }
   }
 
-  // Step 4: GéoRisques (+ RGE ALTI® altitude) + espaces naturels protégés (apicarto Nature)
-  // Lancés EN PARALLÈLE : la latence reste celle de l'appel le plus lent — on enrichit
-  // sans alourdir. GéoRisques exige le code INSEE (repli sismique départemental) ; les
-  // espaces protégés non (interrogés au point / sur la parcelle).
+  // Step 4: GéoRisques (+ RGE ALTI®) + espaces naturels protégés (apicarto Nature)
+  // — tous lancés EN PARALLÈLE du bloc GPU (voir promesses plus haut) : on ne fait
+  // ici que recueillir les résultats. GéoRisques exige le code INSEE (repli sismique
+  // départemental) ; les espaces protégés non (interrogés au point / sur la parcelle).
   if (lat !== undefined && lng !== undefined) {
-    const parcelGeomForNature = result.parcel?.geometry ?? null;
-    const [risks, protectedAreas] = await Promise.all([
-      code_insee ? getRisks(lat, lng, code_insee) : Promise.resolve(null),
-      getProtectedAreas(lat, lng, parcelGeomForNature),
-    ]);
+    const risks = risksPromise ? await risksPromise : null;
+    const protectedAreas = protectedPromise ? await protectedPromise : [];
 
     if (risks) {
       result.risks = risks;
@@ -1856,8 +1894,9 @@ export async function analyseParcel(
       calcVars.maxHeightM = parcelHeight.hauteur_m;
     }
     // Emprise au sol déjà bâtie sur la parcelle (BD TOPO® bâtiments). null si
-    // indéterminable → la « surface restante » ne sera alors pas affichée.
-    const existingFootprintM2 = await computeBuiltFootprintM2(result.parcel.geometry);
+    // indéterminable → la « surface restante » ne sera alors pas affichée. L'appel
+    // a été lancé en parallèle du GPU (footprintPromise) : on récupère le résultat.
+    const existingFootprintM2 = footprintPromise ? await footprintPromise : null;
     if (existingFootprintM2 != null) {
       result.built_footprint_m2 = existingFootprintM2;
       result.data_sources.push("BD TOPO® (bâtiments)");
@@ -1886,7 +1925,7 @@ export async function analyseParcel(
     parcelGeomForZoning &&
     (parcelGeomForZoning.type === "Polygon" || parcelGeomForZoning.type === "MultiPolygon")
   ) {
-    const zoningCtx = await getCommunePluContext(code_insee);
+    const zoningCtx = await communePluContext(code_insee);
     const zoning = findZonesForParcel(zoningCtx.zones, parcelGeomForZoning);
     if (zoning.zones.length > 0) {
       result.zone_a_cheval = zoning.a_cheval;
