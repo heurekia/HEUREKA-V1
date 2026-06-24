@@ -1,10 +1,20 @@
 name: CI
 
 on:
-  push:
-    branches: [main]
+  # CI uniquement sur les PR : le run `pull_request` teste déjà l'arbre FUSIONNÉ
+  # (GitHub checkout `refs/pull/N/merge`). On a retiré le trigger `push` sur main
+  # qui relançait un 2e run CI redondant après chaque merge (≈ -50% de runs CI).
+  # Pour que « commit mergé == commit testé », activer en protection de branche :
+  # « Require branches to be up to date before merging ». Le déploiement, lui,
+  # reste déclenché sur push main via deploy.yml.
   pull_request:
     branches: [main]
+
+# Annule un run en cours devenu obsolète quand on repousse sur la même PR,
+# au lieu de le laisser tourner jusqu'au bout (le deploy a déjà ce mécanisme).
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref || github.ref }}
+  cancel-in-progress: true
 
 jobs:
   security-audit:
