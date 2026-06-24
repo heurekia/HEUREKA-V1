@@ -2,7 +2,7 @@ import { Router } from "express";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { db } from "../db.js";
-import { dossier_pieces_jointes, dossier_documents, dossiers } from "@heureka-v1/db";
+import { dossier_pieces_jointes, dossier_documents, dossier_piece_bundles, dossiers } from "@heureka-v1/db";
 import { eq, like } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
@@ -88,6 +88,33 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
           dossier_user_id: doc.dossier_user_id,
           owner_user_id: null,
           shared_with_citizen: doc.shared_with_citizen,
+        };
+      }
+    }
+
+    if (!resource) {
+      // 3e source : fichier source d'un dépôt groupé (dossier_piece_bundles),
+      // affiché dans l'aperçu de la modale de découpage. Artefact d'instruction :
+      // accessible mairie/instructeur via le périmètre commune, jamais au citoyen.
+      const [bundle] = await db
+        .select({
+          type: dossier_piece_bundles.type,
+          nom: dossier_piece_bundles.nom,
+          dossier_commune: dossiers.commune,
+          dossier_user_id: dossiers.user_id,
+        })
+        .from(dossier_piece_bundles)
+        .leftJoin(dossiers, eq(dossier_piece_bundles.dossier_id, dossiers.id))
+        .where(like(dossier_piece_bundles.url, `%${urlSuffix}`))
+        .limit(1);
+      if (bundle) {
+        resource = {
+          type: bundle.type,
+          nom: bundle.nom,
+          dossier_commune: bundle.dossier_commune,
+          dossier_user_id: bundle.dossier_user_id,
+          owner_user_id: null,
+          shared_with_citizen: false,
         };
       }
     }
