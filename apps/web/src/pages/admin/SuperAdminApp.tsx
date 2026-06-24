@@ -375,6 +375,7 @@ const navItems = [
   { path: "/admin/utilisateurs", icon: "👥", label: "Utilisateurs" },
   { path: "/admin/services", icon: "🔗", label: "Services annexes" },
   { path: "/admin/couts-ia", icon: "💶", label: "Coûts IA" },
+  { path: "/admin/facturation", icon: "💼", label: "Facturation" },
   { path: "/admin/audit", icon: "🔒", label: "Audit sécurité" },
   { path: "/admin/conformite", icon: "🛡", label: "Conformité RGPD" },
   { path: "/admin/configuration", icon: "⚙", label: "Configuration" },
@@ -6243,6 +6244,937 @@ function CoutsIACommune() {
 }
 
 // ─── App Root ─────────────────────────────────────────────────────────────────
+// ─── Facturation / mini compte de résultat ───────────────────────────────────
+interface BillingPrestation {
+  id: string;
+  code: string;
+  label: string;
+  description: string | null;
+  default_unit_price_eur: number;
+  unit: string;
+  default_vat_rate: number;
+  billing_cycle: string;
+  active: boolean;
+  sort_order: number;
+}
+interface BillingItem {
+  id: string;
+  prestation_id: string | null;
+  commune_id: string | null;
+  epci_id: string | null;
+  label: string;
+  quantity: number;
+  unit_price_eur: number;
+  vat_rate: number;
+  billing_cycle: string;
+  start_date: string;
+  end_date: string | null;
+  status: string;
+  note: string | null;
+  client_type: string;
+  client_id: string | null;
+  client_name: string;
+}
+interface BillingCost {
+  id: string;
+  category: string;
+  label: string;
+  amount_eur: number;
+  vat_rate: number;
+  recurrence: string;
+  incurred_on: string;
+  end_date: string | null;
+  note: string | null;
+}
+interface BillingClient { type: string; id: string; name: string; ref: string | null }
+interface BillingClientsResp { communes: BillingClient[]; epci: (BillingClient & { epci_type?: string })[] }
+interface BillingSummary {
+  period: { preset: string; from: string | null; to: string | null };
+  revenue: { recurring_ht: number; one_shot_ht: number; total_ht: number; vat_collected: number; total_ttc: number; mrr: number; arr: number };
+  charges: { ai_eur: number; manual_ht: number; manual_vat_deductible: number; total_ht: number };
+  result: { net_ht: number; margin_pct: number };
+  vat: { collected: number; deductible: number; net: number };
+  revenue_by_cycle: { cycle: string; ht: number; count: number }[];
+  charges_by_category: { category: string; ht: number }[];
+  counts: { active_clients: number; active_lines: number };
+}
+interface BillingByClient {
+  client_type: string; client_id: string; client_name: string;
+  recognized_ht: number; vat: number; recognized_ttc: number; mrr: number; arr: number; lines: number;
+}
+
+const CYCLE_LABELS: Record<string, string> = {
+  one_shot: "Ponctuel", monthly: "Mensuel", quarterly: "Trimestriel", yearly: "Annuel", usage: "À l'usage",
+};
+const COST_RECURRENCE_LABELS: Record<string, string> = {
+  one_shot: "Ponctuelle", monthly: "Mensuelle", quarterly: "Trimestrielle", yearly: "Annuelle",
+};
+const COST_CATEGORY_LABELS: Record<string, string> = {
+  ia: "Coûts IA (Mistral)", infrastructure: "Infrastructure", hebergement: "Hébergement",
+  salaires: "Salaires & RH", marketing: "Marketing & ventes", logiciels: "Logiciels & abonnements", autre: "Autre",
+};
+const COST_CATEGORY_OPTIONS = ["infrastructure", "hebergement", "salaires", "marketing", "logiciels", "autre"];
+
+function fmtEuro(v: number | null | undefined): string {
+  return (v ?? 0).toLocaleString("fr-FR", { style: "currency", currency: "EUR", minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function fmtEuro0(v: number | null | undefined): string {
+  return (v ?? 0).toLocaleString("fr-FR", { style: "currency", currency: "EUR", maximumFractionDigits: 0 });
+}
+function fmtDateFr(s: string | null | undefined): string {
+  if (!s) return "—";
+  const d = new Date(`${s}T00:00:00`);
+  return Number.isNaN(d.getTime()) ? "—" : d.toLocaleDateString("fr-FR");
+}
+function clientKey(type: string, id: string): string { return `${type}:${id}`; }
+
+const billInput: React.CSSProperties = {
+  width: "100%", boxSizing: "border-box", padding: "10px 12px",
+  border: `1px solid ${C.border}`, borderRadius: 8, fontSize: 14, color: C.text,
+  background: C.white, outline: "none",
+};
+
+// Bandeau de toast léger (succès / erreur), aligné sur le style de CoutsIA.
+function useBillToast() {
+  const [toast, setToast] = useState<{ kind: "ok" | "err"; msg: string } | null>(null);
+  useEffect(() => {
+    if (!toast) return;
+    const t = setTimeout(() => setToast(null), 4000);
+    return () => clearTimeout(t);
+  }, [toast]);
+  return { toast, setToast };
+}
+function BillToast({ toast }: { toast: { kind: "ok" | "err"; msg: string } | null }) {
+  if (!toast) return null;
+  return (
+    <div style={{
+      margin: "12px 0", padding: "10px 14px", borderRadius: 8, fontSize: 13,
+      background: toast.kind === "ok" ? C.greenBg : C.redBg,
+      border: `1px solid ${toast.kind === "ok" ? C.green : C.red}`,
+      color: toast.kind === "ok" ? C.green : C.red,
+    }}>{toast.msg}</div>
+  );
+}
+
+// Sélecteur de période partagé (presets calendaires + plage personnalisée).
+function PeriodControls({ preset, from, to, onPreset, onFrom, onTo, onClear }: {
+  preset: string; from: string; to: string;
+  onPreset: (p: string) => void; onFrom: (v: string) => void; onTo: (v: string) => void; onClear: () => void;
+}) {
+  const useCustom = from !== "" || to !== "";
+  const presets: { key: string; label: string }[] = [
+    { key: "month", label: "Mois" }, { key: "quarter", label: "Trimestre" },
+    { key: "year", label: "Année" }, { key: "12m", label: "12 mois" }, { key: "all", label: "Tout" },
+  ];
+  return (
+    <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      {presets.map((p) => (
+        <button key={p.key} onClick={() => onPreset(p.key)}
+          style={{
+            padding: "8px 14px", borderRadius: 8,
+            border: `1px solid ${!useCustom && preset === p.key ? C.accent : C.border}`,
+            background: !useCustom && preset === p.key ? C.accent : "white",
+            color: !useCustom && preset === p.key ? "white" : C.text,
+            fontSize: 13, fontWeight: 600, cursor: "pointer",
+          }}>{p.label}</button>
+      ))}
+      <div style={{ width: 1, height: 24, background: C.border, margin: "0 4px" }} />
+      <div style={{ display: "flex", alignItems: "center", gap: 6, padding: "4px 10px", border: `1px solid ${useCustom ? C.accent : C.border}`, borderRadius: 8, background: "white" }}>
+        <span style={{ fontSize: 12, color: C.textMuted, fontWeight: 600 }}>📅</span>
+        <input type="date" value={from} max={to || undefined} onChange={(e) => onFrom(e.target.value)}
+          style={{ border: "none", outline: "none", fontSize: 13, fontFamily: "inherit", color: C.text, background: "transparent" }} />
+        <span style={{ color: C.textMuted, fontSize: 12 }}>→</span>
+        <input type="date" value={to} min={from || undefined} onChange={(e) => onTo(e.target.value)}
+          style={{ border: "none", outline: "none", fontSize: 13, fontFamily: "inherit", color: C.text, background: "transparent" }} />
+        {useCustom && (
+          <button onClick={onClear} title="Effacer la plage personnalisée"
+            style={{ border: "none", background: "transparent", color: C.textMuted, fontSize: 14, cursor: "pointer", padding: "0 4px", marginLeft: 2 }}>×</button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// Petite barre de répartition (libellé + montant + barre proportionnelle).
+function BreakdownRow({ label, value, total, color }: { label: string; value: number; total: number; color: string }) {
+  const pct = total > 0 ? Math.round((value / total) * 100) : 0;
+  return (
+    <div style={{ padding: "10px 20px", borderTop: `1px solid ${C.border}` }}>
+      <div style={{ display: "flex", justifyContent: "space-between", marginBottom: 6, fontSize: 13 }}>
+        <span style={{ color: C.text, fontWeight: 600 }}>{label}</span>
+        <span style={{ color: C.text }}>{fmtEuro(value)} <span style={{ color: C.textMuted, fontSize: 12 }}>· {pct}%</span></span>
+      </div>
+      <div style={{ height: 6, background: C.bg, borderRadius: 3, overflow: "hidden" }}>
+        <div style={{ width: `${pct}%`, height: "100%", background: color, borderRadius: 3 }} />
+      </div>
+    </div>
+  );
+}
+
+// ── Onglet : compte de résultat ──────────────────────────────────────────────
+function CompteDeResultat({ qs }: { qs: string }) {
+  const [data, setData] = useState<BillingSummary | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setLoading(true);
+    api.get<BillingSummary>(`/admin/billing/summary?${qs}`)
+      .then((d) => { setData(d); setError(""); })
+      .catch((e) => setError(`Impossible de charger le compte de résultat — ${(e as Error).message}`))
+      .finally(() => setLoading(false));
+  }, [qs]);
+
+  if (loading) return <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>;
+  if (error) return <div style={{ background: C.redBg, border: `1px solid ${C.red}`, color: C.red, borderRadius: 10, padding: "12px 16px", fontSize: 14 }}>{error}</div>;
+  if (!data) return null;
+
+  const net = data.result.net_ht;
+  const netColor = net >= 0 ? C.green : C.red;
+
+  const pnlRow = (label: string, value: number, opts?: { bold?: boolean; color?: string; indent?: boolean; total?: boolean }) => (
+    <tr style={{ borderTop: opts?.total ? `2px solid ${C.border}` : `1px solid ${C.border}`, background: opts?.total ? C.bg : "transparent" }}>
+      <td style={{ padding: "11px 20px", paddingLeft: opts?.indent ? 36 : 20, fontSize: 14, fontWeight: opts?.bold ? 700 : 400, color: opts?.color ?? C.text }}>{label}</td>
+      <td style={{ padding: "11px 20px", textAlign: "right", fontSize: 14, fontWeight: opts?.bold ? 700 : 500, color: opts?.color ?? C.text, fontVariantNumeric: "tabular-nums" }}>{fmtEuro(value)}</td>
+    </tr>
+  );
+
+  return (
+    <>
+      {/* StatCards principales */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 16 }}>
+        <StatCard label="Chiffre d'affaires HT" value={fmtEuro0(data.revenue.total_ht)} icon="💶" color={C.accent} bg={C.accentLight} />
+        <StatCard label="TVA collectée" value={fmtEuro0(data.vat.collected)} icon="🧾" color={C.orange} bg={C.orangeBg} />
+        <StatCard label="Charges HT" value={fmtEuro0(data.charges.total_ht)} icon="📉" color={C.red} bg={C.redBg} />
+        <StatCard label="Résultat net HT" value={fmtEuro0(net)} icon={net >= 0 ? "📈" : "⚠️"} color={netColor} bg={net >= 0 ? C.greenBg : C.redBg} />
+      </div>
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 16, marginBottom: 24 }}>
+        <StatCard label="MRR (récurrent / mois)" value={fmtEuro0(data.revenue.mrr)} icon="🔁" color={C.blue} bg={C.blueBg} />
+        <StatCard label="ARR (récurrent / an)" value={fmtEuro0(data.revenue.arr)} icon="📅" color={C.purple} bg={C.purpleBg} />
+        <StatCard label="Marge nette" value={`${data.result.margin_pct.toFixed(1)} %`} icon="🎯" color={netColor} bg={net >= 0 ? C.greenBg : C.redBg} />
+        <StatCard label="Clients facturés" value={data.counts.active_clients} icon="🏛" color={C.green} bg={C.greenBg} />
+      </div>
+
+      {/* Compte de résultat */}
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden", marginBottom: 24 }}>
+        <div style={{ padding: "14px 20px", borderBottom: `1px solid ${C.border}` }}>
+          <div style={{ fontWeight: 700, fontSize: 15, color: C.text }}>Compte de résultat <span style={{ fontWeight: 600, fontSize: 12, color: C.textMuted, marginLeft: 6 }}>· sur la période</span></div>
+          <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>
+            Récurrent proraté sur la période (CA contracté) · ponctuels & usage comptés à leur date · coûts IA issus du suivi Mistral.
+          </div>
+        </div>
+        <table style={{ width: "100%", borderCollapse: "collapse" }}>
+          <tbody>
+            <tr style={{ background: C.bg }}>
+              <td colSpan={2} style={{ padding: "8px 20px", fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Produits</td>
+            </tr>
+            {pnlRow("Abonnements récurrents", data.revenue.recurring_ht, { indent: true })}
+            {pnlRow("Prestations ponctuelles & à l'usage", data.revenue.one_shot_ht, { indent: true })}
+            {pnlRow("Total produits HT", data.revenue.total_ht, { bold: true, total: true })}
+            <tr style={{ background: C.bg }}>
+              <td colSpan={2} style={{ padding: "8px 20px", fontSize: 11, fontWeight: 700, color: C.textMuted, textTransform: "uppercase", letterSpacing: "0.06em" }}>Charges</td>
+            </tr>
+            {pnlRow("Coûts IA (Mistral, estimés)", data.charges.ai_eur, { indent: true })}
+            {pnlRow("Autres charges saisies", data.charges.manual_ht, { indent: true })}
+            {pnlRow("Total charges HT", data.charges.total_ht, { bold: true, total: true })}
+            {pnlRow("= Résultat net HT", net, { bold: true, total: true, color: netColor })}
+          </tbody>
+        </table>
+        <div style={{ display: "flex", gap: 24, padding: "12px 20px", borderTop: `1px solid ${C.border}`, flexWrap: "wrap", fontSize: 12, color: C.textMuted }}>
+          <span>TVA collectée : <strong style={{ color: C.text }}>{fmtEuro(data.vat.collected)}</strong></span>
+          <span>TVA déductible : <strong style={{ color: C.text }}>{fmtEuro(data.vat.deductible)}</strong></span>
+          <span>TVA nette à reverser (est.) : <strong style={{ color: C.text }}>{fmtEuro(data.vat.net)}</strong></span>
+          <span>CA TTC : <strong style={{ color: C.text }}>{fmtEuro(data.revenue.total_ttc)}</strong></span>
+        </div>
+      </div>
+
+      {/* Répartitions */}
+      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 16, marginBottom: 24 }}>
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ padding: "14px 20px", fontWeight: 700, fontSize: 14, color: C.text }}>Produits par type</div>
+          {data.revenue_by_cycle.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Aucun produit sur la période.</div>
+          ) : data.revenue_by_cycle.map((r) => (
+            <BreakdownRow key={r.cycle} label={`${CYCLE_LABELS[r.cycle] ?? r.cycle} · ${r.count} ligne${r.count > 1 ? "s" : ""}`} value={r.ht} total={data.revenue.total_ht} color={C.accent} />
+          ))}
+        </div>
+        <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ padding: "14px 20px", fontWeight: 700, fontSize: 14, color: C.text }}>Charges par catégorie</div>
+          {data.charges_by_category.length === 0 ? (
+            <div style={{ padding: 24, textAlign: "center", color: C.textMuted, fontSize: 13 }}>Aucune charge sur la période.</div>
+          ) : data.charges_by_category.map((r) => (
+            <BreakdownRow key={r.category} label={COST_CATEGORY_LABELS[r.category] ?? r.category} value={r.ht} total={data.charges.total_ht} color={C.red} />
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
+// ── Onglet : CA par client ───────────────────────────────────────────────────
+function CaParClient({ qs }: { qs: string }) {
+  const navigate = useNavigate();
+  const [rows, setRows] = useState<BillingByClient[] | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+
+  useEffect(() => {
+    setLoading(true);
+    api.get<BillingByClient[]>(`/admin/billing/by-client?${qs}`)
+      .then((d) => { setRows(d); setError(""); })
+      .catch((e) => setError(`Impossible de charger le CA par client — ${(e as Error).message}`))
+      .finally(() => setLoading(false));
+  }, [qs]);
+
+  if (loading) return <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>;
+  if (error) return <div style={{ background: C.redBg, border: `1px solid ${C.red}`, color: C.red, borderRadius: 10, padding: "12px 16px", fontSize: 14 }}>{error}</div>;
+  if (!rows || rows.length === 0) return (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: 40, textAlign: "center", color: C.textMuted }}>
+      <div style={{ fontSize: 40, marginBottom: 12 }}>💼</div>
+      <p style={{ margin: 0 }}>Aucune prestation facturée sur la période. Ajoute des lignes dans l'onglet « Prestations facturées ».</p>
+    </div>
+  );
+
+  const totalHt = rows.reduce((s, r) => s + r.recognized_ht, 0);
+  return (
+    <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+      <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+        <thead>
+          <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+            <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Client</th>
+            <th style={{ padding: "10px 20px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Type</th>
+            <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Lignes</th>
+            <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>MRR</th>
+            <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>CA HT (période)</th>
+            <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>TVA</th>
+            <th style={{ padding: "10px 20px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>CA TTC</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={`${r.client_type}:${r.client_id}`} style={{ borderTop: `1px solid ${C.border}`, cursor: r.client_type === "commune" ? "pointer" : "default" }}
+              onClick={() => { if (r.client_type === "commune" && r.client_id) navigate(`/admin/communes/${r.client_id}`); }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = C.bg)}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "transparent")}>
+              <td style={{ padding: "11px 20px", color: C.text, fontWeight: 600 }}>{r.client_name}</td>
+              <td style={{ padding: "11px 20px" }}>{r.client_type === "commune" ? <Badge label="Commune" color={C.blue} bg={C.blueBg} /> : <Badge label="EPCI" color={C.purple} bg={C.purpleBg} />}</td>
+              <td style={{ padding: "11px 20px", textAlign: "right", color: C.textMuted }}>{r.lines}</td>
+              <td style={{ padding: "11px 20px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{fmtEuro(r.mrr)}</td>
+              <td style={{ padding: "11px 20px", textAlign: "right", color: C.text, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmtEuro(r.recognized_ht)}</td>
+              <td style={{ padding: "11px 20px", textAlign: "right", color: C.textMuted, fontVariantNumeric: "tabular-nums" }}>{fmtEuro(r.vat)}</td>
+              <td style={{ padding: "11px 20px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{fmtEuro(r.recognized_ttc)}</td>
+            </tr>
+          ))}
+        </tbody>
+        <tfoot>
+          <tr style={{ borderTop: `2px solid ${C.border}`, background: C.bg }}>
+            <td colSpan={4} style={{ padding: "11px 20px", fontWeight: 700, color: C.text }}>Total</td>
+            <td style={{ padding: "11px 20px", textAlign: "right", fontWeight: 700, color: C.text, fontVariantNumeric: "tabular-nums" }}>{fmtEuro(totalHt)}</td>
+            <td colSpan={2} />
+          </tr>
+        </tfoot>
+      </table>
+    </div>
+  );
+}
+
+// ── Onglet : prestations facturées (lignes par client) ───────────────────────
+const emptyItemForm = () => ({
+  id: "", prestation_id: "", client: "", label: "", quantity: "1", unit_price_eur: "0",
+  vat_rate: "20", billing_cycle: "yearly", start_date: new Date().toISOString().slice(0, 10),
+  end_date: "", status: "active", note: "",
+});
+type ItemForm = ReturnType<typeof emptyItemForm>;
+
+function PrestationsFacturees() {
+  const [items, setItems] = useState<BillingItem[] | null>(null);
+  const [clients, setClients] = useState<BillingClientsResp | null>(null);
+  const [catalogue, setCatalogue] = useState<BillingPrestation[]>([]);
+  const [filter, setFilter] = useState("");
+  const [modal, setModal] = useState<ItemForm | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const { toast, setToast } = useBillToast();
+
+  const load = useCallback(() => {
+    Promise.all([
+      api.get<BillingItem[]>("/admin/billing/items"),
+      api.get<BillingClientsResp>("/admin/billing/clients"),
+      api.get<BillingPrestation[]>("/admin/billing/prestations"),
+    ]).then(([i, c, p]) => { setItems(i); setClients(c); setCatalogue(p); })
+      .catch((e) => setToast({ kind: "err", msg: (e as Error).message }));
+  }, [setToast]);
+  useEffect(() => { load(); }, [load]);
+
+  const openAdd = () => setModal(emptyItemForm());
+  const openEdit = (it: BillingItem) => setModal({
+    id: it.id, prestation_id: it.prestation_id ?? "", client: clientKey(it.client_type, it.client_id ?? ""),
+    label: it.label, quantity: String(it.quantity), unit_price_eur: String(it.unit_price_eur),
+    vat_rate: String(it.vat_rate), billing_cycle: it.billing_cycle, start_date: it.start_date,
+    end_date: it.end_date ?? "", status: it.status, note: it.note ?? "",
+  });
+
+  const onPickPrestation = (prestationId: string) => {
+    setModal((m) => {
+      if (!m) return m;
+      const p = catalogue.find((x) => x.id === prestationId);
+      if (!p) return { ...m, prestation_id: "" };
+      return {
+        ...m, prestation_id: prestationId, label: p.label,
+        unit_price_eur: String(p.default_unit_price_eur), vat_rate: String(p.default_vat_rate),
+        billing_cycle: p.billing_cycle,
+      };
+    });
+  };
+
+  const save = async () => {
+    if (!modal) return;
+    const [ctype, cid] = modal.client.split(":");
+    if (!ctype || !cid) { setToast({ kind: "err", msg: "Sélectionne un client (commune ou EPCI)." }); return; }
+    if (!modal.label.trim()) { setToast({ kind: "err", msg: "Libellé requis." }); return; }
+    setSaving(true);
+    const body = {
+      prestation_id: modal.prestation_id || null,
+      commune_id: ctype === "commune" ? cid : null,
+      epci_id: ctype === "epci" ? cid : null,
+      label: modal.label.trim(),
+      quantity: Number(modal.quantity) || 0,
+      unit_price_eur: Number(modal.unit_price_eur) || 0,
+      vat_rate: Number(modal.vat_rate) || 0,
+      billing_cycle: modal.billing_cycle,
+      start_date: modal.start_date,
+      end_date: modal.end_date || null,
+      status: modal.status,
+      note: modal.note.trim() || null,
+    };
+    try {
+      if (modal.id) await api.put(`/admin/billing/items/${modal.id}`, body);
+      else await api.post("/admin/billing/items", body);
+      setModal(null);
+      setToast({ kind: "ok", msg: "Ligne enregistrée." });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const del = async (id: string) => {
+    setConfirmId(null);
+    try {
+      await api.delete(`/admin/billing/items/${id}`);
+      setToast({ kind: "ok", msg: "Ligne supprimée." });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    }
+  };
+
+  if (!items || !clients) return <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>;
+
+  const filtered = filter ? items.filter((i) => clientKey(i.client_type, i.client_id ?? "") === filter) : items;
+  const lineHt = (i: BillingItem) => i.quantity * i.unit_price_eur;
+
+  return (
+    <>
+      <BillToast toast={toast} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 12, flexWrap: "wrap" }}>
+        <select value={filter} onChange={(e) => setFilter(e.target.value)} style={{ ...billInput, width: "auto", minWidth: 240 }}>
+          <option value="">Tous les clients ({items.length} ligne{items.length > 1 ? "s" : ""})</option>
+          <optgroup label="Communes">
+            {clients.communes.map((c) => <option key={c.id} value={clientKey("commune", c.id)}>{c.name}</option>)}
+          </optgroup>
+          <optgroup label="Groupements / EPCI">
+            {clients.epci.map((e) => <option key={e.id} value={clientKey("epci", e.id)}>{e.name}</option>)}
+          </optgroup>
+        </select>
+        <button onClick={openAdd} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
+          + Ajouter une prestation facturée
+        </button>
+      </div>
+
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+        {filtered.length === 0 ? (
+          <div style={{ padding: 40, textAlign: "center", color: C.textMuted }}>Aucune ligne. Clique sur « Ajouter une prestation facturée ».</div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Client</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Prestation</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Cycle</th>
+                <th style={{ padding: "10px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Qté</th>
+                <th style={{ padding: "10px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>PU HT</th>
+                <th style={{ padding: "10px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Total HT</th>
+                <th style={{ padding: "10px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>TVA</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Depuis</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Statut</th>
+                <th style={{ padding: "10px 16px" }} />
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map((it) => (
+                <tr key={it.id} style={{ borderTop: `1px solid ${C.border}`, opacity: it.status === "cancelled" ? 0.55 : 1 }}>
+                  <td style={{ padding: "11px 16px", color: C.text, fontWeight: 600 }}>{it.client_name}</td>
+                  <td style={{ padding: "11px 16px", color: C.text }}>{it.label}</td>
+                  <td style={{ padding: "11px 16px", color: C.textMuted }}>{CYCLE_LABELS[it.billing_cycle] ?? it.billing_cycle}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", color: C.textMuted }}>{it.quantity}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", color: C.textMuted, fontVariantNumeric: "tabular-nums" }}>{fmtEuro(it.unit_price_eur)}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", color: C.text, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmtEuro(lineHt(it))}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", color: C.textMuted }}>{it.vat_rate}%</td>
+                  <td style={{ padding: "11px 16px", color: C.textMuted, fontSize: 12 }}>{fmtDateFr(it.start_date)}</td>
+                  <td style={{ padding: "11px 16px" }}>{it.status === "active" ? <Badge label="Actif" color={C.green} bg={C.greenBg} /> : <Badge label="Résilié" color={C.textMuted} bg={C.bg} />}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button onClick={() => openEdit(it)} style={{ padding: "4px 10px", marginRight: 6, borderRadius: 6, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 12, cursor: "pointer" }}>Éditer</button>
+                    <button onClick={() => setConfirmId(it.id)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: "white", color: C.red, fontSize: 12, cursor: "pointer" }}>×</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {modal && (
+        <Modal title={modal.id ? "Modifier la prestation facturée" : "Nouvelle prestation facturée"} onClose={() => setModal(null)} width={620}>
+          <div style={{ display: "grid", gap: 14 }}>
+            <Field label="Client (commune ou EPCI)">
+              <select value={modal.client} onChange={(e) => setModal({ ...modal, client: e.target.value })} style={billInput}>
+                <option value="">— Sélectionner —</option>
+                <optgroup label="Communes">
+                  {clients.communes.map((c) => <option key={c.id} value={clientKey("commune", c.id)}>{c.name}</option>)}
+                </optgroup>
+                <optgroup label="Groupements / EPCI">
+                  {clients.epci.map((e) => <option key={e.id} value={clientKey("epci", e.id)}>{e.name}</option>)}
+                </optgroup>
+              </select>
+            </Field>
+            <Field label="Prestation du catalogue (pré-remplit prix & cycle, optionnel)">
+              <select value={modal.prestation_id} onChange={(e) => onPickPrestation(e.target.value)} style={billInput}>
+                <option value="">— Ligne libre (hors catalogue) —</option>
+                {catalogue.filter((p) => p.active || p.id === modal.prestation_id).map((p) => (
+                  <option key={p.id} value={p.id}>{p.label} ({fmtEuro(p.default_unit_price_eur)} / {p.unit})</option>
+                ))}
+              </select>
+            </Field>
+            <Field label="Libellé facturé">
+              <input value={modal.label} onChange={(e) => setModal({ ...modal, label: e.target.value })} style={billInput} placeholder="Ex : Abonnement plateforme 2026" />
+            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+              <Field label="Quantité">
+                <input type="number" step="0.01" min="0" value={modal.quantity} onChange={(e) => setModal({ ...modal, quantity: e.target.value })} style={billInput} />
+              </Field>
+              <Field label="Prix unitaire HT (€)">
+                <input type="number" step="0.01" min="0" value={modal.unit_price_eur} onChange={(e) => setModal({ ...modal, unit_price_eur: e.target.value })} style={billInput} />
+              </Field>
+              <Field label="TVA (%)">
+                <input type="number" step="0.1" min="0" value={modal.vat_rate} onChange={(e) => setModal({ ...modal, vat_rate: e.target.value })} style={billInput} />
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Cycle de facturation">
+                <select value={modal.billing_cycle} onChange={(e) => setModal({ ...modal, billing_cycle: e.target.value })} style={billInput}>
+                  {Object.entries(CYCLE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </Field>
+              <Field label="Statut">
+                <select value={modal.status} onChange={(e) => setModal({ ...modal, status: e.target.value })} style={billInput}>
+                  <option value="active">Actif</option>
+                  <option value="cancelled">Résilié</option>
+                </select>
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Début / date de facturation">
+                <input type="date" value={modal.start_date} onChange={(e) => setModal({ ...modal, start_date: e.target.value })} style={billInput} />
+              </Field>
+              <Field label="Fin (optionnel, abonnements)">
+                <input type="date" value={modal.end_date} onChange={(e) => setModal({ ...modal, end_date: e.target.value })} style={billInput} />
+              </Field>
+            </div>
+            <Field label="Note (optionnel)">
+              <input value={modal.note} onChange={(e) => setModal({ ...modal, note: e.target.value })} style={billInput} />
+            </Field>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+              <button onClick={() => setModal(null)} style={{ padding: "10px 18px", borderRadius: 8, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Annuler</button>
+              <button onClick={save} disabled={saving} style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: C.accent, color: "white", fontSize: 14, fontWeight: 600, cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1 }}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {confirmId && <ConfirmDialog message="Supprimer cette ligne facturée ?" onConfirm={() => del(confirmId)} onCancel={() => setConfirmId(null)} />}
+    </>
+  );
+}
+
+// ── Onglet : catalogue de prestations ────────────────────────────────────────
+const emptyPrestaForm = () => ({
+  id: "", code: "", label: "", description: "", default_unit_price_eur: "0",
+  unit: "forfait", default_vat_rate: "20", billing_cycle: "yearly", active: true, sort_order: "0",
+});
+type PrestaForm = ReturnType<typeof emptyPrestaForm>;
+
+function Catalogue() {
+  const [rows, setRows] = useState<BillingPrestation[] | null>(null);
+  const [modal, setModal] = useState<PrestaForm | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const { toast, setToast } = useBillToast();
+
+  const load = useCallback(() => {
+    api.get<BillingPrestation[]>("/admin/billing/prestations")
+      .then(setRows).catch((e) => setToast({ kind: "err", msg: (e as Error).message }));
+  }, [setToast]);
+  useEffect(() => { load(); }, [load]);
+
+  const openEdit = (p: BillingPrestation) => setModal({
+    id: p.id, code: p.code, label: p.label, description: p.description ?? "",
+    default_unit_price_eur: String(p.default_unit_price_eur), unit: p.unit,
+    default_vat_rate: String(p.default_vat_rate), billing_cycle: p.billing_cycle,
+    active: p.active, sort_order: String(p.sort_order),
+  });
+
+  const save = async () => {
+    if (!modal) return;
+    if (!modal.code.trim() || !modal.label.trim()) { setToast({ kind: "err", msg: "Code et libellé requis." }); return; }
+    setSaving(true);
+    const body = {
+      code: modal.code.trim(), label: modal.label.trim(), description: modal.description.trim() || null,
+      default_unit_price_eur: Number(modal.default_unit_price_eur) || 0, unit: modal.unit.trim() || "forfait",
+      default_vat_rate: Number(modal.default_vat_rate) || 0, billing_cycle: modal.billing_cycle,
+      active: modal.active, sort_order: Number(modal.sort_order) || 0,
+    };
+    try {
+      if (modal.id) await api.put(`/admin/billing/prestations/${modal.id}`, body);
+      else await api.post("/admin/billing/prestations", body);
+      setModal(null);
+      setToast({ kind: "ok", msg: "Prestation enregistrée." });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const del = async (id: string) => {
+    setConfirmId(null);
+    try {
+      await api.delete(`/admin/billing/prestations/${id}`);
+      setToast({ kind: "ok", msg: "Prestation supprimée." });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    }
+  };
+
+  if (!rows) return <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>;
+  return (
+    <>
+      <BillToast toast={toast} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div style={{ fontSize: 13, color: C.textMuted }}>Modèles réutilisables : prix, TVA et cycle par défaut recopiés à l'ajout d'une ligne.</div>
+        <button onClick={() => setModal(emptyPrestaForm())} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>+ Ajouter une prestation</button>
+      </div>
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+        {rows.length === 0 ? (
+          <div style={{ padding: 40, textAlign: "center", color: C.textMuted }}>Catalogue vide.</div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Libellé</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Code</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Cycle</th>
+                <th style={{ padding: "10px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>PU HT</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Unité</th>
+                <th style={{ padding: "10px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>TVA</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Statut</th>
+                <th style={{ padding: "10px 16px" }} />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((p) => (
+                <tr key={p.id} style={{ borderTop: `1px solid ${C.border}`, opacity: p.active ? 1 : 0.55 }}>
+                  <td style={{ padding: "11px 16px", color: C.text, fontWeight: 600 }}>{p.label}</td>
+                  <td style={{ padding: "11px 16px", color: C.textMuted, fontFamily: "monospace", fontSize: 12 }}>{p.code}</td>
+                  <td style={{ padding: "11px 16px", color: C.textMuted }}>{CYCLE_LABELS[p.billing_cycle] ?? p.billing_cycle}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", color: C.text, fontVariantNumeric: "tabular-nums" }}>{fmtEuro(p.default_unit_price_eur)}</td>
+                  <td style={{ padding: "11px 16px", color: C.textMuted }}>{p.unit}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", color: C.textMuted }}>{p.default_vat_rate}%</td>
+                  <td style={{ padding: "11px 16px" }}>{p.active ? <Badge label="Actif" color={C.green} bg={C.greenBg} /> : <Badge label="Inactif" color={C.textMuted} bg={C.bg} />}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button onClick={() => openEdit(p)} style={{ padding: "4px 10px", marginRight: 6, borderRadius: 6, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 12, cursor: "pointer" }}>Éditer</button>
+                    <button onClick={() => setConfirmId(p.id)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: "white", color: C.red, fontSize: 12, cursor: "pointer" }}>×</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {modal && (
+        <Modal title={modal.id ? "Modifier la prestation" : "Nouvelle prestation"} onClose={() => setModal(null)} width={560}>
+          <div style={{ display: "grid", gap: 14 }}>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Code (identifiant unique)">
+                <input value={modal.code} disabled={!!modal.id} onChange={(e) => setModal({ ...modal, code: e.target.value })} style={{ ...billInput, fontFamily: "monospace", background: modal.id ? C.bg : C.white }} placeholder="abonnement_annuel" />
+              </Field>
+              <Field label="Unité">
+                <input value={modal.unit} onChange={(e) => setModal({ ...modal, unit: e.target.value })} style={billInput} placeholder="an, mois, dossier…" />
+              </Field>
+            </div>
+            <Field label="Libellé">
+              <input value={modal.label} onChange={(e) => setModal({ ...modal, label: e.target.value })} style={billInput} placeholder="Abonnement plateforme (annuel)" />
+            </Field>
+            <Field label="Description (optionnel)">
+              <input value={modal.description} onChange={(e) => setModal({ ...modal, description: e.target.value })} style={billInput} />
+            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 14 }}>
+              <Field label="Prix HT (€)">
+                <input type="number" step="0.01" min="0" value={modal.default_unit_price_eur} onChange={(e) => setModal({ ...modal, default_unit_price_eur: e.target.value })} style={billInput} />
+              </Field>
+              <Field label="TVA (%)">
+                <input type="number" step="0.1" min="0" value={modal.default_vat_rate} onChange={(e) => setModal({ ...modal, default_vat_rate: e.target.value })} style={billInput} />
+              </Field>
+              <Field label="Ordre">
+                <input type="number" step="1" value={modal.sort_order} onChange={(e) => setModal({ ...modal, sort_order: e.target.value })} style={billInput} />
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, alignItems: "end" }}>
+              <Field label="Cycle de facturation">
+                <select value={modal.billing_cycle} onChange={(e) => setModal({ ...modal, billing_cycle: e.target.value })} style={billInput}>
+                  {Object.entries(CYCLE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </Field>
+              <label style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 14, color: C.text, padding: "10px 0" }}>
+                <input type="checkbox" checked={modal.active} onChange={(e) => setModal({ ...modal, active: e.target.checked })} />
+                Active (proposée à l'ajout)
+              </label>
+            </div>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+              <button onClick={() => setModal(null)} style={{ padding: "10px 18px", borderRadius: 8, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Annuler</button>
+              <button onClick={save} disabled={saving} style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: C.accent, color: "white", fontSize: 14, fontWeight: 600, cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1 }}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {confirmId && <ConfirmDialog message="Supprimer cette prestation du catalogue ? Les lignes déjà facturées sont conservées." onConfirm={() => del(confirmId)} onCancel={() => setConfirmId(null)} />}
+    </>
+  );
+}
+
+// ── Onglet : charges ─────────────────────────────────────────────────────────
+const emptyCostForm = () => ({
+  id: "", category: "infrastructure", label: "", amount_eur: "0", vat_rate: "20",
+  recurrence: "monthly", incurred_on: new Date().toISOString().slice(0, 10), end_date: "", note: "",
+});
+type CostForm = ReturnType<typeof emptyCostForm>;
+
+function ChargesPanel() {
+  const [rows, setRows] = useState<BillingCost[] | null>(null);
+  const [modal, setModal] = useState<CostForm | null>(null);
+  const [saving, setSaving] = useState(false);
+  const [confirmId, setConfirmId] = useState<string | null>(null);
+  const { toast, setToast } = useBillToast();
+
+  const load = useCallback(() => {
+    api.get<BillingCost[]>("/admin/billing/costs")
+      .then(setRows).catch((e) => setToast({ kind: "err", msg: (e as Error).message }));
+  }, [setToast]);
+  useEffect(() => { load(); }, [load]);
+
+  const openEdit = (c: BillingCost) => setModal({
+    id: c.id, category: c.category, label: c.label, amount_eur: String(c.amount_eur),
+    vat_rate: String(c.vat_rate), recurrence: c.recurrence, incurred_on: c.incurred_on,
+    end_date: c.end_date ?? "", note: c.note ?? "",
+  });
+
+  const save = async () => {
+    if (!modal) return;
+    if (!modal.label.trim()) { setToast({ kind: "err", msg: "Libellé requis." }); return; }
+    setSaving(true);
+    const body = {
+      category: modal.category, label: modal.label.trim(), amount_eur: Number(modal.amount_eur) || 0,
+      vat_rate: Number(modal.vat_rate) || 0, recurrence: modal.recurrence,
+      incurred_on: modal.incurred_on, end_date: modal.end_date || null, note: modal.note.trim() || null,
+    };
+    try {
+      if (modal.id) await api.put(`/admin/billing/costs/${modal.id}`, body);
+      else await api.post("/admin/billing/costs", body);
+      setModal(null);
+      setToast({ kind: "ok", msg: "Charge enregistrée." });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const del = async (id: string) => {
+    setConfirmId(null);
+    try {
+      await api.delete(`/admin/billing/costs/${id}`);
+      setToast({ kind: "ok", msg: "Charge supprimée." });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    }
+  };
+
+  if (!rows) return <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>;
+  return (
+    <>
+      <BillToast toast={toast} />
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
+        <div style={{ fontSize: 13, color: C.textMuted }}>Charges d'exploitation hors IA. Les coûts IA Mistral sont injectés automatiquement dans le compte de résultat.</div>
+        <button onClick={() => setModal(emptyCostForm())} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>+ Ajouter une charge</button>
+      </div>
+      <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
+        {rows.length === 0 ? (
+          <div style={{ padding: 40, textAlign: "center", color: C.textMuted }}>Aucune charge saisie.</div>
+        ) : (
+          <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+            <thead>
+              <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Libellé</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Catégorie</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Récurrence</th>
+                <th style={{ padding: "10px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Montant HT</th>
+                <th style={{ padding: "10px 16px", textAlign: "right", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>TVA</th>
+                <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Date</th>
+                <th style={{ padding: "10px 16px" }} />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((c) => (
+                <tr key={c.id} style={{ borderTop: `1px solid ${C.border}` }}>
+                  <td style={{ padding: "11px 16px", color: C.text, fontWeight: 600 }}>{c.label}</td>
+                  <td style={{ padding: "11px 16px", color: C.textMuted }}>{COST_CATEGORY_LABELS[c.category] ?? c.category}</td>
+                  <td style={{ padding: "11px 16px", color: C.textMuted }}>{COST_RECURRENCE_LABELS[c.recurrence] ?? c.recurrence}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", color: C.text, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{fmtEuro(c.amount_eur)}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", color: C.textMuted }}>{c.vat_rate}%</td>
+                  <td style={{ padding: "11px 16px", color: C.textMuted, fontSize: 12 }}>{fmtDateFr(c.incurred_on)}</td>
+                  <td style={{ padding: "11px 16px", textAlign: "right", whiteSpace: "nowrap" }}>
+                    <button onClick={() => openEdit(c)} style={{ padding: "4px 10px", marginRight: 6, borderRadius: 6, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 12, cursor: "pointer" }}>Éditer</button>
+                    <button onClick={() => setConfirmId(c.id)} style={{ padding: "4px 8px", borderRadius: 6, border: `1px solid ${C.border}`, background: "white", color: C.red, fontSize: 12, cursor: "pointer" }}>×</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
+      {modal && (
+        <Modal title={modal.id ? "Modifier la charge" : "Nouvelle charge"} onClose={() => setModal(null)} width={560}>
+          <div style={{ display: "grid", gap: 14 }}>
+            <Field label="Libellé">
+              <input value={modal.label} onChange={(e) => setModal({ ...modal, label: e.target.value })} style={billInput} placeholder="Ex : Hébergement OVH" />
+            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Catégorie">
+                <select value={modal.category} onChange={(e) => setModal({ ...modal, category: e.target.value })} style={billInput}>
+                  {COST_CATEGORY_OPTIONS.map((k) => <option key={k} value={k}>{COST_CATEGORY_LABELS[k]}</option>)}
+                </select>
+              </Field>
+              <Field label="Récurrence">
+                <select value={modal.recurrence} onChange={(e) => setModal({ ...modal, recurrence: e.target.value })} style={billInput}>
+                  {Object.entries(COST_RECURRENCE_LABELS).map(([k, v]) => <option key={k} value={k}>{v}</option>)}
+                </select>
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Montant HT (€)">
+                <input type="number" step="0.01" min="0" value={modal.amount_eur} onChange={(e) => setModal({ ...modal, amount_eur: e.target.value })} style={billInput} />
+              </Field>
+              <Field label="TVA déductible (%)">
+                <input type="number" step="0.1" min="0" value={modal.vat_rate} onChange={(e) => setModal({ ...modal, vat_rate: e.target.value })} style={billInput} />
+              </Field>
+            </div>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14 }}>
+              <Field label="Date / début">
+                <input type="date" value={modal.incurred_on} onChange={(e) => setModal({ ...modal, incurred_on: e.target.value })} style={billInput} />
+              </Field>
+              <Field label="Fin (optionnel, charge récurrente)">
+                <input type="date" value={modal.end_date} onChange={(e) => setModal({ ...modal, end_date: e.target.value })} style={billInput} />
+              </Field>
+            </div>
+            <Field label="Note (optionnel)">
+              <input value={modal.note} onChange={(e) => setModal({ ...modal, note: e.target.value })} style={billInput} />
+            </Field>
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+              <button onClick={() => setModal(null)} style={{ padding: "10px 18px", borderRadius: 8, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Annuler</button>
+              <button onClick={save} disabled={saving} style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: C.accent, color: "white", fontSize: 14, fontWeight: 600, cursor: saving ? "default" : "pointer", opacity: saving ? 0.7 : 1 }}>{saving ? "Enregistrement…" : "Enregistrer"}</button>
+            </div>
+          </div>
+        </Modal>
+      )}
+      {confirmId && <ConfirmDialog message="Supprimer cette charge ?" onConfirm={() => del(confirmId)} onCancel={() => setConfirmId(null)} />}
+    </>
+  );
+}
+
+// ── Page Facturation (onglets) ───────────────────────────────────────────────
+function Facturation() {
+  const [tab, setTab] = useState<"resultat" | "clients" | "prestations" | "catalogue" | "charges">("resultat");
+  const [preset, setPreset] = useState("year");
+  const [from, setFrom] = useState("");
+  const [to, setTo] = useState("");
+  const qs = (from || to) ? `from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}` : `period=${preset}`;
+
+  const tabs: { key: typeof tab; label: string; icon: string }[] = [
+    { key: "resultat", label: "Compte de résultat", icon: "📊" },
+    { key: "clients", label: "CA par client", icon: "🏛" },
+    { key: "prestations", label: "Prestations facturées", icon: "🧾" },
+    { key: "catalogue", label: "Catalogue", icon: "📦" },
+    { key: "charges", label: "Charges", icon: "📉" },
+  ];
+  const showPeriod = tab === "resultat" || tab === "clients";
+
+  return (
+    <PageShell>
+      <style>{`@keyframes spin{to{transform:rotate(360deg)}}`}</style>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-end", marginBottom: 20, gap: 16, flexWrap: "wrap" }}>
+        <div>
+          <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Facturation <span style={{ fontSize: 13, fontWeight: 600, color: C.textMuted, marginLeft: 8 }}>· mini compte de résultat</span></h1>
+          <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Prestations facturées aux communes & EPCI, TVA, charges et résultat net.</p>
+        </div>
+        {showPeriod && (
+          <PeriodControls preset={preset} from={from} to={to}
+            onPreset={(p) => { setFrom(""); setTo(""); setPreset(p); }}
+            onFrom={setFrom} onTo={setTo} onClear={() => { setFrom(""); setTo(""); }} />
+        )}
+      </div>
+
+      <div style={{ display: "flex", gap: 6, marginBottom: 24, borderBottom: `1px solid ${C.border}`, flexWrap: "wrap" }}>
+        {tabs.map((t) => {
+          const active = tab === t.key;
+          return (
+            <button key={t.key} onClick={() => setTab(t.key)}
+              style={{
+                padding: "10px 16px", border: "none", background: "none", cursor: "pointer",
+                fontSize: 14, fontWeight: active ? 700 : 500, color: active ? C.accent : C.textMuted,
+                borderBottom: `2px solid ${active ? C.accent : "transparent"}`, marginBottom: -1,
+              }}>
+              <span style={{ marginRight: 6 }}>{t.icon}</span>{t.label}
+            </button>
+          );
+        })}
+      </div>
+
+      {tab === "resultat" && <CompteDeResultat qs={qs} />}
+      {tab === "clients" && <CaParClient qs={qs} />}
+      {tab === "prestations" && <PrestationsFacturees />}
+      {tab === "catalogue" && <Catalogue />}
+      {tab === "charges" && <ChargesPanel />}
+    </PageShell>
+  );
+}
+
 export function SuperAdminApp() {
   return (
     <div style={{ display: "flex", fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif" }}>
@@ -6264,6 +7196,7 @@ export function SuperAdminApp() {
           <Route path="/couts-ia" element={<CoutsIA />} />
           <Route path="/couts-ia/commune/:id" element={<CoutsIACommune />} />
           <Route path="/couts-ia/:id" element={<CoutsIADossier />} />
+          <Route path="/facturation" element={<Facturation />} />
           <Route path="/audit" element={<AuditLogs />} />
           <Route path="/conformite" element={<Conformite />} />
           <Route path="/configuration" element={<Configuration />} />

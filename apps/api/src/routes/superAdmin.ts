@@ -1,14 +1,15 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, billing_prestations, billing_items, billing_costs, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
+import { resolvePeriod, summarizeRevenue, summarizeCosts, computeMrr, recognizedRevenueHt, recognizedCostHt, type RevenueLine, type CostLine, type Period } from "../services/billing.js";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { invalidatePricingCache } from "../services/aiUsage.js";
 import { CODE_URBANISME_ID, CODE_URBANISME_NAME, refreshArticle, resolveCode, searchTocByQuery } from "../services/legifrance.js";
-import { eq, sql, count, desc, and, isNull, isNotNull, ilike, asc, gte, lt, inArray } from "drizzle-orm";
+import { eq, sql, count, desc, and, or, isNull, isNotNull, ilike, asc, gte, lt, inArray } from "drizzle-orm";
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
-import { requireAuth, requireRole } from "../middlewares/auth.js";
+import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
 import { logAudit } from "../services/audit.js";
 
@@ -2316,5 +2317,510 @@ superAdminRouter.get("/ai-cost/dossier/:id", async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ════════════════════════════════════════════════════════════════════════════
+// Facturation / mini compte de résultat
+// ════════════════════════════════════════════════════════════════════════════
+// Trois ressources CRUD (catalogue de prestations, lignes facturées par
+// collectivité, charges saisies) + trois vues d'agrégation (clients facturables,
+// compte de résultat, CA par client). Toute l'arithmétique vit dans
+// services/billing.ts (pure + testée) — ici on ne fait que charger/écrire.
+
+const BILLING_CYCLES = ["one_shot", "monthly", "quarterly", "yearly", "usage"];
+const COST_RECURRENCES = ["one_shot", "monthly", "quarterly", "yearly"];
+
+function bnum(v: unknown, def = 0): number {
+  const n = typeof v === "string" ? Number(v.replace(",", ".")) : Number(v);
+  return Number.isFinite(n) ? n : def;
+}
+function bstr(v: unknown): string {
+  return typeof v === "string" ? v.trim() : "";
+}
+// Normalise une date "YYYY-MM-DD" ; renvoie null si invalide. `fallbackToday`
+// renvoie la date du jour quand l'entrée est vide.
+function bdate(v: unknown, fallbackToday = false): string | null {
+  const s = bstr(v);
+  if (!s) return fallbackToday ? new Date().toISOString().slice(0, 10) : null;
+  return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
+}
+function round2(v: number): number {
+  return Math.round((v + Number.EPSILON) * 100) / 100;
+}
+// Id de l'utilisateur courant. Cast local : req.user est posé par requireAuth
+// mais n'est pas typé sur Request dans ce routeur (cf. handlers `req: any`).
+function actorId(req: AuthRequest): string | null {
+  return req.user?.id ?? null;
+}
+function billingPeriod(req: { query: Record<string, unknown> }): Period {
+  const preset = bstr(req.query.period) || "year";
+  const from = typeof req.query.from === "string" ? req.query.from : null;
+  const to = typeof req.query.to === "string" ? req.query.to : null;
+  return resolvePeriod(preset, new Date(), from, to);
+}
+
+// ─── Catalogue de prestations ────────────────────────────────────────────────
+superAdminRouter.get("/billing/prestations", async (_req, res) => {
+  try {
+    const rows = await db.select().from(billing_prestations)
+      .orderBy(asc(billing_prestations.sort_order), asc(billing_prestations.label));
+    res.json(rows);
+  } catch (err) {
+    console.error("[billing/prestations GET]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.post("/billing/prestations", async (req, res) => {
+  try {
+    const code = bstr(req.body?.code);
+    const label = bstr(req.body?.label);
+    if (!code || !label) return res.status(400).json({ error: "Code et libellé requis." });
+    const cycle = bstr(req.body?.billing_cycle) || "one_shot";
+    if (!BILLING_CYCLES.includes(cycle)) return res.status(400).json({ error: "Cycle de facturation invalide." });
+    const [row] = await db.insert(billing_prestations).values({
+      code,
+      label,
+      description: bstr(req.body?.description) || null,
+      default_unit_price_eur: bnum(req.body?.default_unit_price_eur),
+      unit: bstr(req.body?.unit) || "forfait",
+      default_vat_rate: bnum(req.body?.default_vat_rate, 20),
+      billing_cycle: cycle,
+      active: req.body?.active !== false,
+      sort_order: Math.trunc(bnum(req.body?.sort_order)),
+      updated_by: actorId(req),
+    }).returning();
+    await logAudit(req, "admin_billing_prestation_created", { metadata: { code } });
+    res.status(201).json(row);
+  } catch (err) {
+    const msg = err instanceof Error && /unique|duplicate/i.test(err.message)
+      ? "Ce code de prestation existe déjà." : "Erreur serveur";
+    console.error("[billing/prestations POST]", err);
+    res.status(/existe déjà/.test(msg) ? 409 : 500).json({ error: msg });
+  }
+});
+
+superAdminRouter.put("/billing/prestations/:id", async (req, res) => {
+  try {
+    const cycle = bstr(req.body?.billing_cycle) || "one_shot";
+    if (!BILLING_CYCLES.includes(cycle)) return res.status(400).json({ error: "Cycle de facturation invalide." });
+    const label = bstr(req.body?.label);
+    if (!label) return res.status(400).json({ error: "Libellé requis." });
+    const [row] = await db.update(billing_prestations).set({
+      label,
+      description: bstr(req.body?.description) || null,
+      default_unit_price_eur: bnum(req.body?.default_unit_price_eur),
+      unit: bstr(req.body?.unit) || "forfait",
+      default_vat_rate: bnum(req.body?.default_vat_rate, 20),
+      billing_cycle: cycle,
+      active: req.body?.active !== false,
+      sort_order: Math.trunc(bnum(req.body?.sort_order)),
+      updated_by: actorId(req),
+      updated_at: new Date(),
+    }).where(eq(billing_prestations.id, req.params.id)).returning();
+    if (!row) return res.status(404).json({ error: "Prestation introuvable." });
+    await logAudit(req, "admin_billing_prestation_updated", { metadata: { id: req.params.id } });
+    res.json(row);
+  } catch (err) {
+    console.error("[billing/prestations PUT]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.delete("/billing/prestations/:id", async (req, res) => {
+  try {
+    const [row] = await db.delete(billing_prestations).where(eq(billing_prestations.id, req.params.id)).returning();
+    if (!row) return res.status(404).json({ error: "Prestation introuvable." });
+    await logAudit(req, "admin_billing_prestation_deleted", { metadata: { id: req.params.id } });
+    res.status(204).end();
+  } catch (err) {
+    console.error("[billing/prestations DELETE]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Lignes facturées (par collectivité) ─────────────────────────────────────
+// Sélection enrichie du nom de la cible (commune OU EPCI) pour l'affichage.
+const billingItemSelect = {
+  id: billing_items.id,
+  prestation_id: billing_items.prestation_id,
+  commune_id: billing_items.commune_id,
+  epci_id: billing_items.epci_id,
+  label: billing_items.label,
+  quantity: billing_items.quantity,
+  unit_price_eur: billing_items.unit_price_eur,
+  vat_rate: billing_items.vat_rate,
+  billing_cycle: billing_items.billing_cycle,
+  start_date: billing_items.start_date,
+  end_date: billing_items.end_date,
+  status: billing_items.status,
+  note: billing_items.note,
+  created_at: billing_items.created_at,
+  commune_name: communes.name,
+  commune_insee: communes.insee_code,
+  epci_name: epci.name,
+};
+
+function decorateItem<T extends { commune_id: string | null; epci_id: string | null; commune_name: string | null; epci_name: string | null }>(r: T) {
+  return {
+    ...r,
+    client_type: r.commune_id ? "commune" : "epci",
+    client_id: r.commune_id ?? r.epci_id,
+    client_name: r.commune_name ?? r.epci_name ?? "—",
+  };
+}
+
+superAdminRouter.get("/billing/items", async (req, res) => {
+  try {
+    const conds = [];
+    const communeId = bstr(req.query.commune_id);
+    const epciId = bstr(req.query.epci_id);
+    if (communeId) conds.push(eq(billing_items.commune_id, communeId));
+    if (epciId) conds.push(eq(billing_items.epci_id, epciId));
+    const rows = await db.select(billingItemSelect).from(billing_items)
+      .leftJoin(communes, eq(billing_items.commune_id, communes.id))
+      .leftJoin(epci, eq(billing_items.epci_id, epci.id))
+      .where(conds.length ? or(...conds) : undefined as never)
+      .orderBy(desc(billing_items.created_at));
+    res.json(rows.map(decorateItem));
+  } catch (err) {
+    console.error("[billing/items GET]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Valide + normalise un body de ligne facturée. Renvoie {error} ou {values}.
+// `created_by` est posé par l'appelant (POST uniquement) pour ne pas l'écraser
+// lors d'un PUT.
+function parseItemBody(body: Record<string, unknown>): { error: string } | { values: typeof billing_items.$inferInsert } {
+  const communeId = bstr(body.commune_id) || null;
+  const epciId = bstr(body.epci_id) || null;
+  if ((communeId && epciId) || (!communeId && !epciId)) {
+    return { error: "Renseigner exactement une cible : une commune OU un EPCI." };
+  }
+  const label = bstr(body.label);
+  if (!label) return { error: "Libellé requis." };
+  const cycle = bstr(body.billing_cycle) || "one_shot";
+  if (!BILLING_CYCLES.includes(cycle)) return { error: "Cycle de facturation invalide." };
+  const start = bdate(body.start_date, true);
+  if (!start) return { error: "Date de début invalide (format AAAA-MM-JJ)." };
+  const end = bdate(body.end_date);
+  if (bstr(body.end_date) && !end) return { error: "Date de fin invalide (format AAAA-MM-JJ)." };
+  const status = bstr(body.status) || "active";
+  if (!["active", "cancelled"].includes(status)) return { error: "Statut invalide." };
+  return {
+    values: {
+      prestation_id: bstr(body.prestation_id) || null,
+      commune_id: communeId,
+      epci_id: epciId,
+      label,
+      quantity: bnum(body.quantity, 1),
+      unit_price_eur: bnum(body.unit_price_eur),
+      vat_rate: bnum(body.vat_rate, 20),
+      billing_cycle: cycle,
+      start_date: start,
+      end_date: end,
+      status,
+      note: bstr(body.note) || null,
+    },
+  };
+}
+
+superAdminRouter.post("/billing/items", async (req, res) => {
+  try {
+    const parsed = parseItemBody(req.body ?? {});
+    if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+    const [inserted] = await db.insert(billing_items)
+      .values({ ...parsed.values, created_by: actorId(req) })
+      .returning({ id: billing_items.id });
+    const [row] = await db.select(billingItemSelect).from(billing_items)
+      .leftJoin(communes, eq(billing_items.commune_id, communes.id))
+      .leftJoin(epci, eq(billing_items.epci_id, epci.id))
+      .where(eq(billing_items.id, inserted!.id));
+    await logAudit(req, "admin_billing_item_created", { metadata: { id: inserted!.id, label: parsed.values.label } });
+    res.status(201).json(decorateItem(row!));
+  } catch (err) {
+    console.error("[billing/items POST]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.put("/billing/items/:id", async (req, res) => {
+  try {
+    const parsed = parseItemBody(req.body ?? {});
+    if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+    const [updated] = await db.update(billing_items)
+      .set({ ...parsed.values, updated_at: new Date() })
+      .where(eq(billing_items.id, req.params.id)).returning({ id: billing_items.id });
+    if (!updated) return res.status(404).json({ error: "Ligne introuvable." });
+    const [row] = await db.select(billingItemSelect).from(billing_items)
+      .leftJoin(communes, eq(billing_items.commune_id, communes.id))
+      .leftJoin(epci, eq(billing_items.epci_id, epci.id))
+      .where(eq(billing_items.id, req.params.id));
+    await logAudit(req, "admin_billing_item_updated", { metadata: { id: req.params.id } });
+    res.json(decorateItem(row!));
+  } catch (err) {
+    console.error("[billing/items PUT]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.delete("/billing/items/:id", async (req, res) => {
+  try {
+    const [row] = await db.delete(billing_items).where(eq(billing_items.id, req.params.id)).returning();
+    if (!row) return res.status(404).json({ error: "Ligne introuvable." });
+    await logAudit(req, "admin_billing_item_deleted", { metadata: { id: req.params.id } });
+    res.status(204).end();
+  } catch (err) {
+    console.error("[billing/items DELETE]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Charges saisies ─────────────────────────────────────────────────────────
+superAdminRouter.get("/billing/costs", async (_req, res) => {
+  try {
+    const rows = await db.select().from(billing_costs).orderBy(desc(billing_costs.incurred_on));
+    res.json(rows);
+  } catch (err) {
+    console.error("[billing/costs GET]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+function parseCostBody(body: Record<string, unknown>): { error: string } | { values: typeof billing_costs.$inferInsert } {
+  const label = bstr(body.label);
+  if (!label) return { error: "Libellé requis." };
+  const recurrence = bstr(body.recurrence) || "one_shot";
+  if (!COST_RECURRENCES.includes(recurrence)) return { error: "Récurrence invalide." };
+  const incurred = bdate(body.incurred_on, true);
+  if (!incurred) return { error: "Date invalide (format AAAA-MM-JJ)." };
+  const end = bdate(body.end_date);
+  if (bstr(body.end_date) && !end) return { error: "Date de fin invalide (format AAAA-MM-JJ)." };
+  return {
+    values: {
+      category: bstr(body.category) || "autre",
+      label,
+      amount_eur: bnum(body.amount_eur),
+      vat_rate: bnum(body.vat_rate, 0),
+      recurrence,
+      incurred_on: incurred,
+      end_date: end,
+      note: bstr(body.note) || null,
+    },
+  };
+}
+
+superAdminRouter.post("/billing/costs", async (req, res) => {
+  try {
+    const parsed = parseCostBody(req.body ?? {});
+    if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+    const [row] = await db.insert(billing_costs)
+      .values({ ...parsed.values, created_by: actorId(req) })
+      .returning();
+    await logAudit(req, "admin_billing_cost_created", { metadata: { label: parsed.values.label } });
+    res.status(201).json(row);
+  } catch (err) {
+    console.error("[billing/costs POST]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.put("/billing/costs/:id", async (req, res) => {
+  try {
+    const parsed = parseCostBody(req.body ?? {});
+    if ("error" in parsed) return res.status(400).json({ error: parsed.error });
+    const [row] = await db.update(billing_costs)
+      .set({ ...parsed.values, updated_at: new Date() })
+      .where(eq(billing_costs.id, req.params.id)).returning();
+    if (!row) return res.status(404).json({ error: "Charge introuvable." });
+    await logAudit(req, "admin_billing_cost_updated", { metadata: { id: req.params.id } });
+    res.json(row);
+  } catch (err) {
+    console.error("[billing/costs PUT]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+superAdminRouter.delete("/billing/costs/:id", async (req, res) => {
+  try {
+    const [row] = await db.delete(billing_costs).where(eq(billing_costs.id, req.params.id)).returning();
+    if (!row) return res.status(404).json({ error: "Charge introuvable." });
+    await logAudit(req, "admin_billing_cost_deleted", { metadata: { id: req.params.id } });
+    res.status(204).end();
+  } catch (err) {
+    console.error("[billing/costs DELETE]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Clients facturables (communes + EPCI) pour les menus déroulants ──────────
+superAdminRouter.get("/billing/clients", async (_req, res) => {
+  try {
+    const [comm, grp] = await Promise.all([
+      db.select({ id: communes.id, name: communes.name, ref: communes.insee_code }).from(communes).orderBy(asc(communes.name)),
+      db.select({ id: epci.id, name: epci.name, ref: epci.siren, type: epci.type }).from(epci).orderBy(asc(epci.name)),
+    ]);
+    res.json({
+      communes: comm.map((c) => ({ type: "commune", id: c.id, name: c.name, ref: c.ref })),
+      epci: grp.map((e) => ({ type: "epci", id: e.id, name: e.name, ref: e.ref, epci_type: e.type })),
+    });
+  } catch (err) {
+    console.error("[billing/clients GET]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Charge toutes les lignes facturées au format attendu par le moteur de calcul.
+async function loadRevenueLines(): Promise<(RevenueLine & { commune_id: string | null; epci_id: string | null; commune_name: string | null; epci_name: string | null })[]> {
+  return db.select({
+    quantity: billing_items.quantity,
+    unit_price_eur: billing_items.unit_price_eur,
+    vat_rate: billing_items.vat_rate,
+    billing_cycle: billing_items.billing_cycle,
+    start_date: billing_items.start_date,
+    end_date: billing_items.end_date,
+    status: billing_items.status,
+    commune_id: billing_items.commune_id,
+    epci_id: billing_items.epci_id,
+    commune_name: communes.name,
+    epci_name: epci.name,
+  }).from(billing_items)
+    .leftJoin(communes, eq(billing_items.commune_id, communes.id))
+    .leftJoin(epci, eq(billing_items.epci_id, epci.id));
+}
+
+// ─── Compte de résultat (vue d'ensemble agrégée) ─────────────────────────────
+superAdminRouter.get("/billing/summary", async (req, res) => {
+  try {
+    const period = billingPeriod(req);
+    const now = new Date();
+    const [items, costs] = await Promise.all([loadRevenueLines(), db.select().from(billing_costs)]);
+
+    const revenue = summarizeRevenue(items, period, now);
+    const manual = summarizeCosts(costs as CostLine[], period, now);
+
+    // Coûts IA déjà tracés : SUM sur la même fenêtre temporelle.
+    const aiConds = [];
+    if (period.from) aiConds.push(gte(ai_usage_events.created_at, period.from));
+    if (period.to) {
+      const toExcl = new Date(period.to);
+      toExcl.setDate(toExcl.getDate() + 1); // borne haute incluse (fin de journée)
+      aiConds.push(lt(ai_usage_events.created_at, toExcl));
+    }
+    const [aiAgg] = await db.select({ cost: sql<number>`COALESCE(SUM(${ai_usage_events.cost_eur}), 0)` })
+      .from(ai_usage_events).where(aiConds.length ? and(...aiConds) : undefined as never);
+    const ai_eur = round2(Number(aiAgg?.cost ?? 0));
+
+    const charges_total_ht = round2(ai_eur + manual.total_ht);
+    const net_ht = round2(revenue.total_ht - charges_total_ht);
+    const margin_pct = revenue.total_ht > 0 ? round2((net_ht / revenue.total_ht) * 100) : 0;
+
+    // Répartition des produits par cycle de facturation.
+    const cycleMap = new Map<string, { ht: number; count: number }>();
+    for (const it of items) {
+      const ht = recognizedRevenueHt(it, period, now);
+      if (!ht) continue;
+      const cur = cycleMap.get(it.billing_cycle) ?? { ht: 0, count: 0 };
+      cur.ht += ht; cur.count += 1;
+      cycleMap.set(it.billing_cycle, cur);
+    }
+
+    // Répartition des charges par catégorie (IA = catégorie synthétique).
+    const catMap = new Map<string, number>();
+    if (ai_eur > 0) catMap.set("ia", ai_eur);
+    for (const c of costs as CostLine[]) {
+      const ht = recognizedCostHt(c, period, now);
+      if (!ht) continue;
+      const key = (c as { category?: string }).category ?? "autre";
+      catMap.set(key, (catMap.get(key) ?? 0) + ht);
+    }
+
+    // Comptage clients facturés actifs + lignes actives.
+    const activeClients = new Set<string>();
+    let activeLines = 0;
+    for (const it of items) {
+      if ((it.status ?? "active") === "active") {
+        activeLines += 1;
+        const cid = it.commune_id ?? it.epci_id;
+        if (cid) activeClients.add(cid);
+      }
+    }
+
+    res.json({
+      period: { preset: bstr(req.query.period) || "year", from: period.from?.toISOString().slice(0, 10) ?? null, to: period.to?.toISOString().slice(0, 10) ?? null },
+      revenue,
+      charges: {
+        ai_eur,
+        manual_ht: manual.total_ht,
+        manual_vat_deductible: manual.vat_deductible,
+        total_ht: charges_total_ht,
+      },
+      result: { net_ht, margin_pct },
+      vat: {
+        collected: revenue.vat_collected,
+        deductible: manual.vat_deductible,
+        net: round2(revenue.vat_collected - manual.vat_deductible),
+      },
+      revenue_by_cycle: [...cycleMap.entries()]
+        .map(([cycle, v]) => ({ cycle, ht: round2(v.ht), count: v.count }))
+        .sort((a, b) => b.ht - a.ht),
+      charges_by_category: [...catMap.entries()]
+        .map(([category, ht]) => ({ category, ht: round2(ht) }))
+        .sort((a, b) => b.ht - a.ht),
+      counts: { active_clients: activeClients.size, active_lines: activeLines },
+    });
+  } catch (err) {
+    console.error("[billing/summary]", { query: req.query, err });
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// ─── CA par client (commune / EPCI) ──────────────────────────────────────────
+superAdminRouter.get("/billing/by-client", async (req, res) => {
+  try {
+    const period = billingPeriod(req);
+    const now = new Date();
+    const items = await loadRevenueLines();
+
+    type Agg = { client_type: string; client_id: string; client_name: string; recognized_ht: number; vat: number; mrr: number; lines: number };
+    const map = new Map<string, Agg>();
+    for (const it of items) {
+      const clientId = it.commune_id ?? it.epci_id;
+      if (!clientId) continue;
+      const key = `${it.commune_id ? "commune" : "epci"}:${clientId}`;
+      const agg = map.get(key) ?? {
+        client_type: it.commune_id ? "commune" : "epci",
+        client_id: clientId,
+        client_name: it.commune_name ?? it.epci_name ?? "—",
+        recognized_ht: 0, vat: 0, mrr: 0, lines: 0,
+      };
+      const ht = recognizedRevenueHt(it, period, now);
+      agg.recognized_ht += ht;
+      agg.vat += ht * ((it.vat_rate ?? 0) / 100);
+      agg.mrr += computeMrr([it], now);
+      agg.lines += 1;
+      map.set(key, agg);
+    }
+
+    const rows = [...map.values()]
+      .map((a) => ({
+        client_type: a.client_type,
+        client_id: a.client_id,
+        client_name: a.client_name,
+        recognized_ht: round2(a.recognized_ht),
+        vat: round2(a.vat),
+        recognized_ttc: round2(a.recognized_ht + a.vat),
+        mrr: round2(a.mrr),
+        arr: round2(a.mrr * 12),
+        lines: a.lines,
+      }))
+      .sort((a, b) => b.recognized_ht - a.recognized_ht);
+
+    res.json(rows);
+  } catch (err) {
+    console.error("[billing/by-client]", { query: req.query, err });
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
   }
 });

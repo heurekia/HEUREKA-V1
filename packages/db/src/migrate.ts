@@ -1300,6 +1300,90 @@ ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS source_pages jsonb;
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS code_piece_source text;
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS nom_origine text;
 ALTER TABLE dossier_pieces_jointes ADD COLUMN IF NOT EXISTS classification_confidence real;
+
+-- ── Facturation / mini compte de résultat (back-office super-admin) ─────────
+-- Trois tables alimentent l'onglet « Facturation » : un catalogue de
+-- prestations réutilisable, les lignes effectivement facturées à chaque
+-- collectivité (commune OU EPCI), et les charges d'exploitation saisies à la
+-- main. Le compte de résultat croise ces revenus avec les charges + les coûts
+-- IA déjà tracés dans ai_usage_events.
+
+-- Catalogue de prestations (valeurs par défaut recopiées en snapshot sur
+-- chaque ligne facturée).
+CREATE TABLE IF NOT EXISTS billing_prestations (
+  id                      uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code                    text NOT NULL UNIQUE,
+  label                   text NOT NULL,
+  description             text,
+  default_unit_price_eur  double precision NOT NULL DEFAULT 0,
+  unit                    text NOT NULL DEFAULT 'forfait',
+  default_vat_rate        double precision NOT NULL DEFAULT 20,
+  billing_cycle           text NOT NULL DEFAULT 'one_shot',
+  active                  boolean NOT NULL DEFAULT true,
+  sort_order              integer NOT NULL DEFAULT 0,
+  updated_by              uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at              timestamp NOT NULL DEFAULT now(),
+  updated_at              timestamp NOT NULL DEFAULT now()
+);
+
+-- Seed indicatif : grille de départ, librement éditable depuis le back-office.
+INSERT INTO billing_prestations (code, label, description, default_unit_price_eur, unit, default_vat_rate, billing_cycle, sort_order)
+VALUES
+  ('abonnement_annuel',   'Abonnement plateforme (annuel)',  'Licence annuelle d''accès à la plateforme HEUREKIA',        2400, 'an',       20, 'yearly',   10),
+  ('abonnement_mensuel',  'Abonnement plateforme (mensuel)', 'Licence mensuelle d''accès à la plateforme HEUREKIA',        220, 'mois',     20, 'monthly',  20),
+  ('setup',               'Frais de mise en service',        'Paramétrage initial, import du PLU, formation de prise en main', 1500, 'forfait', 20, 'one_shot', 30),
+  ('formation',           'Formation / accompagnement',      'Session de formation des agents instructeurs',                 800, 'forfait',  20, 'one_shot', 40),
+  ('instruction_dossier', 'Instruction de dossier (à l''acte)', 'Facturation à l''unité par dossier instruit',                 12, 'dossier',  20, 'usage',    50)
+ON CONFLICT (code) DO NOTHING;
+
+-- Lignes facturées à chaque collectivité. Exactement une cible (commune OU
+-- EPCI) renseignée.
+CREATE TABLE IF NOT EXISTS billing_items (
+  id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  prestation_id   uuid REFERENCES billing_prestations(id) ON DELETE SET NULL,
+  commune_id      uuid REFERENCES communes(id) ON DELETE CASCADE,
+  epci_id         uuid REFERENCES epci(id) ON DELETE CASCADE,
+  label           text NOT NULL,
+  quantity        double precision NOT NULL DEFAULT 1,
+  unit_price_eur  double precision NOT NULL DEFAULT 0,
+  vat_rate        double precision NOT NULL DEFAULT 20,
+  billing_cycle   text NOT NULL DEFAULT 'one_shot',
+  start_date      date NOT NULL DEFAULT CURRENT_DATE,
+  end_date        date,
+  status          text NOT NULL DEFAULT 'active',
+  note            text,
+  created_by      uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at      timestamp NOT NULL DEFAULT now(),
+  updated_at      timestamp NOT NULL DEFAULT now()
+);
+-- Cible unique : XOR commune/EPCI (ni les deux, ni aucune).
+DO $$ BEGIN
+  ALTER TABLE billing_items
+    ADD CONSTRAINT billing_items_one_client_chk
+    CHECK ((commune_id IS NOT NULL) <> (epci_id IS NOT NULL));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+CREATE INDEX IF NOT EXISTS idx_billing_items_commune ON billing_items(commune_id);
+CREATE INDEX IF NOT EXISTS idx_billing_items_epci ON billing_items(epci_id);
+CREATE INDEX IF NOT EXISTS idx_billing_items_status ON billing_items(status);
+CREATE INDEX IF NOT EXISTS idx_billing_items_start_date ON billing_items(start_date);
+
+-- Charges d'exploitation saisies à la main (hors coûts IA, déjà tracés).
+CREATE TABLE IF NOT EXISTS billing_costs (
+  id           uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  category     text NOT NULL DEFAULT 'autre',
+  label        text NOT NULL,
+  amount_eur   double precision NOT NULL DEFAULT 0,
+  vat_rate     double precision NOT NULL DEFAULT 0,
+  recurrence   text NOT NULL DEFAULT 'one_shot',
+  incurred_on  date NOT NULL DEFAULT CURRENT_DATE,
+  end_date     date,
+  note         text,
+  created_by   uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at   timestamp NOT NULL DEFAULT now(),
+  updated_at   timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_billing_costs_incurred_on ON billing_costs(incurred_on);
+CREATE INDEX IF NOT EXISTS idx_billing_costs_category ON billing_costs(category);
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
