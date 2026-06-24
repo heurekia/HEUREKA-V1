@@ -726,9 +726,9 @@ export function AnalyseParcellaire() {
 
                 {/* La synthèse citoyenne « en clair » ne vit plus dans le corps
                     principal : elle est désormais accessible via le panneau
-                    « Que puis-je construire ici ? » ci-dessous. */}
+                    « Que puis-je faire ici ? » ci-dessous. */}
 
-                {/* Que puis-je construire ici ? — panneau de synthèse citoyenne */}
+                {/* Que puis-je faire ici ? — panneau de synthèse citoyenne */}
                 {(() => {
                   // La synthèse citoyenne (règles PLU + risques + servitudes, déjà
                   // filtrée et mise « en clair » côté serveur) est la matière du panneau.
@@ -748,7 +748,7 @@ export function AnalyseParcellaire() {
                         style={{ width: "100%", textAlign: "left", border: "1px solid #C7D2FE", borderRadius: 14, padding: "16px 18px", background: "linear-gradient(180deg,#F5F7FF,#EEF2FF)", cursor: "pointer", display: "flex", alignItems: "center", gap: 14, boxShadow: "0 2px 6px rgba(79,70,229,0.12)" }}>
                         <span style={{ fontSize: 28, flexShrink: 0 }}>📖</span>
                         <span style={{ flex: 1, minWidth: 0 }}>
-                          <span style={{ display: "block", fontSize: 15, fontWeight: 800, color: "#1E1B4B" }}>Que puis-je construire ici ?</span>
+                          <span style={{ display: "block", fontSize: 15, fontWeight: 800, color: "#1E1B4B" }}>Que puis-je faire ici ?</span>
                           <span style={{ display: "block", fontSize: 12.5, color: "#4F46E5", marginTop: 2 }}>Voir les {pointCount} règle{pointCount > 1 ? "s" : ""} d'urbanisme, en clair</span>
                         </span>
                         <span style={{ fontSize: 13, fontWeight: 700, color: "white", background: "#4F46E5", borderRadius: 999, padding: "8px 16px", flexShrink: 0 }}>Voir →</span>
@@ -759,7 +759,7 @@ export function AnalyseParcellaire() {
                           <div onClick={e => e.stopPropagation()} style={{ background: "white", width: "min(460px, 92vw)", height: "100vh", overflow: "auto", boxShadow: "8px 0 40px rgba(0,0,0,0.25)" }}>
                             <div style={{ padding: "16px 18px", borderBottom: "1px solid #F1F5F9", display: "flex", alignItems: "center", justifyContent: "space-between", position: "sticky", top: 0, background: "white", zIndex: 1 }}>
                               <div>
-                                <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>Que puis-je construire ici ?</div>
+                                <div style={{ fontSize: 15, fontWeight: 700, color: "#111827" }}>Que puis-je faire ici ?</div>
                                 <div style={{ fontSize: 12, color: "#6B7280" }}>{analysis.plu_zone?.zone_label ?? analysis.parcel?.commune ?? "Votre parcelle"}</div>
                               </div>
                               <button onClick={() => setRulesOpen(false)} style={{ border: "none", background: "#F1F5F9", borderRadius: 10, width: 34, height: 34, cursor: "pointer", fontSize: 16 }}>✕</button>
