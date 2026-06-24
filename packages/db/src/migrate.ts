@@ -1385,6 +1385,49 @@ CREATE TABLE IF NOT EXISTS billing_costs (
 CREATE INDEX IF NOT EXISTS idx_billing_costs_incurred_on ON billing_costs(incurred_on);
 CREATE INDEX IF NOT EXISTS idx_billing_costs_category ON billing_costs(category);
 
+-- Grille tarifaire par paliers de population. Une commune est rattachée au
+-- plan dont la tranche [pop_min, pop_max] contient sa population ; le palier
+-- EPCI cible les intercommunalités. Sert à pré-remplir le prix d'une ligne
+-- facturée (modifiable ensuite).
+CREATE TABLE IF NOT EXISTS billing_plans (
+  id                          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  code                        text NOT NULL UNIQUE,
+  name                        text NOT NULL,
+  target_label                text,
+  pop_min                     integer,
+  pop_max                     integer,
+  applies_to                  text NOT NULL DEFAULT 'commune',
+  monthly_price_eur           double precision NOT NULL DEFAULT 0,
+  annual_price_eur            double precision NOT NULL DEFAULT 0,
+  onboarding_initial_eur      double precision NOT NULL DEFAULT 0,
+  onboarding_intermediate_eur double precision NOT NULL DEFAULT 0,
+  dossiers_per_month          integer,
+  agents_included             integer,
+  support_level               text,
+  vat_rate                    double precision NOT NULL DEFAULT 20,
+  active                      boolean NOT NULL DEFAULT true,
+  sort_order                  integer NOT NULL DEFAULT 0,
+  updated_by                  uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at                  timestamp NOT NULL DEFAULT now(),
+  updated_at                  timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_billing_plans_pop ON billing_plans(applies_to, pop_min, pop_max);
+
+-- Seed indicatif : grille proposée (librement éditable depuis le back-office).
+-- dossiers_per_month / agents_included NULL = illimité.
+INSERT INTO billing_plans (code, name, target_label, pop_min, pop_max, applies_to, monthly_price_eur, annual_price_eur, onboarding_initial_eur, onboarding_intermediate_eur, dossiers_per_month, agents_included, support_level, sort_order)
+VALUES
+  ('tres_petite',      'Très petite commune', '< 1 500 hab',        NULL,  1500,  'commune',  99, 1188,   600, 349,   15,   1,    'Email, 72h',     10),
+  ('petite',           'Petites communes',    '1 501 à 3 000 hab',  1501,  3000,  'commune', 199, 2388,   900, 540,   30,   2,    'Email + visio',  20),
+  ('moyenne',          'Commune moyenne',     '3 001 à 5 000 hab',  3001,  5000,  'commune', 299, 3588,  1200, 720,   60,   3,    'Prioritaire',    30),
+  ('grande',           'Grande commune',      '5 001 à 50 000 hab', 5001,  50000, 'commune', 699, 8388,  3000, 999,  150,   5,    'Prioritaire',    40),
+  ('intercommunalite', 'Intercommunalité',    'EPCI, CC, CA',       NULL,  NULL,  'epci',    999, 11988, 9000, 999,  500,  10,    'Prioritaire',    50),
+  ('metropole',        'Métropole',           '> 50 000 hab',       50001, NULL,  'commune', 2500, 30000, 15000, 999, NULL, NULL, 'SLA 99.9%',      60)
+ON CONFLICT (code) DO NOTHING;
+
+-- Rattachement d'une ligne facturée au plan tarifaire appliqué (traçabilité).
+ALTER TABLE billing_items ADD COLUMN IF NOT EXISTS plan_id uuid REFERENCES billing_plans(id) ON DELETE SET NULL;
+
 -- ── Réglages du site public (singleton id=1) ──────────────────────────────
 -- Pilote le mode « bientôt en ligne » : page vitrine + mot de passe d'accès
 -- sur le portail public (www.heurekia.com + apex), activable / désactivable

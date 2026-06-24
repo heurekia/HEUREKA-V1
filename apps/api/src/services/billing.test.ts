@@ -9,8 +9,12 @@ import {
   recognizedCostHt,
   summarizeCosts,
   resolvePeriod,
+  parsePopulation,
+  matchPlanForPopulation,
+  matchPlanForEpci,
   type RevenueLine,
   type CostLine,
+  type PlanLike,
 } from "./billing.js";
 
 // Verrouille l'arithmétique du « mini compte de résultat » : proration des
@@ -155,6 +159,51 @@ describe("charges — recognizedCostHt / summarizeCosts", () => {
     ];
     expect(recognizedCostHt(costs[0]!, { from: D("2026-01-01"), to: D("2026-12-31") }, now)).toBe(0);
   });
+});
+
+describe("parsePopulation", () => {
+  it("parse les nombres et chaînes formatées", () => {
+    expect(parsePopulation(12345)).toBe(12345);
+    expect(parsePopulation("12 345")).toBe(12345);
+    expect(parsePopulation("12345 hab")).toBe(12345);
+    expect(parsePopulation("1 500")).toBe(1500); // espace insécable
+  });
+  it("renvoie null pour vide / invalide", () => {
+    expect(parsePopulation(null)).toBeNull();
+    expect(parsePopulation("")).toBeNull();
+    expect(parsePopulation("N/A")).toBeNull();
+  });
+});
+
+describe("matchPlanForPopulation — rattachement par paliers", () => {
+  const plans: PlanLike[] = [
+    { applies_to: "commune", active: true, pop_min: null, pop_max: 1500, sort_order: 10 },
+    { applies_to: "commune", active: true, pop_min: 1501, pop_max: 3000, sort_order: 20 },
+    { applies_to: "commune", active: true, pop_min: 3001, pop_max: 5000, sort_order: 30 },
+    { applies_to: "commune", active: true, pop_min: 5001, pop_max: 50000, sort_order: 40 },
+    { applies_to: "epci", active: true, pop_min: null, pop_max: null, sort_order: 50 },
+    { applies_to: "commune", active: true, pop_min: 50001, pop_max: null, sort_order: 60 },
+  ];
+  const so = (p: PlanLike | null) => p?.sort_order ?? null;
+
+  it("borne basse ouverte (< 1 500)", () => { expect(so(matchPlanForPopulation(plans, 800))).toBe(10); });
+  it("tranche intermédiaire", () => { expect(so(matchPlanForPopulation(plans, 2500))).toBe(20); });
+  it("limites incluses", () => {
+    expect(so(matchPlanForPopulation(plans, 1500))).toBe(10);
+    expect(so(matchPlanForPopulation(plans, 1501))).toBe(20);
+    expect(so(matchPlanForPopulation(plans, 5000))).toBe(30);
+    expect(so(matchPlanForPopulation(plans, 5001))).toBe(40);
+  });
+  it("borne haute ouverte (> 50 000 → métropole)", () => { expect(so(matchPlanForPopulation(plans, 120000))).toBe(60); });
+  it("n'attrape jamais un palier EPCI pour une commune", () => {
+    expect(matchPlanForPopulation(plans, 2500)?.applies_to).toBe("commune");
+  });
+  it("population inconnue → null", () => { expect(matchPlanForPopulation(plans, null)).toBeNull(); });
+  it("ignore les paliers inactifs", () => {
+    const withInactive: PlanLike[] = [{ applies_to: "commune", active: false, pop_min: null, pop_max: 1500, sort_order: 5 }, ...plans];
+    expect(so(matchPlanForPopulation(withInactive, 800))).toBe(10);
+  });
+  it("EPCI → palier intercommunalité", () => { expect(so(matchPlanForEpci(plans))).toBe(50); });
 });
 
 describe("resolvePeriod — presets", () => {

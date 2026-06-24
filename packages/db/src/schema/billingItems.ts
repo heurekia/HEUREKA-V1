@@ -2,6 +2,7 @@ import { date, doublePrecision, pgTable, text, timestamp, uuid } from "drizzle-o
 import { communes } from "./communes.js";
 import { epci } from "./epci.js";
 import { billing_prestations } from "./billingPrestations.js";
+import { billing_plans } from "./billingPlans.js";
 import { users } from "./users.js";
 
 // Une ligne = une prestation facturée à UNE collectivité (commune OU EPCI).
@@ -18,6 +19,8 @@ export const billing_items = pgTable("billing_items", {
   id: uuid("id").primaryKey().defaultRandom(),
   // Référence catalogue (nullable : une ligne peut être ad hoc, hors catalogue).
   prestation_id: uuid("prestation_id").references(() => billing_prestations.id, { onDelete: "set null" }),
+  // Plan tarifaire (palier population) appliqué, le cas échéant (nullable).
+  plan_id: uuid("plan_id").references(() => billing_plans.id, { onDelete: "set null" }),
   commune_id: uuid("commune_id").references(() => communes.id, { onDelete: "cascade" }),
   epci_id: uuid("epci_id").references(() => epci.id, { onDelete: "cascade" }),
   // Libellé snapshot (éditable indépendamment du catalogue).
