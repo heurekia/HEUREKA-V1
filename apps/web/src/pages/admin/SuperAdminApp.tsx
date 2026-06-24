@@ -377,6 +377,7 @@ const navItems = [
   { path: "/admin/couts-ia", icon: "💶", label: "Coûts IA" },
   { path: "/admin/audit", icon: "🔒", label: "Audit sécurité" },
   { path: "/admin/conformite", icon: "🛡", label: "Conformité RGPD" },
+  { path: "/admin/site", icon: "🚀", label: "Site public" },
   { path: "/admin/configuration", icon: "⚙", label: "Configuration" },
 ];
 
@@ -6243,6 +6244,191 @@ function CoutsIACommune() {
 }
 
 // ─── App Root ─────────────────────────────────────────────────────────────────
+// ─── Site public — mode « bientôt en ligne » ─────────────────────────────────
+interface SiteSettings {
+  coming_soon_enabled: boolean;
+  coming_soon_title: string | null;
+  coming_soon_message: string | null;
+  has_password: boolean;
+  updated_at: string;
+}
+
+function SitePublic() {
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [enabled, setEnabled] = useState(false);
+  const [title, setTitle] = useState("");
+  const [message, setMessage] = useState("");
+  const [password, setPassword] = useState("");
+  const [hasPassword, setHasPassword] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.get<SiteSettings>("/admin/site-settings")
+      .then((s) => {
+        setEnabled(s.coming_soon_enabled);
+        setTitle(s.coming_soon_title ?? "");
+        setMessage(s.coming_soon_message ?? "");
+        setHasPassword(s.has_password);
+      })
+      .catch(() => setError("Impossible de charger les réglages du site."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const save = async () => {
+    setError(null);
+    setSavedAt(null);
+    if (enabled && !hasPassword && !password.trim()) {
+      setError("Définissez un mot de passe d'accès avant d'activer le mode.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const body: Record<string, unknown> = {
+        coming_soon_enabled: enabled,
+        coming_soon_title: title,
+        coming_soon_message: message,
+      };
+      if (password.trim()) body.password = password;
+      const s = await api.patch<SiteSettings>("/admin/site-settings", body);
+      setEnabled(s.coming_soon_enabled);
+      setHasPassword(s.has_password);
+      setPassword("");
+      setSavedAt(new Date().toLocaleTimeString("fr-FR"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Échec de l'enregistrement.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return <PageShell><div style={{ display: "flex", justifyContent: "center", padding: 80 }}><Spinner size={40} /></div></PageShell>;
+  }
+
+  const labelStyle: React.CSSProperties = { display: "block", fontSize: 13, fontWeight: 700, color: C.text, marginBottom: 6 };
+  const inputStyle: React.CSSProperties = {
+    width: "100%", padding: "10px 12px", fontSize: 14, borderRadius: 8,
+    border: `1px solid ${C.border}`, color: C.text, outline: "none", boxSizing: "border-box",
+  };
+
+  return (
+    <PageShell>
+      <div style={{ marginBottom: 24 }}>
+        <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Site public</h1>
+        <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>
+          Mode « bientôt en ligne » : affiche une page vitrine « le système arrive prochainement » avec le logo Heurekia et un mot de passe d'accès sur <strong>www.heurekia.com</strong> et <strong>heurekia.com</strong>. Les espaces professionnels (app.heurekia.com) ne sont pas affectés.
+        </p>
+      </div>
+
+      {/* Bandeau d'état */}
+      <div style={{
+        display: "flex", alignItems: "center", gap: 14,
+        background: enabled ? C.orangeBg : C.greenBg,
+        border: `1px solid ${enabled ? "#FDE68A" : "#A7F3D0"}`,
+        borderRadius: 14, padding: "16px 20px", marginBottom: 20,
+      }}>
+        <div style={{ fontSize: 28 }}>{enabled ? "🚧" : "🌐"}</div>
+        <div style={{ flex: 1 }}>
+          <div style={{ fontSize: 16, fontWeight: 800, color: enabled ? "#92400E" : "#15803D" }}>
+            {enabled ? "Mode « bientôt en ligne » ACTIF" : "Site public ACCESSIBLE"}
+          </div>
+          <div style={{ fontSize: 13, color: C.textMuted, marginTop: 2 }}>
+            {enabled
+              ? "Les visiteurs voient la page vitrine et doivent saisir le mot de passe pour accéder au site."
+              : "Le site public est ouvert normalement à tous les visiteurs."}
+          </div>
+        </div>
+      </div>
+
+      {/* Carte de configuration */}
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, maxWidth: 720 }}>
+        {/* Interrupteur */}
+        <label style={{ display: "flex", alignItems: "center", gap: 14, cursor: "pointer", marginBottom: 24 }}>
+          <span
+            onClick={() => setEnabled((v) => !v)}
+            style={{
+              width: 46, height: 26, borderRadius: 999, flexShrink: 0, position: "relative",
+              background: enabled ? C.accent : "#CBD5E1", transition: "background 0.15s",
+            }}
+          >
+            <span style={{
+              position: "absolute", top: 3, left: enabled ? 23 : 3, width: 20, height: 20,
+              borderRadius: "50%", background: "white", transition: "left 0.15s",
+              boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
+            }} />
+          </span>
+          <span>
+            <span style={{ display: "block", fontSize: 14, fontWeight: 700, color: C.text }}>Activer le mode « bientôt en ligne »</span>
+            <span style={{ display: "block", fontSize: 12.5, color: C.textMuted, marginTop: 1 }}>
+              Un mot de passe d'accès doit être défini pour pouvoir activer le mode.
+            </span>
+          </span>
+          {/* Checkbox réelle, cachée, pour l'accessibilité clavier */}
+          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} style={{ position: "absolute", opacity: 0, width: 0, height: 0 }} />
+        </label>
+
+        <div style={{ marginBottom: 18 }}>
+          <label style={labelStyle}>
+            Mot de passe d'accès {hasPassword && <span style={{ color: C.green, fontWeight: 600 }}>· défini ✓</span>}
+          </label>
+          <input
+            type="text"
+            value={password}
+            onChange={(e) => setPassword(e.target.value)}
+            placeholder={hasPassword ? "•••••••• (laisser vide pour ne pas changer)" : "Choisissez un mot de passe"}
+            autoComplete="new-password"
+            style={inputStyle}
+          />
+        </div>
+
+        <div style={{ marginBottom: 18 }}>
+          <label style={labelStyle}>Titre affiché <span style={{ color: C.textLight, fontWeight: 400 }}>(optionnel)</span></label>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            placeholder="Le système arrive prochainement"
+            style={inputStyle}
+          />
+        </div>
+
+        <div style={{ marginBottom: 22 }}>
+          <label style={labelStyle}>Message <span style={{ color: C.textLight, fontWeight: 400 }}>(optionnel)</span></label>
+          <textarea
+            value={message}
+            onChange={(e) => setMessage(e.target.value)}
+            placeholder="La plateforme Heurekia ouvre bientôt…"
+            rows={3}
+            style={{ ...inputStyle, resize: "vertical", fontFamily: "inherit" }}
+          />
+        </div>
+
+        {error && (
+          <div style={{ background: C.redBg, border: "1px solid #FECACA", color: "#B91C1C", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginBottom: 16 }}>
+            {error}
+          </div>
+        )}
+
+        <div style={{ display: "flex", alignItems: "center", gap: 14 }}>
+          <button
+            onClick={save}
+            disabled={saving}
+            style={{
+              padding: "11px 22px", fontSize: 14, fontWeight: 700, borderRadius: 8, border: "none",
+              background: C.accent, color: "white", cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1,
+            }}
+          >
+            {saving ? "Enregistrement…" : "Enregistrer"}
+          </button>
+          {savedAt && <span style={{ fontSize: 13, color: C.green, fontWeight: 600 }}>✓ Enregistré à {savedAt}</span>}
+        </div>
+      </div>
+    </PageShell>
+  );
+}
+
 export function SuperAdminApp() {
   return (
     <div style={{ display: "flex", fontFamily: "system-ui, -apple-system, 'Segoe UI', sans-serif" }}>
@@ -6266,6 +6452,7 @@ export function SuperAdminApp() {
           <Route path="/couts-ia/:id" element={<CoutsIADossier />} />
           <Route path="/audit" element={<AuditLogs />} />
           <Route path="/conformite" element={<Conformite />} />
+          <Route path="/site" element={<SitePublic />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="*" element={<Navigate to="/admin" replace />} />
         </Routes>
