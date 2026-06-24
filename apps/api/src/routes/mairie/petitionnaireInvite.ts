@@ -13,6 +13,35 @@ export function isPlaceholderEmail(email: string | null | undefined): boolean {
   return !!email && email.toLowerCase().endsWith(PLACEHOLDER_EMAIL_DOMAIN);
 }
 
+// Normalise un nom pour comparaison : sans accents, minuscules, ponctuation et
+// espaces multiples réduits. « Jean-Marie DUPONT » → « jean marie dupont ».
+function normalizeName(s: string | null | undefined): string {
+  return (s ?? "")
+    .normalize("NFD")
+    .replace(/\p{Diacritic}/gu, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+// Garde-fou anti-erreur d'affiliation : avant de rattacher un dossier à un
+// compte existant trouvé par email, on compare l'identité saisie sur le dossier
+// à celle du compte. Tolère l'inversion prénom/nom et les noms partiels (un
+// placeholder n'a souvent qu'un nom de famille) : on ne signale une divergence
+// que si un mot de l'identité la plus courte est absent de l'autre. Si une des
+// deux identités est vide, on ne peut pas comparer → pas d'alerte.
+export function namesLikelyDiffer(
+  a: { prenom?: string | null; nom?: string | null },
+  b: { prenom?: string | null; nom?: string | null },
+): boolean {
+  const tokensA = new Set(normalizeName(`${a.prenom ?? ""} ${a.nom ?? ""}`).split(" ").filter(Boolean));
+  const tokensB = new Set(normalizeName(`${b.prenom ?? ""} ${b.nom ?? ""}`).split(" ").filter(Boolean));
+  if (tokensA.size === 0 || tokensB.size === 0) return false;
+  const [small, big] = tokensA.size <= tokensB.size ? [tokensA, tokensB] : [tokensB, tokensA];
+  for (const t of small) if (!big.has(t)) return true;
+  return false;
+}
+
 // État du compte pétitionnaire après rattachement/création.
 export type PetitionnaireAccountState =
   | "new" //                 compte citoyen tout juste créé

@@ -6151,26 +6151,37 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
 
 // Modale d'invitation du pétitionnaire à activer son espace citoyen. Régularise
 // un dossier dont le compte est un placeholder (email obligatoire) ou dont
-// l'email n'a jamais été activé (renvoi possible, adresse corrigeable).
-function InvitePetitionnaireModal({ dossierId, initialEmail, isPlaceholder, onClose, onInvited }: {
+// l'email n'a jamais été activé (renvoi possible, adresse corrigeable). Si
+// l'adresse correspond à un compte existant d'un autre nom, demande confirmation.
+function InvitePetitionnaireModal({ dossierId, initialEmail, isPlaceholder, petitionnaireName, onClose, onInvited }: {
   dossierId: string;
   initialEmail: string;
   isPlaceholder: boolean;
+  petitionnaireName: string;
   onClose: () => void;
   onInvited: () => void;
 }) {
   const [email, setEmail] = useState(initialEmail);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const submit = async () => {
+  // Compte existant trouvé par email dont le nom diffère du pétitionnaire saisi :
+  // on bascule sur un écran de confirmation avant de rattacher.
+  const [confirmExisting, setConfirmExisting] = useState<{ prenom?: string; nom?: string; verified?: boolean } | null>(null);
+
+  const submit = async (confirm: boolean) => {
     if (busy) return;
     const trimmed = email.trim();
     if (!trimmed) { setError("Veuillez saisir une adresse email."); return; }
     setError(null);
     setBusy(true);
     try {
-      const r = await api.post<{ action: string; emailSent?: boolean }>(
-        `/mairie/dossiers/${dossierId}/inviter-petitionnaire`, { email: trimmed });
+      const r = await api.post<{ action: string; emailSent?: boolean; code?: string; existing?: { prenom?: string; nom?: string; verified?: boolean } }>(
+        `/mairie/dossiers/${dossierId}/inviter-petitionnaire`, { email: trimmed, confirm });
+      if (r.action === "confirm" && r.code === "name_mismatch") {
+        setConfirmExisting(r.existing ?? {});
+        setBusy(false);
+        return;
+      }
       if (r.action === "invited" && r.emailSent === false) {
         setError("Le compte a été rattaché, mais l'email n'a pas pu être envoyé. Réessayez plus tard.");
         setBusy(false);
@@ -6185,25 +6196,47 @@ function InvitePetitionnaireModal({ dossierId, initialEmail, isPlaceholder, onCl
       setBusy(false);
     }
   };
+
+  const existingName = confirmExisting ? [confirmExisting.prenom, confirmExisting.nom].filter(Boolean).join(" ").trim() : "";
+
   return (
     <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={onClose}>
       <div style={{ background: "white", borderRadius: 14, width: 460, padding: 24 }} onClick={e => e.stopPropagation()}>
         <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 8 }}>Inviter le pétitionnaire</div>
-        <p style={{ fontSize: 12.5, color: "#64748b", lineHeight: 1.6, margin: "0 0 16px" }}>
-          {isPlaceholder
-            ? "Ce dossier est rattaché à un compte interne non utilisable. Saisissez l'adresse du pétitionnaire : il recevra une invitation à activer son espace pour suivre son dossier en ligne (ou un rattachement si un compte existe déjà)."
-            : "Le pétitionnaire n'a pas encore activé son espace. Vous pouvez lui (re)envoyer l'invitation, et corriger l'adresse si nécessaire."}
-        </p>
-        <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Email du pétitionnaire</label>
-        <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="jean.dupont@example.com" autoFocus
-          style={{ width: "100%", border: "1.5px solid #E2E8F0", borderRadius: 9, padding: "10px 12px", fontSize: 12.5, outline: "none", boxSizing: "border-box" as const, marginBottom: error ? 8 : 16 }} />
-        {error && <div style={{ fontSize: 12, color: "#DC2626", marginBottom: 14, lineHeight: 1.5 }}>{error}</div>}
-        <div style={{ display: "flex", gap: 9, justifyContent: "flex-end" }}>
-          <button onClick={onClose} disabled={busy} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Annuler</button>
-          <button onClick={submit} disabled={busy || !email.trim()} style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: busy ? "default" : "pointer", opacity: busy || !email.trim() ? 0.6 : 1 }}>
-            {busy ? "Envoi…" : "Envoyer l'invitation"}
-          </button>
-        </div>
+        {confirmExisting ? (
+          <>
+            <div style={{ background: "#FEF3C7", border: "1px solid #FCD34D", borderRadius: 10, padding: "12px 14px", marginBottom: 18 }}>
+              <div style={{ fontSize: 12.5, color: "#92400E", lineHeight: 1.65 }}>
+                Un compte existe déjà pour <strong>{email.trim()}</strong>{existingName ? <> au nom de <strong>{existingName}</strong></> : null} ({confirmExisting.verified ? "compte actif" : "compte non activé"}).
+                <br />Ce nom diffère du pétitionnaire saisi sur le dossier{petitionnaireName ? <> (<strong>{petitionnaireName}</strong>)</> : null}. Confirmez-vous le rattachement de ce dossier à ce compte ?
+              </div>
+            </div>
+            <div style={{ display: "flex", gap: 9, justifyContent: "flex-end" }}>
+              <button onClick={() => setConfirmExisting(null)} disabled={busy} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Revenir</button>
+              <button onClick={() => submit(true)} disabled={busy} style={{ background: "#D97706", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: busy ? "default" : "pointer", opacity: busy ? 0.6 : 1 }}>
+                {busy ? "…" : "Rattacher quand même"}
+              </button>
+            </div>
+          </>
+        ) : (
+          <>
+            <p style={{ fontSize: 12.5, color: "#64748b", lineHeight: 1.6, margin: "0 0 16px" }}>
+              {isPlaceholder
+                ? "Ce dossier est rattaché à un compte interne non utilisable. Saisissez l'adresse du pétitionnaire : il recevra une invitation à activer son espace pour suivre son dossier en ligne (ou un rattachement si un compte existe déjà)."
+                : "Le pétitionnaire n'a pas encore activé son espace. Vous pouvez lui (re)envoyer l'invitation, et corriger l'adresse si nécessaire."}
+            </p>
+            <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Email du pétitionnaire</label>
+            <input type="email" value={email} onChange={e => setEmail(e.target.value)} placeholder="jean.dupont@example.com" autoFocus
+              style={{ width: "100%", border: "1.5px solid #E2E8F0", borderRadius: 9, padding: "10px 12px", fontSize: 12.5, outline: "none", boxSizing: "border-box" as const, marginBottom: error ? 8 : 16 }} />
+            {error && <div style={{ fontSize: 12, color: "#DC2626", marginBottom: 14, lineHeight: 1.5 }}>{error}</div>}
+            <div style={{ display: "flex", gap: 9, justifyContent: "flex-end" }}>
+              <button onClick={onClose} disabled={busy} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Annuler</button>
+              <button onClick={() => submit(false)} disabled={busy || !email.trim()} style={{ background: "#4F46E5", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: busy ? "default" : "pointer", opacity: busy || !email.trim() ? 0.6 : 1 }}>
+                {busy ? "Envoi…" : "Envoyer l'invitation"}
+              </button>
+            </div>
+          </>
+        )}
       </div>
     </div>
   );
@@ -7156,6 +7189,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                   dossierId={dossier.id}
                   initialEmail={dossier.petitionnaire_email ?? ""}
                   isPlaceholder={!!dossier.petitionnaire_is_placeholder}
+                  petitionnaireName={dossier.petitionnaire}
                   onClose={() => setShowInvitePetitionnaire(false)}
                   onInvited={() => { setShowInvitePetitionnaire(false); setPetitionnaireInvited(true); }}
                 />
