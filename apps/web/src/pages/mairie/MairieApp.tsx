@@ -8935,7 +8935,7 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
                         title={isCollapsed ? "Déplier la catégorie" : "Replier la catégorie"}
                       >
                         <span style={{ fontSize: 9, color: "#94a3b8", display: "inline-block", width: 8, transition: "transform 0.15s", transform: isCollapsed ? "rotate(-90deg)" : "rotate(0deg)" }}>▾</span>
-                        <span>{group.label}</span>
+                        <span>{dossier.type === "permis_de_construire_mi" ? group.label.replace(/^PC(\d)/, "PCMI$1") : group.label}</span>
                         <span style={{ fontSize: 10, color: "#94a3b8", fontWeight: 600 }}>({group.items.length})</span>
                       </button>
                       {!isCollapsed && (
@@ -9773,6 +9773,9 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
   const [stagedFiles, setStagedFiles] = useState<StagedFile[]>([]);
   const [cerfaScanning, setCerfaScanning] = useState(false);
   const [cerfaDone, setCerfaDone] = useState(false);
+  // Dépôt multi-fichiers sans CERFA séparé (formulaire saisi à la main) : on
+  // n'auto-désigne alors aucun fichier comme CERFA et le pré-remplissage est sauté.
+  const [noCerfa, setNoCerfa] = useState(false);
   const [ocrError, setOcrError] = useState<string | null>(null);
   const [ocrNumero, setOcrNumero] = useState<string | null>(null);
 
@@ -9854,12 +9857,13 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
           file,
           // Premier CERFA détecté → marqué CERFA ; sinon si on n'a encore rien
           // de désigné CERFA et que c'est un PDF, on prend le 1er PDF par défaut.
-          isCerfa: looksLikeCerfa && !hasCerfa,
+          isCerfa: !noCerfa && looksLikeCerfa && !hasCerfa,
           status: "queued",
         });
       }
-      // Si toujours pas de CERFA désigné, prend le premier PDF (fallback).
-      if (!next.some(f => f.isCerfa)) {
+      // Si toujours pas de CERFA désigné (hors mode « aucun CERFA »), prend le
+      // premier PDF (fallback).
+      if (!noCerfa && !next.some(f => f.isCerfa)) {
         const firstPdf = next.find(f => /\.pdf$/i.test(f.file.name));
         if (firstPdf) firstPdf.isCerfa = true;
       }
@@ -9883,13 +9887,18 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
   }, [stagedFiles.find(f => f.isCerfa)?.id]);
 
   const setCerfa = (id: string) => {
+    setNoCerfa(false);
     setStagedFiles(prev => prev.map(f => ({ ...f, isCerfa: f.id === id })));
+  };
+  const chooseNoCerfa = () => {
+    setNoCerfa(true);
+    setStagedFiles(prev => prev.map(f => ({ ...f, isCerfa: false })));
   };
   const removeFile = (id: string) => {
     setStagedFiles(prev => {
       const next = prev.filter(f => f.id !== id);
-      // Si on a retiré le CERFA, promeut le premier fichier restant.
-      if (!next.some(f => f.isCerfa) && next.length > 0) next[0]!.isCerfa = true;
+      // Si on a retiré le CERFA (hors mode « aucun CERFA »), promeut le 1er restant.
+      if (!noCerfa && !next.some(f => f.isCerfa) && next.length > 0) next[0]!.isCerfa = true;
       return next;
     });
   };
@@ -9919,11 +9928,12 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
         // N'a d'effet côté API que si un email est renseigné.
         invite_petitionnaire: form.petitionnaire_email.trim() ? form.invite_petitionnaire : false,
       };
-      if (ocrNumero) {
-        payload["metadata"] = { numero_cerfa: ocrNumero, created_via: "ocr" };
-      } else if (mode === "manual") {
-        payload["metadata"] = { created_via: "manual" };
-      }
+      // created_via pilote la génération du CERFA prérempli côté API : en OCR
+      // (dossier scanné), la mairie a déjà le vrai CERFA signé dans les pièces
+      // numérisées → aucun CERFA prérempli n'est généré.
+      const meta: Record<string, unknown> = { created_via: mode === "manual" ? "manual" : "ocr" };
+      if (ocrNumero) meta["numero_cerfa"] = ocrNumero;
+      payload["metadata"] = meta;
       const created = await api.post<{ id: string; numero: string }>("/mairie/dossiers", payload);
 
       // Dépôt groupé : un SEUL PDF déposé = très probablement le dossier complet.
@@ -10204,29 +10214,45 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
     </div>
   );
 
+  // Un seul fichier déposé = dossier complet : on n'oblige pas à désigner « le
+  // CERFA » (trompeur — le PDF contient le CERFA, qui sera détecté au découpage).
+  const singleFile = stagedFiles.length === 1;
   const fileList = stagedFiles.length > 0 && (
     <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" }}>
       <div style={{ padding: "8px 12px", background: "#F8FAFC", fontSize: 11, fontWeight: 600, color: "#64748b", textTransform: "uppercase" as const, letterSpacing: 0.4, display: "flex", justifyContent: "space-between" }}>
         <span>{stagedFiles.length} fichier{stagedFiles.length > 1 ? "s" : ""}</span>
-        <span style={{ textTransform: "none" as const, letterSpacing: 0, fontWeight: 500 }}>Choisissez le CERFA</span>
+        <span style={{ textTransform: "none" as const, letterSpacing: 0, fontWeight: 500 }}>{singleFile ? "Découpage automatique" : "Choisissez le CERFA"}</span>
       </div>
       {stagedFiles.map(f => {
         const code = f.isCerfa ? "CERFA" : guessCodePieceFromName(f.file.name);
         return (
           <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderTop: "1px solid #F1F5F9", fontSize: 13 }}>
-            <input type="radio" checked={f.isCerfa} onChange={() => setCerfa(f.id)} title="Désigner comme CERFA" />
+            {!singleFile && <input type="radio" checked={f.isCerfa} onChange={() => setCerfa(f.id)} title="Désigner comme CERFA" />}
             <span style={{ fontSize: 16 }}>{/\.pdf$/i.test(f.file.name) ? "📄" : "🖼️"}</span>
             <div style={{ flex: 1, minWidth: 0 }}>
               <div style={{ color: "#0F172A", whiteSpace: "nowrap" as const, overflow: "hidden", textOverflow: "ellipsis" as const }}>{f.file.name}</div>
               <div style={{ fontSize: 11, color: "#94a3b8" }}>
                 {(f.file.size / 1024).toFixed(0)} Ko
-                {code && <> · <span style={{ color: f.isCerfa ? "#4F46E5" : "#64748b", fontWeight: 600 }}>{code}</span></>}
+                {singleFile
+                  ? <> · <span style={{ color: "#4F46E5", fontWeight: 600 }}>dossier complet</span></>
+                  : code && <> · <span style={{ color: f.isCerfa ? "#4F46E5" : "#64748b", fontWeight: 600 }}>{code}</span></>}
               </div>
             </div>
             <button onClick={() => removeFile(f.id)} title="Retirer" style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", fontSize: 16, padding: 4 }}>×</button>
           </div>
         );
       })}
+      {singleFile && (
+        <div style={{ padding: "8px 12px", borderTop: "1px solid #F1F5F9", fontSize: 11.5, color: "#475569", background: "#FAFAFF", lineHeight: 1.5 }}>
+          📦 Un seul PDF = dossier complet : il pré-remplit le formulaire, puis sera <strong>découpé en pièces</strong> à la création (le CERFA est détecté automatiquement).
+        </div>
+      )}
+      {!singleFile && (
+        <label style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderTop: "1px solid #F1F5F9", fontSize: 12.5, color: "#475569", cursor: "pointer" }}>
+          <input type="radio" checked={noCerfa} onChange={chooseNoCerfa} title="Aucun CERFA dans ce dépôt" />
+          Aucun CERFA dans ce dépôt (je remplis le formulaire à la main)
+        </label>
+      )}
       <label style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 6, padding: "8px 12px", borderTop: "1px solid #F1F5F9", background: "#F8FAFC", cursor: "pointer", fontSize: 12, color: "#4F46E5", fontWeight: 600 }}>
         ＋ Ajouter d'autres fichiers
         <input type="file" multiple accept=".pdf,.jpg,.jpeg,.png" onChange={e => { if (e.target.files) { addFiles(e.target.files); e.target.value = ""; } }} style={{ display: "none" }} />
