@@ -52,7 +52,12 @@ export async function attachCerfaToDossier(dossierId: string): Promise<{ pieceId
     .limit(1);
   if (!dossier) return null;
 
-  const generator = generatorFor(dossier.type, (dossier.metadata as Record<string, unknown>) ?? {});
+  // Dossier déposé/numérisé en OCR : la mairie a déjà le CERFA réel (signé) dans
+  // les pièces scannées → on ne génère PAS de CERFA prérempli redondant.
+  const dossierMeta = (dossier.metadata as Record<string, unknown>) ?? {};
+  if (dossierMeta.created_via === "ocr") return null;
+
+  const generator = generatorFor(dossier.type, dossierMeta);
   if (!generator) return null;
 
   const [user] = await db

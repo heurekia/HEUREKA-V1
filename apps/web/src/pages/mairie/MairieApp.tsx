@@ -9527,11 +9527,12 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
         date_depot: form.date_depot || undefined,
         instructeur_id: form.instructeur_id || undefined,
       };
-      if (ocrNumero) {
-        payload["metadata"] = { numero_cerfa: ocrNumero, created_via: "ocr" };
-      } else if (mode === "manual") {
-        payload["metadata"] = { created_via: "manual" };
-      }
+      // created_via pilote la génération du CERFA prérempli côté API : en OCR
+      // (dossier scanné), la mairie a déjà le vrai CERFA signé dans les pièces
+      // numérisées → aucun CERFA prérempli n'est généré.
+      const meta: Record<string, unknown> = { created_via: mode === "manual" ? "manual" : "ocr" };
+      if (ocrNumero) meta["numero_cerfa"] = ocrNumero;
+      payload["metadata"] = meta;
       const created = await api.post<{ id: string; numero: string }>("/mairie/dossiers", payload);
 
       // Dépôt groupé : un SEUL PDF déposé = très probablement le dossier complet.
