@@ -20,6 +20,7 @@
 import type {
   ParcelAnalysis,
   PrescriptionResult,
+  ProtectedAreaResult,
   RegDbRule,
   RiskResult,
   ServitudeResult,
@@ -31,7 +32,7 @@ export type SynthesisTone = "favorable" | "neutre" | "info" | "attention" | "int
 
 /** Document/source ayant contribué à un thème — c'est le pivot « transversal ». */
 export interface SynthesisSource {
-  kind: "plu" | "ppri" | "servitude" | "prescription" | "risque";
+  kind: "plu" | "ppri" | "servitude" | "prescription" | "risque" | "nature";
   /** Libellé citable, ex: « PLU — art. 10 (UC) », « SUP AC1 — ABF », « GéoRisques ». */
   label: string;
   /** Référence courte : n° d'article, catégorie SUP, code phénomène… */
@@ -88,7 +89,7 @@ export interface ParcelSynthesis {
 // ── Entrée : sous-ensemble structurel de ParcelAnalysis ─────────────────────────
 export type SynthesisInput = Pick<
   ParcelAnalysis,
-  "rules" | "risks" | "servitudes" | "prescriptions" | "plu_zone" | "db_zone"
+  "rules" | "risks" | "servitudes" | "prescriptions" | "plu_zone" | "db_zone" | "protected_areas"
 >;
 
 // ── Taxonomie des thèmes ────────────────────────────────────────────────────────
@@ -384,6 +385,25 @@ function supMeaning(cat: string): SupMeaning {
   return { label: "Servitude d'utilité publique", consequence: "Contraintes spécifiques applicables.", tone: "info" };
 }
 
+// ── Thème transversal : espaces naturels protégés (apicarto Nature / INPN) ──────
+interface NatureMeaning { consequence: string; tone: SynthesisTone }
+function natureMeaning(type: ProtectedAreaResult["type"]): NatureMeaning {
+  if (type === "natura2000_habitat" || type === "natura2000_oiseaux")
+    return { consequence: "Évaluation des incidences Natura 2000 possible (art. L.414-4 C. env.) — pièce spécifique à joindre au dossier.", tone: "attention" };
+  if (type === "reserve_naturelle")
+    return { consequence: "Réglementation propre à la réserve ; autorisation spéciale du gestionnaire possible.", tone: "attention" };
+  if (type === "parc_national")
+    return { consequence: "Réglementation du parc ; en cœur de parc, autorisation spéciale requise.", tone: "attention" };
+  if (type === "parc_naturel_regional")
+    return { consequence: "Compatibilité avec la charte du PNR ; avis du syndicat mixte possible.", tone: "info" };
+  if (type === "znieff1")
+    return { consequence: "Inventaire d'intérêt écologique fort (porter à connaissance) — sans interdiction directe.", tone: "info" };
+  if (type === "znieff2")
+    return { consequence: "Grand ensemble naturel d'intérêt écologique (porter à connaissance).", tone: "info" };
+  // reserve_chasse_faune et tout futur type
+  return { consequence: "Réglementation environnementale spécifique applicable.", tone: "info" };
+}
+
 // ── Construction d'un thème PLU ─────────────────────────────────────────────────
 function worstTone(tones: SynthesisTone[]): SynthesisTone {
   const order: SynthesisTone[] = ["favorable", "neutre", "info", "attention", "interdit"];
@@ -507,7 +527,36 @@ export function buildParcelSynthesis(input: SynthesisInput): ParcelSynthesis {
     }
   }
 
-  // 4) Prescriptions surfaciques (EBC, reculs spéciaux…) → thème « usages »
+  // 4) Thème transversal « Espaces naturels protégés » (apicarto Nature / INPN)
+  const protectedAreas = input.protected_areas ?? [];
+  if (protectedAreas.length > 0) {
+    const items: ThemeItem[] = [];
+    const points: string[] = [];
+    for (const a of protectedAreas) {
+      const m = natureMeaning(a.type);
+      points.push(`${a.label}${a.nom ? ` — ${a.nom}` : ""}.`);
+      items.push({
+        label: a.label,
+        value: a.nom ?? null,
+        detail: m.consequence,
+        source: { kind: "nature", label: "apicarto Nature (INPN)", ref: a.code || undefined },
+        tone: m.tone,
+      });
+    }
+    themes.push({
+      key: "nature",
+      icon: "🌿",
+      title: "Espaces naturels protégés",
+      citizen: {
+        headline: points[0] ?? "Espaces naturels protégés",
+        points: dedupe(points).slice(0, 6),
+        tone: worstTone(items.map((i) => i.tone)),
+      },
+      instructor: { items, sources: dedupeSources(items.map((i) => i.source)) },
+    });
+  }
+
+  // 5) Prescriptions surfaciques (EBC, reculs spéciaux…) → thème « usages »
   const prescriptions = input.prescriptions ?? [];
   if (prescriptions.length > 0) {
     const usages = themes.find((t) => t.key === "usages");
