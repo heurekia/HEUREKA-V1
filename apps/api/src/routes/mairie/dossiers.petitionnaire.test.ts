@@ -1,5 +1,30 @@
 import { describe, it, expect } from "vitest";
-import { petitionnaireSideEffect, type PetitionnaireAccountState } from "./petitionnaireInvite.js";
+import {
+  petitionnaireSideEffect,
+  isPlaceholderEmail,
+  PLACEHOLDER_EMAIL_DOMAIN,
+  type PetitionnaireAccountState,
+} from "./petitionnaireInvite.js";
+
+describe("isPlaceholderEmail — détection des comptes internes non joignables", () => {
+  it("reconnaît un email synthétique de placeholder", () => {
+    expect(isPlaceholderEmail(`dossier-abc-123${PLACEHOLDER_EMAIL_DOMAIN}`)).toBe(true);
+  });
+
+  it("est insensible à la casse", () => {
+    expect(isPlaceholderEmail(`DOSSIER-XYZ@PLACEHOLDER.HEUREKA.LOCAL`)).toBe(true);
+  });
+
+  it("rejette une vraie adresse", () => {
+    expect(isPlaceholderEmail("jean.dupont@example.com")).toBe(false);
+  });
+
+  it("rejette null/undefined/chaîne vide sans lever", () => {
+    expect(isPlaceholderEmail(null)).toBe(false);
+    expect(isPlaceholderEmail(undefined)).toBe(false);
+    expect(isPlaceholderEmail("")).toBe(false);
+  });
+});
 
 // Matrice de décision pour prévenir le pétitionnaire après l'enregistrement d'un
 // dossier au comptoir (saisie manuelle / import OCR).

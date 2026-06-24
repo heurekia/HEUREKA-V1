@@ -3,6 +3,16 @@
 // Isolée ici pour rester testable sans démarrer la route (qui charge la couche
 // auth/db). Utilisée par routes/mairie/dossiers.ts.
 
+// Domaine des emails synthétiques attribués à un pétitionnaire sans email réel
+// (compte interne non utilisable, créé uniquement pour respecter la FK
+// dossiers.user_id). Source unique pour la création ET la détection.
+export const PLACEHOLDER_EMAIL_DOMAIN = "@placeholder.heureka.local";
+
+// True si l'email est un placeholder synthétique (donc compte non joignable).
+export function isPlaceholderEmail(email: string | null | undefined): boolean {
+  return !!email && email.toLowerCase().endsWith(PLACEHOLDER_EMAIL_DOMAIN);
+}
+
 // État du compte pétitionnaire après rattachement/création.
 export type PetitionnaireAccountState =
   | "new" //                 compte citoyen tout juste créé
