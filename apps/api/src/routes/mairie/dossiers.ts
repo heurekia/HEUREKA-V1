@@ -11,7 +11,7 @@ import multer from "multer";
 import crypto from "crypto";
 import path from "path";
 import { z } from "zod";
-import { callAi, convertPdfPagesToPng } from "../../services/aiUsage.js";
+import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
 import { extractFirstJson, sha256Buffer } from "../../services/pieceAnalyzer.js";
 import { attachCerfaToDossier } from "../../services/cerfaAttachment.js";
 import { prefetchSitadelHistory } from "../../services/sitadelPrefetch.js";
@@ -853,8 +853,8 @@ CHAMPS À EXTRAIRE :
 - siret : si une entreprise est déclarée et le SIRET est lisible.
 - adresse : adresse du TERRAIN / projet (cadre « Terrain », page 2). Pas l'adresse personnelle du demandeur de la page 1.
 - code_postal + commune : du terrain (page 2).
-- parcelle : références cadastrales du terrain (page 2). Format « SECTION NUMERO » (ex. « AB 142 »). Si plusieurs parcelles, concatène séparées par « , ».
-- surface_plancher : surface de plancher créée en m² (cadre « Le projet », page 3). Chiffre seul (ex. "95").
+- parcelle : références cadastrales du terrain. Format « SECTION NUMERO » (ex. « AB 142 »). Si plusieurs parcelles, concatène séparées par « , ». Le document peut être un JEU DE PLANS sans formulaire CERFA : lis alors la référence dans le CARTOUCHE des plans (souvent en bas) ou sur le « plan de situation / extraits cadastraux ». NE DEVINE JAMAIS la section : recopie EXACTEMENT les lettres lues (ne confonds pas, p. ex., « AI » avec « ZL ») ; en cas de doute, mets null.
+- surface_plancher : surface de plancher créée en m² (cadre « Le projet » du CERFA, ou mention « S. plancher » sur les plans). Chiffre seul (ex. "95"). En cas de doute, null plutôt qu'une valeur approximative.
 - description : courte phrase libre décrivant le projet (cadre « Le projet » ou « Nature des travaux », page 3) si une zone descriptive est remplie.
 
 RÈGLES :
@@ -936,19 +936,42 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
       });
     }
 
+    // Couche texte : Pixtral peut mal lire un code de section sur une image
+    // (« AI » lu « ZL »…) ou une surface. Quand le PDF a une couche texte (plans
+    // d'architecte, CERFA natif), on la fournit — bien plus fiable pour les
+    // valeurs EXACTES (références cadastrales, surfaces).
+    // pdftotext -layout produit un texte très espacé (mise en page A3) : on
+    // compresse l'espacement pour que tout le document tienne dans le budget de
+    // 30k caractères (sinon les valeurs en fin de document seraient tronquées).
+    const pdfText = sniffed === "pdf"
+      ? (extractPdfText(buf) ?? "")
+          .replace(/\f/g, "\n")
+          .replace(/[ \t]{2,}/g, " ")
+          .replace(/\n[ \t]+/g, "\n")
+          .replace(/\n{3,}/g, "\n\n")
+          .trim()
+      : "";
+    const hasUsableText = pdfText.replace(/\s/g, "").length > 80;
+
+    const userContent: AiContentBlock[] = [...imageBlocks];
+    if (hasUsableText) {
+      userContent.push({
+        type: "text",
+        text: `EXTRAIT TEXTE du document (couche texte, FIABLE pour les valeurs exactes — références cadastrales « section numéro », surfaces, codes). Pour ces valeurs, fie-toi à cet extrait plutôt qu'à l'image :\n"""\n${pdfText.slice(0, 30000)}\n"""`,
+      });
+    }
+    userContent.push({
+      type: "text",
+      text: `Voici ${imageBlocks.length} image${imageBlocks.length > 1 ? "s" : ""} correspondant aux pages successives d'un dossier d'urbanisme (CERFA et/ou plans signés). Examine CHAQUE page avant de répondre, puis extrais l'ensemble des champs demandés.${hasUsableText ? " Pour les références cadastrales (section + numéro) et les surfaces, FIE-TOI EN PRIORITÉ à l'extrait texte ci-dessus ; n'invente JAMAIS une section." : ""} Réponds en JSON strict, sans markdown.`,
+    });
+
     const msg = await callAi(
       { purpose: "ocr_cerfa_admin", dossierId: null, communeId: communeIdForTrace, userId: req.user?.id ?? null, fileHash },
       {
         model: "ai-smart",
         max_tokens: 1500,
         system: OCR_CERFA_SYSTEM,
-        messages: [{
-          role: "user",
-          content: [
-            ...imageBlocks,
-            { type: "text", text: `Voici ${imageBlocks.length} image${imageBlocks.length > 1 ? "s" : ""} correspondant aux pages successives d'un CERFA d'urbanisme. Examine CHAQUE page avant de répondre, puis extrais l'ensemble des champs demandés. Réponds en JSON strict, sans markdown.` },
-          ],
-        }],
+        messages: [{ role: "user", content: userContent }],
       },
     );
 
