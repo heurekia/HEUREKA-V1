@@ -6646,6 +6646,11 @@ function PrestationsFacturees() {
   const [suggestion, setSuggestion] = useState<PlanResolve | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  // Modal « Facturer un plan » : crée plusieurs lignes (abonnement + onboarding) d'un coup.
+  const [planBill, setPlanBill] = useState<{ client: string; start_date: string } | null>(null);
+  const [planBillResolve, setPlanBillResolve] = useState<PlanResolve | null>(null);
+  const [planBillSel, setPlanBillSel] = useState({ abo: true, aboCycle: "yearly" as "yearly" | "monthly", onbInitial: true, onbInterm: false });
+  const [planBillSaving, setPlanBillSaving] = useState(false);
   const { toast, setToast } = useBillToast();
 
   const load = useCallback(() => {
@@ -6748,6 +6753,62 @@ function PrestationsFacturees() {
     }
   };
 
+  // ── « Facturer un plan » : rattachement + sélection de composants ──
+  const openBillPlan = () => {
+    setPlanBillResolve(null);
+    setPlanBillSel({ abo: true, aboCycle: "yearly", onbInitial: true, onbInterm: false });
+    setPlanBill({ client: "", start_date: new Date().toISOString().slice(0, 10) });
+  };
+  const planBillClient = planBill?.client ?? "";
+  useEffect(() => {
+    if (!planBillClient) { setPlanBillResolve(null); return; }
+    const [ctype, cid] = planBillClient.split(":");
+    if (!ctype || !cid) { setPlanBillResolve(null); return; }
+    let cancelled = false;
+    const param = ctype === "commune" ? "commune_id" : "epci_id";
+    api.get<PlanResolve>(`/admin/billing/plans/resolve?${param}=${encodeURIComponent(cid)}`)
+      .then((r) => { if (!cancelled) setPlanBillResolve(r); })
+      .catch(() => { if (!cancelled) setPlanBillResolve(null); });
+    return () => { cancelled = true; };
+  }, [planBillClient]);
+
+  const submitBillPlan = async () => {
+    if (!planBill || !planBillResolve?.plan) return;
+    const [ctype, cid] = planBill.client.split(":");
+    if (!ctype || !cid) { setToast({ kind: "err", msg: "Sélectionne un client." }); return; }
+    const plan = planBillResolve.plan;
+    const keys: PlanComponentKey[] = [];
+    if (planBillSel.abo) keys.push(planBillSel.aboCycle === "yearly" ? "abo_annuel" : "abo_mensuel");
+    if (planBillSel.onbInitial) keys.push("onb_initial");
+    if (planBillSel.onbInterm) keys.push("onb_interm");
+    if (keys.length === 0) { setToast({ kind: "err", msg: "Sélectionne au moins une ligne à facturer." }); return; }
+    setPlanBillSaving(true);
+    try {
+      for (const key of keys) {
+        const s = planComponentSpec(plan, key);
+        await api.post("/admin/billing/items", {
+          plan_id: plan.id,
+          commune_id: ctype === "commune" ? cid : null,
+          epci_id: ctype === "epci" ? cid : null,
+          label: `${plan.name} — ${s.label}`,
+          quantity: 1,
+          unit_price_eur: s.price,
+          vat_rate: plan.vat_rate,
+          billing_cycle: s.cycle,
+          start_date: planBill.start_date,
+          status: "active",
+        });
+      }
+      setPlanBill(null);
+      setToast({ kind: "ok", msg: `${keys.length} ligne(s) facturée(s) pour ${plan.name}.` });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setPlanBillSaving(false);
+    }
+  };
+
   if (!items || !clients) return <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>;
 
   const filtered = filter ? items.filter((i) => clientKey(i.client_type, i.client_id ?? "") === filter) : items;
@@ -6766,9 +6827,14 @@ function PrestationsFacturees() {
             {clients.epci.map((e) => <option key={e.id} value={clientKey("epci", e.id)}>{e.name}</option>)}
           </optgroup>
         </select>
-        <button onClick={openAdd} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>
-          + Ajouter une prestation facturée
-        </button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={openBillPlan} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>
+            ⚡ Facturer un plan
+          </button>
+          <button onClick={openAdd} style={{ padding: "10px 18px", background: "white", color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>
+            + Ligne manuelle
+          </button>
+        </div>
       </div>
 
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
@@ -6916,6 +6982,70 @@ function PrestationsFacturees() {
           </div>
         </Modal>
       )}
+      {planBill && (
+        <Modal title="Facturer un plan" onClose={() => setPlanBill(null)} width={560}>
+          <div style={{ display: "grid", gap: 14 }}>
+            <Field label="Client (commune ou EPCI)">
+              <select value={planBill.client} onChange={(e) => setPlanBill({ ...planBill, client: e.target.value })} style={billInput}>
+                <option value="">— Sélectionner —</option>
+                <optgroup label="Communes">
+                  {clients.communes.map((c) => <option key={c.id} value={clientKey("commune", c.id)}>{c.name}{c.population != null ? ` (${c.population.toLocaleString("fr-FR")} hab)` : ""}</option>)}
+                </optgroup>
+                <optgroup label="Groupements / EPCI">
+                  {clients.epci.map((e) => <option key={e.id} value={clientKey("epci", e.id)}>{e.name}</option>)}
+                </optgroup>
+              </select>
+            </Field>
+            {!planBill.client ? (
+              <div style={{ fontSize: 13, color: C.textMuted, padding: "4px 2px" }}>Sélectionne un client pour voir son plan et les prestations à facturer.</div>
+            ) : !planBillResolve ? (
+              <div style={{ textAlign: "center", padding: 16 }}><Spinner size={18} /></div>
+            ) : !planBillResolve.plan ? (
+              <div style={{ padding: "10px 14px", borderRadius: 10, background: C.orangeBg, border: `1px solid ${C.orange}`, fontSize: 12.5, color: C.text }}>
+                Aucun plan ne correspond {planBillResolve.client_type === "commune" ? "à la population de cette commune (population non renseignée ?)" : "à ce groupement"}. Renseigne la population (onglet Grille tarifaire → ⟳ Compléter les populations) ou utilise « Ligne manuelle ».
+              </div>
+            ) : (
+              <>
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: C.accentLight, border: `1px solid ${C.accent}`, fontSize: 13, color: C.text }}>
+                  🏘️ Plan : <strong>{planBillResolve.plan.name}</strong>{planBillResolve.plan.target_label ? ` · ${planBillResolve.plan.target_label}` : ""}
+                  {planBillResolve.client_type === "commune" ? ` · population ${planBillResolve.population != null ? planBillResolve.population.toLocaleString("fr-FR") : "—"}` : ""}
+                </div>
+                <div style={{ display: "grid", gap: 8, border: `1px solid ${C.border}`, borderRadius: 10, padding: 12 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: C.text }}>
+                    <input type="checkbox" checked={planBillSel.abo} onChange={(e) => setPlanBillSel({ ...planBillSel, abo: e.target.checked })} />
+                    <span style={{ flex: 1 }}>Abonnement</span>
+                    <select value={planBillSel.aboCycle} onChange={(e) => setPlanBillSel({ ...planBillSel, aboCycle: e.target.value as "yearly" | "monthly" })} disabled={!planBillSel.abo}
+                      style={{ ...billInput, width: "auto", padding: "6px 10px", opacity: planBillSel.abo ? 1 : 0.5 }}>
+                      <option value="yearly">Annuel · {fmtEuro(planBillResolve.plan.annual_price_eur)}</option>
+                      <option value="monthly">Mensuel · {fmtEuro(planBillResolve.plan.monthly_price_eur)}</option>
+                    </select>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: C.text }}>
+                    <input type="checkbox" checked={planBillSel.onbInitial} onChange={(e) => setPlanBillSel({ ...planBillSel, onbInitial: e.target.checked })} />
+                    <span style={{ flex: 1 }}>Onboarding initial <span style={{ color: C.textMuted, fontSize: 12 }}>(one-shot)</span></span>
+                    <span style={{ color: C.textMuted }}>{fmtEuro(planBillResolve.plan.onboarding_initial_eur)}</span>
+                  </label>
+                  <label style={{ display: "flex", alignItems: "center", gap: 10, fontSize: 14, color: C.text }}>
+                    <input type="checkbox" checked={planBillSel.onbInterm} onChange={(e) => setPlanBillSel({ ...planBillSel, onbInterm: e.target.checked })} />
+                    <span style={{ flex: 1 }}>Onboarding intermédiaire <span style={{ color: C.textMuted, fontSize: 12 }}>(one-shot)</span></span>
+                    <span style={{ color: C.textMuted }}>{fmtEuro(planBillResolve.plan.onboarding_intermediate_eur)}</span>
+                  </label>
+                </div>
+                <Field label="Date de début / facturation">
+                  <input type="date" value={planBill.start_date} onChange={(e) => setPlanBill({ ...planBill, start_date: e.target.value })} style={billInput} />
+                </Field>
+              </>
+            )}
+            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+              <button onClick={() => setPlanBill(null)} style={{ padding: "10px 18px", borderRadius: 8, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Annuler</button>
+              <button onClick={submitBillPlan} disabled={planBillSaving || !planBillResolve?.plan}
+                style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: C.accent, color: "white", fontSize: 14, fontWeight: 600, cursor: (planBillSaving || !planBillResolve?.plan) ? "default" : "pointer", opacity: (planBillSaving || !planBillResolve?.plan) ? 0.6 : 1 }}>
+                {planBillSaving ? "Facturation…" : "Facturer la sélection"}
+              </button>
+            </div>
+          </div>
+        </Modal>
+      )}
       {confirmId && <ConfirmDialog message="Supprimer cette ligne facturée ?" onConfirm={() => del(confirmId)} onCancel={() => setConfirmId(null)} />}
     </>
   );
@@ -6932,6 +7062,7 @@ function Catalogue() {
   const [rows, setRows] = useState<BillingPrestation[] | null>(null);
   const [modal, setModal] = useState<PrestaForm | null>(null);
   const [saving, setSaving] = useState(false);
+  const [syncing, setSyncing] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const { toast, setToast } = useBillToast();
 
@@ -6982,13 +7113,33 @@ function Catalogue() {
     }
   };
 
+  // Régénère les prestations « Grille » à partir des plans (sans re-migration).
+  const syncFromGrid = async () => {
+    setSyncing(true);
+    try {
+      const r = await api.post<{ plans: number; prestations: number }>("/admin/billing/plans/sync-catalogue");
+      setToast({ kind: "ok", msg: `Catalogue synchronisé : ${r.prestations} prestation(s) issues de ${r.plans} plan(s).` });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setSyncing(false);
+    }
+  };
+
   if (!rows) return <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>;
   return (
     <>
       <BillToast toast={toast} />
-      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16 }}>
-        <div style={{ fontSize: 13, color: C.textMuted, maxWidth: 680 }}>Modèles recopiés à l'ajout d'une ligne. Les prestations « Grille » (abonnement &amp; onboarding par palier) sont générées et tenues à jour automatiquement depuis l'onglet Grille tarifaire — édite le plan pour les modifier.</div>
-        <button onClick={() => setModal(emptyPrestaForm())} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600 }}>+ Ajouter une prestation</button>
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 12, flexWrap: "wrap" }}>
+        <div style={{ fontSize: 13, color: C.textMuted, maxWidth: 620 }}>Modèles recopiés à l'ajout d'une ligne. Les prestations « Grille » (abonnement &amp; onboarding par palier) sont générées depuis l'onglet Grille tarifaire — édite le plan pour les modifier.</div>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={syncFromGrid} disabled={syncing} title="(Re)génère les prestations abonnement & onboarding à partir des plans de la grille tarifaire"
+            style={{ padding: "10px 16px", background: "white", color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, cursor: syncing ? "default" : "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", opacity: syncing ? 0.7 : 1 }}>
+            {syncing ? "Génération…" : "⟳ Générer depuis la grille"}
+          </button>
+          <button onClick={() => setModal(emptyPrestaForm())} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>+ Ajouter une prestation</button>
+        </div>
       </div>
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
         {rows.length === 0 ? (

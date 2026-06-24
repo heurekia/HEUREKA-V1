@@ -2927,6 +2927,21 @@ superAdminRouter.post("/billing/plans", async (req, res) => {
   }
 });
 
+// Régénère toutes les prestations catalogue depuis les plans (idempotent).
+// Filet de sécurité si la génération de migration n'a pas tourné, ou après un
+// changement groupé de tarifs.
+superAdminRouter.post("/billing/plans/sync-catalogue", async (req, res) => {
+  try {
+    const plans = await db.select().from(billing_plans);
+    for (const p of plans) await syncPlanPrestations(p);
+    await logAudit(req, "admin_billing_catalogue_synced", { metadata: { plans: plans.length } });
+    res.json({ plans: plans.length, prestations: plans.length * PLAN_COMPONENTS.length });
+  } catch (err) {
+    console.error("[billing/plans/sync-catalogue]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 superAdminRouter.put("/billing/plans/:id", async (req, res) => {
   try {
     const parsed = parsePlanBody(req.body ?? {});
