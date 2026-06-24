@@ -1,6 +1,6 @@
 import { describe, it, expect } from "vitest";
 import { buildParcelSynthesis, type SynthesisInput } from "./parcelSynthesis.js";
-import type { RegDbRule, RiskResult, ServitudeResult } from "./parcelAnalysis.js";
+import type { ProtectedAreaResult, RegDbRule, RiskResult, ServitudeResult } from "./parcelAnalysis.js";
 
 // ── Fabriques de fixtures ───────────────────────────────────────────────────────
 function rule(p: Partial<RegDbRule>): RegDbRule {
@@ -39,6 +39,7 @@ function synth(over: Partial<SynthesisInput>): SynthesisInput {
     prescriptions: over.prescriptions ?? [],
     plu_zone: over.plu_zone ?? { zone_code: "UC", zone_label: "Zone UC", zone_type: "U" },
     db_zone: over.db_zone ?? null,
+    protected_areas: over.protected_areas ?? [],
   };
 }
 
@@ -309,5 +310,34 @@ describe("buildParcelSynthesis — altitude RGE ALTI® (cote NGF)", () => {
     }));
     const allDetails = r.themes.flatMap((t) => t.instructor.items.map((i) => i.detail ?? "")).join(" ");
     expect(allDetails).not.toContain("NGF");
+  });
+});
+
+describe("buildParcelSynthesis — espaces naturels protégés (apicarto Nature)", () => {
+  it("crée un thème « nature » en attention pour un site Natura 2000", () => {
+    const protected_areas: ProtectedAreaResult[] = [
+      { type: "natura2000_habitat", label: "Natura 2000 — Directive Habitats (ZSC)", nom: "Camargue", code: "FR9301592" },
+    ];
+    const r = buildParcelSynthesis(synth({ protected_areas }));
+    const nature = r.themes.find((t) => t.key === "nature")!;
+    expect(nature).toBeTruthy();
+    expect(nature.citizen.tone).toBe("attention");
+    expect(nature.instructor.items[0]!.detail).toMatch(/incidences Natura 2000/i);
+    // Traçabilité : source « nature » portant le sitecode.
+    expect(nature.instructor.items[0]!.source.kind).toBe("nature");
+    expect(nature.instructor.items[0]!.source.ref).toBe("FR9301592");
+  });
+
+  it("une ZNIEFF seule reste en tonalité info (sensibilité, sans interdiction)", () => {
+    const protected_areas: ProtectedAreaResult[] = [
+      { type: "znieff1", label: "ZNIEFF de type I", nom: "Coteau de X" },
+    ];
+    const r = buildParcelSynthesis(synth({ protected_areas }));
+    expect(r.themes.find((t) => t.key === "nature")!.citizen.tone).toBe("info");
+  });
+
+  it("aucun espace protégé → pas de thème « nature »", () => {
+    const r = buildParcelSynthesis(synth({}));
+    expect(r.themes.find((t) => t.key === "nature")).toBeUndefined();
   });
 });

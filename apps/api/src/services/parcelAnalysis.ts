@@ -130,6 +130,26 @@ export interface InformationResult {
   txtinf?: string;
 }
 
+// Espace naturel protégé recoupant la parcelle (apicarto module Nature → INPN/MNHN).
+// `type` est la catégorie — toujours fiable car déterminée par la COUCHE interrogée,
+// pas par les propriétés (qui varient selon la source). `nom`/`code` enrichissent
+// quand l'API les fournit. Sert l'évaluation des incidences Natura 2000, la
+// sensibilité écologique (ZNIEFF) et les réglementations propres (réserves, parcs).
+export interface ProtectedAreaResult {
+  type:
+    | "natura2000_habitat"
+    | "natura2000_oiseaux"
+    | "znieff1"
+    | "znieff2"
+    | "reserve_naturelle"
+    | "parc_national"
+    | "parc_naturel_regional"
+    | "reserve_chasse_faune";
+  label: string;   // libellé lisible de la catégorie (ex: « Natura 2000 — Directive Habitats »)
+  nom?: string;    // nom du site (ex: « Camargue ») quand disponible
+  code?: string;   // identifiant (sitecode Natura 2000 ou id_mnhn) quand disponible
+}
+
 export interface ParcelAnalysis {
   query: string;
   address?: AddressResult;
@@ -158,6 +178,7 @@ export interface ParcelAnalysis {
   prescriptions?: PrescriptionResult[];
   servitudes?: ServitudeResult[];
   informations?: InformationResult[];  // périmètres d'informations GPU (info-surf)
+  protected_areas?: ProtectedAreaResult[];  // espaces naturels protégés (apicarto Nature / INPN)
   scot?: string;                       // nom du SCoT couvrant la parcelle
   address_certified?: boolean | null;  // adresse certifiée par la commune (BAL) ; null = inconnu
   parcel_confidence?: "exact" | "approximate"; // exact = parcelle contenant le bâtiment (RNB) ; approximate = heuristique
@@ -847,6 +868,65 @@ export async function getServitudesLin(lat: number, lng: number, parcelGeom?: Ge
   } catch {
     return [];
   }
+}
+
+// ── Espaces naturels protégés (apicarto module Nature → INPN/MNHN) ────────────
+// 9 couches : Natura 2000 (habitat + oiseaux), ZNIEFF 1 & 2, réserves naturelles
+// (RNN/RNC), réserve nationale de chasse & faune, parcs nationaux & régionaux.
+// Interroge toutes les couches EN PARALLÈLE (best-effort, null-safe) sur la
+// géométrie parcellaire si disponible, sinon un bbox autour du point — d'où la
+// formulation « sur ou à proximité » côté instruction. Sert l'évaluation des
+// incidences Natura 2000, la sensibilité écologique (ZNIEFF) et les
+// réglementations propres (réserves, cœur de parc). Comme getRisks, appelé en
+// LIVE (non caché) : la latence reste celle de l'appel le plus lent.
+
+const NATURE_LAYERS: Array<{ path: string; type: ProtectedAreaResult["type"]; label: string }> = [
+  { path: "natura-habitat", type: "natura2000_habitat",    label: "Natura 2000 — Directive Habitats (ZSC)" },
+  { path: "natura-oiseaux", type: "natura2000_oiseaux",    label: "Natura 2000 — Directive Oiseaux (ZPS)" },
+  { path: "znieff1",        type: "znieff1",               label: "ZNIEFF de type I" },
+  { path: "znieff2",        type: "znieff2",               label: "ZNIEFF de type II" },
+  { path: "rnn",            type: "reserve_naturelle",     label: "Réserve naturelle nationale" },
+  { path: "rnc",            type: "reserve_naturelle",     label: "Réserve naturelle de Corse" },
+  { path: "pn",             type: "parc_national",         label: "Parc national" },
+  { path: "pnr",            type: "parc_naturel_regional", label: "Parc naturel régional" },
+  { path: "rncf",           type: "reserve_chasse_faune",  label: "Réserve nationale de chasse et de faune sauvage" },
+];
+
+// Les noms de propriétés varient selon la couche INPN ; on tente plusieurs clés
+// connues (nom de site, libellé ZNIEFF lb_zn, sitecode Natura 2000, id MNHN). Le
+// TYPE reste fiable car déterminé par la couche interrogée, pas par les props.
+function mapNatureFeature(
+  props: Record<string, unknown>,
+  cfg: { type: ProtectedAreaResult["type"]; label: string },
+): ProtectedAreaResult {
+  return {
+    type: cfg.type,
+    label: cfg.label,
+    nom:  str(props, "nom_site", "sitename", "site_name", "nom", "lb_zn", "libelle", "nom_rnn", "nom_pnr", "nom_parc"),
+    code: str(props, "sitecode", "id_mnhn", "nm_sffzn", "id_local", "gml_id"),
+  };
+}
+
+export async function getProtectedAreas(lat: number, lng: number, parcelGeom?: Geometry | null): Promise<ProtectedAreaResult[]> {
+  const geom = supGeom(lat, lng, parcelGeom);
+  const perLayer = await Promise.all(NATURE_LAYERS.map(async (cfg) => {
+    try {
+      const r = await fetch(`https://apicarto.ign.fr/api/nature/${cfg.path}?geom=${encodeURIComponent(geom)}&_limit=5`, { signal: AbortSignal.timeout(6000) });
+      if (!r.ok) return [];
+      const data = await r.json() as { features?: Array<{ properties?: Record<string, unknown> }> };
+      return (data.features ?? []).map((f) => mapNatureFeature(f.properties ?? {}, cfg));
+    } catch {
+      return [];
+    }
+  }));
+  // Dédup : une couche peut renvoyer plusieurs polygones d'un même site.
+  const seen = new Set<string>();
+  return perLayer.flat().filter((a) => {
+    const k = `${a.type}|${a.nom ?? ""}|${a.code ?? ""}`;
+    if (seen.has(k)) return false;
+    seen.add(k);
+    return true;
+  });
 }
 
 // ── GéoRisques risk lookup ────────────────────────────────────────────────────
@@ -1565,12 +1645,52 @@ export async function analyseParcel(
     }
   }
 
-  // Step 4: GéoRisques (+ RGE ALTI® altitude)
-  if (lat !== undefined && lng !== undefined && code_insee) {
-    const risks = await getRisks(lat, lng, code_insee);
-    result.risks = risks;
-    result.data_sources.push("GéoRisques");
-    if (risks.terrain_altitude_m != null) result.data_sources.push("RGE ALTI® (IGN)");
+  // Step 4: GéoRisques (+ RGE ALTI® altitude) + espaces naturels protégés (apicarto Nature)
+  // Lancés EN PARALLÈLE : la latence reste celle de l'appel le plus lent — on enrichit
+  // sans alourdir. GéoRisques exige le code INSEE (repli sismique départemental) ; les
+  // espaces protégés non (interrogés au point / sur la parcelle).
+  if (lat !== undefined && lng !== undefined) {
+    const parcelGeomForNature = result.parcel?.geometry ?? null;
+    const [risks, protectedAreas] = await Promise.all([
+      code_insee ? getRisks(lat, lng, code_insee) : Promise.resolve(null),
+      getProtectedAreas(lat, lng, parcelGeomForNature),
+    ]);
+
+    if (risks) {
+      result.risks = risks;
+      result.data_sources.push("GéoRisques");
+      if (risks.terrain_altitude_m != null) result.data_sources.push("RGE ALTI® (IGN)");
+    }
+
+    if (protectedAreas.length > 0) {
+      result.protected_areas = protectedAreas;
+      result.data_sources.push("apicarto Nature (INPN/MNHN)");
+
+      // Conséquences d'instruction les plus structurantes, sans sur-alerter.
+      const natura = protectedAreas.find((a) => a.type === "natura2000_habitat" || a.type === "natura2000_oiseaux");
+      if (natura) {
+        result.warnings.push(
+          `Site Natura 2000 sur ou à proximité de la parcelle${natura.nom ? ` (${natura.nom})` : ""} — une évaluation des incidences Natura 2000 peut être requise (art. L.414-4 du code de l'environnement).`,
+        );
+      }
+      const reserve = protectedAreas.find((a) => a.type === "reserve_naturelle");
+      if (reserve) {
+        result.warnings.push(
+          `Réserve naturelle sur ou à proximité${reserve.nom ? ` (${reserve.nom})` : ""} — réglementation propre à la réserve, autorisation spéciale possible.`,
+        );
+      }
+      if (protectedAreas.some((a) => a.type === "parc_national")) {
+        result.warnings.push(
+          "Parc national sur ou à proximité — en cœur de parc, les travaux sont soumis à autorisation spéciale du parc.",
+        );
+      }
+      const znieff = protectedAreas.some((a) => a.type === "znieff1" || a.type === "znieff2");
+      if (znieff && !natura && !reserve && !protectedAreas.some((a) => a.type === "parc_national")) {
+        result.warnings.push(
+          "ZNIEFF (zone naturelle d'intérêt écologique) sur ou à proximité — sensibilité environnementale à prendre en compte (porter à connaissance).",
+        );
+      }
+    }
   }
 
   // Step 5: DB rules lookup — use manual zone override if GPU failed
