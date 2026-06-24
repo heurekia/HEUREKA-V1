@@ -10278,7 +10278,7 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
       })}
       {singleFile && (
         <div style={{ padding: "8px 12px", borderTop: "1px solid #F1F5F9", fontSize: 11.5, color: "#475569", background: "#FAFAFF", lineHeight: 1.5 }}>
-          📦 Un seul PDF = dossier complet : il pré-remplit le formulaire, puis sera <strong>découpé en pièces</strong> à la création (le CERFA est détecté automatiquement).
+          📦 Un seul PDF = dossier complet : ses données pré-remplissent le formulaire, et il sera <strong>découpé en pièces</strong> (CERFA, plans, notice…) à la création.
         </div>
       )}
       {!singleFile && (
