@@ -22,6 +22,7 @@ import {
   type PieceType,
   codeFromType,
   defaultPieceName,
+  expectedTypeFromCode,
 } from "./pieceExtractor.js";
 import { getStorageProvider } from "./storage.js";
 import { queuePieceOcr } from "./pieceOcrQueue.js";
@@ -63,7 +64,8 @@ export interface SegmentationResult {
 
 interface PageClassification {
   page: number;          // 1-indexé
-  types: PieceType[];    // 1 normalement, 2 si page partagée
+  codes: string[];       // code(s) lus dans le cartouche (ex. PCMI7, PCMI8) — prioritaires
+  types: PieceType[];    // classification visuelle de repli (1, ou 2 si page partagée)
   confidence: number;    // 0..1
   title: string;
 }
@@ -77,7 +79,9 @@ interface Trace {
 // ── Prompt de classification ──────────────────────────────────────────────────
 const SEGMENT_SYSTEM = `Tu es un agent d'instruction d'urbanisme expérimenté. On te transmet, page par page, le contenu d'un dossier déposé en UN SEUL fichier (CERFA + pièces type PCMI/PC/DP). Pour CHAQUE page, identifie à quelle(s) pièce(s) réglementaire(s) elle appartient.
 
-Types possibles (et UNIQUEMENT ceux-là) :
+PRIORITÉ AU CARTOUCHE — les plans d'architecte portent un CARTOUCHE (encadré, le plus souvent EN BAS de la planche) qui NOMME la pièce, très souvent avec son CODE officiel (« PCMI2 », « PCMI 7 - PCMI 8 », « PC5 », « DP4 ») et/ou son intitulé (« PLAN DE MASSE », « PRISES DE VUE », « FAÇADES »). LIS ce cartouche en priorité : c'est la source la plus fiable. Quand tu y vois un ou plusieurs codes, reporte-les TELS QUELS dans "codes" (ex. ["PCMI7","PCMI8"] pour une planche qui porte les deux). Une même planche peut porter deux codes = page partagée.
+
+Types possibles pour "types" (et UNIQUEMENT ceux-là) :
 - "cerfa" : formulaire CERFA de demande
 - "plan_situation" : plan de situation du terrain
 - "plan_masse" : plan de masse
@@ -89,13 +93,14 @@ Types possibles (et UNIQUEMENT ceux-là) :
 - "autre" : non reconnu / page de garde / pièce hors nomenclature
 
 Règles :
-- Une page peut appartenir à DEUX pièces si la planche le précise (ex. une même planche A3 porte le plan de masse ET les façades → "types": ["plan_masse","plan_facade"]).
-- Les pièces s'étendent souvent sur plusieurs pages consécutives (ex. une notice de 6 pages).
-- N'INVENTE RIEN : si tu n'es pas sûr, mets "autre" avec une confiance basse.
+- "codes" = code(s) lus dans le cartouche, [] si aucun code lisible.
+- "types" = ta classification visuelle (1, ou 2 si planche partagée) — sert de repli quand le cartouche ne donne pas de code.
+- Les pièces s'étendent souvent sur plusieurs pages consécutives (ex. une notice de 6 pages) : reporte le même code/type sur chacune.
+- N'INVENTE RIEN : si tu n'es pas sûr, "codes": [] et "types": ["autre"] avec une confiance basse.
 - "confidence" reflète ta certitude (0 = aucune, 1 = certaine).
 
 Réponds en JSON STRICT, sans texte autour :
-{ "pages": [ { "page": 1, "types": ["cerfa"], "confidence": 0.95, "title": "courte étiquette" } ] }`;
+{ "pages": [ { "page": 1, "codes": ["PCMI7","PCMI8"], "types": ["photo"], "confidence": 0.96, "title": "Prises de vue" } ] }`;
 
 // ── Parsing robuste de la réponse LLM ────────────────────────────────────────
 function normalizeTypes(v: unknown): PieceType[] {
@@ -136,6 +141,7 @@ function parsePageClassifications(text: string, pageOffset: number): PageClassif
     const page = pageOffset + i + 1;
     out.push({
       page,
+      codes: Array.isArray(p.codes) ? p.codes.map((c) => String(c)) : (typeof p.codes === "string" ? [p.codes] : []),
       types: normalizeTypes(p.types ?? p.type),
       confidence: clamp01(p.confidence),
       title: typeof p.title === "string" ? p.title.slice(0, 120) : "",
@@ -208,7 +214,7 @@ async function classifyByVision(
   }
   // Filet : pages au-delà du plafond → « autre » à vérifier.
   for (let p = total + 1; p <= pageCount; p++) {
-    all.push({ page: p, types: ["autre"], confidence: 0.2, title: "" });
+    all.push({ page: p, codes: [], types: ["autre"], confidence: 0.2, title: "" });
   }
   return all;
 }
@@ -218,57 +224,77 @@ function round2(n: number): number {
   return Math.round(n * 100) / 100;
 }
 
-function groupSegments(perPage: PageClassification[], dossierType: string | null): ProposedSegment[] {
-  // Pages portant >1 type = pages partagées (planche multi-pièces).
-  const sharedPages = new Set<number>();
-  for (const pc of perPage) if (pc.types.filter((t) => t !== "autre").length > 1) sharedPages.add(pc.page);
+// Normalise un code lu dans un cartouche : « PCMI 7 » → « PCMI7 », « PC 05 » →
+// « PC5 ». Renvoie null si ce n'est pas un code de pièce reconnu (anti-bruit).
+function normalizeCode(raw: string): string | null {
+  const c = raw.toUpperCase().replace(/[\s.]/g, "").trim();
+  if (c === "CERFA") return "CERFA";
+  const m = c.match(/^(PCMI|DPMI|PC|DP|PA|PD|CU)0?(\d{1,2})$/);
+  return m ? `${m[1]}${m[2]}` : null;
+}
 
-  const byType = new Map<PieceType, number[]>();
-  const autre: PageClassification[] = [];
+function groupSegments(perPage: PageClassification[], dossierType: string | null): ProposedSegment[] {
+  // Pour chaque page, on résout une liste d'affectations (code, type) : on
+  // PRIVILÉGIE les codes lus dans le cartouche ; à défaut, on déduit le code du
+  // type visuel. `explicit` = le code vient du cartouche (signal fiable).
+  type Assign = { page: number; code: string | null; type: PieceType; explicit: boolean; conf: number };
+  const perPageAssigns = new Map<number, Assign[]>();
+
   for (const pc of perPage) {
-    const known = pc.types.filter((t) => t !== "autre");
-    if (known.length === 0 || pc.confidence < MIN_CODE_CONFIDENCE) {
-      autre.push(pc);
-      continue;
+    const list: Assign[] = [];
+    const cart = [...new Set((pc.codes ?? []).map(normalizeCode).filter((c): c is string => c !== null))];
+    if (cart.length > 0) {
+      for (const code of cart) {
+        const t = expectedTypeFromCode(code) ?? pc.types.find((x) => x !== "autre") ?? "autre";
+        list.push({ page: pc.page, code, type: t, explicit: true, conf: Math.max(pc.confidence, 0.9) });
+      }
+    } else {
+      const known = pc.types.filter((t) => t !== "autre");
+      if (known.length === 0 || pc.confidence < MIN_CODE_CONFIDENCE) {
+        list.push({ page: pc.page, code: null, type: "autre", explicit: false, conf: pc.confidence });
+      } else {
+        for (const t of known) {
+          list.push({ page: pc.page, code: codeFromType(t, dossierType), type: t, explicit: false, conf: pc.confidence });
+        }
+      }
     }
-    for (const t of known) {
-      if (!byType.has(t)) byType.set(t, []);
-      byType.get(t)!.push(pc.page);
+    perPageAssigns.set(pc.page, list);
+  }
+
+  // Page partagée : plus d'une pièce distincte sur la même page.
+  const sharedPages = new Set<number>();
+  for (const [page, list] of perPageAssigns) {
+    if (new Set(list.map((a) => a.code ?? "autre")).size > 1) sharedPages.add(page);
+  }
+
+  // Regroupement par code ; les pages « autre » (code null) restent isolées.
+  const groups = new Map<string, Assign[]>();
+  for (const [page, list] of perPageAssigns) {
+    for (const a of list) {
+      const key = a.code ?? `autre:${page}`;
+      if (!groups.has(key)) groups.set(key, []);
+      groups.get(key)!.push(a);
     }
   }
 
-  const confByPage = new Map<number, number>();
-  for (const pc of perPage) confByPage.set(pc.page, pc.confidence);
-
   const segments: ProposedSegment[] = [];
-  for (const [type, pages] of byType) {
-    const uniq = [...new Set(pages)].sort((a, b) => a - b);
-    const confs = uniq.map((p) => confByPage.get(p) ?? 0.5);
-    const avg = confs.reduce((a, b) => a + b, 0) / confs.length;
-    const shared = uniq.some((p) => sharedPages.has(p));
-    const code = codeFromType(type, dossierType);
+  for (const list of groups.values()) {
+    const pages = [...new Set(list.map((a) => a.page))].sort((x, y) => x - y);
+    const first = list[0]!;
+    const { code, type } = first;
+    const explicit = list.every((a) => a.explicit);
+    const avg = list.reduce((s, a) => s + a.conf, 0) / list.length;
+    const shared = pages.some((p) => sharedPages.has(p));
     segments.push({
       code,
       type,
-      pages: uniq,
-      nom: defaultPieceName(code, type, uniq),
+      pages,
+      nom: defaultPieceName(code, type, pages),
       confidence: round2(avg),
       shared,
-      // photo : code proche/lointaine ambigu → toujours à confirmer.
-      needs_review: avg < REVIEW_THRESHOLD || shared || type === "photo" || code === null,
-    });
-  }
-
-  // Pages « autre » : une pièce par page, à reclasser manuellement.
-  for (const pc of autre) {
-    segments.push({
-      code: null,
-      type: "autre",
-      pages: [pc.page],
-      nom: defaultPieceName(null, "autre", [pc.page]),
-      confidence: round2(pc.confidence),
-      shared: sharedPages.has(pc.page),
-      needs_review: true,
+      // À confirmer si : faible confiance, non classé, page partagée non
+      // étiquetée explicitement, ou photo proche/lointaine déduite sans code.
+      needs_review: avg < REVIEW_THRESHOLD || code === null || (shared && !explicit) || (type === "photo" && !explicit),
     });
   }
 
