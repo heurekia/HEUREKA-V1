@@ -91,6 +91,24 @@ parcelleRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
   }
 });
 
+// Construit l'identifiant cadastral 14 caractères (ex. 37018000AI0217) à partir
+// de la référence portée par le dossier (CERFA/OCR). Gère les références
+// partielles (« AI 217 » → complétée avec l'INSEE de la commune) et
+// multi-parcelles (« AI 217 & AI 218p » → on prend la 1re). Renvoie null si non
+// interprétable (l'appelant retombe alors sur l'adresse).
+function toCadastralRefId(parcelle: string | null | undefined, citycode: string | undefined): string | null {
+  if (!parcelle) return null;
+  const firstChunk = parcelle.split(/\s*(?:[&,;/]|\bet\b)\s*/i)[0] ?? parcelle;
+  const raw = firstChunk.trim().replace(/\s+/g, "").toUpperCase();
+  if (!raw) return null;
+  if (/^\d{5}[A-Z0-9]{9,}$/.test(raw)) return raw; // déjà complet
+  const m = /^([A-Z]{1,2})0*(\d{1,4})[A-Z]*$/.exec(raw); // « AI217 », « AI0217 », « AI218P »
+  if (m && m[1] && m[2] && citycode) {
+    return `${citycode}000${m[1].padStart(2, "0")}${m[2].padStart(4, "0")}`;
+  }
+  return null;
+}
+
 parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res) => {
   try {
     const qOverride = (req.query.q as string | undefined)?.trim();
@@ -120,37 +138,20 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
     }
 
     // Build the analysis query.
-    // The address is ALWAYS the primary source: geocoding gives exact coordinates,
-    // from which we derive the parcel, PLU zone, and all regulatory data.
-    // The dossier.parcelle field (often partial like "BM 019") is only used when
-    // there is no address and it resolves to a full 14-char cadastral reference.
-    let query: string | null;
-    if (qOverride) {
-      // Instructeur corrected the address via the UI editor
-      query = qOverride;
-    } else if (dossier.adresse) {
-      // Standard flow: address → geocode → parcel → analysis
-      // Don't append commune if it's already present in the address string (avoids BAN confusion)
-      const communeAlreadyInAddr = dossier.commune &&
-        dossier.adresse.toLowerCase().includes(dossier.commune.toLowerCase());
-      query = communeAlreadyInAddr
-        ? dossier.adresse
-        : `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`;
-    } else if (dossier.parcelle) {
-      // No address at all — try to use the cadastral reference as a fallback
-      const raw = dossier.parcelle.trim().replace(/\s+/g, "");
-      if (/^\d{5}[A-Z0-9]{9,}$/i.test(raw)) {
-        query = raw;  // Full 14-char ref (e.g. 37018000BM0019)
-      } else {
-        // Partial ref like "BM 019" — expand with commune INSEE
-        const m = /^([A-Z]{1,2})0*(\d{1,4})$/i.exec(raw);
-        query = (m && m[1] && m[2] && citycode)
-          ? `${citycode}000${m[1].toUpperCase().padStart(2, "0")}${m[2].padStart(4, "0")}`
-          : null;
-      }
-    } else {
-      query = null;
-    }
+    // PRIORITÉ À LA RÉFÉRENCE CADASTRALE déclarée/OCRisée : une référence se
+    // résout en parcelle EXACTE via l'IGN (findParcelByRef, dans analyseParcel),
+    // bien plus fiable que le géocodage d'une adresse — qui peut tomber sur la
+    // voirie ou une parcelle voisine et renvoyer une MAUVAISE section (ex. « ZL »
+    // au lieu de « AI »). L'adresse reste utilisée en repli, et comme filet si la
+    // référence ne se résout pas (cf. plus bas). Une correction manuelle (?q=)
+    // ou un clic carte (?lat/lng) restent prioritaires sur tout.
+    const communeAlreadyInAddr = !!dossier.commune && !!dossier.adresse &&
+      dossier.adresse.toLowerCase().includes(dossier.commune.toLowerCase());
+    const addrQuery = dossier.adresse
+      ? (communeAlreadyInAddr ? dossier.adresse : `${dossier.adresse}${dossier.commune ? ", " + dossier.commune : ""}`)
+      : null;
+    const refId = qOverride ? null : toCadastralRefId(dossier.parcelle, citycode);
+    const query: string | null = qOverride ? qOverride : (refId ?? addrQuery);
 
     if (!query) return res.status(422).json({ error: "Aucune adresse ni référence parcellaire sur ce dossier." });
 
@@ -162,7 +163,13 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
     const lngParam = parseFloat(req.query.lng as string);
     const coords = !isNaN(latParam) && !isNaN(lngParam) ? { lat: latParam, lng: lngParam } : undefined;
 
-    const analysis = await analyseParcel(query, { citycode, zoneOverride, coords });
+    let analysis = await analyseParcel(query, { citycode, zoneOverride, coords });
+    // Filet anti-régression : si on a privilégié la référence cadastrale mais
+    // qu'elle ne s'est PAS résolue en parcelle (réf erronée, INSEE absent côté
+    // IGN…), on réessaie avec l'adresse — comportement historique préservé.
+    if (refId && query === refId && !analysis.parcel && addrQuery) {
+      analysis = await analyseParcel(addrQuery, { citycode, zoneOverride, coords });
+    }
 
     // Persiste les servitudes dans le metadata du dossier et recalcule
     // date_limite_instruction : une SUP AC1/AC2/AC3/AC4 (ABF, SPR, site classé,
