@@ -8520,7 +8520,11 @@ function DossierDetailScreen({ dossier, onBack, navigate }: {
 
           docs.forEach((doc, i) => {
             const codeBase = (doc.code_piece ?? "").toUpperCase();
-            const code = codeBase || extractCodeFromName(doc.nom);
+            // Normalise les codes « maison individuelle » (PCMI2 → PC2,
+            // DPMI3 → DP3) pour qu'ils tombent dans les mêmes catégories que
+            // PC*/DP*. Sans ça, "PCMI2".startsWith("PC2") est faux et toutes les
+            // pièces issues d'un dépôt PCMI finissent dans « Autres ».
+            const code = (codeBase || extractCodeFromName(doc.nom)).replace(/^PCMI/, "PC").replace(/^DPMI/, "DP");
             // Premier prefix qui matche, "other" si rien.
             const matched = PIECE_CATEGORIES.find((c) => c.codes.length > 0 && c.codes.some((p) => code.startsWith(p)));
             buckets.get(matched?.key ?? "other")!.push({ doc, origIndex: i });
