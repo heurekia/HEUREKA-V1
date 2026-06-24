@@ -5,7 +5,7 @@ import "react-pdf/dist/Page/TextLayer.css";
 import {
   MousePointer2, Circle, Square, ArrowUpRight, Pen, Type as TypeIcon,
   Trash2, X, Eye, EyeOff, Save, Send, Download, ChevronLeft, ChevronRight, Loader2,
-  Ruler, MoveHorizontal, Hexagon,
+  Ruler, MoveHorizontal, Hexagon, ZoomIn, ZoomOut, Hand, Maximize2,
 } from "lucide-react";
 import { api, ApiError } from "../lib/api";
 
@@ -304,6 +304,11 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
   const [numPages, setNumPages] = useState(1);
   const [mediaSize, setMediaSize] = useState<{ w: number; h: number }>({ w: 0, h: 0 });
   const [renderWidth, setRenderWidth] = useState(800);
+  // Zoom (multiplicateur de la largeur de rendu) + outil main (pan). Le calque
+  // SVG suit la taille rendue ; les coords en % restent valides à tout zoom.
+  const [zoom, setZoom] = useState(1);
+  const [panMode, setPanMode] = useState(false);
+  const panRef = useRef<{ x: number; y: number; left: number; top: number } | null>(null);
   const [includeInternal, setIncludeInternal] = useState(false);
   const [busy, setBusy] = useState<null | "export" | "send">(null);
   const [error, setError] = useState<string | null>(null);
@@ -371,6 +376,42 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
     return `Échelle : ${fmtLen(num(pageScaleMark?.style.meters))}`;
   })();
 
+  // ── Zoom & déplacement (pan) ──
+  const displayWidth = Math.max(120, Math.round(renderWidth * zoom));
+  const zoomTo = (z: number) => setZoom(Math.max(0.25, Math.min(8, z)));
+  const onStagePointerDown = (e: React.PointerEvent) => {
+    const el = stageRef.current;
+    if (!el) return;
+    // Outil main (clic gauche) ou bouton du milieu (n'importe quel outil).
+    if (!(panMode && e.button === 0) && e.button !== 1) return;
+    panRef.current = { x: e.clientX, y: e.clientY, left: el.scrollLeft, top: el.scrollTop };
+    el.setPointerCapture(e.pointerId);
+    e.preventDefault();
+  };
+  const onStagePointerMove = (e: React.PointerEvent) => {
+    const el = stageRef.current; const p = panRef.current;
+    if (!el || !p) return;
+    el.scrollLeft = p.left - (e.clientX - p.x);
+    el.scrollTop = p.top - (e.clientY - p.y);
+  };
+  const onStagePointerUp = (e: React.PointerEvent) => {
+    const el = stageRef.current;
+    if (el && panRef.current && el.hasPointerCapture(e.pointerId)) el.releasePointerCapture(e.pointerId);
+    panRef.current = null;
+  };
+  // Ctrl/⌘ + molette : zoom (listener natif non-passif pour pouvoir preventDefault).
+  useEffect(() => {
+    const el = stageRef.current;
+    if (!el) return;
+    const onWheel = (e: WheelEvent) => {
+      if (!(e.ctrlKey || e.metaKey)) return;
+      e.preventDefault();
+      setZoom((z) => Math.max(0.25, Math.min(8, z * (e.deltaY < 0 ? 1.12 : 0.89))));
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, []);
+
   // ── Chargement des annotations existantes ──
   useEffect(() => {
     let cancelled = false;
@@ -419,7 +460,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
     const ro = new ResizeObserver(remeasureMedia);
     ro.observe(el);
     return () => ro.disconnect();
-  }, [remeasureMedia, renderWidth, page, isImage, isPdf]);
+  }, [remeasureMedia, renderWidth, zoom, page, isImage, isPdf]);
 
   const flashToast = (msg: string) => { setToast(msg); window.setTimeout(() => setToast(null), 2600); };
 
@@ -930,7 +971,7 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
         <div style={{ display: "flex", alignItems: "center", gap: 14, padding: "8px 16px", borderBottom: "1px solid #EEF2F7", flexWrap: "wrap" }}>
           <div style={{ display: "flex", gap: 6 }}>
             {TOOLS.map((t) => (
-              <button key={t.key} type="button" title={t.label} onClick={() => { setTool(t.key); if (t.key !== "select") setSelectedId(null); if (t.key !== "polygon" && polyDraft) cancelPoly(); }} style={btn(tool === t.key)}>
+              <button key={t.key} type="button" title={t.label} onClick={() => { setTool(t.key); setPanMode(false); if (t.key !== "select") setSelectedId(null); if (t.key !== "polygon" && polyDraft) cancelPoly(); }} style={btn(tool === t.key)}>
                 {t.icon}
               </button>
             ))}
@@ -949,6 +990,17 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
                 <span style={{ display: "inline-block", width: 16, height: w, borderRadius: 2, background: width === w ? "white" : "#475569" }} />
               </button>
             ))}
+          </div>
+          {/* Zoom + déplacement (pan) */}
+          <div style={{ width: 1, height: 24, background: "#E2E8F0" }} />
+          <div style={{ display: "flex", gap: 5, alignItems: "center" }}>
+            <button type="button" title="Outil main — déplacer la vue (ou bouton du milieu de la souris)" aria-pressed={panMode} onClick={() => { setPanMode((v) => !v); }} style={btn(panMode)}>
+              <Hand size={16} />
+            </button>
+            <button type="button" title="Dézoomer" onClick={() => zoomTo(zoom / 1.25)} style={btn(false)}><ZoomOut size={16} /></button>
+            <button type="button" title="Zoom à 100 % (ajuster)" onClick={() => setZoom(1)} style={{ ...btn(false), width: "auto", padding: "0 8px", fontSize: 11.5, fontWeight: 600, fontVariantNumeric: "tabular-nums" }}>{Math.round(zoom * 100)}%</button>
+            <button type="button" title="Zoomer (Ctrl/⌘ + molette)" onClick={() => zoomTo(zoom * 1.25)} style={btn(false)}><ZoomIn size={16} /></button>
+            <button type="button" title="Ajuster à la largeur" onClick={() => setZoom(1)} style={btn(false)}><Maximize2 size={16} /></button>
           </div>
           {isPdf && numPages > 1 && (
             <>
@@ -1043,13 +1095,20 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
 
         {/* Corps : scène + panneau latéral */}
         <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
-          <div ref={stageRef} style={{ flex: 1, minWidth: 0, overflow: "auto", background: "#0F172A0A", display: "flex", justifyContent: "center", padding: 16 }}>
-            <div ref={mediaRef} style={{ position: "relative", alignSelf: "flex-start", lineHeight: 0 }}>
+          <div
+            ref={stageRef}
+            onPointerDown={onStagePointerDown}
+            onPointerMove={onStagePointerMove}
+            onPointerUp={onStagePointerUp}
+            onPointerCancel={onStagePointerUp}
+            style={{ flex: 1, minWidth: 0, overflow: "auto", background: "#0F172A0A", padding: 16, textAlign: "center", cursor: panMode ? "grab" : undefined }}
+          >
+            <div ref={mediaRef} style={{ position: "relative", display: "inline-block", lineHeight: 0, textAlign: "left" }}>
               {isImage ? (
-                <img ref={imgRef} src={piece.url} alt={piece.nom} onLoad={remeasureMedia} style={{ width: renderWidth, height: "auto", display: "block" }} />
+                <img ref={imgRef} src={piece.url} alt={piece.nom} draggable={false} onLoad={remeasureMedia} style={{ width: displayWidth, height: "auto", display: "block" }} />
               ) : isPdf ? (
                 <Document file={piece.url} options={PDF_OPTIONS} onLoadSuccess={({ numPages }) => setNumPages(numPages)} loading={<div style={{ padding: 40, fontSize: 13, color: "#64748b" }}>Chargement du PDF…</div>}>
-                  <Page pageNumber={page} width={renderWidth} renderTextLayer={false} renderAnnotationLayer={false} onLoadSuccess={(p) => setPageWidthPt(typeof p.originalWidth === "number" ? p.originalWidth : null)} onRenderSuccess={remeasureMedia} />
+                  <Page pageNumber={page} width={displayWidth} renderTextLayer={false} renderAnnotationLayer={false} onLoadSuccess={(p) => setPageWidthPt(typeof p.originalWidth === "number" ? p.originalWidth : null)} onRenderSuccess={remeasureMedia} />
                 </Document>
               ) : (
                 <div style={{ padding: 40, fontSize: 13, color: "#94a3b8" }}>Format non annotable.</div>
@@ -1060,10 +1119,10 @@ export function PieceMarkupEditor({ dossierId, piece, onClose, onExported, embed
                   ref={svgRef}
                   width={mediaSize.w}
                   height={mediaSize.h}
-                  onPointerDown={showOriginal ? undefined : onPointerDown}
-                  onPointerMove={showOriginal ? undefined : onPointerMove}
-                  onPointerUp={showOriginal ? undefined : onPointerUp}
-                  style={{ position: "absolute", top: 0, left: 0, cursor: showOriginal ? "default" : tool === "select" ? "move" : "crosshair", touchAction: "none", pointerEvents: showOriginal ? "none" : "auto" }}
+                  onPointerDown={showOriginal || panMode ? undefined : onPointerDown}
+                  onPointerMove={showOriginal || panMode ? undefined : onPointerMove}
+                  onPointerUp={showOriginal || panMode ? undefined : onPointerUp}
+                  style={{ position: "absolute", top: 0, left: 0, cursor: panMode ? "grab" : showOriginal ? "default" : tool === "select" ? "move" : "crosshair", touchAction: "none", pointerEvents: showOriginal || panMode ? "none" : "auto" }}
                 >
                   {!showOriginal && marksOnPage.map(renderMark)}
                   {/* Poignées de sommets de la marque sélectionnée (déplaçables). */}
