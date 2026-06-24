@@ -1,16 +1,100 @@
 import { Router } from "express";
 import { rateLimit } from "express-rate-limit";
+import jwt from "jsonwebtoken";
+import bcrypt from "bcryptjs";
+import { eq } from "drizzle-orm";
+import { db } from "../db.js";
+import { site_settings } from "@heureka-v1/db";
 import { analyseParcel } from "../services/parcelAnalysis.js";
 import { gpuDebug } from "../services/gpuDebug.js";
 import { getOrFetchArticle, parseArticleRef } from "../services/legifrance.js";
 import { requireAuth, requireRole, optionalAuth, type AuthRequest } from "../middlewares/auth.js";
 import { logAudit } from "../services/audit.js";
+import { COOKIE_OPTIONS } from "./auth.js";
 
 export const publicRouter = Router();
 
 // Endpoint anonyme et coûteux (GPU, géocodage, règles DB) : limite par IP
 // pour éviter l'abus/DoS tout en restant confortable pour un usage normal.
 const analyseLimiter = rateLimit({ windowMs: 15 * 60 * 1000, max: 30, legacyHeaders: false });
+
+// ─── Mode « bientôt en ligne » (page vitrine + mot de passe d'accès) ──────────
+// Le portail public peut être verrouillé avant l'ouverture officielle : on
+// affiche alors une page « le système arrive prochainement » et on exige un mot
+// de passe. Le déverrouillage pose un cookie httpOnly signé (JWT) — le mot de
+// passe n'est jamais embarqué dans le bundle front.
+const SITE_ACCESS_COOKIE = "site_access";
+const JWT_SECRET = process.env.JWT_SECRET as string; // garanti défini (cf. middlewares/auth)
+
+// Anti-bruteforce sur la saisie du mot de passe vitrine.
+const siteAccessLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000,
+  max: 20,
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Trop de tentatives. Réessayez dans 15 minutes." },
+});
+
+function hasSiteAccess(req: AuthRequest): boolean {
+  const cookies = req.cookies as Record<string, string | undefined> | undefined;
+  const token = cookies?.[SITE_ACCESS_COOKIE];
+  if (!token) return false;
+  try {
+    jwt.verify(token, JWT_SECRET);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * GET /public/site-status
+ * État du mode « bientôt en ligne » pour le portail public. Ne renvoie JAMAIS le
+ * mot de passe ni son hash. `unlocked` indique si le visiteur courant a déjà
+ * fourni le bon mot de passe (cookie valide).
+ */
+publicRouter.get("/site-status", async (req: AuthRequest, res) => {
+  try {
+    const [s] = await db.select().from(site_settings).where(eq(site_settings.id, 1)).limit(1);
+    const comingSoon = !!s?.coming_soon_enabled;
+    res.json({
+      comingSoon,
+      unlocked: comingSoon ? hasSiteAccess(req) : true,
+      title: s?.coming_soon_title ?? null,
+      message: s?.coming_soon_message ?? null,
+    });
+  } catch (err) {
+    console.error("[public/site-status]", err);
+    // Fail-open : une panne DB ne doit jamais verrouiller le site par accident.
+    res.json({ comingSoon: false, unlocked: true, title: null, message: null });
+  }
+});
+
+/**
+ * POST /public/site-access  { password }
+ * Vérifie le mot de passe d'accès au site vitrine et, si correct, pose le cookie
+ * de déverrouillage (30 jours). 401 si incorrect.
+ */
+publicRouter.post("/site-access", siteAccessLimiter, async (req, res) => {
+  try {
+    const password = typeof req.body?.password === "string" ? req.body.password : "";
+    const [s] = await db.select().from(site_settings).where(eq(site_settings.id, 1)).limit(1);
+    // Mode inactif : rien à déverrouiller, on répond OK (idempotent).
+    if (!s?.coming_soon_enabled) return res.json({ ok: true });
+    if (!s.coming_soon_password_hash) {
+      return res.status(400).json({ error: "Aucun mot de passe d'accès n'est défini." });
+    }
+    const ok = await bcrypt.compare(password, s.coming_soon_password_hash);
+    if (!ok) return res.status(401).json({ error: "Mot de passe incorrect." });
+
+    const token = jwt.sign({ site_access: true }, JWT_SECRET, { expiresIn: "30d" });
+    res.cookie(SITE_ACCESS_COOKIE, token, { ...COOKIE_OPTIONS, maxAge: 30 * 24 * 60 * 60 * 1000 });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[public/site-access]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 
 /**
  * GET /public/analyse?q=<adresse ou ref cadastrale>

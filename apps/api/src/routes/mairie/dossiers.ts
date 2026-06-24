@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, client as pgClient } from "../../db.js";
-import { dossiers, users, instruction_events, dossier_pieces_jointes } from "@heureka-v1/db";
+import { dossiers, users, instruction_events, dossier_pieces_jointes, password_tokens } from "@heureka-v1/db";
 import { eq, desc, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { type AuthRequest } from "../../middlewares/auth.js";
@@ -15,6 +15,14 @@ import { callAi, convertPdfPagesToPng } from "../../services/aiUsage.js";
 import { extractFirstJson, sha256Buffer } from "../../services/pieceAnalyzer.js";
 import { attachCerfaToDossier } from "../../services/cerfaAttachment.js";
 import { prefetchSitadelHistory } from "../../services/sitadelPrefetch.js";
+import { notifyUser } from "../../services/notify.js";
+import { sendPetitionnaireInvitationEmail } from "../../services/mailer.js";
+import {
+  petitionnaireSideEffect,
+  isPlaceholderEmail,
+  PLACEHOLDER_EMAIL_DOMAIN,
+  type PetitionnaireAccountState,
+} from "./petitionnaireInvite.js";
 import { getStorageProvider } from "../../services/storage.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 import {
@@ -304,11 +312,26 @@ dossiersRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
         .where(eq(dossiers.id, dossier.id));
       dossier = { ...dossier, date_limite_instruction: dateLimite, metadata: newMeta };
     }
-    const [demandeur] = await db
-      .select({ id: users.id, prenom: users.prenom, nom: users.nom, email: users.email })
+    const [demandeurRow] = await db
+      .select({ id: users.id, prenom: users.prenom, nom: users.nom, email: users.email, email_verified_at: users.email_verified_at })
       .from(users)
       .where(eq(users.id, dossier.user_id))
       .limit(1);
+    // On masque l'email synthétique (placeholder) et on expose l'état du compte
+    // pour que la mairie puisse proposer « inviter le pétitionnaire ».
+    const demandeur = demandeurRow
+      ? {
+          id: demandeurRow.id,
+          prenom: demandeurRow.prenom,
+          nom: demandeurRow.nom,
+          email: isPlaceholderEmail(demandeurRow.email) ? null : demandeurRow.email,
+          email_verified: !!demandeurRow.email_verified_at,
+          is_placeholder: isPlaceholderEmail(demandeurRow.email),
+          // Le compte n'est pas exploitable par le citoyen tant qu'il est en
+          // placeholder ou que l'email n'a jamais été vérifié → invitation utile.
+          can_invite: isPlaceholderEmail(demandeurRow.email) || !demandeurRow.email_verified_at,
+        }
+      : null;
     let instructeur = null;
     if (dossier.instructeur_id) {
       const [inst] = await db
@@ -676,11 +699,17 @@ dossiersRouter.post("/dossiers/:id/take-charge", async (req: AuthRequest, res) =
 });
 
 // ── Création d'un dossier au comptoir (mairie) ──
-// Saisie manuelle OU finalisation d'une extraction OCR. La pétitionnaire n'a
-// pas nécessairement de compte citoyen : on crée un utilisateur placeholder
-// (rôle citoyen, mot de passe aléatoire non utilisable) pour respecter la
-// FK dossiers.user_id. Le dossier est créé directement en statut "soumis"
-// (la mairie l'enregistre déjà au comptoir, donc plus de stade brouillon).
+// Saisie manuelle OU finalisation d'une extraction OCR. Le pétitionnaire n'a
+// pas nécessairement de compte citoyen. Trois cas pour respecter la FK
+// dossiers.user_id :
+//   • email fourni + compte existant → rattachement au compte ;
+//   • email fourni + pas de compte   → création d'un compte citoyen ;
+//   • aucun email                    → utilisateur placeholder (email
+//     synthétique, mot de passe aléatoire non utilisable).
+// Si invite_petitionnaire est demandé ET qu'un email est présent, on prévient
+// le citoyen : invitation à activer son espace (compte neuf ou jamais activé)
+// ou notification in-app (compte déjà actif). Le dossier est créé directement
+// en statut "soumis" (enregistré au comptoir, donc plus de stade brouillon).
 const mairieCreateDossierSchema = z.object({
   type: z.enum([
     "permis_de_construire",
@@ -704,8 +733,37 @@ const mairieCreateDossierSchema = z.object({
   description: z.string().trim().optional(),
   date_depot: z.string().trim().optional(),
   instructeur_id: z.string().uuid().optional().or(z.literal("")),
+  // Si true ET petitionnaire_email renseigné : invite le pétitionnaire à
+  // activer son espace citoyen (ou le notifie si son compte est déjà actif).
+  invite_petitionnaire: z.boolean().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
+
+// Crée un jeton d'activation (7 jours) et envoie au pétitionnaire l'invitation
+// à suivre son dossier en ligne. Best-effort : tout échec est journalisé sans
+// interrompre la création — le dossier vit indépendamment du compte citoyen.
+async function invitePetitionnaireToActivate(opts: {
+  userId: string;
+  email: string;
+  prenom: string;
+  numeroDossier: string;
+  communeName: string | null;
+}): Promise<void> {
+  const token = crypto.randomBytes(32).toString("hex");
+  await db.insert(password_tokens).values({
+    user_id: opts.userId,
+    token,
+    type: "activation",
+    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  });
+  await sendPetitionnaireInvitationEmail({
+    to: opts.email,
+    prenom: opts.prenom,
+    numeroDossier: opts.numeroDossier,
+    communeName: opts.communeName ?? undefined,
+    token,
+  });
+}
 
 dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
   try {
@@ -728,11 +786,20 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
     // au crypto.randomUUID() ; un échec d'unicité (rarissime) provoque un 500
     // que l'opérateur pourra rejouer.
     const providedEmail = data.petitionnaire_email?.trim().toLowerCase();
+    // L'invitation n'a de sens qu'avec un vrai email (pas de placeholder).
+    const inviteRequested = data.invite_petitionnaire === true && !!providedEmail;
     let petitionnaireUserId: string;
+    let account: PetitionnaireAccountState;
     if (providedEmail) {
-      const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, providedEmail)).limit(1);
+      const [existing] = await db
+        .select({ id: users.id, email_verified_at: users.email_verified_at })
+        .from(users)
+        .where(eq(users.email, providedEmail))
+        .limit(1);
       if (existing) {
+        // Rattachement au compte existant.
         petitionnaireUserId = existing.id;
+        account = existing.email_verified_at ? "existing-verified" : "existing-unverified";
       } else {
         const { default: bcrypt } = await import("bcryptjs");
         const hash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
@@ -745,11 +812,12 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
           commune: data.commune ?? req.user?.commune ?? null,
         }).returning({ id: users.id });
         petitionnaireUserId = created!.id;
+        account = "new";
       }
     } else {
       const { default: bcrypt } = await import("bcryptjs");
       const hash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
-      const syntheticEmail = `dossier-${crypto.randomUUID()}@placeholder.heureka.local`;
+      const syntheticEmail = `dossier-${crypto.randomUUID()}${PLACEHOLDER_EMAIL_DOMAIN}`;
       const [created] = await db.insert(users).values({
         email: syntheticEmail,
         password_hash: hash,
@@ -759,7 +827,12 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
         commune: data.commune ?? req.user?.commune ?? null,
       }).returning({ id: users.id });
       petitionnaireUserId = created!.id;
+      account = "placeholder";
     }
+    // Effet de bord déclenché APRÈS création du dossier (best-effort) : on a
+    // besoin de son numéro pour l'invitation, et on n'émet rien si la création
+    // échoue.
+    const petitionnaireEffect = petitionnaireSideEffect({ inviteRequested, account });
 
     // TODO PLAT'AU : remplacer ce numéro local par celui retourné par
     // l'API PLAT'AU (réservation de numéro national de dossier) une fois le
@@ -819,12 +892,171 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
       console.error("[mairie/dossiers] prefetchSitadelHistory:", err instanceof Error ? `${err.name}: ${err.message}` : err);
     });
 
+    // Invitation / notification du pétitionnaire (best-effort, non bloquant).
+    if (petitionnaireEffect === "invite") {
+      invitePetitionnaireToActivate({
+        userId: petitionnaireUserId,
+        email: providedEmail!,
+        prenom,
+        numeroDossier: dossier!.numero,
+        communeName: dossier!.commune ?? null,
+      }).catch((err) => {
+        console.error("[mairie/dossiers] invitePetitionnaire:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+      });
+    } else if (petitionnaireEffect === "notify") {
+      // notifyUser avale déjà ses erreurs en interne.
+      void notifyUser({
+        user_id: petitionnaireUserId,
+        dossier_id: dossier!.id,
+        type: "dossier_enregistre",
+        title: "Un dossier a été enregistré à votre nom",
+        message: `Le dossier ${dossier!.numero} a été enregistré par le service urbanisme. Vous pouvez en suivre l'avancement depuis votre espace.`,
+      });
+    }
+
     res.status(201).json(dossier);
   } catch (err) {
     if (err instanceof z.ZodError) {
       return res.status(400).json({ error: "Données invalides", details: err.errors });
     }
     console.error("[mairie/dossiers]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Inviter / rattacher le pétitionnaire d'un dossier existant ──
+// Régularise a posteriori un dossier dont le pétitionnaire n'a pas de compte
+// exploitable (placeholder sans email, ou email jamais activé), ou le rattache
+// à un compte connu. L'agent fournit éventuellement une adresse :
+//   • placeholder → email obligatoire : on rattache le dossier à un compte
+//     existant portant cette adresse, sinon on convertit le compte placeholder
+//     en lui attribuant la vraie adresse — puis on envoie l'invitation ;
+//   • compte réel jamais activé → (ré)envoi de l'invitation (adresse modifiable) ;
+//   • compte déjà actif → notification in-app ; on refuse de changer l'adresse
+//     d'un compte vérifié (pour ne pas détourner le compte d'un tiers).
+const invitePetitionnaireSchema = z.object({
+  email: z.string().trim().email().optional().or(z.literal("")),
+});
+
+dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", async (req: AuthRequest, res) => {
+  try {
+    const { email: rawEmail } = invitePetitionnaireSchema.parse(req.body ?? {});
+    const providedEmail = rawEmail?.trim().toLowerCase() || null;
+
+    const dossierId = req.params.id as string;
+    const [dossier] = await db.select().from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+    if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
+
+    const [current] = await db
+      .select({ id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, email_verified_at: users.email_verified_at })
+      .from(users)
+      .where(eq(users.id, dossier.user_id))
+      .limit(1);
+    if (!current) return res.status(404).json({ error: "Pétitionnaire introuvable" });
+
+    const currentIsPlaceholder = isPlaceholderEmail(current.email);
+
+    // Compte déjà actif : rien à activer. On notifie et on refuse tout
+    // changement d'adresse (un compte vérifié appartient à un tiers identifié).
+    if (current.email_verified_at) {
+      if (providedEmail && providedEmail !== current.email) {
+        return res.status(409).json({
+          error: "Ce pétitionnaire a déjà un compte actif ; le rattacher à une autre adresse n'est pas autorisé ici.",
+          code: "account_active",
+        });
+      }
+      void notifyUser({
+        user_id: current.id,
+        dossier_id: dossier.id,
+        type: "dossier_enregistre",
+        title: "Suivi de votre dossier",
+        message: `Le service urbanisme vous invite à suivre le dossier ${dossier.numero} depuis votre espace.`,
+      });
+      return res.json({ action: "notified" });
+    }
+
+    // Compte non vérifié (placeholder OU réel jamais activé) : il faut une
+    // adresse cible. Pour un placeholder, elle doit être fournie par l'agent.
+    const targetEmail = providedEmail ?? (currentIsPlaceholder ? null : current.email);
+    if (!targetEmail) {
+      return res.status(400).json({
+        error: "Une adresse email est requise pour inviter ce pétitionnaire.",
+        code: "email_required",
+      });
+    }
+
+    // Un autre compte porte-t-il déjà cette adresse ? → rattachement.
+    const [other] = await db
+      .select({ id: users.id, prenom: users.prenom, nom: users.nom, email_verified_at: users.email_verified_at })
+      .from(users)
+      .where(eq(users.email, targetEmail))
+      .limit(1);
+
+    let targetUserId: string;
+    let targetPrenom: string;
+    let account: PetitionnaireAccountState;
+
+    if (other && other.id !== current.id) {
+      // Rattache le dossier au compte existant.
+      await db.update(dossiers).set({ user_id: other.id, updated_at: new Date() }).where(eq(dossiers.id, dossier.id));
+      targetUserId = other.id;
+      targetPrenom = other.prenom;
+      account = other.email_verified_at ? "existing-verified" : "existing-unverified";
+      // Nettoyage : si l'ancien compte placeholder devient orphelin, on le supprime.
+      if (currentIsPlaceholder) {
+        const [refRow] = await db
+          .select({ count: sql<number>`count(*)::int` })
+          .from(dossiers)
+          .where(eq(dossiers.user_id, current.id));
+        if ((refRow?.count ?? 0) === 0) {
+          await db.delete(users).where(eq(users.id, current.id));
+        }
+      }
+    } else {
+      // Convertit le compte courant : on lui attribue la vraie adresse (si elle
+      // change). email_verified_at reste NULL → activation nécessaire.
+      if (targetEmail !== current.email) {
+        await db.update(users).set({ email: targetEmail, updated_at: new Date() }).where(eq(users.id, current.id));
+      }
+      targetUserId = current.id;
+      targetPrenom = current.prenom;
+      account = "existing-unverified";
+    }
+
+    const effect = petitionnaireSideEffect({ inviteRequested: true, account });
+    if (effect === "invite") {
+      let emailSent = true;
+      try {
+        await invitePetitionnaireToActivate({
+          userId: targetUserId,
+          email: targetEmail,
+          prenom: targetPrenom,
+          numeroDossier: dossier.numero,
+          communeName: dossier.commune ?? null,
+        });
+      } catch (err) {
+        // Le jeton est posé ; seul l'envoi a pu échouer. On le signale pour que
+        // l'agent puisse réessayer, sans perdre le rattachement déjà effectué.
+        emailSent = false;
+        console.error("[mairie/dossiers] inviter-petitionnaire send:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+      }
+      return res.json({ action: "invited", email: targetEmail, emailSent });
+    }
+
+    // Rattachement à un compte déjà actif → notification in-app.
+    void notifyUser({
+      user_id: targetUserId,
+      dossier_id: dossier.id,
+      type: "dossier_enregistre",
+      title: "Un dossier a été enregistré à votre nom",
+      message: `Le dossier ${dossier.numero} a été enregistré par le service urbanisme. Vous pouvez en suivre l'avancement depuis votre espace.`,
+    });
+    return res.json({ action: "notified", email: targetEmail });
+  } catch (err) {
+    if (err instanceof z.ZodError) {
+      return res.status(400).json({ error: "Adresse email invalide", details: err.errors });
+    }
+    console.error("[mairie/dossiers] inviter-petitionnaire:", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

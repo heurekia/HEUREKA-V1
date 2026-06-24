@@ -1384,6 +1384,20 @@ CREATE TABLE IF NOT EXISTS billing_costs (
 );
 CREATE INDEX IF NOT EXISTS idx_billing_costs_incurred_on ON billing_costs(incurred_on);
 CREATE INDEX IF NOT EXISTS idx_billing_costs_category ON billing_costs(category);
+
+-- ── Réglages du site public (singleton id=1) ──────────────────────────────
+-- Pilote le mode « bientôt en ligne » : page vitrine + mot de passe d'accès
+-- sur le portail public (www.heurekia.com + apex), activable / désactivable
+-- depuis le super-admin. coming_soon_password_hash = bcrypt (jamais en clair).
+CREATE TABLE IF NOT EXISTS site_settings (
+  id                          integer PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+  coming_soon_enabled         boolean NOT NULL DEFAULT false,
+  coming_soon_title           text,
+  coming_soon_message         text,
+  coming_soon_password_hash   text,
+  updated_at                  timestamp NOT NULL DEFAULT now()
+);
+INSERT INTO site_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

@@ -1,9 +1,8 @@
 import { Routes, Route, Navigate } from "react-router-dom";
-import { CrossSubdomainRedirect, ProtectedRoute, PublicOnlyRoute } from "./guards";
+import { AdminPortalRedirect, CrossSubdomainRedirect, ProtectedRoute, PublicOnlyRoute } from "./guards";
 import { ActiverCompte } from "../pages/public/ActiverCompte";
 import { MairieLogin } from "../pages/mairie/MairieLogin";
 import { MairieApp } from "../pages/mairie/MairieApp";
-import { SuperAdminApp } from "../pages/admin/SuperAdminApp";
 import { ServiceExterneApp } from "../pages/service/ServiceExterneApp";
 import { Seo } from "../components/Seo";
 
@@ -31,14 +30,9 @@ export function AppRouter() {
         }
       />
 
-      <Route
-        path="/admin/*"
-        element={
-          <ProtectedRoute roles={["admin"]} loginPath="/mairie/login">
-            <SuperAdminApp />
-          </ProtectedRoute>
-        }
-      />
+      {/* Le portail super-admin a migré sur admin.heurekia.com.
+          On conserve une redirection pour les anciens liens/marque-pages. */}
+      <Route path="/admin/*" element={<AdminPortalRedirect />} />
 
       <Route
         path="/service/*"

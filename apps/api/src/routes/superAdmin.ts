@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, billing_prestations, billing_items, billing_costs, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, site_settings, billing_prestations, billing_items, billing_costs, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
 import { resolvePeriod, summarizeRevenue, summarizeCosts, computeMrr, recognizedRevenueHt, recognizedCostHt, type RevenueLine, type CostLine, type Period } from "../services/billing.js";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { invalidatePricingCache } from "../services/aiUsage.js";
@@ -35,6 +35,90 @@ superAdminRouter.get("/dashboard", async (_req, res) => {
       dossiersEnCours: Number(dossierCount?.count ?? 0),
       epci: Number(epciCount?.count ?? 0),
     });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Site public — mode « bientôt en ligne » ─────────────────────────────────
+// Singleton site_settings (id=1) garanti par la migration. On ne renvoie jamais
+// le hash du mot de passe : seulement un booléen `has_password`.
+async function getSiteSettings() {
+  const [s] = await db.select().from(site_settings).where(eq(site_settings.id, 1)).limit(1);
+  if (s) return s;
+  // Garde-fou si la migration de seed n'a pas (encore) tourné.
+  await db.insert(site_settings).values({ id: 1 }).onConflictDoNothing();
+  const [created] = await db.select().from(site_settings).where(eq(site_settings.id, 1)).limit(1);
+  return created!;
+}
+
+function publicSiteSettings(s: typeof site_settings.$inferSelect) {
+  return {
+    coming_soon_enabled: s.coming_soon_enabled,
+    coming_soon_title: s.coming_soon_title,
+    coming_soon_message: s.coming_soon_message,
+    has_password: !!s.coming_soon_password_hash,
+    updated_at: s.updated_at,
+  };
+}
+
+superAdminRouter.get("/site-settings", async (_req, res) => {
+  try {
+    res.json(publicSiteSettings(await getSiteSettings()));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PATCH /admin/site-settings
+// Body (tous optionnels) : { coming_soon_enabled, coming_soon_title,
+//   coming_soon_message, password }. `password` n'est appliqué que s'il est non
+//   vide (sinon mot de passe inchangé). On interdit l'activation du mode tant
+//   qu'aucun mot de passe n'est défini — sinon le site serait verrouillé sans
+//   aucune issue pour le public.
+superAdminRouter.patch("/site-settings", async (req, res) => {
+  try {
+    const b = (req.body ?? {}) as {
+      coming_soon_enabled?: boolean;
+      coming_soon_title?: string | null;
+      coming_soon_message?: string | null;
+      password?: string | null;
+    };
+    const current = await getSiteSettings();
+
+    const updates: Record<string, unknown> = { updated_at: new Date() };
+    if (b.coming_soon_title !== undefined) {
+      updates.coming_soon_title = typeof b.coming_soon_title === "string" ? b.coming_soon_title.trim() || null : null;
+    }
+    if (b.coming_soon_message !== undefined) {
+      updates.coming_soon_message = typeof b.coming_soon_message === "string" ? b.coming_soon_message.trim() || null : null;
+    }
+
+    let willHavePassword = !!current.coming_soon_password_hash;
+    if (typeof b.password === "string" && b.password.length > 0) {
+      updates.coming_soon_password_hash = await bcrypt.hash(b.password, 10);
+      willHavePassword = true;
+    }
+
+    if (typeof b.coming_soon_enabled === "boolean") {
+      if (b.coming_soon_enabled && !willHavePassword) {
+        return res.status(400).json({ error: "Définissez d'abord un mot de passe d'accès avant d'activer le mode « bientôt en ligne »." });
+      }
+      updates.coming_soon_enabled = b.coming_soon_enabled;
+    }
+
+    const [updated] = await db.update(site_settings).set(updates).where(eq(site_settings.id, 1)).returning();
+    await logAudit(req, "admin_site_settings_updated", {
+      targetType: "site_settings",
+      targetId: "1",
+      metadata: {
+        coming_soon_enabled: updated?.coming_soon_enabled ?? null,
+        password_changed: updates.coming_soon_password_hash !== undefined,
+      },
+    });
+    res.json(publicSiteSettings(updated!));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

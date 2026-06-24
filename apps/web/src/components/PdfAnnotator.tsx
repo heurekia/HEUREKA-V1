@@ -6,8 +6,10 @@ import {
   ChevronLeft, ChevronRight, ZoomIn, ZoomOut, Maximize2,
   Highlighter, X, Eye, EyeOff, ShieldCheck, FileDown,
   Hand, MousePointer2, RotateCcw, RotateCw, Undo2,
+  SlidersHorizontal, ChevronUp, ChevronDown,
 } from "lucide-react";
 import { api } from "../lib/api";
+import { usePersistentBoolean } from "../hooks/usePersistentBoolean";
 
 // Setup du worker pdfjs — sans ça pdf.js démarre un worker depuis un CDN
 // (incompatible CSP) ou échoue silencieusement. On l'inclut via import.meta.url
@@ -166,6 +168,9 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
   // suspend la capture de sélection pour ne pas créer d'annotations fantômes
   // pendant qu'on déplace la vue.
   const [tool, setTool] = useState<"select" | "hand">("select");
+  // Pli / dépli des outils (sélection/main, rotation) — vue épurée pour la
+  // consultation. La navigation (pages, zoom) et le téléchargement restent.
+  const [toolsCollapsed, , toggleTools] = usePersistentBoolean("heureka.viewerToolsCollapsed", false);
   // Rotation de lecture, locale au visualiseur. N'altère ni le fichier
   // stocké ni l'analyse OCR — c'est une commodité d'affichage pour les PDFs
   // déposés en paysage ou tête-bêche. Persistée par utilisateur via
@@ -519,6 +524,23 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
           <ZoomIn className="w-4 h-4" />
         </button>
         <div className="w-px h-4 bg-gray-200 mx-1" />
+        {/* Plier / déplier les outils — sélection/main & rotation. Vue épurée
+            pour la consultation ; navigation (pages, zoom) et téléchargement
+            restent toujours accessibles. Préférence mémorisée. */}
+        <button
+          type="button"
+          onClick={toggleTools}
+          aria-pressed={!toolsCollapsed}
+          className="inline-flex items-center gap-1 p-1 rounded hover:bg-gray-100"
+          title={toolsCollapsed ? "Déplier les outils" : "Plier les outils — consultation épurée"}
+        >
+          <SlidersHorizontal className="w-4 h-4" />
+          <span className="hidden md:inline">Outils</span>
+          {toolsCollapsed ? <ChevronDown className="w-3.5 h-3.5" /> : <ChevronUp className="w-3.5 h-3.5" />}
+        </button>
+        {!toolsCollapsed && (
+        <>
+        <div className="w-px h-4 bg-gray-200 mx-1" />
         {/* Toggle outil sélection / main. En mode main, le clic-glissé
             déplace la vue (utile zoomé) et la sélection texte est suspendue. */}
         <button
@@ -558,6 +580,8 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
         >
           <Undo2 className="w-4 h-4" />
         </button>
+        </>
+        )}
         {/* Indicateur d'angle — n'apparaît qu'en rotation non nulle pour ne
             pas alourdir la barre en lecture standard. Tabular-nums évite que
             le « ° » ne saute selon le chiffre affiché. */}
