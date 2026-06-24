@@ -2541,6 +2541,9 @@ superAdminRouter.put("/billing/prestations/:id", async (req, res) => {
     if (!BILLING_CYCLES.includes(cycle)) return res.status(400).json({ error: "Cycle de facturation invalide." });
     const label = bstr(req.body?.label);
     if (!label) return res.status(400).json({ error: "Libellé requis." });
+    const [existing] = await db.select({ plan_id: billing_prestations.plan_id }).from(billing_prestations).where(eq(billing_prestations.id, req.params.id)).limit(1);
+    if (!existing) return res.status(404).json({ error: "Prestation introuvable." });
+    if (existing.plan_id) return res.status(400).json({ error: "Prestation générée par la grille tarifaire — modifie le plan correspondant." });
     const [row] = await db.update(billing_prestations).set({
       label,
       description: bstr(req.body?.description) || null,
@@ -2564,6 +2567,8 @@ superAdminRouter.put("/billing/prestations/:id", async (req, res) => {
 
 superAdminRouter.delete("/billing/prestations/:id", async (req, res) => {
   try {
+    const [existing] = await db.select({ plan_id: billing_prestations.plan_id }).from(billing_prestations).where(eq(billing_prestations.id, req.params.id)).limit(1);
+    if (existing?.plan_id) return res.status(400).json({ error: "Prestation générée par la grille tarifaire — supprime ou désactive le plan correspondant." });
     const [row] = await db.delete(billing_prestations).where(eq(billing_prestations.id, req.params.id)).returning();
     if (!row) return res.status(404).json({ error: "Prestation introuvable." });
     await logAudit(req, "admin_billing_prestation_deleted", { metadata: { id: req.params.id } });
@@ -2841,6 +2846,36 @@ function parsePlanBody(body: Record<string, unknown>): { error: string } | { val
   };
 }
 
+// Composants facturables d'un plan, reflétés dans le catalogue (abonnement +
+// onboarding). Servent à la génération/maj des prestations dérivées.
+const PLAN_COMPONENTS: { key: string; label: string; unit: string; cycle: string; price: (p: typeof billing_plans.$inferSelect) => number; ord: number }[] = [
+  { key: "abo_annuel",  label: "Abonnement annuel",        unit: "an",      cycle: "yearly",   price: (p) => p.annual_price_eur,           ord: 1 },
+  { key: "abo_mensuel", label: "Abonnement mensuel",       unit: "mois",    cycle: "monthly",  price: (p) => p.monthly_price_eur,          ord: 2 },
+  { key: "onb_initial", label: "Onboarding initial",       unit: "forfait", cycle: "one_shot", price: (p) => p.onboarding_initial_eur,      ord: 3 },
+  { key: "onb_interm",  label: "Onboarding intermédiaire", unit: "forfait", cycle: "one_shot", price: (p) => p.onboarding_intermediate_eur, ord: 4 },
+];
+
+// Génère / met à jour (upsert par code déterministe) les prestations catalogue
+// dérivées d'un plan. Appelée après chaque création/édition de plan.
+async function syncPlanPrestations(plan: typeof billing_plans.$inferSelect): Promise<void> {
+  for (const c of PLAN_COMPONENTS) {
+    const shared = {
+      label: `${plan.name} — ${c.label}`,
+      default_unit_price_eur: c.price(plan),
+      unit: c.unit,
+      default_vat_rate: plan.vat_rate,
+      billing_cycle: c.cycle,
+      active: plan.active,
+      sort_order: plan.sort_order * 10 + c.ord,
+      plan_id: plan.id,
+      plan_component: c.key,
+    };
+    await db.insert(billing_prestations)
+      .values({ code: `plan_${plan.code}_${c.key}`, description: "Généré depuis la grille tarifaire", ...shared })
+      .onConflictDoUpdate({ target: billing_prestations.code, set: { ...shared, updated_at: new Date() } });
+  }
+}
+
 superAdminRouter.get("/billing/plans", async (_req, res) => {
   try {
     const rows = await db.select().from(billing_plans)
@@ -2882,6 +2917,7 @@ superAdminRouter.post("/billing/plans", async (req, res) => {
     if ("error" in parsed) return res.status(400).json({ error: parsed.error });
     const [row] = await db.insert(billing_plans)
       .values({ ...parsed.values, updated_by: actorId(req) }).returning();
+    if (row) await syncPlanPrestations(row);
     await logAudit(req, "admin_billing_plan_created", { metadata: { code: parsed.values.code } });
     res.status(201).json(row);
   } catch (err) {
@@ -2899,6 +2935,7 @@ superAdminRouter.put("/billing/plans/:id", async (req, res) => {
       .set({ ...parsed.values, updated_by: actorId(req), updated_at: new Date() })
       .where(eq(billing_plans.id, req.params.id)).returning();
     if (!row) return res.status(404).json({ error: "Plan introuvable." });
+    await syncPlanPrestations(row);
     await logAudit(req, "admin_billing_plan_updated", { metadata: { id: req.params.id } });
     res.json(row);
   } catch (err) {

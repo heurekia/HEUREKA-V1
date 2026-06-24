@@ -1,5 +1,6 @@
 import { boolean, doublePrecision, integer, pgTable, text, timestamp, uuid } from "drizzle-orm/pg-core";
 import { users } from "./users.js";
+import { billing_plans } from "./billingPlans.js";
 
 // Catalogue des prestations facturables aux collectivités (communes / EPCI).
 // Édité depuis l'onglet « Facturation » du back-office super-admin. Sert de
@@ -26,6 +27,12 @@ export const billing_prestations = pgTable("billing_prestations", {
   billing_cycle: text("billing_cycle").notNull().default("one_shot"),
   active: boolean("active").notNull().default(true),
   sort_order: integer("sort_order").notNull().default(0),
+  // Si renseigné, cette prestation est générée depuis un plan de la grille
+  // tarifaire (et tenue à jour automatiquement) : `plan_component` ∈
+  // {abo_annuel, abo_mensuel, onb_initial, onb_interm}. NULL = prestation à la
+  // carte saisie manuellement.
+  plan_id: uuid("plan_id").references(() => billing_plans.id, { onDelete: "cascade" }),
+  plan_component: text("plan_component"),
   updated_by: uuid("updated_by").references(() => users.id, { onDelete: "set null" }),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
