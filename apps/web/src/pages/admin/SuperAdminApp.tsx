@@ -7247,6 +7247,7 @@ function GrilleTarifaire() {
   const [rows, setRows] = useState<BillingPlan[] | null>(null);
   const [modal, setModal] = useState<PlanForm | null>(null);
   const [saving, setSaving] = useState(false);
+  const [backfilling, setBackfilling] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
   const { toast, setToast } = useBillToast();
 
@@ -7284,6 +7285,20 @@ function GrilleTarifaire() {
     }
   };
 
+  // Récupère la population INSEE des communes qui n'en ont pas, pour activer le
+  // rattachement automatique au plan tarifaire.
+  const backfillPopulations = async () => {
+    setBackfilling(true);
+    try {
+      const r = await api.post<{ updated: number; failed: number; skipped: number; total: number }>("/admin/communes/backfill-population");
+      setToast({ kind: "ok", msg: `Populations : ${r.updated} complétée(s), ${r.skipped} déjà OK${r.failed ? `, ${r.failed} en échec` : ""}.` });
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setBackfilling(false);
+    }
+  };
+
   if (!rows) return <div style={{ display: "flex", justifyContent: "center", padding: 60 }}><Spinner /></div>;
   const th: React.CSSProperties = { padding: "10px 14px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12, whiteSpace: "nowrap" };
   const thr: React.CSSProperties = { ...th, textAlign: "right" };
@@ -7294,7 +7309,14 @@ function GrilleTarifaire() {
         <div style={{ fontSize: 13, color: C.textMuted, maxWidth: 680 }}>
           Paliers de prix selon la population. À l'ajout d'une ligne facturée, la commune est rattachée automatiquement au palier correspondant et le prix est pré-rempli (modifiable). Le palier « EPCI » s'applique aux groupements.
         </div>
-        <button onClick={() => setModal(emptyPlanForm())} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>+ Ajouter un plan</button>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          <button onClick={backfillPopulations} disabled={backfilling}
+            title="Récupère la population INSEE des communes pour activer le rattachement automatique au plan"
+            style={{ padding: "10px 16px", background: "white", color: C.text, border: `1px solid ${C.border}`, borderRadius: 8, cursor: backfilling ? "default" : "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap", opacity: backfilling ? 0.7 : 1 }}>
+            {backfilling ? "Mise à jour…" : "⟳ Compléter les populations"}
+          </button>
+          <button onClick={() => setModal(emptyPlanForm())} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>+ Ajouter un plan</button>
+        </div>
       </div>
       <div style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, overflow: "hidden" }}>
         <div style={{ overflowX: "auto" }}>

@@ -184,6 +184,20 @@ superAdminRouter.get("/communes", async (_req, res) => {
   }
 });
 
+// Récupère la population légale d'une commune via l'API Géo (geo.api.gouv.fr)
+// à partir de son code INSEE. Sert à alimenter le rattachement automatique au
+// plan tarifaire. Renvoie null si indisponible (réseau, code inconnu…).
+async function fetchCommunePopulation(insee: string): Promise<number | null> {
+  try {
+    const r = await fetch(`https://geo.api.gouv.fr/communes/${encodeURIComponent(insee)}?fields=population`);
+    if (!r.ok) return null;
+    const data = await r.json() as { population?: number };
+    return typeof data.population === "number" && Number.isFinite(data.population) ? data.population : null;
+  } catch {
+    return null;
+  }
+}
+
 superAdminRouter.post("/communes", async (req, res) => {
   try {
     const { name, insee_code, zip_code, email, telephone, logo_url, population, surface, departement, region, description, epci_id } = req.body as {
@@ -206,14 +220,44 @@ superAdminRouter.post("/communes", async (req, res) => {
       return res.status(400).json({ error: "name, insee_code et zip_code sont requis" });
     }
 
+    // Population non fournie : récupération automatique depuis l'API Géo (INSEE)
+    // pour activer le rattachement au plan tarifaire (modifiable ensuite).
+    let pop = population;
+    if ((pop == null || pop.trim() === "") && insee_code) {
+      const fetched = await fetchCommunePopulation(insee_code);
+      if (fetched != null) pop = String(fetched);
+    }
+
     const [newCommune] = await db
       .insert(communes)
-      .values({ name, insee_code, zip_code, email, telephone, logo_url, population, surface, departement, region, description, epci_id, instruction_mutualisee: false })
+      .values({ name, insee_code, zip_code, email, telephone, logo_url, population: pop, surface, departement, region, description, epci_id, instruction_mutualisee: false })
       .returning();
 
     res.status(201).json(newCommune);
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Complète la population manquante des communes depuis l'API Géo (INSEE).
+// Idempotent : ne touche que les communes sans population renseignée.
+superAdminRouter.post("/communes/backfill-population", async (req, res) => {
+  try {
+    const rows = await db.select({ id: communes.id, insee_code: communes.insee_code, population: communes.population }).from(communes);
+    let updated = 0, failed = 0, skipped = 0;
+    for (const c of rows) {
+      if (c.population != null && c.population.trim() !== "") { skipped++; continue; }
+      if (!c.insee_code) { failed++; continue; }
+      const pop = await fetchCommunePopulation(c.insee_code);
+      if (pop == null) { failed++; continue; }
+      await db.update(communes).set({ population: String(pop), updated_at: new Date() }).where(eq(communes.id, c.id));
+      updated++;
+    }
+    await logAudit(req, "admin_communes_population_backfilled", { metadata: { updated, failed, skipped } });
+    res.json({ updated, failed, skipped, total: rows.length });
+  } catch (err) {
+    console.error("[communes/backfill-population]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
