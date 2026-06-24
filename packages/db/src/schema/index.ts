@@ -42,3 +42,6 @@ export * from "./dossier_facts.js";
 export * from "./regulatory_analyses.js";
 export * from "./regulatory_findings.js";
 export * from "./documentationFavoris.js";
+export * from "./billingPrestations.js";
+export * from "./billingItems.js";
+export * from "./billingCosts.js";
