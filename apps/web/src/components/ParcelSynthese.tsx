@@ -90,14 +90,24 @@ function SourceChip({ s }: { s: SynthSource }) {
 function CitizenTheme({ theme }: { theme: SynthTheme }) {
   const t = TONE[theme.citizen.tone];
   const points = theme.citizen.points;
+  // Chaque catégorie se replie individuellement : on clique son en-tête pour la
+  // refermer et ne garder à l'œil que les rubriques qui nous concernent. Ouvertes
+  // par défaut pour ne rien masquer à la première lecture.
+  const [open, setOpen] = useState(true);
   if (points.length === 0) return null;
   return (
     <div style={{ border: `1px solid ${t.border}`, borderRadius: 12, overflow: "hidden", background: "white" }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "11px 14px", background: t.bg, borderBottom: `1px solid ${t.border}` }}>
+      <button
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+        style={{ display: "flex", alignItems: "center", gap: 10, width: "100%", textAlign: "left", padding: "11px 14px", background: t.bg, border: "none", borderBottom: open ? `1px solid ${t.border}` : "none", cursor: "pointer" }}
+      >
         <span style={{ fontSize: 20 }}>{theme.icon}</span>
         <span style={{ flex: 1, fontSize: 13.5, fontWeight: 800, color: "#1E1B4B" }}>{theme.title}</span>
         <ToneChip tone={theme.citizen.tone} />
-      </div>
+        <span style={{ fontSize: 12, color: t.fg, fontWeight: 700, flexShrink: 0 }}>{open ? "▴" : "▾"}</span>
+      </button>
+      {open && (
       <div style={{ padding: "10px 14px" }}>
         <ul style={{ margin: 0, padding: 0, listStyle: "none", display: "flex", flexDirection: "column", gap: 6 }}>
           {points.map((p, i) => (
@@ -140,6 +150,7 @@ function CitizenTheme({ theme }: { theme: SynthTheme }) {
           );
         })()}
       </div>
+      )}
     </div>
   );
 }
