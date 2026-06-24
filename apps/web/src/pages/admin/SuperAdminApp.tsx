@@ -368,19 +368,49 @@ function InseeWidget({ onSelect }: { onSelect: (c: InseeCandidate) => void }) {
 }
 
 // ─── Sidebar ──────────────────────────────────────────────────────────────────
-const navItems = [
-  { path: adminPath(), exact: true, icon: "⊞", label: "Vue d'ensemble" },
-  { path: adminPath("/communes"), icon: "🏛", label: "Communes" },
-  { path: adminPath("/groupements"), icon: "🤝", label: "Groupements" },
-  { path: adminPath("/roles"), icon: "🔑", label: "Rôles" },
-  { path: adminPath("/utilisateurs"), icon: "👥", label: "Utilisateurs" },
-  { path: adminPath("/services"), icon: "🔗", label: "Services annexes" },
-  { path: adminPath("/couts-ia"), icon: "💶", label: "Coûts IA" },
-  { path: adminPath("/facturation"), icon: "💼", label: "Facturation" },
-  { path: adminPath("/audit"), icon: "🔒", label: "Audit sécurité" },
-  { path: adminPath("/conformite"), icon: "🛡", label: "Conformité RGPD" },
-  { path: adminPath("/site"), icon: "🚀", label: "Site public" },
-  { path: adminPath("/configuration"), icon: "⚙", label: "Configuration" },
+// Les onglets sont regroupés en catégories pour alléger la navigation.
+// L'en-tête `title` à null signale une entrée sans catégorie (« Vue d'ensemble »).
+interface NavItem { path: string; exact?: boolean; icon: string; label: string; }
+interface NavGroup { title: string | null; items: NavItem[]; }
+
+const navGroups: NavGroup[] = [
+  {
+    title: null,
+    items: [
+      { path: adminPath(), exact: true, icon: "⊞", label: "Vue d'ensemble" },
+    ],
+  },
+  {
+    title: "Organisation",
+    items: [
+      { path: adminPath("/communes"), icon: "🏛", label: "Communes" },
+      { path: adminPath("/groupements"), icon: "🤝", label: "Groupements" },
+      { path: adminPath("/roles"), icon: "🔑", label: "Rôles" },
+      { path: adminPath("/utilisateurs"), icon: "👥", label: "Utilisateurs" },
+      { path: adminPath("/services"), icon: "🔗", label: "Services annexes" },
+    ],
+  },
+  {
+    title: "Finances",
+    items: [
+      { path: adminPath("/couts-ia"), icon: "💶", label: "Coûts IA" },
+      { path: adminPath("/facturation"), icon: "💼", label: "Facturation" },
+    ],
+  },
+  {
+    title: "Sécurité & conformité",
+    items: [
+      { path: adminPath("/audit"), icon: "🔒", label: "Audit sécurité" },
+      { path: adminPath("/conformite"), icon: "🛡", label: "Conformité RGPD" },
+    ],
+  },
+  {
+    title: "Système",
+    items: [
+      { path: adminPath("/site"), icon: "🚀", label: "Site public" },
+      { path: adminPath("/configuration"), icon: "⚙", label: "Configuration" },
+    ],
+  },
 ];
 
 // ─── Indicateur temps réel d'activité IA ─────────────────────────────────────
@@ -514,32 +544,44 @@ function Sidebar() {
       </div>
 
       {/* Nav */}
-      <nav style={{ flex: 1, padding: "12px 12px", display: "flex", flexDirection: "column", gap: 2 }}>
-        {navItems.map((item) => {
-          const isActive = item.exact
-            ? location.pathname === item.path
-            : location.pathname.startsWith(item.path);
-          return (
-            <button
-              key={item.path}
-              onClick={() => navigate(item.path)}
-              style={{
-                display: "flex", alignItems: "center", gap: 12,
-                padding: "10px 14px", borderRadius: 8, border: "none",
-                cursor: "pointer", textAlign: "left", width: "100%",
-                background: isActive ? C.accent : "transparent",
-                color: isActive ? "white" : "#94A3B8",
-                fontSize: 14, fontWeight: isActive ? 600 : 400,
-                transition: "background 0.15s, color 0.15s",
-              }}
-              onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "white"; } }}
-              onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#94A3B8"; } }}
-            >
-              <span style={{ fontSize: 16, width: 20, textAlign: "center" }}>{item.icon}</span>
-              <span>{item.label}</span>
-            </button>
-          );
-        })}
+      <nav style={{ flex: 1, padding: "12px 12px", display: "flex", flexDirection: "column", gap: 2, overflowY: "auto" }}>
+        {navGroups.map((group, gi) => (
+          <div key={group.title ?? `group-${gi}`} style={{ display: "flex", flexDirection: "column", gap: 2, marginTop: gi === 0 ? 0 : 14 }}>
+            {group.title && (
+              <div style={{
+                padding: "4px 14px 6px", fontSize: 10.5, fontWeight: 700,
+                letterSpacing: "0.08em", textTransform: "uppercase", color: "#475569",
+              }}>
+                {group.title}
+              </div>
+            )}
+            {group.items.map((item) => {
+              const isActive = item.exact
+                ? location.pathname === item.path
+                : location.pathname.startsWith(item.path);
+              return (
+                <button
+                  key={item.path}
+                  onClick={() => navigate(item.path)}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 12,
+                    padding: "10px 14px", borderRadius: 8, border: "none",
+                    cursor: "pointer", textAlign: "left", width: "100%",
+                    background: isActive ? C.accent : "transparent",
+                    color: isActive ? "white" : "#94A3B8",
+                    fontSize: 14, fontWeight: isActive ? 600 : 400,
+                    transition: "background 0.15s, color 0.15s",
+                  }}
+                  onMouseEnter={(e) => { if (!isActive) { e.currentTarget.style.background = "rgba(255,255,255,0.06)"; e.currentTarget.style.color = "white"; } }}
+                  onMouseLeave={(e) => { if (!isActive) { e.currentTarget.style.background = "transparent"; e.currentTarget.style.color = "#94A3B8"; } }}
+                >
+                  <span style={{ fontSize: 16, width: 20, textAlign: "center" }}>{item.icon}</span>
+                  <span>{item.label}</span>
+                </button>
+              );
+            })}
+          </div>
+        ))}
       </nav>
 
       {/* Live AI activity widget */}
