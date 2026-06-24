@@ -11,6 +11,9 @@ interface User {
   commune_insee?: string;
   telephone?: string;
   avatar_url?: string;
+  // false tant que l'agent n'a pas vu la pop-up d'onboarding (1re connexion).
+  // Absent pour les comptes hors espace mairie (ex. citoyen FranceConnect).
+  onboarding_completed?: boolean;
 }
 
 interface AuthContextType {

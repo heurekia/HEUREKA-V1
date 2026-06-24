@@ -5671,6 +5671,7 @@ function DelegationsPanel() {
 function InfosPersoScreen() {
   const { user, refreshUser } = useAuth();
   const [stab, setStab] = useState("À propos");
+  const [profilParams, setProfilParams] = useSearchParams();
 
   // ── À propos state ──
   const [prenom, setPrenom] = useState(user?.prenom ?? "");
@@ -5950,6 +5951,12 @@ function InfosPersoScreen() {
             <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Centre d'aide</div>
               <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Documentation, tutoriels et support.</div>
+              <button
+                onClick={() => { const sp = new URLSearchParams(profilParams); sp.set("guide", "1"); setProfilParams(sp); }}
+                style={{ display: "inline-flex", alignItems: "center", gap: 8, border: "1px solid #C7D2FE", background: "#EEF2FF", color: "#4F46E5", borderRadius: 10, padding: "10px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer", marginBottom: 20 }}
+              >
+                ✨ Revoir le guide d'accueil
+              </button>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
                 {[{ icon: "📖", title: "Documentation", sub: "Guides complets sur toutes les fonctionnalités" }, { icon: "🎥", title: "Tutoriels vidéo", sub: "Apprenez avec nos tutoriels pas à pas" }, { icon: "💬", title: "Chat support", sub: "Discutez avec notre équipe de support" }, { icon: "📧", title: "Contacter le support", sub: "Envoyez-nous un message" }].map(c => (
                   <button key={c.title} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 12, padding: 16, cursor: "pointer", textAlign: "left" }}>
@@ -10409,14 +10416,125 @@ function NoCommuneAssignedScreen({ prenom }: { prenom: string }) {
   );
 }
 
+// ── Onboarding (pop-up de bienvenue, 1re connexion d'un agent) ────────────────
+// Écran 1 : présentation des modules. Écran 2 : mise en avant du bouton d'aide
+// « ? ». À la fin (ou « Passer »), on marque l'onboarding comme vu en base.
+
+const ONBOARDING_MODULES: { icon: React.ComponentType<{ size?: number; className?: string }>; label: string; desc: string }[] = [
+  { icon: HomeIcon, label: "Tableau de bord", desc: "Vue d'ensemble de votre activité et accès rapide aux dossiers." },
+  { icon: FolderIcon, label: "Dossiers", desc: "Instruisez les demandes : pièces, conformité au PLU, décision." },
+  { icon: CalendarIcon, label: "Calendrier", desc: "Suivez les échéances et les délais légaux d'instruction." },
+  { icon: MessageIcon, label: "Messagerie", desc: "Échangez avec les pétitionnaires et les services consultés." },
+  { icon: MapIcon, label: "Carte", desc: "Visualisez les dossiers géolocalisés et consultez le zonage PLU." },
+  { icon: ChartIcon, label: "Statistiques", desc: "Vos indicateurs : délais moyens, taux d'acceptation, retards." },
+  { icon: PenIcon, label: "Signatures", desc: "Signez électroniquement les arrêtés qui vous sont soumis." },
+  { icon: SettingsIcon, label: "Paramètres", desc: "Réglementation (PLU), modèles de courrier, notifications." },
+];
+
+function OnboardingModal({ prenom, onComplete }: { prenom: string; onComplete: () => void }) {
+  const [step, setStep] = useState(0);
+  const [closing, setClosing] = useState(false);
+
+  const finish = () => {
+    if (closing) return;
+    setClosing(true);
+    // Best-effort : si l'appel échoue, on ferme quand même (la modale ne doit
+    // pas bloquer l'agent). Le flag sera retenté au prochain /auth/me.
+    api.post("/auth/onboarding/complete").catch(() => {}).finally(onComplete);
+  };
+
+  return (
+    <div style={{ position: "fixed", inset: 0, background: "rgba(15,23,42,0.55)", zIndex: 9000, display: "flex", alignItems: "center", justifyContent: "center", padding: 16 }}>
+      <div style={{ background: "white", borderRadius: 18, width: "100%", maxWidth: 560, maxHeight: "92vh", overflow: "hidden", display: "flex", flexDirection: "column", boxShadow: "0 24px 70px rgba(15,23,42,0.35)" }}>
+        {/* Header dégradé */}
+        <div style={{ background: "linear-gradient(135deg, #4F46E5, #6366F1)", color: "white", padding: "22px 26px" }}>
+          <div style={{ fontSize: 12, fontWeight: 700, letterSpacing: "0.08em", textTransform: "uppercase", color: "rgba(255,255,255,0.8)", marginBottom: 6 }}>Bienvenue sur HEUREKIA ✨</div>
+          <div style={{ fontSize: 21, fontWeight: 800, lineHeight: 1.25 }}>
+            {step === 0
+              ? `Bonjour${prenom ? ` ${prenom}` : ""}, voici votre espace d'instruction`
+              : "Une question ? L'assistant est là pour vous"}
+          </div>
+        </div>
+
+        {/* Corps */}
+        <div style={{ padding: "20px 26px", overflowY: "auto" }}>
+          {step === 0 ? (
+            <>
+              <div style={{ fontSize: 13.5, color: "#64748b", lineHeight: 1.6, marginBottom: 16 }}>
+                Tout se pilote depuis le menu de gauche. Voici les modules à votre disposition :
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+                {ONBOARDING_MODULES.map(({ icon: Icon, label, desc }) => (
+                  <div key={label} style={{ display: "flex", gap: 11, padding: "11px 12px", border: "1px solid #EEF1F5", borderRadius: 11, background: "#F8FAFC" }}>
+                    <div style={{ width: 32, height: 32, borderRadius: 9, background: "#EEF2FF", color: "#4F46E5", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                      <Icon size={17} />
+                    </div>
+                    <div style={{ minWidth: 0 }}>
+                      <div style={{ fontSize: 12.5, fontWeight: 700, color: "#0F172A" }}>{label}</div>
+                      <div style={{ fontSize: 11, color: "#64748b", lineHeight: 1.4, marginTop: 2 }}>{desc}</div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </>
+          ) : (
+            <div style={{ textAlign: "center", padding: "8px 4px 4px" }}>
+              <div style={{ display: "inline-flex", alignItems: "center", justifyContent: "center", width: 64, height: 64, borderRadius: "50%", background: "#EEF2FF", color: "#4F46E5", marginBottom: 16 }}>
+                <HelpIcon size={32} />
+              </div>
+              <div style={{ fontSize: 14, color: "#374151", lineHeight: 1.65, maxWidth: 420, margin: "0 auto" }}>
+                À tout moment, cliquez sur le bouton <span style={{ display: "inline-flex", verticalAlign: "middle", width: 22, height: 22, borderRadius: "50%", border: "1.5px solid #4F46E5", color: "#4F46E5", alignItems: "center", justifyContent: "center", margin: "0 3px" }}><HelpIcon size={13} /></span> en haut à droite pour poser une question à l'assistant.
+              </div>
+              <div style={{ background: "#F0F4FF", borderLeft: "3px solid #4F46E5", borderRadius: 8, padding: "12px 14px", marginTop: 18, textAlign: "left", maxWidth: 420, marginLeft: "auto", marginRight: "auto" }}>
+                <div style={{ fontSize: 11.5, fontWeight: 700, color: "#4F46E5", marginBottom: 6 }}>Par exemple :</div>
+                {["Comment prendre en charge un nouveau dossier ?", "Comment demander des pièces complémentaires ?", "Comment faire signer une décision ?"].map((q) => (
+                  <div key={q} style={{ fontSize: 12, color: "#475569", lineHeight: 1.5, paddingLeft: 14, position: "relative" }}>
+                    <span style={{ position: "absolute", left: 0, color: "#818cf8" }}>›</span>{q}
+                  </div>
+                ))}
+              </div>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 16 }}>
+                L'assistant répond aussi aux questions techniques et au « comment faire… » sur l'outil.
+              </div>
+            </div>
+          )}
+        </div>
+
+        {/* Pied : étapes + actions */}
+        <div style={{ borderTop: "1px solid #F1F5F9", padding: "14px 26px", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12 }}>
+          <div style={{ display: "flex", gap: 6 }}>
+            {[0, 1].map((d) => (
+              <span key={d} style={{ width: d === step ? 18 : 7, height: 7, borderRadius: 4, background: d === step ? "#4F46E5" : "#CBD5E1", transition: "all 0.2s" }} />
+            ))}
+          </div>
+          <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+            {step === 0 ? (
+              <button onClick={finish} disabled={closing} style={{ border: "none", background: "none", color: "#94a3b8", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: "8px 6px" }}>Passer</button>
+            ) : (
+              <button onClick={() => setStep(0)} disabled={closing} style={{ border: "1px solid #E2E8F0", background: "white", color: "#475569", fontSize: 13, fontWeight: 600, cursor: "pointer", padding: "9px 16px", borderRadius: 9 }}>← Précédent</button>
+            )}
+            {step === 0 ? (
+              <button onClick={() => setStep(1)} style={{ border: "none", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", fontSize: 13, fontWeight: 700, cursor: "pointer", padding: "9px 20px", borderRadius: 9, boxShadow: "0 2px 8px rgba(79,70,229,0.35)" }}>Suivant →</button>
+            ) : (
+              <button onClick={finish} disabled={closing} style={{ border: "none", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", fontSize: 13, fontWeight: 700, cursor: closing ? "default" : "pointer", padding: "9px 20px", borderRadius: 9, boxShadow: "0 2px 8px rgba(79,70,229,0.35)", opacity: closing ? 0.7 : 1 }}>C'est parti ✓</button>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export function MairieApp() {
-  const { user } = useAuth();
+  const { user, refreshUser } = useAuth();
   const isAdmin = user?.role === "admin";
   const canManageUsers = user?.role === "admin" || user?.role === "mairie";
   const [commune, setCommuteRaw] = useState(user?.commune ?? "");
   const [userCommunes, setUserCommunes] = useState<string[]>([]);
   const [communesLoaded, setCommunesLoaded] = useState(false);
   const [showNouveauDossier, setShowNouveauDossier] = useState(false);
+  const [onboardingDismissed, setOnboardingDismissed] = useState(false);
+  const [onboardingParams, setOnboardingParams] = useSearchParams();
   const [messageBadge, setMessageBadge] = useState(0);
   const [signaturesBadge, setSignaturesBadge] = useState(0);
   const [isSignataire, setIsSignataire] = useState(false);
@@ -10556,6 +10674,28 @@ export function MairieApp() {
         </div>
       </div>
       {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} commune={commune} />}
+      {(() => {
+        // Affiché à la 1re connexion d'un agent (flag onboarding non posé), ou
+        // sur demande explicite via ?guide=1 (bouton « Revoir le guide »).
+        const replay = onboardingParams.get("guide") === "1";
+        const isAgent = user?.role === "instructeur" || user?.role === "mairie";
+        const firstLogin = !!isAgent && user?.onboarding_completed === false && !onboardingDismissed;
+        if (!replay && !firstLogin) return null;
+        return (
+          <OnboardingModal
+            prenom={user?.prenom ?? ""}
+            onComplete={() => {
+              setOnboardingDismissed(true);
+              if (replay) {
+                const sp = new URLSearchParams(onboardingParams);
+                sp.delete("guide");
+                setOnboardingParams(sp, { replace: true });
+              }
+              refreshUser().catch(() => {});
+            }}
+          />
+        );
+      })()}
     </div>
   );
 }

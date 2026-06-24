@@ -24,6 +24,10 @@ export const users = pgTable("users", {
   // vérification reçu après l'inscription publique. Les comptes invités
   // (mairie/instructeur) sont marqués vérifiés au moment de l'activation.
   email_verified_at: timestamp("email_verified_at"),
+  // Horodatage de complétion de l'onboarding (pop-up de bienvenue). NULL =
+  // jamais vu → la modale d'accueil s'affiche à la 1re connexion d'un agent
+  // mairie/instructeur. Renseigné une fois que l'agent l'a parcourue/fermée.
+  onboarding_completed_at: timestamp("onboarding_completed_at"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });
