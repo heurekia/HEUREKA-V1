@@ -10,8 +10,9 @@
  *  1. api-adresse.data.gouv.fr   → geocode address to lat/lng
  *  2. apicarto.ign.fr/cadastre   → parcel reference, surface, geometry
  *  3. apicarto.ign.fr/gpu        → PLU zone code and label
- *  4. georisques.gouv.fr         → flood/seismic/clay risks
- *  5. local DB (zones + rules)   → regulatory rules for the zone
+ *  4. georisques.gouv.fr         → risks: gaspar/alea (commune) + zonage_sismique & rga (au point)
+ *  5. data.geopf.fr/altimetrie   → terrain altitude (RGE ALTI®) — prérequis cote NGF / PPRI
+ *  6. local DB (zones + rules)   → regulatory rules for the zone
  */
 
 import type { Geometry, Polygon } from "geojson";
@@ -91,6 +92,9 @@ export interface RiskResult {
   clay_risk: "fort" | "moyen" | "faible" | "nul" | "inconnu";
   landslide_risk: "fort" | "moyen" | "faible" | "nul" | "inconnu";
   radon_level: "3" | "2" | "1" | "inconnu";
+  /** Altitude moyenne du terrain (m, NGF / IGN69) issue du RGE ALTI® (Géoplateforme).
+   *  Prérequis pour comparer à la cote de référence d'un PPRI. null si indisponible. */
+  terrain_altitude_m?: number | null;
   raw?: Record<string, unknown>;
 }
 
@@ -855,6 +859,120 @@ function parseAleaLevel(niv: string): "fort" | "moyen" | "faible" | "nul" {
     : "nul";
 }
 
+// Niveau d'exposition argileux à partir d'un libellé (RGA au point ou GASPAR).
+function parseClayExposure(s: string): "fort" | "moyen" | "faible" | "nul" | null {
+  const n = s.toLowerCase();
+  if (!n.trim()) return null;
+  if (n.includes("fort")) return "fort";
+  if (n.includes("moyen")) return "moyen";
+  if (n.includes("faible")) return "faible";
+  if (n.includes("nul") || n.includes("aucun") || n.includes("absen")) return "nul";
+  return null;
+}
+
+// Table départementale de sismicité (arrêté du 22 octobre 2010) — REPLI utilisé
+// quand l'interrogation au point (zonage_sismique) est indisponible.
+function seismicZoneFromDept(code_insee: string): string {
+  const dept = code_insee?.slice(0, 2) ?? "";
+  const zone1Depts = new Set(["14","22","27","29","35","44","49","50","53","56","61","62","76","80"]);
+  const zone3Depts = new Set(["01","05","07","09","15","26","38","42","43","48","63","64","65","67","68","70","73","74","88"]);
+  const zone4Depts = new Set(["04","06"]);
+  const zone5Depts = new Set(["971","972","974","976"]);
+  return zone5Depts.has(dept) ? "5" : zone4Depts.has(dept) ? "4" : zone3Depts.has(dept) ? "3" : zone1Depts.has(dept) ? "1" : "2";
+}
+
+type GasparAlea = Pick<RiskResult, "flood_risk" | "landslide_risk" | "clay_risk" | "radon_level"> & {
+  raw?: Record<string, unknown>;
+};
+
+// GASPAR / aléa (maille communale) — socle historique. Best-effort : null si KO.
+async function fetchGasparAlea(lat: number, lng: number, code_insee: string): Promise<GasparAlea | null> {
+  try {
+    const url = `https://georisques.gouv.fr/api/v1/gaspar/alea?latlon=${lng}%2C${lat}&code_insee=${code_insee}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const data = await r.json() as { data?: Array<{ codePhenomene?: string; niveauAlea?: string }> };
+    const out: GasparAlea = {
+      flood_risk: "inconnu", landslide_risk: "inconnu", clay_risk: "inconnu", radon_level: "inconnu",
+      raw: data as Record<string, unknown>,
+    };
+    for (const item of data.data ?? []) {
+      const code = (item.codePhenomene ?? "").toUpperCase();
+      const niv = item.niveauAlea ?? "";
+      if (code.includes("INOND")) {
+        out.flood_risk = parseAleaLevel(niv);
+      } else if (code.includes("MVMT") || code.includes("MOUVEMENT") || code.includes("GLISSMT") || code.includes("EBOUL")) {
+        // Keep worst level if multiple entries
+        const lvl = parseAleaLevel(niv);
+        const order = ["nul", "faible", "moyen", "fort"];
+        if (order.indexOf(lvl) > order.indexOf(out.landslide_risk === "inconnu" ? "nul" : out.landslide_risk)) {
+          out.landslide_risk = lvl;
+        }
+      } else if (code.includes("ARGILE") || code.includes("RETRAIT")) {
+        out.clay_risk = parseAleaLevel(niv);
+      } else if (code.includes("RADON")) {
+        const n = niv.toLowerCase();
+        out.radon_level = n.includes("3") || n.includes("eleve") || n.includes("élevé") ? "3"
+          : n.includes("2") || n.includes("moyen") ? "2"
+          : "1";
+      }
+    }
+    return out;
+  } catch {
+    return null;
+  }
+}
+
+// Zonage sismique réglementaire AU POINT (georisques) — plus précis que la table
+// départementale (le zonage descend à la commune). Best-effort : null si KO.
+async function fetchSeismicZoneAtPoint(lat: number, lng: number): Promise<string | null> {
+  try {
+    const url = `https://georisques.gouv.fr/api/v1/zonage_sismique?latlon=${lng}%2C${lat}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const data = await r.json() as { data?: Array<{ code_zone?: string | number; zone_sismicite?: string }> };
+    const row = data.data?.[0];
+    const code = row?.code_zone != null ? String(row.code_zone).trim() : "";
+    return /^[1-5]$/.test(code) ? code : null;
+  } catch {
+    return null;
+  }
+}
+
+// Retrait-gonflement des argiles AU POINT (georisques /rga) — exposition
+// cartographiée, plus fine que la maille GASPAR. Best-effort : null si KO.
+async function fetchClayExposureAtPoint(lat: number, lng: number): Promise<"fort" | "moyen" | "faible" | "nul" | null> {
+  try {
+    const url = `https://georisques.gouv.fr/api/v1/rga?latlon=${lng}%2C${lat}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
+    if (!r.ok) return null;
+    const data = await r.json() as { data?: Array<{ exposition?: string; niveau?: string; codeExposition?: string | number }> };
+    const row = data.data?.[0];
+    if (!row) return null;
+    return parseClayExposure(String(row.exposition ?? row.niveau ?? row.codeExposition ?? ""));
+  } catch {
+    return null;
+  }
+}
+
+// Altitude du terrain (RGE ALTI® via la Géoplateforme). Renvoie l'altitude NGF
+// arrondie au décimètre, ou null (hors couverture, sentinelle -99999, ou KO).
+export async function getTerrainAltitude(lat: number, lng: number): Promise<number | null> {
+  try {
+    const url = `https://data.geopf.fr/altimetrie/1.0/calcul/alti/rest/elevation.json`
+      + `?lon=${lng}&lat=${lat}&resource=ign_rge_alti_wld&zonly=true&indent=false`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return null;
+    const data = await r.json() as { elevations?: Array<number | { z?: number }> };
+    const first = data.elevations?.[0];
+    const z = typeof first === "number" ? first : first?.z;
+    if (typeof z !== "number" || !Number.isFinite(z) || z <= -1000) return null; // -99999 = hors données
+    return Math.round(z * 10) / 10;
+  } catch {
+    return null;
+  }
+}
+
 export async function getRisks(lat: number, lng: number, code_insee: string): Promise<RiskResult> {
   const result: RiskResult = {
     flood_risk: "inconnu",
@@ -862,48 +980,35 @@ export async function getRisks(lat: number, lng: number, code_insee: string): Pr
     clay_risk: "inconnu",
     landslide_risk: "inconnu",
     radon_level: "inconnu",
+    terrain_altitude_m: null,
   };
-  try {
-    const url = `https://georisques.gouv.fr/api/v1/gaspar/alea?latlon=${lng}%2C${lat}&code_insee=${code_insee}`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (r.ok) {
-      const data = await r.json() as {
-        data?: Array<{ codePhenomene?: string; niveauAlea?: string }>;
-      };
-      result.raw = data as Record<string, unknown>;
-      for (const item of data.data ?? []) {
-        const code = (item.codePhenomene ?? "").toUpperCase();
-        const niv = item.niveauAlea ?? "";
-        if (code.includes("INOND")) {
-          result.flood_risk = parseAleaLevel(niv);
-        } else if (code.includes("MVMT") || code.includes("MOUVEMENT") || code.includes("GLISSMT") || code.includes("EBOUL")) {
-          // Keep worst level if multiple entries
-          const lvl = parseAleaLevel(niv);
-          const order = ["nul", "faible", "moyen", "fort"];
-          if (order.indexOf(lvl) > order.indexOf(result.landslide_risk === "inconnu" ? "nul" : result.landslide_risk)) {
-            result.landslide_risk = lvl;
-          }
-        } else if (code.includes("ARGILE") || code.includes("RETRAIT")) {
-          result.clay_risk = parseAleaLevel(niv);
-        } else if (code.includes("RADON")) {
-          const n = niv.toLowerCase();
-          result.radon_level = n.includes("3") || n.includes("eleve") || n.includes("élevé") ? "3"
-            : n.includes("2") || n.includes("moyen") ? "2"
-            : "1";
-        }
-      }
-    }
-  } catch {
-    // Risk API is best-effort
+
+  // Sources interrogées EN PARALLÈLE → la latence reste celle de l'appel le plus
+  // lent (et non leur somme) : on enrichit la donnée sans alourdir l'instruction.
+  const [gaspar, altitude, seismicPt, clayPt] = await Promise.all([
+    fetchGasparAlea(lat, lng, code_insee),
+    getTerrainAltitude(lat, lng),
+    fetchSeismicZoneAtPoint(lat, lng),
+    fetchClayExposureAtPoint(lat, lng),
+  ]);
+
+  // Socle GASPAR (inondation / mouvement de terrain / argiles / radon).
+  if (gaspar) {
+    result.flood_risk = gaspar.flood_risk;
+    result.landslide_risk = gaspar.landslide_risk;
+    result.clay_risk = gaspar.clay_risk;
+    result.radon_level = gaspar.radon_level;
+    result.raw = gaspar.raw;
   }
 
-  // Seismic zone from department code (arrêté du 22 octobre 2010)
-  const dept = code_insee?.slice(0, 2) ?? "";
-  const zone1Depts = new Set(["14","22","27","29","35","44","49","50","53","56","61","62","76","80"]);
-  const zone3Depts = new Set(["01","05","07","09","15","26","38","42","43","48","63","64","65","67","68","70","73","74","88"]);
-  const zone4Depts = new Set(["04","06"]);
-  const zone5Depts = new Set(["971","972","974","976"]);
-  result.seismic_zone = zone5Depts.has(dept) ? "5" : zone4Depts.has(dept) ? "4" : zone3Depts.has(dept) ? "3" : zone1Depts.has(dept) ? "1" : "2";
+  // Altitude RGE ALTI® (prérequis cote NGF / PPRI).
+  result.terrain_altitude_m = altitude;
+
+  // Argiles : l'exposition AU POINT (RGA) prime sur la maille GASPAR si dispo.
+  if (clayPt) result.clay_risk = clayPt;
+
+  // Sismicité : zonage au point si dispo, sinon repli sur la table départementale.
+  result.seismic_zone = seismicPt ?? seismicZoneFromDept(code_insee);
 
   return result;
 }
@@ -1455,11 +1560,12 @@ export async function analyseParcel(
     }
   }
 
-  // Step 4: GéoRisques
+  // Step 4: GéoRisques (+ RGE ALTI® altitude)
   if (lat !== undefined && lng !== undefined && code_insee) {
     const risks = await getRisks(lat, lng, code_insee);
     result.risks = risks;
     result.data_sources.push("GéoRisques");
+    if (risks.terrain_altitude_m != null) result.data_sources.push("RGE ALTI® (IGN)");
   }
 
   // Step 5: DB rules lookup — use manual zone override if GPU failed

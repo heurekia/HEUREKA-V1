@@ -291,3 +291,23 @@ describe("buildParcelSynthesis — robustesse & compteurs", () => {
     expect(r.counts.attention).toBeGreaterThanOrEqual(1);
   });
 });
+
+describe("buildParcelSynthesis — altitude RGE ALTI® (cote NGF)", () => {
+  it("injecte l'altitude dans le détail inondation quand un aléa est présent", () => {
+    const r = buildParcelSynthesis(synth({
+      risks: { ...noRisks, flood_risk: "moyen", terrain_altitude_m: 48.7 },
+    }));
+    const risques = r.themes.find((t) => t.key === "risques")!;
+    const flood = risques.instructor.items.find((i) => i.label === "Risque inondation")!;
+    expect(flood.detail).toContain("48,7 m NGF");
+    expect(flood.detail).toContain("RGE ALTI");
+  });
+
+  it("n'affiche pas l'altitude hors contexte inondation (anti-bruit)", () => {
+    const r = buildParcelSynthesis(synth({
+      risks: { ...noRisks, terrain_altitude_m: 48.7 }, // aucun aléa inondation
+    }));
+    const allDetails = r.themes.flatMap((t) => t.instructor.items.map((i) => i.detail ?? "")).join(" ");
+    expect(allDetails).not.toContain("NGF");
+  });
+});
