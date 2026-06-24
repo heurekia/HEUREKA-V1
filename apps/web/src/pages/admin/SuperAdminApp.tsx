@@ -7277,11 +7277,16 @@ function SitePublic() {
       {/* Carte de configuration */}
       <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, maxWidth: 720 }}>
         {/* Interrupteur */}
-        <label style={{ display: "flex", alignItems: "center", gap: 14, cursor: "pointer", marginBottom: 24 }}>
-          <span
+        <div style={{ display: "flex", alignItems: "center", gap: 14, marginBottom: 24 }}>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={enabled}
+            aria-label="Activer le mode « bientôt en ligne »"
             onClick={() => setEnabled((v) => !v)}
             style={{
               width: 46, height: 26, borderRadius: 999, flexShrink: 0, position: "relative",
+              padding: 0, border: "none", cursor: "pointer",
               background: enabled ? C.accent : "#CBD5E1", transition: "background 0.15s",
             }}
           >
@@ -7290,16 +7295,14 @@ function SitePublic() {
               borderRadius: "50%", background: "white", transition: "left 0.15s",
               boxShadow: "0 1px 2px rgba(0,0,0,0.2)",
             }} />
-          </span>
-          <span>
+          </button>
+          <div onClick={() => setEnabled((v) => !v)} style={{ cursor: "pointer" }}>
             <span style={{ display: "block", fontSize: 14, fontWeight: 700, color: C.text }}>Activer le mode « bientôt en ligne »</span>
             <span style={{ display: "block", fontSize: 12.5, color: C.textMuted, marginTop: 1 }}>
               Un mot de passe d'accès doit être défini pour pouvoir activer le mode.
             </span>
-          </span>
-          {/* Checkbox réelle, cachée, pour l'accessibilité clavier */}
-          <input type="checkbox" checked={enabled} onChange={(e) => setEnabled(e.target.checked)} style={{ position: "absolute", opacity: 0, width: 0, height: 0 }} />
-        </label>
+          </div>
+        </div>
 
         <div style={{ marginBottom: 18 }}>
           <label style={labelStyle}>
