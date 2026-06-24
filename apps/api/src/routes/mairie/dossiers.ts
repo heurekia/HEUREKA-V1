@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db, client as pgClient } from "../../db.js";
-import { dossiers, users, instruction_events, dossier_pieces_jointes } from "@heureka-v1/db";
+import { dossiers, users, instruction_events, dossier_pieces_jointes, password_tokens } from "@heureka-v1/db";
 import { eq, desc, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { type AuthRequest } from "../../middlewares/auth.js";
@@ -15,6 +15,9 @@ import { callAi, convertPdfPagesToPng } from "../../services/aiUsage.js";
 import { extractFirstJson, sha256Buffer } from "../../services/pieceAnalyzer.js";
 import { attachCerfaToDossier } from "../../services/cerfaAttachment.js";
 import { prefetchSitadelHistory } from "../../services/sitadelPrefetch.js";
+import { notifyUser } from "../../services/notify.js";
+import { sendPetitionnaireInvitationEmail } from "../../services/mailer.js";
+import { petitionnaireSideEffect, type PetitionnaireAccountState } from "./petitionnaireInvite.js";
 import { getStorageProvider } from "../../services/storage.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 import {
@@ -676,11 +679,17 @@ dossiersRouter.post("/dossiers/:id/take-charge", async (req: AuthRequest, res) =
 });
 
 // ── Création d'un dossier au comptoir (mairie) ──
-// Saisie manuelle OU finalisation d'une extraction OCR. La pétitionnaire n'a
-// pas nécessairement de compte citoyen : on crée un utilisateur placeholder
-// (rôle citoyen, mot de passe aléatoire non utilisable) pour respecter la
-// FK dossiers.user_id. Le dossier est créé directement en statut "soumis"
-// (la mairie l'enregistre déjà au comptoir, donc plus de stade brouillon).
+// Saisie manuelle OU finalisation d'une extraction OCR. Le pétitionnaire n'a
+// pas nécessairement de compte citoyen. Trois cas pour respecter la FK
+// dossiers.user_id :
+//   • email fourni + compte existant → rattachement au compte ;
+//   • email fourni + pas de compte   → création d'un compte citoyen ;
+//   • aucun email                    → utilisateur placeholder (email
+//     synthétique, mot de passe aléatoire non utilisable).
+// Si invite_petitionnaire est demandé ET qu'un email est présent, on prévient
+// le citoyen : invitation à activer son espace (compte neuf ou jamais activé)
+// ou notification in-app (compte déjà actif). Le dossier est créé directement
+// en statut "soumis" (enregistré au comptoir, donc plus de stade brouillon).
 const mairieCreateDossierSchema = z.object({
   type: z.enum([
     "permis_de_construire",
@@ -704,8 +713,37 @@ const mairieCreateDossierSchema = z.object({
   description: z.string().trim().optional(),
   date_depot: z.string().trim().optional(),
   instructeur_id: z.string().uuid().optional().or(z.literal("")),
+  // Si true ET petitionnaire_email renseigné : invite le pétitionnaire à
+  // activer son espace citoyen (ou le notifie si son compte est déjà actif).
+  invite_petitionnaire: z.boolean().optional(),
   metadata: z.record(z.unknown()).optional(),
 });
+
+// Crée un jeton d'activation (7 jours) et envoie au pétitionnaire l'invitation
+// à suivre son dossier en ligne. Best-effort : tout échec est journalisé sans
+// interrompre la création — le dossier vit indépendamment du compte citoyen.
+async function invitePetitionnaireToActivate(opts: {
+  userId: string;
+  email: string;
+  prenom: string;
+  numeroDossier: string;
+  communeName: string | null;
+}): Promise<void> {
+  const token = crypto.randomBytes(32).toString("hex");
+  await db.insert(password_tokens).values({
+    user_id: opts.userId,
+    token,
+    type: "activation",
+    expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
+  });
+  await sendPetitionnaireInvitationEmail({
+    to: opts.email,
+    prenom: opts.prenom,
+    numeroDossier: opts.numeroDossier,
+    communeName: opts.communeName ?? undefined,
+    token,
+  });
+}
 
 dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
   try {
@@ -728,11 +766,20 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
     // au crypto.randomUUID() ; un échec d'unicité (rarissime) provoque un 500
     // que l'opérateur pourra rejouer.
     const providedEmail = data.petitionnaire_email?.trim().toLowerCase();
+    // L'invitation n'a de sens qu'avec un vrai email (pas de placeholder).
+    const inviteRequested = data.invite_petitionnaire === true && !!providedEmail;
     let petitionnaireUserId: string;
+    let account: PetitionnaireAccountState;
     if (providedEmail) {
-      const [existing] = await db.select({ id: users.id }).from(users).where(eq(users.email, providedEmail)).limit(1);
+      const [existing] = await db
+        .select({ id: users.id, email_verified_at: users.email_verified_at })
+        .from(users)
+        .where(eq(users.email, providedEmail))
+        .limit(1);
       if (existing) {
+        // Rattachement au compte existant.
         petitionnaireUserId = existing.id;
+        account = existing.email_verified_at ? "existing-verified" : "existing-unverified";
       } else {
         const { default: bcrypt } = await import("bcryptjs");
         const hash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
@@ -745,6 +792,7 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
           commune: data.commune ?? req.user?.commune ?? null,
         }).returning({ id: users.id });
         petitionnaireUserId = created!.id;
+        account = "new";
       }
     } else {
       const { default: bcrypt } = await import("bcryptjs");
@@ -759,7 +807,12 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
         commune: data.commune ?? req.user?.commune ?? null,
       }).returning({ id: users.id });
       petitionnaireUserId = created!.id;
+      account = "placeholder";
     }
+    // Effet de bord déclenché APRÈS création du dossier (best-effort) : on a
+    // besoin de son numéro pour l'invitation, et on n'émet rien si la création
+    // échoue.
+    const petitionnaireEffect = petitionnaireSideEffect({ inviteRequested, account });
 
     // TODO PLAT'AU : remplacer ce numéro local par celui retourné par
     // l'API PLAT'AU (réservation de numéro national de dossier) une fois le
@@ -818,6 +871,28 @@ dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
     prefetchSitadelHistory(dossier!.id).catch((err) => {
       console.error("[mairie/dossiers] prefetchSitadelHistory:", err instanceof Error ? `${err.name}: ${err.message}` : err);
     });
+
+    // Invitation / notification du pétitionnaire (best-effort, non bloquant).
+    if (petitionnaireEffect === "invite") {
+      invitePetitionnaireToActivate({
+        userId: petitionnaireUserId,
+        email: providedEmail!,
+        prenom,
+        numeroDossier: dossier!.numero,
+        communeName: dossier!.commune ?? null,
+      }).catch((err) => {
+        console.error("[mairie/dossiers] invitePetitionnaire:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+      });
+    } else if (petitionnaireEffect === "notify") {
+      // notifyUser avale déjà ses erreurs en interne.
+      void notifyUser({
+        user_id: petitionnaireUserId,
+        dossier_id: dossier!.id,
+        type: "dossier_enregistre",
+        title: "Un dossier a été enregistré à votre nom",
+        message: `Le dossier ${dossier!.numero} a été enregistré par le service urbanisme. Vous pouvez en suivre l'avancement depuis votre espace.`,
+      });
+    }
 
     res.status(201).json(dossier);
   } catch (err) {

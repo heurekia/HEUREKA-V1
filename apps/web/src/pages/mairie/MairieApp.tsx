@@ -9564,6 +9564,7 @@ type NouveauDossierForm = {
   description: string;
   date_depot: string;
   instructeur_id: string;
+  invite_petitionnaire: boolean;
 };
 
 const DOSSIER_TYPE_OPTIONS: { value: NouveauDossierType; label: string }[] = [
@@ -9658,6 +9659,7 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
     description: "",
     date_depot: today,
     instructeur_id: "",
+    invite_petitionnaire: true,
   };
   const [form, setForm] = useState<NouveauDossierForm>(emptyForm);
   const [instructeurs, setInstructeurs] = useState<{ id: string; prenom: string; nom: string }[]>([]);
@@ -9823,6 +9825,8 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
         description: form.description.trim() || undefined,
         date_depot: form.date_depot || undefined,
         instructeur_id: form.instructeur_id || undefined,
+        // N'a d'effet côté API que si un email est renseigné.
+        invite_petitionnaire: form.petitionnaire_email.trim() ? form.invite_petitionnaire : false,
       };
       if (ocrNumero) {
         payload["metadata"] = { numero_cerfa: ocrNumero, created_via: "ocr" };
@@ -10029,6 +10033,23 @@ function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commun
       <div>
         <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Email du pétitionnaire</label>
         <input type="email" value={form.petitionnaire_email} onChange={e => setField("petitionnaire_email", e.target.value)} placeholder="jean.dupont@example.com" style={inputStyle} />
+        {form.petitionnaire_email.trim() ? (
+          <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 8, cursor: "pointer" }}>
+            <input
+              type="checkbox"
+              checked={form.invite_petitionnaire}
+              onChange={e => setField("invite_petitionnaire", e.target.checked)}
+              style={{ marginTop: 2, cursor: "pointer" }}
+            />
+            <span style={{ fontSize: 12, color: "#6B7280", lineHeight: 1.5 }}>
+              Inviter le pétitionnaire à suivre son dossier en ligne — un email d'activation de son espace citoyen lui sera envoyé (ou une notification s'il a déjà un compte).
+            </span>
+          </label>
+        ) : (
+          <p style={{ fontSize: 12, color: "#9CA3AF", margin: "8px 0 0", lineHeight: 1.5 }}>
+            Sans email, aucun espace citoyen n'est créé : le dossier est rattaché à un compte interne non utilisable par le pétitionnaire.
+          </p>
+        )}
       </div>
       <div>
         <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Adresse du projet</label>
