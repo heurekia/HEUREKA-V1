@@ -1,0 +1,21 @@
+# Acquisition CrowdSec pour HEUREKA — sources de logs analysées.
+#
+# Copié par install.sh dans /etc/crowdsec/acquis.d/heureka.yaml.
+# Source unique : install.sh met de côté l'acquisition auto-générée par le
+# paquet (acquis.yaml.dpkg-auto.bak) pour éviter la double lecture des logs.
+#
+# nginx termine le TLS directement (pas de proxy en amont) : l'IP cliente
+# présente dans access.log est donc l'IP réelle — pas de X-Forwarded-For à
+# parser, pas de risque de bannir l'IP d'un reverse proxy intermédiaire.
+
+filenames:
+  - /var/log/nginx/access.log
+  - /var/log/nginx/error.log
+labels:
+  type: nginx
+---
+# Brute-force SSH sur le VPS lui-même (collection 'linux' installée par défaut).
+filenames:
+  - /var/log/auth.log
+labels:
+  type: syslog
