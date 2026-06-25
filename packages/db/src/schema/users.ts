@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, pgEnum, uuid } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, pgEnum, uuid, integer } from "drizzle-orm/pg-core";
 
 export const userRoleEnum = pgEnum("user_role", ["citoyen", "mairie", "instructeur", "admin", "service_externe"]);
 
@@ -28,6 +28,11 @@ export const users = pgTable("users", {
   // jamais vu → la modale d'accueil s'affiche à la 1re connexion d'un agent
   // mairie/instructeur. Renseigné une fois que l'agent l'a parcourue/fermée.
   onboarding_completed_at: timestamp("onboarding_completed_at"),
+  // Compteur de version de session : incrémenté pour invalider d'un coup TOUS
+  // les jetons JWT existants d'un utilisateur (changement de mot de passe, de
+  // rôle, ou révocation/offboarding). Le JWT embarque cette valeur (claim `tv`)
+  // et requireAuth la compare à la valeur courante (cf. middlewares/auth.ts).
+  token_version: integer("token_version").notNull().default(0),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

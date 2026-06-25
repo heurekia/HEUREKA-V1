@@ -118,6 +118,7 @@ franceConnectRouter.get("/callback", fcLimiter, async (req: AuthRequest, res) =>
       role: user.role,
       commune: user.commune ?? undefined,
       commune_insee: user.commune_insee ?? undefined,
+      token_version: user.token_version,
     });
     res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);

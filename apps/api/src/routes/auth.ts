@@ -5,7 +5,7 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { users, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens, ai_usage_events, audit_logs } from "@heureka-v1/db";
 import { eq, and, gt, isNull, inArray } from "drizzle-orm";
-import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
+import { generateToken, requireAuth, bumpTokenVersion, invalidateTokenVersionCache, type AuthRequest } from "../middlewares/auth.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../services/mailer.js";
 import { logAudit } from "../services/audit.js";
 import { getStorageProvider } from "../services/storage.js";
@@ -205,7 +205,7 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
         code: "email_not_verified",
       });
     }
-    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
+    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: user.token_version });
     res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, "login", req);
@@ -358,6 +358,7 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     // La cascade DB supprime dossiers → pieces → messages → notifications.
     // audit_logs.user_id est ON DELETE SET NULL (préservé pour la sécurité).
     await db.delete(users).where(eq(users.id, user.id));
+    invalidateTokenVersionCache(user.id);
 
     res.clearCookie(cookieNameFor(req), COOKIE_CLEAR_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
@@ -401,6 +402,10 @@ authRouter.patch("/me/password", requireAuth, async (req: AuthRequest, res) => {
     if (!valid) return res.status(401).json({ error: "Mot de passe actuel incorrect" });
     const password_hash = await bcrypt.hash(new_password, 10);
     await db.update(users).set({ password_hash, updated_at: new Date() }).where(eq(users.id, user.id));
+    // Révocation : invalide TOUTES les sessions existantes, mais réémet le cookie
+    // de CELLE-ci pour ne pas déconnecter l'utilisateur qui change son mot de passe.
+    const newTv = await bumpTokenVersion(user.id);
+    res.cookie(cookieNameFor(req), generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: newTv }), COOKIE_OPTIONS);
     await writeAudit(user.id, user.email, "password_change", req);
     res.json({ ok: true });
   } catch (err) {
@@ -518,7 +523,9 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     const [user] = await db.select().from(users).where(eq(users.id, row.user_id)).limit(1);
     if (!user) return res.status(500).json({ error: "Erreur serveur" });
 
-    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
+    // Nouveau mot de passe défini → invalide toute session antérieure.
+    const newTv = await bumpTokenVersion(user.id);
+    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: newTv });
     res.cookie(cookieNameFor(req), jwtToken, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, row.type === "activation" ? "account_activated" : "password_reset", req);
@@ -556,7 +563,7 @@ authRouter.post("/verify-email", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, 
     const [user] = await db.select().from(users).where(eq(users.id, row.user_id)).limit(1);
     if (!user) return res.status(500).json({ error: "Erreur serveur" });
 
-    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
+    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: user.token_version });
     res.cookie(cookieNameFor(req), jwtToken, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, "email_verified", req);
