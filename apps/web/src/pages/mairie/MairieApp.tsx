@@ -1411,11 +1411,21 @@ function SignaturesPendantesScreen() {
   );
 }
 
-function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
+function DossierDetailRoute({ navigate, commune, communes, setCommune }: { navigate: (s: string) => void; commune: string; communes: string[]; setCommune: (c: string) => void }) {
   const { id } = useParams<{ id: string }>();
   const routerNavigate = useNavigate();
   const [dossier, setDossier] = useState<DossierInfo | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // On peut arriver sur ce dossier via la liste, la recherche, une notification
+  // (cloche) ou un lien direct — potentiellement vers un dossier d'une autre
+  // commune que celle sélectionnée. On aligne alors la commune active (sidebar,
+  // badges, écrans) sur celle du dossier ouvert. Réf pour appliquer la dernière
+  // logique sans relancer le fetch quand la commune sélectionnée change.
+  const syncCommuneRef = useRef<(c: string | null | undefined) => void>(() => {});
+  syncCommuneRef.current = (c) => {
+    if (c && c !== commune && communes.includes(c)) setCommune(c);
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -1433,6 +1443,8 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
     };
     api.get<ApiDetail>(`/mairie/dossiers/${id}`)
       .then(data => {
+        // Synchronise la commune sélectionnée sur celle du dossier ouvert.
+        syncCommuneRef.current(data.commune);
         const meta = (data.metadata ?? {}) as Record<string, unknown>;
         const lat = parseFloat(String(meta["lat"] ?? ""));
         const lng = parseFloat(String(meta["lng"] ?? ""));
@@ -1765,7 +1777,7 @@ export function MairieApp() {
           <Routes>
             <Route index element={<DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} inseeCode={communeInseeMap[commune]} onDossierClick={handleDossierClick} />} />
             <Route path="dossiers" element={<DossiersScreen commune={commune} onDossierClick={handleDossierClick} />} />
-            <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} />} />
+            <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} commune={commune} communes={userCommunes} setCommune={setCommune} />} />
             <Route path="messagerie" element={<MessageScreen commune={commune} onDossierClick={handleDossierClick} onUnreadChange={setMessageBadge} />} />
             <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
             <Route path="carte" element={<CarteScreen commune={commune} setCommune={setCommune} communeInseeMap={communeInseeMap} />} />
