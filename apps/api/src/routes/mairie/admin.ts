@@ -128,7 +128,12 @@ adminRouter.get("/admin/users", async (req: AuthRequest, res) => {
           WHERE uc.user_id = ${users.id} AND lower(c.name) = lower(${communeName})
         )
       )`,
+      // On exclut citoyens ET admins : un compte "admin" est un super-admin
+      // plateforme (Heurekia), géré dans la console super-admin — pas un agent
+      // de la commune. Il n'a donc pas sa place dans la liste Utilisateurs
+      // d'une mairie (où l'on ne gère que les rôles mairie / instructeur).
       ne(users.role, "citoyen"),
+      ne(users.role, "admin"),
     ));
     res.json(rows);
   } catch (err) {

@@ -339,8 +339,8 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
         {[
           ["Agents", String(userList.length), "#4F46E5"],
+          ["Mairie", String(userList.filter(u => u.role === "mairie").length), "#7C3AED"],
           ["Instructeurs", String(userList.filter(u => u.role === "instructeur").length), "#0891B2"],
-          ["Admins", String(userList.filter(u => u.role === "admin").length), "#DC2626"],
         ].map(([l, v, c]) => (
           <div key={l} style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ fontSize: 22, fontWeight: 700, color: c }}>{v}</span>
