@@ -126,3 +126,25 @@ export type ApiDossier = {
   // le détail renvoie 423.
   ocr_processing?: boolean;
 };
+
+// Types de dossier sélectionnables (création + édition du type en détail).
+export type NouveauDossierType =
+  | "permis_de_construire"
+  | "permis_de_construire_mi"
+  | "declaration_prealable"
+  | "permis_amenager"
+  | "permis_demolir"
+  | "permis_lotir"
+  | "certificat_urbanisme"
+  | "certificat_urbanisme_a"
+  | "certificat_urbanisme_b";
+
+export const DOSSIER_TYPE_OPTIONS: { value: NouveauDossierType; label: string }[] = [
+  { value: "permis_de_construire_mi", label: "Permis de construire — Maison individuelle (PCMI)" },
+  { value: "permis_de_construire", label: "Permis de construire (PC)" },
+  { value: "declaration_prealable", label: "Déclaration préalable (DP)" },
+  { value: "permis_amenager", label: "Permis d'aménager (PA)" },
+  { value: "permis_demolir", label: "Permis de démolir (PD)" },
+  { value: "certificat_urbanisme_a", label: "Certificat d'urbanisme informatif (CUa)" },
+  { value: "certificat_urbanisme_b", label: "Certificat d'urbanisme opérationnel (CUb)" },
+];
