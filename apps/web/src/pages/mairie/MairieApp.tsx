@@ -464,7 +464,19 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
     api.get<ApiNotif[]>("/notifications").then(setApiNotifs).catch(() => {});
   };
 
-  useEffect(() => { loadNotifs(); }, []);
+  // La cloche est montée en permanence dans le shell : sans rafraîchissement,
+  // son badge reste figé sur l'état du montage et une notification arrivée
+  // entre-temps (ex. « Signature requise ») n'y apparaît jamais tant que l'on
+  // n'ouvre pas le menu — alors qu'elle est bien visible dans l'Historique
+  // (qui se recharge à chaque visite). On rafraîchit donc périodiquement et au
+  // retour de focus, comme le badge des signatures en attente.
+  useEffect(() => {
+    loadNotifs();
+    const timer = setInterval(loadNotifs, 30_000);
+    const onFocus = () => loadNotifs();
+    window.addEventListener("focus", onFocus);
+    return () => { clearInterval(timer); window.removeEventListener("focus", onFocus); };
+  }, []);
 
   const unreadCount = apiNotifs.filter(n => !n.is_read).length;
 
