@@ -19,6 +19,7 @@ import { pieceAnnotationsRouter } from "./pieceAnnotations.js";
 import { dossierDocumentsRouter } from "./documents.js";
 import { assistantRouter } from "./assistant.js";
 import { helpReaderRouter } from "../help.js";
+import { supportRouter } from "./support.js";
 
 export const mairieRouter = Router();
 mairieRouter.use(requireAuth);
@@ -34,6 +35,10 @@ mairieRouter.use(auditMutations({
     "/service-conversations/:consultationId/read",
     // L'assistant d'aide n'est pas une mutation métier : on ne l'audite pas.
     "/assistant",
+    // Demande de support : le contenu du message (potentiellement des données
+    // personnelles) ne doit pas être dupliqué dans le journal d'audit. L'email
+    // envoyé fait foi.
+    "/support",
   ]),
 }));
 mairieRouter.use("/dossiers/:id", enforceDossierAccess);
@@ -60,3 +65,5 @@ mairieRouter.use(dossierDocumentsRouter);
 mairieRouter.use(assistantRouter);
 // Centre d'aide : lecture du sommaire + des articles publiés (GET only).
 mairieRouter.use(helpReaderRouter);
+// Demandes d'aide (formulaire « Contacter le support »).
+mairieRouter.use(supportRouter);

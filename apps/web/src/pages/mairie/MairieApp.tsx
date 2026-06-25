@@ -22,9 +22,7 @@ import { StatistiquesScreen } from "./StatistiquesScreen";
 import { NouveauDossierModal } from "./NouveauDossierModal";
 import { ParametresScreen } from "./ParametresScreen";
 import { AideDocumentation } from "./AideDocumentation";
-
-// Adresse de l'équipe support (boutons « Chat support » / « Contacter le support »).
-const SUPPORT_EMAIL = "support@heurekia.com";
+import { SupportModal } from "./SupportModal";
 
 const NAV_ITEMS = [
   { label: "Tableau de bord", icon: HomeIcon, path: "/mairie" },
@@ -1048,6 +1046,8 @@ function InfosPersoScreen() {
   // Centre d'aide : lecteur de documentation (ouvert depuis la carte
   // « Documentation » ou une question fréquente, avec recherche pré-remplie).
   const [docReader, setDocReader] = useState<{ open: boolean; query: string }>({ open: false, query: "" });
+  // Formulaire de contact support (cartes « Chat support » / « Contacter le support »).
+  const [supportModal, setSupportModal] = useState<{ open: boolean; type: string }>({ open: false, type: "question" });
 
   // ── À propos state ──
   const [prenom, setPrenom] = useState(user?.prenom ?? "");
@@ -1330,8 +1330,8 @@ function InfosPersoScreen() {
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
                 {([
                   { icon: "📖", title: "Documentation", sub: "Guides complets sur toutes les fonctionnalités", onClick: () => setDocReader({ open: true, query: "" }) },
-                  { icon: "💬", title: "Chat support", sub: "Discutez avec notre équipe de support", onClick: () => { window.location.href = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Assistance Heurekia")}`; } },
-                  { icon: "📧", title: "Contacter le support", sub: "Envoyez-nous un message", onClick: () => { window.location.href = `mailto:${SUPPORT_EMAIL}?subject=${encodeURIComponent("Contact support Heurekia")}`; } },
+                  { icon: "💬", title: "Chat support", sub: "Discutez avec notre équipe de support", onClick: () => setSupportModal({ open: true, type: "question" }) },
+                  { icon: "📧", title: "Contacter le support", sub: "Envoyez-nous un message", onClick: () => setSupportModal({ open: true, type: "autre" }) },
                 ]).map(c => (
                   <button key={c.title} onClick={c.onClick} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 12, padding: 16, cursor: "pointer", textAlign: "left", transition: "border-color 0.15s, box-shadow 0.15s" }}
                     onMouseEnter={e => { e.currentTarget.style.borderColor = "#C7D2FE"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(79,70,229,0.08)"; }}
@@ -1355,6 +1355,9 @@ function InfosPersoScreen() {
 
       {docReader.open && (
         <AideDocumentation initialQuery={docReader.query} onClose={() => setDocReader({ open: false, query: "" })} />
+      )}
+      {supportModal.open && (
+        <SupportModal defaultType={supportModal.type} onClose={() => setSupportModal({ open: false, type: "question" })} />
       )}
     </div>
   );
