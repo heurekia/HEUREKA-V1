@@ -3,6 +3,7 @@ import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearch
 import { api, ApiError } from "../../lib/api";
 import { normalizeForSearch } from "../../lib/utils";
 import { useAuth, hasPermission } from "../../hooks/useAuth";
+import { MfaSettings } from "../../components/MfaSettings";
 import { TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 import { fmtDate, COMMUNE_INSEE, notifIcon, notifColor, relTime, resolveCommune, type ApiNotif, type ApiDossier, type DossierInfo, type WorkflowMeta, type DelaiBreakdown } from "./shared";
 import {
@@ -1303,13 +1304,7 @@ function InfosPersoScreen() {
                 </button>
               </div>
               <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>Double authentification (2FA)</div>
-                  <div style={{ width: 36, height: 20, borderRadius: 10, background: "#E2E8F0", position: "relative", cursor: "not-allowed" }}>
-                    <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-                  </div>
-                </div>
-                <div style={{ fontSize: 12, color: "#94a3b8" }}>Fonctionnalité à venir — authentification double facteur par application TOTP.</div>
+                <MfaSettings />
               </div>
             </div>
           )}

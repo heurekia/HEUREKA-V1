@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "rea
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
+import { MfaSettings } from "../../components/MfaSettings";
 import { adminPath } from "../../router/adminBase";
 import { CATEGORIES } from "@heureka-v1/shared";
 
@@ -4186,6 +4187,11 @@ function Configuration() {
       <div style={{ marginBottom: 28 }}>
         <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Configuration</h1>
         <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Paramètres avancés de la plateforme</p>
+      </div>
+
+      {/* ── Sécurité de mon compte (double authentification) ── */}
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
+        <MfaSettings />
       </div>
 
       {/* ── Demandes d'articles manquants (issues des clics utilisateurs) ── */}
