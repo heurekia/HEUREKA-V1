@@ -15,7 +15,7 @@
  *  6. local DB (zones + rules)   → regulatory rules for the zone
  */
 
-import type { Geometry, Polygon } from "geojson";
+import type { Geometry, Polygon, MultiPolygon } from "geojson";
 import { db } from "../db.js";
 import { zones, zone_regulatory_rules, communes, gpu_parcel_cache } from "@heureka-v1/db";
 import { eq, and, ilike, sql, inArray } from "drizzle-orm";
@@ -1248,6 +1248,24 @@ function computeRulesRelevance(result: ParcelAnalysis): RegDbRule[] {
  *  - a free-text address: "12 rue du Commerce, Ballan-Miré"
  *  - a cadastral reference: "37018000AB0050"
  */
+// Centre approché d'une géométrie cadastrale (anneau extérieur), robuste aux
+// Polygon ET MultiPolygon. Sert de point pour résoudre la zone PLU / servitudes
+// quand la parcelle est trouvée par RÉFÉRENCE (sans géocodage d'adresse).
+function geometryCentroid(geom: Geometry | null | undefined): { lat: number; lng: number } | null {
+  if (!geom) return null;
+  let outer: number[][] | undefined;
+  if (geom.type === "Polygon") outer = (geom as Polygon).coordinates[0];
+  else if (geom.type === "MultiPolygon") outer = (geom as MultiPolygon).coordinates[0]?.[0];
+  else return null;
+  if (!outer || outer.length === 0) return null;
+  let sx = 0, sy = 0, n = 0;
+  for (const c of outer) {
+    const x = c[0], y = c[1];
+    if (typeof x === "number" && typeof y === "number") { sx += x; sy += y; n++; }
+  }
+  return n > 0 ? { lat: sy / n, lng: sx / n } : null;
+}
+
 export async function analyseParcel(
   query: string,
   options?: { citycode?: string; zoneOverride?: string; coords?: { lat: number; lng: number } }
@@ -1298,14 +1316,11 @@ export async function analyseParcel(
       result.parcel_confidence = "exact"; // explicit cadastral reference → unambiguous
       result.data_sources.push("IGN Cadastre");
       code_insee = parcel.code_insee;
-      // Get centroid from geometry if available
-      if (parcel.geometry?.type === "Polygon") {
-        const coords = (parcel.geometry as Polygon).coordinates[0];
-        if (coords && coords.length > 0) {
-          lat = coords.reduce((s, c) => s + (c[1] ?? 0), 0) / coords.length;
-          lng = coords.reduce((s, c) => s + (c[0] ?? 0), 0) / coords.length;
-        }
-      }
+      // Centre depuis la géométrie (Polygon OU MultiPolygon) → point utilisé pour
+      // la résolution de zone PLU / servitudes. Sans ce centre, le bloc zonage
+      // (gardé par `if (lat && lng)`) est sauté et la zone reste « non déterminée ».
+      const centre = geometryCentroid(parcel.geometry);
+      if (centre) { lat = centre.lat; lng = centre.lng; }
     } else {
       result.warnings.push("Parcelle cadastrale non trouvée via API IGN.");
     }
