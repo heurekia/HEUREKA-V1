@@ -893,6 +893,17 @@ reglementationRouter.post(
           schema_errors: parsed.errors,
         });
       }
+      // Périmètre : l'import upserte/purge la commune ciblée (_meta.insee). Un
+      // agent (non-admin) ne peut importer que dans une commune existante de son
+      // périmètre ; admin (scope null) non restreint.
+      const scope = await getCommuneScope(req.user!.id, req.user!.role);
+      if (scope !== null) {
+        const insee = parsed.data!._meta.insee;
+        const [c] = await db.select({ name: communes.name }).from(communes).where(eq(communes.insee_code, insee)).limit(1);
+        if (!c || !communeInScope(c.name, scope)) {
+          return res.status(403).json({ error: "Commune hors de votre périmètre" });
+        }
+      }
       const result = await importCanonical(parsed.data!);
       res.json({
         ok: true,

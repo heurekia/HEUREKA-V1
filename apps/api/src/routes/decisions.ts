@@ -533,19 +533,27 @@ decisionsRouter.delete("/communes/:commune/signataires/:id", requireRole("mairie
 });
 
 // ── GET /api/decisions/:id/events ────────────────────────────────────────────
-decisionsRouter.get("/:id/events", async (req: AuthRequest, res) => {
-  const { id } = req.params as { id: string };
-  const rows = await db
-    .select({
-      id: decision_events.id,
-      event_type: decision_events.event_type,
-      note: decision_events.note,
-      created_at: decision_events.created_at,
-      user: { prenom: users.prenom, nom: users.nom },
-    })
-    .from(decision_events)
-    .leftJoin(users, eq(decision_events.user_id, users.id))
-    .where(eq(decision_events.decision_id, id))
-    .orderBy(desc(decision_events.created_at));
-  res.json(rows);
+// Réservé aux agents ET au périmètre : l'historique contient les motifs de
+// refus de signature et les noms d'agents — pas de lecture cross-commune.
+decisionsRouter.get("/:id/events", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    if (!(await loadDossierForDecision(req, res, id))) return;
+    const rows = await db
+      .select({
+        id: decision_events.id,
+        event_type: decision_events.event_type,
+        note: decision_events.note,
+        created_at: decision_events.created_at,
+        user: { prenom: users.prenom, nom: users.nom },
+      })
+      .from(decision_events)
+      .leftJoin(users, eq(decision_events.user_id, users.id))
+      .where(eq(decision_events.decision_id, id))
+      .orderBy(desc(decision_events.created_at));
+    res.json(rows);
+  } catch (err) {
+    console.error("[decisions:events]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
 });
