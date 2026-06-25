@@ -3,9 +3,11 @@ import { api } from "../../lib/api";
 import BundleSplitModal from "./BundleSplitModal";
 import { DOSSIER_TYPE_OPTIONS, type NouveauDossierType } from "./shared";
 
-// Modale "Nouveau dossier" : choix dépôt OCR (CERFA) ou saisie manuelle,
-// reconnaissance des pièces, création du dossier. Types et sous-composants
-// (overlay, en-tête, devinette de code pièce) locaux. Extrait de MairieApp.tsx.
+// Modale "Nouveau dossier" : dépôt OCR (CERFA + pièces), reconnaissance des
+// pièces, création du dossier. La saisie 100 % manuelle a été retirée — le
+// formulaire reste éditable à la main après dépôt (option « aucun CERFA »).
+// Types et sous-composants (overlay, en-tête, devinette de code pièce) locaux.
+// Extrait de MairieApp.tsx.
 
 type NouveauDossierForm = {
   type: NouveauDossierType;
@@ -90,7 +92,6 @@ export function NouveauDossierModalHeader({ title, back, onClose }: { title: str
 }
 
 export function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commune: string }) {
-  const [mode, setMode] = useState<"choose" | "manual" | "ocr">("choose");
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const emptyForm: NouveauDossierForm = {
@@ -287,7 +288,7 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
       // created_via pilote la génération du CERFA prérempli côté API : en OCR
       // (dossier scanné), la mairie a déjà le vrai CERFA signé dans les pièces
       // numérisées → aucun CERFA prérempli n'est généré.
-      const meta: Record<string, unknown> = { created_via: mode === "manual" ? "manual" : "ocr" };
+      const meta: Record<string, unknown> = { created_via: "ocr" };
       if (ocrNumero) meta["numero_cerfa"] = ocrNumero;
       payload["metadata"] = meta;
       const created = await api.post<{ id: string; numero: string }>("/mairie/dossiers", payload);
@@ -446,29 +447,6 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
     </NouveauDossierOverlay>
   );
 
-  if (mode === "choose") return (
-    <NouveauDossierOverlay onClose={onClose}>
-      <NouveauDossierModalHeader title="Nouveau dossier" onClose={onClose} />
-      <div style={{ padding: "24px", display: "flex", flexDirection: "column" as const, gap: 12 }}>
-        <p style={{ fontSize: 13, color: "#64748b", margin: 0 }}>Choisissez le mode de saisie du dossier.</p>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 4 }}>
-          <button onClick={() => setMode("manual")} style={{ border: "2px solid #E2E8F0", borderRadius: 14, padding: "24px 20px", cursor: "pointer", background: "white", textAlign: "left", transition: "border-color 0.15s" }}
-            onMouseEnter={e => (e.currentTarget.style.borderColor = "#4F46E5")} onMouseLeave={e => (e.currentTarget.style.borderColor = "#E2E8F0")}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>📝</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Saisie manuelle</div>
-            <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>Remplissez le formulaire CERFA et les pièces complémentaires manuellement.</div>
-          </button>
-          <button onClick={() => setMode("ocr")} style={{ border: "2px solid #E2E8F0", borderRadius: 14, padding: "24px 20px", cursor: "pointer", background: "white", textAlign: "left", transition: "border-color 0.15s" }}
-            onMouseEnter={e => (e.currentTarget.style.borderColor = "#4F46E5")} onMouseLeave={e => (e.currentTarget.style.borderColor = "#E2E8F0")}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>📷</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Reconnaissance OCR</div>
-            <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>Importez un CERFA scanné ou des pièces complémentaires — les données seront extraites automatiquement.</div>
-          </button>
-        </div>
-      </div>
-    </NouveauDossierOverlay>
-  );
-
   const formFields = (
     <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
       <div>
@@ -554,7 +532,7 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
 
   const submitLabel = submitting
     ? (uploadProgress ? `Dépôt ${uploadProgress.done}/${uploadProgress.total}…` : "Création…")
-    : (mode === "ocr" && stagedFiles.length > 0 ? `Créer le dossier (${stagedFiles.length} pièce${stagedFiles.length > 1 ? "s" : ""})` : "Créer le dossier");
+    : (stagedFiles.length > 0 ? `Créer le dossier (${stagedFiles.length} pièce${stagedFiles.length > 1 ? "s" : ""})` : "Créer le dossier");
 
   const footer = (
     <div style={{ padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
@@ -616,9 +594,9 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
     </div>
   );
 
-  if (mode === "ocr") return (
+  return (
     <NouveauDossierOverlay onClose={onClose}>
-      <NouveauDossierModalHeader title="Reconnaissance OCR" onClose={onClose} back={() => { setMode("choose"); setStagedFiles([]); setCerfaDone(false); setOcrError(null); setOcrNumero(null); }} />
+      <NouveauDossierModalHeader title="Nouveau dossier" onClose={onClose} />
       <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
         {stagedFiles.length > 0 && !submitting && (
           <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 8, padding: "10px 14px" }}>
@@ -682,14 +660,6 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
         )}
       </div>
       {stagedFiles.length > 0 && footer}
-    </NouveauDossierOverlay>
-  );
-
-  return (
-    <NouveauDossierOverlay onClose={onClose}>
-      <NouveauDossierModalHeader title="Nouveau dossier — Saisie manuelle" onClose={onClose} back={() => setMode("choose")} />
-      <div style={{ padding: "20px 24px" }}>{formFields}</div>
-      {footer}
     </NouveauDossierOverlay>
   );
 }
