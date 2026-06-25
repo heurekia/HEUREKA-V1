@@ -310,15 +310,23 @@ function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]
 // Chaque frappe remonte le HTML courant via onChange.
 function EditableBody({ html, onChange }: { html: string; onChange: (html: string) => void }) {
   const ref = useRef<HTMLDivElement>(null);
+  const focusedRef = useRef(false);
+  // Synchronise le DOM depuis `html` tant que l'utilisateur ne tape pas (focus) :
+  // les mises à jour live (liste de pièces, variables) se reflètent dans
+  // l'éditeur, sans réinitialiser le curseur pendant la saisie.
   useLayoutEffect(() => {
-    if (ref.current) ref.current.innerHTML = DOMPurify.sanitize(html);
-  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+    if (ref.current && !focusedRef.current && ref.current.innerHTML !== html) {
+      ref.current.innerHTML = DOMPurify.sanitize(html);
+    }
+  }, [html]);
   return (
     <div
       ref={ref}
       className="tiptap-preview-mairie courrier-editable-active"
       contentEditable
       suppressContentEditableWarning
+      onFocus={() => { focusedRef.current = true; }}
+      onBlur={() => { focusedRef.current = false; }}
       onInput={(e) => onChange(e.currentTarget.innerHTML)}
       style={{ outline: "2px dashed #6366F1", outlineOffset: 6, borderRadius: 4, minHeight: 60 }}
     />
@@ -771,6 +779,21 @@ export function CourrierModal({
     setSubstitutedHtml(substituteVariables(selected.body, vars));
   }, [selected, letterhead, dossier, user, signataire, piecesListHtml, requestedPieces.length]);
 
+  // Quand la sélection de pièces change, on repart de la substitution live pour
+  // que la balise {liste_pieces_a_completer} reflète toujours la sélection (sinon
+  // une édition manuelle antérieure du corps figeait la liste). Le garde
+  // prevPiecesKey évite de réinitialiser au montage — ce qui préserve le corps
+  // d'un brouillon rouvert.
+  const piecesKey = JSON.stringify(requestedPieces);
+  const prevPiecesKey = useRef(piecesKey);
+  useEffect(() => {
+    if (prevPiecesKey.current === piecesKey) return;
+    prevPiecesKey.current = piecesKey;
+    // On revient au corps live ; EditableBody se resynchronise (le mode édition
+    // peut rester actif, la liste de pièces s'y met à jour automatiquement).
+    setBodyOverride(null);
+  }, [piecesKey]);
+
   // Auto-sélection d'un template de catégorie "pieces_complementaires" quand
   // la modale est ouverte en mode demande de pièces — fallback : premier
   // template disponible.
@@ -911,14 +934,14 @@ export function CourrierModal({
             {mode === "pieces_complementaires" ? (
               <button
                 onClick={handleSend}
-                disabled={emitting || isSent || (!draftId && requestedPieces.length === 0)}
-                title={isSent ? "Courrier déjà émis" : (!draftId && requestedPieces.length === 0) ? "Sélectionnez au moins une pièce" : "Émettre et basculer le dossier en incomplet"}
+                disabled={emitting || isSent || (requestedPieces.length === 0)}
+                title={isSent ? "Courrier déjà émis" : (requestedPieces.length === 0) ? "Sélectionnez au moins une pièce" : "Émettre et basculer le dossier en incomplet"}
                 style={{
                   display: "flex", alignItems: "center", gap: 6, padding: "7px 16px",
-                  background: (emitting || isSent || (!draftId && requestedPieces.length === 0)) ? "#E2E8F0" : "linear-gradient(135deg,#D97706,#F59E0B)",
-                  color: (emitting || isSent || (!draftId && requestedPieces.length === 0)) ? "#94a3b8" : "white",
+                  background: (emitting || isSent || (requestedPieces.length === 0)) ? "#E2E8F0" : "linear-gradient(135deg,#D97706,#F59E0B)",
+                  color: (emitting || isSent || (requestedPieces.length === 0)) ? "#94a3b8" : "white",
                   border: "none", borderRadius: 8,
-                  cursor: (emitting || isSent || (!draftId && requestedPieces.length === 0)) ? "default" : "pointer",
+                  cursor: (emitting || isSent || (requestedPieces.length === 0)) ? "default" : "pointer",
                   fontSize: 13, fontWeight: 600,
                 }}>
                 {isSent ? "✓ Émise" : emitting ? "Émission…" : "Émettre la demande"}
