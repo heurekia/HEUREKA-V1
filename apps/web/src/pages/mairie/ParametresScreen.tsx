@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { DotsIcon, StatusBadge } from "./ui";
@@ -608,6 +608,7 @@ export function ParametresScreen({ commune = "", communes = [], isAdmin = false,
   const NOTIF_SUBS = ["historique", "evenements", "canaux"] as const;
   type NotifSub = (typeof NOTIF_SUBS)[number];
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [stab, setStab] = useState(() => SLUG_TO_TAB[searchParams.get("tab") ?? ""] ?? "Réglementation");
   const selectTab = (t: string) => {
     setStab(t);
@@ -671,6 +672,14 @@ export function ParametresScreen({ commune = "", communes = [], isAdmin = false,
       api.patch(`/notifications/${n.id}/read`).catch(() => {});
       setHistNotifs(ns => ns.map(x => x.id === n.id ? { ...x, is_read: true } : x));
     }
+  };
+  // Au clic, on marque la notification lue ET on renvoie vers son objet (le
+  // dossier concerné), comme depuis la cloche. La commune active est
+  // resynchronisée par l'écran de détail à l'ouverture du dossier (cf.
+  // DossierDetailRoute), donc inutile de la basculer ici.
+  const handleHistNotifClick = (n: ApiNotif) => {
+    markOneRead(n);
+    if (n.dossier_id) navigate(`/mairie/dossiers/${n.dossier_id}`);
   };
   return (
     <div style={{ padding: 24 }}>
@@ -746,7 +755,7 @@ export function ParametresScreen({ commune = "", communes = [], isAdmin = false,
                 // Agent multi-communes : préfixe le nom de la ville concernée.
                 const communeLabel = communes.length > 1 ? (resolveCommune(n.commune, communes) ?? n.commune) : null;
                 return (
-                <div key={n.id} onClick={() => markOneRead(n)}
+                <div key={n.id} onClick={() => handleHistNotifClick(n)}
                   style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 20px", borderBottom: "1px solid #F8FAFC", background: n.is_read ? "white" : "#F8F7FF", cursor: "pointer", transition: "background 0.15s" }}>
                   <div style={{ width: 36, height: 36, borderRadius: 10, background: notifColor(n.type) + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{notifIcon(n.type)}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
