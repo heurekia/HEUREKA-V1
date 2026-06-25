@@ -191,6 +191,15 @@ decisionsRouter.get("/dossier/:dossierId", async (req: AuthRequest, res) => {
       motif_refus_signature: decisions.motif_refus_signature,
       created_at: decisions.created_at,
       updated_at: decisions.updated_at,
+      // Instructeur AUTEUR de la décision (instructeur_id est NOT NULL : toujours
+      // présent). À ne pas confondre avec l'instructeur ASSIGNÉ au dossier, qui
+      // peut être « Non assigné ». Le panneau Décision affiche cet auteur dans
+      // le circuit de signature (ligne « Instructeur·trice »).
+      instructeur: {
+        id: instructeurU.id,
+        prenom: instructeurU.prenom,
+        nom: instructeurU.nom,
+      },
       signataire: {
         id: signataireU.id,
         prenom: signataireU.prenom,
@@ -199,6 +208,7 @@ decisionsRouter.get("/dossier/:dossierId", async (req: AuthRequest, res) => {
       },
     })
     .from(decisions)
+    .leftJoin(instructeurU, eq(decisions.instructeur_id, instructeurU.id))
     .leftJoin(signataireU, eq(decisions.signataire_id, signataireU.id))
     .where(eq(decisions.dossier_id, dossierId))
     .orderBy(desc(decisions.created_at))
