@@ -165,9 +165,11 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
 
     let analysis = await analyseParcel(query, { citycode, zoneOverride, coords });
     // Filet anti-régression : si on a privilégié la référence cadastrale mais
-    // qu'elle ne s'est PAS résolue en parcelle (réf erronée, INSEE absent côté
-    // IGN…), on réessaie avec l'adresse — comportement historique préservé.
-    if (refId && query === refId && !analysis.parcel && addrQuery) {
+    // qu'elle ne s'est PAS résolue en parcelle OU n'a PAS déterminé de zone PLU,
+    // on réessaie avec l'adresse (géocodage → coordonnées → zone), comportement
+    // historique préservé. On ne le fait pas si l'instructeur a cliqué un point
+    // sur la carte (?lat/lng) : son choix prime.
+    if (refId && query === refId && addrQuery && !coords && (!analysis.parcel || !analysis.plu_zone)) {
       analysis = await analyseParcel(addrQuery, { citycode, zoneOverride, coords });
     }
 
