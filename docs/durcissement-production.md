@@ -2,7 +2,8 @@
 
 > Document vivant. Tient le fil de l'audit de performance et du durcissement de
 > la plateforme en vue d'une montée en charge. Mis à jour **au fur et à mesure**
-> de l'avancement (cf. § Journal d'avancement). Dernière mise à jour : chantiers 1.2 & 1.3.
+> de l'avancement (cf. § Journal d'avancement). Dernière mise à jour : Palier 1
+> terminé (chantier 1.1 async + garde-fou hors-sujet).
 
 ## 1. Contexte & verdict
 
@@ -42,7 +43,7 @@ pilote mono-instance** une fois le Palier 0 traité. Ce n'est pas un audit
 | Palier | Objectif | Risque | État |
 |---|---|---|---|
 | **0** | Garde-fous à faible risque (index, timeouts, rate-limit) | Faible | ✅ Fait |
-| **1** | Sortir le travail lourd du cycle requête + transactions | Moyen | 🚧 En cours |
+| **1** | Sortir le travail lourd du cycle requête + transactions | Moyen | ✅ Fait (hors 1.3b mineur) |
 | **2** | Exécution (build JS, fin du `tsx`) & observabilité | Moyen | ⏳ À faire |
 | **3** | Frontend (code splitting, mémoïsation, cache données) | Faible | ⏳ À faire |
 | **4** | Scaling horizontal (Redis, clustering, Postgres séparé) | Élevé | ⏳ À faire |
@@ -67,7 +68,25 @@ pilote mono-instance** une fois le Palier 0 traité. Ce n'est pas un audit
 | 1.2 | `refreshPluZones` hors du chemin `/analyse` (fond + service *stale*) | ✅ Fait | `perf(plu): stale-while-revalidate du contexte PLU` |
 | 1.3 | CPU bloquant : `execFileSync`→async (rendu/extraction PDF) | ✅ Fait | `perf(pdf): rendu et extraction PDF asynchrones` |
 | 1.3b | Offload base64/hash de gros buffers vers worker_threads + plafond de taille cumulée | ⏳ À faire (impact moindre) | |
-| 1.1 | Upload citoyen → file OCR asynchrone (réponse 201 immédiate) — **BLOQUANT** | 🚧 En cours | |
+| 1.1 | Upload citoyen → file OCR asynchrone (réponse 201 immédiate) — **BLOQUANT** | ✅ Fait | `perf(upload citoyen): analyse IA en arrière-plan` |
+| 1.1b | Garde-fou « document hors-sujet » : blocage du dépôt si une pièce ne correspond pas à sa rubrique (serveur + wizard) | ✅ Fait | `feat(pieces): detectRubricMismatch` ; `feat(soumission): bloque le dépôt … hors-sujet` ; `feat(wizard citoyen): polling … hors-sujet` |
+
+### Détail — Option 1 (upload citoyen async) + garde-fou hors-sujet
+
+Choix validé avec l'utilisateur (cf. décision produit) : upload citoyen **non
+bloquant** AVEC préservation/renforcement du blocage de soumission.
+
+- **Async** : la route `/dossiers/:id/pieces/upload` persiste la pièce, ré-ouvre
+  le dossier immédiatement, met l'analyse (Pixtral) en file (`pieceOcrQueue`,
+  généralisée avec un hook `onSettled`) et répond `201` avec `ai_pending`. Le
+  wizard interroge la pièce jusqu'au verdict (polling borné) puis affiche le
+  score + l'éventuel hors-sujet.
+- **Garde-fou hors-sujet** : `detectRubricMismatch` compare le type **détecté**
+  par l'extraction IA au type **attendu** de la rubrique. Conservateur (familles
+  texte/graphique, confiance ≥ seuil) pour éviter les faux positifs. Enforcement
+  **serveur** sur `/soumettre` (422), **plus** blocage du bouton côté wizard.
+  Le blocage existant sur les pièces obligatoires manquantes est conservé ;
+  le verdict qualitatif (« À reprendre ») reste indicatif, comme avant.
 
 ## 5. Variables d'environnement introduites
 
@@ -81,6 +100,7 @@ pilote mono-instance** une fois le Palier 0 traité. Ce n'est pas un audit
 | `RL_UPLOAD_MAX` / `RL_UPLOAD_WINDOW_MS` | `60` / `300000` | Quota upload/OCR de pièces (par utilisateur) |
 | `RL_LLM_MAX` / `RL_LLM_WINDOW_MS` | `40` / `300000` | Quota IA interactive (assistant, structuration) |
 | `RL_ANALYZE_MAX` / `RL_ANALYZE_WINDOW_MS` | `60` / `300000` | Quota analyses réglementaires |
+| `RUBRIC_MISMATCH_MIN_CONFIDENCE` | `0.75` | Confiance min. sur le type détecté pour bloquer un dépôt « hors-sujet » |
 
 > ⚠️ Les rate-limiters et timeouts d'inactivité utilisent un **store en mémoire**
 > (par process), cohérent avec le mono-instance. À externaliser en Redis au
