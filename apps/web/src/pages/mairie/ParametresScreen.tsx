@@ -912,8 +912,9 @@ export function ParametresScreen({ commune = "", communes = [], isAdmin = false,
         <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
           <CommuneLetterheadPanel inseeCode={communeInseeMap[commune]} />
           <div style={{ borderTop: "1px solid #E2E8F0", paddingTop: 28 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Modèles de courrier</div>
-            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Créez et gérez vos modèles de courrier avec variables dynamiques.</div>
+            {/* Pas de titre ici : TemplateManagerPanel rend déjà son propre
+                en-tête (« Mes Modèles de Courrier » + bouton « Nouveau modèle »).
+                Le doublon de titres a été retiré. */}
             <TemplateManagerPanel inseeCode={communeInseeMap[commune]} />
           </div>
         </div>

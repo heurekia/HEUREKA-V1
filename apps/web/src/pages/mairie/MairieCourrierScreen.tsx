@@ -531,9 +531,12 @@ export function CourrierModal({
   }, [allMentions, selectedRefs]);
 
   useEffect(() => {
-    // Périmètre commune du dossier (cf. inseeCode) — aligné sur la création des
-    // modèles, sinon un agent multi-communes ne retrouve pas ses modèles ici.
-    const q = inseeCode ? `?insee_code=${encodeURIComponent(inseeCode)}` : "";
+    // Périmètre = commune DU DOSSIER, résolue côté serveur via dossier_id : ça
+    // ne dépend ni de la commune principale du compte ni d'une table nom→INSEE
+    // côté client. insee_code reste transmis comme secours (repli serveur).
+    const params = new URLSearchParams({ dossier_id: dossier.id });
+    if (inseeCode) params.set("insee_code", inseeCode);
+    const q = `?${params.toString()}`;
     Promise.all([
       api.get<CourrierTemplate[]>(`/mairie/templates${q}`),
       api.get<Letterhead & { commune_configured?: boolean }>(`/mairie/commune-letterhead${q}`),
@@ -542,7 +545,7 @@ export function CourrierModal({
       setLetterhead(lh);
       if (tpls.length > 0) setSelected(tpls[0]!);
     }).catch(() => {}).finally(() => setLoading(false));
-  }, [inseeCode]);
+  }, [dossier.id, inseeCode]);
 
   // Signataire de la commune pour le bloc signature. Hors décision (ex. pièces
   // manquantes), on retient le signataire délégué (arrêté de délégation), sinon

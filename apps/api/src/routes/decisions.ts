@@ -424,8 +424,15 @@ decisionsRouter.post("/:id/notify", requireRole("mairie", "instructeur", "admin"
 });
 
 // ── GET /api/decisions/communes/:commune/signataires ─────────────────────────
-decisionsRouter.get("/communes/:commune/signataires", async (req: AuthRequest, res) => {
+// Réservé aux agents ET au périmètre commune de l'appelant : la réponse expose
+// signature_image / tampon_image (signature manuscrite + cachet officiel), des
+// données qui permettraient la contrefaçon d'arrêtés si elles fuyaient.
+decisionsRouter.get("/communes/:commune/signataires", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(commune, scope)) {
+    return res.status(403).json({ error: "Commune hors de votre périmètre" });
+  }
   const rows = await db
     .select({
       id: signataires.id,
@@ -483,6 +490,14 @@ decisionsRouter.put("/communes/:commune/signataires/:id", requireRole("mairie", 
   if (!communeInScope(commune, scope)) {
     return res.status(403).json({ error: "Commune hors de votre périmètre" });
   }
+  // Anti-IDOR : le :commune (vérifié ci-dessus) ne garantit pas que :id lui
+  // appartient. On vérifie la commune RÉELLE du signataire ciblé, sinon un
+  // agent pourrait réécrire la signature d'une commune hors de son périmètre
+  // en passant un :commune valide et un :id arbitraire.
+  const [existingSig] = await db.select({ commune: signataires.commune }).from(signataires).where(eq(signataires.id, id)).limit(1);
+  if (!existingSig || !communeInScope(existingSig.commune, scope)) {
+    return res.status(404).json({ error: "Signataire introuvable" });
+  }
   const { role, fonction, signature_image, tampon_image, delegation_arrete, delegation_date, active } = req.body as {
     role?: string; fonction?: string | null; signature_image?: string | null; tampon_image?: string | null;
     delegation_arrete?: string; delegation_date?: string; active?: boolean;
@@ -509,24 +524,37 @@ decisionsRouter.delete("/communes/:commune/signataires/:id", requireRole("mairie
   if (!communeInScope(commune, scope)) {
     return res.status(403).json({ error: "Commune hors de votre périmètre" });
   }
+  // Anti-IDOR : vérifier la commune RÉELLE du signataire ciblé (cf. PUT).
+  const [existingSig] = await db.select({ commune: signataires.commune }).from(signataires).where(eq(signataires.id, id)).limit(1);
+  if (!existingSig || !communeInScope(existingSig.commune, scope)) {
+    return res.status(404).json({ error: "Signataire introuvable" });
+  }
   await db.update(signataires).set({ active: false }).where(eq(signataires.id, id));
   res.json({ ok: true });
 });
 
 // ── GET /api/decisions/:id/events ────────────────────────────────────────────
-decisionsRouter.get("/:id/events", async (req: AuthRequest, res) => {
-  const { id } = req.params as { id: string };
-  const rows = await db
-    .select({
-      id: decision_events.id,
-      event_type: decision_events.event_type,
-      note: decision_events.note,
-      created_at: decision_events.created_at,
-      user: { prenom: users.prenom, nom: users.nom },
-    })
-    .from(decision_events)
-    .leftJoin(users, eq(decision_events.user_id, users.id))
-    .where(eq(decision_events.decision_id, id))
-    .orderBy(desc(decision_events.created_at));
-  res.json(rows);
+// Réservé aux agents ET au périmètre : l'historique contient les motifs de
+// refus de signature et les noms d'agents — pas de lecture cross-commune.
+decisionsRouter.get("/:id/events", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    if (!(await loadDossierForDecision(req, res, id))) return;
+    const rows = await db
+      .select({
+        id: decision_events.id,
+        event_type: decision_events.event_type,
+        note: decision_events.note,
+        created_at: decision_events.created_at,
+        user: { prenom: users.prenom, nom: users.nom },
+      })
+      .from(decision_events)
+      .leftJoin(users, eq(decision_events.user_id, users.id))
+      .where(eq(decision_events.decision_id, id))
+      .orderBy(desc(decision_events.created_at));
+    res.json(rows);
+  } catch (err) {
+    console.error("[decisions:events]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
 });
