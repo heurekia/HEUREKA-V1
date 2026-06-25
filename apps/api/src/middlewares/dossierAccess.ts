@@ -1,7 +1,7 @@
 import type { Response, NextFunction } from "express";
 import { db } from "../db.js";
 import { dossiers, users, communes, user_communes } from "@heureka-v1/db";
-import { eq, sql, type SQL } from "drizzle-orm";
+import { eq, sql, inArray, type SQL } from "drizzle-orm";
 import type { AuthRequest } from "./auth.js";
 
 // Résultat de la résolution du périmètre d'un agent : noms de communes (en
@@ -74,7 +74,10 @@ export function communeScopeFilter(communeColumn: SQL, scope: CommuneScope, requ
   const requested = requestedCommune ? sql`${communeColumn} ILIKE ${requestedCommune}` : null;
   if (scope === null) return requested ?? sql`1=1`;
   if (scope.size === 0) return sql`1=0`;
-  const inScope = sql`lower(trim(${communeColumn})) = ANY(${[...scope]})`;
+  // NB : `inArray` rend `... in ($1,$2)`. Surtout pas `= ANY(${[...scope]})` —
+  // drizzle développe un tableau JS en `($1,$2)` (ROW), qu'ANY() rejette
+  // (« op ANY/ALL (array) requires array on right side ») → 500 silencieux.
+  const inScope = inArray(sql`lower(trim(${communeColumn}))`, [...scope]);
   return requested ? sql`(${inScope}) AND (${requested})` : inScope;
 }
 
