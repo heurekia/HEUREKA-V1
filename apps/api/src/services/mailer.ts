@@ -206,6 +206,75 @@ export async function sendPetitionnaireInvitationEmail(opts: {
   });
 }
 
+// Notification au pétitionnaire qu'un courrier d'instruction lui a été adressé
+// (canal email de la remise de courrier). Reste une NOTIFICATION : le courrier
+// lui-même est consultable dans son espace / sa messagerie. L'envoi du PDF en
+// pièce jointe relève d'une étape ultérieure.
+export async function sendCourrierEmail(opts: {
+  to: string;
+  prenom: string;
+  numeroDossier: string;
+  communeName?: string;
+  subject: string;
+  piecesText?: string;
+}) {
+  assertEmail(opts.to);
+  const link = `${CITIZEN_BASE_URL}/`;
+  const commune = opts.communeName
+    ? `le service urbanisme de <strong>${esc(opts.communeName)}</strong>`
+    : "votre service urbanisme";
+  const communeText = opts.communeName ? `le service urbanisme de ${opts.communeName}` : "votre service urbanisme";
+  const piecesHtml = opts.piecesText
+    ? `<div style="margin:0 0 28px;padding:14px 16px;background:#FAFAFA;border:1px solid #E2E8F0;border-radius:8px;font-size:14px;color:#374151;white-space:pre-line">${esc(opts.piecesText)}</div>`
+    : "";
+  await getResend().emails.send({
+    from: FROM,
+    to: opts.to,
+    subject: opts.subject?.trim() || "Courrier de votre service urbanisme",
+    html: `
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#F0F0F0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F0F0F0;padding:40px 0">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08)">
+        <tr>
+          <td style="background:#000020;padding:24px 32px">
+            <table cellpadding="0" cellspacing="0"><tr>
+              <td style="width:32px;height:32px;background:#4F46E5;border-radius:8px;text-align:center;vertical-align:middle"><span style="color:white;font-weight:800;font-size:14px">H</span></td>
+              <td style="padding-left:12px;color:white;font-size:18px;font-weight:700">HEUREKIA</td>
+            </tr></table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:40px 32px 32px">
+            <h1 style="margin:0 0 20px;font-size:22px;font-weight:800;color:#0F172A">${esc(opts.subject?.trim() || "Courrier de votre service urbanisme")}</h1>
+            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${esc(opts.prenom)},</p>
+            <p style="margin:0 0 24px;font-size:15px;color:#374151;line-height:1.7">
+              ${commune} vous a adressé un courrier concernant votre dossier <strong>${esc(opts.numeroDossier)}</strong>.
+            </p>
+            ${piecesHtml}
+            <table cellpadding="0" cellspacing="0" style="margin:0 0 28px"><tr>
+              <td style="background:#4F46E5;border-radius:8px;padding:14px 32px"><a href="${link}" style="color:white;text-decoration:none;font-size:15px;font-weight:600">Consulter mon espace →</a></td>
+            </tr></table>
+            <p style="margin:0;font-size:13px;color:#94a3b8">Retrouvez le détail et échangez avec le service instructeur depuis votre espace personnel.</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 32px;border-top:1px solid #F1F5F9;background:#FAFAFA">
+            <p style="margin:0;font-size:12px;color:#94a3b8">Heurekia — Plateforme intelligente de gestion des autorisations d'urbanisme</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`,
+    text: `Bonjour ${opts.prenom},\n\n${communeText} vous a adressé un courrier concernant votre dossier ${opts.numeroDossier}.\n\n${opts.subject?.trim() ?? ""}${opts.piecesText ? `\n\n${opts.piecesText}` : ""}\n\nConsultez votre espace : ${link}\n\nHeurekia — Plateforme intelligente de gestion des autorisations d'urbanisme`,
+  });
+}
+
 export async function sendVerificationEmail(opts: {
   to: string;
   prenom: string;

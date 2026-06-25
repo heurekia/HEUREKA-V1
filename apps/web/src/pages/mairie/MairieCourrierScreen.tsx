@@ -420,6 +420,17 @@ export interface CourrierModalProps {
 
 const NO_AI_HINTS_KEY = "heureka_no_ai_hints";
 
+// Canaux de remise d'un courrier au pétitionnaire (cf. service courrierDelivery).
+type CourrierChannel = "messagerie" | "email" | "postal" | "ar";
+type DeliveryResult = { channel: string; delivered: boolean; via: string; note?: string };
+type SendResponse = { delivery?: DeliveryResult | null };
+const SEND_CHANNELS: { value: CourrierChannel; label: string; icon: string; hint: string }[] = [
+  { value: "messagerie", label: "Messagerie interne", icon: "📨", hint: "Dépose le courrier dans l'espace du pétitionnaire (instantané, dématérialisé)" },
+  { value: "email", label: "Email", icon: "✉️", hint: "Notifie le pétitionnaire par email avec un lien vers son espace" },
+  { value: "postal", label: "Courrier postal", icon: "🖨️", hint: "À imprimer et poster — aucun envoi automatique" },
+  { value: "ar", label: "Recommandé (LRAR)", icon: "📦", hint: "À imprimer et envoyer en recommandé avec A.R." },
+];
+
 export function CourrierModal({
   dossier, onClose,
   mode = "general",
@@ -512,6 +523,9 @@ export function CourrierModal({
   const [saving, setSaving] = useState(false);
   const [savedAt, setSavedAt] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  // Menu de choix du canal d'envoi + retour de remise (via/note).
+  const [showChannelMenu, setShowChannelMenu] = useState(false);
+  const [deliveryResult, setDeliveryResult] = useState<DeliveryResult | null>(null);
   const isSent = statut === "envoye";
 
   // Synthèse des pièces sélectionnées (pour la prévisualisation HTML et la
@@ -537,6 +551,9 @@ export function CourrierModal({
   // édition manuelle (bodyOverride) priment sur la substitution live du modèle.
   const effectiveBody = bodyOverride ?? substitutedHtml;
   const canEditBody = !isSent && !isCanvasBody(effectiveBody);
+  // Envoi impossible si : en cours, déjà envoyé, ou rien à envoyer (aucune pièce
+  // en mode demande de pièces ; ni modèle ni brouillon en mode général).
+  const sendDisabled = emitting || isSent || (mode === "pieces_complementaires" ? requestedPieces.length === 0 : (!selected && !draftId));
 
   const loadMentions = useCallback((ct: string) => {
     setMentionsLoading(true);
@@ -614,19 +631,21 @@ export function CourrierModal({
   // déclenche les effets métier côté serveur (marquage des pièces, bascule du
   // dossier). Si un brouillon existe, on l'envoie via /send (le serveur réutilise
   // les pièces stockées) ; sinon émission directe (pièces) ou création+envoi.
-  const handleSend = useCallback(async () => {
+  const handleSend = useCallback(async (channel: CourrierChannel) => {
     if (emitting || isSent) return;
+    setShowChannelMenu(false);
     setEmitting(true);
     setEmitError(null);
     try {
+      let resp: SendResponse | null = null;
       if (mode === "pieces_complementaires" && !draftId) {
         if (requestedPieces.length === 0) { setEmitError("Sélectionnez au moins une pièce"); return; }
-        await api.post(`/mairie/dossiers/${dossier.id}/courriers/pieces-complementaires`, {
+        resp = await api.post<SendResponse>(`/mairie/dossiers/${dossier.id}/courriers/pieces-complementaires`, {
           pieces: requestedPieces,
           articles_cites: Array.from(selectedRefs),
           body_snapshot: effectiveBody || null,
           subject: selected?.name ?? "Demande de pièces complémentaires",
-          delivery_method: "print",
+          delivery_method: channel,
           attachment_document_ids: Array.from(attachDocIds),
         });
       } else {
@@ -642,9 +661,9 @@ export function CourrierModal({
           id = row.id;
           setDraftId(id);
         }
-        await api.post(`/mairie/dossiers/${dossier.id}/courriers/${id}/send`, {
+        resp = await api.post<SendResponse>(`/mairie/dossiers/${dossier.id}/courriers/${id}/send`, {
           body_snapshot: effectiveBody || null,
-          delivery_method: "print",
+          delivery_method: channel,
           attachment_document_ids: Array.from(attachDocIds),
           // Pour une demande de pièces, on transmet la sélection à jour (le
           // serveur retombe sur l'état stocké si on n'envoie rien).
@@ -656,6 +675,7 @@ export function CourrierModal({
       setEmittedAt(new Date().toISOString());
       setStatut("envoye");
       setIsEditingBody(false);
+      setDeliveryResult(resp?.delivery ?? null);
       onEmitted?.();
     } catch (e) {
       setEmitError(e instanceof Error ? e.message : "Envoi impossible");
@@ -931,37 +951,41 @@ export function CourrierModal({
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
               <Printer size={14} /> Imprimer / PDF
             </button>
-            {mode === "pieces_complementaires" ? (
+            {/* Envoi — choix du canal de remise au pétitionnaire */}
+            <div style={{ position: "relative" }}>
               <button
-                onClick={handleSend}
-                disabled={emitting || isSent || (requestedPieces.length === 0)}
-                title={isSent ? "Courrier déjà émis" : (requestedPieces.length === 0) ? "Sélectionnez au moins une pièce" : "Émettre et basculer le dossier en incomplet"}
+                onClick={() => { if (!sendDisabled) setShowChannelMenu((v) => !v); }}
+                disabled={sendDisabled}
+                title={isSent ? "Courrier déjà envoyé" : (mode === "pieces_complementaires" && requestedPieces.length === 0) ? "Sélectionnez au moins une pièce" : "Choisir le canal d'envoi au pétitionnaire"}
                 style={{
                   display: "flex", alignItems: "center", gap: 6, padding: "7px 16px",
-                  background: (emitting || isSent || (requestedPieces.length === 0)) ? "#E2E8F0" : "linear-gradient(135deg,#D97706,#F59E0B)",
-                  color: (emitting || isSent || (requestedPieces.length === 0)) ? "#94a3b8" : "white",
+                  background: sendDisabled ? "#E2E8F0" : (mode === "pieces_complementaires" ? "linear-gradient(135deg,#D97706,#F59E0B)" : "linear-gradient(135deg,#0F766E,#10B981)"),
+                  color: sendDisabled ? "#94a3b8" : "white",
                   border: "none", borderRadius: 8,
-                  cursor: (emitting || isSent || (requestedPieces.length === 0)) ? "default" : "pointer",
-                  fontSize: 13, fontWeight: 600,
+                  cursor: sendDisabled ? "default" : "pointer", fontSize: 13, fontWeight: 600,
                 }}>
-                {isSent ? "✓ Émise" : emitting ? "Émission…" : "Émettre la demande"}
+                {isSent ? "✓ Envoyé" : emitting ? "Envoi…" : (mode === "pieces_complementaires" ? "Émettre la demande" : "Envoyer")}
+                {!isSent && !emitting && <span style={{ fontSize: 10 }}>▾</span>}
               </button>
-            ) : (
-              <button
-                onClick={handleSend}
-                disabled={emitting || isSent || (!selected && !draftId)}
-                title={isSent ? "Courrier déjà envoyé" : "Marquer ce courrier comme envoyé (après impression / remise). Aucune transmission automatique."}
-                style={{
-                  display: "flex", alignItems: "center", gap: 6, padding: "7px 16px",
-                  background: (emitting || isSent || (!selected && !draftId)) ? "#E2E8F0" : "linear-gradient(135deg,#0F766E,#10B981)",
-                  color: (emitting || isSent || (!selected && !draftId)) ? "#94a3b8" : "white",
-                  border: "none", borderRadius: 8,
-                  cursor: (emitting || isSent || (!selected && !draftId)) ? "default" : "pointer",
-                  fontSize: 13, fontWeight: 600,
-                }}>
-                {isSent ? "✓ Envoyé" : emitting ? "Envoi…" : "Marquer comme envoyé"}
-              </button>
-            )}
+              {showChannelMenu && !sendDisabled && (
+                <>
+                  <div onClick={() => setShowChannelMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                  <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, width: 272, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 14px 36px rgba(0,0,0,0.18)", overflow: "hidden" }}>
+                    <div style={{ padding: "8px 12px", fontSize: 10, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase", borderBottom: "1px solid #F1F5F9" }}>Envoyer par</div>
+                    {SEND_CHANNELS.map((c) => (
+                      <button key={c.value} onClick={() => handleSend(c.value)}
+                        style={{ display: "flex", alignItems: "flex-start", gap: 9, width: "100%", textAlign: "left", padding: "9px 12px", border: "none", borderTop: "1px solid #F8FAFC", background: "white", cursor: "pointer" }}>
+                        <span style={{ fontSize: 15, lineHeight: "18px" }}>{c.icon}</span>
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.label}</span>
+                          <span style={{ display: "block", fontSize: 11, color: "#94a3b8", lineHeight: 1.35 }}>{c.hint}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <button onClick={onClose} style={{ padding: 6, border: "1px solid #E2E8F0", borderRadius: 8, background: "white", cursor: "pointer", display: "flex" }}>
               <X size={16} color="#64748b" />
             </button>
@@ -976,6 +1000,12 @@ export function CourrierModal({
         {saveError && (
           <div className="no-print-modal" style={{ padding: "8px 20px", background: "#FEE2E2", color: "#991B1B", fontSize: 12, borderBottom: "1px solid #FCA5A5" }}>
             {saveError}
+          </div>
+        )}
+        {deliveryResult && (
+          <div className="no-print-modal" style={{ padding: "8px 20px", background: deliveryResult.delivered ? "#DCFCE7" : "#FEF3C7", color: deliveryResult.delivered ? "#15803D" : "#92400E", fontSize: 12, borderBottom: `1px solid ${deliveryResult.delivered ? "#86EFAC" : "#FDE68A"}` }}>
+            {deliveryResult.delivered ? `✓ Courrier transmis via ${deliveryResult.via}.` : `Courrier émis, mais non transmis via ${deliveryResult.via}.`}
+            {deliveryResult.note ? ` ${deliveryResult.note}` : ""}
           </div>
         )}
 

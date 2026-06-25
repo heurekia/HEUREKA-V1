@@ -11,6 +11,14 @@ import {
   renderPieceListHtml,
   type PieceRequestItem,
 } from "../../services/pieceRequest.js";
+import { deliverCourrier, isCourrierChannel } from "../../services/courrierDelivery.js";
+
+// Corps HTML → texte brut lisible (pour la remise en messagerie d'un courrier
+// général, où dossier_messages.content est du texte).
+function htmlToText(html: string | null | undefined): string {
+  if (!html) return "";
+  return html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+}
 
 export const courriersRouter = Router();
 
@@ -55,7 +63,18 @@ courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires", requirePe
       attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
       emis_par: req.user!.id,
     });
-    res.status(201).json(result);
+    const delivery = isCourrierChannel(body.delivery_method)
+      ? await deliverCourrier({
+          dossier_id: dossierId,
+          channel: body.delivery_method,
+          subject: body.subject ?? "Demande de pièces complémentaires",
+          pieces: cleaned,
+          attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
+          emis_par: req.user!.id,
+          emis_par_role: req.user!.role,
+        })
+      : null;
+    res.status(201).json({ ...result, delivery });
   } catch (err) {
     console.error("[courriers/pieces-complementaires]", err);
     res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
@@ -233,7 +252,18 @@ courriersRouter.post("/dossiers/:id/courriers/:courrierId/send", requirePermissi
         attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
         emis_par: req.user!.id,
       });
-      return res.json({ ...result, statut: "envoye" });
+      const delivery = isCourrierChannel(deliveryMethod)
+        ? await deliverCourrier({
+            dossier_id: dossierId,
+            channel: deliveryMethod,
+            subject: subject ?? "Demande de pièces complémentaires",
+            pieces,
+            attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
+            emis_par: req.user!.id,
+            emis_par_role: req.user!.role,
+          })
+        : null;
+      return res.json({ ...result, statut: "envoye", delivery });
     }
 
     const [row] = await db.update(dossier_courriers).set({
@@ -244,7 +274,18 @@ courriersRouter.post("/dossiers/:id/courriers/:courrierId/send", requirePermissi
       emis_par: req.user!.id,
       emis_le: new Date(),
     }).where(eq(dossier_courriers.id, courrierId)).returning();
-    res.json({ courrier_id: courrierId, statut: "envoye", row });
+    const delivery = isCourrierChannel(deliveryMethod)
+      ? await deliverCourrier({
+          dossier_id: dossierId,
+          channel: deliveryMethod,
+          subject: subject ?? "Courrier du service urbanisme",
+          body_text: htmlToText(bodySnapshot),
+          attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
+          emis_par: req.user!.id,
+          emis_par_role: req.user!.role,
+        })
+      : null;
+    res.json({ courrier_id: courrierId, statut: "envoye", row, delivery });
   } catch (err) {
     console.error("[courriers send]", err);
     res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
