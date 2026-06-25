@@ -20,6 +20,7 @@
 
 import { Router } from "express";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import {
   buildDocumentationContext,
   listApplicableReferences,
@@ -32,7 +33,7 @@ import {
 
 export const documentationRouter = Router();
 
-documentationRouter.get("/dossiers/:id/documentation", async (req: AuthRequest, res) => {
+documentationRouter.get("/dossiers/:id/documentation", requirePermission("documentation"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const pieceId = (req.query.piece_id as string | undefined) ?? null;
@@ -52,7 +53,7 @@ documentationRouter.get("/dossiers/:id/documentation", async (req: AuthRequest, 
   }
 });
 
-documentationRouter.get("/dossiers/:id/documentation/reference/:refId", async (req: AuthRequest, res) => {
+documentationRouter.get("/dossiers/:id/documentation/reference/:refId", requirePermission("documentation"), async (req: AuthRequest, res) => {
   try {
     const refId = req.params.refId as string;
     const detail = await getReferenceDetail(refId);
@@ -64,7 +65,7 @@ documentationRouter.get("/dossiers/:id/documentation/reference/:refId", async (r
   }
 });
 
-documentationRouter.get("/dossiers/:id/documentation/search", async (req: AuthRequest, res) => {
+documentationRouter.get("/dossiers/:id/documentation/search", requirePermission("documentation"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const query = ((req.query.q as string | undefined) ?? "").trim();
@@ -84,7 +85,7 @@ documentationRouter.get("/dossiers/:id/documentation/search", async (req: AuthRe
   }
 });
 
-documentationRouter.get("/dossiers/:id/documentation/favoris", async (req: AuthRequest, res) => {
+documentationRouter.get("/dossiers/:id/documentation/favoris", requirePermission("documentation"), async (req: AuthRequest, res) => {
   try {
     if (!req.user?.id) return res.status(401).json({ error: "Authentification requise" });
     const items = await listFavoris(req.params.id as string, req.user.id);
@@ -95,7 +96,7 @@ documentationRouter.get("/dossiers/:id/documentation/favoris", async (req: AuthR
   }
 });
 
-documentationRouter.post("/dossiers/:id/documentation/favoris", async (req: AuthRequest, res) => {
+documentationRouter.post("/dossiers/:id/documentation/favoris", requirePermission("documentation"), async (req: AuthRequest, res) => {
   try {
     if (!req.user?.id) return res.status(401).json({ error: "Authentification requise" });
     const body = (req.body ?? {}) as {
@@ -122,7 +123,7 @@ documentationRouter.post("/dossiers/:id/documentation/favoris", async (req: Auth
   }
 });
 
-documentationRouter.delete("/dossiers/:id/documentation/favoris/:refId", async (req: AuthRequest, res) => {
+documentationRouter.delete("/dossiers/:id/documentation/favoris/:refId", requirePermission("documentation"), async (req: AuthRequest, res) => {
   try {
     if (!req.user?.id) return res.status(401).json({ error: "Authentification requise" });
     await removeFavori({

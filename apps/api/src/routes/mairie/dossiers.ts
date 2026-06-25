@@ -75,7 +75,7 @@ export const dossiersRouter = Router();
 const DOSSIERS_DEFAULT_LIMIT = 100;
 const DOSSIERS_MAX_LIMIT = 500;
 
-dossiersRouter.get("/dossiers", async (req: AuthRequest, res) => {
+dossiersRouter.get("/dossiers", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     const search = req.query.search as string | undefined;
     const status = req.query.status as string | undefined;
@@ -169,7 +169,7 @@ dossiersRouter.get("/dossiers", async (req: AuthRequest, res) => {
   }
 });
 
-dossiersRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
+dossiersRouter.get("/dossiers/export", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   const commune = req.query.commune as string | undefined;
 
   const esc = (v: unknown): string => {
@@ -254,7 +254,7 @@ dossiersRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
   }
 });
 
-dossiersRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
+dossiersRouter.get("/dossiers/:id", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     let [dossier] = await db
       .select()
@@ -371,7 +371,7 @@ dossiersRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
   }
 });
 
-dossiersRouter.get("/dossiers/:id/events", async (req: AuthRequest, res) => {
+dossiersRouter.get("/dossiers/:id/events", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     const events = await db
       .select()
@@ -475,7 +475,7 @@ const ALLOWED_DOSSIER_TYPES = new Set([
   "certificat_urbanisme_b",
 ]);
 
-dossiersRouter.patch("/dossiers/:id/type", requireRole("mairie", "admin", "instructeur"), async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/type", requirePermission("dossiers.instruct"), requireRole("mairie", "admin", "instructeur"), async (req: AuthRequest, res) => {
   try {
     const { type, reason } = (req.body ?? {}) as { type?: string; reason?: string | null };
     if (!type || !ALLOWED_DOSSIER_TYPES.has(type)) {
@@ -534,7 +534,7 @@ dossiersRouter.patch("/dossiers/:id/type", requireRole("mairie", "admin", "instr
   }
 });
 
-dossiersRouter.patch("/dossiers/:id/deadline", async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/deadline", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
   try {
     const body = (req.body ?? {}) as {
       date_completude?: string | null;
@@ -589,7 +589,7 @@ dossiersRouter.patch("/dossiers/:id/deadline", async (req: AuthRequest, res) => 
   }
 });
 
-dossiersRouter.patch("/dossiers/:id/assign", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/assign", requirePermission("dossiers.assign"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   try {
     const { instructeur_id, reason } = (req.body ?? {}) as { instructeur_id?: string; reason?: string | null };
     if (!instructeur_id) return res.status(400).json({ error: "instructeur_id requis" });
@@ -606,7 +606,7 @@ dossiersRouter.patch("/dossiers/:id/assign", requireRole("mairie", "admin"), asy
   }
 });
 
-dossiersRouter.delete("/dossiers/:id/assign", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+dossiersRouter.delete("/dossiers/:id/assign", requirePermission("dossiers.assign"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   try {
     const { reason } = (req.body ?? {}) as { reason?: string | null };
     await unassignInstructeur(req.params.id as string, req.user?.id ?? null, { reason: reason ?? null });
@@ -634,7 +634,7 @@ dossiersRouter.delete("/dossiers/:id/assign", requireRole("mairie", "admin"), as
 // ⚠️ À RETIRER avant la mise en production réelle. Rechercher "TEMP_DELETE_DOSSIER"
 // (back + front) pour le retrait complet.
 // ─────────────────────────────────────────────────────────────────────────
-dossiersRouter.delete("/dossiers/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+dossiersRouter.delete("/dossiers/:id", requirePermission("dossiers.delete"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     // enforceDossierAccess (cf. mairie/index.ts) a déjà chargé le dossier et
@@ -667,7 +667,7 @@ dossiersRouter.delete("/dossiers/:id", requireRole("mairie", "admin"), async (re
   }
 });
 
-dossiersRouter.post("/dossiers/:id/take-charge", async (req: AuthRequest, res) => {
+dossiersRouter.post("/dossiers/:id/take-charge", requirePermission("dossiers.assign"), async (req: AuthRequest, res) => {
   try {
     const role = req.user?.role ?? "";
     if (!ASSIGNABLE_ROLES.has(role)) {
@@ -767,7 +767,7 @@ async function invitePetitionnaireToActivate(opts: {
   });
 }
 
-dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
+dossiersRouter.post("/dossiers", requirePermission("dossiers.create"), async (req: AuthRequest, res) => {
   try {
     const data = mairieCreateDossierSchema.parse(req.body);
 
@@ -947,7 +947,7 @@ const invitePetitionnaireSchema = z.object({
   confirm: z.boolean().optional(),
 });
 
-dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", async (req: AuthRequest, res) => {
+dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
   try {
     const { email: rawEmail, confirm } = invitePetitionnaireSchema.parse(req.body ?? {});
     const providedEmail = rawEmail?.trim().toLowerCase() || null;
@@ -1153,7 +1153,7 @@ function ocrSingle(req: AuthRequest, res: import("express").Response, next: impo
   });
 }
 
-dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
+dossiersRouter.post("/ocr-cerfa", requirePermission("dossiers.create"), ocrSingle, async (req: AuthRequest, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "Fichier requis" });
     const sniffed = ocrSniff(req.file.buffer);

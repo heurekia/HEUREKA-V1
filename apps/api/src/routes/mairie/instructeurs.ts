@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { users, user_availability, user_absences, user_delegations, communes, user_communes } from "@heureka-v1/db";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 
 export const instructeursRouter = Router();
@@ -45,7 +46,7 @@ async function agentsInCallerScope(
   return [...merged.values()];
 }
 
-instructeursRouter.get("/instructeurs", async (req: AuthRequest, res) => {
+instructeursRouter.get("/instructeurs", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     // Restreint aux agents du périmètre de l'appelant (cf. agentsInCallerScope).
     const instructeurs = await agentsInCallerScope(req);

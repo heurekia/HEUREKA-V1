@@ -5,6 +5,7 @@ import { dossiers, users, dossier_messages, dossier_consultations } from "@heure
 import { eq, desc, and, sql, isNull } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { getCommuneScope, communeScopeFilter, communeInScope } from "../../middlewares/dossierAccess.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import { resolveAttachmentRefs } from "../../services/gedAttachments.js";
 
 export const conversationsRouter = Router();
@@ -38,7 +39,7 @@ async function consultationInScopeOr404(req: AuthRequest, res: Response, consult
 }
 
 // ── Conversations : liste avec preview et non-lus ──
-conversationsRouter.get("/conversations", async (req: AuthRequest, res) => {
+conversationsRouter.get("/conversations", requirePermission("messagerie"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -83,7 +84,7 @@ conversationsRouter.get("/conversations", async (req: AuthRequest, res) => {
 // Combine les fils citoyen↔mairie (messages 'citoyen' non lus) et les fils
 // mairie↔service externe (messages 'service_externe%' non lus) pour rester
 // cohérent avec le badge maintenu en temps réel par MessageScreen.
-conversationsRouter.get("/conversations/unread-count", async (req: AuthRequest, res) => {
+conversationsRouter.get("/conversations/unread-count", requirePermission("messagerie"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -113,7 +114,7 @@ conversationsRouter.get("/conversations/unread-count", async (req: AuthRequest, 
 });
 
 // ── Thread d'une conversation ──
-conversationsRouter.get("/conversations/:dossierId", async (req: AuthRequest, res) => {
+conversationsRouter.get("/conversations/:dossierId", requirePermission("messagerie"), async (req: AuthRequest, res) => {
   try {
     const msgs = await db
       .select({
@@ -140,7 +141,7 @@ conversationsRouter.get("/conversations/:dossierId", async (req: AuthRequest, re
 });
 
 // ── Envoyer un message à un citoyen depuis le dossier ──
-conversationsRouter.post("/conversations/:dossierId", async (req: AuthRequest, res) => {
+conversationsRouter.post("/conversations/:dossierId", requirePermission("messagerie"), async (req: AuthRequest, res) => {
   try {
     const content = (req.body?.content as string | undefined)?.trim() ?? "";
     const dossierId = req.params.dossierId as string;
@@ -183,7 +184,7 @@ conversationsRouter.post("/conversations/:dossierId", async (req: AuthRequest, r
 });
 
 // ── Marquer tous les messages citoyens d'une conversation comme lus ──
-conversationsRouter.post("/conversations/:dossierId/read", async (req: AuthRequest, res) => {
+conversationsRouter.post("/conversations/:dossierId/read", requirePermission("messagerie"), async (req: AuthRequest, res) => {
   try {
     await db
       .update(dossier_messages)
@@ -204,7 +205,7 @@ conversationsRouter.post("/conversations/:dossierId/read", async (req: AuthReque
 });
 
 // ── Remettre la conversation en non-lu (efface read_at du dernier message citoyen) ──
-conversationsRouter.post("/conversations/:dossierId/unread", async (req: AuthRequest, res) => {
+conversationsRouter.post("/conversations/:dossierId/unread", requirePermission("messagerie"), async (req: AuthRequest, res) => {
   try {
     const [last] = await db
       .select({ id: dossier_messages.id })
@@ -234,7 +235,7 @@ conversationsRouter.post("/conversations/:dossierId/unread", async (req: AuthReq
 // Une conversation = une consultation_id. Le service rattaché est résolu via
 // dossier_consultations.external_service_id (peut être NULL si le service n'a
 // pas encore de compte/lien — on retombe sur service_name).
-conversationsRouter.get("/service-conversations", async (req: AuthRequest, res) => {
+conversationsRouter.get("/service-conversations", requirePermission("messagerie"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -287,7 +288,7 @@ conversationsRouter.get("/service-conversations", async (req: AuthRequest, res) 
   }
 });
 
-conversationsRouter.get("/service-conversations/:consultationId", async (req: AuthRequest, res) => {
+conversationsRouter.get("/service-conversations/:consultationId", requirePermission("messagerie"), async (req: AuthRequest, res) => {
   try {
     const inScope = await consultationInScopeOr404(req, res, req.params.consultationId as string);
     if (!inScope) return;
@@ -311,7 +312,7 @@ conversationsRouter.get("/service-conversations/:consultationId", async (req: Au
   }
 });
 
-conversationsRouter.post("/service-conversations/:consultationId", async (req: AuthRequest, res) => {
+conversationsRouter.post("/service-conversations/:consultationId", requirePermission("messagerie"), async (req: AuthRequest, res) => {
   try {
     const content = (req.body?.content as string | undefined)?.trim();
     if (!content) return res.status(400).json({ error: "Contenu requis" });
@@ -344,7 +345,7 @@ conversationsRouter.post("/service-conversations/:consultationId", async (req: A
   }
 });
 
-conversationsRouter.post("/service-conversations/:consultationId/read", async (req: AuthRequest, res) => {
+conversationsRouter.post("/service-conversations/:consultationId/read", requirePermission("messagerie"), async (req: AuthRequest, res) => {
   try {
     const consultationId = req.params.consultationId as string;
     const dossierId = await consultationInScopeOr404(req, res, consultationId);

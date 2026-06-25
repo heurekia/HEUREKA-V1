@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { dossiers } from "@heureka-v1/db";
 import { eq } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import {
   runDossierConformityAnalysis,
   runDossierConformityAnalysisBackground,
@@ -12,7 +13,7 @@ import {
 
 export const conformiteRouter = Router();
 
-conformiteRouter.get("/dossiers/:id/conformite", async (req: AuthRequest, res) => {
+conformiteRouter.get("/dossiers/:id/conformite", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     const [row] = await db
       .select({
@@ -35,7 +36,7 @@ conformiteRouter.get("/dossiers/:id/conformite", async (req: AuthRequest, res) =
   }
 });
 
-conformiteRouter.post("/dossiers/:id/conformite/analyse", async (req: AuthRequest, res) => {
+conformiteRouter.post("/dossiers/:id/conformite/analyse", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const [d] = await db.select({
@@ -76,7 +77,7 @@ conformiteRouter.post("/dossiers/:id/conformite/analyse", async (req: AuthReques
 //   - au moins une pièce validée
 // Sinon → 422 avec payload structuré listant les bloqueurs, l'UI peut
 // pointer l'instructeur vers les pièces à statuer avant de relancer.
-conformiteRouter.get("/dossiers/:id/conformite/finale", async (req: AuthRequest, res) => {
+conformiteRouter.get("/dossiers/:id/conformite/finale", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     const [row] = await db
       .select({
@@ -101,7 +102,7 @@ conformiteRouter.get("/dossiers/:id/conformite/finale", async (req: AuthRequest,
   }
 });
 
-conformiteRouter.post("/dossiers/:id/conformite/finale", async (req: AuthRequest, res) => {
+conformiteRouter.post("/dossiers/:id/conformite/finale", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const userId = req.user?.id;

@@ -4,6 +4,7 @@ import { communes, zones, zone_regulatory_rules, document_segments, document_seg
 import { eq, desc, and, sql, ilike, inArray } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { documentInScope, zoneInScope, ruleInScope, annotationInScope, segmentInScope } from "../../middlewares/regulatoryScope.js";
 import { streamAi, type AiContentBlock } from "../../services/aiUsage.js";
@@ -25,7 +26,7 @@ export const reglementationRouter = Router();
 // explicitement. Les consommateurs « lecture » (carte, dashboards, futurs
 // services) reçoivent ainsi par défaut un référentiel utilisable, sans risque
 // de mélange visuel avec du contenu non validé.
-reglementationRouter.get("/reglementation", async (req: AuthRequest, res) => {
+reglementationRouter.get("/reglementation", requirePermission("zones.read"), async (req: AuthRequest, res) => {
   try {
     const communeName = (req.query.commune_name as string | undefined)?.trim();
     const inseeCode = (req.query.insee_code as string | undefined)?.trim();
@@ -82,7 +83,7 @@ reglementationRouter.get("/reglementation", async (req: AuthRequest, res) => {
 // DELETE /mairie/reglementation?insee_code=37018
 // Purge toutes les zones + règles d'une commune (ex. retirer des données résiduelles
 // avant de réimporter le vrai PLU).
-reglementationRouter.delete("/reglementation", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.delete("/reglementation", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const inseeCode = (req.query.insee_code as string | undefined)?.trim();
     if (!inseeCode) return res.status(400).json({ error: "insee_code requis" });
@@ -107,7 +108,7 @@ reglementationRouter.delete("/reglementation", requireRole("mairie", "instructeu
 });
 
 // PATCH /mairie/reglementation/rules/:id — validate, edit or reject a rule
-reglementationRouter.patch("/reglementation/rules/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.patch("/reglementation/rules/:id", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -152,7 +153,7 @@ reglementationRouter.patch("/reglementation/rules/:id", requireRole("mairie", "i
 });
 
 // DELETE /mairie/reglementation/rules/:id
-reglementationRouter.delete("/reglementation/rules/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.delete("/reglementation/rules/:id", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -168,7 +169,7 @@ reglementationRouter.delete("/reglementation/rules/:id", requireRole("mairie", "
 });
 
 // POST /mairie/reglementation/zones/:zoneId/rules — add a rule manually
-reglementationRouter.post("/reglementation/zones/:zoneId/rules", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/reglementation/zones/:zoneId/rules", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const zone_id = req.params.zoneId as string;
     const [zone] = await db.select({ id: zones.id }).from(zones).where(eq(zones.id, zone_id)).limit(1);
@@ -211,7 +212,7 @@ reglementationRouter.post("/reglementation/zones/:zoneId/rules", requireRole("ma
 });
 
 // POST /mairie/reglementation/zones/:zoneId/rules/bulk — ajout en masse (sous-règles)
-reglementationRouter.post("/reglementation/zones/:zoneId/rules/bulk", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/reglementation/zones/:zoneId/rules/bulk", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const zone_id = req.params.zoneId as string;
     const [zone] = await db.select({ id: zones.id }).from(zones).where(eq(zones.id, zone_id)).limit(1);
@@ -268,7 +269,7 @@ reglementationRouter.post("/reglementation/zones/:zoneId/rules/bulk", requireRol
 // forwardé au client en heartbeats SSE → la passerelle voit du trafic régulier
 // → plus de 502. À la fin, on parse l'accumulé et on envoie les règles dans un
 // événement `done`.
-reglementationRouter.post("/reglementation/structure-article", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/reglementation/structure-article", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { text, zone_code, article_number, image_base64, image_media_type } = req.body as { text?: string; zone_code?: string; article_number?: number | string; image_base64?: string; image_media_type?: string };
   const hasImage = typeof image_base64 === "string" && image_base64.length > 0;
   if ((!text || text.trim().length < 5) && !hasImage) return res.status(400).json({ error: "Texte de l'article ou image requis" });
@@ -438,7 +439,7 @@ AUTRES RÈGLES :
 // Streaming SSE : même justification que structure-article, accentuée ici par
 // le max_tokens 16k qui peut prendre 2-3 min. Sans streaming la passerelle
 // coupe systématiquement → 502 + facturation perdue.
-reglementationRouter.post("/reglementation/structure-zone", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/reglementation/structure-zone", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { text, zone_code } = req.body as { text?: string; zone_code?: string };
   // Le seuil bas accepte les chunks courts légitimes (Préambule, article
   // « sans objet ») produits par le découpage par article côté front.
@@ -602,7 +603,7 @@ RÈGLES DE STRUCTURATION :
 });
 
 // GET /mairie/documents/search?q=...&insee=...&doc_types=PPRI,OAP&top_k=5
-reglementationRouter.get("/documents/search", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.get("/documents/search", requirePermission("zones.read"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const query = (req.query.q as string | undefined)?.trim();
     const insee = (req.query.insee as string | undefined)?.trim();
@@ -639,7 +640,7 @@ const VISIBILITIES_SET = new Set(["private", "shared"]);
 // GET /mairie/documents/:docId/segments — liste les chunks indexés d'un
 // document avec leur métadonnée + annotations. Sert au visualiseur côté UI
 // pour permettre à l'instructeur d'annoter passage par passage.
-reglementationRouter.get("/documents/:docId/segments", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.get("/documents/:docId/segments", requirePermission("zones.read"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const docId = req.params.docId as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -690,7 +691,7 @@ reglementationRouter.get("/documents/:docId/segments", requireRole("mairie", "in
 // (3.C.3). Pas de segment_id : la position visuelle est portée par page +
 // quote + highlight_rects. Le RAG matchera ensuite par chevauchement texte
 // au moment du search pour réinjecter l'annotation à côté du bon chunk.
-reglementationRouter.post("/documents/:docId/annotations", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/documents/:docId/annotations", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const docId = req.params.docId as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -734,7 +735,7 @@ reglementationRouter.post("/documents/:docId/annotations", requireRole("mairie",
 // GET /mairie/documents/:docId/annotations — liste toutes les annotations
 // d'un document (tous statuts). Sert au panneau de validation côté UI et
 // à la restauration des surlignages dans le viewer PDF.
-reglementationRouter.get("/documents/:docId/annotations", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.get("/documents/:docId/annotations", requirePermission("zones.read"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const docId = req.params.docId as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -754,7 +755,7 @@ reglementationRouter.get("/documents/:docId/annotations", requireRole("mairie", 
 // POST /mairie/segments/:segmentId/annotations — créer une annotation.
 // Le statut initial est "brouillon" — il faut une action explicite de
 // validation pour qu'elle remonte dans le RAG.
-reglementationRouter.post("/segments/:segmentId/annotations", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/segments/:segmentId/annotations", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const segmentId = req.params.segmentId as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -798,7 +799,7 @@ reglementationRouter.post("/segments/:segmentId/annotations", requireRole("mairi
 
 // PATCH /mairie/annotations/:id — modifier OU valider/rejeter.
 // Toute modification de la note rebascule en brouillon (anti-édit silencieux).
-reglementationRouter.patch("/annotations/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.patch("/annotations/:id", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -865,7 +866,7 @@ reglementationRouter.patch("/annotations/:id", requireRole("mairie", "instructeu
   }
 });
 
-reglementationRouter.delete("/annotations/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.delete("/annotations/:id", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -882,6 +883,7 @@ reglementationRouter.delete("/annotations/:id", requireRole("mairie", "instructe
 
 reglementationRouter.post(
   "/reglementation/import-canonical",
+  requirePermission("zones.edit"),
   requireRole("mairie", "instructeur", "admin"),
   async (req: AuthRequest, res) => {
     try {
@@ -917,7 +919,7 @@ reglementationRouter.post(
   },
 );
 
-reglementationRouter.post("/reglementation/zones", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/reglementation/zones", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const { insee_code, commune_name, zone_code, zone_label, zone_type } = req.body as {
       insee_code?: string; commune_name?: string;
@@ -951,7 +953,7 @@ reglementationRouter.post("/reglementation/zones", requireRole("mairie", "instru
 });
 
 // DELETE /mairie/reglementation/zones/:id — delete a zone and its rules
-reglementationRouter.delete("/reglementation/zones/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.delete("/reglementation/zones/:id", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -967,7 +969,7 @@ reglementationRouter.delete("/reglementation/zones/:id", requireRole("mairie", "
 });
 
 // PATCH /mairie/reglementation/zones/:id — update zone label/summary
-reglementationRouter.patch("/reglementation/zones/:id", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.patch("/reglementation/zones/:id", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);

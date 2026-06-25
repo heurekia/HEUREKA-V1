@@ -3247,27 +3247,43 @@ function Utilisateurs() {
 
 // ─── Rôles & Permissions ──────────────────────────────────────────────────────
 const PERMISSION_MODULES = [
+  { group: "Tableau de bord", items: [
+    { key: "dashboard",  label: "Tableau de bord", desc: "Accès à la vue d'ensemble de la commune" },
+  ]},
   { group: "Dossiers", items: [
-    { key: "dossiers.read",     label: "Consulter les dossiers",  desc: "Voir la liste et le détail des dossiers" },
-    { key: "dossiers.instruct", label: "Instruire",               desc: "Changer le statut, ajouter des événements" },
-    { key: "dossiers.decision", label: "Émettre une décision",    desc: "Accepter, refuser ou prescrire un dossier" },
+    { key: "dossiers.read",     label: "Consulter les dossiers",       desc: "Voir la liste et le détail des dossiers" },
+    { key: "dossiers.create",   label: "Créer un dossier",             desc: "Enregistrer une nouvelle demande (guichet, OCR CERFA)" },
+    { key: "dossiers.instruct", label: "Instruire",                    desc: "Statut, délais, pièces, conformité, annotations" },
+    { key: "dossiers.assign",   label: "Affecter / prendre en charge", desc: "S'attribuer un dossier ou l'assigner à un agent" },
+    { key: "dossiers.decision", label: "Émettre une décision",         desc: "Rédiger et soumettre l'arrêté (accord, refus, prescriptions)" },
+    { key: "dossiers.delete",   label: "Supprimer un dossier",         desc: "Suppression définitive d'un dossier" },
+  ]},
+  { group: "Courriers", items: [
+    { key: "courriers.read",      label: "Consulter les courriers", desc: "Voir les courriers et modèles de la commune" },
+    { key: "courriers.generate",  label: "Générer un courrier",     desc: "Produire un courrier sur un dossier (pièces complémentaires…)" },
+    { key: "courriers.templates", label: "Gérer les modèles",       desc: "Créer / modifier les modèles de courrier et l'en-tête" },
+  ]},
+  { group: "Services annexes", items: [
+    { key: "consultations.read",   label: "Consulter les consultations", desc: "Voir les consultations de services et leurs avis" },
+    { key: "consultations.manage", label: "Gérer les consultations",     desc: "Lancer des consultations et gérer les documents de service" },
   ]},
   { group: "Communication", items: [
-    { key: "messagerie", label: "Messagerie",  desc: "Envoyer et recevoir des messages" },
-    { key: "documents",  label: "Documents",   desc: "Consulter et télécharger les pièces jointes" },
+    { key: "messagerie", label: "Messagerie",        desc: "Échanger avec le pétitionnaire et les services" },
+    { key: "documents",  label: "Pièces & documents", desc: "Consulter et télécharger les pièces jointes" },
   ]},
   { group: "Planification", items: [
-    { key: "calendrier", label: "Calendrier",     desc: "Gérer les événements et délais réglementaires" },
-    { key: "stats",      label: "Statistiques",   desc: "Tableaux de bord et indicateurs" },
-    { key: "dashboard",  label: "Tableau de bord",desc: "Accès au dashboard de la commune" },
+    { key: "calendrier", label: "Calendrier",   desc: "Événements et délais réglementaires" },
+    { key: "stats",      label: "Statistiques", desc: "Indicateurs et tableaux de suivi" },
   ]},
-  { group: "Réglementation", items: [
-    { key: "zones.read", label: "Consulter le PLU", desc: "Accès en lecture au règlement de zonage" },
-    { key: "zones.edit", label: "Modifier le PLU",  desc: "Créer et éditer les zones et règles PLU" },
+  { group: "Réglementation (PLU)", items: [
+    { key: "zones.read",    label: "Consulter le PLU",            desc: "Carte et règlement de zonage en lecture" },
+    { key: "zones.edit",    label: "Modifier le PLU",             desc: "Zones, règles et import du règlement PLU" },
+    { key: "documentation", label: "Documentation réglementaire", desc: "Recherche documentaire et favoris sur un dossier" },
   ]},
   { group: "Administration", items: [
-    { key: "utilisateurs", label: "Gestion des agents",   desc: "Créer, modifier et désactiver les agents" },
-    { key: "parametres",   label: "Paramètres commune",   desc: "Modifier les informations de la commune" },
+    { key: "utilisateurs", label: "Gestion des agents",      desc: "Créer, modifier et désactiver les agents" },
+    { key: "parametres",   label: "Paramètres commune",      desc: "Modifier les informations de la commune" },
+    { key: "signataires",  label: "Gestion des signataires", desc: "Habiliter et gérer les signataires d'arrêtés" },
   ]},
 ];
 
