@@ -1433,6 +1433,13 @@ function SignaturesPendantesScreen() {
                 <button onClick={() => row.dossier?.id && routerNavigate(`/mairie/dossiers/${row.dossier.id}`)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "#374151" }}>
                   Voir le dossier
                 </button>
+                {/* Accès direct à la pièce soumise à signature (projet d'arrêté) :
+                    deep-link vers l'onglet Décision, qui en affiche l'aperçu
+                    complet. Évite que le signataire signe sans avoir lu l'acte. */}
+                <button onClick={() => row.dossier?.id && routerNavigate(`/mairie/dossiers/${row.dossier.id}?tab=decision`)} style={{ border: "1px solid #C7D2FE", background: "#EEF2FF", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "#4F46E5", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+                  Voir l'arrêté
+                </button>
                 <button onClick={async () => {
                   setSigning(row.id);
                   try {
