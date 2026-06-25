@@ -413,8 +413,8 @@ adminRouter.post("/admin/ingest-plu-pdf", requirePermission("zones.import"), asy
     const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
     const totalPages = pdfDoc.getPageCount();
 
-    const renderPagesAsBlocks = (firstPage: number, maxPages: number): AiContentBlock[] => {
-      const pngs = convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 150 });
+    const renderPagesAsBlocks = async (firstPage: number, maxPages: number): Promise<AiContentBlock[]> => {
+      const pngs = await convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 150 });
       return pngs.map<AiContentBlock>((png) => ({
         type: "image",
         source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
@@ -426,7 +426,7 @@ adminRouter.post("/admin/ingest-plu-pdf", requirePermission("zones.import"), asy
     // tronçon" : un seul appel ciblé qui pilote tout le découpage qui suit.
     send({ type: "phase", message: "Lecture du sommaire…" });
     const TOC_PAGES = Math.min(5, totalPages);
-    const tocBlocks = renderPagesAsBlocks(1, TOC_PAGES);
+    const tocBlocks = await renderPagesAsBlocks(1, TOC_PAGES);
     const tocMsg = await callAi(
       { purpose: "plu_toc_detect", userId: req.user?.id ?? null, communeId: commune.id },
       {
@@ -499,7 +499,7 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].`,
           page_from: first, page_to: last,
         });
         try {
-          const blocks = renderPagesAsBlocks(first, last - first + 1);
+          const blocks = await renderPagesAsBlocks(first, last - first + 1);
           const ruleMsg = await callAi(
             { purpose: "plu_rule_extract", userId: req.user?.id ?? null, communeId: commune.id },
             {
@@ -780,11 +780,11 @@ function gcIngestJobs() {
   }
 }
 
-function renderPagesAsBlocksFor(pdfBuffer: Buffer, firstPage: number, maxPages: number): AiContentBlock[] {
+async function renderPagesAsBlocksFor(pdfBuffer: Buffer, firstPage: number, maxPages: number): Promise<AiContentBlock[]> {
   // DPI 130 : compromis taille payload Mistral / lisibilité tableaux. À 150 le
   // payload (8 × ~350 KB base64) faisait dépasser le proxy nginx (504) sur
   // les batches lents — 130 réduit ~25 % le poids et la latence Pixtral.
-  const pngs = convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 130 });
+  const pngs = await convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 130 });
   return pngs.map<AiContentBlock>((png) => ({
     type: "image",
     source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
@@ -821,14 +821,14 @@ async function detectPluToc(
   }
 
   const tocPages = Math.min(15, totalPages);
-  const nativeText = extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
+  const nativeText = await extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
   let toc: TocEntry[] = nativeText ? parseTocFromNativeText(nativeText) : [];
 
   if (toc.length === 0) {
     // Bascule Pixtral. Sur PDF normal, on n'arrive ici que pour des PLU à
     // sommaire inhabituel — coût modéré et acceptable.
     const TOC_PAGES = Math.min(5, totalPages);
-    const tocBlocks = renderPagesAsBlocksFor(pdfBuffer, 1, TOC_PAGES);
+    const tocBlocks = await renderPagesAsBlocksFor(pdfBuffer, 1, TOC_PAGES);
     const tocMsg = await callAi(
       { purpose: "plu_toc_detect", userId: ctx.userId, communeId: ctx.communeId },
       {
@@ -1156,7 +1156,7 @@ async function runIngestJob(job: IngestJob): Promise<void> {
     const seg = job.segments[segmentIndex]!;
     const zone = seg.zones.find((z) => z.code === zoneCode)!;
     const batch = zone.batches[batchIndex]!;
-    const blocks = renderPagesAsBlocksFor(seg.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
+    const blocks = await renderPagesAsBlocksFor(seg.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
     const ruleMsg = await callAi(
       { purpose: "plu_rule_extract", userId: job.userId, communeId: job.commune.id },
       {

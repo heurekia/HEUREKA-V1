@@ -11,8 +11,9 @@
  * alimentent `ai_usage_events` (page admin « Coûts IA »). Le `model` stocké
  * est l'id Mistral natif (ex. `pixtral-large-latest`).
  */
-import { execFileSync } from "node:child_process";
-import { mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { execFile, execFileSync } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { db } from "../db.js";
@@ -179,8 +180,13 @@ interface MistralChatMessage {
   content: string | MistralChatBlock[];
 }
 
-function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
-  return convertPdfPagesToPng(pdf, { maxPages: 1, dpi: 200 })[0]!;
+// execFile promisifié : exécute pdftoppm/pdftotext SANS bloquer l'event-loop
+// (contrairement à execFileSync, qui gelait le thread unique le temps du rendu
+// PDF — plusieurs secondes sur un PDF multi-pages, pour TOUTES les requêtes).
+const execFileAsync = promisify(execFile);
+
+async function convertPdfFirstPageToPng(pdf: Buffer): Promise<Buffer> {
+  return (await convertPdfPagesToPng(pdf, { maxPages: 1, dpi: 200 }))[0]!;
 }
 
 // Rend les pages d'un PDF en PNGs via pdftoppm. Utilisé par les callers qui
@@ -195,24 +201,24 @@ function convertPdfFirstPageToPng(pdf: Buffer): Buffer {
 // les pages restantes ; sinon on rend `maxPages` pages à partir de
 // `firstPage`. `dpi` 150 par défaut : lisible pour l'OCR sans faire
 // exploser la taille du payload Mistral sur un PDF multi-pages.
-export function convertPdfPagesToPng(
+export async function convertPdfPagesToPng(
   pdf: Buffer,
   opts: { firstPage?: number; maxPages?: number; dpi?: number } = {},
-): Buffer[] {
+): Promise<Buffer[]> {
   const dpi = opts.dpi ?? 150;
   const firstPage = Math.max(1, opts.firstPage ?? 1);
-  const dir = mkdtempSync(path.join(tmpdir(), "heureka-ai-"));
+  const dir = await mkdtemp(path.join(tmpdir(), "heureka-ai-"));
   try {
     const pdfPath = path.join(dir, "in.pdf");
     const outPrefix = path.join(dir, "out");
-    writeFileSync(pdfPath, pdf);
+    await writeFile(pdfPath, pdf);
     try {
       const args = ["-png", "-r", String(dpi), "-f", String(firstPage)];
       if (opts.maxPages && opts.maxPages > 0) {
         args.push("-l", String(firstPage + opts.maxPages - 1));
       }
       args.push(pdfPath, outPrefix);
-      execFileSync("pdftoppm", args, { stdio: ["ignore", "ignore", "pipe"] });
+      await execFileAsync("pdftoppm", args);
     } catch (err) {
       // ENOENT = binaire absent → message actionnable plutôt que stack
       // trace cryptique. Le VPS OVH provisionne poppler-utils via le script
@@ -231,21 +237,21 @@ export function convertPdfPagesToPng(
     // version : `out-1.png`, `out-01.png`, voire `out.png` lorsqu'une seule
     // page est demandée sur certaines builds. On liste simplement le dossier
     // pour rester robuste, et on trie pour garder l'ordre des pages.
-    const out = readdirSync(dir)
+    const names = (await readdir(dir))
       .filter((n) => n.toLowerCase().endsWith(".png"))
       .sort((a, b) => {
         // Tri naturel sur les numéros de page incrustés dans le nom.
         const na = parseInt(a.match(/(\d+)\.png$/i)?.[1] ?? "0", 10);
         const nb = parseInt(b.match(/(\d+)\.png$/i)?.[1] ?? "0", 10);
         return na - nb;
-      })
-      .map((n) => readFileSync(path.join(dir, n)));
+      });
+    const out = await Promise.all(names.map((n) => readFile(path.join(dir, n))));
     if (out.length === 0) {
       throw new Error("pdftoppm n'a produit aucune page");
     }
     return out;
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 }
 
@@ -257,31 +263,32 @@ export function convertPdfPagesToPng(
 // Renvoie `null` si pdftotext n'est pas installé (le caller bascule alors sur
 // le chemin Pixtral). Renvoie une chaîne vide si le PDF n'a pas de couche
 // texte (PDF scanné) — le caller bascule aussi sur Pixtral.
-export function extractPdfText(
+export async function extractPdfText(
   pdf: Buffer,
   opts: { firstPage?: number; lastPage?: number } = {},
-): string | null {
-  const dir = mkdtempSync(path.join(tmpdir(), "heureka-pdftext-"));
+): Promise<string | null> {
+  const dir = await mkdtemp(path.join(tmpdir(), "heureka-pdftext-"));
   try {
     const pdfPath = path.join(dir, "in.pdf");
-    writeFileSync(pdfPath, pdf);
+    await writeFile(pdfPath, pdf);
     const args = ["-layout"];
     if (opts.firstPage) args.push("-f", String(opts.firstPage));
     if (opts.lastPage) args.push("-l", String(opts.lastPage));
     args.push(pdfPath, "-"); // "-" = stdout
     try {
-      const out = execFileSync("pdftotext", args, { stdio: ["ignore", "pipe", "pipe"], maxBuffer: 32 * 1024 * 1024 });
-      return out.toString("utf8");
+      // stdout est une string (encodage utf8 par défaut de execFile).
+      const { stdout } = await execFileAsync("pdftotext", args, { maxBuffer: 32 * 1024 * 1024 });
+      return stdout;
     } catch (err) {
       if ((err as { code?: string }).code === "ENOENT") return null;
       throw err;
     }
   } finally {
-    rmSync(dir, { recursive: true, force: true });
+    await rm(dir, { recursive: true, force: true });
   }
 }
 
-function translateMessages(request: AiRequest): MistralChatMessage[] {
+async function translateMessages(request: AiRequest): Promise<MistralChatMessage[]> {
   const out: MistralChatMessage[] = [];
   if (request.system) {
     out.push({ role: "system", content: request.system });
@@ -305,7 +312,7 @@ function translateMessages(request: AiRequest): MistralChatMessage[] {
           // Pixtral n'accepte pas le PDF natif → conversion première page
           // via pdftoppm (poppler-utils). Pour les PDF multi-pages, prévoir
           // un découpage côté appelant (cf. splitPdfBase64 dans mairie/admin).
-          const png = convertPdfFirstPageToPng(Buffer.from(b.source.data, "base64"));
+          const png = await convertPdfFirstPageToPng(Buffer.from(b.source.data, "base64"));
           blocks.push({
             type: "image_url",
             image_url: { url: `data:image/png;base64,${png.toString("base64")}` },
@@ -483,7 +490,7 @@ export async function callAi(ctx: CallAiContext, request: AiRequest): Promise<Ai
   const body: Record<string, unknown> = {
     model: mistralModel,
     max_tokens: request.max_tokens,
-    messages: translateMessages(request),
+    messages: await translateMessages(request),
   };
   if (request.temperature !== undefined) body.temperature = request.temperature;
   // Mistral ne supporte pas response_format=json_object SIMULTANÉMENT avec
@@ -574,7 +581,7 @@ export async function streamAi(ctx: CallAiContext, request: AiRequest): Promise<
     model: mistralModel,
     max_tokens: request.max_tokens,
     stream: true,
-    messages: translateMessages(request),
+    messages: await translateMessages(request),
   };
   if (request.temperature !== undefined) body.temperature = request.temperature;
   if (request.tools && request.tools.length > 0) {
