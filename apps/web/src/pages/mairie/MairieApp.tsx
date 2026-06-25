@@ -1827,7 +1827,7 @@ export function MairieApp() {
       <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} signaturesBadge={signaturesBadge} isSignataire={isSignataire} communes={userCommunes} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} communes={userCommunes} setCommune={setCommune} onViewAllNotifications={() => routerNavigate("/mairie/parametres?tab=notifications")} />
+          <Topbar onNewDossier={active === "Dossiers" && hasPermission(user, "dossiers.create") ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} communes={userCommunes} setCommune={setCommune} onViewAllNotifications={() => routerNavigate("/mairie/parametres?tab=notifications")} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           <Routes>
