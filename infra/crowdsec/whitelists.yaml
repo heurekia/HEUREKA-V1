@@ -1,0 +1,25 @@
+# Whitelist CrowdSec — IP de confiance HEUREKIA (anti auto-blocage).
+#
+# Copié par install.sh dans :
+#   /etc/crowdsec/parsers/s02-enrich/heureka-whitelists.yaml
+#
+# IMPORTANT : remplacer l'IP de documentation ci-dessous par la/les IP
+# publiques fixes de l'équipe (bureau, VPN admin, monitoring) AVANT d'activer
+# le blocage. enable-blocking.sh refuse de tourner tant que le marqueur
+# « A_COMPLETER » est présent dans ce fichier.
+#
+# Une whitelist au niveau parser : les événements issus de ces IP ne génèrent
+# jamais de décision, quel que soit le scénario.
+name: heureka/whitelists
+description: "IP de confiance HEUREKIA — jamais bloquées par CrowdSec"
+whitelist:
+  reason: "HEUREKIA trusted sources (bureau, admin, monitoring)"
+  ip:
+    - "127.0.0.1"
+    - "::1"
+  cidr:
+    # A_COMPLETER : remplacer le placeholder TEST-NET ci-dessous par la/les
+    # IP publiques fixes de l'équipe. Exemples :
+    #   - "203.0.113.42/32"   # bureau HEUREKIA
+    #   - "198.51.100.0/24"   # VPN admin
+    - "192.0.2.1/32"          # placeholder (TEST-NET-1, ne matche aucune IP réelle)
