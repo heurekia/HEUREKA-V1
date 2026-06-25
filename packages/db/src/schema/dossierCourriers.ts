@@ -56,5 +56,15 @@ export const dossier_courriers = pgTable("dossier_courriers", {
   emis_par: uuid("emis_par").references(() => users.id),
   emis_le: timestamp("emis_le").notNull().defaultNow(),
   delivery_method: text("delivery_method"),
+  // Cycle de vie du courrier :
+  //   "brouillon" = enregistré mais non émis — modifiable, SANS effet métier
+  //                 (le dossier ne bascule pas en incomplet, les pièces ne sont
+  //                 pas marquées). Permet de préparer un courrier et de décider
+  //                 plus tard quoi en faire.
+  //   "envoye"    = émis/transmis — figé, effets métier appliqués.
+  // Default "envoye" : les courriers historiques (antérieurs au brouillon)
+  // étaient tous émis directement ; le backfill les classe donc en "envoye",
+  // ce qui correspond à la réalité.
+  statut: text("statut").notNull().default("envoye"),
   created_at: timestamp("created_at").notNull().defaultNow(),
 });

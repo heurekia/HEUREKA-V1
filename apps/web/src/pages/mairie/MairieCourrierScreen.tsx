@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, type Dispatch, type SetStateAction } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, type Dispatch, type SetStateAction } from "react";
 import DOMPurify from "dompurify";
 import { Rnd } from "react-rnd";
 import { api } from "../../lib/api";
@@ -304,8 +304,29 @@ function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]
   );
 }
 
+// ─── Corps de courrier éditable (contentEditable, seedé une fois au montage) ──
+// Monté uniquement en mode édition : on injecte le HTML au montage puis on laisse
+// l'utilisateur taper librement (aucune ré-injection → pas de saut de curseur).
+// Chaque frappe remonte le HTML courant via onChange.
+function EditableBody({ html, onChange }: { html: string; onChange: (html: string) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  useLayoutEffect(() => {
+    if (ref.current) ref.current.innerHTML = DOMPurify.sanitize(html);
+  }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return (
+    <div
+      ref={ref}
+      className="tiptap-preview-mairie courrier-editable-active"
+      contentEditable
+      suppressContentEditableWarning
+      onInput={(e) => onChange(e.currentTarget.innerHTML)}
+      style={{ outline: "2px dashed #6366F1", outlineOffset: 6, borderRadius: 4, minHeight: 60 }}
+    />
+  );
+}
+
 // ─── Courrier preview (print-ready, multi-page) ───────────────────────────
-function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; letterhead: Letterhead; extraHtml?: string }) {
+function CourrierPrintPreview({ html, letterhead, extraHtml, editable = false, onBodyChange }: { html: string; letterhead: Letterhead; extraHtml?: string; editable?: boolean; onBodyChange?: (html: string) => void }) {
   if (isCanvasBody(html)) {
     return <CanvasPrintView pages={parseCanvasDoc(html)} letterhead={letterhead} extraHtml={extraHtml} />;
   }
@@ -327,7 +348,9 @@ function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; l
         </div>
       )}
       <div className="lh-print-body" style={{ padding: "24px 36px", minHeight: 400 }}>
-        <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />
+        {editable
+          ? <EditableBody html={html} onChange={onBodyChange ?? (() => {})} />
+          : <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />}
         {extraHtml && (
           <div style={{ marginTop: 28, paddingTop: 18, borderTop: "1px solid #CBD5E1" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>
@@ -372,6 +395,19 @@ export interface CourrierModalProps {
   // retrouvait pas dans l'onglet Courriers. On relit donc sur le même périmètre
   // que la création (cf. TemplateManagerPanel).
   inseeCode?: string;
+  // Courrier existant à rouvrir (brouillon à reprendre, ou courrier émis à
+  // consulter). Quand fourni, le corps enregistré prime sur la substitution du
+  // modèle et le modal s'ouvre en reprise plutôt qu'en création.
+  initialCourrier?: {
+    id: string;
+    type: string;
+    subject: string | null;
+    body_snapshot: string | null;
+    statut: "brouillon" | "envoye";
+    articles_cites?: string[];
+    pieces_jointes_ids?: Array<{ piece_id?: string; code_piece?: string; nom: string; raison?: string; manquante?: boolean }>;
+    delivery_method?: string | null;
+  };
 }
 
 const NO_AI_HINTS_KEY = "heureka_no_ai_hints";
@@ -383,6 +419,7 @@ export function CourrierModal({
   aiSuggestedMissingPieces = [],
   onEmitted,
   inseeCode,
+  initialCourrier,
 }: CourrierModalProps) {
   const { user } = useAuth();
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
@@ -402,7 +439,7 @@ export function CourrierModal({
   const [showMentions, setShowMentions] = useState(false);
   const [mentionsLoading, setMentionsLoading] = useState(false);
   const [allMentions, setAllMentions] = useState<MentionRow[]>([]);
-  const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
+  const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set(initialCourrier?.articles_cites ?? []));
   const [courrierType, setCourrierType] = useState(mode === "pieces_complementaires" ? "pieces_complementaires" : "");
   const [insertedMentionsHtml, setInsertedMentionsHtml] = useState("");
   const [viewingArticle, setViewingArticle] = useState<MentionRow | null>(null);
@@ -431,13 +468,43 @@ export function CourrierModal({
     }
     return s;
   };
-  const [selectedPieceIds, setSelectedPieceIds] = useState<Set<string>>(initialSelected);
-  const [pieceReasons, setPieceReasons] = useState<Record<string, string>>({});
-  const [extraPieces, setExtraPieces] = useState<Array<{ id: string; nom: string; code_piece: string; raison: string }>>([]);
+  // À la réouverture d'un courrier de pièces, on reconstruit la sélection depuis
+  // les pièces enregistrées (sinon un ré-enregistrement écraserait la liste).
+  const [selectedPieceIds, setSelectedPieceIds] = useState<Set<string>>(() => {
+    if (initialCourrier?.pieces_jointes_ids) {
+      return new Set(initialCourrier.pieces_jointes_ids.filter((p) => p.piece_id).map((p) => p.piece_id as string));
+    }
+    return initialSelected();
+  });
+  const [pieceReasons, setPieceReasons] = useState<Record<string, string>>(() => {
+    const r: Record<string, string> = {};
+    for (const p of initialCourrier?.pieces_jointes_ids ?? []) {
+      if (p.piece_id && p.raison) r[p.piece_id] = p.raison;
+    }
+    return r;
+  });
+  const [extraPieces, setExtraPieces] = useState<Array<{ id: string; nom: string; code_piece: string; raison: string }>>(
+    () => (initialCourrier?.pieces_jointes_ids ?? [])
+      .filter((p) => !p.piece_id)
+      .map((p, i) => ({ id: `seed-${i}`, nom: p.nom, code_piece: p.code_piece ?? "", raison: p.raison ?? "" })),
+  );
   const [showPiecesPanel, setShowPiecesPanel] = useState<boolean>(mode === "pieces_complementaires");
   const [emitting, setEmitting] = useState(false);
   const [emitError, setEmitError] = useState<string | null>(null);
-  const [emittedAt, setEmittedAt] = useState<string | null>(null);
+  const [emittedAt, setEmittedAt] = useState<string | null>(initialCourrier?.statut === "envoye" ? new Date().toISOString() : null);
+
+  // ── Cycle de vie : brouillon (enregistré, modifiable) / envoyé (figé) ──
+  // draftId non nul = le courrier existe en base. bodyOverride prime sur la
+  // substitution du modèle dès qu'on rouvre un enregistrement ou qu'on édite
+  // le texte à la main.
+  const [draftId, setDraftId] = useState<string | null>(initialCourrier?.id ?? null);
+  const [statut, setStatut] = useState<"brouillon" | "envoye" | null>(initialCourrier?.statut ?? null);
+  const [bodyOverride, setBodyOverride] = useState<string | null>(initialCourrier?.body_snapshot ?? null);
+  const [isEditingBody, setIsEditingBody] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  const isSent = statut === "envoye";
 
   // Synthèse des pièces sélectionnées (pour la prévisualisation HTML et la
   // bascule serveur). Ordre : pièces déposées sélectionnées, puis ajouts libres.
@@ -457,6 +524,11 @@ export function CourrierModal({
     })),
   ];
   const piecesListHtml = renderPieceListHtmlClient(requestedPieces);
+
+  // Corps réellement affiché / imprimé / enregistré. Un brouillon rouvert ou une
+  // édition manuelle (bodyOverride) priment sur la substitution live du modèle.
+  const effectiveBody = bodyOverride ?? substitutedHtml;
+  const canEditBody = !isSent && !isCanvasBody(effectiveBody);
 
   const loadMentions = useCallback((ct: string) => {
     setMentionsLoading(true);
@@ -495,28 +567,109 @@ export function CourrierModal({
   //    statut et le marquage des pièces côté serveur. 2) verrouille la modale
   //    (emittedAt) pour éviter une double émission. 3) notifie le parent
   //    pour qu'il rafraîchisse le dossier.
-  const handleEmitPieceRequest = useCallback(async () => {
-    if (requestedPieces.length === 0 || emitting || emittedAt) return;
+  // Type métier persisté (pilote le libellé dans l'historique des courriers).
+  const courrierTypeForSave = mode === "pieces_complementaires"
+    ? "pieces_complementaires"
+    : (selected?.category ?? initialCourrier?.type ?? "general");
+
+  // Enregistre / met à jour le courrier en BROUILLON — sans aucun effet métier
+  // (le dossier ne bascule pas, les pièces ne sont pas marquées). Permet de
+  // préparer un courrier et de décider plus tard quoi en faire.
+  const handleSaveDraft = useCallback(async () => {
+    if (saving || isSent) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const payload = {
+        type: courrierTypeForSave,
+        subject: selected?.name ?? null,
+        body_snapshot: effectiveBody || null,
+        articles_cites: Array.from(selectedRefs),
+        pieces: mode === "pieces_complementaires" ? requestedPieces : [],
+      };
+      if (draftId) {
+        await api.put(`/mairie/dossiers/${dossier.id}/courriers/${draftId}`, payload);
+      } else {
+        const row = await api.post<{ id: string }>(`/mairie/dossiers/${dossier.id}/courriers/drafts`, payload);
+        setDraftId(row.id);
+      }
+      setStatut("brouillon");
+      setSavedAt(new Date().toISOString());
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Enregistrement impossible");
+    } finally {
+      setSaving(false);
+    }
+  }, [saving, isSent, courrierTypeForSave, selected, effectiveBody, selectedRefs, mode, requestedPieces, draftId, dossier.id]);
+
+  // Envoie le courrier (brouillon → envoyé). Pour une demande de pièces,
+  // déclenche les effets métier côté serveur (marquage des pièces, bascule du
+  // dossier). Si un brouillon existe, on l'envoie via /send (le serveur réutilise
+  // les pièces stockées) ; sinon émission directe (pièces) ou création+envoi.
+  const handleSend = useCallback(async () => {
+    if (emitting || isSent) return;
     setEmitting(true);
     setEmitError(null);
     try {
-      const articles = Array.from(selectedRefs);
-      await api.post(`/mairie/dossiers/${dossier.id}/courriers/pieces-complementaires`, {
-        pieces: requestedPieces,
-        articles_cites: articles,
-        body_snapshot: substitutedHtml || null,
-        subject: selected?.name ?? "Demande de pièces complémentaires",
-        delivery_method: "print",
-        attachment_document_ids: Array.from(attachDocIds),
-      });
+      if (mode === "pieces_complementaires" && !draftId) {
+        if (requestedPieces.length === 0) { setEmitError("Sélectionnez au moins une pièce"); return; }
+        await api.post(`/mairie/dossiers/${dossier.id}/courriers/pieces-complementaires`, {
+          pieces: requestedPieces,
+          articles_cites: Array.from(selectedRefs),
+          body_snapshot: effectiveBody || null,
+          subject: selected?.name ?? "Demande de pièces complémentaires",
+          delivery_method: "print",
+          attachment_document_ids: Array.from(attachDocIds),
+        });
+      } else {
+        let id = draftId;
+        if (!id) {
+          const row = await api.post<{ id: string }>(`/mairie/dossiers/${dossier.id}/courriers/drafts`, {
+            type: courrierTypeForSave,
+            subject: selected?.name ?? null,
+            body_snapshot: effectiveBody || null,
+            articles_cites: Array.from(selectedRefs),
+            pieces: mode === "pieces_complementaires" ? requestedPieces : [],
+          });
+          id = row.id;
+          setDraftId(id);
+        }
+        await api.post(`/mairie/dossiers/${dossier.id}/courriers/${id}/send`, {
+          body_snapshot: effectiveBody || null,
+          delivery_method: "print",
+          attachment_document_ids: Array.from(attachDocIds),
+          // Pour une demande de pièces, on transmet la sélection à jour (le
+          // serveur retombe sur l'état stocké si on n'envoie rien).
+          ...(mode === "pieces_complementaires"
+            ? { pieces: requestedPieces, articles_cites: Array.from(selectedRefs) }
+            : {}),
+        });
+      }
       setEmittedAt(new Date().toISOString());
+      setStatut("envoye");
+      setIsEditingBody(false);
       onEmitted?.();
     } catch (e) {
-      setEmitError(e instanceof Error ? e.message : "Émission impossible");
+      setEmitError(e instanceof Error ? e.message : "Envoi impossible");
     } finally {
       setEmitting(false);
     }
-  }, [dossier.id, requestedPieces, emitting, emittedAt, selectedRefs, substitutedHtml, selected, onEmitted, attachDocIds]);
+  }, [emitting, isSent, mode, draftId, requestedPieces, selectedRefs, effectiveBody, selected, attachDocIds, courrierTypeForSave, dossier.id, onEmitted]);
+
+  // Sélection d'un modèle par l'utilisateur : on repart de la substitution du
+  // modèle (abandon d'une édition manuelle ou d'un corps rouvert).
+  const selectTemplate = useCallback((tpl: CourrierTemplate) => {
+    setSelected(tpl);
+    setBodyOverride(null);
+    setIsEditingBody(false);
+  }, []);
+
+  // Édition manuelle du corps : on capte le HTML et on invalide l'indicateur
+  // "Enregistré ✓" (il y a de nouveau des modifications non sauvegardées).
+  const handleBodyChange = useCallback((html: string) => {
+    setBodyOverride(html);
+    setSavedAt(null);
+  }, []);
 
   const handleInsertMentions = useCallback(() => {
     if (selectedRefs.size === 0) return;
@@ -543,7 +696,9 @@ export function CourrierModal({
     ]).then(([tpls, lh]) => {
       setTemplates(tpls);
       setLetterhead(lh);
-      if (tpls.length > 0) setSelected(tpls[0]!);
+      // En reprise d'un courrier existant, on n'auto-sélectionne pas de modèle :
+      // le corps enregistré (bodyOverride) prime sur la substitution.
+      if (tpls.length > 0 && !initialCourrier) setSelected(tpls[0]!);
     }).catch((e) => {
       // Ne pas avaler l'erreur en silence : un échec serveur affichait
       // « Aucun modèle » à tort (indiscernable d'une liste vide légitime).
@@ -620,10 +775,10 @@ export function CourrierModal({
   // la modale est ouverte en mode demande de pièces — fallback : premier
   // template disponible.
   useEffect(() => {
-    if (mode !== "pieces_complementaires" || selected || templates.length === 0) return;
+    if (mode !== "pieces_complementaires" || selected || templates.length === 0 || initialCourrier) return;
     const preferred = templates.find((t) => t.category === "pieces_complementaires");
     setSelected(preferred ?? templates[0] ?? null);
-  }, [mode, templates, selected]);
+  }, [mode, templates, selected, initialCourrier]);
 
   return (
     <div className="print-modal-overlay" style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex" }}>
@@ -681,6 +836,9 @@ export function CourrierModal({
             padding-top: 160px !important;
             padding-bottom: 70px !important;
           }
+
+          /* L'encadré d'édition ne doit jamais apparaître à l'impression. */
+          .courrier-editable-active { outline: none !important; }
         }
       `}</style>
       <div className="no-print-modal" style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
@@ -688,7 +846,18 @@ export function CourrierModal({
         {/* Header */}
         <div className="no-print-modal" style={{ padding: "12px 20px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Générer un courrier</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Générer un courrier</span>
+              {statut && (
+                <span style={{
+                  fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5,
+                  color: isSent ? "#15803D" : "#B45309",
+                  background: isSent ? "#DCFCE7" : "#FEF3C7",
+                }}>
+                  {isSent ? "Envoyé" : "Brouillon"}
+                </span>
+              )}
+            </div>
             <div style={{ fontSize: 12, color: "#64748b" }}>{dossier.numero} — {dossier.petitionnaire}</div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
@@ -718,25 +887,56 @@ export function CourrierModal({
               style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showMentions ? "#0284C7" : "#E2E8F0"}`, borderRadius: 7, background: showMentions ? "#E0F2FE" : "white", color: showMentions ? "#0284C7" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
               📜 Mentions légales
             </button>
+            {/* Édition du texte (corps HTML uniquement, hors courrier déjà envoyé) */}
+            {canEditBody && (
+              <button onClick={() => setIsEditingBody((v) => !v)}
+                title="Modifier le texte du courrier avant de l'enregistrer ou de l'envoyer"
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${isEditingBody ? "#6366F1" : "#E2E8F0"}`, borderRadius: 7, background: isEditingBody ? "#EEF2FF" : "white", color: isEditingBody ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
+                <Pencil size={13} /> {isEditingBody ? "Fin d'édition" : "Modifier le texte"}
+              </button>
+            )}
             <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
+            {/* Enregistrer en brouillon — aucun effet métier */}
+            {!isSent && (
+              <button onClick={handleSaveDraft} disabled={saving}
+                title="Enregistrer ce courrier en brouillon, sans l'envoyer ni modifier le dossier"
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", background: "white", color: saving ? "#94a3b8" : "#334155", border: "1px solid #CBD5E1", borderRadius: 8, cursor: saving ? "default" : "pointer", fontSize: 13, fontWeight: 600 }}>
+                <Save size={14} /> {saving ? "Enregistrement…" : (savedAt && !saveError ? "Enregistré ✓" : "Enregistrer le brouillon")}
+              </button>
+            )}
             <button onClick={() => window.print()}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
               <Printer size={14} /> Imprimer / PDF
             </button>
-            {mode === "pieces_complementaires" && (
+            {mode === "pieces_complementaires" ? (
               <button
-                onClick={handleEmitPieceRequest}
-                disabled={emitting || requestedPieces.length === 0 || !!emittedAt}
-                title={emittedAt ? "Courrier déjà émis pour cette session" : requestedPieces.length === 0 ? "Sélectionnez au moins une pièce" : "Émettre et basculer le dossier en incomplet"}
+                onClick={handleSend}
+                disabled={emitting || isSent || (!draftId && requestedPieces.length === 0)}
+                title={isSent ? "Courrier déjà émis" : (!draftId && requestedPieces.length === 0) ? "Sélectionnez au moins une pièce" : "Émettre et basculer le dossier en incomplet"}
                 style={{
                   display: "flex", alignItems: "center", gap: 6, padding: "7px 16px",
-                  background: (emitting || requestedPieces.length === 0 || !!emittedAt) ? "#E2E8F0" : "linear-gradient(135deg,#D97706,#F59E0B)",
-                  color: (emitting || requestedPieces.length === 0 || !!emittedAt) ? "#94a3b8" : "white",
+                  background: (emitting || isSent || (!draftId && requestedPieces.length === 0)) ? "#E2E8F0" : "linear-gradient(135deg,#D97706,#F59E0B)",
+                  color: (emitting || isSent || (!draftId && requestedPieces.length === 0)) ? "#94a3b8" : "white",
                   border: "none", borderRadius: 8,
-                  cursor: (emitting || requestedPieces.length === 0 || !!emittedAt) ? "default" : "pointer",
+                  cursor: (emitting || isSent || (!draftId && requestedPieces.length === 0)) ? "default" : "pointer",
                   fontSize: 13, fontWeight: 600,
                 }}>
-                {emittedAt ? "✓ Émise" : emitting ? "Émission…" : "Émettre la demande"}
+                {isSent ? "✓ Émise" : emitting ? "Émission…" : "Émettre la demande"}
+              </button>
+            ) : (
+              <button
+                onClick={handleSend}
+                disabled={emitting || isSent || (!selected && !draftId)}
+                title={isSent ? "Courrier déjà envoyé" : "Marquer ce courrier comme envoyé (après impression / remise). Aucune transmission automatique."}
+                style={{
+                  display: "flex", alignItems: "center", gap: 6, padding: "7px 16px",
+                  background: (emitting || isSent || (!selected && !draftId)) ? "#E2E8F0" : "linear-gradient(135deg,#0F766E,#10B981)",
+                  color: (emitting || isSent || (!selected && !draftId)) ? "#94a3b8" : "white",
+                  border: "none", borderRadius: 8,
+                  cursor: (emitting || isSent || (!selected && !draftId)) ? "default" : "pointer",
+                  fontSize: 13, fontWeight: 600,
+                }}>
+                {isSent ? "✓ Envoyé" : emitting ? "Envoi…" : "Marquer comme envoyé"}
               </button>
             )}
             <button onClick={onClose} style={{ padding: 6, border: "1px solid #E2E8F0", borderRadius: 8, background: "white", cursor: "pointer", display: "flex" }}>
@@ -748,6 +948,11 @@ export function CourrierModal({
         {emitError && (
           <div className="no-print-modal" style={{ padding: "8px 20px", background: "#FEE2E2", color: "#991B1B", fontSize: 12, borderBottom: "1px solid #FCA5A5" }}>
             {emitError}
+          </div>
+        )}
+        {saveError && (
+          <div className="no-print-modal" style={{ padding: "8px 20px", background: "#FEE2E2", color: "#991B1B", fontSize: 12, borderBottom: "1px solid #FCA5A5" }}>
+            {saveError}
           </div>
         )}
 
@@ -765,7 +970,7 @@ export function CourrierModal({
                 const cat = CATEGORY_CONFIG[tpl.category] ?? CATEGORY_CONFIG.general!;
                 const isSelected = selected?.id === tpl.id;
                 return (
-                  <button key={tpl.id} onClick={() => setSelected(tpl)}
+                  <button key={tpl.id} onClick={() => selectTemplate(tpl)}
                     style={{ width: "100%", padding: "9px 12px", border: `2px solid ${isSelected ? cat.color : "#E2E8F0"}`, borderRadius: 8, background: isSelected ? cat.bg : "white", color: isSelected ? cat.color : "#374151", fontSize: 12, fontWeight: isSelected ? 700 : 400, cursor: "pointer", textAlign: "left", marginBottom: 6, transition: "all 0.1s" }}>
                     <div style={{ marginBottom: 2 }}>{tpl.name}</div>
                     <div style={{ fontSize: 10, opacity: 0.7 }}>{cat.label}</div>
@@ -776,9 +981,9 @@ export function CourrierModal({
 
           {/* Print preview */}
           <div className="print-area" style={{ flex: 1, overflowY: "auto" }}>
-            {selected ? (
+            {(selected || bodyOverride) ? (
               <div style={{ position: "relative" }}>
-                <CourrierPrintPreview html={substitutedHtml} letterhead={letterhead} extraHtml={insertedMentionsHtml || undefined} />
+                <CourrierPrintPreview html={effectiveBody} letterhead={letterhead} extraHtml={insertedMentionsHtml || undefined} editable={isEditingBody} onBodyChange={handleBodyChange} />
                 {/* Draggable signature */}
                 {showSig && (signataire?.signature_image || letterhead.signature_image) && (
                   <DraggableStamp
