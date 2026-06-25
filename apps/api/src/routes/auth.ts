@@ -367,9 +367,22 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     }
 
     await writeAudit(user.id, user.email, "account_deleted", req);
-    // La cascade DB supprime dossiers → pieces → messages → notifications.
-    // audit_logs.user_id est ON DELETE SET NULL (préservé pour la sécurité).
-    await db.delete(users).where(eq(users.id, user.id));
+    // Suppression transactionnelle dans l'ordre des dépendances. La cascade DB
+    // (dossiers.user_id ON DELETE CASCADE) emporte bien dossiers → messages →
+    // notifications, MAIS dossier_pieces_jointes.user_id est une FK NOT NULL
+    // SANS cascade (user_id n'y est qu'une dénormalisation du déposant ; la
+    // pièce « appartient » au dossier). Postgres vérifie cette contrainte sans
+    // attendre que la cascade via dossier_id ait effacé les pièces → le DELETE
+    // sur users échouait en violation de clé étrangère (500 « Erreur serveur »)
+    // dès que le citoyen avait déposé la moindre pièce — soit quasi tous les
+    // comptes réels, bloquant le droit à l'effacement (RGPD art. 17). On efface
+    // donc explicitement ses pièces d'abord, puis l'utilisateur (le DELETE users
+    // emporte alors les dossiers par cascade). Même pattern que la suppression
+    // côté super-admin (cf. superAdmin.ts DELETE /users/:id).
+    await db.transaction(async (tx) => {
+      await tx.delete(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.user_id, user.id));
+      await tx.delete(users).where(eq(users.id, user.id));
+    });
     invalidateTokenVersionCache(user.id);
 
     res.clearCookie(cookieNameFor(req), COOKIE_CLEAR_OPTIONS);
