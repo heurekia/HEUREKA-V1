@@ -58,12 +58,34 @@ export async function resolveDossierRecipients(dossierId: string): Promise<strin
   return Array.from(new Set(rows.map((r) => r.id)));
 }
 
+// Retire les destinataires ayant explicitement désactivé ce type de
+// notification (notification_prefs[type] === false). Clé absente = activé :
+// par défaut un agent reçoit tout. Best-effort — si la lecture échoue on ne
+// filtre rien (mieux vaut une notification de trop qu'une notification perdue).
+async function filterByNotificationPref(userIds: string[], type: string): Promise<string[]> {
+  if (userIds.length === 0) return [];
+  try {
+    const rows = await db
+      .select({ id: users.id, prefs: users.notification_prefs })
+      .from(users)
+      .where(inArray(users.id, userIds));
+    const optedOut = new Set(
+      rows.filter((r) => r.prefs && r.prefs[type] === false).map((r) => r.id),
+    );
+    return userIds.filter((id) => !optedOut.has(id));
+  } catch (err) {
+    console.error("[notify] filterByNotificationPref a échoué:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+    return userIds;
+  }
+}
+
 export async function notifyDossierAgents(input: NotifyDossierInput): Promise<void> {
   try {
     let recipients = await resolveDossierRecipients(input.dossier_id);
     if (input.exclude_user_id) {
       recipients = recipients.filter((u) => u !== input.exclude_user_id);
     }
+    recipients = await filterByNotificationPref(recipients, input.type);
     if (recipients.length === 0) return;
     await db.insert(notifications).values(
       recipients.map((user_id) => ({
@@ -82,6 +104,8 @@ export async function notifyDossierAgents(input: NotifyDossierInput): Promise<vo
 // Notifie un utilisateur unique (ex. décision en attente de signature). Best-effort.
 export async function notifyUser(input: { user_id: string; dossier_id?: string | null; type: string; title: string; message: string }): Promise<void> {
   try {
+    const allowed = await filterByNotificationPref([input.user_id], input.type);
+    if (allowed.length === 0) return;
     await db.insert(notifications).values({
       user_id: input.user_id,
       dossier_id: input.dossier_id ?? null,

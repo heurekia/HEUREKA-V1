@@ -21,6 +21,9 @@ export interface User {
   //   null / undefined = accès complet (super admin OU agent sans rôle
   //   personnalisé) ; un tableau = liste blanche issue du profil.
   permissions?: string[] | null;
+  // Préférences de notification (cloche mairie), par type : { [type]: bool }.
+  // Une clé absente vaut « activé ». Éditées dans Infos Perso › Notifications.
+  notification_prefs?: Record<string, boolean>;
 }
 
 /**

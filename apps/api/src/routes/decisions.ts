@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import {
-  decisions, decision_events, signataires, notifications, users, dossiers,
+  decisions, decision_events, signataires, users, dossiers,
 } from "@heureka-v1/db";
 import { eq, and, or, desc, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
@@ -9,6 +9,7 @@ import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.
 import { requirePermission } from "../middlewares/permissions.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
 import { changeDossierStatus } from "../services/dossierWorkflow.js";
+import { notifyUser } from "../services/notify.js";
 
 /**
  * Charge le dossier référencé par une décision et vérifie que sa commune
@@ -320,7 +321,7 @@ decisionsRouter.post("/:id/submit", requireRole("mairie", "instructeur", "admin"
   });
 
   if (decision.signataire_id) {
-    await db.insert(notifications).values({
+    await notifyUser({
       user_id: decision.signataire_id,
       dossier_id: decision.dossier_id,
       type: "signature_requise",
@@ -394,7 +395,7 @@ decisionsRouter.post("/:id/sign", requireRole("mairie", "instructeur", "admin"),
     decision_id: id, user_id: req.user!.id, event_type: "signe",
   });
 
-  await db.insert(notifications).values({
+  await notifyUser({
     user_id: decision.instructeur_id,
     dossier_id: decision.dossier_id,
     type: "decision_signee",
@@ -430,7 +431,7 @@ decisionsRouter.post("/:id/refuse-signature", requireRole("mairie", "instructeur
     decision_id: id, user_id: req.user!.id, event_type: "refuse", note: motif,
   });
 
-  await db.insert(notifications).values({
+  await notifyUser({
     user_id: decision.instructeur_id,
     dossier_id: decision.dossier_id,
     type: "signature_refusee",

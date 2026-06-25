@@ -1110,12 +1110,43 @@ function InfosPersoScreen() {
     } finally { setSavingPw(false); }
   };
 
+  // ── Notifications perso state ──
+  // Types de notifications réellement émis vers un agent (cf. services/notify.ts
+  // et routes/decisions.ts). On n'expose que ceux-là : chaque interrupteur pilote
+  // donc une notification qui existe vraiment, filtrée à la source selon ce choix.
+  const NOTIF_PREF_TYPES: { type: string; label: string; sub: string }[] = [
+    { type: "dossier_soumis", label: "Nouveau dossier déposé", sub: "Quand un pétitionnaire dépose un nouveau dossier" },
+    { type: "pieces_complementaires_recues", label: "Pièces complémentaires reçues", sub: "Quand un pétitionnaire ajoute les pièces demandées" },
+    { type: "message_citoyen", label: "Message d'un pétitionnaire", sub: "Quand un pétitionnaire écrit sur un de vos dossiers" },
+    { type: "dossier_pret_apres_ocr", label: "Dossier prêt à l'instruction", sub: "Quand l'analyse automatique des pièces est terminée" },
+    { type: "signature_requise", label: "Signature requise", sub: "Quand un projet d'arrêté attend votre signature" },
+    { type: "decision_signee", label: "Arrêté signé", sub: "Quand un arrêté que vous avez instruit est signé" },
+    { type: "signature_refusee", label: "Signature refusée", sub: "Quand un signataire refuse de signer un arrêté" },
+  ];
+  const [notifPrefs, setNotifPrefs] = useState<Record<string, boolean>>(user?.notification_prefs ?? {});
+  const [savingNotifPrefs, setSavingNotifPrefs] = useState(false);
+  const [notifPrefsMsg, setNotifPrefsMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => { setNotifPrefs(user?.notification_prefs ?? {}); }, [user?.id]);
+  // Modèle opt-out : une clé absente vaut « activé ». Un type vaut false seulement
+  // si l'utilisateur l'a explicitement désactivé.
+  const isNotifOn = (type: string) => notifPrefs[type] !== false;
+  const toggleNotifPref = (type: string) => { setNotifPrefs(p => ({ ...p, [type]: !(p[type] !== false) })); setNotifPrefsMsg(null); };
+  const saveNotifPrefs = async () => {
+    setSavingNotifPrefs(true); setNotifPrefsMsg(null);
+    try {
+      await api.patch("/auth/me", { notification_prefs: notifPrefs });
+      await refreshUser();
+      setNotifPrefsMsg({ ok: true, text: "Préférences enregistrées." });
+    } catch (e) {
+      setNotifPrefsMsg({ ok: false, text: e instanceof Error ? e.message : "Erreur serveur" });
+    } finally { setSavingNotifPrefs(false); }
+  };
+
   const navItems = [
     { label: "À propos", icon: "👤" },
     { label: "Communes & Rôles", icon: "🏛" },
     { label: "Disponibilités", icon: "📅" },
     { label: "Délégations", icon: "🤝" },
-    { label: "Mes Signatures", icon: "✍️" },
     { label: "Notifications", icon: "🔔" },
     { label: "Sécurité / Connexion", icon: "🔒" },
     { label: "Centre d'aide", icon: "❓" },
@@ -1226,48 +1257,33 @@ function InfosPersoScreen() {
 
           {stab === "Délégations" && <DelegationsPanel />}
 
-          {stab === "Mes Signatures" && (
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Mes Signatures</div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Signatures électroniques utilisées dans vos courriers et arrêtés.</div>
-              <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
-                <div style={{ flex: 1, border: "2px solid #4F46E5", borderRadius: 12, padding: 20, position: "relative" }}>
-                  <span style={{ position: "absolute", top: 10, right: 10, background: "#EEF2FF", color: "#4F46E5", fontSize: 10, fontWeight: 700, borderRadius: 4, padding: "2px 6px" }}>Par défaut</span>
-                  <div style={{ height: 60, background: "#F8FAFC", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
-                    <span style={{ fontFamily: "cursive", fontSize: 22, color: "#0F172A" }}>Marie Lecomte</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#64748b" }}>Signature principale — utilisée par défaut</div>
-                </div>
-                <div style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 12, padding: 20, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#94a3b8" }}>
-                  <span style={{ fontSize: 28 }}>+</span>
-                  <span style={{ fontSize: 12 }}>Ajouter une signature</span>
-                </div>
-              </div>
-            </div>
-          )}
-
           {stab === "Notifications" && (
             <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Notifications personnelles</div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Préférences de notification pour votre compte uniquement.</div>
-              {[
-                { label: "Dossier assigné", sub: "Quand un dossier m'est assigné", active: true },
-                { label: "Message reçu", sub: "Quand je reçois un nouveau message", active: true },
-                { label: "Délai proche", sub: "48h avant une échéance", active: true },
-                { label: "Délai dépassé", sub: "Quand un délai est dépassé sur mes dossiers", active: true },
-                { label: "Avis reçu", sub: "Quand un service rend son avis", active: false },
-                { label: "Mises à jour plateforme", sub: "Nouvelles fonctionnalités et correctifs", active: false },
-              ].map(n => (
-                <div key={n.label} style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Choisissez les notifications que vous souhaitez recevoir dans la cloche. Ce réglage ne concerne que votre compte.</div>
+              {NOTIF_PREF_TYPES.map(n => (
+                <div key={n.type} style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{n.label}</div>
                     <div style={{ fontSize: 11, color: "#94a3b8" }}>{n.sub}</div>
                   </div>
-                  <div style={{ width: 36, height: 20, borderRadius: 10, background: n.active ? "#4F46E5" : "#E2E8F0", position: "relative", cursor: "pointer" }}>
-                    <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: n.active ? 18 : 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-                  </div>
+                  <button type="button" role="switch" aria-checked={isNotifOn(n.type)} aria-label={n.label} onClick={() => toggleNotifPref(n.type)}
+                    style={{ width: 36, height: 20, borderRadius: 10, background: isNotifOn(n.type) ? "#4F46E5" : "#E2E8F0", position: "relative", cursor: "pointer", border: "none", padding: 0, flexShrink: 0, transition: "background 0.15s" }}>
+                    <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: isNotifOn(n.type) ? 18 : 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)", transition: "left 0.15s" }} />
+                  </button>
                 </div>
               ))}
+              {notifPrefsMsg && (
+                <div style={{ background: notifPrefsMsg.ok ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${notifPrefsMsg.ok ? "#86EFAC" : "#FECACA"}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, color: notifPrefsMsg.ok ? "#15803d" : "#DC2626", marginTop: 16 }}>
+                  {notifPrefsMsg.text}
+                </div>
+              )}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+                <button onClick={() => { setNotifPrefs(user?.notification_prefs ?? {}); setNotifPrefsMsg(null); }} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+                <button onClick={saveNotifPrefs} disabled={savingNotifPrefs} style={{ background: savingNotifPrefs ? "#A5B4FC" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: savingNotifPrefs ? "not-allowed" : "pointer" }}>
+                  {savingNotifPrefs ? "Enregistrement…" : "Enregistrer"}
+                </button>
+              </div>
             </div>
           )}
 
