@@ -337,6 +337,19 @@ CREATE INDEX IF NOT EXISTS idx_dossiers_instructeur_id ON dossiers(instructeur_i
 CREATE INDEX IF NOT EXISTS idx_zones_commune_id ON zones(commune_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 
+-- Index de chemins chauds identifiés à l'audit de performance (Palier 0).
+-- Jointure/filtre des règles par zone (instruction, viewer réglementation, ingestion) :
+-- sans index, chaque lecture des règles d'une zone faisait un seq scan de toute la table,
+-- qui grossit avec chaque PLU ingéré. Le composite (zone_id, validation_status) couvre
+-- à la fois les lookups par zone seule et le filtre fréquent validation_status = 'valide'.
+CREATE INDEX IF NOT EXISTS idx_zone_regulatory_rules_zone ON zone_regulatory_rules(zone_id, validation_status);
+-- Timeline d'un dossier (instruction_events), lue à chaque ouverture de fiche dossier.
+CREATE INDEX IF NOT EXISTS idx_instruction_events_dossier ON instruction_events(dossier_id);
+-- Notifications rattachées à un dossier (jointure GET /notifications) + lookup inverse.
+CREATE INDEX IF NOT EXISTS idx_notifications_dossier ON notifications(dossier_id);
+-- Événements de calendrier rattachés à un dossier.
+CREATE INDEX IF NOT EXISTS idx_calendar_events_dossier ON calendar_events(dossier_id);
+
 -- Legal mentions cache (Légifrance / Code de l'urbanisme)
 CREATE TABLE IF NOT EXISTS legal_mentions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
