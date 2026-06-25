@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
-import { api } from "../../lib/api";
+import { api, ApiError } from "../../lib/api";
 import { linkifyArticles } from "../../utils/linkifyArticles";
 import { Step5CerfaInfos } from "./Step5CerfaInfos";
 
@@ -90,6 +90,14 @@ interface UploadedPiece {
   // exposé publiquement aux citoyens en prod — réservé au cas où la
   // chaîne IA est mal configurée et qu'on veut un signal lisible.
   aiError?: string | null;
+  // Analyse IA en cours en arrière-plan : le serveur a répondu ai_pending et le
+  // wizard interroge la pièce jusqu'au verdict. Bloque la soumission le temps de
+  // pouvoir statuer sur le hors-sujet.
+  aiPending?: boolean;
+  // Pièce hors-sujet : ne correspond pas à sa rubrique (ex. photo déposée dans
+  // l'emplacement CERFA). Renseigné par le serveur (rubric_mismatch). Bloque la
+  // soumission tant qu'il est présent — le citoyen doit redéposer le bon document.
+  mismatch?: { expected: string; detected: string } | null;
 }
 
 function getScoreConfig(score: string): { label: string; bg: string; color: string } | null {
@@ -516,6 +524,65 @@ export function NouvelleDemandeWizard() {
   const [dossierNumero, setDossierNumero] = useState<string | null>(null);
   const [uploadedPieces, setUploadedPieces] = useState<Record<string, UploadedPiece[]>>({});
   const [uploadingCodes, setUploadingCodes] = useState<Set<string>>(new Set());
+
+  // Le composant est-il toujours monté ? Stoppe les boucles de polling d'analyse
+  // si le citoyen quitte le wizard.
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
+  // Interroge une pièce jusqu'à ce que son analyse IA soit terminée (ocr_status
+  // done/failed/skipped), puis met à jour son verdict + le flag « hors-sujet ».
+  // Borné dans le temps : au-delà on cesse d'attendre (le serveur reste l'autorité
+  // au moment de la soumission, cf. /soumettre). Utilisé après chaque upload et à
+  // la reprise d'un brouillon dont une pièce était encore en cours d'analyse.
+  const pollPieceStatus = useCallback(async (codePiece: string, pieceId: string) => {
+    if (!dossierId) return;
+    interface PieceStatusApi {
+      id: string;
+      ocr_status: string | null;
+      analyse_ia: PieceAnalysis | null;
+      rubric_mismatch: { expected: string; detected: string } | null;
+    }
+    const INTERVAL_MS = 3000;
+    const MAX_ATTEMPTS = 60; // ~3 min — le worker plafonne déjà chaque pièce à 4 min
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      await new Promise((r) => setTimeout(r, INTERVAL_MS));
+      if (!mountedRef.current) return;
+      let pieces: PieceStatusApi[];
+      try {
+        pieces = await api.get<PieceStatusApi[]>(`/dossiers/${dossierId}/pieces`);
+      } catch {
+        continue; // erreur réseau passagère → on retente
+      }
+      const p = pieces.find((x) => x.id === pieceId);
+      if (!p) return; // pièce supprimée entre-temps
+      const settled = p.ocr_status === "done" || p.ocr_status === "failed" || p.ocr_status === "skipped";
+      if (!settled) continue;
+      setUploadedPieces((prev) => {
+        const list = prev[codePiece];
+        if (!list) return prev;
+        return {
+          ...prev,
+          [codePiece]: list.map((it) => it.id === pieceId ? {
+            ...it,
+            analyse: p.analyse_ia ?? null,
+            aiPending: false,
+            aiUnavailable: p.ocr_status === "failed" && !p.analyse_ia,
+            mismatch: p.rubric_mismatch,
+          } : it),
+        };
+      });
+      return;
+    }
+    // Plafond atteint : on lève l'état « en cours » pour ne pas bloquer le bouton
+    // indéfiniment (la soumission est de toute façon revérifiée côté serveur).
+    if (!mountedRef.current) return;
+    setUploadedPieces((prev) => {
+      const list = prev[codePiece];
+      if (!list) return prev;
+      return { ...prev, [codePiece]: list.map((it) => it.id === pieceId ? { ...it, aiPending: false } : it) };
+    });
+  }, [dossierId]);
   const [creatingDossier, setCreatingDossier] = useState(false);
   // RGPD — consentement explicite à l'analyse IA des pièces (art. 13 + 22).
   // true par défaut (le service est conçu autour de l'analyse), mais le
@@ -559,6 +626,8 @@ export function NouvelleDemandeWizard() {
       code_piece: string | null;
       url: string;
       analyse_ia: PieceAnalysis | null;
+      ocr_status: string | null;
+      rubric_mismatch: { expected: string; detected: string } | null;
     }
 
     (async () => {
@@ -614,14 +683,19 @@ export function NouvelleDemandeWizard() {
 
         // Regroupe les pièces déjà uploadées par code_piece (ou ANNEXE_KEY).
         const grouped: Record<string, UploadedPiece[]> = {};
+        const resumePending: Array<{ key: string; id: string }> = [];
         for (const p of existingPieces) {
           const key = p.code_piece ?? ANNEXE_KEY;
+          const aiPending = p.ocr_status === "pending" || p.ocr_status === "processing";
+          if (aiPending) resumePending.push({ key, id: p.id });
           (grouped[key] ??= []).push({
             id: p.id,
             nom: p.nom,
             url: p.url,
             analyse: p.analyse_ia ?? null,
             autoGenerated: !!p.code_piece?.endsWith("-FORMULAIRE"),
+            aiPending,
+            mismatch: p.rubric_mismatch,
           });
         }
 
@@ -644,6 +718,8 @@ export function NouvelleDemandeWizard() {
         setClassification(resumedClassification);
         setUploadedPieces(grouped);
         setStep(7);
+        // Reprend l'interrogation des pièces dont l'analyse n'était pas terminée.
+        for (const x of resumePending) void pollPieceStatus(x.key, x.id);
       } catch {
         if (!cancelled) setResumeError("Impossible de reprendre ce dossier. Réessayez ou contactez le support.");
       } finally {
@@ -757,26 +833,35 @@ export function NouvelleDemandeWizard() {
       url: string;
       code_piece: string | null;
       analyse_ia: PieceAnalysis | null;
+      ocr_status: string | null;
+      rubric_mismatch: { expected: string; detected: string } | null;
     }
     try {
       const pieces = await api.get<PieceApi[]>(`/dossiers/${id}/pieces`);
       const grouped: Record<string, UploadedPiece[]> = {};
+      const resumePending: Array<{ key: string; id: string }> = [];
       for (const p of pieces) {
         const key = p.code_piece ?? ANNEXE_KEY;
+        const aiPending = p.ocr_status === "pending" || p.ocr_status === "processing";
+        if (aiPending) resumePending.push({ key, id: p.id });
         (grouped[key] ??= []).push({
           id: p.id,
           nom: p.nom,
           url: p.url,
           analyse: p.analyse_ia ?? null,
           autoGenerated: !!p.code_piece?.endsWith("-FORMULAIRE"),
+          aiPending,
+          mismatch: p.rubric_mismatch,
         });
       }
       setUploadedPieces(grouped);
+      // Reprend l'interrogation des pièces encore en cours d'analyse.
+      for (const x of resumePending) void pollPieceStatus(x.key, x.id);
     } catch {
       // Non-bloquant : si le refetch échoue, l'utilisateur peut toujours
       // uploader manuellement.
     }
-  }, []);
+  }, [pollPieceStatus]);
 
   // La génération du CERFA prérempli côté API est lancée en arrière-plan
   // (best-effort) au POST/PATCH du dossier. On attend brièvement puis on
@@ -876,9 +961,10 @@ export function NouvelleDemandeWizard() {
         url: string;
         analyse_ia: PieceAnalysis | null;
         ai_requested?: boolean;
+        ai_pending?: boolean;
         ai_error?: string | null;
       };
-      const aiUnavailable = (data.ai_requested ?? aiConsent) && data.analyse_ia === null;
+      const pending = !!data.ai_pending;
       setUploadedPieces((prev) => {
         const current = prev[codePiece] ?? [];
         return {
@@ -888,11 +974,17 @@ export function NouvelleDemandeWizard() {
             nom: file.name,
             url: data.url,
             analyse: data.analyse_ia,
-            aiUnavailable,
+            // En attente d'analyse en arrière-plan : ni indisponible, ni
+            // hors-sujet pour l'instant — le polling tranchera.
+            aiPending: pending,
+            aiUnavailable: false,
             aiError: data.ai_error ?? null,
+            mismatch: null,
           }],
         };
       });
+      // Interroge la pièce jusqu'au verdict (analyse qualitative + hors-sujet).
+      if (pending) void pollPieceStatus(codePiece, data.id);
     } catch (e) {
       const msg = e instanceof Error && e.message ? e.message : "Erreur inconnue";
       alert(`Erreur lors du dépôt : ${msg}`);
@@ -903,7 +995,7 @@ export function NouvelleDemandeWizard() {
         return next;
       });
     }
-  }, [dossierId, aiConsent]);
+  }, [dossierId, aiConsent, pollPieceStatus]);
 
   // ── Delete a previously uploaded piece ─────────────────────────────────────
   const deletePiece = useCallback(async (codePiece: string, pieceId: string) => {
@@ -937,12 +1029,20 @@ export function NouvelleDemandeWizard() {
     try {
       await api.post(`/dossiers/${dossierId}/soumettre`, {});
       setSubmitted({ id: dossierId, numero: dossierNumero });
-    } catch {
-      alert("Erreur lors de la soumission. Réessayez.");
+    } catch (e) {
+      // Garde-fous serveur : 422 = pièce hors-sujet (ne correspond pas à sa
+      // rubrique), 409 = analyse encore en cours. On resynchronise l'état des
+      // pièces pour refléter le problème dans l'UI, et on affiche le message.
+      if (e instanceof ApiError && (e.status === 422 || e.status === 409)) {
+        await refetchPieces(dossierId).catch(() => {});
+        alert(e.message);
+      } else {
+        alert("Erreur lors de la soumission. Réessayez.");
+      }
     } finally {
       setSubmitting(false);
     }
-  }, [dossierId, dossierNumero]);
+  }, [dossierId, dossierNumero, refetchPieces]);
 
   const next = () => setStep((s) => (s + 1) as Step);
   const prev = () => setStep((s) => (s - 1) as Step);
@@ -2160,6 +2260,22 @@ export function NouvelleDemandeWizard() {
                         ⓘ Analyse indisponible
                       </span>
                     )}
+                    {file.aiPending && (
+                      <span
+                        style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: "#FEF3C7", color: "#B45309", flexShrink: 0 }}
+                        title="Analyse automatique en cours — le verdict s'affichera dans quelques instants."
+                      >
+                        ⏳ Analyse en cours…
+                      </span>
+                    )}
+                    {file.mismatch && (
+                      <span
+                        style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: "#FEE2E2", color: "#DC2626", flexShrink: 0 }}
+                        title="Ce document ne semble pas correspondre à cette rubrique. Vérifiez que vous avez déposé le bon fichier au bon endroit."
+                      >
+                        🚫 Ne correspond pas à cette rubrique
+                      </span>
+                    )}
                     {!file.autoGenerated && (
                       <button
                         onClick={() => void deletePiece(codePiece, file.id)}
@@ -2575,7 +2691,14 @@ export function NouvelleDemandeWizard() {
                 const pieces = classification?.pieces_requises ?? [];
                 const required = pieces.filter((p) => p.requis);
                 const missing = required.filter((p) => (uploadedPieces[p.code]?.length ?? 0) === 0).length;
-                const canSubmit = missing === 0 && !!dossierId && !submitting;
+                // Contrôles IA sur toutes les pièces déposées (toutes rubriques) :
+                // on ne soumet pas tant qu'une analyse est en cours, ni si une pièce
+                // est hors-sujet (ne correspond pas à sa rubrique). Le serveur
+                // re-vérifie ces deux conditions au moment de /soumettre.
+                const allUploaded = Object.values(uploadedPieces).flat();
+                const anyPending = allUploaded.some((p) => p.aiPending);
+                const horsSujet = allUploaded.filter((p) => p.mismatch);
+                const canSubmit = missing === 0 && !anyPending && horsSujet.length === 0 && !!dossierId && !submitting;
                 return (
                   <>
                     {missing > 0 ? (
@@ -2587,7 +2710,17 @@ export function NouvelleDemandeWizard() {
                         ✓ Toutes les pièces obligatoires ont été déposées.
                       </div>
                     ) : null}
-                    {missing === 0 && (
+                    {horsSujet.length > 0 && (
+                      <div style={{ background: "#FEE2E2", border: "1px solid #FECACA", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#DC2626", lineHeight: 1.5, fontWeight: 500 }}>
+                        🚫 {horsSujet.length > 1 ? `${horsSujet.length} pièces ne correspondent` : "Une pièce ne correspond"} pas à {horsSujet.length > 1 ? "leur" : "sa"} rubrique : {horsSujet.map((p) => p.nom).join(", ")}. Vérifiez que le bon document est déposé dans chaque emplacement avant de soumettre.
+                      </div>
+                    )}
+                    {anyPending && horsSujet.length === 0 && (
+                      <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#B45309", lineHeight: 1.5 }}>
+                        ⏳ Analyse de vos pièces en cours… La soumission sera disponible dès qu'elle sera terminée (quelques instants).
+                      </div>
+                    )}
+                    {missing === 0 && !anyPending && horsSujet.length === 0 && (
                       <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 12, padding: "13px 18px", marginBottom: 24, fontSize: 13, color: "#15803D", lineHeight: 1.5 }}>
                         ✓ Votre dossier sera transmis à la mairie de{" "}
                         <strong>{parcel?.commune ?? "votre commune"}</strong>. Vous recevrez un

@@ -945,7 +945,14 @@ dossiersRouter.get("/:id/pieces", async (req: AuthRequest, res) => {
         isNull(dossier_pieces_jointes.archived_at),
       ))
       .orderBy(desc(dossier_pieces_jointes.uploaded_at));
-    res.json(pieces);
+    // Flag « hors-sujet » calculé côté serveur (le wizard n'a pas à dupliquer la
+    // logique de detectRubricMismatch). null = pas de problème ; objet = la pièce
+    // ne correspond pas à sa rubrique → la soumission sera refusée (cf. /soumettre).
+    const enriched = pieces.map((p) => ({
+      ...p,
+      rubric_mismatch: detectRubricMismatch(p.code_piece, p.extraction_ia as PieceExtraction | null),
+    }));
+    res.json(enriched);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
