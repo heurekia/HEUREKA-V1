@@ -1,25 +1,21 @@
-# Whitelist CrowdSec — IP de confiance HEUREKIA (anti auto-blocage).
+# Whitelist CrowdSec — base versionnée (loopback uniquement).
 #
 # Copié par install.sh dans :
 #   /etc/crowdsec/parsers/s02-enrich/heureka-whitelists.yaml
 #
-# IMPORTANT : remplacer l'IP de documentation ci-dessous par la/les IP
-# publiques fixes de l'équipe (bureau, VPN admin, monitoring) AVANT d'activer
-# le blocage. enable-blocking.sh refuse de tourner tant que le marqueur
-# « A_COMPLETER » est présent dans ce fichier.
+# Ce fichier est PUBLIC (versionné) : n'y mets JAMAIS d'IP personnelle ou de
+# bureau (géolocalisable). Les IP réelles de l'équipe (bureau fixe, VPN admin,
+# monitoring) vont dans le fichier LOCAL non versionné, déposé côté serveur :
+#   /etc/crowdsec/parsers/s02-enrich/heureka-whitelists-local.yaml
+# (cf. whitelists.local.example.yaml — install.sh le sème s'il est absent et ne
+# l'écrase jamais).
 #
-# Une whitelist au niveau parser : les événements issus de ces IP ne génèrent
-# jamais de décision, quel que soit le scénario.
+# Rappel : avec SSH par clé only + la console OVH comme secours, une whitelist
+# n'est PAS obligatoire (cf. README, section « Ne pas se faire bannir »).
 name: heureka/whitelists
-description: "IP de confiance HEUREKIA — jamais bloquées par CrowdSec"
+description: "Loopback de confiance — jamais bloqué par CrowdSec"
 whitelist:
-  reason: "HEUREKIA trusted sources (bureau, admin, monitoring)"
+  reason: "HEUREKIA loopback"
   ip:
     - "127.0.0.1"
     - "::1"
-  cidr:
-    # A_COMPLETER : remplacer le placeholder TEST-NET ci-dessous par la/les
-    # IP publiques fixes de l'équipe. Exemples :
-    #   - "203.0.113.42/32"   # bureau HEUREKIA
-    #   - "198.51.100.0/24"   # VPN admin
-    - "192.0.2.1/32"          # placeholder (TEST-NET-1, ne matche aucune IP réelle)

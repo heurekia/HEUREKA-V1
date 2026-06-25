@@ -40,10 +40,21 @@ fi
 install -d -m 755 /etc/crowdsec/acquis.d
 install -m 644 "$HERE/acquis.yaml" /etc/crowdsec/acquis.d/heureka.yaml
 
-# 4. Whitelist IP de confiance (anti auto-blocage). À COMPLÉTER avant d'enforcer.
+# 4. Whitelists. La base (loopback) est versionnée et peut être réécrite.
 install -d -m 755 /etc/crowdsec/parsers/s02-enrich
 install -m 644 "$HERE/whitelists.yaml" \
   /etc/crowdsec/parsers/s02-enrich/heureka-whitelists.yaml
+
+#    Le fichier LOCAL (IP réelles de l'équipe) n'est JAMAIS écrasé : on le sème
+#    depuis l'exemple seulement s'il est absent. À compléter côté serveur si
+#    besoin — non versionné, pas d'IP perso dans le dépôt.
+LOCAL_WL=/etc/crowdsec/parsers/s02-enrich/heureka-whitelists-local.yaml
+if [[ ! -f "$LOCAL_WL" ]]; then
+  install -m 644 "$HERE/whitelists.local.example.yaml" "$LOCAL_WL"
+  log "Whitelist locale initialisée (vide) : $LOCAL_WL"
+else
+  log "Whitelist locale déjà présente : $LOCAL_WL — laissée intacte."
+fi
 
 # 5. Démarrage / recharge
 systemctl enable --now crowdsec
@@ -51,5 +62,5 @@ systemctl reload crowdsec 2>/dev/null || systemctl restart crowdsec
 
 log "OK — CrowdSec installé en DÉTECTION SEULE (aucun blocage actif)."
 log "Vérifier :   sudo cscli metrics   puis   sudo cscli alerts list"
-log "Observer 24-48 h, compléter whitelists.yaml (IP équipe), puis lancer :"
-log "   sudo ./enable-blocking.sh"
+log "Observer 24-48 h. Recommandé avant d'enforcer : SSH en clé only."
+log "Puis :   sudo ./enable-blocking.sh"
