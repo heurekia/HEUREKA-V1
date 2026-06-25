@@ -1117,7 +1117,6 @@ function InfosPersoScreen() {
     { label: "Délégations", icon: "🤝" },
     { label: "Mes Signatures", icon: "✍️" },
     { label: "Notifications", icon: "🔔" },
-    { label: "Préférences", icon: "⚙️" },
     { label: "Sécurité / Connexion", icon: "🔒" },
     { label: "Centre d'aide", icon: "❓" },
   ];
@@ -1269,38 +1268,6 @@ function InfosPersoScreen() {
                   </div>
                 </div>
               ))}
-            </div>
-          )}
-
-          {stab === "Préférences" && (
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>Préférences d'affichage</div>
-              {[
-                { label: "Langue", value: "Français" },
-                { label: "Fuseau horaire", value: "Europe/Paris (UTC+2)" },
-                { label: "Format de date", value: "DD/MM/YYYY" },
-                { label: "Dossiers par page", value: "20" },
-              ].map(p => (
-                <div key={p.label} style={{ display: "flex", alignItems: "center", marginBottom: 14, gap: 16 }}>
-                  <div style={{ width: 180, fontSize: 13, color: "#374151", fontWeight: 500 }}>{p.label}</div>
-                  <select style={{ flex: 1, padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151" }}><option>{p.value}</option></select>
-                </div>
-              ))}
-              <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 16, marginTop: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Thème</div>
-                <div style={{ display: "flex", gap: 10 }}>
-                  {[["Clair","☀️",true],["Sombre","🌙",false],["Système","💻",false]].map(([l,ic,active]) => (
-                    <button key={String(l)} style={{ flex: 1, border: active ? "2px solid #4F46E5" : "1px solid #E2E8F0", background: active ? "#EEF2FF" : "white", borderRadius: 10, padding: "12px 8px", cursor: "pointer", textAlign: "center" }}>
-                      <div style={{ fontSize: 20, marginBottom: 4 }}>{ic as string}</div>
-                      <div style={{ fontSize: 12, color: active ? "#4F46E5" : "#374151", fontWeight: active ? 600 : 400 }}>{l as string}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20, gap: 8 }}>
-                <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
-                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
-              </div>
             </div>
           )}
 
