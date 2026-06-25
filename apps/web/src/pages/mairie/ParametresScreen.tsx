@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { DotsIcon, StatusBadge } from "./ui";
-import { COMMUNE_INSEE, notifIcon, notifColor, relTime, type ApiNotif } from "./shared";
+import { COMMUNE_INSEE, notifIcon, notifColor, relTime, resolveCommune, type ApiNotif } from "./shared";
 import { ReglementationScreen } from "./ReglementationScreen";
 import { TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 
@@ -238,11 +238,13 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   const [editRoleConfigId, setEditRoleConfigId] = useState("");
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [roleConfigs, setRoleConfigs] = useState<RoleConfig[]>([]);
-  const [communeSigs, setCommuneSigs] = useState<{ id: string; user_id: string; role: string; fonction: string | null; delegation_arrete: string | null }[]>([]);
+  const [communeSigs, setCommuneSigs] = useState<{ id: string; user_id: string; role: string; fonction: string | null; signature_image: string | null; tampon_image: string | null; delegation_arrete: string | null }[]>([]);
   const [sigModal, setSigModal] = useState<{ userId: string; name: string } | null>(null);
   const [sigRole, setSigRole] = useState("maire");
   const [sigFonction, setSigFonction] = useState("");
   const [sigDelegation, setSigDelegation] = useState("");
+  const [sigSignature, setSigSignature] = useState("");
+  const [sigTampon, setSigTampon] = useState("");
   const [sigSaving, setSigSaving] = useState(false);
 
   const load = () => {
@@ -253,7 +255,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
       .finally(() => setLoading(false));
   };
   const loadSigs = () => {
-    api.get<{ id: string; user_id: string; role: string; fonction: string | null; delegation_arrete: string | null }[]>(
+    api.get<{ id: string; user_id: string; role: string; fonction: string | null; signature_image: string | null; tampon_image: string | null; delegation_arrete: string | null }[]>(
       `/decisions/communes/${encodeURIComponent(commune)}/signataires`
     ).then(setCommuneSigs).catch(() => {});
   };
@@ -337,8 +339,8 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
         {[
           ["Agents", String(userList.length), "#4F46E5"],
+          ["Mairie", String(userList.filter(u => u.role === "mairie").length), "#7C3AED"],
           ["Instructeurs", String(userList.filter(u => u.role === "instructeur").length), "#0891B2"],
-          ["Admins", String(userList.filter(u => u.role === "admin").length), "#DC2626"],
         ].map(([l, v, c]) => (
           <div key={l} style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ fontSize: 22, fontWeight: 700, color: c }}>{v}</span>
@@ -410,7 +412,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={() => { setEditingId(u.id); setEditRoleConfigId(u.role_config_id ?? ""); }}
                         style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>Rôle</button>
-                      <button onClick={() => { const s = getSig(u.id); setSigModal({ userId: u.id, name: `${u.prenom} ${u.nom}` }); setSigRole(s?.role ?? "maire"); setSigFonction(s?.fonction ?? ""); setSigDelegation(s?.delegation_arrete ?? ""); }}
+                      <button onClick={() => { const s = getSig(u.id); setSigModal({ userId: u.id, name: `${u.prenom} ${u.nom}` }); setSigRole(s?.role ?? "maire"); setSigFonction(s?.fonction ?? ""); setSigDelegation(s?.delegation_arrete ?? ""); setSigSignature(s?.signature_image ?? ""); setSigTampon(s?.tampon_image ?? ""); }}
                         title="Habilitation signature ADS"
                         style={{ border: `1px solid ${getSig(u.id) ? "#FDE68A" : "#E2E8F0"}`, background: getSig(u.id) ? "#FEF9C3" : "white", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: getSig(u.id) ? "#92400E" : "#64748b", cursor: "pointer" }}>✍️</button>
                       {u.id !== currentUserId && (
@@ -530,6 +532,30 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                 <label style={{ fontSize: 11, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 5 }}>Fonction (intitulé exact imprimé sur les courriers)</label>
                 <input value={sigFonction} onChange={e => setSigFonction(e.target.value)} placeholder="ex. Conseiller Municipal Délégué à l'Urbanisme (facultatif)" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12.5, outline: "none", boxSizing: "border-box" as const }} />
               </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+                {([
+                  { label: "Signature", val: sigSignature, set: setSigSignature, hint: "PNG fond transparent recommandé" },
+                  { label: "Tampon / Cachet", val: sigTampon, set: setSigTampon, hint: "Image du cachet officiel" },
+                ] as const).map(f => (
+                  <div key={f.label}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 5 }}>{f.label}</label>
+                    {f.val && <img src={f.val} alt="" style={{ height: 40, width: "auto", maxWidth: "100%", border: "1px solid #E2E8F0", borderRadius: 5, objectFit: "contain", background: "#F8FAFC", padding: 3, marginBottom: 6, display: "block" }} />}
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <label style={{ fontSize: 11.5, color: "#4F46E5", cursor: "pointer", border: "1px solid #E2E8F0", borderRadius: 7, padding: "5px 10px", background: "white" }}>
+                        {f.val ? "Remplacer" : "Téléverser"}
+                        <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => {
+                          const file = e.target.files?.[0]; if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => f.set(typeof reader.result === "string" ? reader.result : "");
+                          reader.readAsDataURL(file);
+                        }} />
+                      </label>
+                      {f.val && <button onClick={() => f.set("")} style={{ fontSize: 11, color: "#EF4444", border: "none", background: "none", cursor: "pointer" }}>Retirer</button>}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 4 }}>{f.hint}</div>
+                  </div>
+                ))}
+              </div>
               <div style={{ display: "flex", gap: 8, justifyContent: currentSig ? "space-between" : "flex-end" }}>
                 {currentSig && (
                   <button onClick={() => {
@@ -547,8 +573,8 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                   <button onClick={() => {
                     setSigSaving(true);
                     const p = currentSig
-                      ? api.put(`/decisions/communes/${encodeURIComponent(commune)}/signataires/${currentSig.id}`, { role: sigRole, fonction: sigFonction || null, delegation_arrete: sigDelegation || null })
-                      : api.post(`/decisions/communes/${encodeURIComponent(commune)}/signataires`, { user_id: sigModal.userId, role: sigRole, fonction: sigFonction || null, delegation_arrete: sigDelegation || null });
+                      ? api.put(`/decisions/communes/${encodeURIComponent(commune)}/signataires/${currentSig.id}`, { role: sigRole, fonction: sigFonction || null, signature_image: sigSignature || null, tampon_image: sigTampon || null, delegation_arrete: sigDelegation || null })
+                      : api.post(`/decisions/communes/${encodeURIComponent(commune)}/signataires`, { user_id: sigModal.userId, role: sigRole, fonction: sigFonction || null, signature_image: sigSignature || null, tampon_image: sigTampon || null, delegation_arrete: sigDelegation || null });
                     p.then(() => { loadSigs(); setSigModal(null); })
                       .catch(() => {})
                       .finally(() => setSigSaving(false));
@@ -565,7 +591,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   );
 }
 
-export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
+export function ParametresScreen({ commune = "", communes = [], isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; communes?: string[]; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
   const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
   const TAB_SLUGS: Record<string, string> = {
@@ -716,12 +742,16 @@ export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers
                   <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Aucune notification</div>
                   <div style={{ fontSize: 12, color: "#94a3b8" }}>Vous êtes à jour !</div>
                 </div>
-              ) : histNotifs.map(n => (
+              ) : histNotifs.map(n => {
+                // Agent multi-communes : préfixe le nom de la ville concernée.
+                const communeLabel = communes.length > 1 ? (resolveCommune(n.commune, communes) ?? n.commune) : null;
+                return (
                 <div key={n.id} onClick={() => markOneRead(n)}
                   style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 20px", borderBottom: "1px solid #F8FAFC", background: n.is_read ? "white" : "#F8F7FF", cursor: "pointer", transition: "background 0.15s" }}>
                   <div style={{ width: 36, height: 36, borderRadius: 10, background: notifColor(n.type) + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{notifIcon(n.type)}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" as const }}>
+                      {communeLabel && <span style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", background: "#EEF2FF", borderRadius: 4, padding: "1px 7px" }}>{communeLabel}</span>}
                       <span style={{ fontSize: 13, fontWeight: n.is_read ? 500 : 700, color: "#0F172A" }}>{n.title}</span>
                       <span style={{ fontSize: 11, color: "#94a3b8", flexShrink: 0 }}>{relTime(n.created_at)}</span>
                     </div>
@@ -729,7 +759,8 @@ export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers
                   </div>
                   {!n.is_read && <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 6 }} />}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -881,8 +912,9 @@ export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers
         <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
           <CommuneLetterheadPanel inseeCode={communeInseeMap[commune]} />
           <div style={{ borderTop: "1px solid #E2E8F0", paddingTop: 28 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Modèles de courrier</div>
-            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Créez et gérez vos modèles de courrier avec variables dynamiques.</div>
+            {/* Pas de titre ici : TemplateManagerPanel rend déjà son propre
+                en-tête (« Mes Modèles de Courrier » + bouton « Nouveau modèle »).
+                Le doublon de titres a été retiré. */}
             <TemplateManagerPanel inseeCode={communeInseeMap[commune]} />
           </div>
         </div>

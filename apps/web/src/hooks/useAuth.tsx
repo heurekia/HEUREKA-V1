@@ -17,6 +17,22 @@ export interface User {
   // MFA : état d'activation et éligibilité (renseignés par /auth/me).
   mfa_enabled?: boolean;
   mfa_available?: boolean;
+  // Permissions effectives accordées par le rôle personnalisé assigné.
+  //   null / undefined = accès complet (super admin OU agent sans rôle
+  //   personnalisé) ; un tableau = liste blanche issue du profil.
+  permissions?: string[] | null;
+}
+
+/**
+ * Vrai si l'utilisateur possède la permission donnée. Accès complet (true) quand
+ * `permissions` est null/undefined : super admin, ou agent sans rôle
+ * personnalisé assigné — garantit la rétro-compatibilité avec les comptes
+ * existants. Aligné avec getEffectivePermissions côté API.
+ */
+export function hasPermission(user: User | null, key: string): boolean {
+  if (!user) return false;
+  if (user.permissions == null) return true;
+  return user.permissions.includes(key);
 }
 
 // Résultat de login : soit la session est ouverte (status "ok"), soit une 2e

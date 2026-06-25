@@ -366,6 +366,12 @@ export interface CourrierModalProps {
   aiSuggestedMissingPieces?: Array<{ code: string; nom: string }>;
   // Callback appelé après une émission réussie (le parent rafraîchit le dossier).
   onEmitted?: () => void;
+  // INSEE de la commune du dossier. Sans lui, les modèles et l'en-tête sont lus
+  // sur la commune principale du compte et non sur celle du dossier : un agent
+  // multi-communes qui a créé ses modèles sous la commune sélectionnée ne les
+  // retrouvait pas dans l'onglet Courriers. On relit donc sur le même périmètre
+  // que la création (cf. TemplateManagerPanel).
+  inseeCode?: string;
 }
 
 const NO_AI_HINTS_KEY = "heureka_no_ai_hints";
@@ -376,13 +382,15 @@ export function CourrierModal({
   availablePieces = [],
   aiSuggestedMissingPieces = [],
   onEmitted,
+  inseeCode,
 }: CourrierModalProps) {
   const { user } = useAuth();
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
   const [selected, setSelected] = useState<CourrierTemplate | null>(null);
   const [letterhead, setLetterhead] = useState<Letterhead>({ letterhead_logo: null, letterhead_title: null, letterhead_subtitle: null, letterhead_address: null, footer_text: null, signature_image: null, tampon_image: null });
-  // Signataire désigné de la commune (nom + fonction) pour le bloc signature.
-  const [signataire, setSignataire] = useState<{ nom: string; fonction: string } | null>(null);
+  // Signataire désigné de la commune (nom + fonction + image signature/tampon)
+  // pour le bloc signature. Les images priment sur celles de la commune.
+  const [signataire, setSignataire] = useState<{ nom: string; fonction: string; signature_image: string | null; tampon_image: string | null } | null>(null);
   const [substitutedHtml, setSubstitutedHtml] = useState("");
   const [loading, setLoading] = useState(true);
   // Draggable signature & tampon
@@ -523,15 +531,25 @@ export function CourrierModal({
   }, [allMentions, selectedRefs]);
 
   useEffect(() => {
+    // Périmètre = commune DU DOSSIER, résolue côté serveur via dossier_id : ça
+    // ne dépend ni de la commune principale du compte ni d'une table nom→INSEE
+    // côté client. insee_code reste transmis comme secours (repli serveur).
+    const params = new URLSearchParams({ dossier_id: dossier.id });
+    if (inseeCode) params.set("insee_code", inseeCode);
+    const q = `?${params.toString()}`;
     Promise.all([
-      api.get<CourrierTemplate[]>("/mairie/templates"),
-      api.get<Letterhead & { commune_configured?: boolean }>("/mairie/commune-letterhead"),
+      api.get<CourrierTemplate[]>(`/mairie/templates${q}`),
+      api.get<Letterhead & { commune_configured?: boolean }>(`/mairie/commune-letterhead${q}`),
     ]).then(([tpls, lh]) => {
       setTemplates(tpls);
       setLetterhead(lh);
       if (tpls.length > 0) setSelected(tpls[0]!);
-    }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+    }).catch((e) => {
+      // Ne pas avaler l'erreur en silence : un échec serveur affichait
+      // « Aucun modèle » à tort (indiscernable d'une liste vide légitime).
+      console.error("[CourrierModal] chargement modèles/en-tête échoué", e);
+    }).finally(() => setLoading(false));
+  }, [dossier.id, inseeCode]);
 
   // Signataire de la commune pour le bloc signature. Hors décision (ex. pièces
   // manquantes), on retient le signataire délégué (arrêté de délégation), sinon
@@ -541,6 +559,7 @@ export function CourrierModal({
     if (!commune) { setSignataire(null); return; }
     type SignataireRow = {
       role: string; fonction: string | null; active?: boolean; delegation_arrete: string | null;
+      signature_image: string | null; tampon_image: string | null;
       user: { prenom: string; nom: string } | null;
     };
     api.get<SignataireRow[]>(`/decisions/communes/${encodeURIComponent(commune)}/signataires`)
@@ -551,6 +570,8 @@ export function CourrierModal({
         setSignataire({
           nom: chosen.user ? `${chosen.user.prenom} ${chosen.user.nom}` : "",
           fonction: chosen.fonction || ROLE_LABELS[chosen.role] || chosen.role,
+          signature_image: chosen.signature_image ?? null,
+          tampon_image: chosen.tampon_image ?? null,
         });
       })
       .catch(() => setSignataire(null));
@@ -672,14 +693,14 @@ export function CourrierModal({
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             {/* Signature toggle */}
-            {letterhead.signature_image && (
+            {(signataire?.signature_image || letterhead.signature_image) && (
               <button onClick={() => setShowSig(v => !v)}
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showSig ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 7, background: showSig ? "#EEF2FF" : "white", color: showSig ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
                 ✍️ Signature
               </button>
             )}
             {/* Tampon toggle */}
-            {letterhead.tampon_image && (
+            {(signataire?.tampon_image || letterhead.tampon_image) && (
               <button onClick={() => setShowTamp(v => !v)}
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showTamp ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 7, background: showTamp ? "#EEF2FF" : "white", color: showTamp ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
                 🔵 Tampon
@@ -759,19 +780,19 @@ export function CourrierModal({
               <div style={{ position: "relative" }}>
                 <CourrierPrintPreview html={substitutedHtml} letterhead={letterhead} extraHtml={insertedMentionsHtml || undefined} />
                 {/* Draggable signature */}
-                {showSig && letterhead.signature_image && (
+                {showSig && (signataire?.signature_image || letterhead.signature_image) && (
                   <DraggableStamp
-                    src={letterhead.signature_image}
+                    src={signataire?.signature_image || letterhead.signature_image || ""}
                     pos={sigPos}
                     setPos={setSigPos}
-                    caption={`${user?.prenom ?? ""} ${user?.nom ?? ""}`}
+                    caption={signataire?.nom || `${user?.prenom ?? ""} ${user?.nom ?? ""}`}
                     onHide={() => setShowSig(false)}
                   />
                 )}
                 {/* Draggable tampon */}
-                {showTamp && letterhead.tampon_image && (
+                {showTamp && (signataire?.tampon_image || letterhead.tampon_image) && (
                   <DraggableStamp
-                    src={letterhead.tampon_image}
+                    src={signataire?.tampon_image || letterhead.tampon_image || ""}
                     pos={tampPos}
                     setPos={setTampPos}
                     onHide={() => setShowTamp(false)}
@@ -1731,8 +1752,8 @@ export function CommuneLetterheadPanel({ inseeCode }: { inseeCode?: string }) {
             style={{ width: "100%", padding: "8px 11px", border: "1px solid #E2E8F0", borderRadius: 7, fontSize: 13, outline: "none", resize: "vertical", minHeight: 64, fontFamily: "inherit", boxSizing: "border-box" }} />
         </div>
 
-        {imageUpload("Signature", form.signature_image, "signature_image", "PNG fond transparent recommandé. Positionnée librement sur le courrier.")}
-        {imageUpload("Tampon / Cachet", form.tampon_image, "tampon_image", "Image du tampon officiel. Positionné librement sur le courrier.")}
+        {imageUpload("Signature (repli commune)", form.signature_image, "signature_image", "Repli si le signataire n'a pas sa propre signature. À définir de préférence par signataire (Utilisateurs → Signataires).")}
+        {imageUpload("Tampon / Cachet (repli commune)", form.tampon_image, "tampon_image", "Repli si le signataire n'a pas son propre tampon. À définir de préférence par signataire (Utilisateurs → Signataires).")}
 
         <div>
           <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 5 }}>Pied de page</label>

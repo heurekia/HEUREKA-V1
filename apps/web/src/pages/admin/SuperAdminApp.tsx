@@ -2839,23 +2839,26 @@ function Utilisateurs() {
   const [filterCommune, setFilterCommune] = useState("");
   const [activeTab, setActiveTab] = useState<"tous" | "mairie" | "instructeur" | "citoyen" | "admin">("tous");
   const [search, setSearch] = useState("");
-  const [editRole, setEditRole] = useState<{ id: string; role: string } | null>(null);
+  const [editRole, setEditRole] = useState<{ id: string; role: string; role_config_id: string } | null>(null);
   const [communesModal, setCommunesModal] = useState<{ id: string; name: string } | null>(null);
   const [userCommuneIds, setUserCommuneIds] = useState<Set<string>>(new Set());
   const [formCommuneIds, setFormCommuneIds] = useState<Set<string>>(new Set());
-  const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
+  const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "", role_config_id: "" });
+  const [roleConfigs, setRoleConfigs] = useState<RolePermission[]>([]);
   const [resendingId, setResendingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
     if (filterCommune) params.set("commune", filterCommune);
-    const [users, communes] = await Promise.all([
+    const [users, communes, roles] = await Promise.all([
       api.get<UserItem[]>(`/admin/users?${params.toString()}`),
       api.get<Commune[]>("/admin/communes"),
+      api.get<RolePermission[]>("/admin/roles"),
     ]);
     setUsersData(users);
     setAllCommunes(communes);
+    setRoleConfigs(roles);
     setLoading(false);
   }, [filterCommune]);
 
@@ -2881,10 +2884,10 @@ function Utilisateurs() {
       setToast({ msg: "Tous les champs obligatoires sont requis", type: "error" }); return;
     }
     try {
-      await api.post("/admin/users", { ...form, communeIds: [...formCommuneIds] });
+      await api.post("/admin/users", { ...form, role_config_id: form.role_config_id || null, communeIds: [...formCommuneIds] });
       setToast({ msg: `Invitation envoyée à ${form.email} — lien valable 7 jours.`, type: "success" });
       setShowModal(false);
-      setForm({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
+      setForm({ prenom: "", nom: "", email: "", role: "mairie", telephone: "", role_config_id: "" });
       setFormCommuneIds(new Set());
       load();
     } catch (e) {
@@ -2904,9 +2907,9 @@ function Utilisateurs() {
     }
   };
 
-  const handleRoleUpdate = async (id: string, role: string) => {
+  const handleRoleUpdate = async (id: string, role: string, role_config_id: string) => {
     try {
-      await api.patch(`/admin/users/${id}`, { role });
+      await api.patch(`/admin/users/${id}`, { role, role_config_id: role_config_id || null });
       setToast({ msg: "Rôle mis à jour", type: "success" });
       setEditRole(null);
       load();
@@ -3071,10 +3074,16 @@ function Utilisateurs() {
                   <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>{u.email}</td>
                   <td style={{ padding: "12px 16px" }}>
                     {editRole?.id === u.id ? (
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                         <select
                           value={editRole.role}
-                          onChange={(e) => setEditRole({ ...editRole, role: e.target.value })}
+                          onChange={(e) => {
+                            // Changer de rôle de base : on ne garde un rôle
+                            // personnalisé que pour mairie / instructeur.
+                            const role = e.target.value;
+                            const keepConfig = role === "mairie" || role === "instructeur";
+                            setEditRole({ ...editRole, role, role_config_id: keepConfig ? editRole.role_config_id : "" });
+                          }}
                           style={{ padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, color: C.text, background: C.white, outline: "none" }}
                         >
                           <option value="admin">Admin</option>
@@ -3082,13 +3091,33 @@ function Utilisateurs() {
                           <option value="instructeur">Instructeur</option>
                           <option value="citoyen">Citoyen</option>
                         </select>
-                        <button onClick={() => handleRoleUpdate(u.id, editRole.role)} style={{ padding: "4px 10px", background: C.green, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓</button>
+                        {(editRole.role === "mairie" || editRole.role === "instructeur") && (
+                          <select
+                            value={editRole.role_config_id}
+                            onChange={(e) => {
+                              // Sélectionner un rôle personnalisé aligne le rôle
+                              // de base sur celui défini par le profil.
+                              const id = e.target.value;
+                              const rc = roleConfigs.find((r) => r.id === id);
+                              setEditRole({ ...editRole, role_config_id: id, role: rc ? rc.base_role : editRole.role });
+                            }}
+                            style={{ padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, color: C.text, background: C.white, outline: "none", maxWidth: 170 }}
+                          >
+                            <option value="">— Rôle personnalisé —</option>
+                            {roleConfigs.map((rc) => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
+                          </select>
+                        )}
+                        <button onClick={() => handleRoleUpdate(u.id, editRole.role, editRole.role_config_id)} style={{ padding: "4px 10px", background: C.green, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓</button>
                         <button onClick={() => setEditRole(null)} style={{ padding: "4px 8px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", fontSize: 12 }}>✕</button>
                       </div>
                     ) : (
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <RoleBadge role={u.role} />
-                        <button onClick={() => setEditRole({ id: u.id, role: u.role })} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, fontSize: 12, padding: 2 }}>✏️</button>
+                        {(() => {
+                          const rc = u.role_config_id ? roleConfigs.find((r) => r.id === u.role_config_id) : null;
+                          return rc ? <span style={{ padding: "2px 8px", borderRadius: 6, background: `${rc.color}20`, color: rc.color, fontSize: 11, fontWeight: 700 }}>{rc.label}</span> : null;
+                        })()}
+                        <button onClick={() => setEditRole({ id: u.id, role: u.role, role_config_id: u.role_config_id ?? "" })} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, fontSize: 12, padding: 2 }}>✏️</button>
                       </div>
                     )}
                   </td>
@@ -3144,14 +3173,34 @@ function Utilisateurs() {
             <Field label="Email *">
               <Input type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
             </Field>
-            <Field label="Rôle *">
-              <Select value={form.role} onChange={(v) => setForm({ ...form, role: v })}>
-                <option value="admin">Admin</option>
-                <option value="mairie">Mairie</option>
-                <option value="instructeur">Instructeur</option>
-                <option value="citoyen">Citoyen</option>
-              </Select>
-            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <Field label="Rôle *">
+                <Select value={form.role} onChange={(v) => setForm({ ...form, role: v, role_config_id: (v === "mairie" || v === "instructeur") ? form.role_config_id : "" })}>
+                  <option value="admin">Admin</option>
+                  <option value="mairie">Mairie</option>
+                  <option value="instructeur">Instructeur</option>
+                  <option value="citoyen">Citoyen</option>
+                </Select>
+              </Field>
+              <Field label="Rôle personnalisé">
+                {(form.role === "mairie" || form.role === "instructeur") ? (
+                  <Select
+                    value={form.role_config_id}
+                    onChange={(v) => {
+                      const rc = roleConfigs.find((r) => r.id === v);
+                      setForm({ ...form, role_config_id: v, role: rc ? rc.base_role : form.role });
+                    }}
+                  >
+                    <option value="">— Aucun —</option>
+                    {roleConfigs.map((rc) => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
+                  </Select>
+                ) : (
+                  <Select value="" onChange={() => {}} disabled>
+                    <option value="">— Non applicable —</option>
+                  </Select>
+                )}
+              </Field>
+            </div>
             <Field label={`Communes${formCommuneIds.size > 0 ? ` (${formCommuneIds.size} sélectionnée${formCommuneIds.size > 1 ? "s" : ""})` : ""}`}>
               <CoverageSelector allCommunes={allCommunes} selectedIds={formCommuneIds} onChange={setFormCommuneIds} />
             </Field>

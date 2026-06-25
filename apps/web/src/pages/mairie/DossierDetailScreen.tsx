@@ -297,10 +297,13 @@ function InvitePetitionnaireModal({ dossierId, initialEmail, isPlaceholder, peti
   );
 }
 
-export function DossierDetailScreen({ dossier, onBack, navigate }: {
+export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
   dossier: DossierInfo;
   onBack: () => void;
   navigate: (s: string) => void;
+  // INSEE de la commune du dossier — transmis à la modale courrier pour lire les
+  // modèles et l'en-tête de la bonne commune (cf. CourrierModal.inseeCode).
+  inseeCode?: string;
 }) {
   const { user } = useAuth();
   // Invitation du pétitionnaire (compte placeholder / jamais activé). `invited`
@@ -3683,6 +3686,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
       </div>
       {courrierMode && (
         <CourrierModal
+          inseeCode={inseeCode}
           dossier={{
             id: dossier.id,
             numero: dossier.numero,

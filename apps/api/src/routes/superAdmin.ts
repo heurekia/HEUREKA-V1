@@ -11,6 +11,7 @@ import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
 import { requireAuth, requireRole, bumpTokenVersion, invalidateTokenVersionCache, type AuthRequest } from "../middlewares/auth.js";
 import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
+import { invalidatePermissions, invalidateAllPermissions } from "../middlewares/permissions.js";
 import { logAudit } from "../services/audit.js";
 
 export const superAdminRouter = Router();
@@ -1013,7 +1014,21 @@ superAdminRouter.get("/users", async (req, res) => {
     const { commune, role } = req.query as { commune?: string; role?: string };
 
     const conditions = [];
-    if (commune) conditions.push(eq(users.commune, commune));
+    if (commune) {
+      // Un agent peut être rattaché à PLUSIEURS communes (table user_communes).
+      // `users.commune` ne porte que la commune PRINCIPALE (la 1re saisie à la
+      // création) : filtrer dessus seul masque l'agent dans ses communes
+      // secondaires. On retient donc aussi les agents reliés à la commune via
+      // user_communes (cf. getCommuneScope, qui fait foi pour l'accès réel).
+      conditions.push(sql`(
+        lower(${users.commune}) = lower(${commune})
+        OR EXISTS (
+          SELECT 1 FROM user_communes uc
+          JOIN communes c ON c.id = uc.commune_id
+          WHERE uc.user_id = ${users.id} AND lower(c.name) = lower(${commune})
+        )
+      )`);
+    }
     if (role) conditions.push(eq(users.role, role as "citoyen" | "mairie" | "instructeur" | "admin"));
 
     const rows = await db
@@ -1222,6 +1237,8 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
     if (role !== undefined && prevRole !== undefined && role !== prevRole) {
       await bumpTokenVersion(id);
     }
+    // Idem pour le cache de permissions (role_config_id a pu changer).
+    invalidatePermissions(id);
     await logAudit(req, "admin_user_updated", { email: updated.email });
     res.json(updated);
   } catch (err) {
@@ -1358,6 +1375,7 @@ superAdminRouter.post("/roles", async (req, res) => {
       })
       .returning();
 
+    invalidateAllPermissions();
     await logAudit(req, "admin_role_created");
     res.status(201).json(newRole);
   } catch (err) {
@@ -1394,6 +1412,8 @@ superAdminRouter.patch("/roles/:id", async (req, res) => {
       .where(eq(role_permissions.id, id))
       .returning();
 
+    // Les permissions du profil ont pu changer → invalider tous les agents.
+    invalidateAllPermissions();
     await logAudit(req, "admin_role_updated");
     res.json(updated);
   } catch (err) {
@@ -1414,6 +1434,7 @@ superAdminRouter.delete("/roles/:id", async (req, res) => {
     }
 
     await db.delete(role_permissions).where(eq(role_permissions.id, id));
+    invalidateAllPermissions();
     await logAudit(req, "admin_role_deleted");
     res.json({ success: true });
   } catch (err) {

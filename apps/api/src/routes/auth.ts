@@ -6,6 +6,7 @@ import { db } from "../db.js";
 import { users, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens, ai_usage_events, audit_logs } from "@heureka-v1/db";
 import { eq, and, gt, isNull, inArray } from "drizzle-orm";
 import { generateToken, requireAuth, bumpTokenVersion, invalidateTokenVersionCache, issueMfaTicket, verifyMfaTicket, type AuthRequest } from "../middlewares/auth.js";
+import { getEffectivePermissions } from "../middlewares/permissions.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../services/mailer.js";
 import { logAudit } from "../services/audit.js";
 import { getStorageProvider } from "../services/storage.js";
@@ -429,6 +430,10 @@ authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {
   try {
     const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    // Permissions effectives : null = accès complet (super admin ou agent sans
+    // rôle personnalisé) ; sinon liste blanche issue du profil assigné. Le front
+    // s'en sert pour masquer la navigation / les actions non autorisées.
+    const permSet = await getEffectivePermissions(user.id, user.role);
     res.json({
       id: user.id,
       email: user.email,
@@ -444,6 +449,7 @@ authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {
       mfa_enabled: user.mfa_enabled,
       // La MFA n'est proposée qu'aux comptes agents/admin.
       mfa_available: ["mairie", "instructeur", "admin"].includes(user.role),
+      permissions: permSet === null ? null : [...permSet],
     });
   } catch (err) {
     console.error(err);

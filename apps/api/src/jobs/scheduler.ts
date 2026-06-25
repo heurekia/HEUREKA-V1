@@ -3,7 +3,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { db } from "../db.js";
 import { audit_logs, communes, dossiers, dossier_pieces_jointes, user_absences } from "@heureka-v1/db";
-import { sql, eq, lt, lte, gte, and, or, isNull } from "drizzle-orm";
+import { sql, eq, lt, lte, gte, and, or, isNull, inArray } from "drizzle-orm";
 import { getStorageProvider } from "../services/storage.js";
 import { refreshPluZones, PLU_REFRESH_AFTER_MS } from "../services/pluZones.js";
 import { resolveEffectiveInstructeur } from "../services/absenceDelegation.js";
@@ -52,7 +52,7 @@ export function startScheduledJobs() {
       const storage = getStorageProvider();
       const pieces = await db.select({ url: dossier_pieces_jointes.url })
         .from(dossier_pieces_jointes)
-        .where(sql`${dossier_pieces_jointes.dossier_id} = ANY(${draftIds})`);
+        .where(inArray(dossier_pieces_jointes.dossier_id, draftIds));
       const keys = pieces
         .map((p) => p.url)
         .filter((u): u is string => !!u)
@@ -63,7 +63,7 @@ export function startScheduledJobs() {
       }
 
       // 3) Supprimer en cascade (dossier → pieces, messages, notifications).
-      await db.delete(dossiers).where(sql`${dossiers.id} = ANY(${draftIds})`);
+      await db.delete(dossiers).where(inArray(dossiers.id, draftIds));
       console.log(`[cron] Purged ${oldDrafts.length} brouillon dossier(s) > ${DRAFT_DOSSIER_RETENTION_DAYS} days (+ ${filesDeleted} files)`);
     } catch (err) {
       console.error("[cron] draft purge failed:", err);
