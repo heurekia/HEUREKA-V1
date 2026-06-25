@@ -238,11 +238,13 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   const [editRoleConfigId, setEditRoleConfigId] = useState("");
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [roleConfigs, setRoleConfigs] = useState<RoleConfig[]>([]);
-  const [communeSigs, setCommuneSigs] = useState<{ id: string; user_id: string; role: string; fonction: string | null; delegation_arrete: string | null }[]>([]);
+  const [communeSigs, setCommuneSigs] = useState<{ id: string; user_id: string; role: string; fonction: string | null; signature_image: string | null; tampon_image: string | null; delegation_arrete: string | null }[]>([]);
   const [sigModal, setSigModal] = useState<{ userId: string; name: string } | null>(null);
   const [sigRole, setSigRole] = useState("maire");
   const [sigFonction, setSigFonction] = useState("");
   const [sigDelegation, setSigDelegation] = useState("");
+  const [sigSignature, setSigSignature] = useState("");
+  const [sigTampon, setSigTampon] = useState("");
   const [sigSaving, setSigSaving] = useState(false);
 
   const load = () => {
@@ -253,7 +255,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
       .finally(() => setLoading(false));
   };
   const loadSigs = () => {
-    api.get<{ id: string; user_id: string; role: string; fonction: string | null; delegation_arrete: string | null }[]>(
+    api.get<{ id: string; user_id: string; role: string; fonction: string | null; signature_image: string | null; tampon_image: string | null; delegation_arrete: string | null }[]>(
       `/decisions/communes/${encodeURIComponent(commune)}/signataires`
     ).then(setCommuneSigs).catch(() => {});
   };
@@ -410,7 +412,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={() => { setEditingId(u.id); setEditRoleConfigId(u.role_config_id ?? ""); }}
                         style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>Rôle</button>
-                      <button onClick={() => { const s = getSig(u.id); setSigModal({ userId: u.id, name: `${u.prenom} ${u.nom}` }); setSigRole(s?.role ?? "maire"); setSigFonction(s?.fonction ?? ""); setSigDelegation(s?.delegation_arrete ?? ""); }}
+                      <button onClick={() => { const s = getSig(u.id); setSigModal({ userId: u.id, name: `${u.prenom} ${u.nom}` }); setSigRole(s?.role ?? "maire"); setSigFonction(s?.fonction ?? ""); setSigDelegation(s?.delegation_arrete ?? ""); setSigSignature(s?.signature_image ?? ""); setSigTampon(s?.tampon_image ?? ""); }}
                         title="Habilitation signature ADS"
                         style={{ border: `1px solid ${getSig(u.id) ? "#FDE68A" : "#E2E8F0"}`, background: getSig(u.id) ? "#FEF9C3" : "white", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: getSig(u.id) ? "#92400E" : "#64748b", cursor: "pointer" }}>✍️</button>
                       {u.id !== currentUserId && (
@@ -530,6 +532,30 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                 <label style={{ fontSize: 11, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 5 }}>Fonction (intitulé exact imprimé sur les courriers)</label>
                 <input value={sigFonction} onChange={e => setSigFonction(e.target.value)} placeholder="ex. Conseiller Municipal Délégué à l'Urbanisme (facultatif)" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12.5, outline: "none", boxSizing: "border-box" as const }} />
               </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 16 }}>
+                {([
+                  { label: "Signature", val: sigSignature, set: setSigSignature, hint: "PNG fond transparent recommandé" },
+                  { label: "Tampon / Cachet", val: sigTampon, set: setSigTampon, hint: "Image du cachet officiel" },
+                ] as const).map(f => (
+                  <div key={f.label}>
+                    <label style={{ fontSize: 11, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 5 }}>{f.label}</label>
+                    {f.val && <img src={f.val} alt="" style={{ height: 40, width: "auto", maxWidth: "100%", border: "1px solid #E2E8F0", borderRadius: 5, objectFit: "contain", background: "#F8FAFC", padding: 3, marginBottom: 6, display: "block" }} />}
+                    <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                      <label style={{ fontSize: 11.5, color: "#4F46E5", cursor: "pointer", border: "1px solid #E2E8F0", borderRadius: 7, padding: "5px 10px", background: "white" }}>
+                        {f.val ? "Remplacer" : "Téléverser"}
+                        <input type="file" accept="image/*" style={{ display: "none" }} onChange={e => {
+                          const file = e.target.files?.[0]; if (!file) return;
+                          const reader = new FileReader();
+                          reader.onload = () => f.set(typeof reader.result === "string" ? reader.result : "");
+                          reader.readAsDataURL(file);
+                        }} />
+                      </label>
+                      {f.val && <button onClick={() => f.set("")} style={{ fontSize: 11, color: "#EF4444", border: "none", background: "none", cursor: "pointer" }}>Retirer</button>}
+                    </div>
+                    <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 4 }}>{f.hint}</div>
+                  </div>
+                ))}
+              </div>
               <div style={{ display: "flex", gap: 8, justifyContent: currentSig ? "space-between" : "flex-end" }}>
                 {currentSig && (
                   <button onClick={() => {
@@ -547,8 +573,8 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                   <button onClick={() => {
                     setSigSaving(true);
                     const p = currentSig
-                      ? api.put(`/decisions/communes/${encodeURIComponent(commune)}/signataires/${currentSig.id}`, { role: sigRole, fonction: sigFonction || null, delegation_arrete: sigDelegation || null })
-                      : api.post(`/decisions/communes/${encodeURIComponent(commune)}/signataires`, { user_id: sigModal.userId, role: sigRole, fonction: sigFonction || null, delegation_arrete: sigDelegation || null });
+                      ? api.put(`/decisions/communes/${encodeURIComponent(commune)}/signataires/${currentSig.id}`, { role: sigRole, fonction: sigFonction || null, signature_image: sigSignature || null, tampon_image: sigTampon || null, delegation_arrete: sigDelegation || null })
+                      : api.post(`/decisions/communes/${encodeURIComponent(commune)}/signataires`, { user_id: sigModal.userId, role: sigRole, fonction: sigFonction || null, signature_image: sigSignature || null, tampon_image: sigTampon || null, delegation_arrete: sigDelegation || null });
                     p.then(() => { loadSigs(); setSigModal(null); })
                       .catch(() => {})
                       .finally(() => setSigSaving(false));
