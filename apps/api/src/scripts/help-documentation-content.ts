@@ -995,23 +995,6 @@ export const HELP_THEMES: ThemeSeed[] = [
         ),
       },
       {
-        slug: "workflow-delais",
-        title: "Délais et workflow d'instruction",
-        excerpt: "Paramétrer les délais légaux par type de dossier.",
-        html: doc(
-          p("L'onglet <strong>Paramètres → Workflow & Délais</strong> définit les délais d'instruction utilisés pour calculer les échéances."),
-          h2("Les délais par type"),
-          p("Pour chaque type de dossier (PC, DP, PA, CU, PD…), vous réglez :"),
-          ul([
-            "le <strong>délai légal</strong> (référence) ;",
-            "le <strong>délai d'alerte</strong> (avant l'échéance) ;",
-            "le <strong>délai maximal</strong>.",
-          ]),
-          p("Modifiez les valeurs puis enregistrez ; « Réinitialiser » restaure les valeurs par défaut."),
-          info("Cet onglet rappelle aussi les grandes étapes du workflow standard (réception, complétude, consultations, instruction, décision)."),
-        ),
-      },
-      {
         slug: "documents-reglementaires",
         title: "Le référentiel documentaire (PLU, PPRI…)",
         excerpt: "Centraliser les documents réglementaires de la commune.",
