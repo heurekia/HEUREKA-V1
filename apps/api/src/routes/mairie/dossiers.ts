@@ -6,6 +6,7 @@ import { alias } from "drizzle-orm/pg-core";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { inArray } from "drizzle-orm";
 import { requireRole } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import multer from "multer";
 import crypto from "crypto";
@@ -401,7 +402,7 @@ dossiersRouter.get("/dossiers/:id/events", async (req: AuthRequest, res) => {
   }
 });
 
-dossiersRouter.patch("/dossiers/:id/status", async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/status", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
   try {
     const { status, reason } = (req.body ?? {}) as { status?: string; reason?: string | null };
     if (!status) return res.status(400).json({ error: "Statut requis" });

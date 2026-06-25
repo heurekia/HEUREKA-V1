@@ -6,6 +6,7 @@ import {
 import { eq, and, or, desc } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
+import { requirePermission } from "../middlewares/permissions.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
 import { changeDossierStatus } from "../services/dossierWorkflow.js";
 
@@ -176,7 +177,7 @@ decisionsRouter.get("/dossier/:dossierId", async (req: AuthRequest, res) => {
 
 // ── POST /api/decisions/dossier/:dossierId ───────────────────────────────────
 // Create or update the draft decision (upsert)
-decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur", "admin"), requirePermission("dossiers.decision"), async (req: AuthRequest, res) => {
   const { dossierId } = req.params as { dossierId: string };
   const dossier = await loadDossierForDossierId(req, res, dossierId);
   if (!dossier) return;
@@ -256,7 +257,7 @@ decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur",
 });
 
 // ── POST /api/decisions/:id/submit ──────────────────────────────────────────
-decisionsRouter.post("/:id/submit", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.post("/:id/submit", requireRole("mairie", "instructeur", "admin"), requirePermission("dossiers.decision"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
 
   const [decision] = await db

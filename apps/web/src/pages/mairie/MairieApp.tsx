@@ -2,7 +2,7 @@ import { useState, useRef, useEffect, useCallback, useMemo } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
 import { normalizeForSearch } from "../../lib/utils";
-import { useAuth } from "../../hooks/useAuth";
+import { useAuth, hasPermission } from "../../hooks/useAuth";
 import { TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 import { fmtDate, COMMUNE_INSEE, notifIcon, notifColor, relTime, resolveCommune, type ApiNotif, type ApiDossier, type DossierInfo, type WorkflowMeta, type DelaiBreakdown } from "./shared";
 import {
@@ -35,6 +35,37 @@ const NAV_ITEMS = [
 const LABEL_TO_PATH: Record<string, string> = Object.fromEntries(NAV_ITEMS.map(n => [n.label, n.path]));
 LABEL_TO_PATH["Infos Perso"] = "/mairie/profil";
 
+// Permissions requises pour accéder à chaque section (au moins une suffit). Les
+// sections absentes (Signatures, Infos Perso) ne sont pas gérées par
+// permission : « Signatures » dépend de l'habilitation signataire, « Infos
+// Perso » est toujours accessible. Un agent sans rôle personnalisé a
+// `permissions === null` → hasPermission renvoie toujours true (accès complet).
+const NAV_PERMS: Record<string, string[]> = {
+  "/mairie": ["dashboard"],
+  "/mairie/dossiers": ["dossiers.read"],
+  "/mairie/calendrier": ["calendrier"],
+  "/mairie/messagerie": ["messagerie"],
+  "/mairie/carte": ["zones.read"],
+  "/mairie/statistiques": ["stats"],
+  "/mairie/parametres": ["parametres", "utilisateurs"],
+};
+
+function navAllowed(path: string, user: Parameters<typeof hasPermission>[0]): boolean {
+  const req = NAV_PERMS[path];
+  if (!req) return true;
+  return req.some(p => hasPermission(user, p));
+}
+
+// Garde-fou de route : protège un écran derrière ses permissions. En cas
+// d'accès direct (deep-link) à une section interdite, redirige vers le premier
+// onglet autorisé — ou « Infos Perso » en dernier recours.
+function RequirePerm({ perms, children }: { perms: string[]; children: React.ReactElement }) {
+  const { user } = useAuth();
+  if (perms.some(p => hasPermission(user, p))) return children;
+  const fallback = NAV_ITEMS.find(n => NAV_PERMS[n.path]?.some(p => hasPermission(user, p)))?.path ?? "/mairie/profil";
+  return <Navigate to={fallback} replace />;
+}
+
 function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, signaturesBadge = 0, isSignataire = false, communes = [] }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void; messageBadge?: number; signaturesBadge?: number; isSignataire?: boolean; communes?: string[] }) {
   const [showDrop, setShowDrop] = useState(false);
   const [search, setSearch] = useState("");
@@ -44,7 +75,12 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, sig
   const filtered = manyCommunes
     ? communes.filter(c => normalizeForSearch(c).includes(normalizedSearch))
     : communes;
-  const visibleNavItems = NAV_ITEMS.filter(item => item.label !== "Signatures" || isSignataire);
+  const visibleNavItems = NAV_ITEMS.filter(item => {
+    // « Signatures » dépend de l'habilitation signataire, pas d'une permission.
+    if (item.label === "Signatures") return isSignataire;
+    // Les autres sections sont masquées si le rôle personnalisé ne les autorise pas.
+    return navAllowed(item.path, user);
+  });
   return (
     <aside style={{
       width: 200, minWidth: 200, background: "#0f1629",
@@ -1662,7 +1698,9 @@ function OnboardingModal({ prenom, onComplete }: { prenom: string; onComplete: (
 export function MairieApp() {
   const { user, refreshUser } = useAuth();
   const isAdmin = user?.role === "admin";
-  const canManageUsers = user?.role === "admin" || user?.role === "mairie";
+  // Gestion des agents : réservée aux responsables (mairie) / super admins ET
+  // conditionnée à la permission « utilisateurs » du rôle personnalisé éventuel.
+  const canManageUsers = (user?.role === "admin" || user?.role === "mairie") && hasPermission(user, "utilisateurs");
   const [commune, setCommuteRaw] = useState(user?.commune ?? "");
   const [userCommunes, setUserCommunes] = useState<string[]>([]);
   const [communesLoaded, setCommunesLoaded] = useState(false);
@@ -1793,14 +1831,14 @@ export function MairieApp() {
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           <Routes>
-            <Route index element={<DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} inseeCode={communeInseeMap[commune]} onDossierClick={handleDossierClick} />} />
-            <Route path="dossiers" element={<DossiersScreen commune={commune} onDossierClick={handleDossierClick} />} />
-            <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} commune={commune} communes={userCommunes} setCommune={setCommune} communeInseeMap={communeInseeMap} />} />
-            <Route path="messagerie" element={<MessageScreen commune={commune} onDossierClick={handleDossierClick} onUnreadChange={setMessageBadge} />} />
-            <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
-            <Route path="carte" element={<CarteScreen commune={commune} setCommune={setCommune} communeInseeMap={communeInseeMap} />} />
-            <Route path="statistiques" element={<StatistiquesScreen commune={commune} />} />
-            <Route path="parametres" element={<ParametresScreen commune={commune} communes={userCommunes} isAdmin={isAdmin} canManageUsers={canManageUsers} communeInseeMap={communeInseeMap} onInseeUpdated={refreshCommuneInseeMap} />} />
+            <Route index element={<RequirePerm perms={NAV_PERMS["/mairie"]!}><DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} inseeCode={communeInseeMap[commune]} onDossierClick={handleDossierClick} /></RequirePerm>} />
+            <Route path="dossiers" element={<RequirePerm perms={NAV_PERMS["/mairie/dossiers"]!}><DossiersScreen commune={commune} onDossierClick={handleDossierClick} /></RequirePerm>} />
+            <Route path="dossiers/:id" element={<RequirePerm perms={NAV_PERMS["/mairie/dossiers"]!}><DossierDetailRoute navigate={setActive} commune={commune} communes={userCommunes} setCommune={setCommune} communeInseeMap={communeInseeMap} /></RequirePerm>} />
+            <Route path="messagerie" element={<RequirePerm perms={NAV_PERMS["/mairie/messagerie"]!}><MessageScreen commune={commune} onDossierClick={handleDossierClick} onUnreadChange={setMessageBadge} /></RequirePerm>} />
+            <Route path="calendrier" element={<RequirePerm perms={NAV_PERMS["/mairie/calendrier"]!}><CalendrierScreen commune={commune} /></RequirePerm>} />
+            <Route path="carte" element={<RequirePerm perms={NAV_PERMS["/mairie/carte"]!}><CarteScreen commune={commune} setCommune={setCommune} communeInseeMap={communeInseeMap} /></RequirePerm>} />
+            <Route path="statistiques" element={<RequirePerm perms={NAV_PERMS["/mairie/statistiques"]!}><StatistiquesScreen commune={commune} /></RequirePerm>} />
+            <Route path="parametres" element={<RequirePerm perms={NAV_PERMS["/mairie/parametres"]!}><ParametresScreen commune={commune} communes={userCommunes} isAdmin={isAdmin} canManageUsers={canManageUsers} communeInseeMap={communeInseeMap} onInseeUpdated={refreshCommuneInseeMap} /></RequirePerm>} />
             <Route path="signatures" element={<SignaturesPendantesScreen />} />
             <Route path="profil" element={<InfosPersoScreen />} />
             <Route path="*" element={<Navigate to="/mairie" replace />} />

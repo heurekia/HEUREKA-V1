@@ -11,6 +11,7 @@ import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
+import { invalidatePermissions, invalidateAllPermissions } from "../middlewares/permissions.js";
 import { logAudit } from "../services/audit.js";
 
 export const superAdminRouter = Router();
@@ -1216,6 +1217,8 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
     // Rôle et/ou commune ont pu changer → purger le cache de périmètre de cet
     // agent, sinon il garde son ancien scope jusqu'au redémarrage du process.
     invalidateCommuneScope(id);
+    // Idem pour le cache de permissions (role_config_id a pu changer).
+    invalidatePermissions(id);
     await logAudit(req, "admin_user_updated", { email: updated.email });
     res.json(updated);
   } catch (err) {
@@ -1322,6 +1325,7 @@ superAdminRouter.post("/roles", async (req, res) => {
       })
       .returning();
 
+    invalidateAllPermissions();
     await logAudit(req, "admin_role_created");
     res.status(201).json(newRole);
   } catch (err) {
@@ -1358,6 +1362,8 @@ superAdminRouter.patch("/roles/:id", async (req, res) => {
       .where(eq(role_permissions.id, id))
       .returning();
 
+    // Les permissions du profil ont pu changer → invalider tous les agents.
+    invalidateAllPermissions();
     await logAudit(req, "admin_role_updated");
     res.json(updated);
   } catch (err) {
@@ -1378,6 +1384,7 @@ superAdminRouter.delete("/roles/:id", async (req, res) => {
     }
 
     await db.delete(role_permissions).where(eq(role_permissions.id, id));
+    invalidateAllPermissions();
     await logAudit(req, "admin_role_deleted");
     res.json({ success: true });
   } catch (err) {

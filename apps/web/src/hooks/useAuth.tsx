@@ -14,6 +14,22 @@ interface User {
   // false tant que l'agent n'a pas vu la pop-up d'onboarding (1re connexion).
   // Absent pour les comptes hors espace mairie (ex. citoyen FranceConnect).
   onboarding_completed?: boolean;
+  // Permissions effectives accordées par le rôle personnalisé assigné.
+  //   null / undefined = accès complet (super admin OU agent sans rôle
+  //   personnalisé) ; un tableau = liste blanche issue du profil.
+  permissions?: string[] | null;
+}
+
+/**
+ * Vrai si l'utilisateur possède la permission donnée. Accès complet (true) quand
+ * `permissions` est null/undefined : super admin, ou agent sans rôle
+ * personnalisé assigné — garantit la rétro-compatibilité avec les comptes
+ * existants. Aligné avec getEffectivePermissions côté API.
+ */
+export function hasPermission(user: User | null, key: string): boolean {
+  if (!user) return false;
+  if (user.permissions == null) return true;
+  return user.permissions.includes(key);
 }
 
 interface AuthContextType {
