@@ -80,14 +80,35 @@ communesRouter.get("/communes", async (req: AuthRequest, res) => {
 });
 
 // ── Liste des communes avec code INSEE (pour la carte et le sélecteur) ──
-communesRouter.get("/commune-list", async (_req: AuthRequest, res) => {
+// Scopé comme /communes : un agent ne voit que SES communes (sinon énumération
+// du référentiel complet). Admin : voit tout.
+communesRouter.get("/commune-list", async (req: AuthRequest, res) => {
   try {
-    const rows = await db.select({
-      name: communes.name,
-      insee_code: communes.insee_code,
-      zip_code: communes.zip_code,
-    }).from(communes).orderBy(communes.name);
-    res.json(rows);
+    const userId = req.user!.id;
+    const role = req.user!.role;
+
+    if (role === "admin") {
+      const rows = await db.select({
+        name: communes.name,
+        insee_code: communes.insee_code,
+        zip_code: communes.zip_code,
+      }).from(communes).orderBy(communes.name);
+      return res.json(rows);
+    }
+
+    const linked = await db
+      .select({ name: communes.name, insee_code: communes.insee_code, zip_code: communes.zip_code })
+      .from(user_communes)
+      .innerJoin(communes, eq(user_communes.commune_id, communes.id))
+      .where(eq(user_communes.user_id, userId))
+      .orderBy(communes.name);
+    if (linked.length > 0) return res.json(linked);
+
+    // Fallback : commune principale (comptes legacy mono-commune).
+    const [user] = await db.select({ commune: users.commune, commune_insee: users.commune_insee })
+      .from(users).where(eq(users.id, userId)).limit(1);
+    if (user?.commune) return res.json([{ name: user.commune, insee_code: user.commune_insee ?? null, zip_code: null }]);
+    res.json([]);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

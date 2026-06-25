@@ -14,6 +14,7 @@ import {
   buildAuthorizeUrl,
   exchangeCodeForTokens,
   fetchUserInfo,
+  verifyIdToken,
 } from "../services/franceConnect.js";
 
 export const franceConnectRouter = Router();
@@ -96,10 +97,14 @@ franceConnectRouter.get("/callback", fcLimiter, async (req: AuthRequest, res) =>
 
     const tokens = await exchangeCodeForTokens(cfg, code);
 
-    // Anti-rejeu : le nonce de l'id_token doit correspondre à celui émis.
-    // TODO[prod] : vérifier en plus la signature JWS + iss/aud/exp via le JWKS.
-    const idPayload = jwt.decode(tokens.id_token) as { nonce?: string } | null;
-    if (!idPayload || idPayload.nonce !== tx.nonce) return fail("Jeton FranceConnect invalide (nonce).");
+    // Vérification complète de l'id_token : signature JWS (JWKS de l'issuer),
+    // `iss`, `aud` (== client_id), `exp` + anti-rejeu `nonce`.
+    try {
+      await verifyIdToken(cfg, tokens.id_token, tx.nonce);
+    } catch (e) {
+      console.error("[franceconnect] id_token:", e);
+      return fail("Jeton FranceConnect invalide.");
+    }
 
     const identity = await fetchUserInfo(cfg, tokens.access_token);
     if (!identity?.sub) return fail("Identité FranceConnect incomplète.");

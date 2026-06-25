@@ -315,6 +315,18 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
 
+    // Comptes professionnels (mairie/instructeur/admin/service_externe) : la
+    // suppression en libre-service échouerait sur des FK conservées pour raisons
+    // légales/d'audit (dossiers instruits, décisions signées — ON DELETE RESTRICT)
+    // et renvoyait jusqu'ici un 500 opaque. Ces comptes sont gérés par
+    // l'administrateur ; la purge passe par le flux admin (réassignation des
+    // références). On renvoie donc un message explicite plutôt qu'un échec brut.
+    if (user.role !== "citoyen") {
+      return res.status(409).json({
+        error: "Les comptes professionnels sont gérés par votre administrateur. Pour la suppression de votre compte, contactez votre administrateur ou le délégué à la protection des données (DPD).",
+      });
+    }
+
     // Compte « 100 % FranceConnect » : aucun mot de passe local à vérifier.
     // La suppression par ce flux (qui exige le mot de passe) n'est pas
     // applicable — l'utilisateur devra passer par une procédure dédiée.
