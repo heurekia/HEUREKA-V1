@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { api, ApiError } from "../../lib/api";
+import { useAuth, hasPermission } from "../../hooks/useAuth";
 import { ROLE_LABELS, type DossierInfo } from "./shared";
 
 // Onglet "Décision" du détail dossier : projet d'arrêté, type de décision,
@@ -121,9 +122,13 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
   const [localConditions, setLocalConditions] = useState("");
   const [localSignataireId, setLocalSignataireId] = useState<string | null>(null);
 
+  const { user } = useAuth();
+  // Permission « Émettre une décision » (rédaction + soumission). La signature
+  // reste régie séparément par l'habilitation signataire (cf. isSignataire).
+  const canDecide = hasPermission(user, "dossiers.decision");
   const communeName = liveCommune ?? dossier.commune ?? "";
   const decisionOptions = (DECISION_OPTIONS[dossier.type] ?? DECISION_OPTIONS["permis_de_construire"]) as Array<{ key: string; label: string; sub: string }>;
-  const isEditable = !decision || decision.status === "brouillon" || decision.status === "revision_necessaire";
+  const isEditable = canDecide && (!decision || decision.status === "brouillon" || decision.status === "revision_necessaire");
   const isSignataire = communeSignataires.some(s => s.user_id === currentUserId);
 
   useEffect(() => {
@@ -276,6 +281,11 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
 
         {/* Decision form / read-only view */}
         <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+          {!canDecide && (
+            <div style={{ marginBottom: 16, padding: "10px 14px", background: "#FFF7ED", borderRadius: 8, border: "1px solid #FED7AA", fontSize: 12, color: "#C2410C", fontWeight: 600 }}>
+              Votre rôle ne vous autorise pas à rédiger ou soumettre une décision. Consultation seule.
+            </div>
+          )}
           <div style={{ fontSize: 14, fontWeight: 800, color: "#0F172A", marginBottom: 18 }}>
             {isEditable ? "Projet de décision" : "Décision"}
             {decision && !isEditable && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: "#4F46E5", background: "#EEF2FF", borderRadius: 6, padding: "2px 8px" }}>{typeLabel}</span>}

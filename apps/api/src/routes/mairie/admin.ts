@@ -4,6 +4,7 @@ import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_doc
 import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
+import { requirePermission, invalidatePermissions } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeInScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
 import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
@@ -152,7 +153,7 @@ adminRouter.get("/admin/users", async (req: AuthRequest, res) => {
 });
 
 // ── Création d'un utilisateur (admin ou mairie pour leur commune) ──
-adminRouter.post("/admin/users", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+adminRouter.post("/admin/users", requireRole("mairie", "admin"), requirePermission("utilisateurs"), async (req: AuthRequest, res) => {
   try {
     // "mairie" users can only create agents for their own commune
     const communeName = req.user?.role === "admin"
@@ -197,7 +198,7 @@ adminRouter.post("/admin/users", requireRole("mairie", "admin"), async (req: Aut
 });
 
 // ── Mise à jour rôle/infos d'un utilisateur (admin ou mairie pour leur commune) ──
-adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), requirePermission("utilisateurs"), async (req: AuthRequest, res) => {
   try {
     const userId = req.params.id as string;
     const { role, prenom, nom, telephone, role_config_id } = req.body as Record<string, string | undefined>;
@@ -218,6 +219,9 @@ adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), async (req
       ...(role_config_id !== undefined ? { role_config_id: role_config_id || null } : {}),
       updated_at: new Date(),
     }).where(eq(users.id, userId));
+    // Rôle de base et/ou rôle personnalisé ont pu changer → purger le cache de
+    // permissions de l'agent pour une prise d'effet immédiate.
+    invalidatePermissions(userId);
     const [updated] = await db.select({
       id: users.id, email: users.email, prenom: users.prenom, nom: users.nom,
       role: users.role, commune: users.commune, telephone: users.telephone,
@@ -231,7 +235,7 @@ adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), async (req
 });
 
 // ── Suppression d'un utilisateur (admin ou mairie pour leur commune) ──
-adminRouter.delete("/admin/users/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+adminRouter.delete("/admin/users/:id", requireRole("mairie", "admin"), requirePermission("utilisateurs"), async (req: AuthRequest, res) => {
   try {
     const reqUser = req.user as { id: string; role: string; commune?: string };
     const userId = req.params.id as string;
@@ -309,7 +313,7 @@ adminRouter.post("/admin/compute-deadlines", async (req: AuthRequest, res) => {
 // (partagé entre les sous-pipelines, aligné sur le format canonique +
 // calibration UC).
 
-adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
+adminRouter.post("/admin/ingest-plu-pdf", requirePermission("zones.edit"), async (req: AuthRequest, res) => {
   // Endpoint legacy SSE. Conservé pour rétrocompat ; le nouveau front utilise
   // /admin/ingest-plu-pdf/start + /batch + /commit (cf. plus bas).
   const { commune_name, insee_code, zip_code, pdf_base64 } = req.body as {
@@ -881,7 +885,7 @@ function dedupeTocByCode(entries: TocEntry[]): TocEntry[] {
 //    purge/insère par source_document_id, pose commune_id NULL si porteur
 //    EPCI (zones partagées) ou commune.id si porteur commune. Les communes
 //    rattachées sont lues depuis document_communes.
-adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) => {
+adminRouter.post("/admin/ingest-plu-pdf/start", requirePermission("zones.edit"), async (req: AuthRequest, res) => {
   try {
     gcIngestJobs();
     // Périmètre de l'agent : utilisé plus bas pour interdire l'ingestion d'un
