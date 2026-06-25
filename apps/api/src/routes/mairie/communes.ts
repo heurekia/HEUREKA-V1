@@ -4,6 +4,7 @@ import { dossiers, users, communes, user_communes } from "@heureka-v1/db";
 import { eq, sql } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireAuth } from "../../middlewares/auth.js";
+import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 
 export const communesRouter = Router();
 
@@ -98,6 +99,13 @@ communesRouter.get("/commune-list", async (_req: AuthRequest, res) => {
 communesRouter.get("/commune-users", requireAuth, async (req: AuthRequest, res) => {
   const communeName = (req.query.commune as string) ?? "";
   if (!communeName) return res.json([]);
+
+  // Périmètre : on ne liste les agents (emails) que d'une commune du périmètre
+  // de l'appelant — le ?commune= n'est pas une frontière de sécurité.
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(communeName, scope)) {
+    return res.status(403).json({ error: "Commune hors de votre périmètre" });
+  }
 
   // Users linked via user_communes table
   const viaTable = await db
