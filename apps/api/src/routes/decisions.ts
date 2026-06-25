@@ -84,6 +84,26 @@ const signataireU = alias(users, "signataire_user");
 const signataireCommuneEq = (value: string) =>
   sql`lower(trim(${signataires.commune})) = ${value.trim().toLowerCase()}`;
 
+// Le pouvoir de signer — ou de refuser de signer — un arrêté découle de
+// l'appartenance ACTIVE à la liste des signataires de la commune, et non du
+// rôle de compte. Dans une petite commune, la même personne instruit et signe :
+// un agent de rôle « instructeur » désigné signataire doit donc pouvoir agir.
+// (C'est cette habilitation, et non le rôle, qui rend visibles l'onglet
+// « Signatures » et la liste des arrêtés en attente — cf. /is-signataire et
+// /pending, sans restriction de rôle.)
+async function isActiveSignataire(userId: string, commune: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: signataires.id })
+    .from(signataires)
+    .where(and(
+      eq(signataires.user_id, userId),
+      signataireCommuneEq(commune),
+      eq(signataires.active, true),
+    ))
+    .limit(1);
+  return !!row;
+}
+
 // ── GET /api/decisions/pending ──────────────────────────────────────────────
 decisionsRouter.get("/pending", async (req: AuthRequest, res) => {
   const rows = await db
@@ -303,7 +323,7 @@ decisionsRouter.post("/:id/submit", requireRole("mairie", "instructeur", "admin"
 });
 
 // ── POST /api/decisions/:id/sign ────────────────────────────────────────────
-decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.post("/:id/sign", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const { arrete_numero } = req.body as { arrete_numero?: string };
 
@@ -315,17 +335,12 @@ decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: Au
   if (!existing.length) return res.status(404).json({ error: "Décision introuvable" });
   const dec = existing[0]!;
   // Le signataire doit appartenir à la liste active des signataires de la
-  // commune de la décision. Empêche un mairie d'une autre commune (mais
-  // figurant dans son scope) de signer un arrêté qui ne le concerne pas.
-  const [isSign] = await db.select({ id: signataires.id })
-    .from(signataires)
-    .where(and(
-      eq(signataires.user_id, req.user!.id),
-      signataireCommuneEq(dec.commune),
-      eq(signataires.active, true),
-    ))
-    .limit(1);
-  if (!isSign) return res.status(403).json({ error: "Vous n'êtes pas signataire actif de cette commune" });
+  // commune de la décision. C'est cette habilitation — et non le rôle de
+  // compte — qui autorise la signature : empêche un agent d'une autre commune
+  // (mais figurant dans son scope) de signer un arrêté qui ne le concerne pas.
+  if (!await isActiveSignataire(req.user!.id, dec.commune)) {
+    return res.status(403).json({ error: "Vous n'êtes pas signataire actif de cette commune" });
+  }
 
   // Any signataire of the commune can sign, or the assigned signataire
   const dossierRow = await db.select({ type: dossiers.type }).from(dossiers)
@@ -381,11 +396,18 @@ decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: Au
 });
 
 // ── POST /api/decisions/:id/refuse-signature ─────────────────────────────────
-decisionsRouter.post("/:id/refuse-signature", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.post("/:id/refuse-signature", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const { motif } = req.body as { motif: string };
+  if (!motif || !motif.trim()) return res.status(400).json({ error: "Motif du refus requis" });
 
-  if (!await loadDossierForDecision(req, res, id)) return;
+  const ctx = await loadDossierForDecision(req, res, id);
+  if (!ctx) return;
+  // Même règle d'autorisation que la signature : refuser de signer (et renvoyer
+  // l'arrêté en révision) est un acte réservé au signataire actif de la commune.
+  if (!await isActiveSignataire(req.user!.id, ctx.commune)) {
+    return res.status(403).json({ error: "Vous n'êtes pas signataire actif de cette commune" });
+  }
   const [decision] = await db
     .update(decisions)
     .set({ status: "revision_necessaire", motif_refus_signature: motif, updated_at: new Date() })

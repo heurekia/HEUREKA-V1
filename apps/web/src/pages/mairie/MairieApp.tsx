@@ -1392,6 +1392,10 @@ function SignaturesPendantesScreen() {
   const [signing, setSigning] = useState<string | null>(null);
   const [refusing, setRefusing] = useState<string | null>(null);
   const [refuseMotif, setRefuseMotif] = useState("");
+  // Erreur de la dernière action (signer/refuser). Sans ça, un échec serveur
+  // (ex. 403 « Vous n'êtes pas signataire actif de cette commune ») était avalé
+  // silencieusement : le bouton « Signer » / « Refuser » semblait ne rien faire.
+  const [actionError, setActionError] = useState<string | null>(null);
   const routerNavigate = useNavigate();
 
   const load = () => {
@@ -1402,6 +1406,32 @@ function SignaturesPendantesScreen() {
   };
 
   useEffect(() => { load(); }, []);
+
+  const handleSign = async (rowId: string) => {
+    setSigning(rowId);
+    setActionError(null);
+    try {
+      await api.post(`/decisions/${rowId}/sign`, {});
+      load();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : "La signature a échoué. Vérifiez votre connexion et réessayez.");
+    } finally {
+      setSigning(null);
+    }
+  };
+
+  const handleRefuse = async () => {
+    if (!refusing || !refuseMotif.trim()) return;
+    setActionError(null);
+    try {
+      await api.post(`/decisions/${refusing}/refuse-signature`, { motif: refuseMotif });
+      load();
+      setRefusing(null);
+      setRefuseMotif("");
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : "Le refus a échoué. Vérifiez votre connexion et réessayez.");
+    }
+  };
 
   const DECISION_LABEL: Record<string, string> = {
     accord: "Accord", accord_prescription: "Accord avec prescriptions", refus: "Refus",
@@ -1416,6 +1446,16 @@ function SignaturesPendantesScreen() {
         <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Signatures en attente</h1>
         <p style={{ color: "#64748b", fontSize: 13 }}>Projets d'arrêtés soumis pour votre signature.</p>
       </div>
+
+      {/* Erreur d'action hors modale (signature). La modale de refus affiche sa
+          propre bannière puisqu'elle recouvre cette zone. */}
+      {actionError && !refusing && (
+        <div role="alert" style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 14px", marginBottom: 16, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 9, fontSize: 12.5, color: "#991B1B" }}>
+          <span style={{ fontWeight: 700 }}>⚠</span>
+          <span style={{ flex: 1 }}>{actionError}</span>
+          <button onClick={() => setActionError(null)} aria-label="Fermer" style={{ border: "none", background: "none", color: "#991B1B", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>
+        </div>
+      )}
 
       {loading ? (
         <div style={{ padding: 48, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>
@@ -1452,16 +1492,10 @@ function SignaturesPendantesScreen() {
                   <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
                   Voir l'arrêté
                 </button>
-                <button onClick={async () => {
-                  setSigning(row.id);
-                  try {
-                    await api.post(`/decisions/${row.id}/sign`, {});
-                    load();
-                  } catch { /* ignore */ } finally { setSigning(null); }
-                }} disabled={signing === row.id} style={{ background: "linear-gradient(135deg,#059669,#10B981)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                <button onClick={() => handleSign(row.id)} disabled={signing === row.id} style={{ background: "linear-gradient(135deg,#059669,#10B981)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: signing === row.id ? "not-allowed" : "pointer" }}>
                   {signing === row.id ? "…" : "Signer"}
                 </button>
-                <button onClick={() => setRefusing(row.id)} style={{ background: "white", color: "#EF4444", border: "1px solid #FECACA", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
+                <button onClick={() => { setActionError(null); setRefusing(row.id); }} style={{ background: "white", color: "#EF4444", border: "1px solid #FECACA", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
                   Refuser
                 </button>
               </div>
@@ -1472,18 +1506,16 @@ function SignaturesPendantesScreen() {
 
       {/* Refuse modal */}
       {refusing && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => { setRefusing(null); setRefuseMotif(""); }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => { setRefusing(null); setRefuseMotif(""); setActionError(null); }}>
           <div style={{ background: "white", borderRadius: 14, width: 460, padding: 24 }} onClick={e => e.stopPropagation()}>
             <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Motif du refus</div>
             <textarea value={refuseMotif} onChange={e => setRefuseMotif(e.target.value)} rows={4} placeholder="Précisez la raison du refus…" style={{ width: "100%", border: "1.5px solid #E2E8F0", borderRadius: 9, padding: "10px 12px", fontSize: 12.5, outline: "none", resize: "vertical" as const, fontFamily: "inherit", boxSizing: "border-box" as const, marginBottom: 16 }} />
+            {actionError && (
+              <div role="alert" style={{ padding: "9px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, fontSize: 12, color: "#991B1B", marginBottom: 14 }}>{actionError}</div>
+            )}
             <div style={{ display: "flex", gap: 9, justifyContent: "flex-end" }}>
-              <button onClick={() => { setRefusing(null); setRefuseMotif(""); }} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Annuler</button>
-              <button onClick={async () => {
-                if (!refuseMotif.trim()) return;
-                try { await api.post(`/decisions/${refusing}/refuse-signature`, { motif: refuseMotif }); load(); }
-                catch { /* ignore */ }
-                setRefusing(null); setRefuseMotif("");
-              }} disabled={!refuseMotif.trim()} style={{ background: "#EF4444", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              <button onClick={() => { setRefusing(null); setRefuseMotif(""); setActionError(null); }} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Annuler</button>
+              <button onClick={handleRefuse} disabled={!refuseMotif.trim()} style={{ background: "#EF4444", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: !refuseMotif.trim() ? "not-allowed" : "pointer" }}>
                 Confirmer
               </button>
             </div>
