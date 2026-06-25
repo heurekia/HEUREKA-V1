@@ -383,15 +383,25 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
 
 authRouter.patch("/me", requireAuth, async (req: AuthRequest, res) => {
   try {
-    const { prenom, nom, telephone } = req.body as { prenom?: string; nom?: string; telephone?: string };
+    const { prenom, nom, telephone, notification_prefs } = req.body as { prenom?: string; nom?: string; telephone?: string; notification_prefs?: Record<string, unknown> };
     const update: Record<string, unknown> = { updated_at: new Date() };
     if (prenom?.trim()) update.prenom = prenom.trim();
     if (nom?.trim()) update.nom = nom.trim();
     if (telephone !== undefined) update.telephone = telephone?.trim() || null;
+    // Préférences de notification : on n'accepte qu'une map plate { type: bool }.
+    // Toute valeur non booléenne est ignorée pour ne pas stocker de structure
+    // arbitraire fournie par le client.
+    if (notification_prefs && typeof notification_prefs === "object" && !Array.isArray(notification_prefs)) {
+      const clean: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(notification_prefs)) {
+        if (typeof v === "boolean") clean[k] = v;
+      }
+      update.notification_prefs = clean;
+    }
     const [updated] = await db.update(users).set(update).where(eq(users.id, req.user!.id)).returning();
     if (!updated) return res.status(404).json({ error: "Utilisateur non trouvé" });
     await writeAudit(req.user!.id, req.user!.email, "profile_update", req);
-    res.json({ id: updated.id, email: updated.email, prenom: updated.prenom, nom: updated.nom, role: updated.role, commune: updated.commune, commune_insee: updated.commune_insee, telephone: updated.telephone, avatar_url: updated.avatar_url });
+    res.json({ id: updated.id, email: updated.email, prenom: updated.prenom, nom: updated.nom, role: updated.role, commune: updated.commune, commune_insee: updated.commune_insee, telephone: updated.telephone, avatar_url: updated.avatar_url, notification_prefs: updated.notification_prefs });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -450,6 +460,7 @@ authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {
       // La MFA n'est proposée qu'aux comptes agents/admin.
       mfa_available: ["mairie", "instructeur", "admin"].includes(user.role),
       permissions: permSet === null ? null : [...permSet],
+      notification_prefs: user.notification_prefs ?? {},
     });
   } catch (err) {
     console.error(err);

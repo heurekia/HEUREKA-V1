@@ -40,6 +40,10 @@ export const users = pgTable("users", {
   mfa_secret: text("mfa_secret"),
   mfa_enabled: boolean("mfa_enabled").notNull().default(false),
   mfa_backup_codes: jsonb("mfa_backup_codes").$type<string[]>(),
+  // Préférences de notification de la cloche mairie, par type :
+  // { [type]: boolean }. Une clé absente vaut « activé » (modèle opt-out). Lue
+  // et filtrée dans services/notify.ts avant l'insertion d'une notification.
+  notification_prefs: jsonb("notification_prefs").$type<Record<string, boolean>>().notNull().default({}),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

@@ -1558,6 +1558,11 @@ CREATE TABLE IF NOT EXISTS help_articles (
 );
 CREATE INDEX IF NOT EXISTS idx_help_articles_theme ON help_articles(theme_id);
 CREATE INDEX IF NOT EXISTS idx_help_articles_status ON help_articles(status);
+
+-- ── Préférences de notification par utilisateur (cloche mairie) ──
+-- Map JSON { type_notification: bool }. Clé absente = activé (opt-out explicite).
+-- Filtrée dans services/notify.ts avant l'insertion d'une notification.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_prefs jsonb NOT NULL DEFAULT '{}'::jsonb;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
