@@ -4,51 +4,61 @@
 <meta charset="utf-8">
 <title>Signature mail Heurekia</title>
 <!--
-  Signature HTML Heurekia : le logo est reference par URL (image hebergee, non encodee dans le HTML),
-  donc la signature pese ~2,5 Ko, bien sous la limite Zimbra de 10240 caracteres.
-  Le logo est servi a https://www.heurekia.com/img/logo-heurekia.png (en ligne apres deploiement sur main).
-  Pour l'utiliser : ouvrir ce fichier dans un navigateur, Ctrl+A puis Ctrl+C, coller dans l'editeur de
-  signature Zimbra en mode HTML (format enrichi). Ce commentaire et le <head> ne sont PAS copies.
+  Signature Heurekia — version « tout tableau », durcie pour les clients qui
+  nettoient le HTML des mails reçus (Zimbra notamment, qui supprime le texte
+  placé dans des <div>). Tout le texte est ici dans des cellules <td>.
+  Logo servi par URL : https://www.heurekia.com/img/logo-heurekia.png
+  (CORP autorisé en cross-origin côté serveur).
+  Utilisation : ouvrir ce fichier dans un navigateur, Ctrl+A puis Ctrl+C,
+  coller dans l'éditeur de signature en mode HTML. Ce <head> n'est pas copié.
 -->
 </head>
-<body style="margin:0;padding:0;font-family:Arial, Helvetica, sans-serif;">
-<table cellpadding="0" cellspacing="0" border="0" style="width:600px;max-width:100%;background:#ffffff;border-radius:14px;border:1px solid #dbe6f2;font-family:Arial, Helvetica, sans-serif;color:#0D2B45;">
+<body style="margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;">
+<table cellpadding="0" cellspacing="0" border="0" width="600" style="width:600px;max-width:100%;background-color:#ffffff;border:1px solid #dbe6f2;border-radius:14px;font-family:Arial,Helvetica,sans-serif;color:#0D2B45;">
   <tr>
     <td style="padding:22px 24px;">
       <table cellpadding="0" cellspacing="0" border="0" width="100%">
         <tr>
-          <td width="172" valign="top" style="padding-right:22px;border-right:1px solid #dbe6f2;">
-            <img src="https://www.heurekia.com/img/logo-heurekia.png" width="150" alt="HEUREKIA - L'urbanisme simplifie, pour tous" style="width:150px;height:auto;display:block;border:0;outline:none;">
+          <td width="172" valign="top" style="width:172px;padding-right:22px;border-right:1px solid #dbe6f2;">
+            <img src="https://www.heurekia.com/img/logo-heurekia.png" width="150" height="106" alt="HEUREKIA" style="display:block;width:150px;height:106px;border:0;outline:none;">
           </td>
           <td valign="top" style="padding-left:22px;">
-            <div style="font-size:18px;line-height:22px;font-weight:700;color:#0D2B45;">Evi DELETANG</div>
-            <div style="font-size:13px;line-height:19px;color:#1E5AA8;font-weight:600;">Cofondateur &middot; HEUREKIA</div>
-            <div style="height:12px;line-height:12px;font-size:12px;">&nbsp;</div>
-            <table cellpadding="0" cellspacing="0" border="0" style="font-size:12.5px;line-height:18px;color:#0D2B45;">
+            <table cellpadding="0" cellspacing="0" border="0" width="100%">
               <tr>
-                <td style="padding:1px 8px 1px 0;color:#1E5AA8;font-weight:700;">M</td>
-                <td style="padding:1px 0;"><a href="mailto:e.deletang@heurekia.com" style="color:#0D2B45;text-decoration:none;">e.deletang@heurekia.com</a></td>
+                <td style="font-family:Arial,Helvetica,sans-serif;font-size:18px;line-height:22px;font-weight:bold;color:#0D2B45;">Evi DELETANG</td>
               </tr>
               <tr>
-                <td style="padding:1px 8px 1px 0;color:#1E5AA8;font-weight:700;">T</td>
-                <td style="padding:1px 0;"><a href="tel:+33674694482" style="color:#0D2B45;text-decoration:none;">+33 6 74 69 44 82</a></td>
+                <td style="font-family:Arial,Helvetica,sans-serif;font-size:13px;line-height:19px;font-weight:bold;color:#1E5AA8;padding-top:3px;">Cofondateur &middot; HEUREKIA</td>
               </tr>
               <tr>
-                <td style="padding:1px 8px 1px 0;color:#1E5AA8;font-weight:700;">W</td>
-                <td style="padding:1px 0;"><a href="https://www.heurekia.com" style="color:#0D2B45;text-decoration:none;">www.heurekia.com</a></td>
+                <td style="padding-top:13px;">
+                  <table cellpadding="0" cellspacing="0" border="0">
+                    <tr>
+                      <td style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:18px;color:#1E5AA8;font-weight:bold;padding:1px 8px 1px 0;">M</td>
+                      <td style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:18px;padding:1px 0;"><a href="mailto:e.deletang@heurekia.com" style="color:#0D2B45;text-decoration:none;">e.deletang@heurekia.com</a></td>
+                    </tr>
+                    <tr>
+                      <td style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:18px;color:#1E5AA8;font-weight:bold;padding:1px 8px 1px 0;">T</td>
+                      <td style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:18px;padding:1px 0;"><a href="tel:+33674694482" style="color:#0D2B45;text-decoration:none;">+33 6 74 69 44 82</a></td>
+                    </tr>
+                    <tr>
+                      <td style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:18px;color:#1E5AA8;font-weight:bold;padding:1px 8px 1px 0;">W</td>
+                      <td style="font-family:Arial,Helvetica,sans-serif;font-size:12.5px;line-height:18px;padding:1px 0;"><a href="https://www.heurekia.com" style="color:#0D2B45;text-decoration:none;">www.heurekia.com</a></td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+              <tr>
+                <td style="font-family:Arial,Helvetica,sans-serif;font-size:11.5px;line-height:16px;color:#51677c;padding-top:13px;">Plateforme num&eacute;rique d'assistance &agrave; l'urbanisme, &agrave; l'instruction des dossiers et aux d&eacute;marches citoyennes.</td>
               </tr>
             </table>
-            <div style="height:12px;line-height:12px;font-size:12px;">&nbsp;</div>
-            <div style="font-size:11.5px;line-height:16px;color:#51677c;">Plateforme num&eacute;rique d'assistance &agrave; l'urbanisme, &agrave; l'instruction des dossiers et aux d&eacute;marches citoyennes.</div>
           </td>
         </tr>
       </table>
     </td>
   </tr>
   <tr>
-    <td style="background:#0D2B45;border-radius:0 0 14px 14px;padding:9px 24px;">
-      <div style="font-size:11px;line-height:15px;color:#d9e8f8;">HEUREKIA &middot; Urbanisme augment&eacute; &middot; Analyse r&eacute;glementaire &middot; Portail citoyen &middot; Instruction simplifi&eacute;e</div>
-    </td>
+    <td bgcolor="#0D2B45" style="background-color:#0D2B45;border-radius:0 0 14px 14px;padding:9px 24px;font-family:Arial,Helvetica,sans-serif;font-size:11px;line-height:15px;color:#d9e8f8;">HEUREKIA &middot; Urbanisme augment&eacute; &middot; Analyse r&eacute;glementaire &middot; Portail citoyen &middot; Instruction simplifi&eacute;e</td>
   </tr>
 </table>
 </body>
