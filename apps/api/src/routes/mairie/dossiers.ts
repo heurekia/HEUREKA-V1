@@ -1186,7 +1186,7 @@ dossiersRouter.post("/ocr-cerfa", requirePermission("dossiers.create"), ocrSingl
       source: { type: "base64"; media_type: "image/png" | "image/jpeg"; data: string };
     }> = [];
     if (sniffed === "pdf") {
-      const pages = convertPdfPagesToPng(buf, { maxPages: 8 });
+      const pages = await convertPdfPagesToPng(buf, { maxPages: 8 });
       for (const png of pages) {
         imageBlocks.push({
           type: "image",
@@ -1212,7 +1212,7 @@ dossiersRouter.post("/ocr-cerfa", requirePermission("dossiers.create"), ocrSingl
     // compresse l'espacement pour que tout le document tienne dans le budget de
     // 30k caractères (sinon les valeurs en fin de document seraient tronquées).
     const pdfText = sniffed === "pdf"
-      ? (extractPdfText(buf) ?? "")
+      ? ((await extractPdfText(buf)) ?? "")
           .replace(/\f/g, "\n")
           .replace(/[ \t]{2,}/g, " ")
           .replace(/\n[ \t]+/g, "\n")
