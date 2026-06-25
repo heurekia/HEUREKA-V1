@@ -2,7 +2,7 @@ import { useState, useEffect } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
-import { DotsIcon, StatusBadge } from "./ui";
+import { DotsIcon, StatusBadge, ChevronDownIcon } from "./ui";
 import { fmtDate, STATUS_LABEL, TYPE_LABEL, type ApiDossier, type DossierInfo } from "./shared";
 
 // Écran "Dossiers" : liste filtrable/paginée des dossiers de la commune.
@@ -417,9 +417,14 @@ export function DossiersScreen({ commune, onDossierClick }: { commune: string; o
         <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid #F1F5F9" }}>
           <span style={{ fontSize: 12, color: "#64748b" }}>{rows.length} dossier{rows.length !== 1 ? "s" : ""} affiché{rows.length !== 1 ? "s" : ""}</span>
           <div style={{ flex: 1 }} />
-          <select style={{ border: "1px solid #E2E8F0", borderRadius: 6, padding: "4px 8px", fontSize: 12 }}>
-            <option>Tous les dossiers par page</option>
-          </select>
+          {/* Indicateur décoratif (une seule option). On évite le <select> natif :
+              ses contrôles sont rendus par la couche native du navigateur et
+              transparaissent par-dessus le menu « ⋮ » (fixed, z-index) qui peut
+              recouvrir ce pied de page — quel que soit le z-index. */}
+          <div style={{ border: "1px solid #E2E8F0", borderRadius: 6, padding: "4px 8px", fontSize: 12, color: "#64748b", background: "white", display: "inline-flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
+            Tous les dossiers par page
+            <span style={{ color: "#94a3b8", display: "inline-flex" }}><ChevronDownIcon size={12} /></span>
+          </div>
         </div>
       </div>
     </div>
