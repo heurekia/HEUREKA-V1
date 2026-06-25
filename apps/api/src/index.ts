@@ -21,6 +21,18 @@ const server = app.listen(PORT, "0.0.0.0", () => {
   warmCodeTocCache("CE");
 });
 
+// Timeouts serveur HTTP. Node ne borne pas la durée totale d'une requête au-delà
+// de ses défauts, et derrière nginx un `keepAliveTimeout` trop court provoque des
+// 502 sporadiques (course à la fermeture de socket côté upstream). On fixe donc
+// explicitement :
+//  - keepAliveTimeout > au keepalive upstream de nginx (60s) pour éviter ces 502 ;
+//  - headersTimeout > keepAliveTimeout (exigé par Node) — borne le slowloris d'en-têtes ;
+//  - requestTimeout : durée max d'une requête complète (corps inclus). Généreux car
+//    les uploads de pièces/PLU peuvent être volumineux sur lien lent ; configurable.
+server.keepAliveTimeout = Number(process.env.HTTP_KEEPALIVE_TIMEOUT_MS ?? 65_000);
+server.headersTimeout = Number(process.env.HTTP_HEADERS_TIMEOUT_MS ?? 66_000);
+server.requestTimeout = Number(process.env.HTTP_REQUEST_TIMEOUT_MS ?? 300_000);
+
 // Graceful shutdown. Sans ça, systemd envoie SIGTERM lors d'un
 // `systemctl restart` (déploiement ou rotation logs), Node sort en code 143,
 // pnpm rapporte ELIFECYCLE et l'unité est marquée failed alors que c'est un

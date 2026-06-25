@@ -9,6 +9,7 @@
  * onglet "Coûts IA".
  */
 import type { LlmFn } from "./structurer.ts";
+import { fetchWithRetry } from "../llm-fetch.ts";
 
 const MISTRAL_API_BASE = process.env.MISTRAL_API_BASE ?? "https://api.mistral.ai/v1";
 
@@ -32,7 +33,7 @@ export function mistralLlm(opts: MistralLlmOptions | string = {}): LlmFn {
 
   return async (system, user) => {
     const startedAt = Date.now();
-    const res = await fetch(`${MISTRAL_API_BASE}/chat/completions`, {
+    const res = await fetchWithRetry(`${MISTRAL_API_BASE}/chat/completions`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -48,7 +49,7 @@ export function mistralLlm(opts: MistralLlmOptions | string = {}): LlmFn {
           { role: "user", content: user },
         ],
       }),
-    });
+    }, { timeoutMs: 90_000, retries: 3, label: "Mistral structuration" });
     if (!res.ok) {
       const txt = await res.text().catch(() => "");
       throw new Error(`Mistral HTTP ${res.status} : ${txt.slice(0, 300)}`);
