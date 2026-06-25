@@ -14,16 +14,32 @@ const BASE_URL = process.env.FRONTEND_URL ?? "https://app.heurekia.com";
 // cookie de session (token_www) et atterrisse dans l'espace citoyen.
 const CITIZEN_BASE_URL = process.env.CITIZEN_URL ?? "https://www.heurekia.com";
 
+// Échappe les valeurs interpolées dans le HTML des emails (anti-injection de
+// balises via prénom / nom de service / commune / n° de dossier).
+function esc(s: string): string {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c,
+  );
+}
+
+// Garde-fou : `to` doit être UNE adresse simple. Rejette listes / CRLF /
+// virgules qui permettraient d'ajouter des destinataires non voulus.
+function assertEmail(to: string): void {
+  if (typeof to !== "string" || !/^[^\s,;<>"]+@[^\s,;<>"]+\.[^\s,;<>"]+$/.test(to)) {
+    throw new Error(`Adresse email invalide pour l'envoi : ${JSON.stringify(to)}`);
+  }
+}
+
 function formatCommuneList(names: string[]): { html: string; text: string } {
   if (names.length === 0) return { html: "", text: "" };
   if (names.length === 1) return {
-    html: `de <strong>${names[0]}</strong>`,
+    html: `de <strong>${esc(names[0]!)}</strong>`,
     text: `de ${names[0]}`,
   };
   const rest = names.slice(0, -1);
   const last = names[names.length - 1]!;
   return {
-    html: `de <strong>${rest.join("</strong>, <strong>")}</strong> et <strong>${last}</strong>`,
+    html: `de <strong>${rest.map(esc).join("</strong>, <strong>")}</strong> et <strong>${esc(last)}</strong>`,
     text: `de ${rest.join(", ")} et ${last}`,
   };
 }
@@ -36,19 +52,20 @@ export async function sendActivationEmail(opts: {
   roleLabel?: string;
   communeNames?: string[];
 }) {
+  assertEmail(opts.to);
   const link = `${BASE_URL}/activer-compte?token=${opts.token}`;
 
   let identity: string;
   let identityText: string;
   if (opts.roleLabel) {
-    identity = `<strong>${opts.roleLabel}</strong> pour le compte de <strong>${opts.serviceName}</strong>`;
+    identity = `<strong>${esc(opts.roleLabel)}</strong> pour le compte de <strong>${esc(opts.serviceName)}</strong>`;
     identityText = `${opts.roleLabel} pour le compte de ${opts.serviceName}`;
   } else if (opts.communeNames && opts.communeNames.length > 0) {
     const { html, text } = formatCommuneList(opts.communeNames);
     identity = `agent du service urbanisme ${html}`;
     identityText = `agent du service urbanisme ${text}`;
   } else {
-    identity = `agent du service urbanisme de <strong>${opts.serviceName}</strong>`;
+    identity = `agent du service urbanisme de <strong>${esc(opts.serviceName)}</strong>`;
     identityText = `agent du service urbanisme de ${opts.serviceName}`;
   }
 
@@ -79,7 +96,7 @@ export async function sendActivationEmail(opts: {
         <tr>
           <td style="padding:40px 32px 32px">
             <h1 style="margin:0 0 20px;font-size:22px;font-weight:800;color:#0F172A">Activez votre accès Heurekia</h1>
-            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${opts.prenom},</p>
+            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${esc(opts.prenom)},</p>
             <p style="margin:0 0 28px;font-size:15px;color:#374151;line-height:1.7">
               Un accès sécurisé à la plateforme Heurekia vient d'être créé pour vous en tant qu'${identity}.<br><br>
               Afin de finaliser l'activation de votre compte et définir votre mot de passe personnel, cliquez sur le bouton ci-dessous.
@@ -122,9 +139,10 @@ export async function sendPetitionnaireInvitationEmail(opts: {
   communeName?: string;
   token: string;
 }) {
+  assertEmail(opts.to);
   const link = `${CITIZEN_BASE_URL}/activer-compte?token=${opts.token}`;
   const communeHtml = opts.communeName
-    ? `par le service urbanisme de <strong>${opts.communeName}</strong>`
+    ? `par le service urbanisme de <strong>${esc(opts.communeName)}</strong>`
     : "par votre service urbanisme";
   const communeText = opts.communeName
     ? `par le service urbanisme de ${opts.communeName}`
@@ -157,9 +175,9 @@ export async function sendPetitionnaireInvitationEmail(opts: {
         <tr>
           <td style="padding:40px 32px 32px">
             <h1 style="margin:0 0 20px;font-size:22px;font-weight:800;color:#0F172A">Suivez votre dossier en ligne</h1>
-            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${opts.prenom},</p>
+            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${esc(opts.prenom)},</p>
             <p style="margin:0 0 28px;font-size:15px;color:#374151;line-height:1.7">
-              Votre dossier d'urbanisme <strong>${opts.numeroDossier}</strong> a été enregistré ${communeHtml}.<br><br>
+              Votre dossier d'urbanisme <strong>${esc(opts.numeroDossier)}</strong> a été enregistré ${communeHtml}.<br><br>
               Activez votre espace personnel pour suivre son avancement, échanger avec le service instructeur et consulter les décisions. Il vous suffit de définir votre mot de passe.
             </p>
             <table cellpadding="0" cellspacing="0" style="margin:0 0 32px">
@@ -197,6 +215,7 @@ export async function sendVerificationEmail(opts: {
   // bon sous-domaine ; à défaut on retombe sur BASE_URL.
   baseUrl?: string;
 }) {
+  assertEmail(opts.to);
   const base = opts.baseUrl ?? BASE_URL;
   const link = `${base}/verifier-email?token=${opts.token}`;
   await getResend().emails.send({
@@ -226,7 +245,7 @@ export async function sendVerificationEmail(opts: {
         <tr>
           <td style="padding:40px 32px 32px">
             <h1 style="margin:0 0 20px;font-size:22px;font-weight:800;color:#0F172A">Confirmez votre adresse email</h1>
-            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${opts.prenom},</p>
+            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${esc(opts.prenom)},</p>
             <p style="margin:0 0 28px;font-size:15px;color:#374151;line-height:1.7">
               Merci d'avoir créé votre compte Heurekia. Pour finaliser votre inscription et
               accéder à votre espace, confirmez votre adresse email en cliquant sur le bouton ci-dessous.
@@ -262,6 +281,7 @@ export async function sendPasswordResetEmail(opts: {
   prenom: string;
   token: string;
 }) {
+  assertEmail(opts.to);
   const link = `${BASE_URL}/activer-compte?token=${opts.token}&mode=reset`;
   await getResend().emails.send({
     from: FROM,
@@ -287,7 +307,7 @@ export async function sendPasswordResetEmail(opts: {
         </td></tr>
         <tr><td style="padding:40px 32px 32px">
           <h1 style="margin:0 0 24px;font-size:22px;color:#0F172A">Réinitialisez votre mot de passe</h1>
-          <p style="margin:0 0 24px;font-size:15px;color:#374151;line-height:1.6">Bonjour ${opts.prenom},<br><br>Une demande de réinitialisation de mot de passe a été effectuée pour votre compte.</p>
+          <p style="margin:0 0 24px;font-size:15px;color:#374151;line-height:1.6">Bonjour ${esc(opts.prenom)},<br><br>Une demande de réinitialisation de mot de passe a été effectuée pour votre compte.</p>
           <table cellpadding="0" cellspacing="0" style="margin:0 0 32px">
             <tr><td style="background:#4F46E5;border-radius:8px;padding:14px 28px">
               <a href="${link}" style="color:white;text-decoration:none;font-size:15px;font-weight:600">Définir un nouveau mot de passe →</a>

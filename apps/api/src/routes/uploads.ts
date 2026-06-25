@@ -30,6 +30,9 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
     // déposée par le citoyen (dossier_pieces_jointes) OU un document produit
     // par l'instruction (dossier_documents = GED, ex : pièce annotée).
     const urlSuffix = `/api/uploads/${key}`;
+    // Échappe les jokers LIKE (`_`, `%`, `\`) : `key` autorise `_`, qui agirait
+    // sinon comme un joker SQL et pourrait matcher l'URL d'une autre ressource.
+    const urlSuffixLike = `%${urlSuffix.replace(/[\\%_]/g, "\\$&")}`;
 
     // Forme unifiée pour la décision d'accès, quelle que soit la source.
     type Resource = {
@@ -53,7 +56,7 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
       })
       .from(dossier_pieces_jointes)
       .leftJoin(dossiers, eq(dossier_pieces_jointes.dossier_id, dossiers.id))
-      .where(like(dossier_pieces_jointes.url, `%${urlSuffix}`))
+      .where(like(dossier_pieces_jointes.url, urlSuffixLike))
       .limit(1);
 
     let resource: Resource | null = piece
@@ -78,7 +81,7 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
         })
         .from(dossier_documents)
         .leftJoin(dossiers, eq(dossier_documents.dossier_id, dossiers.id))
-        .where(like(dossier_documents.url, `%${urlSuffix}`))
+        .where(like(dossier_documents.url, urlSuffixLike))
         .limit(1);
       if (doc) {
         resource = {
@@ -105,7 +108,7 @@ uploadsRouter.get("/:key", async (req: AuthRequest, res) => {
         })
         .from(dossier_piece_bundles)
         .leftJoin(dossiers, eq(dossier_piece_bundles.dossier_id, dossiers.id))
-        .where(like(dossier_piece_bundles.url, `%${urlSuffix}`))
+        .where(like(dossier_piece_bundles.url, urlSuffixLike))
         .limit(1);
       if (bundle) {
         resource = {

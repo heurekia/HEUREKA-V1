@@ -1354,6 +1354,11 @@ adminRouter.get("/admin/ingest-plu-pdf/status", async (req: AuthRequest, res) =>
   if (!jobId) return res.status(400).json({ error: "jobId requis" });
   const job = INGEST_JOBS.get(jobId);
   if (!job) return res.status(404).json({ error: "Job introuvable ou expiré" });
+  // Un job d'ingestion n'est consultable que par son initiateur (ou un admin) :
+  // sinon un autre agent pourrait suivre/lire un job via un jobId deviné.
+  if (req.user!.role !== "admin" && job.userId !== req.user!.id) {
+    return res.status(404).json({ error: "Job introuvable ou expiré" });
+  }
 
   // Une entrée par (segment, zone). Le front somme total_batches/done_batches
   // pour la barre de progression — l'agrégation par somme reste correcte même
