@@ -37,6 +37,7 @@ import {
   changeDossierStatus,
   assignInstructeur,
   unassignInstructeur,
+  ensureAssignedToActor,
   WorkflowError,
   workflowErrorToHttp,
 } from "../../services/dossierWorkflow.js";
@@ -413,6 +414,15 @@ dossiersRouter.patch("/dossiers/:id/status", requirePermission("dossiers.status"
 
     // 1) Transition de statut via la machine à états (refuse si interdite).
     await changeDossierStatus(dossierId, status as DossierStatus, req.user?.id ?? null, { reason: reason ?? null });
+
+    // 1bis) Prise en charge implicite : faire avancer manuellement le dossier
+    // est un acte d'instruction. Best-effort — ne fait jamais échouer la
+    // transition pour un souci d'affectation ; no-op si déjà pris en charge.
+    try {
+      await ensureAssignedToActor(dossierId, req.user?.id ?? null, req.user?.role);
+    } catch (e) {
+      console.warn("[mairie/dossiers/status] ensureAssignedToActor:", e);
+    }
 
     // 2) Effets de bord : date de dépôt + recalcul d'échéance.
     const sideEffects: Partial<typeof before> & { updated_at?: Date } = {};

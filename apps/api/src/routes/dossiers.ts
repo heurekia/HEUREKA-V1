@@ -5,6 +5,7 @@ import { dossiers, dossier_messages, dossier_pieces_jointes, instruction_events,
 import { eq, desc, and, ilike, gt, sql, isNull } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import { auditMutations } from "../middlewares/auditMutations.js";
+import { uploadLimiter } from "../middlewares/rateLimiters.js";
 import crypto from "crypto";
 import { callAi } from "../services/aiUsage.js";
 import path from "path";
@@ -932,7 +933,7 @@ function uploadSingle(req: AuthRequest, res: import("express").Response, next: i
   });
 }
 
-dossiersRouter.post("/:id/pieces/upload", uploadSingle, async (req: AuthRequest, res) => {
+dossiersRouter.post("/:id/pieces/upload", uploadLimiter, uploadSingle, async (req: AuthRequest, res) => {
   // Avec multer.memoryStorage(), req.file.buffer contient le contenu binaire
   // et req.file.path est undefined. La key est générée ici (UUID + extension)
   // puis l'écriture est déléguée au StorageProvider (local OU S3).

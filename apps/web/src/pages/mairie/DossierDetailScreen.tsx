@@ -3766,7 +3766,13 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
 
         {/* ── DÉCISION ── */}
         {activeTab === "Décision" && (
-          <DecisionPanel dossier={dossier} liveCommune={liveCommune} currentUserId={user?.id} />
+          <DecisionPanel
+            dossier={dossier}
+            liveCommune={liveCommune}
+            currentUserId={user?.id}
+            liveInstructeur={currentInstructeur ?? dossier.instructeur ?? null}
+            onDecisionChange={refreshWorkflow}
+          />
         )}
 
       </div>

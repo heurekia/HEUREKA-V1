@@ -101,10 +101,18 @@ function decisionStepIndex(status: DecisionStatus): number {
   return 0;
 }
 
-export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
+export function DecisionPanel({ dossier, liveCommune, currentUserId, liveInstructeur, onDecisionChange }: {
   dossier: DossierInfo;
   liveCommune: string | null;
   currentUserId?: string;
+  // Nom de l'instructeur tenu à jour par le parent (prise en charge implicite à
+  // la création de la décision) : évite un bloc « Instructeur·trice — » vide
+  // tant que la page n'a pas été rechargée.
+  liveInstructeur?: string | null;
+  // Notifie le parent après chaque action de décision (création/soumission/
+  // signature/refus/notification) pour qu'il rafraîchisse l'en-tête du dossier
+  // (badge de statut + instructeur), sans recharger la page.
+  onDecisionChange?: () => void;
 }) {
   const [decision, setDecision] = useState<DecisionData | null>(null);
   const [loadingDecision, setLoadingDecision] = useState(true);
@@ -165,6 +173,10 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
     setActionError(null);
     try {
       setDecision(await fn());
+      // Le statut du dossier et son instructeur ont pu changer côté serveur
+      // (passage en « décision en cours », prise en charge implicite, statut
+      // terminal après signature…) : on demande au parent de se rafraîchir.
+      onDecisionChange?.();
       return true;
     } catch (e) {
       setActionError(e instanceof ApiError ? e.message : "L'opération a échoué. Vérifiez votre connexion et réessayez.");
@@ -211,11 +223,13 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
   const typeLabel = decisionOptions.find(o => o.key === (decision?.type ?? localType))?.label ?? "—";
   // Nom de l'instructeur·trice à afficher dans le circuit de signature : on prend
   // l'AUTEUR de la décision (toujours renseigné), avec repli sur l'instructeur
-  // assigné au dossier. Sans ça, la ligne restait « non nommée » (—) dès que le
-  // dossier n'avait pas d'instructeur assigné.
+  // assigné au dossier — d'abord la valeur tenue à jour par le parent
+  // (liveInstructeur, qui reflète la prise en charge implicite sans rechargement),
+  // puis la valeur du prop initial. Sans ça, la ligne restait « non nommée » (—)
+  // dès que le dossier n'avait pas d'instructeur assigné.
   const instructeurLabel = decision?.instructeur
     ? `${decision.instructeur.prenom} ${decision.instructeur.nom}`.trim()
-    : (dossier.instructeur ?? null);
+    : (liveInstructeur ?? dossier.instructeur ?? null);
   const signataireLabel = (() => {
     if (decision?.signataire) return `${decision.signataire.prenom} ${decision.signataire.nom}`;
     const row = communeSignataires.find(s => s.user_id === (localSignataireId ?? decision?.signataire_id));

@@ -14,6 +14,7 @@
 import { Router } from "express";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { streamAi } from "../../services/aiUsage.js";
+import { llmLimiter } from "../../middlewares/rateLimiters.js";
 import {
   buildMairieAssistantSystemPrompt,
   sanitizeHistory,
@@ -36,7 +37,7 @@ assistantRouter.get("/assistant/suggestions", (_req, res) => {
 // verrait un 502 alors que Mistral a déjà facturé. On forwarde les deltas de
 // texte (effet de frappe) ; le tracking ai_usage_events est automatique à
 // finalMessage().
-assistantRouter.post("/assistant", async (req: AuthRequest, res) => {
+assistantRouter.post("/assistant", llmLimiter, async (req: AuthRequest, res) => {
   const body = (req.body ?? {}) as { question?: unknown; history?: unknown };
   const question = typeof body.question === "string" ? body.question.trim() : "";
   if (!question) return res.status(400).json({ error: "question requise" });

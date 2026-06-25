@@ -8,6 +8,7 @@ import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { documentInScope, zoneInScope, ruleInScope, annotationInScope, segmentInScope } from "../../middlewares/regulatoryScope.js";
 import { streamAi, type AiContentBlock } from "../../services/aiUsage.js";
+import { llmLimiter } from "../../middlewares/rateLimiters.js";
 import { parseLooseArray } from "../../services/jsonExtract.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 import { resolveCommuneActiveZoneIds } from "../../services/communeZones.js";
@@ -269,7 +270,7 @@ reglementationRouter.post("/reglementation/zones/:zoneId/rules/bulk", requirePer
 // forwardé au client en heartbeats SSE → la passerelle voit du trafic régulier
 // → plus de 502. À la fin, on parse l'accumulé et on envoie les règles dans un
 // événement `done`.
-reglementationRouter.post("/reglementation/structure-article", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/reglementation/structure-article", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), llmLimiter, async (req: AuthRequest, res) => {
   const { text, zone_code, article_number, image_base64, image_media_type } = req.body as { text?: string; zone_code?: string; article_number?: number | string; image_base64?: string; image_media_type?: string };
   const hasImage = typeof image_base64 === "string" && image_base64.length > 0;
   if ((!text || text.trim().length < 5) && !hasImage) return res.status(400).json({ error: "Texte de l'article ou image requis" });
@@ -439,7 +440,7 @@ AUTRES RÈGLES :
 // Streaming SSE : même justification que structure-article, accentuée ici par
 // le max_tokens 16k qui peut prendre 2-3 min. Sans streaming la passerelle
 // coupe systématiquement → 502 + facturation perdue.
-reglementationRouter.post("/reglementation/structure-zone", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/reglementation/structure-zone", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), llmLimiter, async (req: AuthRequest, res) => {
   const { text, zone_code } = req.body as { text?: string; zone_code?: string };
   // Le seuil bas accepte les chunks courts légitimes (Préambule, article
   // « sans objet ») produits par le découpage par article côté front.
