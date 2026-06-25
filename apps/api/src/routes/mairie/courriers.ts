@@ -209,9 +209,14 @@ courriersRouter.get("/templates", async (req: AuthRequest, res) => {
     if (dossierId) {
       const row = await getDossierCommuneRow(req, dossierId);
       if (row) {
-        const keys = [row.insee_code, row.name].filter((v): v is string => !!v);
+        // Match par INSEE *ou* par nom. NB : surtout pas `ANY(${tableau})` —
+        // drizzle développe un tableau JS en `($1,$2)` (une ROW), alors que
+        // ANY() exige un vrai tableau SQL → erreur 500. On compare donc des
+        // scalaires explicites (commune_insee et name sont NOT NULL).
+        const insee = row.insee_code;
+        const name = row.name;
         const rows = await db.select().from(courrier_templates)
-          .where(sql`commune_insee = ANY(${keys}) OR commune ILIKE ANY(${keys})`)
+          .where(sql`commune_insee IN (${insee}, ${name}) OR commune ILIKE ${insee} OR commune ILIKE ${name}`)
           .orderBy(courrier_templates.created_at);
         return res.json(rows);
       }
