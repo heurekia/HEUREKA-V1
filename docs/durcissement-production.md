@@ -2,7 +2,7 @@
 
 > Document vivant. Tient le fil de l'audit de performance et du durcissement de
 > la plateforme en vue d'une montée en charge. Mis à jour **au fur et à mesure**
-> de l'avancement (cf. § Journal d'avancement). Dernière mise à jour : chantier 1.5.
+> de l'avancement (cf. § Journal d'avancement). Dernière mise à jour : chantiers 1.2 & 1.3.
 
 ## 1. Contexte & verdict
 
@@ -64,9 +64,10 @@ pilote mono-instance** une fois le Palier 0 traité. Ce n'est pas un audit
 |---|---|---|---|
 | 1.4 | N+1 du viewer réglementation → une requête `inArray` + regroupement | ✅ Fait | `perf(reglementation): supprime le N+1 du viewer réglementation` |
 | 1.5 | Transactions sur émission de courrier (`pieceRequest`) et `applyDossierFacts` (+ batch des écritures) | ✅ Fait | `fix(courrier): émission … atomique` ; `fix(facts): applyDossierFacts atomique` |
-| 1.2 | `refreshPluZones` hors du chemin `/analyse` (fond + service *stale*) | ⏳ À faire | |
-| 1.3 | CPU bloquant : `execFileSync`→async, base64/hash hors event-loop, plafond de taille cumulée | ⏳ À faire | |
-| 1.1 | Upload citoyen → file OCR asynchrone (réponse 201 immédiate) — **BLOQUANT** | ⏳ À faire | |
+| 1.2 | `refreshPluZones` hors du chemin `/analyse` (fond + service *stale*) | ✅ Fait | `perf(plu): stale-while-revalidate du contexte PLU` |
+| 1.3 | CPU bloquant : `execFileSync`→async (rendu/extraction PDF) | ✅ Fait | `perf(pdf): rendu et extraction PDF asynchrones` |
+| 1.3b | Offload base64/hash de gros buffers vers worker_threads + plafond de taille cumulée | ⏳ À faire (impact moindre) | |
+| 1.1 | Upload citoyen → file OCR asynchrone (réponse 201 immédiate) — **BLOQUANT** | 🚧 En cours | |
 
 ## 5. Variables d'environnement introduites
 
