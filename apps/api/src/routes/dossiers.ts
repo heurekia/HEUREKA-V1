@@ -15,7 +15,7 @@ import { buildPiecesContext, getPiecesForType, getPieceByCode } from "../data/pi
 import { changeDossierStatus, WorkflowError } from "../services/dossierWorkflow.js";
 import { notifyDossierAgents } from "../services/notify.js";
 import { analyzePiece } from "../services/pieceAnalyzer.js";
-import { extractPiece, expectedTypeFromCode, type PieceExtraction } from "../services/pieceExtractor.js";
+import { extractPiece, expectedTypeFromCode, detectRubricMismatch, type PieceExtraction } from "../services/pieceExtractor.js";
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
 import { syncDossierFactsFromPieces } from "../services/dossierFacts.js";
 import { autoReopenAfterCitizenUpload } from "../services/dossierWorkflow.js";
@@ -387,6 +387,37 @@ dossiersRouter.post("/:id/soumettre", async (req: AuthRequest, res) => {
     const manquantes = piecesRequises.filter((p) => !uploadedCodes.has(p.code));
     if (manquantes.length > 0) {
       return res.status(422).json({ error: "Dossier incomplet", manquantes });
+    }
+
+    // Garde-fou « analyse en cours » : si une pièce est encore en cours
+    // d'analyse IA (worker en arrière-plan), on ne peut pas statuer sur son
+    // hors-sujet → on demande de patienter. L'état `processing` est posé
+    // uniquement par le worker OCR (non ambigu) ; une pièce déjà analysée ou un
+    // dépôt ancien n'est jamais "processing".
+    const enAnalyse = uploadedPieces.filter((p) => p.ocr_status === "processing");
+    if (enAnalyse.length > 0) {
+      return res.status(409).json({
+        error: "Analyse des pièces en cours. Réessayez dans quelques instants.",
+        en_analyse: enAnalyse.map((p) => ({ piece_id: p.id, nom: p.nom })),
+      });
+    }
+
+    // Garde-fou « document hors-sujet » : on refuse la soumission si une pièce
+    // déposée n'a manifestement aucun rapport avec sa rubrique (ex. une photo
+    // dans l'emplacement CERFA). Détection conservatrice : seuls les mismatches
+    // inter-familles à haute confiance bloquent (cf. detectRubricMismatch), pour
+    // ne pas refuser un citoyen à tort.
+    const horsSujet = uploadedPieces
+      .map((p) => {
+        const mismatch = detectRubricMismatch(p.code_piece, p.extraction_ia as PieceExtraction | null);
+        return mismatch ? { piece_id: p.id, nom: p.nom, code_piece: p.code_piece, ...mismatch } : null;
+      })
+      .filter((x): x is NonNullable<typeof x> => x !== null);
+    if (horsSujet.length > 0) {
+      return res.status(422).json({
+        error: "Une ou plusieurs pièces ne correspondent pas à leur emplacement.",
+        hors_sujet: horsSujet,
+      });
     }
 
     const depotDate = new Date();
