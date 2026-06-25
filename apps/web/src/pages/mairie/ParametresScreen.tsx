@@ -3,7 +3,7 @@ import { useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { DotsIcon, StatusBadge } from "./ui";
-import { COMMUNE_INSEE, notifIcon, notifColor, relTime, type ApiNotif } from "./shared";
+import { COMMUNE_INSEE, notifIcon, notifColor, relTime, resolveCommune, type ApiNotif } from "./shared";
 import { ReglementationScreen } from "./ReglementationScreen";
 import { TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 
@@ -560,7 +560,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   );
 }
 
-export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
+export function ParametresScreen({ commune = "", communes = [], isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; communes?: string[]; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
   const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
   const TAB_SLUGS: Record<string, string> = {
@@ -711,12 +711,16 @@ export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers
                   <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Aucune notification</div>
                   <div style={{ fontSize: 12, color: "#94a3b8" }}>Vous êtes à jour !</div>
                 </div>
-              ) : histNotifs.map(n => (
+              ) : histNotifs.map(n => {
+                // Agent multi-communes : préfixe le nom de la ville concernée.
+                const communeLabel = communes.length > 1 ? (resolveCommune(n.commune, communes) ?? n.commune) : null;
+                return (
                 <div key={n.id} onClick={() => markOneRead(n)}
                   style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 20px", borderBottom: "1px solid #F8FAFC", background: n.is_read ? "white" : "#F8F7FF", cursor: "pointer", transition: "background 0.15s" }}>
                   <div style={{ width: 36, height: 36, borderRadius: 10, background: notifColor(n.type) + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{notifIcon(n.type)}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" as const }}>
+                      {communeLabel && <span style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", background: "#EEF2FF", borderRadius: 4, padding: "1px 7px" }}>{communeLabel}</span>}
                       <span style={{ fontSize: 13, fontWeight: n.is_read ? 500 : 700, color: "#0F172A" }}>{n.title}</span>
                       <span style={{ fontSize: 11, color: "#94a3b8", flexShrink: 0 }}>{relTime(n.created_at)}</span>
                     </div>
@@ -724,7 +728,8 @@ export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers
                   </div>
                   {!n.is_read && <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 6 }} />}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 

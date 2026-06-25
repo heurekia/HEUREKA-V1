@@ -4,7 +4,7 @@ import { api, ApiError } from "../../lib/api";
 import { normalizeForSearch } from "../../lib/utils";
 import { useAuth } from "../../hooks/useAuth";
 import { TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
-import { fmtDate, COMMUNE_INSEE, notifIcon, notifColor, relTime, type ApiNotif, type ApiDossier, type DossierInfo, type WorkflowMeta, type DelaiBreakdown } from "./shared";
+import { fmtDate, COMMUNE_INSEE, notifIcon, notifColor, relTime, resolveCommune, type ApiNotif, type ApiDossier, type DossierInfo, type WorkflowMeta, type DelaiBreakdown } from "./shared";
 import {
   HomeIcon, FolderIcon, CalendarIcon, MessageIcon, MapIcon, ChartIcon, SettingsIcon,
   BellIcon, SearchIcon, PlusIcon, HelpIcon, BuildingIcon, ChevronDownIcon,
@@ -412,7 +412,7 @@ function FaqAssistant() {
   );
 }
 
-function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick, commune = "", onViewAllNotifications }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void; commune?: string; onViewAllNotifications?: () => void }) {
+function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick, commune = "", communes = [], setCommune, onViewAllNotifications }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void; commune?: string; communes?: string[]; setCommune?: (c: string) => void; onViewAllNotifications?: () => void }) {
   const routerNav = useNavigate();
   const [showNotifs, setShowNotifs] = useState(false);
   const [showFAQ, setShowFAQ] = useState(false);
@@ -440,6 +440,12 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
       setApiNotifs(ns => ns.map(x => x.id === n.id ? { ...x, is_read: true } : x));
     }
     setShowNotifs(false);
+    // Bascule la commune active sur celle du dossier visé : un agent
+    // multi-communes peut cliquer une notif d'une autre ville que celle
+    // actuellement sélectionnée. On résout le nom canonique (la commune du
+    // dossier est saisie librement) avant de naviguer.
+    const target = resolveCommune(n.commune, communes);
+    if (target && target !== commune) setCommune?.(target);
     if (n.dossier_id) routerNav(`/mairie/dossiers/${n.dossier_id}`);
   };
 
@@ -512,18 +518,24 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
               <div style={{ maxHeight: 320, overflowY: "auto" }}>
                 {apiNotifs.length === 0 ? (
                   <div style={{ padding: "24px 16px", textAlign: "center", fontSize: 12, color: "#94a3b8" }}>Aucune notification</div>
-                ) : apiNotifs.slice(0, 8).map(n => (
+                ) : apiNotifs.slice(0, 8).map(n => {
+                  // Agent multi-communes : on préfixe la notif du nom de la ville
+                  // concernée pour lever l'ambiguïté entre communes.
+                  const communeLabel = communes.length > 1 ? (resolveCommune(n.commune, communes) ?? n.commune) : null;
+                  return (
                   <div key={n.id} onClick={() => handleNotifClick(n)}
                     style={{ padding: "10px 16px", display: "flex", alignItems: "flex-start", gap: 10, borderBottom: "1px solid #F8FAFC", cursor: "pointer", background: n.is_read ? "white" : "#F8F7FF", transition: "background 0.15s" }}>
                     <div style={{ width: 32, height: 32, borderRadius: 8, background: notifColor(n.type) + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{notifIcon(n.type)}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
+                      {communeLabel && <div style={{ display: "inline-block", maxWidth: "100%", fontSize: 9.5, fontWeight: 700, color: "#4F46E5", background: "#EEF2FF", borderRadius: 4, padding: "1px 6px", marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{communeLabel}</div>}
                       <div style={{ fontSize: 12, color: "#0F172A", fontWeight: n.is_read ? 400 : 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.title}</div>
                       <div style={{ fontSize: 11, color: "#64748b", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.message}</div>
                       <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>{relTime(n.created_at)}</div>
                     </div>
                     {!n.is_read && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 4 }} />}
                   </div>
-                ))}
+                  );
+                })}
               </div>
               <div style={{ padding: "10px 16px", textAlign: "center", borderTop: "1px solid #F1F5F9" }}>
                 <button onClick={() => { setShowNotifs(false); onViewAllNotifications?.(); }} style={{ border: "none", background: "none", fontSize: 12, color: "#4F46E5", cursor: "pointer", fontWeight: 500 }}>
@@ -1424,7 +1436,11 @@ function DossierDetailRoute({ navigate, commune, communes, setCommune }: { navig
   // logique sans relancer le fetch quand la commune sélectionnée change.
   const syncCommuneRef = useRef<(c: string | null | undefined) => void>(() => {});
   syncCommuneRef.current = (c) => {
-    if (c && c !== commune && communes.includes(c)) setCommune(c);
+    // `c` vient de `dossiers.commune` (texte libre) : on résout le nom canonique
+    // du sélecteur avant de comparer/basculer, sinon une simple différence de
+    // casse/accent empêchait le changement de commune.
+    const target = resolveCommune(c, communes);
+    if (target && target !== commune) setCommune(target);
   };
 
   useEffect(() => {
@@ -1771,7 +1787,7 @@ export function MairieApp() {
       <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} signaturesBadge={signaturesBadge} isSignataire={isSignataire} communes={userCommunes} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} onViewAllNotifications={() => routerNavigate("/mairie/parametres?tab=notifications")} />
+          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} communes={userCommunes} setCommune={setCommune} onViewAllNotifications={() => routerNavigate("/mairie/parametres?tab=notifications")} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           <Routes>
@@ -1782,7 +1798,7 @@ export function MairieApp() {
             <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
             <Route path="carte" element={<CarteScreen commune={commune} setCommune={setCommune} communeInseeMap={communeInseeMap} />} />
             <Route path="statistiques" element={<StatistiquesScreen commune={commune} />} />
-            <Route path="parametres" element={<ParametresScreen commune={commune} isAdmin={isAdmin} canManageUsers={canManageUsers} communeInseeMap={communeInseeMap} onInseeUpdated={refreshCommuneInseeMap} />} />
+            <Route path="parametres" element={<ParametresScreen commune={commune} communes={userCommunes} isAdmin={isAdmin} canManageUsers={canManageUsers} communeInseeMap={communeInseeMap} onInseeUpdated={refreshCommuneInseeMap} />} />
             <Route path="signatures" element={<SignaturesPendantesScreen />} />
             <Route path="profil" element={<InfosPersoScreen />} />
             <Route path="*" element={<Navigate to="/mairie" replace />} />
