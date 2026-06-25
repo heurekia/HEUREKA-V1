@@ -493,8 +493,17 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     if (!token || !password) return res.status(400).json({ error: "Token et mot de passe requis" });
     if (passwordPolicyErrors(password).length > 0) return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
 
+    // Cette route DÉFINIT un mot de passe : elle n'accepte que les tokens prévus
+    // pour ça (invitation « activation » ou « reset »). Un token « verification »
+    // (confirmation d'email, mot de passe déjà défini) ne doit PAS permettre de
+    // réécrire le mot de passe — il passe par /verify-email.
     const [row] = await db.select().from(password_tokens)
-      .where(and(eq(password_tokens.token, token), isNull(password_tokens.used_at), gt(password_tokens.expires_at, new Date())))
+      .where(and(
+        eq(password_tokens.token, token),
+        inArray(password_tokens.type, ["activation", "reset"]),
+        isNull(password_tokens.used_at),
+        gt(password_tokens.expires_at, new Date()),
+      ))
       .limit(1);
     if (!row) return res.status(400).json({ error: "Lien invalide ou expiré" });
 

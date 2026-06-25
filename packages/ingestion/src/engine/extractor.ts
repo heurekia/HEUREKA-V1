@@ -4,7 +4,7 @@
  *  - .txt  → read as-is (handy for tests / pre-extracted text).
  *  - .docx → TODO (mammoth) — next sprint.
  */
-import { execSync } from "node:child_process";
+import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 
@@ -16,7 +16,9 @@ export function extractText(filePath: string): string {
   if (ext === ".pdf") {
     try {
       // pdftotext separates pages with form-feed (\f); the cleaner handles it.
-      return execSync(`pdftotext "${filePath}" -`, { encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 });
+      // execFileSync (pas de shell, args en tableau) → pas d'injection possible
+      // même si filePath contenait des métacaractères shell.
+      return execFileSync("pdftotext", [filePath, "-"], { encoding: "utf-8", maxBuffer: 64 * 1024 * 1024 });
     } catch (e) {
       const detail = e instanceof Error ? e.message : String(e);
       throw new Error(

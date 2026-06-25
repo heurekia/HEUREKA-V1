@@ -1180,6 +1180,18 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
       role_config_id: string | null;
     }>;
 
+    // Anti-lockout : refuser la rétrogradation du DERNIER administrateur (sinon
+    // plus aucun compte ne peut accéder à /api/admin → récupération SQL manuelle).
+    if (role !== undefined && role !== "admin") {
+      const [target] = await db.select({ role: users.role }).from(users).where(eq(users.id, id)).limit(1);
+      if (target?.role === "admin") {
+        const adminRows = await db.select({ value: count() }).from(users).where(eq(users.role, "admin"));
+        if ((adminRows[0]?.value ?? 0) <= 1) {
+          return res.status(409).json({ error: "Impossible de rétrograder le dernier administrateur." });
+        }
+      }
+    }
+
     const [updated] = await db
       .update(users)
       .set({ role, prenom, nom, commune, commune_insee, telephone, role_config_id, updated_at: new Date() })
@@ -1252,7 +1264,17 @@ superAdminRouter.put("/users/:id/communes", async (req, res) => {
 superAdminRouter.delete("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const [target] = await db.select({ email: users.email }).from(users).where(eq(users.id, id)).limit(1);
+    // Anti auto-suppression (cohérent avec le flux mairie) et anti-lockout.
+    if (id === (req as AuthRequest).user?.id) {
+      return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte." });
+    }
+    const [target] = await db.select({ email: users.email, role: users.role }).from(users).where(eq(users.id, id)).limit(1);
+    if (target?.role === "admin") {
+      const adminRows = await db.select({ value: count() }).from(users).where(eq(users.role, "admin"));
+      if ((adminRows[0]?.value ?? 0) <= 1) {
+        return res.status(409).json({ error: "Impossible de supprimer le dernier administrateur." });
+      }
+    }
     await db.transaction(async (tx) => {
       // Nullify instructeur_id on dossiers assigned to this user (no cascade in schema)
       await tx.update(dossiers).set({ instructeur_id: null }).where(eq(dossiers.instructeur_id, id));

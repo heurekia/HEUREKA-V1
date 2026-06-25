@@ -27,7 +27,7 @@
 import { db } from "../db.js";
 import { zones, zone_regulatory_rules, communes } from "@heureka-v1/db";
 import { eq, and } from "drizzle-orm";
-import { execSync } from "child_process";
+import { execFileSync } from "child_process";
 import fs from "fs";
 import { callAi, type AiToolDefinition } from "../services/aiUsage.js";
 
@@ -107,7 +107,7 @@ const SAVE_RULE_TOOL: AiToolDefinition = {
 
 function extractCleanText(pdfPath: string): string {
   console.log("  Extraction du texte PDF (pdftotext)…");
-  const raw = execSync(`pdftotext "${pdfPath}" -`, {
+  const raw = execFileSync("pdftotext", [pdfPath, "-"], {
     encoding: "utf-8",
     maxBuffer: 30 * 1024 * 1024,
   });
