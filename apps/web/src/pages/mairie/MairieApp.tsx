@@ -1423,7 +1423,7 @@ function SignaturesPendantesScreen() {
   );
 }
 
-function DossierDetailRoute({ navigate, commune, communes, setCommune }: { navigate: (s: string) => void; commune: string; communes: string[]; setCommune: (c: string) => void }) {
+function DossierDetailRoute({ navigate, commune, communes, setCommune, communeInseeMap }: { navigate: (s: string) => void; commune: string; communes: string[]; setCommune: (c: string) => void; communeInseeMap: Record<string, string> }) {
   const { id } = useParams<{ id: string }>();
   const routerNavigate = useNavigate();
   const [dossier, setDossier] = useState<DossierInfo | null>(null);
@@ -1513,7 +1513,9 @@ function DossierDetailRoute({ navigate, commune, communes, setCommune }: { navig
 
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>Chargement…</div>;
   if (!dossier) return null;
-  return <DossierDetailScreen dossier={dossier} onBack={() => routerNavigate(-1 as never)} navigate={navigate} />;
+  // INSEE de la commune du dossier (cf. communeInseeMap, même source que l'écran
+  // Paramètres) — pour que la modale courrier lise les modèles de cette commune.
+  return <DossierDetailScreen dossier={dossier} onBack={() => routerNavigate(-1 as never)} navigate={navigate} inseeCode={dossier.commune ? communeInseeMap[dossier.commune] : undefined} />;
 }
 
 const COMMUNE_STORAGE_KEY = (userId?: string) => `heureka_commune_${userId ?? "anon"}`;
@@ -1793,7 +1795,7 @@ export function MairieApp() {
           <Routes>
             <Route index element={<DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} inseeCode={communeInseeMap[commune]} onDossierClick={handleDossierClick} />} />
             <Route path="dossiers" element={<DossiersScreen commune={commune} onDossierClick={handleDossierClick} />} />
-            <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} commune={commune} communes={userCommunes} setCommune={setCommune} />} />
+            <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} commune={commune} communes={userCommunes} setCommune={setCommune} communeInseeMap={communeInseeMap} />} />
             <Route path="messagerie" element={<MessageScreen commune={commune} onDossierClick={handleDossierClick} onUnreadChange={setMessageBadge} />} />
             <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
             <Route path="carte" element={<CarteScreen commune={commune} setCommune={setCommune} communeInseeMap={communeInseeMap} />} />
