@@ -875,8 +875,38 @@ dossiersRouter.get("/:id/pieces", async (req: AuthRequest, res) => {
     if (!dossier) return res.status(404).json({ error: "Dossier non trouvé" });
     // Les versions archivées (remplacées suite à un complément) sont masquées
     // côté citoyen — la pièce active est seule visible dans son espace.
+    // Projection explicite : on N'EXPOSE PAS au citoyen les champs d'instruction
+    // internes `instructeur_note` (note libre de l'agent) ni `instructeur_status_by`
+    // (identité de l'agent décideur). `analyse_ia`/`instructeur_status` restent
+    // visibles : le citoyen a consenti à l'analyse et doit connaître le statut de
+    // sa pièce (validée / complément demandé).
     const pieces = await db
-      .select()
+      .select({
+        id: dossier_pieces_jointes.id,
+        dossier_id: dossier_pieces_jointes.dossier_id,
+        user_id: dossier_pieces_jointes.user_id,
+        nom: dossier_pieces_jointes.nom,
+        url: dossier_pieces_jointes.url,
+        type: dossier_pieces_jointes.type,
+        taille: dossier_pieces_jointes.taille,
+        code_piece: dossier_pieces_jointes.code_piece,
+        analyse_ia: dossier_pieces_jointes.analyse_ia,
+        extraction_ia: dossier_pieces_jointes.extraction_ia,
+        instructeur_status: dossier_pieces_jointes.instructeur_status,
+        instructeur_status_at: dossier_pieces_jointes.instructeur_status_at,
+        ai_processed: dossier_pieces_jointes.ai_processed,
+        ocr_status: dossier_pieces_jointes.ocr_status,
+        ocr_started_at: dossier_pieces_jointes.ocr_started_at,
+        ocr_completed_at: dossier_pieces_jointes.ocr_completed_at,
+        archived_at: dossier_pieces_jointes.archived_at,
+        archived_by_piece_id: dossier_pieces_jointes.archived_by_piece_id,
+        uploaded_at: dossier_pieces_jointes.uploaded_at,
+        source_bundle_id: dossier_pieces_jointes.source_bundle_id,
+        source_pages: dossier_pieces_jointes.source_pages,
+        code_piece_source: dossier_pieces_jointes.code_piece_source,
+        nom_origine: dossier_pieces_jointes.nom_origine,
+        classification_confidence: dossier_pieces_jointes.classification_confidence,
+      })
       .from(dossier_pieces_jointes)
       .where(and(
         eq(dossier_pieces_jointes.dossier_id, req.params.id as string),
