@@ -544,7 +544,11 @@ export function CourrierModal({
       setTemplates(tpls);
       setLetterhead(lh);
       if (tpls.length > 0) setSelected(tpls[0]!);
-    }).catch(() => {}).finally(() => setLoading(false));
+    }).catch((e) => {
+      // Ne pas avaler l'erreur en silence : un échec serveur affichait
+      // « Aucun modèle » à tort (indiscernable d'une liste vide légitime).
+      console.error("[CourrierModal] chargement modèles/en-tête échoué", e);
+    }).finally(() => setLoading(false));
   }, [dossier.id, inseeCode]);
 
   // Signataire de la commune pour le bloc signature. Hors décision (ex. pièces
