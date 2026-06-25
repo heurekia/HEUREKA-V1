@@ -8,7 +8,7 @@ import { alias } from "drizzle-orm/pg-core";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { requirePermission } from "../middlewares/permissions.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
-import { changeDossierStatus } from "../services/dossierWorkflow.js";
+import { changeDossierStatus, ensureAssignedToActor } from "../services/dossierWorkflow.js";
 
 /**
  * Charge le dossier référencé par une décision et vérifie que sa commune
@@ -235,6 +235,11 @@ decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur",
   const commune = dossier.commune ?? "";
   if (!commune) return res.status(400).json({ error: "Dossier sans commune" });
 
+  // Prise en charge implicite : produire un arrêté est un acte d'instruction.
+  // On évite ainsi qu'une décision soit créée (et son bloc signature renseigné)
+  // sur un dossier resté « Non assigné ». No-op si déjà pris en charge.
+  await ensureAssignedToActor(dossierId, req.user!.id, req.user!.role);
+
   const existing = await db
     .select({ id: decisions.id })
     .from(decisions)
@@ -350,6 +355,20 @@ decisionsRouter.post("/:id/sign", requireRole("mairie", "instructeur", "admin"),
   // (mais figurant dans son scope) de signer un arrêté qui ne le concerne pas.
   if (!await isActiveSignataire(req.user!.id, dec.commune)) {
     return res.status(403).json({ error: "Vous n'êtes pas signataire actif de cette commune" });
+  }
+
+  // Le circuit de signature ne peut être court-circuité : on ne signe qu'un
+  // arrêté effectivement soumis à la signature. Bloque la signature directe
+  // d'un brouillon / d'une révision et la re-signature d'un arrêté déjà signé
+  // ou notifié (la machine d'état de l'UI ne propose « Signer » que depuis
+  // soumis_signature ; ce garde-fou ferme le contournement par appel direct).
+  if (dec.status !== "soumis_signature") {
+    const already = dec.status === "signe" || dec.status === "notifie";
+    return res.status(409).json({
+      error: already
+        ? "Cet arrêté est déjà signé."
+        : "Cet arrêté doit d'abord être soumis à la signature.",
+    });
   }
 
   // Any signataire of the commune can sign, or the assigned signataire

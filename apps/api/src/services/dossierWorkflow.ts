@@ -214,6 +214,45 @@ export async function unassignInstructeur(
   return { changed: true, previous_instructeur_id: before.instructeur_id };
 }
 
+// ── Prise en charge implicite ────────────────────────────────────────────────
+// Affecte le dossier à l'agent qui agit, s'il n'est encore assigné à personne.
+// Garantit l'invariant : aucun dossier ne peut être instruit, décidé ou signé
+// tout en restant « Non assigné ». Tout premier acte d'instruction (validation
+// de pièce, transition de statut manuelle, création de décision) emporte donc
+// la prise en charge.
+//
+// Idempotent et NON volant : no-op si le dossier est déjà pris en charge — que
+// ce soit par l'acteur lui-même ou par un tiers (un simple acte ne réassigne
+// jamais le dossier d'un collègue). Silencieux si l'acteur n'a pas un rôle
+// affectable (cf. ASSIGNABLE_ROLES, ex. service_externe) : on ne bloque jamais
+// l'action principale, on s'abstient simplement d'affecter.
+export async function ensureAssignedToActor(
+  dossierId: string,
+  actorId: string | null | undefined,
+  actorRole: string | null | undefined,
+): Promise<{ assigned: boolean }> {
+  if (!actorId || !actorRole || !ASSIGNABLE_ROLES.has(actorRole)) {
+    return { assigned: false };
+  }
+  const [before] = await db
+    .select({ instructeur_id: dossiers.instructeur_id })
+    .from(dossiers)
+    .where(eq(dossiers.id, dossierId))
+    .limit(1);
+  // Dossier introuvable (la route gère le 404) ou déjà pris en charge → no-op.
+  if (!before || before.instructeur_id) return { assigned: false };
+
+  // L'acteur agit en personne : pas de redirection d'absence (il EST présent),
+  // on le pose donc directement comme instructeur. assignInstructeur journalise
+  // « Dossier pris en charge par X » (type instructeur_assigned) dans
+  // instruction_events.
+  const res = await assignInstructeur(dossierId, actorId, actorId, {
+    reason: "prise en charge automatique (premier acte d'instruction)",
+    skipAbsenceRedirection: true,
+  });
+  return { assigned: res.changed };
+}
+
 // Helper utilisé par les routes pour renvoyer une 4xx propre.
 export function workflowErrorToHttp(err: WorkflowError): { status: number; body: { error: string; code: WorkflowErrorCode } } {
   switch (err.code) {
