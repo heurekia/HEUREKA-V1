@@ -50,7 +50,7 @@ type DetailTab = typeof DETAIL_TABS[number];
 // cette table sont visibles dès qu'on a accès au dossier. Un agent sans rôle
 // personnalisé (permissions null) voit tout (hasPermission renvoie true).
 const TAB_PERM: Partial<Record<DetailTab, string>> = {
-  "Documents": "documents",
+  "Documents": "pieces.read",
   "Consultations": "consultations.read",
   "Courriers": "courriers.read",
 };
@@ -1180,12 +1180,14 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
   // Fallback si l'API ne renvoie pas encore le bloc workflow (ex. cache front).
   // Permissions du rôle personnalisé (null = accès complet). Elles masquent les
   // actions correspondantes ; le backend les refuse aussi (défense en profondeur).
-  const canInstruct = hasPermission(user, "dossiers.instruct");
+  const canStatus = hasPermission(user, "dossiers.status");
+  const canRunConformite = hasPermission(user, "conformite.run");
   const canAssign = hasPermission(user, "dossiers.assign");
   const canGenerateCourrier = hasPermission(user, "courriers.generate");
-  const canManageConsult = hasPermission(user, "consultations.manage");
-  const nextAction = canInstruct ? (workflow?.next_action ?? primaryNextActionFor(currentStatus as DossierStatus)) : null;
-  const allowedTransitions = canInstruct ? (workflow?.allowed_transitions ?? []) : [];
+  const canCreateConsult = hasPermission(user, "consultations.create");
+  const canUpdateConsult = hasPermission(user, "consultations.update");
+  const nextAction = canStatus ? (workflow?.next_action ?? primaryNextActionFor(currentStatus as DossierStatus)) : null;
+  const allowedTransitions = canStatus ? (workflow?.allowed_transitions ?? []) : [];
   const canTakeCharge = canAssign && (workflow?.can_take_charge ?? false);
   const canReassign = canAssign && (workflow?.can_reassign ?? false);
   const canUnassign = canAssign && (workflow?.can_unassign ?? false);
@@ -1917,7 +1919,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>Périmètre ABF — consultation obligatoire</div>
                           <div style={{ fontSize: 12, color: "#B45309", lineHeight: 1.6, marginBottom: 12 }}>Cette parcelle est en périmètre de protection des Monuments Historiques. L'avis de l'Architecte des Bâtiments de France est requis avant toute décision.</div>
-                          {canManageConsult && (
+                          {canCreateConsult && (
                             <button
                               onClick={() => openMissionModal("ABF")}
                               disabled={consultationsMissioning}
@@ -2389,7 +2391,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                     </div>
                   )}
                 </div>
-                {canInstruct && (
+                {canRunConformite && (
                   <button
                     onClick={() => void relaunchWorkingAnalysis()}
                     disabled={workingLoading}
@@ -2443,7 +2445,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                       </div>
                     )}
                   </div>
-                  {canInstruct && (
+                  {canRunConformite && (
                     <button
                       onClick={() => void launchConformiteFinale()}
                       disabled={conformiteFinaleLaunching}
@@ -3489,7 +3491,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                       <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
                       Organismes consultés
                     </div>
-                    {canManageConsult && (
+                    {canCreateConsult && (
                       <button
                         onClick={() => openMissionModal()}
                         disabled={consultationsMissioning}
@@ -3535,7 +3537,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                       ) : (
                         <div style={{ fontSize: 12.5, color: "#94a3b8", lineHeight: 1.7, padding: "13px 14px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #EAECF0", fontStyle: "italic" }}>Aucun avis reçu pour l'instant.</div>
                       )}
-                      {canManageConsult && selectedC.status === "en_attente" && (
+                      {canUpdateConsult && selectedC.status === "en_attente" && (
                         <button
                           onClick={() => {
                             api.patch(`/mairie/dossiers/${dossier.id}/consultations/${selectedC.id}`, { status: "avis_recu", favorable: true })

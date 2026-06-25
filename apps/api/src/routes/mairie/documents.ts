@@ -14,7 +14,7 @@ import { getStorageProvider } from "../../services/storage.js";
 export const dossierDocumentsRouter = Router();
 
 // ── Lister les documents de la GED d'un dossier ──
-dossierDocumentsRouter.get("/dossiers/:id/documents", requirePermission("documents"), async (req: AuthRequest, res) => {
+dossierDocumentsRouter.get("/dossiers/:id/documents", requirePermission("pieces.read"), async (req: AuthRequest, res) => {
   try {
     const rows = await db
       .select({
@@ -45,7 +45,7 @@ dossierDocumentsRouter.get("/dossiers/:id/documents", requirePermission("documen
 });
 
 // ── Supprimer un document de la GED ──
-dossierDocumentsRouter.delete("/dossiers/:id/documents/:docId", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
+dossierDocumentsRouter.delete("/dossiers/:id/documents/:docId", requirePermission("pieces.validate"), async (req: AuthRequest, res) => {
   try {
     const [doc] = await db
       .select()

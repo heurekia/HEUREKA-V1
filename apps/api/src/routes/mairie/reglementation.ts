@@ -691,7 +691,7 @@ reglementationRouter.get("/documents/:docId/segments", requirePermission("zones.
 // (3.C.3). Pas de segment_id : la position visuelle est portée par page +
 // quote + highlight_rects. Le RAG matchera ensuite par chevauchement texte
 // au moment du search pour réinjecter l'annotation à côté du bon chunk.
-reglementationRouter.post("/documents/:docId/annotations", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/documents/:docId/annotations", requirePermission("zones.annotate"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const docId = req.params.docId as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -755,7 +755,7 @@ reglementationRouter.get("/documents/:docId/annotations", requirePermission("zon
 // POST /mairie/segments/:segmentId/annotations — créer une annotation.
 // Le statut initial est "brouillon" — il faut une action explicite de
 // validation pour qu'elle remonte dans le RAG.
-reglementationRouter.post("/segments/:segmentId/annotations", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.post("/segments/:segmentId/annotations", requirePermission("zones.annotate"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const segmentId = req.params.segmentId as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -799,7 +799,7 @@ reglementationRouter.post("/segments/:segmentId/annotations", requirePermission(
 
 // PATCH /mairie/annotations/:id — modifier OU valider/rejeter.
 // Toute modification de la note rebascule en brouillon (anti-édit silencieux).
-reglementationRouter.patch("/annotations/:id", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.patch("/annotations/:id", requirePermission("zones.annotate"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -866,7 +866,7 @@ reglementationRouter.patch("/annotations/:id", requirePermission("zones.edit"), 
   }
 });
 
-reglementationRouter.delete("/annotations/:id", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+reglementationRouter.delete("/annotations/:id", requirePermission("zones.annotate"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const id = req.params.id as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -883,7 +883,7 @@ reglementationRouter.delete("/annotations/:id", requirePermission("zones.edit"),
 
 reglementationRouter.post(
   "/reglementation/import-canonical",
-  requirePermission("zones.edit"),
+  requirePermission("zones.import"),
   requireRole("mairie", "instructeur", "admin"),
   async (req: AuthRequest, res) => {
     try {

@@ -346,7 +346,7 @@ parcelleRouter.get("/dossiers/:id/sitadel-history", requirePermission("dossiers.
   }
 });
 
-parcelleRouter.patch("/dossiers/:id/adresse", requirePermission("dossiers.instruct"), requireAuth, async (req: AuthRequest, res) => {
+parcelleRouter.patch("/dossiers/:id/adresse", requirePermission("dossiers.edit"), requireAuth, async (req: AuthRequest, res) => {
   try {
     const { adresse, commune } = req.body as { adresse?: string; commune?: string };
     if (!adresse) return res.status(400).json({ error: "adresse requis" });

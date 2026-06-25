@@ -59,7 +59,7 @@ async function loadPieceInDossier(dossierId: string, pieceId: string) {
 }
 
 // ── Lister les annotations d'une pièce ──
-pieceAnnotationsRouter.get("/dossiers/:id/pieces/:pieceId/annotations", requirePermission("documents"), async (req: AuthRequest, res) => {
+pieceAnnotationsRouter.get("/dossiers/:id/pieces/:pieceId/annotations", requirePermission("pieces.read"), async (req: AuthRequest, res) => {
   try {
     const piece = await loadPieceInDossier(req.params.id as string, req.params.pieceId as string);
     if (!piece) return res.status(404).json({ error: "Pièce non trouvée" });
@@ -76,7 +76,7 @@ pieceAnnotationsRouter.get("/dossiers/:id/pieces/:pieceId/annotations", requireP
 });
 
 // ── Créer une annotation ──
-pieceAnnotationsRouter.post("/dossiers/:id/pieces/:pieceId/annotations", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
+pieceAnnotationsRouter.post("/dossiers/:id/pieces/:pieceId/annotations", requirePermission("pieces.annotate"), async (req: AuthRequest, res) => {
   try {
     const piece = await loadPieceInDossier(req.params.id as string, req.params.pieceId as string);
     if (!piece) return res.status(404).json({ error: "Pièce non trouvée" });
@@ -116,7 +116,7 @@ pieceAnnotationsRouter.post("/dossiers/:id/pieces/:pieceId/annotations", require
 });
 
 // ── Modifier une annotation (géométrie, style, commentaire, visibilité) ──
-pieceAnnotationsRouter.patch("/dossiers/:id/pieces/:pieceId/annotations/:annId", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
+pieceAnnotationsRouter.patch("/dossiers/:id/pieces/:pieceId/annotations/:annId", requirePermission("pieces.annotate"), async (req: AuthRequest, res) => {
   try {
     const piece = await loadPieceInDossier(req.params.id as string, req.params.pieceId as string);
     if (!piece) return res.status(404).json({ error: "Pièce non trouvée" });
@@ -153,7 +153,7 @@ pieceAnnotationsRouter.patch("/dossiers/:id/pieces/:pieceId/annotations/:annId",
 });
 
 // ── Supprimer une annotation ──
-pieceAnnotationsRouter.delete("/dossiers/:id/pieces/:pieceId/annotations/:annId", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
+pieceAnnotationsRouter.delete("/dossiers/:id/pieces/:pieceId/annotations/:annId", requirePermission("pieces.annotate"), async (req: AuthRequest, res) => {
   try {
     const piece = await loadPieceInDossier(req.params.id as string, req.params.pieceId as string);
     if (!piece) return res.status(404).json({ error: "Pièce non trouvée" });
@@ -179,7 +179,7 @@ pieceAnnotationsRouter.delete("/dossiers/:id/pieces/:pieceId/annotations/:annId"
 // (category 'annotation'), prêt à être joint à un message ou un courrier.
 pieceAnnotationsRouter.post(
   "/dossiers/:id/pieces/:pieceId/annotations/export",
-  requirePermission("dossiers.instruct"),
+  requirePermission("pieces.annotate"),
   exportUploadSingle,
   async (req: AuthRequest, res) => {
     const storage = getStorageProvider();

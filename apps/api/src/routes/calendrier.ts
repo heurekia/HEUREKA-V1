@@ -10,7 +10,7 @@ export const calendrierRouter = Router();
 calendrierRouter.use(requireAuth);
 
 // ── Événements entre deux dates ──
-calendrierRouter.get("/", requirePermission("calendrier"), async (req: AuthRequest, res) => {
+calendrierRouter.get("/", requirePermission("calendrier.read"), async (req: AuthRequest, res) => {
   try {
     const { debut, fin } = req.query;
     // Filtrage strict par user_id : un utilisateur ne voit que ses propres
@@ -42,7 +42,7 @@ calendrierRouter.get("/", requirePermission("calendrier"), async (req: AuthReque
   }
 });
 
-calendrierRouter.post("/", requirePermission("calendrier"), async (req: AuthRequest, res) => {
+calendrierRouter.post("/", requirePermission("calendrier.edit"), async (req: AuthRequest, res) => {
   try {
     const { title, date, end_date, type, dossier_id, description, all_day } = req.body;
     if (!title || !date || !type) {

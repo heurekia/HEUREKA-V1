@@ -55,7 +55,7 @@ consultationsRouter.get("/documents", requirePermission("consultations.read"), a
   }
 });
 
-consultationsRouter.post("/documents", requirePermission("consultations.manage"), async (req: AuthRequest, res) => {
+consultationsRouter.post("/documents", requirePermission("consultations.documents"), async (req: AuthRequest, res) => {
   try {
     const { commune_name, type, name, original_filename, file_size, pdf_base64, synthese } = req.body as {
       commune_name: string;
@@ -146,7 +146,7 @@ consultationsRouter.post("/documents", requirePermission("consultations.manage")
 //    l'instruction.
 //  - Passer à "valide" exige un utilisateur authentifié (validated_by) et
 //    horodate la décision (validated_at) — c'est l'amorce de l'audit trail.
-consultationsRouter.patch("/documents/:id", requirePermission("consultations.manage"), async (req: AuthRequest, res) => {
+consultationsRouter.patch("/documents/:id", requirePermission("consultations.documents"), async (req: AuthRequest, res) => {
   try {
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
     if (!(await documentInScope(req.params.id as string, scope))) {
@@ -210,7 +210,7 @@ consultationsRouter.patch("/documents/:id", requirePermission("consultations.man
   }
 });
 
-consultationsRouter.delete("/documents/:id", requirePermission("consultations.manage"), async (req: AuthRequest, res) => {
+consultationsRouter.delete("/documents/:id", requirePermission("consultations.documents"), async (req: AuthRequest, res) => {
   try {
     const documentId = req.params.id as string;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -350,7 +350,7 @@ consultationsRouter.get("/dossiers/:id/consultations", requirePermission("consul
   }
 });
 
-consultationsRouter.post("/dossiers/:id/consultations", requirePermission("consultations.manage"), async (req: AuthRequest, res) => {
+consultationsRouter.post("/dossiers/:id/consultations", requirePermission("consultations.create"), async (req: AuthRequest, res) => {
   try {
     const { service_name, service_type, avis, external_service_id, message } = req.body as {
       service_name: string;
@@ -423,7 +423,7 @@ consultationsRouter.post("/dossiers/:id/consultations", requirePermission("consu
   }
 });
 
-consultationsRouter.patch("/dossiers/:id/consultations/:consultationId", requirePermission("consultations.manage"), async (req: AuthRequest, res) => {
+consultationsRouter.patch("/dossiers/:id/consultations/:consultationId", requirePermission("consultations.update"), async (req: AuthRequest, res) => {
   try {
     const { status, favorable, avis, date_reponse } = req.body as {
       status?: string;

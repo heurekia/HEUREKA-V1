@@ -402,7 +402,7 @@ dossiersRouter.get("/dossiers/:id/events", requirePermission("dossiers.read"), a
   }
 });
 
-dossiersRouter.patch("/dossiers/:id/status", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/status", requirePermission("dossiers.status"), async (req: AuthRequest, res) => {
   try {
     const { status, reason } = (req.body ?? {}) as { status?: string; reason?: string | null };
     if (!status) return res.status(400).json({ error: "Statut requis" });
@@ -475,7 +475,7 @@ const ALLOWED_DOSSIER_TYPES = new Set([
   "certificat_urbanisme_b",
 ]);
 
-dossiersRouter.patch("/dossiers/:id/type", requirePermission("dossiers.instruct"), requireRole("mairie", "admin", "instructeur"), async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/type", requirePermission("dossiers.edit"), requireRole("mairie", "admin", "instructeur"), async (req: AuthRequest, res) => {
   try {
     const { type, reason } = (req.body ?? {}) as { type?: string; reason?: string | null };
     if (!type || !ALLOWED_DOSSIER_TYPES.has(type)) {
@@ -534,7 +534,7 @@ dossiersRouter.patch("/dossiers/:id/type", requirePermission("dossiers.instruct"
   }
 });
 
-dossiersRouter.patch("/dossiers/:id/deadline", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/deadline", requirePermission("dossiers.deadline"), async (req: AuthRequest, res) => {
   try {
     const body = (req.body ?? {}) as {
       date_completude?: string | null;
@@ -947,7 +947,7 @@ const invitePetitionnaireSchema = z.object({
   confirm: z.boolean().optional(),
 });
 
-dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", requirePermission("dossiers.instruct"), async (req: AuthRequest, res) => {
+dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", requirePermission("dossiers.invite"), async (req: AuthRequest, res) => {
   try {
     const { email: rawEmail, confirm } = invitePetitionnaireSchema.parse(req.body ?? {});
     const providedEmail = rawEmail?.trim().toLowerCase() || null;
