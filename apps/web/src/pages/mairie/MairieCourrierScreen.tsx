@@ -366,6 +366,12 @@ export interface CourrierModalProps {
   aiSuggestedMissingPieces?: Array<{ code: string; nom: string }>;
   // Callback appelé après une émission réussie (le parent rafraîchit le dossier).
   onEmitted?: () => void;
+  // INSEE de la commune du dossier. Sans lui, les modèles et l'en-tête sont lus
+  // sur la commune principale du compte et non sur celle du dossier : un agent
+  // multi-communes qui a créé ses modèles sous la commune sélectionnée ne les
+  // retrouvait pas dans l'onglet Courriers. On relit donc sur le même périmètre
+  // que la création (cf. TemplateManagerPanel).
+  inseeCode?: string;
 }
 
 const NO_AI_HINTS_KEY = "heureka_no_ai_hints";
@@ -376,6 +382,7 @@ export function CourrierModal({
   availablePieces = [],
   aiSuggestedMissingPieces = [],
   onEmitted,
+  inseeCode,
 }: CourrierModalProps) {
   const { user } = useAuth();
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
@@ -523,15 +530,18 @@ export function CourrierModal({
   }, [allMentions, selectedRefs]);
 
   useEffect(() => {
+    // Périmètre commune du dossier (cf. inseeCode) — aligné sur la création des
+    // modèles, sinon un agent multi-communes ne retrouve pas ses modèles ici.
+    const q = inseeCode ? `?insee_code=${encodeURIComponent(inseeCode)}` : "";
     Promise.all([
-      api.get<CourrierTemplate[]>("/mairie/templates"),
-      api.get<Letterhead & { commune_configured?: boolean }>("/mairie/commune-letterhead"),
+      api.get<CourrierTemplate[]>(`/mairie/templates${q}`),
+      api.get<Letterhead & { commune_configured?: boolean }>(`/mairie/commune-letterhead${q}`),
     ]).then(([tpls, lh]) => {
       setTemplates(tpls);
       setLetterhead(lh);
       if (tpls.length > 0) setSelected(tpls[0]!);
     }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+  }, [inseeCode]);
 
   // Signataire de la commune pour le bloc signature. Hors décision (ex. pièces
   // manquantes), on retient le signataire délégué (arrêté de délégation), sinon
