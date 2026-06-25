@@ -78,8 +78,8 @@ const DEMANDE_PIECES_MANQUANTES = `
 
 <div style="margin-top:24px;">
   <p style="margin:0 0 2px;">Pour le Maire et par délégation,</p>
-  <p style="margin:0 0 2px;">${manual("Qualité du signataire")}</p>
-  <p style="margin:0;">${manual("Nom du signataire")}</p>
+  <p style="margin:0 0 2px;">${v("signataire_fonction", "Fonction du signataire")}</p>
+  <p style="margin:0;">${v("signataire_nom", "Nom du signataire")}</p>
 </div>
 `.trim();
 

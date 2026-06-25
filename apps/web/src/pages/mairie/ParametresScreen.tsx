@@ -238,9 +238,10 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   const [editRoleConfigId, setEditRoleConfigId] = useState("");
   const [deleteId, setDeleteId] = useState<string | null>(null);
   const [roleConfigs, setRoleConfigs] = useState<RoleConfig[]>([]);
-  const [communeSigs, setCommuneSigs] = useState<{ id: string; user_id: string; role: string; delegation_arrete: string | null }[]>([]);
+  const [communeSigs, setCommuneSigs] = useState<{ id: string; user_id: string; role: string; fonction: string | null; delegation_arrete: string | null }[]>([]);
   const [sigModal, setSigModal] = useState<{ userId: string; name: string } | null>(null);
   const [sigRole, setSigRole] = useState("maire");
+  const [sigFonction, setSigFonction] = useState("");
   const [sigDelegation, setSigDelegation] = useState("");
   const [sigSaving, setSigSaving] = useState(false);
 
@@ -252,7 +253,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
       .finally(() => setLoading(false));
   };
   const loadSigs = () => {
-    api.get<{ id: string; user_id: string; role: string; delegation_arrete: string | null }[]>(
+    api.get<{ id: string; user_id: string; role: string; fonction: string | null; delegation_arrete: string | null }[]>(
       `/decisions/communes/${encodeURIComponent(commune)}/signataires`
     ).then(setCommuneSigs).catch(() => {});
   };
@@ -409,7 +410,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                     <div style={{ display: "flex", gap: 6 }}>
                       <button onClick={() => { setEditingId(u.id); setEditRoleConfigId(u.role_config_id ?? ""); }}
                         style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 6, padding: "4px 10px", fontSize: 11, color: "#4F46E5", cursor: "pointer" }}>Rôle</button>
-                      <button onClick={() => { const s = getSig(u.id); setSigModal({ userId: u.id, name: `${u.prenom} ${u.nom}` }); setSigRole(s?.role ?? "maire"); setSigDelegation(s?.delegation_arrete ?? ""); }}
+                      <button onClick={() => { const s = getSig(u.id); setSigModal({ userId: u.id, name: `${u.prenom} ${u.nom}` }); setSigRole(s?.role ?? "maire"); setSigFonction(s?.fonction ?? ""); setSigDelegation(s?.delegation_arrete ?? ""); }}
                         title="Habilitation signature ADS"
                         style={{ border: `1px solid ${getSig(u.id) ? "#FDE68A" : "#E2E8F0"}`, background: getSig(u.id) ? "#FEF9C3" : "white", borderRadius: 6, padding: "4px 8px", fontSize: 11, color: getSig(u.id) ? "#92400E" : "#64748b", cursor: "pointer" }}>✍️</button>
                       {u.id !== currentUserId && (
@@ -525,6 +526,10 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                   <input value={sigDelegation} onChange={e => setSigDelegation(e.target.value)} placeholder="2024-DEL-001 (facultatif)" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12.5, outline: "none", boxSizing: "border-box" as const }} />
                 </div>
               </div>
+              <div style={{ marginBottom: 16 }}>
+                <label style={{ fontSize: 11, fontWeight: 600, color: "#64748b", display: "block", marginBottom: 5 }}>Fonction (intitulé exact imprimé sur les courriers)</label>
+                <input value={sigFonction} onChange={e => setSigFonction(e.target.value)} placeholder="ex. Conseiller Municipal Délégué à l'Urbanisme (facultatif)" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 12.5, outline: "none", boxSizing: "border-box" as const }} />
+              </div>
               <div style={{ display: "flex", gap: 8, justifyContent: currentSig ? "space-between" : "flex-end" }}>
                 {currentSig && (
                   <button onClick={() => {
@@ -542,8 +547,8 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                   <button onClick={() => {
                     setSigSaving(true);
                     const p = currentSig
-                      ? api.put(`/decisions/communes/${encodeURIComponent(commune)}/signataires/${currentSig.id}`, { role: sigRole, delegation_arrete: sigDelegation || null })
-                      : api.post(`/decisions/communes/${encodeURIComponent(commune)}/signataires`, { user_id: sigModal.userId, role: sigRole, delegation_arrete: sigDelegation || null });
+                      ? api.put(`/decisions/communes/${encodeURIComponent(commune)}/signataires/${currentSig.id}`, { role: sigRole, fonction: sigFonction || null, delegation_arrete: sigDelegation || null })
+                      : api.post(`/decisions/communes/${encodeURIComponent(commune)}/signataires`, { user_id: sigModal.userId, role: sigRole, fonction: sigFonction || null, delegation_arrete: sigDelegation || null });
                     p.then(() => { loadSigs(); setSigModal(null); })
                       .catch(() => {})
                       .finally(() => setSigSaving(false));

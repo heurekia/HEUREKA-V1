@@ -397,6 +397,11 @@ CREATE TABLE IF NOT EXISTS signataires (
 );
 CREATE INDEX IF NOT EXISTS idx_signataires_commune ON signataires(commune);
 CREATE INDEX IF NOT EXISTS idx_signataires_user_id ON signataires(user_id);
+-- Intitulé exact de la fonction du signataire (imprimé dans les courriers).
+ALTER TABLE signataires ADD COLUMN IF NOT EXISTS fonction text;
+-- Signature + tampon propres au signataire (priment sur ceux de la commune).
+ALTER TABLE signataires ADD COLUMN IF NOT EXISTS signature_image text;
+ALTER TABLE signataires ADD COLUMN IF NOT EXISTS tampon_image text;
 
 -- Décisions ADS (projet d'arrêté lié à un dossier)
 CREATE TABLE IF NOT EXISTS decisions (

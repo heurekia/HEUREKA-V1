@@ -431,6 +431,9 @@ decisionsRouter.get("/communes/:commune/signataires", async (req: AuthRequest, r
       user_id: signataires.user_id,
       commune: signataires.commune,
       role: signataires.role,
+      fonction: signataires.fonction,
+      signature_image: signataires.signature_image,
+      tampon_image: signataires.tampon_image,
       delegation_arrete: signataires.delegation_arrete,
       delegation_date: signataires.delegation_date,
       active: signataires.active,
@@ -454,12 +457,16 @@ decisionsRouter.post("/communes/:commune/signataires", requireRole("mairie", "ad
   if (!communeInScope(commune, scope)) {
     return res.status(403).json({ error: "Commune hors de votre périmètre" });
   }
-  const { user_id, role, delegation_arrete, delegation_date } = req.body as {
-    user_id: string; role: string; delegation_arrete?: string; delegation_date?: string;
+  const { user_id, role, fonction, signature_image, tampon_image, delegation_arrete, delegation_date } = req.body as {
+    user_id: string; role: string; fonction?: string; signature_image?: string; tampon_image?: string;
+    delegation_arrete?: string; delegation_date?: string;
   };
 
   const [row] = await db.insert(signataires).values({
     user_id, commune, role,
+    fonction: fonction ?? null,
+    signature_image: signature_image ?? null,
+    tampon_image: tampon_image ?? null,
     delegation_arrete: delegation_arrete ?? null,
     delegation_date: delegation_date ?? null,
   }).returning();
@@ -475,12 +482,16 @@ decisionsRouter.put("/communes/:commune/signataires/:id", requireRole("mairie", 
   if (!communeInScope(commune, scope)) {
     return res.status(403).json({ error: "Commune hors de votre périmètre" });
   }
-  const { role, delegation_arrete, delegation_date, active } = req.body as {
-    role?: string; delegation_arrete?: string; delegation_date?: string; active?: boolean;
+  const { role, fonction, signature_image, tampon_image, delegation_arrete, delegation_date, active } = req.body as {
+    role?: string; fonction?: string | null; signature_image?: string | null; tampon_image?: string | null;
+    delegation_arrete?: string; delegation_date?: string; active?: boolean;
   };
 
   const update: Record<string, unknown> = { updated_at: new Date() };
   if (role !== undefined) update.role = role;
+  if (fonction !== undefined) update.fonction = fonction;
+  if (signature_image !== undefined) update.signature_image = signature_image;
+  if (tampon_image !== undefined) update.tampon_image = tampon_image;
   if (delegation_arrete !== undefined) update.delegation_arrete = delegation_arrete;
   if (delegation_date !== undefined) update.delegation_date = delegation_date;
   if (active !== undefined) update.active = active;
