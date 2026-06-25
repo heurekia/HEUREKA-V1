@@ -183,7 +183,6 @@ function CourriersPanel({ dossierId, refreshKey, onRequestNewPiecesCourrier, onR
             // Reprise (édition/envoi) réservée à qui peut générer ; sinon lecture seule.
             const canResume = isDraft && canGenerate;
             const pieces = Array.isArray(c.pieces_jointes_ids) ? c.pieces_jointes_ids : [];
-            const articles = Array.isArray(c.articles_cites) ? c.articles_cites : [];
             return (
               <div key={c.id} style={{ background: "white", border: "1px solid #E8EEF4", borderRadius: 12, padding: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
@@ -224,19 +223,6 @@ function CourriersPanel({ dossierId, refreshKey, onRequestNewPiecesCourrier, onR
                         </li>
                       ))}
                     </ul>
-                  </div>
-                )}
-
-                {articles.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase" as const, marginBottom: 5 }}>
-                      Articles cités
-                    </div>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" as const }}>
-                      {articles.map((a) => (
-                        <span key={a} style={{ fontSize: 11, fontWeight: 600, color: "#374151", background: "#F1F5F9", padding: "2px 8px", borderRadius: 5, fontFamily: "monospace" }}>Art. {a}</span>
-                      ))}
-                    </div>
                   </div>
                 )}
               </div>
