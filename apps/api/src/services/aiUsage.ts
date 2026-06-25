@@ -18,6 +18,7 @@ import path from "node:path";
 import { db } from "../db.js";
 import { ai_usage_events, ai_pricing } from "@heureka-v1/db";
 import { maybeNotify } from "./aiAlerts.js";
+import { fetchWithRetry } from "./httpRetry.js";
 
 const MISTRAL_API_BASE = process.env.MISTRAL_API_BASE ?? "https://api.mistral.ai/v1";
 
@@ -495,7 +496,7 @@ export async function callAi(ctx: CallAiContext, request: AiRequest): Promise<Ai
   }
 
   const startedAt = Date.now();
-  const res = await fetch(`${MISTRAL_API_BASE}/chat/completions`, {
+  const res = await fetchWithRetry(`${MISTRAL_API_BASE}/chat/completions`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
@@ -503,7 +504,7 @@ export async function callAi(ctx: CallAiContext, request: AiRequest): Promise<Ai
       "Accept": "application/json",
     },
     body: JSON.stringify(body),
-  });
+  }, { timeoutMs: 90_000, retries: 3, label: "Mistral (call)" });
   const durationMs = Date.now() - startedAt;
   if (!res.ok) {
     const txt = await res.text();
@@ -582,16 +583,47 @@ export async function streamAi(ctx: CallAiContext, request: AiRequest): Promise<
   }
 
   const startedAt = Date.now();
-  const res = await fetch(`${MISTRAL_API_BASE}/chat/completions`, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      "Authorization": `Bearer ${getMistralKey()}`,
-      "Accept": "text/event-stream",
-    },
-    body: JSON.stringify(body),
-  });
+
+  // Anti-blocage du streaming : Mistral (ou le réseau) peut cesser d'émettre sans
+  // fermer la connexion → l'itérateur pendrait indéfiniment, gardant la requête SSE
+  // et la socket ouvertes. On arme un timeout d'INACTIVITÉ réarmé à chaque chunk
+  // reçu (cf. parseStream) : il borne aussi bien une connexion qui pend qu'un flux
+  // gelé en cours, SANS jamais couper une génération active.
+  const idleMs = Number(process.env.MISTRAL_STREAM_IDLE_MS ?? 45_000);
+  const controller = new AbortController();
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  const armIdle = () => {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(
+      () => controller.abort(new Error("Mistral stream : timeout d'inactivité")),
+      idleMs,
+    );
+    idleTimer.unref?.();
+  };
+  const clearIdle = () => {
+    if (idleTimer) { clearTimeout(idleTimer); idleTimer = undefined; }
+  };
+
+  armIdle();
+  let res: Response;
+  try {
+    res = await fetch(`${MISTRAL_API_BASE}/chat/completions`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "Authorization": `Bearer ${getMistralKey()}`,
+        "Accept": "text/event-stream",
+      },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearIdle();
+    const reason = err instanceof Error ? err.message : String(err);
+    throw new Error(`Mistral (stream) : échec de connexion — ${reason}`);
+  }
   if (!res.ok || !res.body) {
+    clearIdle();
     const txt = await res.text().catch(() => "");
     throw new Error(`Mistral HTTP ${res.status} (stream) : ${txt.slice(0, 300)}`);
   }
@@ -609,9 +641,11 @@ export async function streamAi(ctx: CallAiContext, request: AiRequest): Promise<
   // body fetch ne pourrait pas être lu deux fois.
   async function* parseStream(): AsyncGenerator<AiStreamEvent, void, void> {
     let buf = "";
+    try {
     while (true) {
       const { value, done } = await reader.read();
       if (done) break;
+      armIdle(); // chunk reçu → on réarme le timeout d'inactivité
       buf += decoder.decode(value, { stream: true });
       let idx: number;
       while ((idx = buf.indexOf("\n\n")) >= 0) {
@@ -643,6 +677,9 @@ export async function streamAi(ctx: CallAiContext, request: AiRequest): Promise<
           }
         }
       }
+    }
+    } finally {
+      clearIdle();
     }
   }
 
