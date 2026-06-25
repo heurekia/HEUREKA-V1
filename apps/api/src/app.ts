@@ -116,6 +116,15 @@ app.use(express.static(frontendDist, {
     if (filePath.endsWith(".html")) {
       res.setHeader("Cache-Control", "no-cache");
     }
+    // Images publiques (logo pour les signatures mail, visuels Open Graph) :
+    // elles doivent pouvoir être chargées depuis une AUTRE origine (Gmail,
+    // Zimbra, réseaux sociaux). Or Helmet pose par défaut
+    // `Cross-Origin-Resource-Policy: same-origin`, ce qui fait annuler le
+    // chargement du logo par les clients mail. On relâche donc CORP pour le
+    // seul dossier /img ; le reste de l'app et l'API gardent la valeur stricte.
+    if (filePath.replace(/\\/g, "/").includes("/img/")) {
+      res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    }
   },
 }));
 
