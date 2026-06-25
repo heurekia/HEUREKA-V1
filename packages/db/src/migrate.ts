@@ -1186,6 +1186,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_users_fc_sub ON users(fc_sub) WHERE fc_su
 -- hash ; seuls les comptes issus de FranceConnect ont password_hash = NULL.
 ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
 
+-- Revocation de session : compteur embarque dans le JWT (claim tv). Incremente
+-- lors d'un changement de mot de passe / de role / d'une revocation -> tous les
+-- jetons emis avant deviennent invalides (cf. middlewares/auth.ts). DEFAULT 0 :
+-- les jetons deja emis (tv absent => 0) restent valides jusqu'a leur expiration.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 0;
+
+-- MFA TOTP (opt-in agents/admin). mfa_secret = secret TOTP chiffre au repos
+-- (AES-256-GCM) ; mfa_enabled true apres confirmation d'un 1er code ;
+-- mfa_backup_codes = empreintes SHA-256 des codes de secours a usage unique.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled boolean NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_backup_codes jsonb;
+
 -- ── Traçabilité fine règle → passage source ────────────────────────────────
 -- Jusqu'ici une règle ne pointait que vers son DOCUMENT (source_document_id).
 -- On ajoute de quoi retrouver le PASSAGE exact :

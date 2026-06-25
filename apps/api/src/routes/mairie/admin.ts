@@ -3,7 +3,7 @@ import { db } from "../../db.js";
 import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_documents, document_communes } from "@heureka-v1/db";
 import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
-import { requireRole } from "../../middlewares/auth.js";
+import { requireRole, bumpTokenVersion, invalidateTokenVersionCache } from "../../middlewares/auth.js";
 import { requirePermission, invalidatePermissions } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeInScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
@@ -211,6 +211,12 @@ adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), requirePer
     }
     const validRoles = req.user?.role === "admin" ? ["mairie", "instructeur", "admin", "citoyen"] : ["mairie", "instructeur"];
     if (role && !validRoles.includes(role)) return res.status(400).json({ error: "Rôle invalide" });
+    // Rôle précédent : un changement de rôle révoque les jetons existants (cf. plus bas).
+    let prevRole: string | undefined;
+    if (role) {
+      const [cur] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1);
+      prevRole = cur?.role;
+    }
     await db.update(users).set({
       ...(role ? { role: role as "mairie" | "instructeur" | "admin" | "citoyen" } : {}),
       ...(prenom ? { prenom } : {}),
@@ -227,6 +233,10 @@ adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), requirePer
       role: users.role, commune: users.commune, telephone: users.telephone,
       role_config_id: users.role_config_id,
     }).from(users).where(eq(users.id, userId));
+    // Changement de rôle = changement de privilèges → révoquer les jetons émis.
+    if (role && prevRole !== undefined && role !== prevRole) {
+      await bumpTokenVersion(userId);
+    }
     res.json(updated);
   } catch (err) {
     console.error(err);
@@ -248,6 +258,7 @@ adminRouter.delete("/admin/users/:id", requireRole("mairie", "admin"), requirePe
       }
     }
     await db.delete(users).where(eq(users.id, userId));
+    invalidateTokenVersionCache(userId);
     res.status(204).send();
   } catch (err) {
     console.error(err);

@@ -5,11 +5,15 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { users, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens, ai_usage_events, audit_logs } from "@heureka-v1/db";
 import { eq, and, gt, isNull, inArray } from "drizzle-orm";
-import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
+import { generateToken, requireAuth, bumpTokenVersion, invalidateTokenVersionCache, issueMfaTicket, verifyMfaTicket, type AuthRequest } from "../middlewares/auth.js";
 import { getEffectivePermissions } from "../middlewares/permissions.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../services/mailer.js";
 import { logAudit } from "../services/audit.js";
 import { getStorageProvider } from "../services/storage.js";
+import {
+  generateTotpSecret, totpKeyUri, totpQrDataUrl, verifyTotp,
+  encryptSecret, decryptSecret, generateBackupCodes, consumeBackupCode,
+} from "../services/mfa.js";
 import crypto from "crypto";
 
 export const authRouter = Router();
@@ -206,7 +210,14 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
         code: "email_not_verified",
       });
     }
-    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
+    // MFA activée : le mot de passe est bon mais on n'ouvre PAS la session ;
+    // on renvoie un ticket court (preuve mot-de-passe-OK) à présenter avec un
+    // code TOTP à /auth/mfa/login-verify.
+    if (user.mfa_enabled) {
+      await writeAudit(user.id, user.email, "login_mfa_challenge", req);
+      return res.json({ mfa_required: true, mfa_ticket: issueMfaTicket(user.id) });
+    }
+    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: user.token_version });
     res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, "login", req);
@@ -359,6 +370,7 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     // La cascade DB supprime dossiers → pieces → messages → notifications.
     // audit_logs.user_id est ON DELETE SET NULL (préservé pour la sécurité).
     await db.delete(users).where(eq(users.id, user.id));
+    invalidateTokenVersionCache(user.id);
 
     res.clearCookie(cookieNameFor(req), COOKIE_CLEAR_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
@@ -402,6 +414,10 @@ authRouter.patch("/me/password", requireAuth, async (req: AuthRequest, res) => {
     if (!valid) return res.status(401).json({ error: "Mot de passe actuel incorrect" });
     const password_hash = await bcrypt.hash(new_password, 10);
     await db.update(users).set({ password_hash, updated_at: new Date() }).where(eq(users.id, user.id));
+    // Révocation : invalide TOUTES les sessions existantes, mais réémet le cookie
+    // de CELLE-ci pour ne pas déconnecter l'utilisateur qui change son mot de passe.
+    const newTv = await bumpTokenVersion(user.id);
+    res.cookie(cookieNameFor(req), generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: newTv }), COOKIE_OPTIONS);
     await writeAudit(user.id, user.email, "password_change", req);
     res.json({ ok: true });
   } catch (err) {
@@ -430,6 +446,9 @@ authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {
       avatar_url: user.avatar_url,
       created_at: user.created_at,
       onboarding_completed: !!user.onboarding_completed_at,
+      mfa_enabled: user.mfa_enabled,
+      // La MFA n'est proposée qu'aux comptes agents/admin.
+      mfa_available: ["mairie", "instructeur", "admin"].includes(user.role),
       permissions: permSet === null ? null : [...permSet],
     });
   } catch (err) {
@@ -524,7 +543,9 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     const [user] = await db.select().from(users).where(eq(users.id, row.user_id)).limit(1);
     if (!user) return res.status(500).json({ error: "Erreur serveur" });
 
-    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
+    // Nouveau mot de passe défini → invalide toute session antérieure.
+    const newTv = await bumpTokenVersion(user.id);
+    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: newTv });
     res.cookie(cookieNameFor(req), jwtToken, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, row.type === "activation" ? "account_activated" : "password_reset", req);
@@ -562,7 +583,7 @@ authRouter.post("/verify-email", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, 
     const [user] = await db.select().from(users).where(eq(users.id, row.user_id)).limit(1);
     if (!user) return res.status(500).json({ error: "Erreur serveur" });
 
-    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
+    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: user.token_version });
     res.cookie(cookieNameFor(req), jwtToken, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, "email_verified", req);
@@ -591,6 +612,111 @@ authRouter.post("/resend-verification", rateLimit({ windowMs: 60 * 60 * 1000, ma
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── MFA (TOTP) — opt-in, comptes agents/admin ───────────────────────────────
+const MFA_ROLES = new Set(["mairie", "instructeur", "admin"]);
+const mfaVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10, legacyHeaders: false,
+  message: { error: "Trop de tentatives. Réessayez dans 15 minutes." },
+});
+
+// Démarre la configuration : génère un secret (stocké CHIFFRÉ, non encore actif)
+// et renvoie le QR + le secret base32 pour saisie manuelle dans l'app TOTP.
+authRouter.post("/mfa/setup", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    if (!MFA_ROLES.has(user.role)) return res.status(403).json({ error: "La double authentification n'est pas disponible pour ce type de compte." });
+    if (user.mfa_enabled) return res.status(409).json({ error: "MFA déjà activée. Désactivez-la d'abord pour la reconfigurer." });
+    const secret = generateTotpSecret();
+    await db.update(users).set({ mfa_secret: encryptSecret(secret), updated_at: new Date() }).where(eq(users.id, user.id));
+    const uri = totpKeyUri(user.email, secret);
+    res.json({ secret, otpauth_uri: uri, qr_data_url: await totpQrDataUrl(uri) });
+  } catch (err) {
+    console.error("[mfa:setup]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Confirme la configuration avec un 1er code → active la MFA et renvoie les
+// codes de secours (affichés UNE seule fois ; stockés uniquement hachés).
+authRouter.post("/mfa/enable", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { code } = req.body as { code?: string };
+    if (!code) return res.status(400).json({ error: "Code requis" });
+    const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    if (user.mfa_enabled) return res.status(409).json({ error: "MFA déjà activée." });
+    if (!user.mfa_secret) return res.status(400).json({ error: "Aucune configuration en cours. Lancez d'abord la configuration." });
+    if (!verifyTotp(String(code), decryptSecret(user.mfa_secret))) return res.status(400).json({ error: "Code invalide." });
+    const { plain, hashes } = generateBackupCodes();
+    await db.update(users).set({ mfa_enabled: true, mfa_backup_codes: hashes, updated_at: new Date() }).where(eq(users.id, user.id));
+    await writeAudit(user.id, user.email, "mfa_enabled", req);
+    res.json({ ok: true, backup_codes: plain });
+  } catch (err) {
+    console.error("[mfa:enable]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Désactive la MFA — exige un code TOTP valide OU le mot de passe du compte.
+authRouter.post("/mfa/disable", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { code, password } = req.body as { code?: string; password?: string };
+    const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    if (!user.mfa_enabled) return res.status(400).json({ error: "MFA non activée." });
+    let ok = false;
+    if (code && user.mfa_secret && verifyTotp(String(code), decryptSecret(user.mfa_secret))) ok = true;
+    else if (password && user.password_hash && (await bcrypt.compare(String(password), user.password_hash))) ok = true;
+    if (!ok) return res.status(400).json({ error: "Code ou mot de passe invalide." });
+    await db.update(users).set({ mfa_enabled: false, mfa_secret: null, mfa_backup_codes: null, updated_at: new Date() }).where(eq(users.id, user.id));
+    await writeAudit(user.id, user.email, "mfa_disabled", req);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[mfa:disable]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// 2e étape du login : valide un code TOTP (ou un code de secours) contre le
+// ticket émis par /login, puis ouvre la session.
+authRouter.post("/mfa/login-verify", mfaVerifyLimiter, async (req: AuthRequest, res) => {
+  try {
+    const { mfa_ticket, code } = req.body as { mfa_ticket?: string; code?: string };
+    if (!mfa_ticket || !code) return res.status(400).json({ error: "Ticket et code requis" });
+    const uid = verifyMfaTicket(String(mfa_ticket));
+    if (!uid) return res.status(401).json({ error: "Session de connexion expirée. Recommencez." });
+    const [user] = await db.select().from(users).where(eq(users.id, uid)).limit(1);
+    if (!user || !user.mfa_enabled || !user.mfa_secret) return res.status(401).json({ error: "Configuration MFA invalide." });
+
+    let ok = verifyTotp(String(code), decryptSecret(user.mfa_secret));
+    if (!ok) {
+      // Repli : code de secours à usage unique.
+      const remaining = consumeBackupCode(String(code), user.mfa_backup_codes);
+      if (remaining) {
+        ok = true;
+        await db.update(users).set({ mfa_backup_codes: remaining, updated_at: new Date() }).where(eq(users.id, user.id));
+        await writeAudit(user.id, user.email, "mfa_backup_code_used", req);
+      }
+    }
+    if (!ok) {
+      await writeAudit(user.id, user.email, "mfa_failed", req);
+      return res.status(401).json({ error: "Code invalide." });
+    }
+
+    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: user.token_version });
+    res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
+    res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
+    await writeAudit(user.id, user.email, "login", req);
+    res.json({
+      user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune, commune_insee: user.commune_insee, onboarding_completed: !!user.onboarding_completed_at },
+    });
+  } catch (err) {
+    console.error("[mfa:login-verify]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

@@ -9,7 +9,7 @@ import { eq, sql, count, desc, and, or, isNull, isNotNull, ilike, asc, gte, lt, 
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
-import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
+import { requireAuth, requireRole, bumpTokenVersion, invalidateTokenVersionCache, type AuthRequest } from "../middlewares/auth.js";
 import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
 import { invalidatePermissions, invalidateAllPermissions } from "../middlewares/permissions.js";
 import { logAudit } from "../services/audit.js";
@@ -1195,11 +1195,14 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
       role_config_id: string | null;
     }>;
 
-    // Anti-lockout : refuser la rétrogradation du DERNIER administrateur (sinon
-    // plus aucun compte ne peut accéder à /api/admin → récupération SQL manuelle).
-    if (role !== undefined && role !== "admin") {
+    // Rôle précédent (pour détecter un changement → révocation des sessions) +
+    // garde anti-lockout : refuser la rétrogradation du DERNIER administrateur
+    // (sinon plus aucun compte n'accède à /api/admin → récupération SQL manuelle).
+    let prevRole: string | undefined;
+    if (role !== undefined) {
       const [target] = await db.select({ role: users.role }).from(users).where(eq(users.id, id)).limit(1);
-      if (target?.role === "admin") {
+      prevRole = target?.role;
+      if (role !== "admin" && prevRole === "admin") {
         const adminRows = await db.select({ value: count() }).from(users).where(eq(users.role, "admin"));
         if ((adminRows[0]?.value ?? 0) <= 1) {
           return res.status(409).json({ error: "Impossible de rétrograder le dernier administrateur." });
@@ -1229,10 +1232,34 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
     // Rôle et/ou commune ont pu changer → purger le cache de périmètre de cet
     // agent, sinon il garde son ancien scope jusqu'au redémarrage du process.
     invalidateCommuneScope(id);
+    // Changement de rôle = changement de privilèges → révoquer les jetons émis
+    // avec l'ancien rôle (ne pas attendre l'expiration 7 j).
+    if (role !== undefined && prevRole !== undefined && role !== prevRole) {
+      await bumpTokenVersion(id);
+    }
     // Idem pour le cache de permissions (role_config_id a pu changer).
     invalidatePermissions(id);
     await logAudit(req, "admin_user_updated", { email: updated.email });
     res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Réinitialise (désactive) la MFA d'un utilisateur — secours opérationnel en cas
+// de perte de l'appareil ET des codes de secours. L'utilisateur devra la
+// reconfigurer à sa prochaine connexion.
+superAdminRouter.post("/users/:id/mfa-reset", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [u] = await db.update(users)
+      .set({ mfa_enabled: false, mfa_secret: null, mfa_backup_codes: null, updated_at: new Date() })
+      .where(eq(users.id, id))
+      .returning({ email: users.email });
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    await logAudit(req, "admin_mfa_reset", { email: u.email });
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -1300,6 +1327,7 @@ superAdminRouter.delete("/users/:id", async (req, res) => {
       // Delete the user — cascades through user_id FKs (dossiers, notifications, etc.)
       await tx.delete(users).where(eq(users.id, id));
     });
+    invalidateTokenVersionCache(id);
     await logAudit(req, "admin_user_deleted", { email: target?.email ?? null });
     res.json({ success: true });
   } catch (err) {
