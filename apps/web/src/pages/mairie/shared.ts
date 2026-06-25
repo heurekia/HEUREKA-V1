@@ -148,3 +148,27 @@ export const DOSSIER_TYPE_OPTIONS: { value: NouveauDossierType; label: string }[
   { value: "certificat_urbanisme_a", label: "Certificat d'urbanisme informatif (CUa)" },
   { value: "certificat_urbanisme_b", label: "Certificat d'urbanisme opérationnel (CUb)" },
 ];
+
+// Notifications : forme API + helpers d'affichage (icône, couleur, temps relatif).
+export type ApiNotif = { id: string; type: string; title: string; message: string; is_read: boolean; dossier_id: string | null; created_at: string };
+
+export function notifIcon(type: string) {
+  if (type.includes("message")) return "💬";
+  if (type.includes("delai") || type.includes("echeance") || type.includes("incomplet")) return "⏰";
+  if (type.includes("decision") || type.includes("accepte") || type.includes("refuse")) return "✅";
+  if (type.includes("dossier") || type.includes("nouveau")) return "📁";
+  return "🔔";
+}
+export function notifColor(type: string) {
+  if (type.includes("delai") || type.includes("echeance") || type.includes("incomplet") || type.includes("refuse")) return "#EF4444";
+  if (type.includes("message")) return "#3B82F6";
+  return "#4F46E5";
+}
+export function relTime(d: string) {
+  const ms = Date.now() - new Date(d).getTime();
+  if (ms < 60_000) return "À l'instant";
+  if (ms < 3_600_000) return `Il y a ${Math.floor(ms / 60_000)} min`;
+  if (ms < 86_400_000) return `Il y a ${Math.floor(ms / 3_600_000)}h`;
+  if (ms < 172_800_000) return "Hier";
+  return `Il y a ${Math.floor(ms / 86_400_000)}j`;
+}
