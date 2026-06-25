@@ -423,8 +423,15 @@ decisionsRouter.post("/:id/notify", requireRole("mairie", "instructeur", "admin"
 });
 
 // ── GET /api/decisions/communes/:commune/signataires ─────────────────────────
-decisionsRouter.get("/communes/:commune/signataires", async (req: AuthRequest, res) => {
+// Réservé aux agents ET au périmètre commune de l'appelant : la réponse expose
+// signature_image / tampon_image (signature manuscrite + cachet officiel), des
+// données qui permettraient la contrefaçon d'arrêtés si elles fuyaient.
+decisionsRouter.get("/communes/:commune/signataires", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(commune, scope)) {
+    return res.status(403).json({ error: "Commune hors de votre périmètre" });
+  }
   const rows = await db
     .select({
       id: signataires.id,
@@ -482,6 +489,14 @@ decisionsRouter.put("/communes/:commune/signataires/:id", requireRole("mairie", 
   if (!communeInScope(commune, scope)) {
     return res.status(403).json({ error: "Commune hors de votre périmètre" });
   }
+  // Anti-IDOR : le :commune (vérifié ci-dessus) ne garantit pas que :id lui
+  // appartient. On vérifie la commune RÉELLE du signataire ciblé, sinon un
+  // agent pourrait réécrire la signature d'une commune hors de son périmètre
+  // en passant un :commune valide et un :id arbitraire.
+  const [existingSig] = await db.select({ commune: signataires.commune }).from(signataires).where(eq(signataires.id, id)).limit(1);
+  if (!existingSig || !communeInScope(existingSig.commune, scope)) {
+    return res.status(404).json({ error: "Signataire introuvable" });
+  }
   const { role, fonction, signature_image, tampon_image, delegation_arrete, delegation_date, active } = req.body as {
     role?: string; fonction?: string | null; signature_image?: string | null; tampon_image?: string | null;
     delegation_arrete?: string; delegation_date?: string; active?: boolean;
@@ -507,6 +522,11 @@ decisionsRouter.delete("/communes/:commune/signataires/:id", requireRole("mairie
   const scope = await getCommuneScope(req.user!.id, req.user!.role);
   if (!communeInScope(commune, scope)) {
     return res.status(403).json({ error: "Commune hors de votre périmètre" });
+  }
+  // Anti-IDOR : vérifier la commune RÉELLE du signataire ciblé (cf. PUT).
+  const [existingSig] = await db.select({ commune: signataires.commune }).from(signataires).where(eq(signataires.id, id)).limit(1);
+  if (!existingSig || !communeInScope(existingSig.commune, scope)) {
+    return res.status(404).json({ error: "Signataire introuvable" });
   }
   await db.update(signataires).set({ active: false }).where(eq(signataires.id, id));
   res.json({ ok: true });
