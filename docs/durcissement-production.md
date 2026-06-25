@@ -2,8 +2,8 @@
 
 > Document vivant. Tient le fil de l'audit de performance et du durcissement de
 > la plateforme en vue d'une montée en charge. Mis à jour **au fur et à mesure**
-> de l'avancement (cf. § Journal d'avancement). Dernière mise à jour : Palier 1
-> terminé (chantier 1.1 async + garde-fou hors-sujet).
+> de l'avancement (cf. § Journal d'avancement). Dernière mise à jour : Palier 2
+> entamé (healthcheck profond + logs structurés ; build/tsx à coordonner).
 
 ## 1. Contexte & verdict
 
@@ -44,7 +44,7 @@ pilote mono-instance** une fois le Palier 0 traité. Ce n'est pas un audit
 |---|---|---|---|
 | **0** | Garde-fous à faible risque (index, timeouts, rate-limit) | Faible | ✅ Fait |
 | **1** | Sortir le travail lourd du cycle requête + transactions | Moyen | ✅ Fait (hors 1.3b mineur) |
-| **2** | Exécution (build JS, fin du `tsx`) & observabilité | Moyen | ⏳ À faire |
+| **2** | Exécution (build JS, fin du `tsx`) & observabilité | Moyen | 🚧 Partiel (observabilité entamée ; build/tsx à coordonner) |
 | **3** | Frontend (code splitting, mémoïsation, cache données) | Faible | ⏳ À faire |
 | **4** | Scaling horizontal (Redis, clustering, Postgres séparé) | Élevé | ⏳ À faire |
 
@@ -88,6 +88,47 @@ bloquant** AVEC préservation/renforcement du blocage de soumission.
   Le blocage existant sur les pièces obligatoires manquantes est conservé ;
   le verdict qualitatif (« À reprendre ») reste indicatif, comme avant.
 
+### Palier 2 — exécution & observabilité 🚧
+
+| # | Chantier | État | Commit |
+|---|---|---|---|
+| 2.1 | Healthcheck profond (`/api/health` → `SELECT 1`, 503 si DB KO) + `/api/health/live` | ✅ Fait | `feat(api): healthcheck profond` |
+| 2.2 | Logs structurés (pino) + log de requêtes avec reqId (X-Request-Id) | ✅ Fait | `feat(api): logs structurés (pino)` |
+| 2.3 | Métriques Prometheus (`/metrics`) | ⏸️ Reporté | — |
+| 2.4 | Sentry (back + front) | ⏸️ Reporté | — |
+| 2.5 | **Compiler l'API en JS + `node` (fin du `tsx` en prod)** — BLOQUANT | ⏳ À coordonner | — |
+
+**2.3 / 2.4 — pourquoi reportés.** `prom-client` et `@sentry/node` v8+ tirent
+tous deux `@opentelemetry/api`, qui est un **peer optionnel de drizzle-orm** : sa
+présence crée une **2e instance de drizzle-orm** et casse le typage (mélange de
+types `SQL` entre instances, cf. `scheduler.ts`). À reprendre avec une **dédup
+explicite** de `@opentelemetry/api` (le fournir uniformément à tous les
+consommateurs de drizzle-orm, ou figer une seule instance) **et** une validation
+sur serveur (ces outils nécessitent un process qui tourne + un DSN Sentry).
+
+**2.5 — blocages identifiés (à traiter ensemble, en environnement de déploiement).**
+Ce n'est PAS un simple changement de script `start`. Bloqueurs réels :
+1. **Résolutions de chemins via `import.meta.url`** relatives à l'emplacement
+   *source* : `services/storage.ts`, `services/cerfaPcmiFiller.ts`,
+   `services/dossierConformity.ts`, `routes/uploads.ts` calculent
+   `../../uploads` et `../data/cerfa/...` depuis `src/services/`. Un bundle vers
+   `dist/index.js` (profondeur différente) casserait ces chemins (uploads
+   introuvables, **génération CERFA cassée**). → refactorer vers une base stable
+   et configurable (ex. `UPLOADS_DIR`, racine du package) AVANT de bundler.
+2. **Assets binaires `src/data/`** (template CERFA `13406-16.pdf`, `*.fields.json`,
+   plans de hauteurs) : à copier dans la sortie de build ou à référencer via un
+   chemin stable.
+3. **Packages workspace** (`@heureka-v1/*`) résolus vers du TS source (et
+   `ingestion` utilise des imports en `.ts`) : à **bundler** (esbuild/tsup avec
+   `noExternal: [/@heureka-v1/]`) ou à compiler package par package.
+4. **Déploiement** : versionner un `ecosystem.config.cjs`, passer pm2 à
+   `node dist/index.js`, adapter `deploy.yml` (build → artefact), retirer `tsx`
+   du chemin runtime. `tsconfig` API : retirer `noEmit`/`allowImportingTsExtensions`.
+
+Approche recommandée : `tsup` (bundle ESM, workspace inliné, node_modules
+externes) APRÈS le refactor des chemins (point 1), avec un boot local
+`node dist/index.js` comme garde-fou, puis validation déploiement.
+
 ## 5. Variables d'environnement introduites
 
 | Variable | Défaut | Rôle |
@@ -101,6 +142,7 @@ bloquant** AVEC préservation/renforcement du blocage de soumission.
 | `RL_LLM_MAX` / `RL_LLM_WINDOW_MS` | `40` / `300000` | Quota IA interactive (assistant, structuration) |
 | `RL_ANALYZE_MAX` / `RL_ANALYZE_WINDOW_MS` | `60` / `300000` | Quota analyses réglementaires |
 | `RUBRIC_MISMATCH_MIN_CONFIDENCE` | `0.75` | Confiance min. sur le type détecté pour bloquer un dépôt « hors-sujet » |
+| `LOG_LEVEL` | `info` (prod) / `debug` | Niveau du logger pino |
 
 > ⚠️ Les rate-limiters et timeouts d'inactivité utilisent un **store en mémoire**
 > (par process), cohérent avec le mono-instance. À externaliser en Redis au

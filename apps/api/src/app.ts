@@ -18,11 +18,37 @@ import { serviceRouter } from "./routes/service.js";
 import { decisionsRouter } from "./routes/decisions.js";
 import { regulatoryRouter } from "./routes/regulatory.js";
 import { uploadsRouter } from "./routes/uploads.js";
+import { client } from "@heureka-v1/db";
+import { pinoHttp } from "pino-http";
+import { randomUUID } from "node:crypto";
+import { logger } from "./logger.js";
 
 export const app = express();
 
 // Trust the first proxy (nginx en frontal du VPS OVH) so rate-limiters see the real client IP
 app.set("trust proxy", 1);
+
+// Log structuré de chaque requête (méthode, route, status, durée) avec un reqId
+// de corrélation — réutilise le X-Request-Id de nginx s'il existe, sinon en
+// génère un (renvoyé au client). Placé tôt pour couvrir toutes les routes ; le
+// health-check est exclu pour ne pas noyer les logs sous le polling du gate.
+app.use(pinoHttp({
+  logger,
+  genReqId: (req, res) => {
+    const hdr = req.headers["x-request-id"];
+    const id = (Array.isArray(hdr) ? hdr[0] : hdr) || randomUUID();
+    res.setHeader("X-Request-Id", id);
+    return id;
+  },
+  customLogLevel: (_req, res, err) => {
+    if (err || res.statusCode >= 500) return "error";
+    if (res.statusCode >= 400) return "warn";
+    return "info";
+  },
+  autoLogging: {
+    ignore: (req) => req.url === "/api/health" || req.url === "/api/health/live",
+  },
+}));
 
 // Skip compression for Server-Sent Events — gzip buffering would hold the
 // stream and the client would receive nothing until the response ends.
@@ -96,8 +122,29 @@ app.use("/api/service", serviceRouter);
 app.use("/api/decisions", decisionsRouter);
 app.use("/api/regulatory", regulatoryRouter);
 
-app.get("/api/health", (_req, res) => {
+// Liveness : le process répond-il ? Superficiel et sans I/O — à utiliser pour
+// un probe qui ne doit PAS tuer le process sur un simple incident DB transitoire.
+app.get("/api/health/live", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });
+});
+
+// Readiness / healthcheck PROFOND : vérifie que la base répond (SELECT 1 borné).
+// Le gate de déploiement (deploy.yml) et tout uptime monitor externe doivent voir
+// "degraded" (503) quand la DB est injoignable, plutôt qu'un faux "ok" qui
+// laisserait passer un déploiement contre une base cassée ou marquerait l'app
+// "up" alors qu'elle sert des 500. `curl -f` du gate échoue bien sur le 503.
+app.get("/api/health", async (_req, res) => {
+  try {
+    await Promise.race([
+      client`SELECT 1`,
+      new Promise((_resolve, reject) =>
+        setTimeout(() => reject(new Error("db healthcheck timeout")), 2000),
+      ),
+    ]);
+    res.json({ status: "ok", db: "ok", version: "1.0.0" });
+  } catch {
+    res.status(503).json({ status: "degraded", db: "down", version: "1.0.0" });
+  }
 });
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
