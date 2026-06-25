@@ -1,7 +1,7 @@
 import { randomUUID } from "crypto";
 import { db } from "../db.js";
 import { dossier_pieces_jointes, dossier_facts, dossiers } from "@heureka-v1/db";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, inArray } from "drizzle-orm";
 import type { PieceExtraction } from "./pieceExtractor.js";
 
 // ─── Types ────────────────────────────────────────────────────────────
@@ -268,10 +268,15 @@ export function resolveDossierFactsWithConflicts(
 //   - Si un fait actif existe avec la même source auto-extraite et la
 //     même value, on ne touche à rien (idempotent).
 //   - Sinon, on marque l'ancien comme superseded_at = now() et on insère
-//     le nouveau. Une transaction conviendrait mais Drizzle 0.45 n'offre
-//     pas d'API transactionnelle fluide ici — on accepte le risque
-//     d'incohérence transitoire car le moteur ne fonde aucun verdict sur
-//     un fait obsolète (il filtre superseded_at IS NULL).
+//     le nouveau.
+//
+// Atomicité : la lecture des actifs, le supersede et l'insert s'exécutent dans
+// UNE transaction. L'invariant "un seul gagnant actif par clé" (index unique
+// partiel uniq_dossier_facts_active_winner_key) est ainsi garanti — les anciens
+// gagnants sont superseded AVANT l'insertion des nouveaux, dans la même
+// transaction : jamais deux gagnants actifs simultanés, ni zéro en cas d'échec
+// partiel. Les écritures sont groupées (un seul UPDATE et un seul INSERT pour
+// tout le lot) au lieu d'un aller-retour par ligne.
 
 export interface SyncReport {
   inserted: number;
@@ -291,18 +296,6 @@ export async function applyDossierFacts(
   const report: SyncReport = { inserted: 0, superseded: 0, skipped_instructor: 0, kept_identical: 0, conflicts: 0 };
   if (desired.length === 0) return report;
 
-  // On lit TOUS les actifs (gagnants + non-gagnants), regroupés par clé.
-  const activeRows = await db
-    .select()
-    .from(dossier_facts)
-    .where(and(eq(dossier_facts.dossier_id, dossierId), isNull(dossier_facts.superseded_at)));
-  const activeByKey = new Map<string, typeof activeRows>();
-  for (const r of activeRows) {
-    const arr = activeByKey.get(r.key) ?? [];
-    arr.push(r);
-    activeByKey.set(r.key, arr);
-  }
-
   // Regroupement des candidats désirés par clé : on doit traiter une clé
   // d'un seul tenant pour préserver l'invariant "un seul gagnant actif".
   const desiredByKey = new Map<string, PersistedFactCandidate[]>();
@@ -312,74 +305,100 @@ export async function applyDossierFacts(
     desiredByKey.set(f.key, arr);
   }
 
+  // Signature d'idempotence : {(source_ref.piece_id, source_ref.field, source,
+  // value, is_winner)}. piece_id + field suffisent à identifier l'origine d'un
+  // candidat (on évite la sérialisation profonde du source_ref complet). Définie
+  // une fois, hors de la boucle.
+  const signature = (r: { source: string; value: unknown; source_ref: unknown; is_winner: boolean }): string => {
+    const ref = r.source_ref as { piece_id?: string; field?: string } | null;
+    return JSON.stringify({
+      piece_id: ref?.piece_id ?? null,
+      field: ref?.field ?? null,
+      source: r.source,
+      value: r.value,
+      is_winner: r.is_winner,
+    });
+  };
+
   const now = new Date();
-  for (const [key, group] of desiredByKey) {
-    const existing = activeByKey.get(key) ?? [];
-    if (group.some((c) => c.is_winner === false) || existing.some((r) => !r.is_winner)) {
-      // (compté plus bas)
+
+  await db.transaction(async (tx) => {
+    // Lecture des actifs DANS la transaction (snapshot cohérent avec les writes).
+    const activeRows = await tx
+      .select()
+      .from(dossier_facts)
+      .where(and(eq(dossier_facts.dossier_id, dossierId), isNull(dossier_facts.superseded_at)));
+    const activeByKey = new Map<string, typeof activeRows>();
+    for (const r of activeRows) {
+      const arr = activeByKey.get(r.key) ?? [];
+      arr.push(r);
+      activeByKey.set(r.key, arr);
     }
 
-    // Règle d'or : une saisie instructeur sur le gagnant est gelée, on ne
-    // touche RIEN sur cette clé (ni gagnant ni non-gagnants). L'instructeur
-    // décidera explicitement de re-lancer s'il veut reconsidérer.
-    const existingWinner = existing.find((r) => r.is_winner);
-    if (existingWinner?.source === "instructor_entry") {
-      report.skipped_instructor++;
-      continue;
-    }
+    // On accumule les ids à superseder et les lignes à insérer pour TOUT le lot,
+    // puis on émet un seul UPDATE et un seul INSERT (au lieu d'un par ligne).
+    const idsToSupersede: string[] = [];
+    const rowsToInsert: (typeof dossier_facts.$inferInsert)[] = [];
 
-    // Idempotence : si le multiset {(source_ref.piece_id, source_ref.field,
-    // source, value, is_winner)} matche entre existing et group, rien à faire.
-    // On évite la sérialisation profonde du source_ref complet — piece_id +
-    // field suffisent à identifier l'origine d'un candidat.
-    const signature = (r: { source: string; value: unknown; source_ref: unknown; is_winner: boolean }): string => {
-      const ref = r.source_ref as { piece_id?: string; field?: string } | null;
-      return JSON.stringify({
-        piece_id: ref?.piece_id ?? null,
-        field: ref?.field ?? null,
-        source: r.source,
-        value: r.value,
-        is_winner: r.is_winner,
-      });
-    };
-    const existingSigs = new Set(existing.map(signature));
-    const desiredSigs = new Set(group.map(signature));
-    const identical = existingSigs.size === desiredSigs.size
-      && [...existingSigs].every((s) => desiredSigs.has(s));
+    for (const [key, group] of desiredByKey) {
+      const existing = activeByKey.get(key) ?? [];
 
-    if (identical) {
-      report.kept_identical++;
+      // Règle d'or : une saisie instructeur sur le gagnant est gelée, on ne
+      // touche RIEN sur cette clé (ni gagnant ni non-gagnants). L'instructeur
+      // décidera explicitement de re-lancer s'il veut reconsidérer.
+      const existingWinner = existing.find((r) => r.is_winner);
+      if (existingWinner?.source === "instructor_entry") {
+        report.skipped_instructor++;
+        continue;
+      }
+
+      // Idempotence : multiset {signature} identique entre existing et group → rien à faire.
+      const existingSigs = new Set(existing.map(signature));
+      const desiredSigs = new Set(group.map(signature));
+      const identical = existingSigs.size === desiredSigs.size
+        && [...existingSigs].every((s) => desiredSigs.has(s));
+      if (identical) {
+        report.kept_identical++;
+        if (group.some((c) => c.conflict_group_id)) report.conflicts++;
+        continue;
+      }
+
+      // Refresh complet de la clé : supersede tous les actifs, insère tout le
+      // groupe (gagnant + non-gagnants). Plus simple et plus sûr que le delta.
+      for (const r of existing) {
+        idsToSupersede.push(r.id);
+        report.superseded++;
+      }
+      for (const fact of group) {
+        rowsToInsert.push({
+          dossier_id: dossierId,
+          key: fact.key,
+          value: fact.value as object,
+          unit: fact.unit ?? null,
+          source: fact.source,
+          source_ref: fact.source_ref as object,
+          confidence: fact.confidence ?? null,
+          is_winner: fact.is_winner,
+          conflict_group_id: fact.conflict_group_id,
+        });
+        report.inserted++;
+      }
       if (group.some((c) => c.conflict_group_id)) report.conflicts++;
-      continue;
     }
 
-    // Refresh complet : supersede tous les actifs de la clé, puis insère
-    // l'intégralité du nouveau groupe (gagnant + non-gagnants). Plus simple
-    // et plus sûr que le delta, et la pression d'écriture reste faible car
-    // les changements de candidats sont peu fréquents.
-    for (const r of existing) {
-      await db
+    // Supersede AVANT insert : garantit qu'aucun ancien gagnant actif ne coexiste
+    // avec un nouveau (contrainte unique partielle). Un seul UPDATE + un seul
+    // INSERT pour tout le lot.
+    if (idsToSupersede.length > 0) {
+      await tx
         .update(dossier_facts)
         .set({ superseded_at: now, updated_at: now })
-        .where(eq(dossier_facts.id, r.id));
-      report.superseded++;
+        .where(inArray(dossier_facts.id, idsToSupersede));
     }
-    for (const fact of group) {
-      await db.insert(dossier_facts).values({
-        dossier_id: dossierId,
-        key: fact.key,
-        value: fact.value as object,
-        unit: fact.unit ?? null,
-        source: fact.source,
-        source_ref: fact.source_ref as object,
-        confidence: fact.confidence ?? null,
-        is_winner: fact.is_winner,
-        conflict_group_id: fact.conflict_group_id,
-      });
-      report.inserted++;
+    if (rowsToInsert.length > 0) {
+      await tx.insert(dossier_facts).values(rowsToInsert);
     }
-    if (group.some((c) => c.conflict_group_id)) report.conflicts++;
-  }
+  });
 
   return report;
 }
