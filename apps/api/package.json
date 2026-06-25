@@ -39,8 +39,10 @@
     "multer": "^2.2.0",
     "node-cron": "^4.2.1",
     "nodemailer": "^9.0.1",
+    "otplib": "^12.0.1",
     "pdf-lib": "^1.17.1",
     "polygon-clipping": "^0.15.7",
+    "qrcode": "^1.5.4",
     "resend": "^6.12.4",
     "tsx": "^4.19.4",
     "unpdf": "^0.12.1",
@@ -58,6 +60,7 @@
     "@types/node": "^22.15.3",
     "@types/node-cron": "^3.0.11",
     "@types/nodemailer": "^8.0.0",
+    "@types/qrcode": "^1.5.5",
     "typescript": "~5.9.2",
     "vitest": "^3.0.5"
   }

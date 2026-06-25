@@ -79,6 +79,24 @@ export function invalidateTokenVersionCache(userId: string): void {
   _tvCache.delete(userId);
 }
 
+// ── Ticket MFA ──────────────────────────────────────────────────────────────
+// Émis quand le mot de passe est validé mais que la MFA reste à confirmer. Ce
+// n'est PAS une session : courte durée, purpose dédié, ne donne accès à rien
+// d'autre qu'à /auth/mfa/login-verify.
+export function issueMfaTicket(userId: string): string {
+  return jwt.sign({ uid: userId, purpose: "mfa_login" }, JWT_SECRET, { expiresIn: "5m" });
+}
+
+export function verifyMfaTicket(ticket: string): string | null {
+  try {
+    const d = jwt.verify(ticket, JWT_SECRET) as { uid?: string; purpose?: string };
+    if (d.purpose !== "mfa_login" || typeof d.uid !== "string") return null;
+    return d.uid;
+  } catch {
+    return null;
+  }
+}
+
 function extractToken(req: Request): string | null {
   // Per-portal cookie: the citoyen (www), mairie (app) and super-admin (admin)
   // sessions must coexist WITHOUT bleeding into each other.

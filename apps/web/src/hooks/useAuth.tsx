@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
 import { api } from "../lib/api";
 
-interface User {
+export interface User {
   id: string;
   email: string;
   prenom: string;
@@ -14,12 +14,20 @@ interface User {
   // false tant que l'agent n'a pas vu la pop-up d'onboarding (1re connexion).
   // Absent pour les comptes hors espace mairie (ex. citoyen FranceConnect).
   onboarding_completed?: boolean;
+  // MFA : état d'activation et éligibilité (renseignés par /auth/me).
+  mfa_enabled?: boolean;
+  mfa_available?: boolean;
 }
+
+// Résultat de login : soit la session est ouverte (status "ok"), soit une 2e
+// étape MFA est requise (status "mfa" + ticket à présenter à verifyMfaLogin).
+export type LoginResult = { status: "ok"; user: User } | { status: "mfa"; ticket: string };
 
 interface AuthContextType {
   user: User | null;
   loading: boolean;
-  login: (email: string, password: string) => Promise<User>;
+  login: (email: string, password: string) => Promise<LoginResult>;
+  verifyMfaLogin: (ticket: string, code: string) => Promise<User>;
   register: (data: { email: string; password: string; prenom: string; nom: string; role?: string; commune?: string }) => Promise<{ pendingVerification: boolean; email: string }>;
   verifyEmail: (token: string) => Promise<User>;
   logout: () => Promise<void>;
@@ -58,8 +66,20 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { fetchUser(); }, [fetchUser]);
 
-  const login = async (email: string, password: string) => {
-    const res = await api.post<{ user: User }>("/auth/login", { email, password });
+  const login = async (email: string, password: string): Promise<LoginResult> => {
+    const res = await api.post<{ user?: User; mfa_required?: boolean; mfa_ticket?: string }>("/auth/login", { email, password });
+    // MFA activée : pas de session encore, on remonte le ticket pour la 2e étape.
+    if (res.mfa_required && res.mfa_ticket) return { status: "mfa", ticket: res.mfa_ticket };
+    if (res.user) {
+      setUser(res.user);
+      prewarmPluZones(res.user);
+      return { status: "ok", user: res.user };
+    }
+    throw new Error("Réponse de connexion inattendue");
+  };
+
+  const verifyMfaLogin = async (ticket: string, code: string): Promise<User> => {
+    const res = await api.post<{ user: User }>("/auth/mfa/login-verify", { mfa_ticket: ticket, code });
     setUser(res.user);
     prewarmPluZones(res.user);
     return res.user;
@@ -85,7 +105,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   };
 
   return (
-    <AuthContext.Provider value={{ user, loading, login, register, verifyEmail, logout, refreshUser: fetchUser }}>
+    <AuthContext.Provider value={{ user, loading, login, verifyMfaLogin, register, verifyEmail, logout, refreshUser: fetchUser }}>
       {children}
     </AuthContext.Provider>
   );

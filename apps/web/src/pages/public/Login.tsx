@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
-import { useAuth } from "../../hooks/useAuth";
+import { useAuth, type User } from "../../hooks/useAuth";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
@@ -18,9 +18,11 @@ export function Login() {
   const [needsVerification, setNeedsVerification] = useState(false);
   const [resendState, setResendState] = useState<"idle" | "sending" | "sent">("idle");
   const [fcEnabled, setFcEnabled] = useState(false);
-  const { login } = useAuth();
+  const { login, verifyMfaLogin } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const [mfaTicket, setMfaTicket] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
   const next = sanitizeNextParam(searchParams.get("next"));
 
   // Erreur renvoyée par le callback FranceConnect (?fc_error=...).
@@ -42,24 +44,42 @@ export function Login() {
     ? `/api/auth/franceconnect/login?next=${encodeURIComponent(next)}`
     : "/api/auth/franceconnect/login";
 
+  const goAfterLogin = (u: User) => {
+    if (u.role === "mairie" || u.role === "instructeur") {
+      navigate("/mairie", { replace: true });
+    } else {
+      navigate(next ?? "/citoyen", { replace: true });
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setNeedsVerification(false);
     setLoading(true);
     try {
-      const u = await login(email, password);
-      if (u.role === "mairie" || u.role === "instructeur") {
-        navigate("/mairie", { replace: true });
-      } else {
-        navigate(next ?? "/citoyen", { replace: true });
-      }
+      const r = await login(email, password);
+      if (r.status === "mfa") { setMfaTicket(r.ticket); setLoading(false); return; }
+      goAfterLogin(r.user);
     } catch (err) {
       if (err instanceof ApiError && (err.body as { code?: string })?.code === "email_not_verified") {
         setNeedsVerification(true);
       }
       setError(err instanceof Error ? err.message : "Identifiants incorrects");
     } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleMfaSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const u = await verifyMfaLogin(mfaTicket ?? "", mfaCode.trim());
+      goAfterLogin(u);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Code invalide");
       setLoading(false);
     }
   };
@@ -96,6 +116,24 @@ export function Login() {
           <p className="text-gray-500 text-sm">Accédez à votre espace personnel</p>
         </CardHeader>
         <CardContent>
+          {mfaTicket ? (
+          <form onSubmit={handleMfaSubmit} className="space-y-4">
+            {error && (
+              <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg text-sm">{error}</div>
+            )}
+            <p className="text-sm text-gray-600">
+              Saisissez le code à 6 chiffres de votre application d'authentification
+              (ou l'un de vos codes de secours).
+            </p>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Code de vérification</label>
+              <Input value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} required autoFocus placeholder="123 456" autoComplete="one-time-code" />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? "Vérification..." : "Vérifier"}
+            </Button>
+          </form>
+          ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
               <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg text-sm">
@@ -128,8 +166,9 @@ export function Login() {
               {loading ? "Connexion..." : "Se connecter"}
             </Button>
           </form>
+          )}
 
-          {fcEnabled && (
+          {!mfaTicket && fcEnabled && (
             <div className="mt-6">
               <div className="relative">
                 <div className="absolute inset-0 flex items-center">

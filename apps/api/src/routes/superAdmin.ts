@@ -1230,6 +1230,25 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
   }
 });
 
+// Réinitialise (désactive) la MFA d'un utilisateur — secours opérationnel en cas
+// de perte de l'appareil ET des codes de secours. L'utilisateur devra la
+// reconfigurer à sa prochaine connexion.
+superAdminRouter.post("/users/:id/mfa-reset", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [u] = await db.update(users)
+      .set({ mfa_enabled: false, mfa_secret: null, mfa_backup_codes: null, updated_at: new Date() })
+      .where(eq(users.id, id))
+      .returning({ email: users.email });
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    await logAudit(req, "admin_mfa_reset", { email: u.email });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 superAdminRouter.get("/users/:id/communes", async (req, res) => {
   try {
     const rows = await db.select({ commune_id: user_communes.commune_id })

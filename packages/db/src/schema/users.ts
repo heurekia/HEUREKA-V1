@@ -1,4 +1,4 @@
-import { pgTable, text, timestamp, pgEnum, uuid, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, timestamp, pgEnum, uuid, integer, boolean, jsonb } from "drizzle-orm/pg-core";
 
 export const userRoleEnum = pgEnum("user_role", ["citoyen", "mairie", "instructeur", "admin", "service_externe"]);
 
@@ -33,6 +33,13 @@ export const users = pgTable("users", {
   // rôle, ou révocation/offboarding). Le JWT embarque cette valeur (claim `tv`)
   // et requireAuth la compare à la valeur courante (cf. middlewares/auth.ts).
   token_version: integer("token_version").notNull().default(0),
+  // MFA TOTP (opt-in, comptes agents/admin). mfa_secret = secret TOTP CHIFFRÉ
+  // au repos (AES-256-GCM, cf. services/mfa.ts) ; NULL = non enrôlé. mfa_enabled
+  // passe à true seulement après confirmation d'un 1er code. mfa_backup_codes =
+  // empreintes SHA-256 des codes de secours à usage unique (jamais en clair).
+  mfa_secret: text("mfa_secret"),
+  mfa_enabled: boolean("mfa_enabled").notNull().default(false),
+  mfa_backup_codes: jsonb("mfa_backup_codes").$type<string[]>(),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });
