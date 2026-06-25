@@ -46,20 +46,6 @@ dashboardRouter.get("/dashboard", requirePermission("dashboard"), async (req: Au
   }
 });
 
-// ── Délais légaux d'instruction par type (en jours) ──
-// Référence : code de l'urbanisme R*423-23 et suivants.
-const DELAIS_LEGAUX_JOURS: Record<string, number> = {
-  permis_de_construire: 90,
-  permis_de_construire_mi: 60,
-  declaration_prealable: 30,
-  permis_amenager: 90,
-  permis_demolir: 60,
-  permis_lotir: 90,
-  certificat_urbanisme: 60,
-  certificat_urbanisme_a: 30,
-  certificat_urbanisme_b: 60,
-};
-
 const STATUTS_DECIDES = ["accepte", "refuse", "accord_prescription"] as const;
 
 // ── Statistiques : vue d'ensemble + types ──
@@ -157,11 +143,15 @@ dashboardRouter.get("/stats/delais", requirePermission("stats"), async (req: Aut
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
     const cf = communeScopeFilter(sql`commune`, scope, commune);
 
-    // Délai moyen actuel par type
+    // Délai moyen réel vs délai légal, par type. Le « délai légal » est mesuré
+    // sur la vraie échéance calendaire (date_limite_instruction, calculée en
+    // mois calendaires par applyMonthsToDate) — pas sur une approximation en
+    // jours — et moyenné sur les dossiers concernés.
     const parType = await db
       .select({
         type: dossiers.type,
         delai_moyen: sql<number>`avg(extract(epoch from (date_delivrance - date_depot)) / 86400)`,
+        delai_legal: sql<number>`avg(extract(epoch from (date_limite_instruction - date_depot)) / 86400)`,
       })
       .from(dossiers)
       .where(sql`date_depot IS NOT NULL AND date_delivrance IS NOT NULL AND (${cf})`)
@@ -202,16 +192,22 @@ dashboardRouter.get("/stats/delais", requirePermission("stats"), async (req: Aut
       delai_par_type: parType.map((r) => ({
         type: r.type,
         delai_moyen: r.delai_moyen != null ? Math.round(Number(r.delai_moyen)) : null,
-        delai_legal: DELAIS_LEGAUX_JOURS[r.type] ?? null,
+        delai_legal: r.delai_legal != null ? Math.round(Number(r.delai_legal)) : null,
       })),
       evolution: evolution.map((r) => ({
         mois: r.mois,
         delai_moyen: r.delai_moyen != null ? Math.round(Number(r.delai_moyen)) : 0,
       })),
       en_retard: enRetard.map((r) => {
-        const legal = DELAIS_LEGAUX_JOURS[r.type] ?? null;
-        const ecoule = r.date_depot ? Math.floor((Date.now() - new Date(r.date_depot).getTime()) / 86400000) : null;
-        const depassement = legal != null && ecoule != null ? ecoule - legal : null;
+        // Tout est calculé sur les vraies dates : la date limite est déjà en
+        // mois calendaires (applyMonthsToDate), donc le délai légal (dépôt →
+        // échéance) et le dépassement (échéance → aujourd'hui) reflètent
+        // exactement le droit applicable, gestion des mois 28/29/30/31 incluse.
+        const depotMs = r.date_depot ? new Date(r.date_depot).getTime() : null;
+        const limiteMs = r.date_limite ? new Date(r.date_limite).getTime() : null;
+        const legal = depotMs != null && limiteMs != null ? Math.round((limiteMs - depotMs) / 86400000) : null;
+        const ecoule = depotMs != null ? Math.floor((Date.now() - depotMs) / 86400000) : null;
+        const depassement = limiteMs != null ? Math.floor((Date.now() - limiteMs) / 86400000) : null;
         return {
           id: r.id,
           numero: r.numero,
