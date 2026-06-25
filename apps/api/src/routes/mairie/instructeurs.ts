@@ -8,17 +8,22 @@ import { getCommuneScope, communeScopeFilter } from "../../middlewares/dossierAc
 
 export const instructeursRouter = Router();
 
-// Agents (instructeur/mairie/admin) qui partagent au moins une commune avec
-// l'appelant — via user_communes OU le champ legacy users.commune. Sert au
-// sélecteur d'assignation/délégation : un agent ne doit pas énumérer ni
-// déléguer vers des agents hors de son périmètre. Admin (scope null) → tous.
+// Agents habilités de la mairie (rôles instructeur/mairie) qui partagent au
+// moins une commune avec l'appelant — via user_communes OU le champ legacy
+// users.commune. Sert au sélecteur d'assignation/délégation : un agent ne doit
+// pas énumérer ni déléguer vers des agents hors de son périmètre.
+// On EXCLUT les citoyens ET les super-admins : un compte "admin" est un compte
+// plateforme (Heurekia), pas un agent de la commune — il n'a donc pas sa place
+// parmi les délégués/instructeurs assignables (cohérent avec la liste
+// Utilisateurs d'une mairie, cf. routes/mairie/admin.ts). Un appelant super-admin
+// (scope null) voit tous les agents mairie/instructeur, jamais d'autres admins.
 // `restrictToIds` limite la résolution à un sous-ensemble (validation de délégués).
 async function agentsInCallerScope(
   req: AuthRequest,
   restrictToIds?: string[],
 ): Promise<Array<{ id: string; prenom: string; nom: string; email: string }>> {
   const scope = await getCommuneScope(req.user!.id, req.user!.role);
-  const roleFilter = sql`${users.role} IN ('instructeur', 'mairie', 'admin')`;
+  const roleFilter = sql`${users.role} IN ('instructeur', 'mairie')`;
   const idFilter = restrictToIds && restrictToIds.length > 0 ? inArray(users.id, restrictToIds) : undefined;
 
   if (scope === null) {
