@@ -12,6 +12,8 @@ const TEMPLATE_VARIABLES = [
     { label: "Service instructeur", name: "service_instructeur" },
     { label: "Coordonnées", name: "coordonnees_mairie" },
     { label: "Nom de l'agent", name: "nom_agent" },
+    { label: "Téléphone de l'agent", name: "agent_tel" },
+    { label: "Email de l'agent", name: "agent_email" },
     { label: "Date du courrier", name: "date_courrier" },
   ]},
   { group: "Références du dossier", vars: [
@@ -30,6 +32,9 @@ const TEMPLATE_VARIABLES = [
     { label: "Code postal", name: "code_postal" },
     { label: "Références cadastrales", name: "parcelle" },
     { label: "Superficie (surface plancher)", name: "surface_plancher" },
+  ]},
+  { group: "Projet", vars: [
+    { label: "Description / nature des travaux", name: "description_projet" },
   ]},
   { group: "Demande de pièces complémentaires", vars: [
     { label: "Liste des pièces à compléter", name: "liste_pieces_a_completer" },
@@ -150,8 +155,10 @@ interface Letterhead {
 }
 export interface DossierForCourrier {
   id: string; numero: string; type: string; petitionnaire: string;
+  petitionnaire_email?: string | null;
   adresse?: string; commune?: string; code_postal?: string; parcelle?: string;
-  surface_plancher?: string; date_depot?: string; echeance?: string;
+  surface_plancher?: string; description?: string | null;
+  date_depot?: string; echeance?: string;
   date_completude?: string; date_delivrance?: string;
 }
 
@@ -527,12 +534,14 @@ export function CourrierModal({
       service_instructeur: letterhead.letterhead_subtitle ?? "—",
       coordonnees_mairie: letterhead.letterhead_address ?? "—",
       nom_agent: `${user.prenom} ${user.nom}`,
+      agent_tel: user.telephone ?? "—",
+      agent_email: user.email ?? "—",
       date_courrier: new Date().toLocaleDateString("fr-FR"),
       // Dossier
       numero_dossier: dossier.numero,
       type_dossier: TYPE_LABEL[dossier.type] ?? dossier.type,
       demandeur_nom: dossier.petitionnaire,
-      demandeur_email: "—",
+      demandeur_email: dossier.petitionnaire_email || "—",
       date_depot: fmtDate(dossier.date_depot),
       date_completude: fmtDate(dossier.date_completude),
       date_delivrance: fmtDate(dossier.date_delivrance),
@@ -543,6 +552,8 @@ export function CourrierModal({
       code_postal: dossier.code_postal ?? "—",
       parcelle: dossier.parcelle ?? "—",
       surface_plancher: dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—",
+      // Projet
+      description_projet: dossier.description || "—",
       // Demande de pièces complémentaires : liste dynamique injectée
       // dans le corps du template via la variable {liste_pieces_a_completer}.
       liste_pieces_a_completer: piecesListHtml || "—",

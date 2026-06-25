@@ -88,30 +88,37 @@ absente, à créer + alimenter · ⚪ plomberie à supprimer.
 `cb_decisionpc`, switches de format Word `\* Caps` / `\* Lower` / `\@ "dd MMMM yyyy"`
 (on reformate proprement côté Heureka).
 
-## 4. Nouvelles variables dynamiques à créer
+## 4. Variables dynamiques — créées vs. absentes
 
-Regroupées par famille (s'ajoutent au catalogue `TEMPLATE_VARIABLES`) :
+### 4.a ✅ Créées maintenant (données réellement présentes dans l'outil)
 
-**Demandeur / destinataire** (source : CERFA → OCR → saisie agent)
-- `demandeur_civilite` — M. / Mme / Société…
-- `demandeur_adresse` — bloc adresse complet (composé des sous-champs)
-- `mandataire_nom`, `mandataire_qualite`
-- `destinataire_bloc` — résolu : mandataire si présent, sinon demandeur
+Ajoutées au catalogue `TEMPLATE_VARIABLES` + câblées dans `MairieCourrierScreen` :
 
-**Projet** (source : CERFA / OCR / dossier existant)
-- `description_projet` — depuis `dossiers.description` (déjà en base)
-- `destination_projet`
-- `surface_demolie`, `nb_logements`, `nb_batiments`, `surface_terrain`
+| Variable | Source réelle | Vérifié |
+|---|---|---|
+| `description_projet` | `dossiers.description` (saisi à la création / OCR, renvoyé par la route détail mairie) | route `dossiers.ts:121,219`, capté `dossiers.ts:878,1283` |
+| `agent_tel` | `users.telephone` exposé via `user` (auth) | `useAuth` `User.telephone` |
+| `agent_email` | `users.email` exposé via `user` (auth) | `useAuth` `User.email` |
+| `demandeur_email` *(corrigé)* | `dossier.petitionnaire_email` (était figé à « — ») | `DossierInfo.petitionnaire_email`, route `dossiers.ts:222` |
 
-**Instruction / agent**
-- `agent_tel`, `agent_email` — depuis `users` (déjà en base)
-- `date_incompletude`, `date_debut_affichage`
+### 4.b 🔴 Absentes — à alimenter par enrichissement (cf. §11)
 
-**Réglementaire** (source : moteur réglementaire Heureka / manuel)
-- `dispositions_urbanisme`, `zone_plu_comment`
+Non créées pour l'instant : aucune donnée ne circule encore dans l'outil.
 
-**Signataire** (cf. §6 — décision à prendre)
-- `signataire_nom`, `signataire_fonction`
+| Variable cible | Champ Operis | Modèle CERFA existant (`CerfaPcmiData`) |
+|---|---|---|
+| `demandeur_civilite` | `DEMANDQUALITE` | (état civil D1*) |
+| `demandeur_adresse` | `DEMANDADR*` | `adresseDemandeur*` / `demandeur_voie*` (D3*) ✔ déjà modélisé |
+| `mandataire_nom`, `mandataire_qualite` | `representant`, `REPRES*` | `societe_representant*` (D2*) ✔ |
+| `destinataire_bloc` | `destinataire*` | dérivé (mandataire sinon demandeur) |
+| `destination_projet` | `S_SEP_STD_DESTINATION` | `destinationActuelle/Future/Usage` ✔ |
+| `surface_demolie` | `TotalShonDemoli` | `surfaceSupprimee` ✔ |
+| `surface_terrain` | `PROJETSURFACE` | (terrain) |
+| `nb_logements`, `nb_batiments` | `lognbcrees`, `totalnbcree` | (logements) |
+| `dispositions_urbanisme` | `S_TXT_STD_DOSDISURB_COMMENT` | — (moteur réglementaire / manuel) |
+| `zone_plu_comment` | `S_TXT_STD_DOSZONE_COMMENT` | — (moteur réglementaire / `conformite_analysis`) |
+| `signataire_nom`, `signataire_fonction` | `COMMUNEINSEERESP*` | — (config commune, cf. §6) |
+| `date_incompletude`, `date_debut_affichage` | `incompletudedate`, `datedebaffich` | — (events d'instruction) |
 
 ## 5. Nouvelle catégorie de courrier
 
@@ -168,3 +175,40 @@ Ce sont des blocs de texte tirés de la base ADS d'Operis. Équivalents Heureka 
 - [ ] Signataire : option (a) image seule ou (b) nom+fonction structurés ?
 - [ ] Volets « taxes » en modèles séparés : OK ?
 - [ ] Ordre d'intégration des 17 une fois le mapping figé.
+
+## 11. Plan d'enrichissement pour les champs absents (§4.b)
+
+Bonne nouvelle : la quasi-totalité des données absentes est **déjà modélisée**
+dans le code, dans `apps/api/src/services/cerfaPcmiFiller.ts` →
+`interface CerfaPcmiData` (adresse demandeur `D3*`, représentant société `D2*`,
+destination, surfaces créée/supprimée/existante, logements). Le modèle existe ;
+ce qui manque, c'est de **persister** cette structure sur le dossier et de
+l'**alimenter**.
+
+### Brique commune : persister les données CERFA sur le dossier
+Ajouter un `dossiers.cerfa_data jsonb` (typé `CerfaPcmiData`) — ou normaliser
+`dossiers.metadata`. Une seule source de vérité, consommée à la fois par le
+remplisseur CERFA (déjà existant) **et** par les variables de courrier.
+
+### Les 3 sources d'alimentation (cascade demandée)
+1. **Front Citoyen — CERFA complet** *(branchement en cours)* : le wizard de
+   dépôt remplit `cerfa_data`. Source primaire, la plus fiable.
+2. **Import OCR** : l'OCR du CERFA déposé peuple `cerfa_data` (mêmes champs).
+   `dossiers.ts:1283` lit déjà un `parsed.description` → étendre au reste.
+3. **Saisie manuelle agent** *(fallback)* : un volet « Données CERFA » éditable
+   sur le dossier mairie pour compléter/corriger (CERFA absent, OCR partiel).
+
+➡️ Une fois `cerfa_data` en place, les variables `demandeur_adresse`,
+`mandataire_*`, `destination_projet`, `surface_demolie`, `nb_logements`…
+se branchent **directement** dessus — sans nouveau modèle de données.
+
+### Cas particuliers
+- **Signataire** (`signataire_nom`/`fonction`) : `ROLE_LABELS` (maire, adjoint,
+  DGS, responsable ADS, directeur) existe déjà côté décision. Enrichissement =
+  exposer le signataire choisi à la décision, ou l'ajouter à la config commune.
+- **Dispositions d'urbanisme / zone PLU** : Heureka a un moteur réglementaire +
+  interprétation de zonage + `conformite_analysis` sur le dossier. Cible :
+  alimenter `zone_plu_comment` depuis la zone déterminée ; `dispositions_urbanisme`
+  reste manuel à court terme.
+- **Dates `incompletude` / `debut_affichage`** : dérivables des events
+  d'instruction (date de demande de pièces ; date de décision/affichage).
