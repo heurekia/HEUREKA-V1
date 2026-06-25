@@ -66,5 +66,19 @@ export const dossier_courriers = pgTable("dossier_courriers", {
   // étaient tous émis directement ; le backfill les classe donc en "envoye",
   // ce qui correspond à la réalité.
   statut: text("statut").notNull().default("envoye"),
+  // ── Circuit de signature ──
+  // "non_requise" = aucun circuit ; "a_signer" = en attente de la signature
+  // d'un signataire désigné ; "signee" = signé.
+  signature_status: text("signature_status").notNull().default("non_requise"),
+  // Signataire désigné (en attente) puis effectif (une fois signé). Réf. users.
+  signataire_user_id: uuid("signataire_user_id").references(() => users.id),
+  // Traçabilité du circuit : qui a demandé la signature et quand, quand signé.
+  signature_requested_by: uuid("signature_requested_by").references(() => users.id),
+  signature_requested_at: timestamp("signature_requested_at"),
+  signed_at: timestamp("signed_at"),
+  // Snapshot des images apposées au moment de la signature (figé : indépendant
+  // d'une modification ultérieure du profil signataire).
+  signature_image: text("signature_image"),
+  tampon_image: text("tampon_image"),
   created_at: timestamp("created_at").notNull().defaultNow(),
 });

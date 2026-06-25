@@ -844,6 +844,13 @@ CREATE TABLE IF NOT EXISTS dossier_courriers (
   emis_le timestamp NOT NULL DEFAULT now(),
   delivery_method text,
   statut text NOT NULL DEFAULT 'envoye',
+  signature_status text NOT NULL DEFAULT 'non_requise',
+  signataire_user_id uuid REFERENCES users(id),
+  signature_requested_by uuid REFERENCES users(id),
+  signature_requested_at timestamp,
+  signed_at timestamp,
+  signature_image text,
+  tampon_image text,
   created_at timestamp NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_courriers_dossier ON dossier_courriers(dossier_id);
@@ -1281,6 +1288,15 @@ ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS attachments jsonb DEFAULT
 -- Default 'envoye' : les courriers déjà en base ont tous été émis directement
 -- (le brouillon n'existait pas), le backfill les classe donc correctement.
 ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS statut text NOT NULL DEFAULT 'envoye';
+
+-- ── Circuit de signature des courriers ──────────────────────────────────────
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signature_status text NOT NULL DEFAULT 'non_requise';
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signataire_user_id uuid REFERENCES users(id);
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signature_requested_by uuid REFERENCES users(id);
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signature_requested_at timestamp;
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signed_at timestamp;
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signature_image text;
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS tampon_image text;
 
 -- ── Dépôt groupé : un seul fichier OCR éclaté en plusieurs pièces ───────────
 -- Flux historique (1 fichier = 1 pièce) inchangé : ces objets sont additifs.

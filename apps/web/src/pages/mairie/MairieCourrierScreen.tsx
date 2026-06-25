@@ -415,6 +415,13 @@ export interface CourrierModalProps {
     articles_cites?: string[];
     pieces_jointes_ids?: Array<{ piece_id?: string; code_piece?: string; nom: string; raison?: string; manquante?: boolean }>;
     delivery_method?: string | null;
+    signature_status?: SignatureStatus;
+    signataire_user_id?: string | null;
+    signataire_prenom?: string | null;
+    signataire_nom?: string | null;
+    signed_at?: string | null;
+    signature_image?: string | null;
+    tampon_image?: string | null;
   };
 }
 
@@ -430,6 +437,15 @@ const SEND_CHANNELS: { value: CourrierChannel; label: string; icon: string; hint
   { value: "postal", label: "Courrier postal", icon: "🖨️", hint: "À imprimer et poster — aucun envoi automatique" },
   { value: "ar", label: "Recommandé (LRAR)", icon: "📦", hint: "À imprimer et envoyer en recommandé avec A.R." },
 ];
+
+// Signataire habilité d'une commune (réponse /decisions/communes/:c/signataires).
+type SignataireRow = {
+  user_id: string;
+  role: string; fonction: string | null; active?: boolean; delegation_arrete: string | null;
+  signature_image: string | null; tampon_image: string | null;
+  user: { id?: string; prenom: string; nom: string } | null;
+};
+type SignatureStatus = "non_requise" | "a_signer" | "signee";
 
 export function CourrierModal({
   dossier, onClose,
@@ -452,8 +468,8 @@ export function CourrierModal({
   // Draggable signature & tampon
   const [sigPos, setSigPos] = useState<Pos>({ x: 60, y: 520 });
   const [tampPos, setTampPos] = useState<Pos>({ x: 340, y: 520 });
-  const [showSig, setShowSig] = useState(false);
-  const [showTamp, setShowTamp] = useState(false);
+  const [showSig, setShowSig] = useState(initialCourrier?.signature_status === "signee");
+  const [showTamp, setShowTamp] = useState(initialCourrier?.signature_status === "signee");
   // Legal mentions panel
   const [showMentions, setShowMentions] = useState(false);
   const [mentionsLoading, setMentionsLoading] = useState(false);
@@ -527,6 +543,20 @@ export function CourrierModal({
   const [showChannelMenu, setShowChannelMenu] = useState(false);
   const [deliveryResult, setDeliveryResult] = useState<DeliveryResult | null>(null);
   const isSent = statut === "envoye";
+  // ── Circuit de signature ──
+  const [signataireRows, setSignataireRows] = useState<SignataireRow[]>([]);
+  const [signatureStatus, setSignatureStatus] = useState<SignatureStatus>(initialCourrier?.signature_status ?? "non_requise");
+  const [signataireUserId, setSignataireUserId] = useState<string | null>(initialCourrier?.signataire_user_id ?? null);
+  const [signedByName, setSignedByName] = useState<string | null>(
+    initialCourrier?.signataire_prenom || initialCourrier?.signataire_nom
+      ? `${initialCourrier?.signataire_prenom ?? ""} ${initialCourrier?.signataire_nom ?? ""}`.trim()
+      : null,
+  );
+  const [signedAt, setSignedAt] = useState<string | null>(initialCourrier?.signed_at ?? null);
+  const [appliedSig, setAppliedSig] = useState<string | null>(initialCourrier?.signature_image ?? null);
+  const [appliedTamp, setAppliedTamp] = useState<string | null>(initialCourrier?.tampon_image ?? null);
+  const [showSignPicker, setShowSignPicker] = useState(false);
+  const [signWorking, setSignWorking] = useState(false);
 
   // Synthèse des pièces sélectionnées (pour la prévisualisation HTML et la
   // bascule serveur). Ordre : pièces déposées sélectionnées, puis ajouts libres.
@@ -553,7 +583,7 @@ export function CourrierModal({
   const canEditBody = !isSent && !isCanvasBody(effectiveBody);
   // Envoi impossible si : en cours, déjà envoyé, ou rien à envoyer (aucune pièce
   // en mode demande de pièces ; ni modèle ni brouillon en mode général).
-  const sendDisabled = emitting || isSent || (mode === "pieces_complementaires" ? requestedPieces.length === 0 : (!selected && !draftId));
+  const sendDisabled = emitting || isSent || signatureStatus === "a_signer" || (mode === "pieces_complementaires" ? requestedPieces.length === 0 : (!selected && !draftId));
 
   const loadMentions = useCallback((ct: string) => {
     setMentionsLoading(true);
@@ -699,6 +729,77 @@ export function CourrierModal({
     setSavedAt(null);
   }, []);
 
+  // ── Habilitation à signer : l'utilisateur courant est-il signataire actif ? ──
+  const mySignataire = user ? (signataireRows.find((r) => r.user_id === user.id) ?? null) : null;
+  const canSign = !!mySignataire;
+  const assignedName = signedByName
+    ?? (signataireRows.find((r) => r.user_id === signataireUserId)?.user
+      ? `${signataireRows.find((r) => r.user_id === signataireUserId)!.user!.prenom} ${signataireRows.find((r) => r.user_id === signataireUserId)!.user!.nom}`
+      : null);
+
+  // Garantit un courrier persisté (id) avant signature/demande : enregistre un
+  // brouillon à la volée si besoin.
+  const ensureDraft = useCallback(async (): Promise<string> => {
+    if (draftId) return draftId;
+    const row = await api.post<{ id: string }>(`/mairie/dossiers/${dossier.id}/courriers/drafts`, {
+      type: courrierTypeForSave,
+      subject: selected?.name ?? null,
+      body_snapshot: effectiveBody || null,
+      articles_cites: Array.from(selectedRefs),
+      pieces: mode === "pieces_complementaires" ? requestedPieces : [],
+    });
+    setDraftId(row.id);
+    return row.id;
+  }, [draftId, dossier.id, courrierTypeForSave, selected, effectiveBody, selectedRefs, mode, requestedPieces]);
+
+  // Le rédacteur habilité appose sa signature/tampon sur place.
+  const handleSign = useCallback(async () => {
+    if (signWorking || signatureStatus === "signee") return;
+    setSignWorking(true);
+    setEmitError(null);
+    try {
+      const id = await ensureDraft();
+      const res = await api.post<{ signature_image?: string | null; tampon_image?: string | null; signed_at?: string | null }>(
+        `/mairie/dossiers/${dossier.id}/courriers/${id}/sign`,
+        { body_snapshot: effectiveBody || null },
+      );
+      setSignatureStatus("signee");
+      setSignataireUserId(user?.id ?? null);
+      setSignedByName(user ? `${user.prenom} ${user.nom}` : null);
+      setSignedAt(res.signed_at ?? new Date().toISOString());
+      const sigImg = res.signature_image ?? mySignataire?.signature_image ?? null;
+      const tampImg = res.tampon_image ?? mySignataire?.tampon_image ?? null;
+      setAppliedSig(sigImg);
+      setAppliedTamp(tampImg);
+      if (sigImg) setShowSig(true);
+      if (tampImg) setShowTamp(true);
+    } catch (e) {
+      setEmitError(e instanceof Error ? e.message : "Signature impossible");
+    } finally {
+      setSignWorking(false);
+    }
+  }, [signWorking, signatureStatus, ensureDraft, dossier.id, effectiveBody, user, mySignataire]);
+
+  // Envoi du courrier en signature à un signataire désigné (traçabilité serveur).
+  const handleRequestSignature = useCallback(async (targetUserId: string) => {
+    if (signWorking) return;
+    setShowSignPicker(false);
+    setSignWorking(true);
+    setEmitError(null);
+    try {
+      const id = await ensureDraft();
+      await api.post(`/mairie/dossiers/${dossier.id}/courriers/${id}/request-signature`, { signataire_user_id: targetUserId });
+      setSignatureStatus("a_signer");
+      setSignataireUserId(targetUserId);
+      const t = signataireRows.find((r) => r.user_id === targetUserId);
+      setSignedByName(t?.user ? `${t.user.prenom} ${t.user.nom}` : null);
+    } catch (e) {
+      setEmitError(e instanceof Error ? e.message : "Demande de signature impossible");
+    } finally {
+      setSignWorking(false);
+    }
+  }, [signWorking, ensureDraft, dossier.id, signataireRows]);
+
   const handleInsertMentions = useCallback(() => {
     if (selectedRefs.size === 0) return;
     const chosen = allMentions.filter(m => selectedRefs.has(m.article_ref));
@@ -739,15 +840,11 @@ export function CourrierModal({
   // le maire, sinon le premier actif. La fonction libre prime sur le rôle.
   useEffect(() => {
     const commune = dossier.commune;
-    if (!commune) { setSignataire(null); return; }
-    type SignataireRow = {
-      role: string; fonction: string | null; active?: boolean; delegation_arrete: string | null;
-      signature_image: string | null; tampon_image: string | null;
-      user: { prenom: string; nom: string } | null;
-    };
+    if (!commune) { setSignataire(null); setSignataireRows([]); return; }
     api.get<SignataireRow[]>(`/decisions/communes/${encodeURIComponent(commune)}/signataires`)
       .then((rows) => {
         const actifs = rows.filter((r) => r.active !== false);
+        setSignataireRows(actifs);
         const chosen = actifs.find((r) => r.delegation_arrete) ?? actifs.find((r) => r.role === "maire") ?? actifs[0] ?? null;
         if (!chosen) { setSignataire(null); return; }
         setSignataire({
@@ -757,7 +854,7 @@ export function CourrierModal({
           tampon_image: chosen.tampon_image ?? null,
         });
       })
-      .catch(() => setSignataire(null));
+      .catch(() => { setSignataire(null); setSignataireRows([]); });
   }, [dossier.commune]);
 
   useEffect(() => {
@@ -900,19 +997,29 @@ export function CourrierModal({
                   {isSent ? "Envoyé" : "Brouillon"}
                 </span>
               )}
+              {signatureStatus === "a_signer" && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: "#6D28D9", background: "#EDE9FE" }}>
+                  ⏳ À signer{assignedName ? ` · ${assignedName}` : ""}
+                </span>
+              )}
+              {signatureStatus === "signee" && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: "#15803D", background: "#DCFCE7" }}>
+                  ✍️ Signé{signedByName ? ` · ${signedByName}` : ""}
+                </span>
+              )}
             </div>
             <div style={{ fontSize: 12, color: "#64748b" }}>{dossier.numero} — {dossier.petitionnaire}</div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
             {/* Signature toggle */}
-            {(signataire?.signature_image || letterhead.signature_image) && (
+            {(appliedSig || signataire?.signature_image || letterhead.signature_image) && (
               <button onClick={() => setShowSig(v => !v)}
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showSig ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 7, background: showSig ? "#EEF2FF" : "white", color: showSig ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
                 ✍️ Signature
               </button>
             )}
             {/* Tampon toggle */}
-            {(signataire?.tampon_image || letterhead.tampon_image) && (
+            {(appliedTamp || signataire?.tampon_image || letterhead.tampon_image) && (
               <button onClick={() => setShowTamp(v => !v)}
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showTamp ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 7, background: showTamp ? "#EEF2FF" : "white", color: showTamp ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
                 🔵 Tampon
@@ -951,12 +1058,48 @@ export function CourrierModal({
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
               <Printer size={14} /> Imprimer / PDF
             </button>
+            {/* Signature — signer sur place (si habilité) ou demander à un signataire */}
+            {signatureStatus !== "signee" && (
+              <>
+                {canSign && (
+                  <button onClick={handleSign} disabled={signWorking}
+                    title="Apposer votre signature (et votre tampon) sur ce courrier"
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: signWorking ? "#E2E8F0" : "#4F46E5", color: signWorking ? "#94a3b8" : "white", border: "none", borderRadius: 8, cursor: signWorking ? "default" : "pointer", fontSize: 13, fontWeight: 600 }}>
+                    ✍️ {signWorking ? "Signature…" : "Signer"}
+                  </button>
+                )}
+                {signataireRows.length > 0 && (
+                  <div style={{ position: "relative" }}>
+                    <button onClick={() => setShowSignPicker((v) => !v)} disabled={signWorking}
+                      title="Envoyer le courrier en signature à un signataire habilité"
+                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: showSignPicker ? "#EEF2FF" : "white", color: "#4F46E5", border: "1px solid #C7D2FE", borderRadius: 8, cursor: signWorking ? "default" : "pointer", fontSize: 13, fontWeight: 600 }}>
+                      📤 {signatureStatus === "a_signer" ? "Réassigner" : "Demander la signature"} <span style={{ fontSize: 10 }}>▾</span>
+                    </button>
+                    {showSignPicker && (
+                      <>
+                        <div onClick={() => setShowSignPicker(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                        <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, width: 264, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 14px 36px rgba(0,0,0,0.18)", overflow: "hidden" }}>
+                          <div style={{ padding: "8px 12px", fontSize: 10, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase", borderBottom: "1px solid #F1F5F9" }}>Envoyer en signature à</div>
+                          {signataireRows.map((s) => (
+                            <button key={s.user_id} onClick={() => handleRequestSignature(s.user_id)}
+                              style={{ display: "flex", flexDirection: "column", gap: 1, width: "100%", textAlign: "left", padding: "8px 12px", border: "none", borderTop: "1px solid #F8FAFC", background: "white", cursor: "pointer" }}>
+                              <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{s.user ? `${s.user.prenom} ${s.user.nom}` : "—"}</span>
+                              <span style={{ fontSize: 11, color: "#94a3b8" }}>{(s.fonction || ROLE_LABELS[s.role] || s.role)}{s.delegation_arrete ? " · délégation" : ""}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
             {/* Envoi — choix du canal de remise au pétitionnaire */}
             <div style={{ position: "relative" }}>
               <button
                 onClick={() => { if (!sendDisabled) setShowChannelMenu((v) => !v); }}
                 disabled={sendDisabled}
-                title={isSent ? "Courrier déjà envoyé" : (mode === "pieces_complementaires" && requestedPieces.length === 0) ? "Sélectionnez au moins une pièce" : "Choisir le canal d'envoi au pétitionnaire"}
+                title={isSent ? "Courrier déjà envoyé" : signatureStatus === "a_signer" ? "En attente de signature — l'envoi sera possible une fois le courrier signé" : (mode === "pieces_complementaires" && requestedPieces.length === 0) ? "Sélectionnez au moins une pièce" : "Choisir le canal d'envoi au pétitionnaire"}
                 style={{
                   display: "flex", alignItems: "center", gap: 6, padding: "7px 16px",
                   background: sendDisabled ? "#E2E8F0" : (mode === "pieces_complementaires" ? "linear-gradient(135deg,#D97706,#F59E0B)" : "linear-gradient(135deg,#0F766E,#10B981)"),
@@ -1038,9 +1181,9 @@ export function CourrierModal({
               <div style={{ position: "relative" }}>
                 <CourrierPrintPreview html={effectiveBody} letterhead={letterhead} extraHtml={insertedMentionsHtml || undefined} editable={isEditingBody} onBodyChange={handleBodyChange} />
                 {/* Draggable signature */}
-                {showSig && (signataire?.signature_image || letterhead.signature_image) && (
+                {showSig && (appliedSig || signataire?.signature_image || letterhead.signature_image) && (
                   <DraggableStamp
-                    src={signataire?.signature_image || letterhead.signature_image || ""}
+                    src={appliedSig || signataire?.signature_image || letterhead.signature_image || ""}
                     pos={sigPos}
                     setPos={setSigPos}
                     caption={signataire?.nom || `${user?.prenom ?? ""} ${user?.nom ?? ""}`}
@@ -1048,9 +1191,9 @@ export function CourrierModal({
                   />
                 )}
                 {/* Draggable tampon */}
-                {showTamp && (signataire?.tampon_image || letterhead.tampon_image) && (
+                {showTamp && (appliedTamp || signataire?.tampon_image || letterhead.tampon_image) && (
                   <DraggableStamp
-                    src={signataire?.tampon_image || letterhead.tampon_image || ""}
+                    src={appliedTamp || signataire?.tampon_image || letterhead.tampon_image || ""}
                     pos={tampPos}
                     setPos={setTampPos}
                     onHide={() => setShowTamp(false)}
