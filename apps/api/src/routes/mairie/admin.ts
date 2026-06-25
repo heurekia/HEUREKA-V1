@@ -115,7 +115,21 @@ adminRouter.get("/admin/users", async (req: AuthRequest, res) => {
       role: users.role, commune: users.commune, telephone: users.telephone,
       role_config_id: users.role_config_id,
       created_at: users.created_at,
-    }).from(users).where(and(ilike(users.commune, communeName), ne(users.role, "citoyen")));
+    }).from(users).where(and(
+      // Inclure aussi les agents multi-communes : `users.commune` ne stocke que
+      // la commune principale (1re saisie), donc un agent rattaché à plusieurs
+      // villes via user_communes n'apparaîtrait que dans sa commune principale.
+      // L'accès réel s'appuie sur user_communes (cf. getCommuneScope).
+      sql`(
+        lower(${users.commune}) = lower(${communeName})
+        OR EXISTS (
+          SELECT 1 FROM user_communes uc
+          JOIN communes c ON c.id = uc.commune_id
+          WHERE uc.user_id = ${users.id} AND lower(c.name) = lower(${communeName})
+        )
+      )`,
+      ne(users.role, "citoyen"),
+    ));
     res.json(rows);
   } catch (err) {
     console.error(err);
