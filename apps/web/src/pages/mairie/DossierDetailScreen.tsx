@@ -96,6 +96,11 @@ type ReopenCourrier = {
   articles_cites?: string[];
   pieces_jointes_ids?: Array<{ piece_id?: string; code_piece?: string; nom: string; raison?: string; manquante?: boolean }>;
   delivery_method?: string | null;
+  signature_status?: "non_requise" | "a_signer" | "signee";
+  signataire_user_id?: string | null;
+  signataire_prenom?: string | null;
+  signataire_nom?: string | null;
+  signed_at?: string | null;
 };
 
 // Historique des courriers d'instruction d'un dossier : brouillons en cours et
@@ -120,6 +125,12 @@ function CourriersPanel({ dossierId, refreshKey, onRequestNewPiecesCourrier, onR
     emis_le: string;
     delivery_method: string | null;
     statut: "brouillon" | "envoye";
+    signature_status: "non_requise" | "a_signer" | "signee";
+    signataire_user_id: string | null;
+    signataire_prenom: string | null;
+    signataire_nom: string | null;
+    signed_at: string | null;
+    signature_requested_at: string | null;
   };
   const [rows, setRows] = useState<CourrierRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -182,6 +193,9 @@ function CourriersPanel({ dossierId, refreshKey, onRequestNewPiecesCourrier, onR
             const isDraft = c.statut === "brouillon";
             // Reprise (édition/envoi) réservée à qui peut générer ; sinon lecture seule.
             const canResume = isDraft && canGenerate;
+            const sigName = (c.signataire_prenom || c.signataire_nom)
+              ? `${c.signataire_prenom ?? ""} ${c.signataire_nom ?? ""}`.trim()
+              : null;
             const pieces = Array.isArray(c.pieces_jointes_ids) ? c.pieces_jointes_ids : [];
             return (
               <div key={c.id} style={{ background: "white", border: "1px solid #E8EEF4", borderRadius: 12, padding: 16 }}>
@@ -191,6 +205,16 @@ function CourriersPanel({ dossierId, refreshKey, onRequestNewPiecesCourrier, onR
                     <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: isDraft ? "#B45309" : "#15803D", background: isDraft ? "#FEF3C7" : "#DCFCE7" }}>
                       {isDraft ? "Brouillon" : "Envoyé"}
                     </span>
+                    {c.signature_status === "a_signer" && (
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: "#6D28D9", background: "#EDE9FE" }}>
+                        ⏳ À signer{sigName ? ` · ${sigName}` : ""}
+                      </span>
+                    )}
+                    {c.signature_status === "signee" && (
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: "#15803D", background: "#DCFCE7" }}>
+                        ✍️ Signé{sigName ? ` · ${sigName}` : ""}{c.signed_at ? ` le ${new Date(c.signed_at).toLocaleDateString("fr-FR")}` : ""}
+                      </span>
+                    )}
                     {c.subject && <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.subject}</span>}
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
@@ -199,9 +223,9 @@ function CourriersPanel({ dossierId, refreshKey, onRequestNewPiecesCourrier, onR
                       {!isDraft && c.delivery_method && <> · <span style={{ textTransform: "capitalize" as const }}>{c.delivery_method}</span></>}
                     </div>
                     <button onClick={() => onReopenCourrier(c)}
-                      title={canResume ? "Reprendre ce brouillon (modifier / envoyer)" : isDraft ? "Consulter ce brouillon" : "Consulter le courrier émis"}
-                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", border: `1px solid ${canResume ? "#FDE68A" : "#E2E8F0"}`, borderRadius: 7, background: canResume ? "#FFFBEB" : "white", color: canResume ? "#B45309" : "#475569", fontSize: 11.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const }}>
-                      {canResume ? "✏️ Reprendre" : "Consulter"}
+                      title={c.signature_status === "a_signer" ? "Ouvrir pour signer (réservé aux signataires habilités)" : canResume ? "Reprendre ce brouillon (modifier / envoyer)" : isDraft ? "Consulter ce brouillon" : "Consulter le courrier émis"}
+                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", border: `1px solid ${c.signature_status === "a_signer" ? "#DDD6FE" : canResume ? "#FDE68A" : "#E2E8F0"}`, borderRadius: 7, background: c.signature_status === "a_signer" ? "#F5F3FF" : canResume ? "#FFFBEB" : "white", color: c.signature_status === "a_signer" ? "#6D28D9" : canResume ? "#B45309" : "#475569", fontSize: 11.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const }}>
+                      {c.signature_status === "a_signer" ? "✍️ Signer" : canResume ? "✏️ Reprendre" : "Consulter"}
                     </button>
                   </div>
                 </div>

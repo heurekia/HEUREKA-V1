@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossier_courriers, users, communes, courrier_templates, legal_mentions, user_communes, dossiers } from "@heureka-v1/db";
+import { dossier_courriers, users, communes, courrier_templates, legal_mentions, user_communes, dossiers, signataires } from "@heureka-v1/db";
 import { eq, and, desc, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requirePermission } from "../../middlewares/permissions.js";
@@ -102,8 +102,15 @@ courriersRouter.get("/dossiers/:id/courriers", requirePermission("courriers.read
         emis_le: dossier_courriers.emis_le,
         delivery_method: dossier_courriers.delivery_method,
         statut: dossier_courriers.statut,
+        signature_status: dossier_courriers.signature_status,
+        signataire_user_id: dossier_courriers.signataire_user_id,
+        signature_requested_at: dossier_courriers.signature_requested_at,
+        signed_at: dossier_courriers.signed_at,
+        signataire_prenom: users.prenom,
+        signataire_nom: users.nom,
       })
       .from(dossier_courriers)
+      .leftJoin(users, eq(users.id, dossier_courriers.signataire_user_id))
       .where(eq(dossier_courriers.dossier_id, req.params.id as string))
       .orderBy(desc(dossier_courriers.emis_le));
     res.json(rows);
@@ -219,6 +226,9 @@ courriersRouter.post("/dossiers/:id/courriers/:courrierId/send", requirePermissi
       .limit(1);
     if (!existing) return res.status(404).json({ error: "Courrier introuvable" });
     if (existing.statut === "envoye") return res.status(409).json({ error: "Ce courrier a déjà été envoyé." });
+    if (existing.signature_status === "a_signer") {
+      return res.status(409).json({ error: "Ce courrier est en attente de signature et ne peut pas encore être envoyé." });
+    }
 
     const body = (req.body ?? {}) as {
       body_snapshot?: string | null;
@@ -288,6 +298,81 @@ courriersRouter.post("/dossiers/:id/courriers/:courrierId/send", requirePermissi
     res.json({ courrier_id: courrierId, statut: "envoye", row, delivery });
   } catch (err) {
     console.error("[courriers send]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// ── Circuit de signature ──────────────────────────────────────────────────
+// Renvoie le signataire ACTIF de la commune rattaché à un utilisateur (= preuve
+// d'habilitation à signer), ou null. signataires.commune est le nom de commune.
+async function findSignataire(commune: string, userId: string) {
+  const [sig] = await db.select().from(signataires)
+    .where(and(eq(signataires.commune, commune), eq(signataires.user_id, userId), eq(signataires.active, true)))
+    .limit(1);
+  return sig ?? null;
+}
+
+// Le rédacteur, s'il est lui-même habilité, appose sa signature/tampon sur place.
+// L'habilitation est vérifiée côté serveur (présence d'un signataire actif).
+courriersRouter.post("/dossiers/:id/courriers/:courrierId/sign", async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const courrierId = req.params.courrierId as string;
+    const [existing] = await db
+      .select({ id: dossier_courriers.id, signature_status: dossier_courriers.signature_status })
+      .from(dossier_courriers)
+      .where(and(eq(dossier_courriers.id, courrierId), eq(dossier_courriers.dossier_id, dossierId)))
+      .limit(1);
+    if (!existing) return res.status(404).json({ error: "Courrier introuvable" });
+    if (existing.signature_status === "signee") return res.status(409).json({ error: "Ce courrier est déjà signé." });
+    const [d] = await db.select({ commune: dossiers.commune }).from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+    if (!d?.commune) return res.status(400).json({ error: "Commune du dossier introuvable" });
+    const sig = await findSignataire(d.commune, req.user!.id);
+    if (!sig) return res.status(403).json({ error: "Vous n'êtes pas habilité à signer pour cette commune." });
+    const body = (req.body ?? {}) as { body_snapshot?: string | null };
+    const [row] = await db.update(dossier_courriers).set({
+      signature_status: "signee",
+      signataire_user_id: req.user!.id,
+      signed_at: new Date(),
+      signature_image: sig.signature_image ?? null,
+      tampon_image: sig.tampon_image ?? null,
+      ...(typeof body.body_snapshot === "string" ? { body_snapshot: body.body_snapshot } : {}),
+    }).where(eq(dossier_courriers.id, courrierId)).returning();
+    res.json(row);
+  } catch (err) {
+    console.error("[courriers sign]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// Envoi en signature à un signataire désigné (le rédacteur n'a pas — ou ne veut
+// pas exercer — son pouvoir de signature). Traçabilité : demandeur + date + cible.
+courriersRouter.post("/dossiers/:id/courriers/:courrierId/request-signature", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const courrierId = req.params.courrierId as string;
+    const targetUserId = typeof req.body?.signataire_user_id === "string" ? req.body.signataire_user_id : null;
+    if (!targetUserId) return res.status(400).json({ error: "Signataire requis" });
+    const [existing] = await db
+      .select({ id: dossier_courriers.id, signature_status: dossier_courriers.signature_status })
+      .from(dossier_courriers)
+      .where(and(eq(dossier_courriers.id, courrierId), eq(dossier_courriers.dossier_id, dossierId)))
+      .limit(1);
+    if (!existing) return res.status(404).json({ error: "Courrier introuvable" });
+    if (existing.signature_status === "signee") return res.status(409).json({ error: "Ce courrier est déjà signé." });
+    const [d] = await db.select({ commune: dossiers.commune }).from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+    if (!d?.commune) return res.status(400).json({ error: "Commune du dossier introuvable" });
+    const target = await findSignataire(d.commune, targetUserId);
+    if (!target) return res.status(400).json({ error: "Le destinataire n'est pas un signataire habilité de la commune." });
+    const [row] = await db.update(dossier_courriers).set({
+      signature_status: "a_signer",
+      signataire_user_id: targetUserId,
+      signature_requested_by: req.user!.id,
+      signature_requested_at: new Date(),
+    }).where(eq(dossier_courriers.id, courrierId)).returning();
+    res.json(row);
+  } catch (err) {
+    console.error("[courriers request-signature]", err);
     res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
   }
 });
