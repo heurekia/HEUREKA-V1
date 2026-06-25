@@ -459,7 +459,7 @@ decisionsRouter.get("/communes/:commune/signataires", requireRole("mairie", "ins
 });
 
 // ── POST /api/decisions/communes/:commune/signataires ────────────────────────
-decisionsRouter.post("/communes/:commune/signataires", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.post("/communes/:commune/signataires", requirePermission("signataires.manage"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
   const scope = await getCommuneScope(req.user!.id, req.user!.role);
   if (!communeInScope(commune, scope)) {
@@ -483,7 +483,7 @@ decisionsRouter.post("/communes/:commune/signataires", requireRole("mairie", "ad
 });
 
 // ── PUT /api/decisions/communes/:commune/signataires/:id ─────────────────────
-decisionsRouter.put("/communes/:commune/signataires/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.put("/communes/:commune/signataires/:id", requirePermission("signataires.manage"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
   const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -517,7 +517,7 @@ decisionsRouter.put("/communes/:commune/signataires/:id", requireRole("mairie", 
 });
 
 // ── DELETE /api/decisions/communes/:commune/signataires/:id ──────────────────
-decisionsRouter.delete("/communes/:commune/signataires/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.delete("/communes/:commune/signataires/:id", requirePermission("signataires.manage"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
   const scope = await getCommuneScope(req.user!.id, req.user!.role);

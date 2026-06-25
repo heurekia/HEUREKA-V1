@@ -43,11 +43,11 @@ LABEL_TO_PATH["Infos Perso"] = "/mairie/profil";
 const NAV_PERMS: Record<string, string[]> = {
   "/mairie": ["dashboard"],
   "/mairie/dossiers": ["dossiers.read"],
-  "/mairie/calendrier": ["calendrier"],
-  "/mairie/messagerie": ["messagerie"],
+  "/mairie/calendrier": ["calendrier.read"],
+  "/mairie/messagerie": ["messagerie.read"],
   "/mairie/carte": ["zones.read"],
   "/mairie/statistiques": ["stats"],
-  "/mairie/parametres": ["parametres", "utilisateurs"],
+  "/mairie/parametres": ["parametres", "utilisateurs.read", "utilisateurs.manage", "signataires.read", "signataires.manage"],
 };
 
 function navAllowed(path: string, user: Parameters<typeof hasPermission>[0]): boolean {
@@ -1699,8 +1699,8 @@ export function MairieApp() {
   const { user, refreshUser } = useAuth();
   const isAdmin = user?.role === "admin";
   // Gestion des agents : réservée aux responsables (mairie) / super admins ET
-  // conditionnée à la permission « utilisateurs » du rôle personnalisé éventuel.
-  const canManageUsers = (user?.role === "admin" || user?.role === "mairie") && hasPermission(user, "utilisateurs");
+  // conditionnée à la permission « utilisateurs.manage » du rôle personnalisé éventuel.
+  const canManageUsers = (user?.role === "admin" || user?.role === "mairie") && hasPermission(user, "utilisateurs.manage");
   const [commune, setCommuteRaw] = useState(user?.commune ?? "");
   const [userCommunes, setUserCommunes] = useState<string[]>([]);
   const [communesLoaded, setCommunesLoaded] = useState(false);
@@ -1827,7 +1827,7 @@ export function MairieApp() {
       <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} signaturesBadge={signaturesBadge} isSignataire={isSignataire} communes={userCommunes} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} communes={userCommunes} setCommune={setCommune} onViewAllNotifications={() => routerNavigate("/mairie/parametres?tab=notifications")} />
+          <Topbar onNewDossier={active === "Dossiers" && hasPermission(user, "dossiers.create") ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} communes={userCommunes} setCommune={setCommune} onViewAllNotifications={() => routerNavigate("/mairie/parametres?tab=notifications")} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
           <Routes>

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
 import { MapLeaflet } from "../../components/MapLeaflet";
@@ -13,7 +13,7 @@ import { DecisionPanel } from "./DecisionPanel";
 import PieceReclassControl from "./PieceReclassControl";
 import { StatusBadge } from "./ui";
 import { fmtDate, TYPE_LABEL, DOSSIER_TYPE_OPTIONS, type DossierInfo, type WorkflowMeta } from "./shared";
-import { useAuth } from "../../hooks/useAuth";
+import { useAuth, hasPermission } from "../../hooks/useAuth";
 import { PieceMarkupEditor } from "../../components/PieceMarkupEditor";
 import { useInstructionViewMode } from "../../hooks/useInstructionViewMode";
 import { useLocalStorageBool } from "../../hooks/useLocalStorageBool";
@@ -44,6 +44,16 @@ import {
 // anciennement étiquetée "Conformité IA".
 const DETAIL_TABS = ["Résumé", "Terrain", "Documents", "Instruction", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
 type DetailTab = typeof DETAIL_TABS[number];
+
+// Onglets nécessitant une permission distincte du simple « dossiers.read »
+// (celle-ci est déjà requise pour ouvrir un dossier). Les onglets absents de
+// cette table sont visibles dès qu'on a accès au dossier. Un agent sans rôle
+// personnalisé (permissions null) voit tout (hasPermission renvoie true).
+const TAB_PERM: Partial<Record<DetailTab, string>> = {
+  "Documents": "pieces.read",
+  "Consultations": "consultations.read",
+  "Courriers": "courriers.read",
+};
 
 // Slugs d'URL pour chaque onglet du détail dossier : ils permettent de restituer
 // l'onglet courant après un rechargement de page (ou via un lien direct), au lieu
@@ -78,10 +88,11 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
 // Historique des courriers d'instruction émis pour un dossier. Liste, type,
 // auteur, pièces visées, articles cités. Sert de référence auditable pour
 // le pétitionnaire et l'instructeur.
-function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGeneralCourrier }: {
+function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGeneralCourrier, canGenerate }: {
   dossierId: string;
   onRequestNewPiecesCourrier: () => void;
   onRequestNewGeneralCourrier: () => void;
+  canGenerate: boolean;
 }) {
   type CourrierRow = {
     id: string;
@@ -122,16 +133,18 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
           <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Courriers émis</div>
           <div style={{ fontSize: 12, color: "#64748b" }}>Historique de tous les courriers envoyés au pétitionnaire pour ce dossier.</div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={onRequestNewPiecesCourrier}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", background: "white", color: "#B45309", border: "1px solid #FDE68A", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
-            📎 Demander des pièces
-          </button>
-          <button onClick={onRequestNewGeneralCourrier}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
-            + Nouveau courrier
-          </button>
-        </div>
+        {canGenerate && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onRequestNewPiecesCourrier}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", background: "white", color: "#B45309", border: "1px solid #FDE68A", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+              📎 Demander des pièces
+            </button>
+            <button onClick={onRequestNewGeneralCourrier}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+              + Nouveau courrier
+            </button>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -329,6 +342,15 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
     const t = SLUG_TO_DETAIL_TAB[searchParams.get("tab") ?? ""];
     if (t && t !== activeTab) setActiveTabState(t);
   }, [searchParams]);
+  // Onglets visibles selon le rôle personnalisé. Si l'onglet actif (ex. via un
+  // lien direct ?tab=courriers) n'est pas autorisé, on retombe sur « Résumé ».
+  const visibleTabs = useMemo(
+    () => DETAIL_TABS.filter(t => !TAB_PERM[t] || hasPermission(user, TAB_PERM[t]!)),
+    [user],
+  );
+  useEffect(() => {
+    if (!visibleTabs.includes(activeTab)) setActiveTab("Résumé");
+  }, [visibleTabs, activeTab, setActiveTab]);
   // Onglet Documents : mode d'affichage côté instructeur — aperçu (3 col.),
   // comparer (pièce ↔ document réglementaire), lecture (plein écran).
   // Persisté en localStorage entre dossiers (préférence utilisateur).
@@ -1156,11 +1178,19 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
     [dossier.id, runWorkflowAction]);
 
   // Fallback si l'API ne renvoie pas encore le bloc workflow (ex. cache front).
-  const nextAction = workflow?.next_action ?? primaryNextActionFor(currentStatus as DossierStatus);
-  const allowedTransitions = workflow?.allowed_transitions ?? [];
-  const canTakeCharge = workflow?.can_take_charge ?? false;
-  const canReassign = workflow?.can_reassign ?? false;
-  const canUnassign = workflow?.can_unassign ?? false;
+  // Permissions du rôle personnalisé (null = accès complet). Elles masquent les
+  // actions correspondantes ; le backend les refuse aussi (défense en profondeur).
+  const canStatus = hasPermission(user, "dossiers.status");
+  const canRunConformite = hasPermission(user, "conformite.run");
+  const canAssign = hasPermission(user, "dossiers.assign");
+  const canGenerateCourrier = hasPermission(user, "courriers.generate");
+  const canCreateConsult = hasPermission(user, "consultations.create");
+  const canUpdateConsult = hasPermission(user, "consultations.update");
+  const nextAction = canStatus ? (workflow?.next_action ?? primaryNextActionFor(currentStatus as DossierStatus)) : null;
+  const allowedTransitions = canStatus ? (workflow?.allowed_transitions ?? []) : [];
+  const canTakeCharge = canAssign && (workflow?.can_take_charge ?? false);
+  const canReassign = canAssign && (workflow?.can_reassign ?? false);
+  const canUnassign = canAssign && (workflow?.can_unassign ?? false);
 
   const CARD: React.CSSProperties = { background: "white", borderRadius: 14, border: "1px solid #E8EEF4", padding: 22, boxShadow: "0 1px 4px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)" };
   const SH: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 18 };
@@ -1426,7 +1456,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                   la phase de complétude (pre_instruction / incomplet) et même
                   une fois passé à en_instruction si un complément est jugé
                   nécessaire au fond. */}
-              {(["pre_instruction", "incomplet", "en_instruction"] as const).includes(currentStatus as "pre_instruction" | "incomplet" | "en_instruction") && (
+              {canGenerateCourrier && (["pre_instruction", "incomplet", "en_instruction"] as const).includes(currentStatus as "pre_instruction" | "incomplet" | "en_instruction") && (
                 <button
                   onClick={() => setCourrierMode("pieces_complementaires")}
                   disabled={workflowBusy}
@@ -1548,7 +1578,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
 
         {/* Tab bar */}
         <div style={{ display: "flex", gap: 0 }}>
-          {DETAIL_TABS.map(tab => (
+          {visibleTabs.map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)} style={{
               display: "flex", alignItems: "center", gap: 6,
               border: "none", background: "none", padding: "10px 18px", fontSize: 12.5, cursor: "pointer",
@@ -1889,13 +1919,15 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>Périmètre ABF — consultation obligatoire</div>
                           <div style={{ fontSize: 12, color: "#B45309", lineHeight: 1.6, marginBottom: 12 }}>Cette parcelle est en périmètre de protection des Monuments Historiques. L'avis de l'Architecte des Bâtiments de France est requis avant toute décision.</div>
-                          <button
-                            onClick={() => openMissionModal("ABF")}
-                            disabled={consultationsMissioning}
-                            style={{ background: consultationsMissioning ? "#F5F3FF" : "linear-gradient(135deg,#8B5CF6,#7C3AED)", color: consultationsMissioning ? "#8B5CF6" : "white", border: consultationsMissioning ? "1px solid #C4B5FD" : "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(124,58,237,0.3)" }}
-                          >
-                            {consultationsMissioning ? "Envoi en cours…" : "Missionner l'ABF"}
-                          </button>
+                          {canCreateConsult && (
+                            <button
+                              onClick={() => openMissionModal("ABF")}
+                              disabled={consultationsMissioning}
+                              style={{ background: consultationsMissioning ? "#F5F3FF" : "linear-gradient(135deg,#8B5CF6,#7C3AED)", color: consultationsMissioning ? "#8B5CF6" : "white", border: consultationsMissioning ? "1px solid #C4B5FD" : "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(124,58,237,0.3)" }}
+                            >
+                              {consultationsMissioning ? "Envoi en cours…" : "Missionner l'ABF"}
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -2359,24 +2391,26 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                     </div>
                   )}
                 </div>
-                <button
-                  onClick={() => void relaunchWorkingAnalysis()}
-                  disabled={workingLoading}
-                  style={{
-                    background: "white",
-                    border: "1px solid #C7D2FE",
-                    color: "#4F46E5",
-                    borderRadius: 9,
-                    padding: "9px 16px",
-                    fontSize: 12.5,
-                    fontWeight: 700,
-                    cursor: workingLoading ? "default" : "pointer",
-                    whiteSpace: "nowrap" as const,
-                    opacity: workingLoading ? 0.6 : 1,
-                  }}
-                >
-                  {workingLoading ? "Analyse en cours…" : hasWorkingData ? "↻ Relancer l'analyse" : "Lancer l'analyse"}
-                </button>
+                {canRunConformite && (
+                  <button
+                    onClick={() => void relaunchWorkingAnalysis()}
+                    disabled={workingLoading}
+                    style={{
+                      background: "white",
+                      border: "1px solid #C7D2FE",
+                      color: "#4F46E5",
+                      borderRadius: 9,
+                      padding: "9px 16px",
+                      fontSize: 12.5,
+                      fontWeight: 700,
+                      cursor: workingLoading ? "default" : "pointer",
+                      whiteSpace: "nowrap" as const,
+                      opacity: workingLoading ? 0.6 : 1,
+                    }}
+                  >
+                    {workingLoading ? "Analyse en cours…" : hasWorkingData ? "↻ Relancer l'analyse" : "Lancer l'analyse"}
+                  </button>
+                )}
               </div>
               {conformiteError && (
                 <div style={{ margin: "0 20px 14px", padding: "8px 12px", borderRadius: 8, background: "#FEF2F2", border: "1px solid #FECACA", fontSize: 12, color: "#991B1B" }}>
@@ -2411,28 +2445,30 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                       </div>
                     )}
                   </div>
-                  <button
-                    onClick={() => void launchConformiteFinale()}
-                    disabled={conformiteFinaleLaunching}
-                    style={{
-                      background: conformiteFinaleLaunching ? "#C7D2FE" : "#4F46E5",
-                      color: "white",
-                      border: "none",
-                      borderRadius: 9,
-                      padding: "10px 18px",
-                      fontSize: 13,
-                      fontWeight: 700,
-                      cursor: conformiteFinaleLaunching ? "default" : "pointer",
-                      boxShadow: "0 2px 6px rgba(79,70,229,0.25)",
-                      whiteSpace: "nowrap" as const,
-                    }}
-                  >
-                    {conformiteFinaleLaunching
-                      ? "Analyse en cours…"
-                      : conformiteFinale?.status === "done"
-                        ? "↻ Relancer l'analyse finale"
-                        : "Lancer l'analyse finale"}
-                  </button>
+                  {canRunConformite && (
+                    <button
+                      onClick={() => void launchConformiteFinale()}
+                      disabled={conformiteFinaleLaunching}
+                      style={{
+                        background: conformiteFinaleLaunching ? "#C7D2FE" : "#4F46E5",
+                        color: "white",
+                        border: "none",
+                        borderRadius: 9,
+                        padding: "10px 18px",
+                        fontSize: 13,
+                        fontWeight: 700,
+                        cursor: conformiteFinaleLaunching ? "default" : "pointer",
+                        boxShadow: "0 2px 6px rgba(79,70,229,0.25)",
+                        whiteSpace: "nowrap" as const,
+                      }}
+                    >
+                      {conformiteFinaleLaunching
+                        ? "Analyse en cours…"
+                        : conformiteFinale?.status === "done"
+                          ? "↻ Relancer l'analyse finale"
+                          : "Lancer l'analyse finale"}
+                    </button>
+                  )}
                 </div>
                 {finaleBlockers && (
                   <div style={{ marginTop: 12, padding: 12, borderRadius: 9, background: "#FEF2F2", border: "1px solid #FECACA" }}>
@@ -3455,13 +3491,15 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                       <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
                       Organismes consultés
                     </div>
-                    <button
-                      onClick={() => openMissionModal()}
-                      disabled={consultationsMissioning}
-                      style={{ background: consultationsMissioning ? "#EEF2FF" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: consultationsMissioning ? "#4F46E5" : "white", border: consultationsMissioning ? "1px solid #C7D2FE" : "none", borderRadius: 9, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(79,70,229,0.3)" }}
-                    >
-                      {consultationsMissioning ? "En cours…" : "+ Missionner un service"}
-                    </button>
+                    {canCreateConsult && (
+                      <button
+                        onClick={() => openMissionModal()}
+                        disabled={consultationsMissioning}
+                        style={{ background: consultationsMissioning ? "#EEF2FF" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: consultationsMissioning ? "#4F46E5" : "white", border: consultationsMissioning ? "1px solid #C7D2FE" : "none", borderRadius: 9, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(79,70,229,0.3)" }}
+                      >
+                        {consultationsMissioning ? "En cours…" : "+ Missionner un service"}
+                      </button>
+                    )}
                   </div>
                   {consultationsLoading ? (
                     <div style={{ textAlign: "center" as const, padding: "32px 0", color: "#94a3b8", fontSize: 13 }}>Chargement…</div>
@@ -3499,7 +3537,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                       ) : (
                         <div style={{ fontSize: 12.5, color: "#94a3b8", lineHeight: 1.7, padding: "13px 14px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #EAECF0", fontStyle: "italic" }}>Aucun avis reçu pour l'instant.</div>
                       )}
-                      {selectedC.status === "en_attente" && (
+                      {canUpdateConsult && selectedC.status === "en_attente" && (
                         <button
                           onClick={() => {
                             api.patch(`/mairie/dossiers/${dossier.id}/consultations/${selectedC.id}`, { status: "avis_recu", favorable: true })
@@ -3675,6 +3713,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
             dossierId={dossier.id}
             onRequestNewPiecesCourrier={() => setCourrierMode("pieces_complementaires")}
             onRequestNewGeneralCourrier={() => setCourrierMode("general")}
+            canGenerate={canGenerateCourrier}
           />
         )}
 
