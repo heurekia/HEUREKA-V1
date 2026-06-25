@@ -350,20 +350,37 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
 
     // RGPD art. 17 (droit à l'effacement) : le simple DELETE en DB laisse les
     // fichiers physiques (PDF, plans, photos) sur disque/S3 → fuite de données.
-    // On les supprime AVANT le DELETE en base via l'abstraction StorageProvider
-    // qui gère indifféremment local et S3-compatible.
-    const storage = getStorageProvider();
-    const userPieces = await db
-      .select({ url: dossier_pieces_jointes.url })
-      .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.user_id, user.id));
-    const keys = userPieces
-      .map((p) => p.url)
-      .filter((u): u is string => !!u)
-      .map((u) => storage.keyFromUrl(u));
-    const { deleted: filesDeleted, failed: filesFailed } = await storage.removeBulk(keys);
-    if (filesFailed > 0) {
-      console.warn(`[rgpd] suppression compte ${user.id} : ${filesFailed} fichiers en échec sur ${keys.length}`);
+    // On les supprime via l'abstraction StorageProvider (local ou S3-compatible).
+    //
+    // BEST-EFFORT STRICT : le nettoyage des fichiers ne doit JAMAIS faire échouer
+    // l'effacement du compte. Un provider mal configuré (getStorageProvider lève)
+    // ou une URL héritée malformée (keyFromUrl lève sur une URL vide/anormale) ne
+    // doit pas transformer la suppression en 500 et rendre le compte indéfiniment
+    // indélébile : l'effacement en base est la partie légalement critique ; les
+    // fichiers orphelins éventuels sont balayés par la purge planifiée. On logge
+    // donc l'incident (visible en prod) et on poursuit la suppression.
+    let filesDeleted = 0;
+    let filesFailed = 0;
+    try {
+      const storage = getStorageProvider();
+      const userPieces = await db
+        .select({ url: dossier_pieces_jointes.url })
+        .from(dossier_pieces_jointes)
+        .where(eq(dossier_pieces_jointes.user_id, user.id));
+      const keys = userPieces
+        .map((p) => p.url)
+        .filter((u): u is string => !!u)
+        .flatMap((u) => {
+          // Une URL anormale ne fait sauter QUE ce fichier (purge ultérieure),
+          // pas toute la suppression.
+          try { return [storage.keyFromUrl(u)]; } catch { return []; }
+        });
+      ({ deleted: filesDeleted, failed: filesFailed } = await storage.removeBulk(keys));
+      if (filesFailed > 0) {
+        console.warn(`[rgpd] suppression compte ${user.id} : ${filesFailed} fichiers en échec sur ${keys.length}`);
+      }
+    } catch (err) {
+      console.error(`[rgpd] nettoyage fichiers échoué pour le compte ${user.id} (suppression poursuivie) :`, err);
     }
 
     await writeAudit(user.id, user.email, "account_deleted", req);
