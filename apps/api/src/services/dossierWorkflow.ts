@@ -16,6 +16,11 @@ import {
 } from "@heureka-v1/shared";
 import { resolveEffectiveInstructeur } from "./absenceDelegation.js";
 
+// Exécuteur DB : soit le client global, soit une transaction Drizzle. Permet de
+// composer plusieurs écritures de services différents dans UNE même transaction
+// (atomicité inter-services — ex. émission de courrier + transition de statut).
+export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 export type WorkflowErrorCode =
   | "DOSSIER_NOT_FOUND"
   | "INVALID_TRANSITION"
@@ -41,6 +46,10 @@ export interface StatusChangeOptions {
   // Type d'event à utiliser. Par défaut "status_changed". Permet aux
   // déclencheurs métiers (ex. décision signée) de poser un type distinct.
   eventType?: string;
+  // Exécuteur transactionnel optionnel : si fourni, le SELECT de garde,
+  // l'UPDATE du statut et l'INSERT de l'event passent par cette transaction —
+  // garantissant l'atomicité avec les écritures de l'appelant.
+  tx?: DbExecutor;
 }
 
 export interface StatusChangeResult {
@@ -55,7 +64,8 @@ export async function changeDossierStatus(
   actorId: string | null,
   opts: StatusChangeOptions = {},
 ): Promise<StatusChangeResult> {
-  const [before] = await db
+  const exec = opts.tx ?? db;
+  const [before] = await exec
     .select({ id: dossiers.id, status: dossiers.status })
     .from(dossiers)
     .where(eq(dossiers.id, dossierId))
@@ -73,12 +83,12 @@ export async function changeDossierStatus(
     );
   }
 
-  await db
+  await exec
     .update(dossiers)
     .set({ status: newStatus, updated_at: new Date() })
     .where(eq(dossiers.id, dossierId));
 
-  await db.insert(instruction_events).values({
+  await exec.insert(instruction_events).values({
     dossier_id: dossierId,
     type: opts.eventType ?? "status_changed",
     user_id: actorId,
