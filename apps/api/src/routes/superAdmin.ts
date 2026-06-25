@@ -13,12 +13,17 @@ import { requireAuth, requireRole, bumpTokenVersion, invalidateTokenVersionCache
 import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
 import { invalidatePermissions, invalidateAllPermissions } from "../middlewares/permissions.js";
 import { logAudit } from "../services/audit.js";
+import { helpAdminRouter } from "./help.js";
 
 export const superAdminRouter = Router();
 
 // All routes require authentication + admin role
 superAdminRouter.use(requireAuth);
 superAdminRouter.use(requireRole("admin"));
+
+// Centre d'aide — outil de rédaction (thèmes + articles). Hérite des gardes
+// requireAuth + requireRole("admin") posées juste au-dessus.
+superAdminRouter.use("/help", helpAdminRouter);
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 superAdminRouter.get("/dashboard", async (_req, res) => {

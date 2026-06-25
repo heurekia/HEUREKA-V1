@@ -46,3 +46,5 @@ export * from "./billingPrestations.js";
 export * from "./billingPlans.js";
 export * from "./billingItems.js";
 export * from "./billingCosts.js";
+export * from "./helpThemes.js";
+export * from "./helpArticles.js";

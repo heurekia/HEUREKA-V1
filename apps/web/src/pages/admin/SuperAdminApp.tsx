@@ -5,6 +5,7 @@ import { useAuth } from "../../hooks/useAuth";
 import { MfaSettings } from "../../components/MfaSettings";
 import { adminPath } from "../../router/adminBase";
 import { CATEGORIES } from "@heureka-v1/shared";
+import { DocumentationAdmin } from "./DocumentationAdmin";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface DashboardStats {
@@ -403,6 +404,12 @@ const navGroups: NavGroup[] = [
     items: [
       { path: adminPath("/audit"), icon: "🔒", label: "Audit sécurité" },
       { path: adminPath("/conformite"), icon: "🛡", label: "Conformité RGPD" },
+    ],
+  },
+  {
+    title: "Contenu",
+    items: [
+      { path: adminPath("/documentation"), icon: "📚", label: "Centre d'aide" },
     ],
   },
   {
@@ -8034,6 +8041,7 @@ export function SuperAdminApp() {
           <Route path="/facturation" element={<Facturation />} />
           <Route path="/audit" element={<AuditLogs />} />
           <Route path="/conformite" element={<Conformite />} />
+          <Route path="/documentation" element={<DocumentationAdmin />} />
           <Route path="/site" element={<SitePublic />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="*" element={<Navigate to={adminPath()} replace />} />

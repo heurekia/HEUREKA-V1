@@ -18,6 +18,7 @@ import { documentationRouter } from "./documentation.js";
 import { pieceAnnotationsRouter } from "./pieceAnnotations.js";
 import { dossierDocumentsRouter } from "./documents.js";
 import { assistantRouter } from "./assistant.js";
+import { helpReaderRouter } from "../help.js";
 
 export const mairieRouter = Router();
 mairieRouter.use(requireAuth);
@@ -57,3 +58,5 @@ mairieRouter.use(documentationRouter);
 mairieRouter.use(pieceAnnotationsRouter);
 mairieRouter.use(dossierDocumentsRouter);
 mairieRouter.use(assistantRouter);
+// Centre d'aide : lecture du sommaire + des articles publiés (GET only).
+mairieRouter.use(helpReaderRouter);

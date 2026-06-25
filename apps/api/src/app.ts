@@ -41,6 +41,10 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "blob:", "https://data.geopf.fr", "https://*.basemaps.cartocdn.com", "https://*.tile.openstreetmap.org"],
       connectSrc: ["'self'", "https://data.geopf.fr", "https://api-adresse.data.gouv.fr", "https://geo.api.gouv.fr"],
+      // Vidéos embarquées dans les articles du Centre d'aide (YouTube/Vimeo).
+      frameSrc: ["'self'", "https://www.youtube.com", "https://www.youtube-nocookie.com", "https://player.vimeo.com"],
+      // Lectures vidéo/audio uploadées (data/blob) en plus du same-origin.
+      mediaSrc: ["'self'", "data:", "blob:"],
       fontSrc: ["'self'"],
       frameAncestors: ["'none'"],
     },
@@ -72,6 +76,9 @@ app.use(cors({
 app.use("/api/mairie/admin/ingest-plu-pdf", express.json({ limit: "300mb" }));
 // Référentiel documentaire commune (OAP, PPRI, PEB…) : PDFs envoyés en base64.
 app.use("/api/mairie/documents", express.json({ limit: "60mb" }));
+// Centre d'aide (super-admin) : articles avec images de couverture/illustrations
+// en data URL base64 — la limite globale 2 Mo serait vite atteinte.
+app.use("/api/admin/help", express.json({ limit: "30mb" }));
 // Analyse d'article avec image (tableau/croquis) en base64.
 app.use("/api/mairie/reglementation/structure-article", express.json({ limit: "15mb" }));
 app.use(express.json({ limit: "2mb" }));
