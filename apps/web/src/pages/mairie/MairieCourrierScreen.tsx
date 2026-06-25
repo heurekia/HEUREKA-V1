@@ -1058,7 +1058,9 @@ export function CourrierModal({
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
               <Printer size={14} /> Imprimer / PDF
             </button>
-            {/* Signature — signer sur place (si habilité) ou demander à un signataire */}
+            {/* Signature — bouton dynamique selon l'accès : un signataire habilité
+                signe directement ; sinon il demande la signature à un signataire
+                habilité. Les deux boutons sont mutuellement exclusifs. */}
             {signatureStatus !== "signee" && (
               <>
                 {canSign && (
@@ -1068,7 +1070,7 @@ export function CourrierModal({
                     ✍️ {signWorking ? "Signature…" : "Signer"}
                   </button>
                 )}
-                {signataireRows.length > 0 && (
+                {!canSign && signataireRows.length > 0 && (
                   <div style={{ position: "relative" }}>
                     <button onClick={() => setShowSignPicker((v) => !v)} disabled={signWorking}
                       title="Envoyer le courrier en signature à un signataire habilité"
