@@ -19,11 +19,36 @@ import { decisionsRouter } from "./routes/decisions.js";
 import { regulatoryRouter } from "./routes/regulatory.js";
 import { uploadsRouter } from "./routes/uploads.js";
 import { client } from "@heureka-v1/db";
+import { pinoHttp } from "pino-http";
+import { randomUUID } from "node:crypto";
+import { logger } from "./logger.js";
 
 export const app = express();
 
 // Trust the first proxy (nginx en frontal du VPS OVH) so rate-limiters see the real client IP
 app.set("trust proxy", 1);
+
+// Log structuré de chaque requête (méthode, route, status, durée) avec un reqId
+// de corrélation — réutilise le X-Request-Id de nginx s'il existe, sinon en
+// génère un (renvoyé au client). Placé tôt pour couvrir toutes les routes ; le
+// health-check est exclu pour ne pas noyer les logs sous le polling du gate.
+app.use(pinoHttp({
+  logger,
+  genReqId: (req, res) => {
+    const hdr = req.headers["x-request-id"];
+    const id = (Array.isArray(hdr) ? hdr[0] : hdr) || randomUUID();
+    res.setHeader("X-Request-Id", id);
+    return id;
+  },
+  customLogLevel: (_req, res, err) => {
+    if (err || res.statusCode >= 500) return "error";
+    if (res.statusCode >= 400) return "warn";
+    return "info";
+  },
+  autoLogging: {
+    ignore: (req) => req.url === "/api/health" || req.url === "/api/health/live",
+  },
+}));
 
 // Skip compression for Server-Sent Events — gzip buffering would hold the
 // stream and the client would receive nothing until the response ends.
