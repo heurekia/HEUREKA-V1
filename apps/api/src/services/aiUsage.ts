@@ -349,6 +349,49 @@ export async function probeAiUsageTable(): Promise<void> {
   }
 }
 
+// ── Boot probe : dépendance système poppler-utils ────────────────────────────
+// Pixtral n'accepte pas le PDF natif. TOUTE analyse/extraction d'une pièce PDF
+// (analyzePiece + extractPiece) passe donc par un rendu PDF→PNG via `pdftoppm`,
+// et la segmentation des dépôts groupés lit la couche texte via `pdftotext`.
+// Ces deux binaires viennent du paquet `poppler-utils`.
+//
+// Si `pdftoppm` manque (ou n'est pas sur le PATH du process API), CHAQUE OCR de
+// pièce PDF échoue : analyzePiece ET extractPiece lèvent au rendu, la pièce est
+// marquée `ocr_status = "failed"` (badge rouge « ⚠ OCR » côté instructeur) alors
+// que le document est parfaitement lisible. Comme la segmentation, elle, peut
+// passer par la couche texte (`pdftotext`) sans rendre d'image, on observe le
+// symptôme déroutant « pièces correctement reconnues mais toutes en échec OCR ».
+// On sonde au boot pour transformer cette panne silencieuse en message
+// actionnable (l'install n'est documentée que dans le README, jamais vérifiée).
+export function probePdfTooling(): void {
+  const tools = [
+    { bin: "pdftoppm", role: "rendu PDF→PNG (analyse + extraction des pièces)" },
+    { bin: "pdftotext", role: "lecture de la couche texte (segmentation des dépôts groupés)" },
+  ];
+  const missing: string[] = [];
+  for (const { bin } of tools) {
+    try {
+      // `-v` imprime la version et sort en code 0 quand le binaire est présent.
+      execFileSync(bin, ["-v"], { stdio: ["ignore", "ignore", "ignore"] });
+    } catch (err) {
+      // Seul ENOENT = binaire absent. Un binaire présent qui renverrait un code
+      // ≠ 0 sur `-v` reste exploitable : on ne le compte pas comme manquant.
+      if ((err as { code?: string }).code === "ENOENT") missing.push(bin);
+    }
+  }
+  if (missing.length === 0) {
+    console.log("[pdf-tooling] ✅ poppler-utils présent (pdftoppm + pdftotext) — OCR des pièces PDF opérationnel.");
+    return;
+  }
+  console.error(
+    `[pdf-tooling] ⚠️  Binaire(s) manquant(s) : ${missing.join(", ")} (paquet poppler-utils). ` +
+    (missing.includes("pdftoppm")
+      ? "Sans pdftoppm, l'OCR de TOUTE pièce PDF échoue (ocr_status=failed, badge rouge « ⚠ OCR ») alors que les documents sont lisibles. "
+      : "") +
+    "Installer : `apt install poppler-utils` (Debian/Ubuntu) ou `brew install poppler` (macOS), puis redémarrer l'API.",
+  );
+}
+
 // ── Helpers de tracking (factorisés entre callAi et streamAi) ───────────────
 
 function trackUsage(
