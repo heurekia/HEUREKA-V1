@@ -1,8 +1,9 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossier_courriers, users, communes, courrier_templates, legal_mentions, user_communes } from "@heureka-v1/db";
+import { dossier_courriers, users, communes, courrier_templates, legal_mentions, user_communes, dossiers } from "@heureka-v1/db";
 import { eq, desc, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { CODE_URBANISME_ID } from "../../services/legifrance.js";
 import {
   emitPieceComplementRequest,
@@ -179,8 +180,43 @@ async function getCommuneForUser(req: AuthRequest): Promise<string | null> {
   return u?.commune_insee ?? u?.commune?.trim() ?? null;
 }
 
+// Commune (ligne complète) d'un dossier, APRÈS contrôle d'accès au dossier
+// (même périmètre que enforceDossierAccess : user_communes ou commune du
+// compte ; admin = tout). Sert à scoper modèles & en-tête sur la commune DU
+// DOSSIER quand la modale courrier passe ?dossier_id=, indépendamment de la
+// commune principale du compte et de toute correspondance nom→INSEE côté front.
+async function getDossierCommuneRow(req: AuthRequest, dossierId: string) {
+  const [d] = await db.select({ commune: dossiers.commune })
+    .from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+  if (!d?.commune) return null;
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(d.commune, scope)) return null;
+  const name = d.commune.trim();
+  const [byName] = await db.select().from(communes).where(ilike(communes.name, name)).limit(1);
+  if (byName) return byName;
+  const [byUnaccent] = await db.select().from(communes)
+    .where(sql`unaccent(name) ILIKE unaccent(${name})`).limit(1);
+  return byUnaccent ?? null;
+}
+
 courriersRouter.get("/templates", async (req: AuthRequest, res) => {
   try {
+    // Priorité au périmètre DU DOSSIER (modale courrier) : on résout la commune
+    // du dossier côté serveur et on matche les modèles par INSEE *ou* par nom —
+    // robuste quel que soit le stockage (seed = INSEE, modèles anciens = nom).
+    const dossierId = typeof req.query.dossier_id === "string" && req.query.dossier_id.trim()
+      ? req.query.dossier_id.trim() : null;
+    if (dossierId) {
+      const row = await getDossierCommuneRow(req, dossierId);
+      if (row) {
+        const keys = [row.insee_code, row.name].filter((v): v is string => !!v);
+        const rows = await db.select().from(courrier_templates)
+          .where(sql`commune_insee = ANY(${keys}) OR commune ILIKE ANY(${keys})`)
+          .orderBy(courrier_templates.created_at);
+        return res.json(rows);
+      }
+      // Dossier introuvable ou hors périmètre : repli sur la commune du compte.
+    }
     const communeKey = await getCommuneForUser(req);
     if (!communeKey) return res.json([]);
     const rows = await db.select().from(courrier_templates)
@@ -250,7 +286,11 @@ courriersRouter.delete("/templates/:templateId", async (req: AuthRequest, res) =
 
 courriersRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
   try {
-    const commune = await getCommuneRowForUser(req);
+    // En-tête de la commune DU DOSSIER si la modale passe ?dossier_id= (sinon
+    // commune du compte), pour que logo/titre/signature correspondent au dossier.
+    const dossierId = typeof req.query.dossier_id === "string" && req.query.dossier_id.trim()
+      ? req.query.dossier_id.trim() : null;
+    const commune = (dossierId ? await getDossierCommuneRow(req, dossierId) : null) ?? await getCommuneRowForUser(req);
     if (!commune) return res.json({ commune_configured: false });
     res.json({
       commune_configured: true,
