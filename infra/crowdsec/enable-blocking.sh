@@ -14,11 +14,22 @@ die() { log "ERREUR: $*"; exit 1; }
 
 command -v cscli >/dev/null 2>&1 || die "Moteur absent — lancer ./install.sh d'abord."
 
-# Garde-fou : refuser tant que la whitelist n'a pas été personnalisée.
-WL=/etc/crowdsec/parsers/s02-enrich/heureka-whitelists.yaml
-if grep -q 'A_COMPLETER' "$WL" 2>/dev/null; then
-  die "Whitelist non complétée ($WL) : renseigner l'IP de l'équipe et retirer
-       le marqueur A_COMPLETER avant d'activer le blocage."
+# Garde-fou anti-lockout. Le vrai risque d'auto-ban d'un admin nomade, c'est le
+# brute-force SSH par mot de passe (scénario ssh-bf) depuis une nouvelle IP. Une
+# whitelist n'est PAS requise si SSH est en clé only : on gate donc sur le bon
+# critère (l'auth par mot de passe), pas sur la présence d'une whitelist.
+if sshd -T 2>/dev/null | grep -qi '^passwordauthentication yes'; then
+  log "ATTENTION : l'authentification SSH par mot de passe est ACTIVÉE."
+  log "  → risque d'auto-ban (ssh-bf) depuis une IP non whitelistée."
+  log "  Recommandé : passer SSH en clé only avant d'enforcer."
+  log "  Secours quoi qu'il arrive : console KVM OVH (non filtrée) puis"
+  log "    sudo cscli decisions delete --ip <ton-ip>"
+  if [[ "${FORCE:-0}" != "1" ]]; then
+    die "Abandon. Passer en clé only, ou forcer : sudo FORCE=1 ./enable-blocking.sh"
+  fi
+  log "FORCE=1 — on continue malgré l'auth par mot de passe."
+else
+  log "SSH par clé only (mot de passe désactivé) — OK pour enforcer."
 fi
 
 log "Installation du bouncer pare-feu (nftables)…"

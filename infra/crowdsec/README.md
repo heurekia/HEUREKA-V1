@@ -62,23 +62,51 @@ sudo cscli collections list   # crowdsecurity/nginx, http-cve, linux présents
 sudo cscli alerts list        # détections
 sudo cscli decisions list     # décisions calculées
 
-# 4. Compléter la whitelist avec les IP fixes de l'équipe (bureau, VPN admin,
-#    monitoring), retirer le placeholder, recharger.
-sudo $EDITOR /etc/crowdsec/parsers/s02-enrich/heureka-whitelists.yaml
+# 4. (Recommandé) Passer SSH en clé only — la vraie protection contre l'auto-ban
+#    d'un admin nomade (cf. « Ne pas se faire bannir » plus bas).
+#    Optionnel : ajouter une IP de SORTIE STABLE (VPN/bureau) dans la whitelist
+#    locale (non versionnée), puis recharger.
+sudo $EDITOR /etc/crowdsec/parsers/s02-enrich/heureka-whitelists-local.yaml
 sudo systemctl reload crowdsec
 
-# 5. Activer le blocage (installe le bouncer nftables). Refuse de tourner si la
-#    whitelist contient encore le marqueur A_COMPLETER.
+# 5. Activer le blocage (installe le bouncer nftables). Le script refuse de
+#    tourner si l'auth SSH par mot de passe est encore active (anti-lockout) ;
+#    forcer si besoin : sudo FORCE=1 ./enable-blocking.sh
 sudo ./enable-blocking.sh
 
 # 6. Confirmer que le bouncer est enregistré et actif
 sudo cscli bouncers list      # le pare-feu doit apparaître "valid"
 ```
 
-> Tip : pour rejouer la whitelist côté repo plutôt que d'éditer en place,
-> modifier `whitelists.yaml` ici, commiter, `git pull` sur le VPS, puis
-> relancer `sudo ./install.sh` (idempotent) — il recopie le fichier et un
-> `reload` suffit.
+### Ne pas se faire bannir (admin nomade)
+
+CrowdSec bannit un **comportement** (brute-force, scan, CVE), pas une IP
+inconnue : travailler depuis des lieux/IP différents ne déclenche rien tant que
+ton trafic est normal. Les deux seuls risques d'auto-ban, et leurs parades :
+
+1. **Brute-force SSH** (mauvais mot de passe / mauvaise clé en boucle).
+   → **SSH en clé only** (`PasswordAuthentication no` dans `sshd_config`) : une
+   clé acceptée ne génère aucune ligne d'échec, `ssh-bf` ne se déclenche jamais
+   pour toi, **où que tu sois**. Parade n°1 ; `enable-blocking.sh` refuse
+   d'ailleurs d'enforcer tant que l'auth par mot de passe est active.
+   → Repli si tu gardes le mot de passe : `sudo cscli simulation enable
+   crowdsecurity/ssh-bf` (détecte mais ne bannit pas).
+2. **Échecs de login répétés** sur `admin.heurekia.com` → ne pas insister, et de
+   toute façon c'est récupérable (ci-dessous).
+
+**Filet de secours — un ban n'est jamais fatal.** La **console KVM/web OVH**
+(Espace client → VPS → Console) passe hors pare-feu nftables : tu t'y connectes
+toujours, même banni, et tu lèves le ban :
+
+```bash
+sudo cscli decisions delete --ip <ton-ip>   # ou --all en cas de panique
+```
+
+**Whitelist stable (optionnel).** Pour une whitelist qui te suit partout : route
+ton admin par une **IP de sortie fixe** (VPN à IP dédiée ou bastion) et mets
+cette unique `/32` dans le fichier local `heureka-whitelists-local.yaml`. Évite
+les IP résidentielles dynamiques (IPv4 FAI ou IPv6 privacy extension) : elles
+changent vite et la whitelist devient caduque.
 
 ## 2. Tester que ça marche
 
@@ -183,7 +211,8 @@ remediation ». Démarrer en `appsec_config` mode `DetectOnly` avant de passer e
 
 | Fichier | Rôle |
 |---|---|
-| `install.sh` | Pose le moteur + collections + acquisition + whitelist (détection seule) |
+| `install.sh` | Pose le moteur + collections + acquisition + whitelists (détection seule) |
 | `enable-blocking.sh` | Installe le bouncer nftables (active le blocage) |
 | `acquis.yaml` | Sources de logs analysées (nginx + auth.log) |
-| `whitelists.yaml` | IP de confiance de l'équipe (anti auto-blocage) — **à compléter** |
+| `whitelists.yaml` | Base versionnée (loopback only) — **jamais d'IP perso ici** |
+| `whitelists.local.example.yaml` | Modèle de whitelist locale (IP équipe) à déposer côté VPS, non versionné |

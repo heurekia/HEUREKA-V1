@@ -6,3 +6,7 @@ dist/
 .DS_Store
 *.log
 .tmp/
+
+# Whitelist CrowdSec réelle (IP de l'équipe) — jamais versionnée, seul le
+# .example l'est. Le fichier de prod vit côté VPS dans /etc/crowdsec/.
+infra/crowdsec/whitelists.local.yaml
