@@ -28,6 +28,9 @@ type DecisionData = {
   motif_refus_signature: string | null;
   created_at: string;
   updated_at: string;
+  // Auteur de la décision (instructeur_id, toujours renseigné). Distinct de
+  // l'instructeur assigné au dossier (dossier.instructeur), qui peut être absent.
+  instructeur?: { id: string; prenom: string; nom: string } | null;
   signataire?: { id: string; prenom: string; nom: string; email: string } | null;
 };
 
@@ -206,6 +209,13 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
 
   const stepIdx = decision ? decisionStepIndex(decision.status) : 0;
   const typeLabel = decisionOptions.find(o => o.key === (decision?.type ?? localType))?.label ?? "—";
+  // Nom de l'instructeur·trice à afficher dans le circuit de signature : on prend
+  // l'AUTEUR de la décision (toujours renseigné), avec repli sur l'instructeur
+  // assigné au dossier. Sans ça, la ligne restait « non nommée » (—) dès que le
+  // dossier n'avait pas d'instructeur assigné.
+  const instructeurLabel = decision?.instructeur
+    ? `${decision.instructeur.prenom} ${decision.instructeur.nom}`.trim()
+    : (dossier.instructeur ?? null);
   const signataireLabel = (() => {
     if (decision?.signataire) return `${decision.signataire.prenom} ${decision.signataire.nom}`;
     const row = communeSignataires.find(s => s.user_id === (localSignataireId ?? decision?.signataire_id));
@@ -438,7 +448,7 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
           <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Signatures</div>
             {[
-              { label: "Instructeur·trice", name: dossier.instructeur ?? "—", signed: true, date: decision.created_at?.split("T")[0] },
+              { label: "Instructeur·trice", name: instructeurLabel ?? "—", signed: !!instructeurLabel, date: decision.created_at?.split("T")[0] },
               { label: ROLE_LABELS[communeSignataires.find(s => s.user_id === decision.signataire_id)?.role ?? ""] ?? "Signataire", name: signataireLabel, signed: decision.status === "signe" || decision.status === "notifie", date: decision.date_decision },
             ].map((sig, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: i === 0 ? "1px solid #F1F5F9" : "none" }}>
