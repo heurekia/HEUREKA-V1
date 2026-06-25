@@ -28,6 +28,12 @@ export interface QueueOcrInput {
   nom_piece: string;
   code_piece: string;
   trace: { dossierId: string | null; userId: string | null; communeId: string | null };
+  // Post-traitement appelé une fois la pièce analysée (succès OU échec), dans le
+  // `finally` du worker. Par défaut : notification "dossier prêt" du comptoir
+  // mairie (maybeNotifyDossierReady). Le dépôt CITOYEN fournit le sien
+  // (ré-ouverture du dossier + sync des faits) — il n'a pas la logique de
+  // session/notification instructeur de la mairie.
+  onSettled?: (dossierId: string) => Promise<void>;
 }
 
 // Garde-fous temporels. Le LLM vision (Pixtral) peut hoqueter ou se bloquer
@@ -151,11 +157,13 @@ async function processOne(input: QueueOcrInput): Promise<void> {
     // réellement quiescent.
     trackPieceSettled(dossierId);
 
-    // À chaque complétion, on tente d'envoyer la notification "dossier prêt".
-    // C'est un no-op tant que (a) l'agent n'a pas finalisé sa session d'upload
-    // ou (b) d'autres pièces sont encore en file.
-    await maybeNotifyDossierReady(dossierId).catch((err) => {
-      console.warn("[pieceOcrQueue] maybeNotifyDossierReady:", err instanceof Error ? `${err.name}: ${err.message}` : err);
+    // À chaque complétion : pour le comptoir mairie, on tente la notification
+    // "dossier prêt" (no-op tant que la session n'est pas finalisée ou que
+    // d'autres pièces sont en file) ; pour le dépôt citoyen, l'appelant fournit
+    // son propre post-traitement (onSettled : ré-ouverture + sync des faits).
+    const settle = input.onSettled ?? maybeNotifyDossierReady;
+    await settle(dossierId).catch((err) => {
+      console.warn("[pieceOcrQueue] onSettled/maybeNotifyDossierReady:", err instanceof Error ? `${err.name}: ${err.message}` : err);
     });
   }
 }

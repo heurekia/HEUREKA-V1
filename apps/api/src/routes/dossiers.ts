@@ -14,11 +14,11 @@ import { classifyPermit } from "../services/classificationEngine.js";
 import { buildPiecesContext, getPiecesForType, getPieceByCode } from "../data/piecesRequises.js";
 import { changeDossierStatus, WorkflowError } from "../services/dossierWorkflow.js";
 import { notifyDossierAgents } from "../services/notify.js";
-import { analyzePiece } from "../services/pieceAnalyzer.js";
-import { extractPiece, expectedTypeFromCode, detectRubricMismatch, type PieceExtraction } from "../services/pieceExtractor.js";
+import { detectRubricMismatch, type PieceExtraction } from "../services/pieceExtractor.js";
 import { runDossierConformityAnalysisBackground } from "../services/dossierConformity.js";
 import { syncDossierFactsFromPieces } from "../services/dossierFacts.js";
 import { autoReopenAfterCitizenUpload } from "../services/dossierWorkflow.js";
+import { queuePieceOcr } from "../services/pieceOcrQueue.js";
 import { computeInstructionDelay, applyMonthsToDate } from "../services/instructionDelays.js";
 import { getStorageProvider } from "../services/storage.js";
 import { attachCerfaToDossier } from "../services/cerfaAttachment.js";
@@ -1068,19 +1068,23 @@ dossiersRouter.post("/:id/pieces/upload", uploadLimiter, uploadSingle, async (re
         .where(eq(dossiers.id, req.params.id as string));
     }
 
-    let analyse_ia: Awaited<ReturnType<typeof analyzePiece>> | null = null;
-    let extraction_ia: PieceExtraction | null = null;
-    // Remonté au client quand l'IA était attendue mais a échoué (clé Mistral
-    // manquante, pdftoppm absent, time-out…). Permet au wizard d'afficher
-    // « analyse indisponible » au lieu d'un silence trompeur.
-    let ai_error: string | null = null;
+    // Analyse IA en ARRIÈRE-PLAN. On ne bloque plus la requête 30–60 s sur les
+    // deux passes Pixtral (analyse qualitative + extraction structurée) : la
+    // pièce est renvoyée immédiatement, le wizard affiche « analyse en cours » et
+    // interroge la pièce jusqu'au verdict. Le worker (pieceOcrQueue) persiste
+    // analyse_ia/extraction_ia + ocr_status (pending → processing → done/failed),
+    // puis resynchronise les faits d'instruction (onSettled).
 
-    if (runAi) {
-      // Deux passes IA en parallèle, non-bloquantes :
-      //   1) analyse qualitative (score conforme/acceptable/incomplet/non_conforme)
-      //   2) extraction structurée (dimensions, surfaces, NGF…) qui alimentera
-      //      ensuite le moteur de conformité au moment de l'instruction.
-      const expected = expectedTypeFromCode(code_piece);
+    // Ré-ouverture immédiate si le dossier était "incomplet" : ne dépend PAS de
+    // l'IA (basée sur la présence de la pièce), donc faite tout de suite plutôt
+    // que d'attendre la fin de l'analyse. Best-effort.
+    try {
+      await autoReopenAfterCitizenUpload(req.params.id as string, req.user!.id);
+    } catch (e) {
+      console.warn("[upload] autoReopen:", e);
+    }
+
+    if (runAi && piece) {
       // Imputation par commune : recherche tolérante sur le nom (les dossiers
       // n'ont qu'un commune textuel, pas d'FK directe).
       let communeIdForTrace: string | null = null;
@@ -1089,77 +1093,48 @@ dossiersRouter.post("/:id/pieces/upload", uploadLimiter, uploadSingle, async (re
         const [c] = await db.select({ id: communes.id }).from(communes).where(ilike(communes.name, dossier.commune)).limit(1);
         communeIdForTrace = c?.id ?? null;
       }
-      const trace = { dossierId: req.params.id as string, userId: req.user!.id, communeId: communeIdForTrace };
-      // On passe directement le Buffer aux services d'analyse — plus de
-      // chemin disque. Les services prennent en charge local ET S3 via le
-      // StorageProvider en relisant la key si besoin (cf. signature *FromBuffer).
-      // Diagnostic : on log explicitement les erreurs au lieu de les avaler
-      // silencieusement, sinon un échec Mistral (modèle inconnu, 401, rate
-      // limit, etc.) reste invisible.
-      const fileBuffer = req.file.buffer;
-      const mimeType = req.file.mimetype;
-      const captureErr = (label: string) => (err: unknown) => {
-        const msg = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
-        console.error(`[upload] ${label} a échoué:`, msg);
-        // Première erreur rencontrée = celle qu'on remonte. On masque la clé
-        // API au passage si elle a fuité dans le message (paranoïa).
-        if (!ai_error) ai_error = msg.replace(/Bearer\s+[A-Za-z0-9._-]+/g, "Bearer ***");
-      };
-      [analyse_ia, extraction_ia] = await Promise.all([
-        analyzePiece(fileBuffer, mimeType, nom_piece, code_piece, undefined, trace).catch((err) => {
-          captureErr("analyzePiece")(err);
-          return null;
-        }),
-        extractPiece(fileBuffer, mimeType, {
-          expected_type: expected,
-          nom_piece,
-          code_piece,
-        }, trace).catch((err) => {
-          captureErr("extractPiece")(err);
-          return null as PieceExtraction | null;
-        }),
-      ]);
-    }
-
-    if (analyse_ia || extraction_ia || !runAi) {
+      const dossierIdStr = req.params.id as string;
+      const userId = req.user!.id;
+      // La pièce reste à ocr_status="pending" (défaut à l'insert) ; le worker la
+      // passe à "processing" puis "done"/"failed". Le buffer est capturé ici
+      // (évalué de façon synchrone à la mise en file).
+      queuePieceOcr({
+        pieceId: piece.id,
+        dossierId: dossierIdStr,
+        fileBuffer: req.file.buffer,
+        mimeType: req.file.mimetype,
+        nom_piece,
+        code_piece,
+        trace: { dossierId: dossierIdStr, userId, communeId: communeIdForTrace },
+        // Post-traitement citoyen : resync des faits (dépend de l'extraction,
+        // donc APRÈS l'analyse). Best-effort. Pas de notification instructeur ici.
+        onSettled: async (dId) => {
+          try { await syncDossierFactsFromPieces(dId); }
+          catch (e) { console.warn("[upload] syncDossierFacts (async):", e); }
+        },
+      });
+    } else if (piece) {
+      // Pas d'analyse IA demandée (consentement refusé) : on sort la pièce de
+      // l'état "pending" par défaut vers "skipped" — pas de statut trompeur, et
+      // la soumission n'est jamais bloquée sur une analyse fantôme.
       await db
         .update(dossier_pieces_jointes)
-        .set({
-          analyse_ia: analyse_ia ?? null,
-          extraction_ia: extraction_ia ?? null,
-          ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null),
-        })
-        .where(eq(dossier_pieces_jointes.id, piece!.id));
-    }
-
-    // Auto-réouverture si le dossier était en "incomplet" : le pétitionnaire
-    // vient de redéposer une pièce, donc la complétude doit être réexaminée.
-    // Best-effort : on n'échoue jamais l'upload pour un problème de transition.
-    try {
-      await autoReopenAfterCitizenUpload(req.params.id as string, req.user!.id);
-    } catch (e) {
-      console.warn("[upload] autoReopen:", e);
-    }
-
-    // Best-effort : remappe les extractions IA en dossier_facts pour que le
-    // moteur réglementaire dispose de données fraiches dès que l'instructeur
-    // ouvre le dossier — pas besoin de relancer manuellement. Sync défensive
-    // côté /api/regulatory/analyze couvre les cas où celle-ci échoue.
-    if (extraction_ia) {
-      try {
-        await syncDossierFactsFromPieces(req.params.id as string);
-      } catch (e) {
-        console.warn("[upload] syncDossierFacts:", e);
-      }
+        .set({ ocr_status: "skipped", ai_processed: false })
+        .where(eq(dossier_pieces_jointes.id, piece.id));
     }
 
     res.status(201).json({
       ...piece,
-      analyse_ia,
-      extraction_ia,
-      ai_processed: runAi && (analyse_ia !== null || extraction_ia !== null),
+      ocr_status: runAi ? "pending" : "skipped",
+      analyse_ia: null,
+      extraction_ia: null,
+      ai_processed: false,
       ai_requested: runAi,
-      ai_error,
+      // L'analyse tourne en arrière-plan : le wizard interroge la pièce (GET)
+      // jusqu'à ocr_status "done"/"failed" pour afficher le verdict et débloquer
+      // la soumission.
+      ai_pending: runAi,
+      ai_error: null,
     });
   } catch (err) {
     // Si le fichier a été écrit dans le storage avant l'erreur, on le retire
