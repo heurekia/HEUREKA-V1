@@ -843,6 +843,7 @@ CREATE TABLE IF NOT EXISTS dossier_courriers (
   emis_par uuid REFERENCES users(id),
   emis_le timestamp NOT NULL DEFAULT now(),
   delivery_method text,
+  statut text NOT NULL DEFAULT 'envoye',
   created_at timestamp NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_courriers_dossier ON dossier_courriers(dossier_id);
@@ -1275,6 +1276,11 @@ CREATE INDEX IF NOT EXISTS idx_piece_annotations_dossier ON dossier_piece_annota
 -- dossier_documents — aucune duplication de fichier).
 ALTER TABLE dossier_messages ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS attachments jsonb DEFAULT '[]'::jsonb;
+
+-- ── Cycle de vie des courriers : brouillon (sans effet) → envoyé (figé) ──────
+-- Default 'envoye' : les courriers déjà en base ont tous été émis directement
+-- (le brouillon n'existait pas), le backfill les classe donc correctement.
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS statut text NOT NULL DEFAULT 'envoye';
 
 -- ── Dépôt groupé : un seul fichier OCR éclaté en plusieurs pièces ───────────
 -- Flux historique (1 fichier = 1 pièce) inchangé : ces objets sont additifs.

@@ -33,6 +33,10 @@ export interface PieceRequestItem {
 
 export interface EmitPieceRequestInput {
   dossier_id: string;
+  // Si fourni, on transforme un brouillon existant en courrier émis (UPDATE)
+  // au lieu d'insérer une nouvelle ligne. Évite les doublons quand l'instructeur
+  // a d'abord enregistré le courrier puis l'envoie.
+  existing_courrier_id?: string;
   pieces: PieceRequestItem[];
   articles_cites: string[];
   // Snapshot du corps de courrier après substitution (HTML ou JSON canvas).
@@ -79,7 +83,7 @@ function escapeHtml(s: string): string {
 export async function emitPieceComplementRequest(
   input: EmitPieceRequestInput,
 ): Promise<EmitPieceRequestResult> {
-  const { dossier_id, pieces, articles_cites, body_snapshot, subject, delivery_method, attachment_document_ids, emis_par } = input;
+  const { dossier_id, existing_courrier_id, pieces, articles_cites, body_snapshot, subject, delivery_method, attachment_document_ids, emis_par } = input;
 
   if (pieces.length === 0) {
     throw new Error("Au moins une pièce doit être sélectionnée pour la demande de complément");
@@ -88,29 +92,56 @@ export async function emitPieceComplementRequest(
   // Documents GED joints (plan annoté…) : résolus + partagés au citoyen.
   const attachments = await resolveAttachmentRefs(dossier_id, attachment_document_ids, "citoyen");
 
-  // 1) Persiste le courrier (snapshot figé).
-  const [courrier] = await db
-    .insert(dossier_courriers)
-    .values({
-      dossier_id,
-      type: "pieces_complementaires",
-      subject: subject ?? "Demande de pièces complémentaires",
-      body_snapshot: body_snapshot ?? null,
-      pieces_jointes_ids: pieces.map((p) => ({
-        piece_id: p.piece_id,
-        code_piece: p.code_piece,
-        nom: p.nom,
-        raison: p.raison,
-        manquante: p.manquante ?? !p.piece_id,
-      })),
-      articles_cites,
-      attachments,
-      emis_par,
-      delivery_method: delivery_method ?? null,
-    })
-    .returning({ id: dossier_courriers.id });
+  const piecesPayload = pieces.map((p) => ({
+    piece_id: p.piece_id,
+    code_piece: p.code_piece,
+    nom: p.nom,
+    raison: p.raison,
+    manquante: p.manquante ?? !p.piece_id,
+  }));
 
-  if (!courrier) throw new Error("Échec de l'enregistrement du courrier");
+  // 1) Persiste le courrier en statut "envoye" (snapshot figé). Si un brouillon
+  //    préexiste (existing_courrier_id), on le transforme en émission plutôt
+  //    que d'insérer un doublon — et on réhorodate l'envoi.
+  let courrierId: string;
+  if (existing_courrier_id) {
+    const [updated] = await db
+      .update(dossier_courriers)
+      .set({
+        type: "pieces_complementaires",
+        subject: subject ?? "Demande de pièces complémentaires",
+        body_snapshot: body_snapshot ?? null,
+        pieces_jointes_ids: piecesPayload,
+        articles_cites,
+        attachments,
+        emis_par,
+        delivery_method: delivery_method ?? null,
+        statut: "envoye",
+        emis_le: new Date(),
+      })
+      .where(eq(dossier_courriers.id, existing_courrier_id))
+      .returning({ id: dossier_courriers.id });
+    if (!updated) throw new Error("Brouillon de courrier introuvable");
+    courrierId = updated.id;
+  } else {
+    const [courrier] = await db
+      .insert(dossier_courriers)
+      .values({
+        dossier_id,
+        type: "pieces_complementaires",
+        subject: subject ?? "Demande de pièces complémentaires",
+        body_snapshot: body_snapshot ?? null,
+        pieces_jointes_ids: piecesPayload,
+        articles_cites,
+        attachments,
+        emis_par,
+        delivery_method: delivery_method ?? null,
+        statut: "envoye",
+      })
+      .returning({ id: dossier_courriers.id });
+    if (!courrier) throw new Error("Échec de l'enregistrement du courrier");
+    courrierId = courrier.id;
+  }
 
   // 2) Marque les pièces déjà déposées en "complement_demande" si elles
   //    n'étaient pas déjà refusées. On ne touche pas aux pièces "valide" ou
@@ -139,7 +170,7 @@ export async function emitPieceComplementRequest(
     user_id: emis_par,
     description: `Demande de ${pieces.length} pièce${pieces.length > 1 ? "s" : ""} complémentaire${pieces.length > 1 ? "s" : ""}`,
     metadata: {
-      courrier_id: courrier.id,
+      courrier_id: courrierId,
       pieces_count: pieces.length,
       manquantes_count: pieces.filter((p) => p.manquante || !p.piece_id).length,
       articles_cites,
@@ -154,7 +185,7 @@ export async function emitPieceComplementRequest(
   try {
     const result = await changeDossierStatus(dossier_id, "incomplet", emis_par, {
       reason: "demande de pièces complémentaires émise",
-      extraMetadata: { courrier_id: courrier.id },
+      extraMetadata: { courrier_id: courrierId },
     });
     status_changed = result.changed;
   } catch (err) {
@@ -165,5 +196,5 @@ export async function emitPieceComplementRequest(
     }
   }
 
-  return { courrier_id: courrier.id, pieces_marked, status_changed };
+  return { courrier_id: courrierId, pieces_marked, status_changed };
 }

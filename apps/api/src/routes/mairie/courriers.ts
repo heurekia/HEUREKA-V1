@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../../db.js";
 import { dossier_courriers, users, communes, courrier_templates, legal_mentions, user_communes, dossiers } from "@heureka-v1/db";
-import { eq, desc, sql, ilike } from "drizzle-orm";
+import { eq, and, desc, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { CODE_URBANISME_ID } from "../../services/legifrance.js";
@@ -74,12 +74,14 @@ courriersRouter.get("/dossiers/:id/courriers", async (req: AuthRequest, res) => 
         id: dossier_courriers.id,
         type: dossier_courriers.type,
         subject: dossier_courriers.subject,
+        body_snapshot: dossier_courriers.body_snapshot,
         pieces_jointes_ids: dossier_courriers.pieces_jointes_ids,
         articles_cites: dossier_courriers.articles_cites,
         attachments: dossier_courriers.attachments,
         emis_par: dossier_courriers.emis_par,
         emis_le: dossier_courriers.emis_le,
         delivery_method: dossier_courriers.delivery_method,
+        statut: dossier_courriers.statut,
       })
       .from(dossier_courriers)
       .where(eq(dossier_courriers.dossier_id, req.params.id as string))
@@ -88,6 +90,163 @@ courriersRouter.get("/dossiers/:id/courriers", async (req: AuthRequest, res) => 
   } catch (err) {
     console.error("[courriers list]", err);
     res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Nettoie une liste de pièces venue du client : on ne garde que nom + raison +
+// flags attendus (jamais d'HTML brut), et on rejette les noms vides.
+function cleanPieces(raw: unknown): PieceRequestItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((p): p is PieceRequestItem => !!p && typeof p === "object" && typeof (p as PieceRequestItem).nom === "string" && (p as PieceRequestItem).nom.trim().length > 0)
+    .map((p) => ({
+      piece_id: typeof p.piece_id === "string" ? p.piece_id : undefined,
+      code_piece: typeof p.code_piece === "string" ? p.code_piece : undefined,
+      nom: p.nom.trim(),
+      raison: typeof p.raison === "string" && p.raison.trim() ? p.raison.trim() : undefined,
+      manquante: p.manquante === true || !p.piece_id,
+    }));
+}
+
+// ── Brouillons de courrier ────────────────────────────────────────────────
+// Un brouillon est un courrier enregistré SANS effet métier : le dossier ne
+// bascule pas en incomplet et les pièces ne sont pas marquées. Il reste
+// modifiable jusqu'à son envoi. L'accès au dossier est déjà contrôlé par
+// enforceDossierAccess (monté sur /dossiers/:id, cf. mairie/index.ts).
+
+// Crée un brouillon (tout type de courrier).
+courriersRouter.post("/dossiers/:id/courriers/drafts", async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const body = (req.body ?? {}) as {
+      type?: string;
+      subject?: string | null;
+      body_snapshot?: string | null;
+      articles_cites?: string[];
+      pieces?: unknown;
+      delivery_method?: string | null;
+    };
+    const type = typeof body.type === "string" && body.type.trim() ? body.type.trim() : "general";
+    const articles = Array.isArray(body.articles_cites) ? body.articles_cites.filter((a) => typeof a === "string") : [];
+    const [row] = await db.insert(dossier_courriers).values({
+      dossier_id: dossierId,
+      type,
+      subject: body.subject ?? null,
+      body_snapshot: body.body_snapshot ?? null,
+      pieces_jointes_ids: cleanPieces(body.pieces),
+      articles_cites: articles,
+      delivery_method: body.delivery_method ?? null,
+      statut: "brouillon",
+      emis_par: req.user!.id,
+    }).returning();
+    res.status(201).json(row);
+  } catch (err) {
+    console.error("[courriers/drafts create]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// Met à jour un brouillon (refusé si déjà envoyé — un courrier émis est figé).
+courriersRouter.put("/dossiers/:id/courriers/:courrierId", async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const courrierId = req.params.courrierId as string;
+    const [existing] = await db.select({ id: dossier_courriers.id, statut: dossier_courriers.statut })
+      .from(dossier_courriers)
+      .where(and(eq(dossier_courriers.id, courrierId), eq(dossier_courriers.dossier_id, dossierId)))
+      .limit(1);
+    if (!existing) return res.status(404).json({ error: "Courrier introuvable" });
+    if (existing.statut !== "brouillon") {
+      return res.status(409).json({ error: "Ce courrier a déjà été envoyé : il n'est plus modifiable." });
+    }
+    const body = (req.body ?? {}) as {
+      type?: string;
+      subject?: string | null;
+      body_snapshot?: string | null;
+      articles_cites?: string[];
+      pieces?: unknown;
+      delivery_method?: string | null;
+    };
+    const patch: Partial<typeof dossier_courriers.$inferInsert> = {};
+    if (typeof body.type === "string" && body.type.trim()) patch.type = body.type.trim();
+    if ("subject" in body) patch.subject = body.subject ?? null;
+    if ("body_snapshot" in body) patch.body_snapshot = body.body_snapshot ?? null;
+    if ("delivery_method" in body) patch.delivery_method = body.delivery_method ?? null;
+    if (Array.isArray(body.articles_cites)) patch.articles_cites = body.articles_cites.filter((a) => typeof a === "string");
+    if ("pieces" in body) patch.pieces_jointes_ids = cleanPieces(body.pieces);
+    if (Object.keys(patch).length === 0) {
+      const [row] = await db.select().from(dossier_courriers).where(eq(dossier_courriers.id, courrierId)).limit(1);
+      return res.json(row);
+    }
+    const [row] = await db.update(dossier_courriers).set(patch).where(eq(dossier_courriers.id, courrierId)).returning();
+    res.json(row);
+  } catch (err) {
+    console.error("[courriers update draft]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// Envoie un courrier (brouillon → envoyé). Pour une demande de pièces, déclenche
+// les effets métier (marquage des pièces, bascule du dossier, événement) via le
+// service dédié. Pour les autres types, fige simplement le snapshot et horodate.
+courriersRouter.post("/dossiers/:id/courriers/:courrierId/send", async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const courrierId = req.params.courrierId as string;
+    const [existing] = await db.select()
+      .from(dossier_courriers)
+      .where(and(eq(dossier_courriers.id, courrierId), eq(dossier_courriers.dossier_id, dossierId)))
+      .limit(1);
+    if (!existing) return res.status(404).json({ error: "Courrier introuvable" });
+    if (existing.statut === "envoye") return res.status(409).json({ error: "Ce courrier a déjà été envoyé." });
+
+    const body = (req.body ?? {}) as {
+      body_snapshot?: string | null;
+      subject?: string | null;
+      delivery_method?: string | null;
+      attachment_document_ids?: string[];
+      pieces?: unknown;
+      articles_cites?: string[];
+    };
+    const bodySnapshot = body.body_snapshot ?? existing.body_snapshot ?? null;
+    const subject = body.subject ?? existing.subject ?? null;
+    const deliveryMethod = body.delivery_method ?? existing.delivery_method ?? null;
+
+    if (existing.type === "pieces_complementaires") {
+      // Pièces / articles à jour fournis par le client (la sélection a pu changer
+      // depuis l'enregistrement) ; à défaut on retombe sur l'état stocké.
+      const fromClient = cleanPieces(body.pieces);
+      const pieces = fromClient.length ? fromClient : cleanPieces(existing.pieces_jointes_ids);
+      if (pieces.length === 0) return res.status(400).json({ error: "Aucune pièce associée à ce courrier" });
+      const articles = Array.isArray(body.articles_cites)
+        ? body.articles_cites.filter((a) => typeof a === "string")
+        : ((existing.articles_cites as string[]) ?? []);
+      const result = await emitPieceComplementRequest({
+        dossier_id: dossierId,
+        existing_courrier_id: courrierId,
+        pieces,
+        articles_cites: articles,
+        body_snapshot: bodySnapshot,
+        subject,
+        delivery_method: deliveryMethod ?? "print",
+        attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
+        emis_par: req.user!.id,
+      });
+      return res.json({ ...result, statut: "envoye" });
+    }
+
+    const [row] = await db.update(dossier_courriers).set({
+      statut: "envoye",
+      body_snapshot: bodySnapshot,
+      subject,
+      delivery_method: deliveryMethod,
+      emis_par: req.user!.id,
+      emis_le: new Date(),
+    }).where(eq(dossier_courriers.id, courrierId)).returning();
+    res.json({ courrier_id: courrierId, statut: "envoye", row });
+  } catch (err) {
+    console.error("[courriers send]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
   }
 });
 

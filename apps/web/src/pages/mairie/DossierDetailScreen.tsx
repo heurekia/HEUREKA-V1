@@ -75,23 +75,40 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
 
 
 // ─── Onglet "Courriers" ──────────────────────────────────────────────────────
-// Historique des courriers d'instruction émis pour un dossier. Liste, type,
-// auteur, pièces visées, articles cités. Sert de référence auditable pour
-// le pétitionnaire et l'instructeur.
-function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGeneralCourrier }: {
+// Courrier existant transmis au modal pour reprise (brouillon à modifier ou
+// courrier émis à consulter). Forme alignée sur CourrierModal.initialCourrier.
+type ReopenCourrier = {
+  id: string;
+  type: string;
+  subject: string | null;
+  body_snapshot: string | null;
+  statut: "brouillon" | "envoye";
+  articles_cites?: string[];
+  pieces_jointes_ids?: Array<{ piece_id?: string; code_piece?: string; nom: string; raison?: string; manquante?: boolean }>;
+  delivery_method?: string | null;
+};
+
+// Historique des courriers d'instruction d'un dossier : brouillons en cours et
+// courriers émis. Liste, type, statut, auteur, pièces visées, articles cités.
+// Sert de référence auditable pour le pétitionnaire et l'instructeur.
+function CourriersPanel({ dossierId, refreshKey, onRequestNewPiecesCourrier, onRequestNewGeneralCourrier, onReopenCourrier }: {
   dossierId: string;
+  refreshKey: number;
   onRequestNewPiecesCourrier: () => void;
   onRequestNewGeneralCourrier: () => void;
+  onReopenCourrier: (c: ReopenCourrier) => void;
 }) {
   type CourrierRow = {
     id: string;
     type: string;
     subject: string | null;
+    body_snapshot: string | null;
     pieces_jointes_ids: Array<{ piece_id?: string; code_piece?: string; nom: string; raison?: string; manquante?: boolean }>;
     articles_cites: string[];
     emis_par: string | null;
     emis_le: string;
     delivery_method: string | null;
+    statut: "brouillon" | "envoye";
   };
   const [rows, setRows] = useState<CourrierRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +119,8 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
       .then((d) => { if (!cancelled) setRows(d); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Erreur"); });
     return () => { cancelled = true; };
-  }, [dossierId]);
+    // refreshKey force le rechargement après enregistrement / envoi d'un courrier.
+  }, [dossierId, refreshKey]);
 
   const COURRIER_LABEL: Record<string, { label: string; color: string; bg: string }> = {
     pieces_complementaires: { label: "Demande de pièces", color: "#B45309", bg: "#FEF3C7" },
@@ -119,8 +137,8 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Courriers émis</div>
-          <div style={{ fontSize: 12, color: "#64748b" }}>Historique de tous les courriers envoyés au pétitionnaire pour ce dossier.</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Courriers</div>
+          <div style={{ fontSize: 12, color: "#64748b" }}>Brouillons en cours et courriers émis pour ce dossier.</div>
         </div>
         <div style={{ display: "flex", gap: 8 }}>
           <button onClick={onRequestNewPiecesCourrier}
@@ -142,12 +160,13 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
         <div style={{ padding: 32, background: "white", borderRadius: 12, border: "1px solid #E8EEF4", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Chargement…</div>
       ) : rows.length === 0 ? (
         <div style={{ padding: 32, background: "white", borderRadius: 12, border: "1px dashed #CBD5E1", textAlign: "center", color: "#64748b", fontSize: 13 }}>
-          Aucun courrier émis pour ce dossier.
+          Aucun courrier pour ce dossier.
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {rows.map((c) => {
             const meta = COURRIER_LABEL[c.type] ?? COURRIER_LABEL.general!;
+            const isDraft = c.statut === "brouillon";
             const pieces = Array.isArray(c.pieces_jointes_ids) ? c.pieces_jointes_ids : [];
             const articles = Array.isArray(c.articles_cites) ? c.articles_cites : [];
             return (
@@ -155,11 +174,21 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: meta.color, background: meta.bg, padding: "2px 8px", borderRadius: 5 }}>{meta.label}</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: isDraft ? "#B45309" : "#15803D", background: isDraft ? "#FEF3C7" : "#DCFCE7" }}>
+                      {isDraft ? "Brouillon" : "Envoyé"}
+                    </span>
                     {c.subject && <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.subject}</span>}
                   </div>
-                  <div style={{ fontSize: 11.5, color: "#64748b", whiteSpace: "nowrap" as const }}>
-                    {new Date(c.emis_le).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-                    {c.delivery_method && <> · <span style={{ textTransform: "capitalize" as const }}>{c.delivery_method}</span></>}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                    <div style={{ fontSize: 11.5, color: "#64748b", whiteSpace: "nowrap" as const }}>
+                      {isDraft ? "Modifié le " : ""}{new Date(c.emis_le).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      {!isDraft && c.delivery_method && <> · <span style={{ textTransform: "capitalize" as const }}>{c.delivery_method}</span></>}
+                    </div>
+                    <button onClick={() => onReopenCourrier(c)}
+                      title={isDraft ? "Reprendre ce brouillon (modifier / envoyer)" : "Consulter le courrier émis"}
+                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", border: `1px solid ${isDraft ? "#FDE68A" : "#E2E8F0"}`, borderRadius: 7, background: isDraft ? "#FFFBEB" : "white", color: isDraft ? "#B45309" : "#475569", fontSize: 11.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const }}>
+                      {isDraft ? "✏️ Reprendre" : "Consulter"}
+                    </button>
                   </div>
                 </div>
 
@@ -399,6 +428,10 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
   // workflow. Le mode pilote le panneau de sélection des pièces et le bouton
   // "Émettre" dans la modale.
   const [courrierMode, setCourrierMode] = useState<null | "general" | "pieces_complementaires">(null);
+  // Courrier existant rouvert depuis l'historique (brouillon repris ou émis consulté).
+  const [reopenCourrier, setReopenCourrier] = useState<ReopenCourrier | null>(null);
+  // Incrémenté à la fermeture du modal courrier pour rafraîchir l'historique.
+  const [courriersRefreshKey, setCourriersRefreshKey] = useState(0);
   const [showMapFull, setShowMapFull] = useState(false);
 
   // ── Analyse parcellaire réelle ──
@@ -3673,8 +3706,10 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
         {activeTab === "Courriers" && (
           <CourriersPanel
             dossierId={dossier.id}
+            refreshKey={courriersRefreshKey}
             onRequestNewPiecesCourrier={() => setCourrierMode("pieces_complementaires")}
             onRequestNewGeneralCourrier={() => setCourrierMode("general")}
+            onReopenCourrier={(c) => setReopenCourrier(c)}
           />
         )}
 
@@ -3684,7 +3719,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
         )}
 
       </div>
-      {courrierMode && (
+      {(courrierMode || reopenCourrier) && (
         <CourrierModal
           inseeCode={inseeCode}
           dossier={{
@@ -3703,7 +3738,8 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
             date_completude: dossier.date_completude,
             echeance: dossier.echeance,
           }}
-          mode={courrierMode}
+          mode={reopenCourrier ? (reopenCourrier.type === "pieces_complementaires" ? "pieces_complementaires" : "general") : courrierMode!}
+          initialCourrier={reopenCourrier ?? undefined}
           availablePieces={(documents ?? []).map((d) => ({
             id: d.id,
             nom: d.nom,
@@ -3718,7 +3754,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
             void refreshWorkflow();
             setDocuments(null); // force le rechargement au prochain accès onglet
           }}
-          onClose={() => setCourrierMode(null)}
+          onClose={() => { setCourrierMode(null); setReopenCourrier(null); setCourriersRefreshKey((k) => k + 1); }}
         />
       )}
     </div>
