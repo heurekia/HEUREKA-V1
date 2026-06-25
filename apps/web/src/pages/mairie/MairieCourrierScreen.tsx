@@ -3,6 +3,7 @@ import DOMPurify from "dompurify";
 import { Rnd } from "react-rnd";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
+import { ROLE_LABELS } from "./shared";
 import { X, Save, ArrowLeft, Plus, Pencil, Trash2, FileText, Printer } from "lucide-react";
 
 // ─── Variable groups ───────────────────────────────────────────────────────
@@ -35,6 +36,10 @@ const TEMPLATE_VARIABLES = [
   ]},
   { group: "Projet", vars: [
     { label: "Description / nature des travaux", name: "description_projet" },
+  ]},
+  { group: "Signataire", vars: [
+    { label: "Nom du signataire", name: "signataire_nom" },
+    { label: "Fonction du signataire", name: "signataire_fonction" },
   ]},
   { group: "Demande de pièces complémentaires", vars: [
     { label: "Liste des pièces à compléter", name: "liste_pieces_a_completer" },
@@ -376,6 +381,8 @@ export function CourrierModal({
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
   const [selected, setSelected] = useState<CourrierTemplate | null>(null);
   const [letterhead, setLetterhead] = useState<Letterhead>({ letterhead_logo: null, letterhead_title: null, letterhead_subtitle: null, letterhead_address: null, footer_text: null, signature_image: null, tampon_image: null });
+  // Signataire désigné de la commune (nom + fonction) pour le bloc signature.
+  const [signataire, setSignataire] = useState<{ nom: string; fonction: string } | null>(null);
   const [substitutedHtml, setSubstitutedHtml] = useState("");
   const [loading, setLoading] = useState(true);
   // Draggable signature & tampon
@@ -526,6 +533,29 @@ export function CourrierModal({
     }).catch(() => {}).finally(() => setLoading(false));
   }, []);
 
+  // Signataire de la commune pour le bloc signature. Hors décision (ex. pièces
+  // manquantes), on retient le signataire délégué (arrêté de délégation), sinon
+  // le maire, sinon le premier actif. La fonction libre prime sur le rôle.
+  useEffect(() => {
+    const commune = dossier.commune;
+    if (!commune) { setSignataire(null); return; }
+    type SignataireRow = {
+      role: string; fonction: string | null; active?: boolean; delegation_arrete: string | null;
+      user: { prenom: string; nom: string } | null;
+    };
+    api.get<SignataireRow[]>(`/decisions/communes/${encodeURIComponent(commune)}/signataires`)
+      .then((rows) => {
+        const actifs = rows.filter((r) => r.active !== false);
+        const chosen = actifs.find((r) => r.delegation_arrete) ?? actifs.find((r) => r.role === "maire") ?? actifs[0] ?? null;
+        if (!chosen) { setSignataire(null); return; }
+        setSignataire({
+          nom: chosen.user ? `${chosen.user.prenom} ${chosen.user.nom}` : "",
+          fonction: chosen.fonction || ROLE_LABELS[chosen.role] || chosen.role,
+        });
+      })
+      .catch(() => setSignataire(null));
+  }, [dossier.commune]);
+
   useEffect(() => {
     if (!selected || !user) return;
     const vars: Record<string, string> = {
@@ -554,13 +584,16 @@ export function CourrierModal({
       surface_plancher: dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—",
       // Projet
       description_projet: dossier.description || "—",
+      // Signataire (délégué de la commune, cf. effet dédié)
+      signataire_nom: signataire?.nom || "—",
+      signataire_fonction: signataire?.fonction || "—",
       // Demande de pièces complémentaires : liste dynamique injectée
       // dans le corps du template via la variable {liste_pieces_a_completer}.
       liste_pieces_a_completer: piecesListHtml || "—",
       nombre_pieces_a_completer: String(requestedPieces.length),
     };
     setSubstitutedHtml(substituteVariables(selected.body, vars));
-  }, [selected, letterhead, dossier, user, piecesListHtml, requestedPieces.length]);
+  }, [selected, letterhead, dossier, user, signataire, piecesListHtml, requestedPieces.length]);
 
   // Auto-sélection d'un template de catégorie "pieces_complementaires" quand
   // la modale est ouverte en mode demande de pièces — fallback : premier
