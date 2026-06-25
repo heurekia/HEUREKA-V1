@@ -3,7 +3,7 @@ import { db } from "../db.js";
 import {
   decisions, decision_events, signataires, notifications, users, dossiers,
 } from "@heureka-v1/db";
-import { eq, and, or, desc } from "drizzle-orm";
+import { eq, and, or, desc, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
 import { requirePermission } from "../middlewares/permissions.js";
@@ -72,6 +72,17 @@ function addMonths(date: Date, months: number): string {
 
 const instructeurU = alias(users, "instructeur_user");
 const signataireU = alias(users, "signataire_user");
+
+// Comparaison de commune insensible à la casse et aux espaces, alignée sur
+// getCommuneScope/communeInScope (lower+trim). Indispensable ici car la commune
+// d'une décision dérive de dossiers.commune — texte libre saisi tel quel
+// (« TOURS ») — alors que signataires.commune provient des Paramètres
+// (« Tours »). Un eq() strict ne matchait jamais : le signataire restait
+// invisible dans le panneau Décision (« Aucun signataire configuré pour cette
+// commune ») et, plus grave, la signature lui était refusée à tort
+// (« Vous n'êtes pas signataire actif de cette commune »).
+const signataireCommuneEq = (value: string) =>
+  sql`lower(trim(${signataires.commune})) = ${value.trim().toLowerCase()}`;
 
 // ── GET /api/decisions/pending ──────────────────────────────────────────────
 decisionsRouter.get("/pending", async (req: AuthRequest, res) => {
@@ -310,7 +321,7 @@ decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: Au
     .from(signataires)
     .where(and(
       eq(signataires.user_id, req.user!.id),
-      eq(signataires.commune, dec.commune),
+      signataireCommuneEq(dec.commune),
       eq(signataires.active, true),
     ))
     .limit(1);
@@ -454,7 +465,7 @@ decisionsRouter.get("/communes/:commune/signataires", requireRole("mairie", "ins
     })
     .from(signataires)
     .leftJoin(users, eq(signataires.user_id, users.id))
-    .where(and(eq(signataires.commune, commune), eq(signataires.active, true)));
+    .where(and(signataireCommuneEq(commune), eq(signataires.active, true)));
   res.json(rows);
 });
 
