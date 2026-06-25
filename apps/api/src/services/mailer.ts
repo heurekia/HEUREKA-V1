@@ -9,6 +9,10 @@ function getResend(): Resend {
 
 const FROM = process.env.SMTP_FROM ?? "Heurekia <notifications@mail.heurekia.com>";
 const BASE_URL = process.env.FRONTEND_URL ?? "https://app.heurekia.com";
+// Boîte de réception des demandes d'aide (bouton « Contacter le support » du
+// Centre d'aide agent). Surchargée par SUPPORT_INBOX en prod ; par défaut on
+// envoie sur contact@heurekia.com dans un premier temps.
+const SUPPORT_INBOX = process.env.SUPPORT_INBOX ?? "contact@heurekia.com";
 // Portail citoyen (www) — distinct du portail pro (app). Les emails destinés à
 // un pétitionnaire doivent renvoyer ici pour que l'activation pose le bon
 // cookie de session (token_www) et atterrisse dans l'espace citoyen.
@@ -342,6 +346,69 @@ export async function sendVerificationEmail(opts: {
 </body>
 </html>`,
     text: `Bonjour ${opts.prenom},\n\nMerci d'avoir créé votre compte Heurekia. Pour finaliser votre inscription, confirmez votre adresse email en cliquant sur ce lien :\n${link}\n\nCe lien est personnel, valable 24 heures et utilisable une seule fois.\n\nSi vous n'êtes pas à l'origine de cette inscription, vous pouvez ignorer cet email.\n\nHeurekia — Plateforme intelligente de gestion des autorisations d'urbanisme`,
+  });
+}
+
+// Demande d'aide envoyée depuis le Centre d'aide d'un agent. Part vers la boîte
+// support interne ; `replyTo` est positionné sur l'agent pour qu'une réponse lui
+// revienne directement. Le contexte (rôle, commune, page, navigateur) est joint
+// pour traiter sans aller-retour. Tout est échappé (esc) avant interpolation.
+export async function sendSupportRequestEmail(opts: {
+  type: string;
+  subject: string;
+  message: string;
+  requester: { name: string; email: string; roleLabel: string; commune?: string | null };
+  context: { url?: string; userAgent?: string; at: string };
+}) {
+  assertEmail(opts.requester.email);
+  const r = opts.requester;
+  const messageHtml = esc(opts.message).replace(/\n/g, "<br>");
+  const ctxRows: [string, string][] = [
+    ["Demandeur", `${r.name} (${r.email})`],
+    ["Rôle", r.roleLabel],
+    ...(r.commune ? [["Commune", r.commune] as [string, string]] : []),
+    ...(opts.context.url ? [["Page", opts.context.url] as [string, string]] : []),
+    ["Reçu le", new Date(opts.context.at).toLocaleString("fr-FR")],
+    ...(opts.context.userAgent ? [["Navigateur", opts.context.userAgent] as [string, string]] : []),
+  ];
+
+  await getResend().emails.send({
+    from: FROM,
+    to: SUPPORT_INBOX,
+    replyTo: r.email,
+    subject: `[Support · ${opts.type}] ${opts.subject}`,
+    html: `
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#F0F0F0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F0F0F0;padding:32px 0">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08)">
+        <tr><td style="background:#000020;padding:20px 28px">
+          <span style="color:white;font-size:16px;font-weight:700">HEUREKIA · Support</span>
+        </td></tr>
+        <tr><td style="padding:28px 28px 8px">
+          <div style="display:inline-block;background:#EEF2FF;color:#4F46E5;font-size:12px;font-weight:700;border-radius:6px;padding:4px 10px;margin-bottom:14px">${esc(opts.type)}</div>
+          <h1 style="margin:0 0 18px;font-size:19px;font-weight:800;color:#0F172A">${esc(opts.subject)}</h1>
+          <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:16px 18px;font-size:15px;color:#1F2937;line-height:1.7">${messageHtml}</div>
+        </td></tr>
+        <tr><td style="padding:16px 28px 28px">
+          <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #F1F5F9;border-radius:10px">
+            ${ctxRows.map(([k, v], i) => `
+            <tr${i % 2 ? ' style="background:#FAFAFA"' : ""}>
+              <td style="padding:8px 14px;font-size:12px;color:#94a3b8;width:110px;vertical-align:top">${esc(k)}</td>
+              <td style="padding:8px 14px;font-size:13px;color:#374151">${esc(v)}</td>
+            </tr>`).join("")}
+          </table>
+          <p style="margin:16px 0 0;font-size:12px;color:#94a3b8">Répondez directement à cet email pour contacter ${esc(r.name)}.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`,
+    text: `[Support · ${opts.type}] ${opts.subject}\n\n${opts.message}\n\n---\n${ctxRows.map(([k, v]) => `${k} : ${v}`).join("\n")}\n\nRépondez directement à cet email pour contacter ${r.name}.`,
   });
 }
 

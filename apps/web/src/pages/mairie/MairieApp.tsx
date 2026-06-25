@@ -21,6 +21,8 @@ import { CalendrierScreen } from "./CalendrierScreen";
 import { StatistiquesScreen } from "./StatistiquesScreen";
 import { NouveauDossierModal } from "./NouveauDossierModal";
 import { ParametresScreen } from "./ParametresScreen";
+import { AideDocumentation } from "./AideDocumentation";
+import { SupportModal } from "./SupportModal";
 
 const NAV_ITEMS = [
   { label: "Tableau de bord", icon: HomeIcon, path: "/mairie" },
@@ -1041,6 +1043,12 @@ function InfosPersoScreen() {
   const [stab, setStab] = useState("À propos");
   const [profilParams, setProfilParams] = useSearchParams();
 
+  // Centre d'aide : lecteur de documentation (ouvert depuis la carte
+  // « Documentation » ou une question fréquente, avec recherche pré-remplie).
+  const [docReader, setDocReader] = useState<{ open: boolean; query: string }>({ open: false, query: "" });
+  // Formulaire de contact support (cartes « Chat support » / « Contacter le support »).
+  const [supportModal, setSupportModal] = useState<{ open: boolean; type: string }>({ open: false, type: "question" });
+
   // ── À propos state ──
   const [prenom, setPrenom] = useState(user?.prenom ?? "");
   const [nom, setNom] = useState(user?.nom ?? "");
@@ -1319,9 +1327,15 @@ function InfosPersoScreen() {
               >
                 ✨ Revoir le guide d'accueil
               </button>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
-                {[{ icon: "📖", title: "Documentation", sub: "Guides complets sur toutes les fonctionnalités" }, { icon: "🎥", title: "Tutoriels vidéo", sub: "Apprenez avec nos tutoriels pas à pas" }, { icon: "💬", title: "Chat support", sub: "Discutez avec notre équipe de support" }, { icon: "📧", title: "Contacter le support", sub: "Envoyez-nous un message" }].map(c => (
-                  <button key={c.title} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 12, padding: 16, cursor: "pointer", textAlign: "left" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
+                {([
+                  { icon: "📖", title: "Documentation", sub: "Guides complets sur toutes les fonctionnalités", onClick: () => setDocReader({ open: true, query: "" }) },
+                  { icon: "💬", title: "Chat support", sub: "Discutez avec notre équipe de support", onClick: () => setSupportModal({ open: true, type: "question" }) },
+                  { icon: "📧", title: "Contacter le support", sub: "Envoyez-nous un message", onClick: () => setSupportModal({ open: true, type: "autre" }) },
+                ]).map(c => (
+                  <button key={c.title} onClick={c.onClick} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 12, padding: 16, cursor: "pointer", textAlign: "left", transition: "border-color 0.15s, box-shadow 0.15s" }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = "#C7D2FE"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(79,70,229,0.08)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = "#E2E8F0"; e.currentTarget.style.boxShadow = "none"; }}>
                     <div style={{ fontSize: 24, marginBottom: 8 }}>{c.icon}</div>
                     <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>{c.title}</div>
                     <div style={{ fontSize: 11, color: "#94a3b8" }}>{c.sub}</div>
@@ -1331,13 +1345,20 @@ function InfosPersoScreen() {
               <div style={{ background: "#F8FAFC", borderRadius: 10, padding: 16 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 10 }}>Questions fréquentes</div>
                 {["Comment créer un nouveau dossier ?","Comment assigner un dossier à un instructeur ?","Comment envoyer une demande de pièce complémentaire ?","Comment consulter les statistiques de ma commune ?"].map(q => (
-                  <div key={q} style={{ padding: "8px 0", borderBottom: "1px solid #E2E8F0", fontSize: 13, color: "#4F46E5", cursor: "pointer" }}>→ {q}</div>
+                  <div key={q} onClick={() => setDocReader({ open: true, query: q })} style={{ padding: "8px 0", borderBottom: "1px solid #E2E8F0", fontSize: 13, color: "#4F46E5", cursor: "pointer" }}>→ {q}</div>
                 ))}
               </div>
             </div>
           )}
         </div>
       </div>
+
+      {docReader.open && (
+        <AideDocumentation initialQuery={docReader.query} onClose={() => setDocReader({ open: false, query: "" })} />
+      )}
+      {supportModal.open && (
+        <SupportModal defaultType={supportModal.type} onClose={() => setSupportModal({ open: false, type: "question" })} />
+      )}
     </div>
   );
 }

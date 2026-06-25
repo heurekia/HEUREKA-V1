@@ -33,3 +33,26 @@ body {
   font-family: "Inter", system-ui, -apple-system, sans-serif;
   -webkit-font-smoothing: antialiased;
 }
+
+/* ── Rendu des articles du Centre d'aide (admin aperçu + lecteur mairie) ──
+   Typographie partagée pour le HTML assaini (sanitizeHelpHtml). */
+.help-article-content {
+  font-size: 15px;
+  line-height: 1.75;
+  color: #1f2937;
+  word-wrap: break-word;
+}
+.help-article-content > * + * { margin-top: 0.85em; }
+.help-article-content h1 { font-size: 1.7em; font-weight: 800; color: #0f172a; line-height: 1.25; margin-top: 1.1em; }
+.help-article-content h2 { font-size: 1.35em; font-weight: 700; color: #0f172a; margin-top: 1.1em; }
+.help-article-content h3 { font-size: 1.12em; font-weight: 700; color: #0f172a; margin-top: 1em; }
+.help-article-content p { margin: 0; }
+.help-article-content a { color: #4f46e5; text-decoration: underline; }
+.help-article-content ul { list-style: disc; padding-left: 1.4em; }
+.help-article-content ol { list-style: decimal; padding-left: 1.4em; }
+.help-article-content li { margin: 0.2em 0; }
+.help-article-content blockquote { border-left: 3px solid #c7d2fe; padding-left: 14px; color: #475569; font-style: italic; margin-left: 0; }
+.help-article-content img { max-width: 100%; height: auto; border-radius: 8px; }
+.help-article-content iframe { max-width: 100%; }
+.help-article-content hr { border: none; border-top: 1px solid #e2e8f0; margin: 1.4em 0; }
+.help-article-content strong { font-weight: 700; }

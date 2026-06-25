@@ -1493,6 +1493,42 @@ CREATE TABLE IF NOT EXISTS site_settings (
   updated_at                  timestamp NOT NULL DEFAULT now()
 );
 INSERT INTO site_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- ── Centre d'aide : documentation rédigée depuis le super-admin ────────────
+-- Deux tables : les thèmes (sommaire) et les articles qui leur sont rattachés.
+-- Le contenu HTML est produit par l'éditeur riche (mise en page, images en
+-- data URL, vidéos embarquées) et assaini avant rendu côté agent mairie.
+CREATE TABLE IF NOT EXISTS help_themes (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug          text NOT NULL UNIQUE,
+  title         text NOT NULL,
+  description   text,
+  icon          text,
+  sort_order    integer NOT NULL DEFAULT 0,
+  is_published  boolean NOT NULL DEFAULT true,
+  created_at    timestamp NOT NULL DEFAULT now(),
+  updated_at    timestamp NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS help_articles (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  theme_id      uuid NOT NULL REFERENCES help_themes(id) ON DELETE CASCADE,
+  slug          text NOT NULL,
+  title         text NOT NULL,
+  excerpt       text,
+  content_html  text NOT NULL DEFAULT '',
+  cover_image   text,
+  status        text NOT NULL DEFAULT 'draft',
+  sort_order    integer NOT NULL DEFAULT 0,
+  author_id     uuid REFERENCES users(id) ON DELETE SET NULL,
+  view_count    integer NOT NULL DEFAULT 0,
+  published_at  timestamp,
+  created_at    timestamp NOT NULL DEFAULT now(),
+  updated_at    timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT help_articles_theme_slug UNIQUE (theme_id, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_help_articles_theme ON help_articles(theme_id);
+CREATE INDEX IF NOT EXISTS idx_help_articles_status ON help_articles(status);
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
