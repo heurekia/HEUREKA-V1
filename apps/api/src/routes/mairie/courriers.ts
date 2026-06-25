@@ -3,6 +3,7 @@ import { db } from "../../db.js";
 import { dossier_courriers, users, communes, courrier_templates, legal_mentions, user_communes, dossiers } from "@heureka-v1/db";
 import { eq, and, desc, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { CODE_URBANISME_ID } from "../../services/legifrance.js";
 import {
@@ -13,7 +14,7 @@ import {
 
 export const courriersRouter = Router();
 
-courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires", async (req: AuthRequest, res) => {
+courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const body = (req.body ?? {}) as {
@@ -61,13 +62,13 @@ courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires", async (re
   }
 });
 
-courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires/preview", async (req: AuthRequest, res) => {
+courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires/preview", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
   const body = (req.body ?? {}) as { pieces?: PieceRequestItem[] };
   const pieces = Array.isArray(body.pieces) ? body.pieces.filter((p) => p && typeof p.nom === "string" && p.nom.trim()) : [];
   res.json({ html: renderPieceListHtml(pieces) });
 });
 
-courriersRouter.get("/dossiers/:id/courriers", async (req: AuthRequest, res) => {
+courriersRouter.get("/dossiers/:id/courriers", requirePermission("courriers.read"), async (req: AuthRequest, res) => {
   try {
     const rows = await db
       .select({
@@ -115,7 +116,7 @@ function cleanPieces(raw: unknown): PieceRequestItem[] {
 // enforceDossierAccess (monté sur /dossiers/:id, cf. mairie/index.ts).
 
 // Crée un brouillon (tout type de courrier).
-courriersRouter.post("/dossiers/:id/courriers/drafts", async (req: AuthRequest, res) => {
+courriersRouter.post("/dossiers/:id/courriers/drafts", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const body = (req.body ?? {}) as {
@@ -147,7 +148,7 @@ courriersRouter.post("/dossiers/:id/courriers/drafts", async (req: AuthRequest, 
 });
 
 // Met à jour un brouillon (refusé si déjà envoyé — un courrier émis est figé).
-courriersRouter.put("/dossiers/:id/courriers/:courrierId", async (req: AuthRequest, res) => {
+courriersRouter.put("/dossiers/:id/courriers/:courrierId", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const courrierId = req.params.courrierId as string;
@@ -189,7 +190,7 @@ courriersRouter.put("/dossiers/:id/courriers/:courrierId", async (req: AuthReque
 // Envoie un courrier (brouillon → envoyé). Pour une demande de pièces, déclenche
 // les effets métier (marquage des pièces, bascule du dossier, événement) via le
 // service dédié. Pour les autres types, fige simplement le snapshot et horodate.
-courriersRouter.post("/dossiers/:id/courriers/:courrierId/send", async (req: AuthRequest, res) => {
+courriersRouter.post("/dossiers/:id/courriers/:courrierId/send", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const courrierId = req.params.courrierId as string;
@@ -358,7 +359,7 @@ async function getDossierCommuneRow(req: AuthRequest, dossierId: string) {
   return byUnaccent ?? null;
 }
 
-courriersRouter.get("/templates", async (req: AuthRequest, res) => {
+courriersRouter.get("/templates", requirePermission("courriers.read"), async (req: AuthRequest, res) => {
   try {
     // Priorité au périmètre DU DOSSIER (modale courrier) : on résout la commune
     // du dossier côté serveur et on matche les modèles par INSEE *ou* par nom —
@@ -393,7 +394,7 @@ courriersRouter.get("/templates", async (req: AuthRequest, res) => {
   }
 });
 
-courriersRouter.post("/templates", async (req: AuthRequest, res) => {
+courriersRouter.post("/templates", requirePermission("courriers.templates"), async (req: AuthRequest, res) => {
   try {
     const communeKey = await getCommuneForUser(req);
     if (!communeKey) return res.status(400).json({ error: "Commune introuvable" });
@@ -412,7 +413,7 @@ courriersRouter.post("/templates", async (req: AuthRequest, res) => {
   }
 });
 
-courriersRouter.put("/templates/:templateId", async (req: AuthRequest, res) => {
+courriersRouter.put("/templates/:templateId", requirePermission("courriers.templates"), async (req: AuthRequest, res) => {
   try {
     const templateId = req.params.templateId as string;
     const communeKey = await getCommuneForUser(req);
@@ -432,7 +433,7 @@ courriersRouter.put("/templates/:templateId", async (req: AuthRequest, res) => {
   }
 });
 
-courriersRouter.delete("/templates/:templateId", async (req: AuthRequest, res) => {
+courriersRouter.delete("/templates/:templateId", requirePermission("courriers.templates"), async (req: AuthRequest, res) => {
   try {
     const templateId = req.params.templateId as string;
     const communeKey = await getCommuneForUser(req);
@@ -448,7 +449,7 @@ courriersRouter.delete("/templates/:templateId", async (req: AuthRequest, res) =
   }
 });
 
-courriersRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
+courriersRouter.get("/commune-letterhead", requirePermission("courriers.read"), async (req: AuthRequest, res) => {
   try {
     // En-tête de la commune DU DOSSIER si la modale passe ?dossier_id= (sinon
     // commune du compte), pour que logo/titre/signature correspondent au dossier.
@@ -473,7 +474,7 @@ courriersRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
   }
 });
 
-courriersRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
+courriersRouter.put("/commune-letterhead", requirePermission("courriers.templates"), async (req: AuthRequest, res) => {
   try {
     const commune = await getCommuneRowForUser(req);
     if (!commune) return res.status(404).json({ error: "Commune introuvable — vérifiez que votre compte est bien rattaché à une commune dans l'administration." });
@@ -496,7 +497,7 @@ courriersRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
 });
 
 // ── Legal mentions (Code de l'urbanisme cache) ────────────────────────────────
-courriersRouter.get("/legal-mentions", async (req: AuthRequest, res) => {
+courriersRouter.get("/legal-mentions", requirePermission("courriers.read"), async (req: AuthRequest, res) => {
   try {
     const dossierType = (req.query.type as string | undefined) ?? "";
     const courrierType = (req.query.courrier_type as string | undefined) ?? "";

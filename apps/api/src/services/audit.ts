@@ -22,6 +22,16 @@ const SENSITIVE_KEYS = new Set([
   "logo_url", "letterhead_logo", "signature_image", "tampon_image", "avatar_url",
 ]);
 
+// Motifs de noms de clés sensibles, insensibles à la casse : couvre les
+// variantes non listées explicitement (client_secret, mdp, pwd, bearer,
+// webhook, *_token, refresh_token…). Empêche qu'un secret porté par une clé
+// non anticipée fuite dans l'audit.
+const SENSITIVE_KEY_RE = /password|passphrase|passwd|mot[_-]?de[_-]?passe|secret|token|api[-_]?key|authorization|bearer|credential|webhook|\bmdp\b|\bpwd\b|signature|tampon/i;
+
+function isSensitiveKey(key: string): boolean {
+  return SENSITIVE_KEYS.has(key) || SENSITIVE_KEY_RE.test(key);
+}
+
 // Tronque récursivement un body utilisateur pour insert en jsonb : on garde
 // les clés "métier" lisibles, on jette les binaires et secrets. Profondeur 2 :
 // au-delà, on stocke un résumé "(object)" pour éviter d'écrire des tonnes de
@@ -38,7 +48,7 @@ export function sanitizeMetadataValue(value: unknown, depth = 0): unknown {
     if (depth >= 2) return "(object)";
     const out: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-      if (SENSITIVE_KEYS.has(k)) continue;
+      if (isSensitiveKey(k)) continue;
       out[k] = sanitizeMetadataValue(v, depth + 1);
     }
     return out;

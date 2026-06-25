@@ -3,12 +3,13 @@ import { db } from "../../db.js";
 import { dossiers, dossier_consultations, notifications, users } from "@heureka-v1/db";
 import { eq, desc, sql } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 
 export const dashboardRouter = Router();
 
 // ── Dashboard stats ──
-dashboardRouter.get("/dashboard", async (req: AuthRequest, res) => {
+dashboardRouter.get("/dashboard", requirePermission("dashboard"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -62,7 +63,7 @@ const DELAIS_LEGAUX_JOURS: Record<string, number> = {
 const STATUTS_DECIDES = ["accepte", "refuse", "accord_prescription"] as const;
 
 // ── Statistiques : vue d'ensemble + types ──
-dashboardRouter.get("/stats", async (req: AuthRequest, res) => {
+dashboardRouter.get("/stats", requirePermission("stats"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -150,7 +151,7 @@ dashboardRouter.get("/stats", async (req: AuthRequest, res) => {
 });
 
 // ── Statistiques : délais d'instruction ──
-dashboardRouter.get("/stats/delais", async (req: AuthRequest, res) => {
+dashboardRouter.get("/stats/delais", requirePermission("stats"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
@@ -230,7 +231,7 @@ dashboardRouter.get("/stats/delais", async (req: AuthRequest, res) => {
 });
 
 // ── Statistiques : services consultés ──
-dashboardRouter.get("/stats/services", async (req: AuthRequest, res) => {
+dashboardRouter.get("/stats/services", requirePermission("stats"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
