@@ -15,6 +15,7 @@ import { queuePieceOcr, notifyIfAlreadyComplete } from "../../services/pieceOcrQ
 import { segmentBundle, applySegmentation, type SegmentationResult, type ApplySegmentInput } from "../../services/pieceSegmenter.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 import { sql } from "drizzle-orm";
+import { uploadLimiter } from "../../middlewares/rateLimiters.js";
 
 export const piecesRouter = Router();
 
@@ -184,7 +185,7 @@ piecesRouter.patch("/dossiers/:id/pieces/:pieceId/annotation", requirePermission
 // devant le pétitionnaire. La notification "dossier prêt" est envoyée à
 // l'instructeur quand toutes les pièces ont été traitées ET que l'agent a
 // finalisé sa session via POST /finalize-upload-session.
-piecesRouter.post("/dossiers/:id/pieces/upload", requirePermission("pieces.upload"), pieceUploadSingle, async (req: AuthRequest, res) => {
+piecesRouter.post("/dossiers/:id/pieces/upload", requirePermission("pieces.upload"), uploadLimiter, pieceUploadSingle, async (req: AuthRequest, res) => {
   const storage = getStorageProvider();
   const fileKey = req.file
     ? `${crypto.randomUUID()}${path.extname(req.file.originalname)}`
@@ -355,7 +356,7 @@ piecesRouter.post("/dossiers/:id/pieces/finalize-upload-session", requirePermiss
   }
 });
 
-piecesRouter.post("/dossiers/:id/pieces/:pieceId/extract", requirePermission("pieces.extract"), async (req: AuthRequest, res) => {
+piecesRouter.post("/dossiers/:id/pieces/:pieceId/extract", requirePermission("pieces.extract"), uploadLimiter, async (req: AuthRequest, res) => {
   try {
     const [piece] = await db
       .select()
@@ -438,7 +439,7 @@ function sanitizeSegments(raw: unknown[], dossierType: string | null): ApplySegm
 }
 
 // ── Dépôt d'un dossier complet en un seul PDF (segmentation asynchrone) ──────
-piecesRouter.post("/dossiers/:id/pieces/upload-bundle", requirePermission("pieces.upload"), pieceUploadSingle, async (req: AuthRequest, res) => {
+piecesRouter.post("/dossiers/:id/pieces/upload-bundle", requirePermission("pieces.upload"), uploadLimiter, pieceUploadSingle, async (req: AuthRequest, res) => {
   const storage = getStorageProvider();
   const fileKey = req.file
     ? `${crypto.randomUUID()}${path.extname(req.file.originalname)}`
