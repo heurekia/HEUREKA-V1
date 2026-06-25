@@ -13,6 +13,7 @@
     "convert-pdf-compat": "tsx src/scripts/convert-pdf-compat.ts",
     "seed:legal-articles": "tsx src/scripts/seed-legal-articles.ts",
     "seed:courrier-tours": "tsx src/scripts/seed-courrier-templates-tours.ts",
+    "seed:help-doc": "tsx src/scripts/seed-help-documentation.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
