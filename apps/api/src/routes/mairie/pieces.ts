@@ -7,7 +7,7 @@ import multer from "multer";
 import crypto from "crypto";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requirePermission } from "../../middlewares/permissions.js";
-import { autoAdvanceIfAllPiecesValid } from "../../services/dossierWorkflow.js";
+import { autoAdvanceIfAllPiecesValid, ensureAssignedToActor } from "../../services/dossierWorkflow.js";
 import { extractPiece, expectedTypeFromCode, codeFromType, defaultPieceName, type PieceType } from "../../services/pieceExtractor.js";
 import { getStorageProvider } from "../../services/storage.js";
 import { archivePreviousComplementDemande } from "../../services/pieceArchive.js";
@@ -150,6 +150,18 @@ piecesRouter.patch("/dossiers/:id/pieces/:pieceId/annotation", requirePermission
           note: rawNote ?? piece.instructeur_note ?? null,
         },
       });
+    }
+
+    // Prise en charge implicite : statuer sur une pièce (valider / rejeter /
+    // demander un complément) est un acte d'instruction. Best-effort, no-op si
+    // déjà pris en charge. Posé AVANT l'auto-bascule pour que l'événement
+    // « pris en charge » précède le « dossier complet » dans la chronologie.
+    if (statusChanged && rawStatus != null) {
+      try {
+        await ensureAssignedToActor(piece.dossier_id, req.user?.id ?? null, req.user?.role);
+      } catch (e) {
+        console.warn("[pieces/annotation] ensureAssignedToActor:", e);
+      }
     }
 
     // Auto-bascule pre_instruction → en_instruction si la dernière pièce
