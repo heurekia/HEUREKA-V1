@@ -176,6 +176,16 @@ Ce sont des blocs de texte tirés de la base ADS d'Operis. Équivalents Heureka 
 - [ ] Volets « taxes » en modèles séparés : OK ?
 - [ ] Ordre d'intégration des 17 une fois le mapping figé.
 
+## 11bis. Avancement de l'intégration
+
+| Modèle | État | Notes |
+|---|---|---|
+| **Demande de pièces manquantes** | ✅ **intégré** | Catégorie `pieces_complementaires`. Liste des pièces ← `liste_pieces_a_completer`. Seed `pnpm -F @heureka-v1/api seed:courrier-tours` (idempotent, communes de Tours Métropole). 6 zones manuelles (adresse demandeur/destinataire, civilité, signataire) en attendant `cerfa_data`. |
+| 16 autres modèles | ⏳ à venir | Même gabarit une fois ce 1er modèle validé. |
+
+Données : `apps/api/src/scripts/tours-courrier-templates.ts` (corps des modèles),
+runner `seed-courrier-templates-tours.ts`.
+
 ## 11. Plan d'enrichissement pour les champs absents (§4.b)
 
 Bonne nouvelle : la quasi-totalité des données absentes est **déjà modélisée**

@@ -12,6 +12,7 @@
     "reindex-rag": "tsx src/scripts/reindex-rag.ts",
     "convert-pdf-compat": "tsx src/scripts/convert-pdf-compat.ts",
     "seed:legal-articles": "tsx src/scripts/seed-legal-articles.ts",
+    "seed:courrier-tours": "tsx src/scripts/seed-courrier-templates-tours.ts",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest"
