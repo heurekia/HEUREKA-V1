@@ -55,24 +55,42 @@ reglementationRouter.get("/reglementation", requirePermission("zones.read"), asy
           .orderBy(zones.display_order)
       : [];
 
-    const result = await Promise.all(zoneRows.map(async zone => {
-      const allRules = await db.select().from(zone_regulatory_rules)
-        .where(eq(zone_regulatory_rules.zone_id, zone.id))
-        .orderBy(zone_regulatory_rules.article_number);
+    // Toutes les règles des zones actives en UNE seule requête, puis regroupement
+    // en mémoire. Auparavant : un SELECT par zone (N+1 qui dégénérait avec le
+    // nombre de zones d'un PLU — 20 à 50 requêtes par ouverture de page). Repose
+    // sur l'index zone_regulatory_rules(zone_id, validation_status). L'ordre global
+    // par article_number garantit que chaque sous-liste de zone reste triée.
+    const zoneIds = zoneRows.map(z => z.id);
+    const allRules = zoneIds.length > 0
+      ? await db.select().from(zone_regulatory_rules)
+          .where(inArray(zone_regulatory_rules.zone_id, zoneIds))
+          .orderBy(zone_regulatory_rules.article_number)
+      : [];
+
+    type RuleRow = typeof allRules[number];
+    const rulesByZone = new Map<string, RuleRow[]>();
+    for (const rule of allRules) {
+      const list = rulesByZone.get(rule.zone_id);
+      if (list) list.push(rule);
+      else rulesByZone.set(rule.zone_id, [rule]);
+    }
+
+    const result = zoneRows.map(zone => {
+      const zoneRules = rulesByZone.get(zone.id) ?? [];
 
       const stats = {
-        total: allRules.length,
-        valide: allRules.filter(r => r.validation_status === "valide").length,
-        brouillon: allRules.filter(r => r.validation_status === "brouillon" || r.validation_status === "draft").length,
-        rejete: allRules.filter(r => r.validation_status === "rejete").length,
+        total: zoneRules.length,
+        valide: zoneRules.filter(r => r.validation_status === "valide").length,
+        brouillon: zoneRules.filter(r => r.validation_status === "brouillon" || r.validation_status === "draft").length,
+        rejete: zoneRules.filter(r => r.validation_status === "rejete").length,
       };
 
       const rules = includeDrafts
-        ? allRules
-        : allRules.filter(r => r.validation_status === "valide");
+        ? zoneRules
+        : zoneRules.filter(r => r.validation_status === "valide");
 
       return { ...zone, rules, stats };
-    }));
+    });
 
     res.json({ commune, zones: result });
   } catch (err) {
