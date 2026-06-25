@@ -4,6 +4,7 @@ import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_doc
 import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole } from "../../middlewares/auth.js";
+import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
 import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
 import { PLU_SAVE_RULE_TOOL, PLU_EXTRACTION_CALIBRATION, coerceCases, coerceAppliesIf, type PluRuleInput } from "./pluSaveRuleTool.js";
@@ -308,6 +309,23 @@ adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
 
   if (!commune_name || !insee_code || !pdf_base64) {
     return res.status(400).json({ error: "commune_name, insee_code et pdf_base64 requis" });
+  }
+
+  // Périmètre : un agent (non-admin) ne peut ingérer/écraser le PLU que d'une
+  // commune de SON périmètre. Vérifié AVANT les en-têtes SSE pour répondre un
+  // JSON 403 propre. Admin (scope === null) : non restreint, peut aussi créer
+  // une commune absente.
+  try {
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    if (scope !== null) {
+      const [c] = await db.select({ name: communes.name }).from(communes).where(eq(communes.insee_code, insee_code)).limit(1);
+      if (!c || !communeInScope(c.name, scope)) {
+        return res.status(403).json({ error: "Commune hors de votre périmètre" });
+      }
+    }
+  } catch (err) {
+    console.error("[ingest-plu-pdf:legacy] scope", err);
+    return res.status(500).json({ error: "Erreur serveur" });
   }
 
   // SSE streaming so the client sees progress zone by zone
@@ -854,6 +872,9 @@ function dedupeTocByCode(entries: TocEntry[]): TocEntry[] {
 adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) => {
   try {
     gcIngestJobs();
+    // Périmètre de l'agent : utilisé plus bas pour interdire l'ingestion d'un
+    // PLU hors de ses communes (admin → scope null → non restreint).
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
     const { commune_name, insee_code, zip_code, pdf_base64, pdfs_base64, doc_id, manual_toc } = req.body as {
       commune_name?: string; insee_code?: string; zip_code?: string;
       pdf_base64?: string; pdfs_base64?: string[]; doc_id?: string;
@@ -897,6 +918,14 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
       if (communeIds.length === 0) {
         return res.status(400).json({ error: "Document sans commune rattachée — rattachez au moins une commune avant d'ingérer." });
       }
+      // Périmètre : au moins une commune couverte par le document doit être dans
+      // celui de l'agent (cas PLUi : N communes membres). Admin : non restreint.
+      if (scope !== null) {
+        const names = await db.select({ name: communes.name }).from(communes).where(inArray(communes.id, communeIds));
+        if (!names.some((c) => communeInScope(c.name, scope))) {
+          return res.status(403).json({ error: "Document hors de votre périmètre" });
+        }
+      }
 
       // On choisit une commune de référence pour le logging/imputation des
       // coûts IA. En mode PLU communal historique, le porteur_commune_id ;
@@ -920,9 +949,15 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
       }
       const existing = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
       if (!existing) {
+        // Créer une commune absente du référentiel est une action admin : un
+        // agent ne peut ingérer que dans une commune existante de son périmètre.
+        if (scope !== null) return res.status(403).json({ error: "Commune hors de votre périmètre" });
         const [created] = await db.insert(communes).values({ name: commune_name, insee_code, zip_code: zip_code ?? "" }).returning();
         commune = created!;
       } else {
+        if (scope !== null && !communeInScope(existing.name, scope)) {
+          return res.status(403).json({ error: "Commune hors de votre périmètre" });
+        }
         await db.update(communes).set({ name: commune_name, zip_code: zip_code ?? existing.zip_code ?? "", updated_at: new Date() }).where(eq(communes.id, existing.id));
         commune = existing;
       }
