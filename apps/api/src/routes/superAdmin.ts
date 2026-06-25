@@ -1013,7 +1013,21 @@ superAdminRouter.get("/users", async (req, res) => {
     const { commune, role } = req.query as { commune?: string; role?: string };
 
     const conditions = [];
-    if (commune) conditions.push(eq(users.commune, commune));
+    if (commune) {
+      // Un agent peut être rattaché à PLUSIEURS communes (table user_communes).
+      // `users.commune` ne porte que la commune PRINCIPALE (la 1re saisie à la
+      // création) : filtrer dessus seul masque l'agent dans ses communes
+      // secondaires. On retient donc aussi les agents reliés à la commune via
+      // user_communes (cf. getCommuneScope, qui fait foi pour l'accès réel).
+      conditions.push(sql`(
+        lower(${users.commune}) = lower(${commune})
+        OR EXISTS (
+          SELECT 1 FROM user_communes uc
+          JOIN communes c ON c.id = uc.commune_id
+          WHERE uc.user_id = ${users.id} AND lower(c.name) = lower(${commune})
+        )
+      )`);
+    }
     if (role) conditions.push(eq(users.role, role as "citoyen" | "mairie" | "instructeur" | "admin"));
 
     const rows = await db
