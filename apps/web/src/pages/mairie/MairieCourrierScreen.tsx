@@ -52,6 +52,7 @@ const CATEGORY_CONFIG: Record<string, { label: string; color: string; bg: string
   avis_reserves: { label: "Avis avec réserves", color: "#B45309", bg: "#FEF3C7" },
   avis_defavorable: { label: "Avis défavorable", color: "#DC2626", bg: "#FEE2E2" },
   pieces_complementaires: { label: "Demande de pièces", color: "#0284C7", bg: "#E0F2FE" },
+  majoration_delai: { label: "Majoration de délai", color: "#CA8A04", bg: "#FEF9C3" },
   accord_tacite: { label: "Accord tacite", color: "#7C3AED", bg: "#EDE9FE" },
   notification_decision: { label: "Notification de décision", color: "#0F172A", bg: "#F1F5F9" },
   general: { label: "Général", color: "#6B7280", bg: "#F3F4F6" },
