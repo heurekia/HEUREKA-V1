@@ -152,8 +152,22 @@ bundle tsup + **smoke tests runtime** (`/metrics` 200 avec token / 401 sans,
 - **Sentry** (`src/sentry.ts`) : capture d'exceptions **gated sur `SENTRY_DSN`**
   (no-op sans DSN → mergeable tout de suite). Handlers globaux (uncaught /
   unhandledRejection) + handler Express ; pas de tracing (`tracesSampleRate 0` —
-  la perf est couverte par les métriques). Le warning « express is not
-  instrumented » au boot est attendu et sans effet sur la capture.
+  la perf est couverte par les métriques).
+  - **Init durcie** (suite à un incident prod) : `Sentry.init()` est enveloppé
+    dans un `try/catch` (un DSN mal formé fait *throw* à l'import → sans ça, crash
+    du process au boot), et `sentryEnabled` ne vaut `true` que si l'init a
+    **réellement réussi**.
+  - **Auto-instrumentation OpenTelemetry désactivée** (`defaultIntegrations:false`
+    + liste réduite aux intégrations de **capture d'erreurs**) : on ne fait pas de
+    tracing, et cette instrumentation ne fonctionne pas sous bundle esbuild
+    (warning « express is not instrumented ») — suspect du crash-loop observé à la
+    1re activation en prod.
+  - ⚠️ **Incident prod (26/06)** : activer `SENTRY_DSN` a mis l'API en crash-loop
+    (502). Cause non reproductible hors prod (boot sans DB en local). Mitigations
+    ci-dessus appliquées ; **re-activation à valider d'abord HORS pm2 sur un port
+    de test** (`SENTRY_DSN=… PORT=3099 node apps/api/dist/index.js`) avant de
+    toucher au service live. Tant que ce n'est pas validé, garder Sentry **off**
+    (les métriques couvrent déjà l'essentiel de l'observabilité).
 - **Front (2.4)** : la capture Sentry **navigateur** reste à faire (optionnel) ;
   ce palier ne couvre que le back.
 

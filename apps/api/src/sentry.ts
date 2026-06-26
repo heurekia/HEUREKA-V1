@@ -18,26 +18,53 @@ import type { Express } from "express";
 
 const dsn = process.env.SENTRY_DSN;
 
-/** Vrai seulement si un DSN est configuré (sinon Sentry est entièrement no-op). */
-export const sentryEnabled = !!dsn;
+// `enabled` reflète l'init RÉELLEMENT réussie, pas seulement la présence d'un DSN.
+// Un DSN mal formé fait **throw** `Sentry.init` au chargement du module ; sans le
+// try/catch ci-dessous, ce throw remonte jusqu'à l'import dans index.ts et CRASHE
+// le process au boot — incident vécu : un DSN placeholder non substitué a mis
+// l'API en crash-loop (502). On préfère démarrer SANS Sentry et le signaler.
+let enabled = false;
 
 if (dsn) {
-  Sentry.init({
-    dsn,
-    environment: process.env.NODE_ENV ?? "development",
-    release: process.env.SENTRY_RELEASE,
-    // Capture d'erreurs uniquement — pas de tracing (cf. en-tête).
-    tracesSampleRate: 0,
-    // Échantillonnage des ERREURS si un jour le volume l'exige (défaut : tout).
-    sampleRate: Number(process.env.SENTRY_SAMPLE_RATE ?? 1),
-  });
-  // NB : au boot, Sentry loggue « [Sentry] express is not instrumented … --import ».
-  // C'est ATTENDU et sans conséquence : ce message concerne l'auto-instrumentation
-  // de PERFORMANCE (tracing), qu'on désactive volontairement (tracesSampleRate 0,
-  // métriques Prometheus à la place). La capture d'exceptions — handlers globaux
-  // + handler Express — fonctionne sans cette instrumentation. (Activer le tracing
-  // demanderait de lancer node avec `--import ./instrument.mjs`.)
+  try {
+    Sentry.init({
+      dsn,
+      environment: process.env.NODE_ENV ?? "development",
+      release: process.env.SENTRY_RELEASE,
+      // Capture d'erreurs uniquement — pas de tracing (cf. en-tête).
+      tracesSampleRate: 0,
+      // Échantillonnage des ERREURS si un jour le volume l'exige (défaut : tout).
+      sampleRate: Number(process.env.SENTRY_SAMPLE_RATE ?? 1),
+      // ⚠️ On DÉSACTIVE l'auto-instrumentation par défaut (OpenTelemetry : Http,
+      // Express, fetch…). Raisons : (1) on ne fait pas de tracing, elle est donc
+      // inutile ; (2) sous notre bundle esbuild elle ne peut pas patcher les
+      // modules (d'où le warning « express is not instrumented … --import ») et
+      // c'est le suspect n°1 du crash-loop observé en prod à l'activation de
+      // Sentry. On ne garde QUE les intégrations de CAPTURE D'ERREURS — elles
+      // n'instrumentent aucun module et suffisent à notre usage.
+      defaultIntegrations: false,
+      integrations: [
+        Sentry.onUncaughtExceptionIntegration(),
+        Sentry.onUnhandledRejectionIntegration(),
+        Sentry.dedupeIntegration(),
+        Sentry.linkedErrorsIntegration(),
+        Sentry.inboundFiltersIntegration(),
+        Sentry.functionToStringIntegration(),
+      ],
+    });
+    enabled = true;
+  } catch (err) {
+    // Ne JAMAIS laisser une init Sentry ratée tuer l'API : on loggue et on
+    // continue sans capture (le reste de l'app n'en dépend pas).
+    console.error(
+      "[sentry] init échouée (DSN invalide ?) — démarrage SANS Sentry:",
+      err instanceof Error ? err.message : err,
+    );
+  }
 }
+
+/** Vrai seulement si l'init Sentry a RÉUSSI (DSN présent ET valide). */
+export const sentryEnabled = enabled;
 
 /**
  * Branche le handler d'erreurs Express de Sentry (no-op si DSN absent). À appeler
