@@ -412,6 +412,10 @@ export function NouvelleDemandeWizard() {
   const qParam = searchParams.get("q") ?? "";
   // Groupement foncier : liste d'ids cadastraux transmise par l'analyse parcellaire.
   const parcellesParam = searchParams.get("parcelles") ?? "";
+  // Quand le wizard est ouvert depuis l'analyse parcellaire avec des parcelles
+  // déjà sélectionnées (param ?parcelles=…), l'unité foncière a été constituée
+  // en amont : on n'expose pas le choix multi-parcelles ici (lecture seule).
+  const parcellesPreselected = parcellesParam.trim().length > 0;
   const dossierParam = searchParams.get("dossier");
 
   const [step, setStep] = useState<Step>(1);
@@ -1516,7 +1520,7 @@ export function NouvelleDemandeWizard() {
                     {attachedParcelles.length > 0 && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
                         {attachedParcelles.map((p, i) => (
-                          <span key={p.parcelle_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #86EFAC", borderRadius: 999, padding: attachedParcelles.length > 1 ? "3px 6px 3px 10px" : "3px 10px", fontSize: 11.5, color: "#0F172A", fontWeight: 600 }}>
+                          <span key={p.parcelle_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #86EFAC", borderRadius: 999, padding: attachedParcelles.length > 1 && !parcellesPreselected ? "3px 6px 3px 10px" : "3px 10px", fontSize: 11.5, color: "#0F172A", fontWeight: 600 }}>
                             {p.parcelle_id}
                             {p.surface_m2 != null && p.surface_m2 > 0 && (
                               <span style={{ color: "#64748b", fontWeight: 400 }}>· {Math.round(p.surface_m2).toLocaleString("fr-FR")} m²</span>
@@ -1524,7 +1528,7 @@ export function NouvelleDemandeWizard() {
                             {i === 0 && attachedParcelles.length > 1 && (
                               <span title="Parcelle principale" style={{ color: "#15803D", fontWeight: 700 }}>★</span>
                             )}
-                            {attachedParcelles.length > 1 && (
+                            {attachedParcelles.length > 1 && !parcellesPreselected && (
                               <button
                                 onClick={() => void detachParcelle(p.parcelle_id)}
                                 disabled={attachingParcel}
@@ -1537,29 +1541,41 @@ export function NouvelleDemandeWizard() {
                       </div>
                     )}
 
-                    {/* Ajout d'une parcelle par référence cadastrale */}
-                    <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
-                      <input
-                        value={extraParcelInput}
-                        onChange={(e) => { setExtraParcelInput(e.target.value); if (attachError) setAttachError(null); }}
-                        onKeyDown={(e) => { if (e.key === "Enter" && !attachingParcel) void attachParcelle(extraParcelInput); }}
-                        placeholder="Réf. cadastrale (ex : 41295000DB0264)"
-                        style={{ flex: 1, padding: "8px 12px", border: "1.5px solid #86EFAC", borderRadius: 9, fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box", background: "white" }}
-                      />
-                      <button
-                        onClick={() => void attachParcelle(extraParcelInput)}
-                        disabled={attachingParcel || !extraParcelInput.trim()}
-                        style={{ padding: "8px 16px", background: "#15803D", color: "white", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: attachingParcel || !extraParcelInput.trim() ? "not-allowed" : "pointer", opacity: attachingParcel || !extraParcelInput.trim() ? 0.6 : 1, whiteSpace: "nowrap", flexShrink: 0 }}
-                      >
-                        {attachingParcel ? "Ajout…" : "+ Ajouter"}
-                      </button>
-                    </div>
-                    {attachError ? (
-                      <div style={{ fontSize: 11.5, color: "#DC2626", marginTop: 6 }}>{attachError}</div>
+                    {/* Ajout d'une parcelle par référence cadastrale. Masqué quand
+                        les parcelles ont déjà été choisies via l'analyse parcellaire :
+                        l'unité foncière est figée, on ne propose pas de la modifier ici. */}
+                    {parcellesPreselected ? (
+                      attachedParcelles.length > 1 && (
+                        <div style={{ fontSize: 11, color: "#64748b", marginTop: 2, lineHeight: 1.4 }}>
+                          Unité foncière constituée lors de l'analyse parcellaire (★ = parcelle principale).
+                        </div>
+                      )
                     ) : (
-                      <div style={{ fontSize: 11, color: "#64748b", marginTop: 6, lineHeight: 1.4 }}>
-                        Votre projet s'étend sur plusieurs parcelles ? Ajoutez-les ici par leur référence cadastrale pour constituer un groupement foncier.
-                      </div>
+                      <>
+                        <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+                          <input
+                            value={extraParcelInput}
+                            onChange={(e) => { setExtraParcelInput(e.target.value); if (attachError) setAttachError(null); }}
+                            onKeyDown={(e) => { if (e.key === "Enter" && !attachingParcel) void attachParcelle(extraParcelInput); }}
+                            placeholder="Réf. cadastrale (ex : 41295000DB0264)"
+                            style={{ flex: 1, padding: "8px 12px", border: "1.5px solid #86EFAC", borderRadius: 9, fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box", background: "white" }}
+                          />
+                          <button
+                            onClick={() => void attachParcelle(extraParcelInput)}
+                            disabled={attachingParcel || !extraParcelInput.trim()}
+                            style={{ padding: "8px 16px", background: "#15803D", color: "white", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: attachingParcel || !extraParcelInput.trim() ? "not-allowed" : "pointer", opacity: attachingParcel || !extraParcelInput.trim() ? 0.6 : 1, whiteSpace: "nowrap", flexShrink: 0 }}
+                          >
+                            {attachingParcel ? "Ajout…" : "+ Ajouter"}
+                          </button>
+                        </div>
+                        {attachError ? (
+                          <div style={{ fontSize: 11.5, color: "#DC2626", marginTop: 6 }}>{attachError}</div>
+                        ) : (
+                          <div style={{ fontSize: 11, color: "#64748b", marginTop: 6, lineHeight: 1.4 }}>
+                            Votre projet s'étend sur plusieurs parcelles ? Ajoutez-les ici par leur référence cadastrale pour constituer un groupement foncier.
+                          </div>
+                        )}
+                      </>
                     )}
                   </div>
 
