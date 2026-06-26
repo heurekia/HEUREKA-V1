@@ -51,6 +51,13 @@ type ParcelAnalysis = {
 
 type BanSuggestion = { label: string; lat: number; lng: number; citycode: string };
 
+// Au-delà de ce rayon de précision GPS (mètres), on ne fait PAS confiance à la
+// parcelle située sous le point : en ville les parcelles font souvent moins de
+// 15 m de large, et un GPS imprécis sélectionnerait la parcelle voisine. Sous ce
+// seuil on pré-analyse (avec invitation à vérifier) ; au-dessus on demande à
+// l'utilisateur de cliquer lui-même sa parcelle sur la carte.
+const GOOD_ACCURACY_M = 20;
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
 const TOPIC_LABEL: Record<string, string> = {
@@ -168,6 +175,7 @@ export function AnalyseParcellaire() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [clickMode, setClickMode] = useState(false);
+  const [geoPosition, setGeoPosition] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
   const [baseLayer, setBaseLayer] = useState<BaseLayer>("ign-ortho");
   const [rulesOpen, setRulesOpen] = useState(false);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -200,12 +208,29 @@ export function AnalyseParcellaire() {
     doAnalyse({ lat: String(lat), lng: String(lng) });
   }, [doAnalyse]);
 
-  // Auto-run when arriving from Accueil with ?q= param
+  // Auto-run when arriving from Accueil with ?q= (address) or ?lat/lng (geoloc)
   useEffect(() => {
     const q = searchParams.get("q");
     if (q?.trim()) {
       setQuery(q);
       doAnalyse({ q: q.trim() });
+      return;
+    }
+    // « Me localiser » : on arrive avec des coordonnées GPS et leur précision.
+    const lat = searchParams.get("lat");
+    const lng = searchParams.get("lng");
+    if (lat && lng) {
+      const accParam = searchParams.get("acc");
+      const accuracy = accParam != null ? Number(accParam) : undefined;
+      setGeoPosition({ lat: Number(lat), lng: Number(lng), accuracy });
+      if (accuracy != null && Number.isFinite(accuracy) && accuracy <= GOOD_ACCURACY_M) {
+        // Précision suffisante : on pré-analyse la parcelle sous le point, mais
+        // on invite l'utilisateur à vérifier (bandeau ci-dessous).
+        doAnalyse({ lat, lng });
+      } else {
+        // Précision insuffisante : on laisse l'utilisateur confirmer sa parcelle.
+        setClickMode(true);
+      }
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -249,6 +274,14 @@ export function AnalyseParcellaire() {
 
   const confidence = analysis?.buildability ? Math.round(analysis.buildability.confidence * 100) : null;
   const parcelGeometry = analysis?.parcel?.geometry as object | undefined;
+
+  // When arriving via "Me localiser", center the map on the GPS point (read from
+  // the URL so it's available before the map mounts) rather than the France view.
+  const geoLatParam = searchParams.get("lat");
+  const geoLngParam = searchParams.get("lng");
+  const hasGeoParams = !!(geoLatParam && geoLngParam);
+  const mapCenter: [number, number] = hasGeoParams ? [Number(geoLatParam), Number(geoLngParam)] : [46.6, 2.3];
+  const mapZoom = hasGeoParams ? 18 : 6;
 
   return (
     <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "white", fontFamily: "system-ui, -apple-system, sans-serif" }}>
@@ -368,6 +401,18 @@ export function AnalyseParcellaire() {
 
           {/* Content area */}
           <div style={{ flex: 1, padding: "14px 16px" }}>
+
+            {/* Bandeau géolocalisation — fiabilité de la parcelle */}
+            {geoPosition && (
+              <div style={{ background: "#EEF2FF", border: "1px solid #C7D2FE", borderRadius: 10, padding: "10px 14px", marginBottom: 12, display: "flex", gap: 8 }}>
+                <span style={{ fontSize: 14, flexShrink: 0 }}>📍</span>
+                <p style={{ fontSize: 12, color: "#3730A3", margin: 0, lineHeight: 1.45 }}>
+                  {analysis
+                    ? <>Parcelle déterminée depuis votre position GPS{geoPosition.accuracy != null ? ` (précision ±${Math.round(geoPosition.accuracy)} m)` : ""}. <strong>Vérifiez sur la carte qu'il s'agit bien de votre terrain</strong> — au besoin, cliquez sur la bonne parcelle.</>
+                    : <>Position GPS approximative{geoPosition.accuracy != null ? ` (±${Math.round(geoPosition.accuracy)} m)` : ""}. <strong>Cliquez sur votre parcelle</strong> sur la carte pour l'analyser.</>}
+                </p>
+              </div>
+            )}
 
             {/* Error */}
             {error && (
@@ -812,8 +857,9 @@ export function AnalyseParcellaire() {
             clickMode={clickMode}
             onMapClick={handleMapClick}
             highlightGeometry={parcelGeometry}
-            defaultCenter={[46.6, 2.3]}
-            defaultZoom={6}
+            positionMarker={geoPosition}
+            defaultCenter={mapCenter}
+            defaultZoom={mapZoom}
           />
           {clickMode && (
             <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)", background: "rgba(79,70,229,0.92)", color: "white", borderRadius: 20, padding: "7px 18px", fontSize: 12, fontWeight: 600, pointerEvents: "none", whiteSpace: "nowrap" }}>
