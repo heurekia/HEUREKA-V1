@@ -23,6 +23,11 @@ export function Login() {
   const [searchParams] = useSearchParams();
   const [mfaTicket, setMfaTicket] = useState<string | null>(null);
   const [mfaCode, setMfaCode] = useState("");
+  // Mot de passe oublié : vue dédiée affichée à la place du formulaire de
+  // connexion. Réponse API volontairement opaque (anti-énumération) → on
+  // confirme l'envoi quoi qu'il arrive.
+  const [forgotMode, setForgotMode] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
   const next = sanitizeNextParam(searchParams.get("next"));
 
   // Erreur renvoyée par le callback FranceConnect (?fc_error=...).
@@ -84,6 +89,19 @@ export function Login() {
     }
   };
 
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await api.post("/auth/forgot-password", { email });
+    } catch {
+      /* réponse opaque côté API — on confirme dans tous les cas */
+    }
+    setForgotSent(true);
+    setLoading(false);
+  };
+
   const handleResend = async () => {
     setResendState("sending");
     try {
@@ -133,6 +151,44 @@ export function Login() {
               {loading ? "Vérification..." : "Vérifier"}
             </Button>
           </form>
+          ) : forgotMode ? (
+            forgotSent ? (
+            <div className="space-y-4">
+              <div className="bg-green-50 border border-green-100 text-green-700 px-4 py-3 rounded-lg text-sm">
+                Si un compte est associé à cette adresse, un email de réinitialisation vient d'être envoyé. Consultez votre boîte de réception (et vos spams).
+              </div>
+              <button
+                type="button"
+                onClick={() => { setForgotMode(false); setForgotSent(false); setError(""); }}
+                className="w-full text-center text-sm font-medium text-heureka-600 hover:underline"
+              >
+                ← Retour à la connexion
+              </button>
+            </div>
+            ) : (
+            <form onSubmit={handleForgotSubmit} className="space-y-4">
+              {error && (
+                <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg text-sm">{error}</div>
+              )}
+              <p className="text-sm text-gray-600">
+                Saisissez votre adresse email : nous vous enverrons un lien pour définir un nouveau mot de passe.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="vous@exemple.fr" />
+              </div>
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? "Envoi..." : "Envoyer le lien"}
+              </Button>
+              <button
+                type="button"
+                onClick={() => { setForgotMode(false); setError(""); }}
+                className="w-full text-center text-sm font-medium text-heureka-600 hover:underline"
+              >
+                ← Retour à la connexion
+              </button>
+            </form>
+            )
           ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
@@ -165,10 +221,17 @@ export function Login() {
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? "Connexion..." : "Se connecter"}
             </Button>
+            <button
+              type="button"
+              onClick={() => { setForgotMode(true); setError(""); setNeedsVerification(false); }}
+              className="w-full text-center text-sm font-medium text-heureka-600 hover:underline"
+            >
+              Mot de passe oublié ?
+            </button>
           </form>
           )}
 
-          {!mfaTicket && fcEnabled && (
+          {!mfaTicket && !forgotMode && fcEnabled && (
             <div className="mt-6">
               <div className="relative">
                 <div className="absolute inset-0 flex items-center">
@@ -194,12 +257,14 @@ export function Login() {
             </div>
           )}
 
-          <p className="text-center text-sm text-gray-500 mt-4">
-            Pas encore de compte ?{" "}
-            <Link to={registerHref} className="text-heureka-600 font-medium hover:underline">
-              S'inscrire gratuitement
-            </Link>
-          </p>
+          {!forgotMode && (
+            <p className="text-center text-sm text-gray-500 mt-4">
+              Pas encore de compte ?{" "}
+              <Link to={registerHref} className="text-heureka-600 font-medium hover:underline">
+                S'inscrire gratuitement
+              </Link>
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>
