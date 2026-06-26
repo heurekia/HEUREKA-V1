@@ -31,6 +31,11 @@ interface ParcelleRefUI {
 
 interface ParcelInfo {
   adresse?: string;
+  // Adresse RÉELLEMENT saisie par le citoyen, conservée telle quelle. `adresse`
+  // peut être réécrite par le géocodage serveur (libellé officiel BAN/IGN de la
+  // parcelle trouvée) ; on garde la saisie d'origine pour pouvoir afficher
+  // EXPLICITEMENT au citoyen que l'adresse retenue diffère de ce qu'il a tapé.
+  adresseSaisie?: string;
   commune?: string;
   zone?: string;       // zone_code  e.g. "UA"
   zoneLabel?: string;  // zone_label e.g. "Zone Urbaine Centrale"
@@ -60,6 +65,7 @@ function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): Par
 
   return {
     adresse: address?.label ?? fallbackAdresse,
+    adresseSaisie: fallbackAdresse || undefined,
     commune: address?.city ?? parcel?.commune ?? municipality?.libelle,
     zone: pluZone?.zone_code,
     zoneLabel: pluZone?.zone_label,
@@ -69,6 +75,18 @@ function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): Par
     servitudes,
     parcelles,
   };
+}
+
+// Compare deux adresses en tolérant les différences de casse, d'accents et de
+// ponctuation (« 18 rue Jean de la Fontaine, Vineuil » ≈ « 18 Rue Jean de La
+// Fontaine 41350 Vineuil »). Sert UNIQUEMENT à décider s'il faut signaler au
+// citoyen que l'adresse retenue diffère de sa saisie : en cas de doute (l'une
+// des deux absente), on considère qu'elles concordent pour ne pas alarmer à tort.
+function sameAddress(a?: string, b?: string): boolean {
+  if (!a || !b) return true;
+  const norm = (s: string) =>
+    s.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "").replace(/[^a-z0-9]+/g, " ").trim();
+  return norm(a) === norm(b);
 }
 
 interface Classification {
@@ -902,6 +920,9 @@ export function NouvelleDemandeWizard() {
       const merged: ParcelInfo = {
         ...mapped,
         adresse: parcel?.adresse || mapped.adresse,
+        // Conserve la saisie d'origine du citoyen (mapAnalysis a reçu l'adresse
+        // déjà géocodée comme fallback, pas la saisie : on la réinjecte ici).
+        adresseSaisie: parcel?.adresseSaisie ?? mapped.adresseSaisie,
         commune: parcel?.commune || mapped.commune,
       };
       setParcel(merged);
@@ -1624,6 +1645,28 @@ export function NouvelleDemandeWizard() {
                       </div>
                     ))}
                   </div>
+
+                  {/* Adresse explicite : si le géocodage a retenu une adresse
+                      différente de la saisie du citoyen, on le signale clairement
+                      plutôt que de substituer en silence. */}
+                  {parcel.adresseSaisie && !sameAddress(parcel.adresse, parcel.adresseSaisie) && (
+                    <div
+                      style={{
+                        marginTop: 12,
+                        fontSize: 11.5,
+                        lineHeight: 1.45,
+                        color: "#92400E",
+                        background: "#FEF3C7",
+                        border: "1px solid #FDE68A",
+                        borderRadius: 8,
+                        padding: "8px 11px",
+                      }}
+                    >
+                      ℹ️ L'adresse retenue ci-dessus est celle <strong>reconnue pour la parcelle</strong>.
+                      Vous aviez saisi : « {parcel.adresseSaisie} ». Si la parcelle identifiée
+                      n'est pas la bonne, modifiez votre recherche d'adresse.
+                    </div>
+                  )}
 
                   {/* Parcelles du projet (unité foncière) — ajout/retrait direct
                       depuis le wizard, sans repasser par l'analyse parcellaire. */}
@@ -3040,7 +3083,20 @@ export function NouvelleDemandeWizard() {
                 }}
               >
                 {[
-                  { icon: "📍", label: "Localisation", value: parcel?.adresse ?? "Non renseignée" },
+                  {
+                    icon: "📍",
+                    label: "Localisation",
+                    value: (
+                      <>
+                        {parcel?.adresse ?? "Non renseignée"}
+                        {parcel?.adresseSaisie && !sameAddress(parcel?.adresse, parcel?.adresseSaisie) && (
+                          <div style={{ fontSize: 11, fontWeight: 400, color: "#94a3b8", marginTop: 3, lineHeight: 1.4 }}>
+                            Adresse reconnue pour la parcelle · vous aviez saisi « {parcel.adresseSaisie} »
+                          </div>
+                        )}
+                      </>
+                    ),
+                  },
                   {
                     icon: "🔨",
                     label: "Type de projet",
@@ -3117,6 +3173,15 @@ export function NouvelleDemandeWizard() {
                 const allUploaded = Object.values(uploadedPieces).flat();
                 const anyPending = allUploaded.some((p) => p.aiPending);
                 const horsSujet = allUploaded.filter((p) => p.mismatch);
+                // Pièces jugées « à reprendre » par l'analyse (score non_conforme)
+                // mais qui ne sont PAS hors-sujet (sinon déjà couvertes par
+                // horsSujet). L'analyse IA reste indicative : on n'interdit pas la
+                // soumission (l'instructeur tranche et pourra redemander la pièce),
+                // mais on refuse d'afficher un bandeau vert « complet » rassurant
+                // alors qu'une pièce est visiblement de mauvaise qualité.
+                const aReprendre = allUploaded.filter(
+                  (p) => !p.mismatch && p.analyse?.score === "non_conforme",
+                );
                 const canSubmit = missing === 0 && !anyPending && horsSujet.length === 0 && !!dossierId && !submitting;
 
                 // Un SEUL bandeau d'état, priorisé selon le cas de figure, pour
@@ -3150,6 +3215,17 @@ export function NouvelleDemandeWizard() {
                   message = (
                     <>
                       ⏳ Analyse de vos pièces en cours… La soumission sera disponible dès qu'elle sera terminée (quelques instants).
+                    </>
+                  );
+                } else if (aReprendre.length > 0) {
+                  tone = "warn";
+                  message = (
+                    <>
+                      ⚠️ {aReprendre.length > 1 ? `${aReprendre.length} pièces sont signalées` : "Une pièce est signalée"}{" "}
+                      « à reprendre » par l'analyse automatique : {aReprendre.map((p) => p.nom).join(", ")}.
+                      Vous pouvez tout de même soumettre votre dossier, mais la mairie
+                      pourra vous {aReprendre.length > 1 ? "redemander ces pièces" : "redemander cette pièce"} si
+                      {aReprendre.length > 1 ? " elles ne sont pas exploitables" : " elle n'est pas exploitable"}.
                     </>
                   );
                 } else {
