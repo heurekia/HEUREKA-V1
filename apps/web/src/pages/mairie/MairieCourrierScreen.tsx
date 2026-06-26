@@ -982,7 +982,7 @@ export function CourrierModal({
         }
       `}</style>
       <div className="no-print-modal" style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
-      <div className="print-modal-box" style={{ position: "relative", width: "90vw", maxWidth: 1100, maxHeight: "92vh", margin: "auto", background: "white", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 60px rgba(0,0,0,0.25)" }}>
+      <div className="print-modal-box" style={{ position: "relative", width: "92vw", maxWidth: 1400, maxHeight: "92vh", margin: "auto", background: "white", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 60px rgba(0,0,0,0.25)" }}>
         {/* Header */}
         <div className="no-print-modal" style={{ padding: "12px 20px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
@@ -1011,20 +1011,9 @@ export function CourrierModal({
             <div style={{ fontSize: 12, color: "#64748b" }}>{dossier.numero} — {dossier.petitionnaire}</div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            {/* Signature toggle */}
-            {(appliedSig || signataire?.signature_image || letterhead.signature_image) && (
-              <button onClick={() => setShowSig(v => !v)}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showSig ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 7, background: showSig ? "#EEF2FF" : "white", color: showSig ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
-                ✍️ Signature
-              </button>
-            )}
-            {/* Tampon toggle */}
-            {(appliedTamp || signataire?.tampon_image || letterhead.tampon_image) && (
-              <button onClick={() => setShowTamp(v => !v)}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showTamp ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 7, background: showTamp ? "#EEF2FF" : "white", color: showTamp ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
-                🔵 Tampon
-              </button>
-            )}
+            {/* Signature & tampon : plus de bouton manuel ici. Ils s'apposent
+                automatiquement sur le courrier lors de la signature (handleSign)
+                et restent déplaçables pour le positionnement. */}
             {/* Pièces à demander — visible uniquement en mode pieces_complementaires */}
             {mode === "pieces_complementaires" && (
               <button onClick={() => { setShowPiecesPanel((v) => !v); if (showMentions) setShowMentions(false); }}
@@ -1080,7 +1069,7 @@ export function CourrierModal({
                     {showSignPicker && (
                       <>
                         <div onClick={() => setShowSignPicker(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
-                        <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, width: 264, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 14px 36px rgba(0,0,0,0.18)", overflow: "hidden" }}>
+                        <div style={{ position: "absolute", left: 0, top: "calc(100% + 6px)", zIndex: 50, width: 264, maxWidth: "calc(100vw - 32px)", background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 14px 36px rgba(0,0,0,0.18)", overflow: "hidden" }}>
                           <div style={{ padding: "8px 12px", fontSize: 10, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase", borderBottom: "1px solid #F1F5F9" }}>Envoyer en signature à</div>
                           {signataireRows.map((s) => (
                             <button key={s.user_id} onClick={() => handleRequestSignature(s.user_id)}
@@ -1178,7 +1167,7 @@ export function CourrierModal({
           </div>
 
           {/* Print preview */}
-          <div className="print-area" style={{ flex: 1, overflowY: "auto" }}>
+          <div className="print-area" style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
             {(selected || bodyOverride) ? (
               <div style={{ position: "relative" }}>
                 <CourrierPrintPreview html={effectiveBody} letterhead={letterhead} extraHtml={insertedMentionsHtml || undefined} editable={isEditingBody} onBodyChange={handleBodyChange} />
