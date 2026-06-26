@@ -93,15 +93,18 @@ export function Accueil() {
   const [showSugg, setShowSugg] = useState(false);
   const [geoLoading, setGeoLoading] = useState(false);
   const [geoError, setGeoError] = useState("");
+  // Fix GPS courant (si l'utilisateur s'est localisé). On le conserve pour
+  // analyser la parcelle à partir des coordonnées exactes — plus fiable que de
+  // re-géocoder l'adresse affichée. Remis à null dès que l'utilisateur tape.
+  const [geoCoords, setGeoCoords] = useState<{ lat: number; lng: number; accuracy: number } | null>(null);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
   const { user } = useAuth();
 
-  // « Me localiser » : on récupère la position GPS du navigateur puis on bascule
-  // sur l'analyse parcellaire centrée sur ce point. On ne sélectionne PAS la
-  // parcelle aveuglément : la page d'analyse laisse l'utilisateur confirmer
-  // (et n'auto-analyse que si la précision GPS est suffisante). Voir
-  // AnalyseParcellaire — la précision (`acc`, en mètres) est transmise telle quelle.
+  // « Me localiser » : on récupère la position GPS du navigateur, on la
+  // reverse-géocode (BAN) pour afficher l'adresse dans la barre, et on garde les
+  // coordonnées exactes pour l'analyse de parcelle. On ne navigue pas tout de
+  // suite : l'utilisateur voit l'adresse trouvée puis lance « Analyser mon projet ».
   const handleLocate = () => {
     setGeoError("");
     if (!("geolocation" in navigator)) {
@@ -110,15 +113,17 @@ export function Accueil() {
     }
     setGeoLoading(true);
     navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        setGeoLoading(false);
+      async (pos) => {
         const { latitude, longitude, accuracy } = pos.coords;
-        const params = new URLSearchParams({
-          lat: latitude.toFixed(6),
-          lng: longitude.toFixed(6),
-          acc: String(Math.round(accuracy)),
-        });
-        navigate(`/analyse-parcellaire?${params.toString()}`);
+        setGeoCoords({ lat: latitude, lng: longitude, accuracy });
+        // Reverse-géocodage : on restitue l'adresse dans la barre.
+        try {
+          const r = await fetch(`https://api-adresse.data.gouv.fr/reverse/?lon=${longitude}&lat=${latitude}`);
+          const data = await r.json() as { features?: Array<{ properties: { label: string } }> };
+          const label = data.features?.[0]?.properties.label;
+          if (label) { setQuery(label); setSuggestions([]); setShowSugg(false); }
+        } catch { /* l'adresse n'a pas pu être résolue — les coordonnées suffisent */ }
+        setGeoLoading(false);
       },
       (err) => {
         setGeoLoading(false);
@@ -140,11 +145,21 @@ export function Accueil() {
   const goAnalyse = (q: string) => {
     setSuggestions([]);
     setShowSugg(false);
-    navigate(`/analyse-parcellaire?q=${encodeURIComponent(q.trim())}`);
+    const params = new URLSearchParams();
+    if (q.trim()) params.set("q", q.trim());
+    // Si on s'est localisé, on transmet les coordonnées exactes (+ précision) :
+    // l'analyse de parcelle s'appuie dessus plutôt que sur l'adresse re-géocodée.
+    if (geoCoords) {
+      params.set("lat", geoCoords.lat.toFixed(6));
+      params.set("lng", geoCoords.lng.toFixed(6));
+      params.set("acc", String(Math.round(geoCoords.accuracy)));
+    }
+    navigate(`/analyse-parcellaire?${params.toString()}`);
   };
 
   const handleQueryChange = (val: string) => {
     setQuery(val);
+    setGeoCoords(null); // l'utilisateur saisit une adresse : le fix GPS n'est plus pertinent
     setShowSugg(true);
     if (suggestTimer.current) clearTimeout(suggestTimer.current);
     if (val.length < 3) { setSuggestions([]); return; }
@@ -239,7 +254,7 @@ export function Accueil() {
                   className="flex-1 bg-transparent py-3.5 text-sm text-gray-700 placeholder-gray-400 outline-none"
                 />
                 {query && (
-                  <button onClick={() => { setQuery(""); setSuggestions([]); }} className="text-gray-400 hover:text-gray-600 text-base leading-none">×</button>
+                  <button onClick={() => { setQuery(""); setSuggestions([]); setGeoCoords(null); }} className="text-gray-400 hover:text-gray-600 text-base leading-none">×</button>
                 )}
               </div>
 
@@ -262,8 +277,28 @@ export function Accueil() {
               )}
             </div>
 
+            {/* Bouton « Me localiser » (icône) — avant « Analyser mon projet » */}
             <button
-              onClick={() => query.trim() && goAnalyse(query)}
+              type="button"
+              onClick={handleLocate}
+              disabled={geoLoading}
+              title="Me localiser"
+              aria-label="Me localiser"
+              className="flex-shrink-0 flex items-center justify-center w-12 border border-gray-200 rounded-xl bg-white hover:bg-gray-50 text-heureka-600 disabled:opacity-60 disabled:cursor-default transition-colors"
+            >
+              {geoLoading ? (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin">
+                  <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                </svg>
+              ) : (
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+                </svg>
+              )}
+            </button>
+
+            <button
+              onClick={() => (query.trim() || geoCoords) && goAnalyse(query)}
               className="flex-shrink-0 flex items-center gap-2 bg-heureka-500 hover:bg-heureka-600 text-white px-6 py-3.5 rounded-xl font-semibold text-sm transition-colors"
             >
               Analyser mon projet
@@ -273,29 +308,7 @@ export function Accueil() {
             </button>
            </div>
 
-           {/* Géolocalisation */}
-           <div className="flex items-center gap-3 flex-wrap">
-             <button
-               type="button"
-               onClick={handleLocate}
-               disabled={geoLoading}
-               className="flex items-center gap-1.5 text-sm font-medium text-heureka-600 hover:text-heureka-700 disabled:opacity-60 disabled:cursor-default transition-colors"
-             >
-               {geoLoading ? (
-                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin">
-                   <path d="M21 12a9 9 0 1 1-6.219-8.56" />
-                 </svg>
-               ) : (
-                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                   <circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
-                 </svg>
-               )}
-               {geoLoading ? "Localisation en cours…" : "Me localiser"}
-             </button>
-             {geoError
-               ? <span className="text-xs text-amber-600">{geoError}</span>
-               : <span className="text-xs text-gray-400">Utilisez votre position pour trouver votre parcelle.</span>}
-           </div>
+           {geoError && <span className="text-xs text-amber-600">{geoError}</span>}
           </div>
         </div>
       </section>

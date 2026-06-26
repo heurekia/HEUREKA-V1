@@ -211,15 +211,13 @@ export function AnalyseParcellaire() {
   // Auto-run when arriving from Accueil with ?q= (address) or ?lat/lng (geoloc)
   useEffect(() => {
     const q = searchParams.get("q");
-    if (q?.trim()) {
-      setQuery(q);
-      doAnalyse({ q: q.trim() });
-      return;
-    }
-    // « Me localiser » : on arrive avec des coordonnées GPS et leur précision.
     const lat = searchParams.get("lat");
     const lng = searchParams.get("lng");
+    // « Me localiser » : on arrive avec des coordonnées GPS (+ précision), et
+    // éventuellement l'adresse re-géocodée à afficher dans la barre. L'analyse
+    // s'appuie sur les coordonnées exactes, plus fiables que l'adresse.
     if (lat && lng) {
+      if (q?.trim()) setQuery(q);
       const accParam = searchParams.get("acc");
       const accuracy = accParam != null ? Number(accParam) : undefined;
       setGeoPosition({ lat: Number(lat), lng: Number(lng), accuracy });
@@ -231,6 +229,11 @@ export function AnalyseParcellaire() {
         // Précision insuffisante : on laisse l'utilisateur confirmer sa parcelle.
         setClickMode(true);
       }
+      return;
+    }
+    if (q?.trim()) {
+      setQuery(q);
+      doAnalyse({ q: q.trim() });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
