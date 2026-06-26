@@ -8,6 +8,7 @@ import { inArray } from "drizzle-orm";
 import { requireRole } from "../../middlewares/auth.js";
 import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
+import { hashPasswordToken } from "../../lib/passwordToken.js";
 import multer from "multer";
 import crypto from "crypto";
 import path from "path";
@@ -765,7 +766,7 @@ async function invitePetitionnaireToActivate(opts: {
   const token = crypto.randomBytes(32).toString("hex");
   await db.insert(password_tokens).values({
     user_id: opts.userId,
-    token,
+    token: hashPasswordToken(token), // stockage du hash ; token en clair envoyé par email
     type: "activation",
     expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
   });

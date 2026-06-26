@@ -5,6 +5,7 @@ import { eq, desc, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireAuth } from "../../middlewares/auth.js";
 import { requirePermission } from "../../middlewares/permissions.js";
+import { getCommuneScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import { analyseParcel } from "../../services/parcelAnalysis.js";
 import {
   computeInstructionDelay,
@@ -28,6 +29,14 @@ parcelleRouter.get("/map-dossiers", requirePermission("dossiers.read"), async (r
   try {
     const commune = req.query.commune as string | undefined;
 
+    // Périmètre : le `?commune=` du client est intersecté avec les communes
+    // réellement rattachées à l'agent (admin = toutes). Sans ce filtre, un appel
+    // sans `?commune=` renvoyait les dossiers de TOUTES les communes (fuite
+    // inter-mairies) ; et la mise en cache géo plus bas écrivait même dans des
+    // dossiers hors périmètre.
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    const communeFilter = communeScopeFilter(sql`dossiers.commune`, scope, commune ?? null);
+
     const rows = await db
       .select({
         id: dossiers.id,
@@ -40,11 +49,7 @@ parcelleRouter.get("/map-dossiers", requirePermission("dossiers.read"), async (r
         metadata: dossiers.metadata,
       })
       .from(dossiers)
-      .where(
-        commune
-          ? sql`commune ILIKE ${commune} AND adresse IS NOT NULL AND status != 'brouillon'`
-          : sql`adresse IS NOT NULL AND status != 'brouillon'`
-      )
+      .where(sql`(${communeFilter}) AND adresse IS NOT NULL AND status != 'brouillon'`)
       .orderBy(desc(dossiers.created_at))
       .limit(200);
 

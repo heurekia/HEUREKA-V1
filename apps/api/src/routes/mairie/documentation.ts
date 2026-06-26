@@ -21,6 +21,7 @@
 import { Router } from "express";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requirePermission } from "../../middlewares/permissions.js";
+import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import {
   buildDocumentationContext,
   listApplicableReferences,
@@ -58,6 +59,18 @@ documentationRouter.get("/dossiers/:id/documentation/reference/:refId", requireP
     const refId = req.params.refId as string;
     const detail = await getReferenceDetail(refId);
     if (!detail) return res.status(404).json({ error: "Référence introuvable" });
+    // Défense en profondeur : `:refId` est une ressource indépendante du dossier
+    // (enforceDossierAccess ne valide que `:id`). On vérifie que la commune de la
+    // référence appartient au périmètre de l'agent, sinon un agent pouvait lire
+    // le contenu réglementaire (texte PLU / synthèse de document) d'une AUTRE
+    // commune en devinant un refId. `commune` nulle = portée intercommunale
+    // (PLUi) : pas de restriction par commune.
+    if (detail.commune) {
+      const scope = await getCommuneScope(req.user!.id, req.user!.role);
+      if (!communeInScope(detail.commune, scope)) {
+        return res.status(404).json({ error: "Référence introuvable" });
+      }
+    }
     res.json(detail);
   } catch (err) {
     console.error("[documentation:detail]", err);

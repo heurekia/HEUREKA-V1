@@ -16,6 +16,7 @@ import {
   encryptSecret, decryptSecret, generateBackupCodes, consumeBackupCode,
 } from "../services/mfa.js";
 import crypto from "crypto";
+import { hashPasswordToken } from "../lib/passwordToken.js";
 
 export const authRouter = Router();
 
@@ -132,7 +133,8 @@ function originBaseUrl(req: AuthRequest): string | undefined {
 async function issueVerificationToken(userId: string): Promise<string> {
   const token = crypto.randomBytes(32).toString("hex");
   const expires = new Date(Date.now() + VERIFICATION_TOKEN_TTL_MS);
-  await db.insert(password_tokens).values({ user_id: userId, token, type: "verification", expires_at: expires });
+  // On stocke le HASH (le token en clair part par email) — cf. lib/passwordToken.
+  await db.insert(password_tokens).values({ user_id: userId, token: hashPasswordToken(token), type: "verification", expires_at: expires });
   return token;
 }
 
@@ -549,7 +551,8 @@ authRouter.post("/forgot-password", rateLimit({ windowMs: 15 * 60 * 1000, max: 5
 
     const token = crypto.randomBytes(32).toString("hex");
     const expires = new Date(Date.now() + 60 * 60 * 1000); // 1 hour
-    await db.insert(password_tokens).values({ user_id: user.id, token, type: "reset", expires_at: expires });
+    // Stockage du HASH uniquement ; le token en clair est envoyé par email.
+    await db.insert(password_tokens).values({ user_id: user.id, token: hashPasswordToken(token), type: "reset", expires_at: expires });
     await sendPasswordResetEmail({ to: user.email, prenom: user.prenom, token }).catch(err => console.error("[mailer] reset:", err));
     res.json({ ok: true });
   } catch (err) {
@@ -565,7 +568,7 @@ authRouter.get("/activate/:token", async (req, res) => {
     const [row] = await db.select({ id: password_tokens.id, type: password_tokens.type, user_id: password_tokens.user_id, email: users.email, prenom: users.prenom })
       .from(password_tokens)
       .leftJoin(users, eq(password_tokens.user_id, users.id))
-      .where(and(eq(password_tokens.token, token), isNull(password_tokens.used_at), gt(password_tokens.expires_at, new Date())))
+      .where(and(eq(password_tokens.token, hashPasswordToken(token)), isNull(password_tokens.used_at), gt(password_tokens.expires_at, new Date())))
       .limit(1);
     if (!row) return res.status(400).json({ error: "Lien invalide ou expiré" });
     res.json({ valid: true, email: row.email, prenom: row.prenom, type: row.type });
@@ -588,7 +591,7 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     // réécrire le mot de passe — il passe par /verify-email.
     const [row] = await db.select().from(password_tokens)
       .where(and(
-        eq(password_tokens.token, token),
+        eq(password_tokens.token, hashPasswordToken(token)),
         inArray(password_tokens.type, ["activation", "reset"]),
         isNull(password_tokens.used_at),
         gt(password_tokens.expires_at, new Date()),
@@ -631,7 +634,7 @@ authRouter.post("/verify-email", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, 
 
     const [row] = await db.select().from(password_tokens)
       .where(and(
-        eq(password_tokens.token, token),
+        eq(password_tokens.token, hashPasswordToken(token)),
         eq(password_tokens.type, "verification"),
         isNull(password_tokens.used_at),
         gt(password_tokens.expires_at, new Date()),

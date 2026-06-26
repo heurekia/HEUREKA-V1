@@ -11,6 +11,7 @@ import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
 import { requireAuth, requireRole, bumpTokenVersion, invalidateTokenVersionCache, type AuthRequest } from "../middlewares/auth.js";
 import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
+import { hashPasswordToken } from "../lib/passwordToken.js";
 import { invalidatePermissions, invalidateAllPermissions } from "../middlewares/permissions.js";
 import { logAudit } from "../services/audit.js";
 import { isProfessionalRole, offboardProfessional, eraseCitizenAccount } from "../services/accountLifecycle.js";
@@ -1141,7 +1142,7 @@ superAdminRouter.post("/users", async (req, res) => {
     const token = crypto.randomBytes(32).toString("hex");
     await db.insert(password_tokens).values({
       user_id: newUser!.id,
-      token,
+      token: hashPasswordToken(token), // stockage du hash ; token en clair envoyé par email
       type: "activation",
       expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
@@ -1177,7 +1178,7 @@ superAdminRouter.post("/users/:id/resend-invitation", async (req, res) => {
     const token = crypto.randomBytes(32).toString("hex");
     await db.insert(password_tokens).values({
       user_id: id,
-      token,
+      token: hashPasswordToken(token), // stockage du hash ; token en clair envoyé par email
       type: "activation",
       expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
@@ -1641,7 +1642,8 @@ superAdminRouter.post("/services/:id/users", async (req, res) => {
     // Generate activation token (valid 7 days)
     const token = crypto.randomBytes(32).toString("hex");
     const expires = new Date(Date.now() + 7 * 24 * 60 * 60 * 1000);
-    await db.insert(password_tokens).values({ user_id: user!.id, token, type: "activation", expires_at: expires });
+    // Stockage du hash ; le token en clair est envoyé par email d'activation.
+    await db.insert(password_tokens).values({ user_id: user!.id, token: hashPasswordToken(token), type: "activation", expires_at: expires });
 
     const SERVICE_ROLE_LABELS: Record<string, string> = {
       ABF:                 "Architecte des Bâtiments de France",

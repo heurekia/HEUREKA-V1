@@ -8,6 +8,7 @@ import { requirePermission, invalidatePermissions } from "../../middlewares/perm
 import { logAudit } from "../../services/audit.js";
 import { isProfessionalRole, deactivateUser, eraseCitizenAccount } from "../../services/accountLifecycle.js";
 import { getCommuneScope, communeInScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
+import { hashPasswordToken } from "../../lib/passwordToken.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
 import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
 import { PLU_SAVE_RULE_TOOL, PLU_EXTRACTION_CALIBRATION, coerceCases, coerceAppliesIf, type PluRuleInput } from "./pluSaveRuleTool.js";
@@ -185,7 +186,7 @@ adminRouter.post("/admin/users", requireRole("mairie", "admin"), requirePermissi
     const token = randomBytes(32).toString("hex");
     await db.insert(password_tokens).values({
       user_id: newUser!.id,
-      token,
+      token: hashPasswordToken(token), // stockage du hash ; token en clair envoyé par email
       type: "activation",
       expires_at: new Date(Date.now() + 7 * 24 * 60 * 60 * 1000),
     });
