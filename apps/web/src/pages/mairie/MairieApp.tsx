@@ -1,26 +1,30 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
 import { normalizeForSearch } from "../../lib/utils";
 import { useAuth, hasPermission } from "../../hooks/useAuth";
 import { MfaSettings } from "../../components/MfaSettings";
-import { TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 import { fmtDate, COMMUNE_INSEE, notifIcon, notifColor, relTime, resolveCommune, type ApiNotif, type ApiDossier, type DossierInfo, type WorkflowMeta, type DelaiBreakdown } from "./shared";
 import {
   HomeIcon, FolderIcon, CalendarIcon, MessageIcon, MapIcon, ChartIcon, SettingsIcon,
   BellIcon, SearchIcon, PlusIcon, HelpIcon, BuildingIcon, ChevronDownIcon,
   PenIcon,
 } from "./ui";
-import { DashboardScreen } from "./DashboardScreen";
-import { DossiersScreen } from "./DossiersScreen";
-import { MessageScreen } from "./MessageScreen";
-import { CarteScreen } from "./CarteScreen";
-import { ReglementationScreen } from "./ReglementationScreen";
-import { DossierDetailScreen } from "./DossierDetailScreen";
-import { CalendrierScreen } from "./CalendrierScreen";
-import { StatistiquesScreen } from "./StatistiquesScreen";
 import { NouveauDossierModal } from "./NouveauDossierModal";
-import { ParametresScreen } from "./ParametresScreen";
+import { PageLoader } from "../../components/PageLoader";
+
+// Écrans mairie chargés à la demande (chacun dans son propre chunk) : la coquille
+// MairieApp ne tire plus l'intégralité des écrans (DossierDetail, Paramètres —
+// qui embarque réglementation + courrier —, Carte/Leaflet…) au premier
+// chargement de l'espace mairie. Rendus sous le <Suspense> des <Routes>.
+const DashboardScreen = lazy(() => import("./DashboardScreen").then((m) => ({ default: m.DashboardScreen })));
+const DossiersScreen = lazy(() => import("./DossiersScreen").then((m) => ({ default: m.DossiersScreen })));
+const MessageScreen = lazy(() => import("./MessageScreen").then((m) => ({ default: m.MessageScreen })));
+const CarteScreen = lazy(() => import("./CarteScreen").then((m) => ({ default: m.CarteScreen })));
+const DossierDetailScreen = lazy(() => import("./DossierDetailScreen").then((m) => ({ default: m.DossierDetailScreen })));
+const CalendrierScreen = lazy(() => import("./CalendrierScreen").then((m) => ({ default: m.CalendrierScreen })));
+const StatistiquesScreen = lazy(() => import("./StatistiquesScreen").then((m) => ({ default: m.StatistiquesScreen })));
+const ParametresScreen = lazy(() => import("./ParametresScreen").then((m) => ({ default: m.ParametresScreen })));
 import { AideDocumentation } from "./AideDocumentation";
 import { SupportModal } from "./SupportModal";
 
@@ -1865,6 +1869,11 @@ export function MairieApp() {
           <Topbar onNewDossier={active === "Dossiers" && hasPermission(user, "dossiers.create") ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} communes={userCommunes} setCommune={setCommune} onViewAllNotifications={() => routerNavigate("/mairie/parametres?tab=notifications")} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
+          {/* Suspense : pendant le chargement du chunk d'un écran lazy (cf. les
+              const lazy() en tête de fichier), on affiche le PageLoader plutôt
+              qu'un blanc. La frontière est ici, sous la Topbar, pour que la
+              coquille (sidebar + barre) reste visible pendant le chargement. */}
+          <Suspense fallback={<PageLoader />}>
           <Routes>
             <Route index element={<RequirePerm perms={NAV_PERMS["/mairie"]!}><DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} inseeCode={communeInseeMap[commune]} onDossierClick={handleDossierClick} /></RequirePerm>} />
             <Route path="dossiers" element={<RequirePerm perms={NAV_PERMS["/mairie/dossiers"]!}><DossiersScreen commune={commune} onDossierClick={handleDossierClick} /></RequirePerm>} />
@@ -1878,6 +1887,7 @@ export function MairieApp() {
             <Route path="profil" element={<InfosPersoScreen />} />
             <Route path="*" element={<Navigate to="/mairie" replace />} />
           </Routes>
+          </Suspense>
         </div>
       </div>
       {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} commune={commune} />}
