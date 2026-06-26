@@ -1,6 +1,7 @@
 import fs from "fs";
-import { extractFirstJson, sanitizePieceName, sha256Buffer } from "./pieceAnalyzer.js";
+import { extractFirstJson, sanitizePieceName } from "./pieceAnalyzer.js";
 import { callAi } from "./aiUsage.js";
+import { sha256HexAsync, toBase64Async } from "./cpuOffload.js";
 
 /**
  * Extraction structurée d'une pièce du dossier d'urbanisme.
@@ -784,8 +785,10 @@ export async function extractPiece(
   }
   if (buf.length > MAX_INLINE_BYTES) return null;
 
-  const base64 = buf.toString("base64");
-  const fileHash = sha256Buffer(buf);
+  // base64 + hash coopératifs (cèdent l'event loop pour les gros buffers) —
+  // cf. services/cpuOffload.ts.
+  const base64 = await toBase64Async(buf);
+  const fileHash = await sha256HexAsync(buf);
   const isPdfFile = isPdf(mimeType);
 
   const documentBlock = isPdfFile

@@ -1,6 +1,7 @@
 import fs from "fs";
 import crypto from "crypto";
 import { callAi } from "./aiUsage.js";
+import { sha256HexAsync, sha256HexConcatAsync, toBase64Async } from "./cpuOffload.js";
 
 // ── RGPD : minimisation du nom de pièce ──────────────────────────────────────
 // Le nom passé au LLM peut contenir le NOM du citoyen (« Plan de masse -
@@ -315,8 +316,10 @@ export async function analyzePiece(
     };
   }
 
-  const base64 = buf.toString("base64");
-  const fileHash = sha256Buffer(buf);
+  // base64 + hash en mode coopératif (cède l'event loop pour les gros buffers,
+  // jusqu'à 30 Mo ici) — cf. services/cpuOffload.ts.
+  const base64 = await toBase64Async(buf);
+  const fileHash = await sha256HexAsync(buf);
   const useRegulatory = !!ctx && !!(ctx.regles?.length || ctx.zone || ctx.aide);
   const system = useRegulatory ? SYSTEM_PROMPT_REGULATORY : SYSTEM_PROMPT_BASIC;
   const contextText = buildContextSection(ctx);
@@ -417,9 +420,8 @@ export async function analyzePieceGroup(
   const system = useRegulatory ? SYSTEM_PROMPT_REGULATORY : SYSTEM_PROMPT_BASIC;
   const contextText = buildContextSection(ctx);
   // Hash agrégé : permet le cache et la traçabilité (même lot → même hash).
-  const concatHash = crypto.createHash("sha256");
-  for (const d of sized) concatHash.update(d.buf);
-  const fileHash = concatHash.digest("hex");
+  // Coopératif (cède l'event loop par tranche) — cf. services/cpuOffload.ts.
+  const fileHash = await sha256HexConcatAsync(sized.map((d) => d.buf));
 
   // En-tête utilisateur : énumère les documents avec leur libellé métier pour
   // que le modèle sache QUEL fichier il voit et qu'ils appartiennent au MÊME slot.
@@ -438,11 +440,11 @@ export async function analyzePieceGroup(
     "Évalue l'ENSEMBLE des documents ci-dessus comme un tout pour ce seul emplacement.",
   ].filter(Boolean).join("\n\n");
 
-  const documentBlocks = sized.map((d) => (
+  const documentBlocks = await Promise.all(sized.map(async (d) => (
     isPdf(d.mimeType)
-      ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: d.buf.toString("base64") } }
-      : { type: "image" as const, source: { type: "base64" as const, media_type: d.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: d.buf.toString("base64") } }
-  ));
+      ? { type: "document" as const, source: { type: "base64" as const, media_type: "application/pdf" as const, data: await toBase64Async(d.buf) } }
+      : { type: "image" as const, source: { type: "base64" as const, media_type: d.mimeType as "image/jpeg" | "image/png" | "image/gif" | "image/webp", data: await toBase64Async(d.buf) } }
+  )));
 
   const msg = await callAi(
     { purpose: "piece_analyze", dossierId: trace?.dossierId, communeId: trace?.communeId, userId: trace?.userId, fileHash },
