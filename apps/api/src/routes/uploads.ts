@@ -1,15 +1,12 @@
 import { Router } from "express";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { db } from "../db.js";
 import { dossier_pieces_jointes, dossier_documents, dossier_piece_bundles, dossiers } from "@heureka-v1/db";
 import { eq, like } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
 import { getStorageProvider } from "../services/storage.js";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
+import { UPLOADS_DIR } from "../paths.js";
 
 export const uploadsRouter = Router();
 uploadsRouter.use(requireAuth);

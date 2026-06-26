@@ -29,12 +29,8 @@
 //   - Taxes (P*) — laissées vides volontairement, la mairie les calcule
 
 import { readFile } from "node:fs/promises";
-import path from "node:path";
-import { fileURLToPath } from "node:url";
 import { PDFDocument } from "pdf-lib";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PCMI_TEMPLATE_PATH = path.resolve(__dirname, "../data/cerfa/13406-16.pdf");
+import { CERFA_TEMPLATE_PATH as PCMI_TEMPLATE_PATH } from "../paths.js";
 
 // ── Types d'entrée ──────────────────────────────────────────────────────────
 
