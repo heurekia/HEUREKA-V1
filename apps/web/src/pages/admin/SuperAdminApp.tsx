@@ -306,6 +306,9 @@ function RoleBadge({ role }: { role: string }) {
   if (role === "admin") return <Badge label="Admin" color={C.purple} bg={C.purpleBg} />;
   if (role === "mairie") return <Badge label="Mairie" color={C.blue} bg={C.blueBg} />;
   if (role === "instructeur") return <Badge label="Instructeur" color={C.green} bg={C.greenBg} />;
+  // Services annexes (ABF, SDIS, DDT…) : sans cas dédié, ces comptes
+  // retombaient sur le badge « Citoyen » et apparaissaient à tort comme tels.
+  if (role === "service_externe") return <Badge label="Service annexe" color={C.orange} bg={C.orangeBg} />;
   return <Badge label="Citoyen" color={C.textMuted} bg={C.bg} />;
 }
 
