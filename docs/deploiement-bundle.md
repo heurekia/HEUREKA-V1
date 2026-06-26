@@ -21,8 +21,18 @@ Sur le VPS, quand tu peux observer le résultat :
 cd /home/ubuntu/heurekia
 git pull && pnpm install --frozen-lockfile
 pnpm build                       # produit apps/api/dist/index.js (tsup) + apps/web/dist (vite)
-pm2 startOrReload ecosystem.config.cjs --update-env && pm2 save
-curl -fsS https://app.heurekia.com/api/health    # doit répondre {"status":"ok","db":"ok"}
+
+# Validation HORS pm2 d'abord (sur un port libre, sans toucher au service live).
+# PORT explicite : dotenv ne surcharge pas une var déjà définie, donc on écoute
+# bien sur 3099 même si .env fixe un autre port.
+PORT=3099 node apps/api/dist/index.js & BOOT=$!; sleep 5
+curl -fsS http://127.0.0.1:3099/api/health       # doit répondre {"status":"ok","db":"ok"}
+kill $BOOT
+
+# Si OK, bascule pm2 (delete + start car le script/cwd change vs l'ancien tsx) :
+pm2 delete heurekia-api
+pm2 start ecosystem.config.cjs --update-env && pm2 save
+curl -fsS https://app.heurekia.com/api/health    # {"status":"ok","db":"ok"}
 pm2 logs heurekia-api --lines 50 --nostream      # vérifier le 🚀 et l'absence d'erreur au boot
 ```
 

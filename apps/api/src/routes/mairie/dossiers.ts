@@ -13,7 +13,8 @@ import crypto from "crypto";
 import path from "path";
 import { z } from "zod";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
-import { extractFirstJson, sha256Buffer } from "../../services/pieceAnalyzer.js";
+import { extractFirstJson } from "../../services/pieceAnalyzer.js";
+import { sha256HexAsync, toBase64Async } from "../../services/cpuOffload.js";
 import { attachCerfaToDossier } from "../../services/cerfaAttachment.js";
 import { prefetchSitadelHistory } from "../../services/sitadelPrefetch.js";
 import { notifyUser } from "../../services/notify.js";
@@ -1172,7 +1173,10 @@ dossiersRouter.post("/ocr-cerfa", requirePermission("dossiers.create"), ocrSingl
     }
 
     const buf = req.file.buffer;
-    const fileHash = sha256Buffer(buf);
+    // Hash coopératif : l'upload peut atteindre 60 Mo et ce handler est sur le
+    // chemin requête — un sha256 synchrone gèlerait l'event loop ~160 ms pour
+    // tous les utilisateurs (cf. services/cpuOffload.ts).
+    const fileHash = await sha256HexAsync(buf);
     const communeIdForTrace = await resolveCommuneIdFromUser(req);
 
     // Pixtral n'accepte pas le PDF natif → on rend les pages utiles en PNG
@@ -1199,7 +1203,7 @@ dossiersRouter.post("/ocr-cerfa", requirePermission("dossiers.create"), ocrSingl
         source: {
           type: "base64",
           media_type: sniffed === "jpeg" ? "image/jpeg" : "image/png",
-          data: buf.toString("base64"),
+          data: await toBase64Async(buf),
         },
       });
     }
