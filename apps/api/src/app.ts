@@ -23,6 +23,7 @@ import { pinoHttp } from "pino-http";
 import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
 import { metricsMiddleware, metricsHandler } from "./metrics.js";
+import { setupSentryErrorHandler } from "./sentry.js";
 
 export const app = express();
 
@@ -194,3 +195,8 @@ app.get("*", (_req, res) => {
   res.setHeader("Cache-Control", "no-cache");
   res.sendFile(path.join(FRONTEND_DIST_DIR, "index.html"));
 });
+
+// Handler d'erreurs Sentry — APRÈS toutes les routes (no-op si SENTRY_DSN absent).
+// Capture les erreurs propagées via next(err) ; les crashs (uncaughtException /
+// unhandledRejection) sont pris par les intégrations globales de Sentry.
+setupSentryErrorHandler(app);

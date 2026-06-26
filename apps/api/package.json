@@ -25,6 +25,7 @@
     "@heureka-v1/ingestion": "workspace:*",
     "@heureka-v1/regulatory-engine": "workspace:*",
     "@heureka-v1/shared": "workspace:*",
+    "@sentry/node": "^10.62.0",
     "@types/compression": "^1.8.1",
     "bcryptjs": "^2.4.3",
     "compression": "^1.8.1",

@@ -1,4 +1,7 @@
 import "dotenv/config";
+// Importé AVANT app.js : l'init Sentry (si SENTRY_DSN défini) s'exécute tôt, une
+// fois dotenv chargé. No-op sans DSN. Voir src/sentry.ts.
+import "./sentry.js";
 import { app } from "./app.js";
 import { startScheduledJobs } from "./jobs/scheduler.js";
 import { probeAiUsageTable, probePdfTooling } from "./services/aiUsage.js";
