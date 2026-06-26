@@ -305,9 +305,21 @@ courriersRouter.post("/dossiers/:id/courriers/:courrierId/send", requirePermissi
 // ── Circuit de signature ──────────────────────────────────────────────────
 // Renvoie le signataire ACTIF de la commune rattaché à un utilisateur (= preuve
 // d'habilitation à signer), ou null. signataires.commune est le nom de commune.
+//
+// La comparaison de commune est insensible à la casse et aux espaces : la
+// commune d'un dossier dérive de dossiers.commune — texte libre saisi tel quel
+// (« TOURS ») — alors que signataires.commune provient des Paramètres
+// (« Tours »). Un eq() strict ne matchait jamais et la signature était refusée à
+// tort au signataire pourtant habilité (« Le destinataire n'est pas un
+// signataire habilité de la commune. »). Aligné sur signataireCommuneEq /
+// isActiveSignataire dans decisions.ts.
 async function findSignataire(commune: string, userId: string) {
   const [sig] = await db.select().from(signataires)
-    .where(and(eq(signataires.commune, commune), eq(signataires.user_id, userId), eq(signataires.active, true)))
+    .where(and(
+      sql`lower(trim(${signataires.commune})) = ${commune.trim().toLowerCase()}`,
+      eq(signataires.user_id, userId),
+      eq(signataires.active, true),
+    ))
     .limit(1);
   return sig ?? null;
 }
