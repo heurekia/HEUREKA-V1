@@ -333,29 +333,46 @@ function EditableBody({ html, onChange }: { html: string; onChange: (html: strin
   );
 }
 
-// ─── Courrier preview (print-ready, multi-page) ───────────────────────────
-function CourrierPrintPreview({ html, letterhead, extraHtml, editable = false, onBodyChange }: { html: string; letterhead: Letterhead; extraHtml?: string; editable?: boolean; onBodyChange?: (html: string) => void }) {
-  if (isCanvasBody(html)) {
-    return <CanvasPrintView pages={parseCanvasDoc(html)} letterhead={letterhead} extraHtml={extraHtml} />;
-  }
+// Padding intérieur du corps de la lettre (aligné sur .lh-print-body).
+const LETTER_PAD_X = 36;
+const LETTER_PAD_Y = 24;
 
-  const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
-  const hasFooter = !!letterhead.footer_text;
+// En-tête réutilisé par la vue continue (édition) et la vue paginée (aperçu).
+function letterHeaderEl(letterhead: Letterhead, className?: string) {
+  if (!(letterhead.letterhead_logo || letterhead.letterhead_title)) return null;
+  return (
+    <div className={className} style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
+      {letterhead.letterhead_logo && (
+        <img src={letterhead.letterhead_logo} alt="" style={{ height: 56, width: "auto", objectFit: "contain", flexShrink: 0 }} />
+      )}
+      <div>
+        {letterhead.letterhead_title && <div style={{ fontSize: 16, fontWeight: 700 }}>{letterhead.letterhead_title}</div>}
+        {letterhead.letterhead_subtitle && <div style={{ fontSize: 13 }}>{letterhead.letterhead_subtitle}</div>}
+        {letterhead.letterhead_address && <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{letterhead.letterhead_address}</div>}
+      </div>
+    </div>
+  );
+}
+
+// Construit le HTML complet du corps (lettre + bloc « références ») tel qu'il
+// sera mesuré PUIS rendu, pour que la pagination corresponde au rendu final.
+function buildLetterBodyHtml(html: string, extraHtml?: string): string {
+  const extraBlock = extraHtml
+    ? `<div style="margin-top:28px;padding-top:18px;border-top:1px solid #CBD5E1;">`
+      + `<div style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">Références législatives et réglementaires</div>`
+      + `<div class="tiptap-preview-mairie">${extraHtml}</div></div>`
+    : "";
+  return DOMPurify.sanitize(html + extraBlock);
+}
+
+// ─── Vue continue (mode édition) ──────────────────────────────────────────
+// Surface unique non paginée : le contentEditable ne peut pas être découpé en
+// feuilles sans casser le curseur. En-tête/pied fixes à l'impression (CSS).
+function LetterFlowView({ html, letterhead, extraHtml, editable, onBodyChange }: { html: string; letterhead: Letterhead; extraHtml?: string; editable: boolean; onBodyChange?: (html: string) => void }) {
   return (
     <div className="courrier-paper" style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B", boxShadow: "0 2px 16px rgba(15,23,42,0.12)" }}>
-      {hasHeader && (
-        <div className="lh-print-header" style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
-          {letterhead.letterhead_logo && (
-            <img src={letterhead.letterhead_logo} alt="" style={{ height: 56, width: "auto", objectFit: "contain", flexShrink: 0 }} />
-          )}
-          <div>
-            {letterhead.letterhead_title && <div style={{ fontSize: 16, fontWeight: 700 }}>{letterhead.letterhead_title}</div>}
-            {letterhead.letterhead_subtitle && <div style={{ fontSize: 13 }}>{letterhead.letterhead_subtitle}</div>}
-            {letterhead.letterhead_address && <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{letterhead.letterhead_address}</div>}
-          </div>
-        </div>
-      )}
-      <div className="lh-print-body" style={{ padding: "24px 36px", minHeight: 400 }}>
+      {letterHeaderEl(letterhead, "lh-print-header")}
+      <div className="lh-print-body" style={{ padding: `${LETTER_PAD_Y}px ${LETTER_PAD_X}px`, minHeight: 400 }}>
         {editable
           ? <EditableBody html={html} onChange={onBodyChange ?? (() => {})} />
           : <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />}
@@ -368,13 +385,94 @@ function CourrierPrintPreview({ html, letterhead, extraHtml, editable = false, o
           </div>
         )}
       </div>
-      {hasFooter && (
+      {letterhead.footer_text && (
         <div className="lh-print-footer" style={{ padding: "10px 36px 14px", borderTop: "1px solid #CBD5E1", fontSize: 11, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", background: "white" }}>
           {letterhead.footer_text}
         </div>
       )}
     </div>
   );
+}
+
+// ─── Vue paginée (mode aperçu) ────────────────────────────────────────────
+// Mesure le corps rendu hors écran, répartit ses blocs de premier niveau en
+// feuilles A4 successives (en-tête + pied + compteur « page X / Y » répétés),
+// pour que l'aperçu reflète la pagination réelle au lieu de tronquer le texte.
+function PaginatedLetterView({ html, letterhead, extraHtml }: { html: string; letterhead: Letterhead; extraHtml?: string }) {
+  const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
+  const footerText = letterhead.footer_text ?? "";
+  const bodyHtml = buildLetterBodyHtml(html, extraHtml);
+
+  const headerRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const footerRef = useRef<HTMLDivElement>(null);
+  const [layout, setLayout] = useState<{ pages: string[]; headerH: number; footerH: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const bodyEl = bodyRef.current;
+    if (!bodyEl) return;
+    const headerH = headerRef.current?.offsetHeight ?? 0;
+    const footerH = footerRef.current?.offsetHeight ?? FTR_H;
+    const contentH = PAGE_H - headerH - footerH - LETTER_PAD_Y * 2;
+    const kids = Array.from(bodyEl.children) as HTMLElement[];
+    if (kids.length === 0) { setLayout({ pages: [bodyHtml], headerH, footerH }); return; }
+    // Répartit chaque bloc de premier niveau ; un bloc plus haut qu'une page
+    // occupe sa propre feuille (et déborde, accepté pour un courrier).
+    const groups: string[][] = [];
+    let cur: string[] = [];
+    let curH = 0;
+    for (const el of kids) {
+      const cs = getComputedStyle(el);
+      const h = el.offsetHeight + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+      if (curH > 0 && curH + h > contentH) { groups.push(cur); cur = []; curH = 0; }
+      cur.push(el.outerHTML);
+      curH += h;
+    }
+    if (cur.length) groups.push(cur);
+    setLayout({ pages: groups.map((g) => g.join("")), headerH, footerH });
+  }, [bodyHtml, hasHeader, footerText]);
+
+  const fontStyle = { fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" } as const;
+  const pages = layout?.pages ?? [];
+
+  return (
+    <div>
+      {/* Mesureur hors écran : sert à connaître la hauteur de chaque bloc et
+          des bandeaux en-tête/pied. Jamais imprimé ni visible. */}
+      <div className="no-print-modal" aria-hidden style={{ position: "absolute", left: -99999, top: 0, width: PAGE_W, visibility: "hidden", pointerEvents: "none" }}>
+        <div ref={headerRef}>{letterHeaderEl(letterhead)}</div>
+        <div ref={bodyRef} className="tiptap-preview-mairie" style={{ width: PAGE_W - LETTER_PAD_X * 2, ...fontStyle }} dangerouslySetInnerHTML={{ __html: bodyHtml }} />
+        <div ref={footerRef} style={{ width: PAGE_W, boxSizing: "border-box", minHeight: FTR_H, borderTop: "1px solid #CBD5E1", padding: "8px 36px", fontSize: 11, lineHeight: 1.4, whiteSpace: "pre-line" }}>{footerText || " "}</div>
+      </div>
+
+      {/* Feuilles A4 paginées */}
+      {pages.map((pageHtml, i) => (
+        <div key={i} className="courrier-paper" style={{
+          position: "relative", width: PAGE_W, height: PAGE_H, background: "white", boxShadow: "0 2px 16px rgba(15,23,42,0.12)", ...fontStyle,
+          ...(i < pages.length - 1 ? { marginBottom: 32, pageBreakAfter: "always", breakAfter: "page" } : {}),
+        }}>
+          {hasHeader && <div style={{ position: "absolute", top: 0, left: 0, right: 0 }}>{letterHeaderEl(letterhead)}</div>}
+          <div className="tiptap-preview-mairie" style={{ position: "absolute", top: layout?.headerH ?? 0, left: 0, right: 0, bottom: layout?.footerH ?? FTR_H, padding: `${LETTER_PAD_Y}px ${LETTER_PAD_X}px`, overflow: "hidden", boxSizing: "border-box" }} dangerouslySetInnerHTML={{ __html: pageHtml }} />
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: layout?.footerH ?? FTR_H, borderTop: "1px solid #CBD5E1", background: "white", display: "flex", alignItems: "center", gap: 12, padding: "0 36px", boxSizing: "border-box" }}>
+            <span style={{ flex: 1, fontSize: 11, color: "#64748b", whiteSpace: "pre-line", textAlign: footerText ? "left" : "right" }}>{footerText}</span>
+            <span style={{ fontSize: 11, color: "#94a3b8", flexShrink: 0 }}>{i + 1} / {pages.length}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Courrier preview (print-ready, multi-page) ───────────────────────────
+function CourrierPrintPreview({ html, letterhead, extraHtml, editable = false, onBodyChange }: { html: string; letterhead: Letterhead; extraHtml?: string; editable?: boolean; onBodyChange?: (html: string) => void }) {
+  if (isCanvasBody(html)) {
+    return <CanvasPrintView pages={parseCanvasDoc(html)} letterhead={letterhead} extraHtml={extraHtml} />;
+  }
+  // Édition : surface continue (curseur libre). Aperçu : feuilles A4 paginées.
+  if (editable) {
+    return <LetterFlowView html={html} letterhead={letterhead} extraHtml={extraHtml} editable onBodyChange={onBodyChange} />;
+  }
+  return <PaginatedLetterView html={html} letterhead={letterhead} extraHtml={extraHtml} />;
 }
 
 // ─── Courrier Modal ────────────────────────────────────────────────────────
