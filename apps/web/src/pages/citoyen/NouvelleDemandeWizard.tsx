@@ -1,4 +1,4 @@
-import { useState, useCallback, useEffect, useRef } from "react";
+import { useState, useCallback, useEffect, useRef, type ReactNode } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { useIsMobile } from "../../hooks/useMediaQuery";
@@ -3118,34 +3118,55 @@ export function NouvelleDemandeWizard() {
                 const anyPending = allUploaded.some((p) => p.aiPending);
                 const horsSujet = allUploaded.filter((p) => p.mismatch);
                 const canSubmit = missing === 0 && !anyPending && horsSujet.length === 0 && !!dossierId && !submitting;
+
+                // Un SEUL bandeau d'état, priorisé selon le cas de figure, pour
+                // ne jamais afficher un message rassurant (vert) en même temps
+                // qu'une alerte bloquante (rouge) — source de confusion. Ordre
+                // de priorité : pièce manquante > hors-sujet > analyse en cours
+                // > prêt à soumettre.
+                const toneStyles = {
+                  error: { background: "#FEE2E2", border: "1px solid #FECACA", color: "#DC2626", fontWeight: 500 },
+                  warn: { background: "#FEF3C7", border: "1px solid #FDE68A", color: "#B45309", fontWeight: 400 },
+                  success: { background: "#F0FDF4", border: "1px solid #86EFAC", color: "#15803D", fontWeight: 400 },
+                } as const;
+                let tone: keyof typeof toneStyles;
+                let message: ReactNode;
+                if (missing > 0) {
+                  tone = "error";
+                  message = (
+                    <>
+                      🚫 {missing} pièce{missing > 1 ? "s" : ""} obligatoire{missing > 1 ? "s" : ""} manquante{missing > 1 ? "s" : ""}. Retournez à l'étape précédente pour les déposer avant de soumettre.
+                    </>
+                  );
+                } else if (horsSujet.length > 0) {
+                  tone = "error";
+                  message = (
+                    <>
+                      🚫 {horsSujet.length > 1 ? `${horsSujet.length} pièces ne correspondent` : "Une pièce ne correspond"} pas à {horsSujet.length > 1 ? "leur" : "sa"} rubrique : {horsSujet.map((p) => p.nom).join(", ")}. Vérifiez que le bon document est déposé dans chaque emplacement avant de soumettre.
+                    </>
+                  );
+                } else if (anyPending) {
+                  tone = "warn";
+                  message = (
+                    <>
+                      ⏳ Analyse de vos pièces en cours… La soumission sera disponible dès qu'elle sera terminée (quelques instants).
+                    </>
+                  );
+                } else {
+                  tone = "success";
+                  message = (
+                    <>
+                      ✓ Votre dossier est complet et sera transmis à la mairie de{" "}
+                      <strong>{parcel?.commune ?? "votre commune"}</strong>. Vous recevrez un
+                      accusé de réception et pourrez suivre l'avancement en temps réel.
+                    </>
+                  );
+                }
                 return (
                   <>
-                    {missing > 0 ? (
-                      <div style={{ background: "#FEE2E2", border: "1px solid #FECACA", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#DC2626", lineHeight: 1.5, fontWeight: 500 }}>
-                        🚫 {missing} pièce{missing > 1 ? "s" : ""} obligatoire{missing > 1 ? "s" : ""} manquante{missing > 1 ? "s" : ""}. Retournez à l'étape précédente pour les déposer avant de soumettre.
-                      </div>
-                    ) : required.length > 0 ? (
-                      <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#15803D", lineHeight: 1.5 }}>
-                        ✓ Toutes les pièces obligatoires ont été déposées.
-                      </div>
-                    ) : null}
-                    {horsSujet.length > 0 && (
-                      <div style={{ background: "#FEE2E2", border: "1px solid #FECACA", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#DC2626", lineHeight: 1.5, fontWeight: 500 }}>
-                        🚫 {horsSujet.length > 1 ? `${horsSujet.length} pièces ne correspondent` : "Une pièce ne correspond"} pas à {horsSujet.length > 1 ? "leur" : "sa"} rubrique : {horsSujet.map((p) => p.nom).join(", ")}. Vérifiez que le bon document est déposé dans chaque emplacement avant de soumettre.
-                      </div>
-                    )}
-                    {anyPending && horsSujet.length === 0 && (
-                      <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#B45309", lineHeight: 1.5 }}>
-                        ⏳ Analyse de vos pièces en cours… La soumission sera disponible dès qu'elle sera terminée (quelques instants).
-                      </div>
-                    )}
-                    {missing === 0 && !anyPending && horsSujet.length === 0 && (
-                      <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 12, padding: "13px 18px", marginBottom: 24, fontSize: 13, color: "#15803D", lineHeight: 1.5 }}>
-                        ✓ Votre dossier sera transmis à la mairie de{" "}
-                        <strong>{parcel?.commune ?? "votre commune"}</strong>. Vous recevrez un
-                        accusé de réception et pourrez suivre l'avancement en temps réel.
-                      </div>
-                    )}
+                    <div style={{ ...toneStyles[tone], borderRadius: 12, padding: "13px 18px", marginBottom: 24, fontSize: 13, lineHeight: 1.5 }}>
+                      {message}
+                    </div>
 
                     <div style={{ display: "flex", justifyContent: "space-between" }}>
                       <button
