@@ -196,11 +196,35 @@ export function AnalyseParcellaire() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
   const [clickMode, setClickMode] = useState(false);
+  // Mode dédié « sélection de parcelles » : activé via la case à cocher « mon
+  // projet comprend d'autres parcelles cadastrales ». Distinct du clic simple
+  // (analyse d'un point) : ici chaque clic AJOUTE/retire une parcelle au
+  // groupement foncier, sur fond de plan cadastral pour repérer les parcelles
+  // adjacentes.
+  const [multiParcelMode, setMultiParcelMode] = useState(false);
   const [geoPosition, setGeoPosition] = useState<{ lat: number; lng: number; accuracy?: number } | null>(null);
   const [baseLayer, setBaseLayer] = useState<BaseLayer>("ign-ortho");
   const [rulesOpen, setRulesOpen] = useState(false);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
+  // Fond de carte à restaurer quand on quitte le mode sélection de parcelles
+  // (on bascule temporairement sur le plan cadastral pendant la sélection).
+  const baseLayerBeforeSelect = useRef<BaseLayer>("ign-ortho");
+
+  // Active / désactive le mode « sélection de parcelles ». À l'activation on
+  // bascule sur le plan cadastral (IGN Plan) pour bien distinguer les parcelles
+  // adjacentes, et on passe la carte en mode clic. À la désactivation on
+  // restaure le fond de carte précédent.
+  const toggleMultiParcelMode = useCallback((on: boolean) => {
+    setMultiParcelMode(on);
+    if (on) {
+      setClickMode(true);
+      setBaseLayer((prev) => { baseLayerBeforeSelect.current = prev; return "ign-plan"; });
+    } else {
+      setClickMode(false);
+      setBaseLayer(baseLayerBeforeSelect.current);
+    }
+  }, []);
 
   // Helper bas-niveau : interroge /public/analyse et renvoie le résultat sans
   // toucher à la sélection ni à l'analyse affichée (gère loading + erreur).
@@ -244,10 +268,13 @@ export function AnalyseParcellaire() {
     const result = await fetchAnalyse(params);
     if (!result) return;
     setClickMode(false);
+    // Une nouvelle recherche d'adresse repart d'un terrain unique : on sort du
+    // mode sélection de parcelles (et on restaure le fond de carte).
+    toggleMultiParcelMode(false);
     const sel = parcelToSelected(result);
     setSelectedParcels(sel ? [sel] : []);
     setAnalysis(result);
-  }, [fetchAnalyse]);
+  }, [fetchAnalyse, toggleMultiParcelMode]);
 
   // Recherche par adresse / réf. cadastrale.
   const handleSearch = useCallback(() => {
@@ -255,7 +282,11 @@ export function AnalyseParcellaire() {
     void analyseAndSelect({ q: query.trim() });
   }, [query, analyseAndSelect]);
 
-  // Clic carte → ajoute / retire la parcelle cliquée de l'unité foncière (toggle).
+  // Clic carte. Deux comportements selon le mode :
+  //  • mode sélection de parcelles (multiParcelMode) → AJOUTE / retire la
+  //    parcelle cliquée du groupement foncier (toggle) ;
+  //  • clic simple → REMPLACE la sélection par la parcelle cliquée (analyse
+  //    d'un seul terrain).
   const handleMapClick = useCallback(async (lat: number, lng: number) => {
     const result = await fetchAnalyse({ lat: String(lat), lng: String(lng) });
     if (!result) return;
@@ -263,6 +294,12 @@ export function AnalyseParcellaire() {
     if (!clicked) {
       // Pas de parcelle sous le point : on affiche tout de même l'analyse au point.
       if (selectedParcels.length === 0) setAnalysis(result);
+      return;
+    }
+    if (!multiParcelMode) {
+      // Clic simple : on repart d'une parcelle unique.
+      setSelectedParcels([clicked]);
+      setAnalysis(result);
       return;
     }
     setSelectedParcels((prev) => {
@@ -273,7 +310,7 @@ export function AnalyseParcellaire() {
       void showSelection(next, result);
       return next;
     });
-  }, [fetchAnalyse, showSelection, selectedParcels.length]);
+  }, [fetchAnalyse, showSelection, selectedParcels.length, multiParcelMode]);
 
   // Retire une parcelle depuis la liste « unité foncière ».
   const removeParcel = useCallback((parcelleId: string) => {
@@ -401,7 +438,13 @@ export function AnalyseParcellaire() {
 
         {/* Map controls */}
         <button
-          onClick={() => setClickMode(v => !v)}
+          onClick={() => {
+            // En mode sélection de parcelles, ce bouton sert d'interrupteur de
+            // sortie (et restaure le fond de carte). Sinon il (dés)active le
+            // clic simple d'analyse.
+            if (multiParcelMode) { toggleMultiParcelMode(false); return; }
+            setClickMode(v => !v);
+          }}
           style={{
             display: "flex", alignItems: "center", gap: 6,
             padding: "5px 12px", borderRadius: 7, fontSize: 12, fontWeight: 600,
@@ -415,7 +458,7 @@ export function AnalyseParcellaire() {
           <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
             <path d="M12 22s-8-4.5-8-11.8A8 8 0 0112 2a8 8 0 018 8.2c0 7.3-8 11.8-8 11.8z" /><circle cx="12" cy="10" r="3" />
           </svg>
-          {clickMode ? "Cliquer sur la carte…" : "Cliquer sur la carte"}
+          {multiParcelMode ? "Sélection de parcelles…" : clickMode ? "Cliquer sur la carte…" : "Cliquer sur la carte"}
         </button>
 
         <div style={{ display: "flex", border: "1px solid #E5E7EB", borderRadius: 7, overflow: "hidden" }}>
@@ -458,7 +501,7 @@ export function AnalyseParcellaire() {
                   style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontSize: 13, color: "#111827", padding: "10px 0" }}
                 />
                 {query && (
-                  <button onClick={() => { setQuery(""); setSuggestions([]); setAnalysis(null); setSelectedParcels([]); setError(""); inputRef.current?.focus(); }}
+                  <button onClick={() => { setQuery(""); setSuggestions([]); setAnalysis(null); setSelectedParcels([]); setError(""); toggleMultiParcelMode(false); inputRef.current?.focus(); }}
                     style={{ border: "none", background: "none", cursor: "pointer", color: "#9CA3AF", padding: 0, fontSize: 16, lineHeight: 1 }}>×</button>
                 )}
               </div>
@@ -488,7 +531,7 @@ export function AnalyseParcellaire() {
 
             <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 7, lineHeight: 1.4 }}>
               Adresse libre · référence cadastrale (37018000AB0050) · ou cliquez sur la carte →
-              <br />Cliquez plusieurs parcelles pour analyser un <strong>groupement foncier</strong>.
+              <br />Plusieurs parcelles ? Analysez d'abord votre terrain, puis cochez <strong>« mon projet comprend d'autres parcelles »</strong> pour constituer un <strong>groupement foncier</strong>.
             </p>
           </div>
 
@@ -530,9 +573,26 @@ export function AnalyseParcellaire() {
                     </span>
                   ))}
                 </div>
-                <p style={{ fontSize: 10.5, color: "#6B7280", margin: "8px 0 0", lineHeight: 1.4 }}>
-                  Cliquez d'autres parcelles sur la carte pour les ajouter au groupement, ou ×&nbsp;pour en retirer.
-                </p>
+                {/* Mode dédié « projet multi-parcelles » : une case à cocher
+                    plutôt qu'un clic libre sur la carte. À l'activation, on
+                    bascule sur le plan cadastral et le citoyen sélectionne
+                    en direct les parcelles (adjacentes) de son projet. */}
+                <label style={{ display: "flex", alignItems: "flex-start", gap: 8, marginTop: 10, cursor: "pointer", padding: "8px 10px", borderRadius: 8, background: multiParcelMode ? "#EEF2FF" : "transparent", border: `1px solid ${multiParcelMode ? "#C7D2FE" : "transparent"}`, transition: "all 0.12s" }}>
+                  <input
+                    type="checkbox"
+                    checked={multiParcelMode}
+                    onChange={(e) => toggleMultiParcelMode(e.target.checked)}
+                    style={{ marginTop: 1, width: 15, height: 15, accentColor: "#4F46E5", cursor: "pointer", flexShrink: 0 }}
+                  />
+                  <span style={{ fontSize: 11.5, color: "#312E81", lineHeight: 1.4 }}>
+                    <strong>Mon projet comprend d'autres parcelles cadastrales</strong>
+                    <span style={{ display: "block", color: "#6B7280", fontSize: 10.5, marginTop: 3, fontWeight: 400 }}>
+                      {multiParcelMode
+                        ? "Mode sélection actif — cliquez les parcelles adjacentes sur le plan cadastral pour les ajouter au groupement, ou × pour en retirer."
+                        : "Cochez pour sélectionner plusieurs parcelles (groupement foncier) directement sur la carte cadastrale."}
+                    </span>
+                  </span>
+                </label>
               </div>
             )}
 
@@ -976,7 +1036,7 @@ export function AnalyseParcellaire() {
             baseLayer={baseLayer}
             parcelLayer={true}
             pluZoneLayer={false}
-            clickMode={clickMode}
+            clickMode={clickMode || multiParcelMode}
             onMapClick={handleMapClick}
             highlightGeometry={parcelGeometry}
             highlightGeometries={selectedGeometries}
@@ -984,9 +1044,11 @@ export function AnalyseParcellaire() {
             defaultCenter={mapCenter}
             defaultZoom={mapZoom}
           />
-          {clickMode && (
+          {(clickMode || multiParcelMode) && (
             <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)", background: "rgba(79,70,229,0.92)", color: "white", borderRadius: 20, padding: "7px 18px", fontSize: 12, fontWeight: 600, pointerEvents: "none", whiteSpace: "nowrap" }}>
-              {selectedParcels.length > 0 ? "Cliquez d'autres parcelles à ajouter au groupement" : "Cliquez sur la parcelle à analyser"}
+              {multiParcelMode
+                ? "Sélection de parcelles — cliquez les parcelles à ajouter au groupement"
+                : "Cliquez sur la parcelle à analyser"}
             </div>
           )}
         </div>
