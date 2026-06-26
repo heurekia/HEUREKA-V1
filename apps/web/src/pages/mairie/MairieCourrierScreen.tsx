@@ -45,6 +45,11 @@ const TEMPLATE_VARIABLES = [
   { group: "Signataire", vars: [
     { label: "Nom du signataire", name: "signataire_nom" },
     { label: "Fonction du signataire", name: "signataire_fonction" },
+    // Balises image : remplacées par la signature / le tampon du signataire
+    // (cf. effet de substitution). Permettent un positionnement dans le flux du
+    // texte, en alternative à la pastille déplaçable.
+    { label: "Signature (image)", name: "signature" },
+    { label: "Tampon (image)", name: "tampon" },
   ]},
   { group: "Demande de pièces complémentaires", vars: [
     { label: "Liste des pièces à compléter", name: "liste_pieces_a_completer" },
@@ -135,6 +140,17 @@ function renderPieceListHtmlClient(pieces: PieceRequestSelection[]): string {
     return `<li style="margin-bottom:6px;">${codeLabel}${escape(p.nom)}${tag}${reason}</li>`;
   }).join("");
   return `<ul style="padding-left:18px;margin:0;">${items}</ul>`;
+}
+
+// Rend une balise image (signature / tampon) dans le flux du texte. Si une image
+// est disponible (data URL base64), on l'insère telle quelle — DOMPurify autorise
+// les data-URI image dans une balise <img>. Sinon, une pastille en pointillés
+// matérialise l'emplacement pour l'auteur du modèle.
+function imageBaliseHtml(src: string | null | undefined, label: string): string {
+  if (src) {
+    return `<img src="${src}" alt="${label}" style="display:inline-block;max-height:72px;width:auto;vertical-align:bottom;" />`;
+  }
+  return `<span style="display:inline-block;min-width:140px;padding:16px 12px;border:1px dashed #CBD5E1;border-radius:6px;color:#94a3b8;font-size:11px;text-align:center;">${label}</span>`;
 }
 
 function substituteVariables(body: string, vars: Record<string, string>): string {
@@ -741,6 +757,16 @@ export function CourrierModal({
   const [showChannelMenu, setShowChannelMenu] = useState(false);
   const [deliveryResult, setDeliveryResult] = useState<DeliveryResult | null>(null);
   const isSent = statut === "envoye";
+  // ── Mode « signature seule » ──
+  // Le courrier a été envoyé en signature à l'utilisateur courant : ce dernier
+  // est le signataire désigné, distinct de l'instructeur qui a préparé le
+  // courrier. Sa seule action est de signer : on masque toutes les actions
+  // d'instruction (pièces, mentions, édition du texte, enregistrement, envoi).
+  // On se base sur l'état initial (props) pour que la vue reste épurée même
+  // après la signature.
+  const signOnly = !!user
+    && initialCourrier?.signature_status === "a_signer"
+    && initialCourrier?.signataire_user_id === user.id;
   // ── Circuit de signature ──
   const [signataireRows, setSignataireRows] = useState<SignataireRow[]>([]);
   const [signatureStatus, setSignatureStatus] = useState<SignatureStatus>(initialCourrier?.signature_status ?? "non_requise");
@@ -1104,13 +1130,18 @@ export function CourrierModal({
       // Signataire (délégué de la commune, cf. effet dédié)
       signataire_nom: signataire?.nom || "—",
       signataire_fonction: signataire?.fonction || "—",
+      // Balises image : la signature apposée (après signature) prime, sinon
+      // l'image du signataire désigné, sinon celle de la commune. À défaut,
+      // une pastille en pointillés matérialise l'emplacement dans l'aperçu.
+      signature: imageBaliseHtml(appliedSig || signataire?.signature_image || letterhead.signature_image, "Signature"),
+      tampon: imageBaliseHtml(appliedTamp || signataire?.tampon_image || letterhead.tampon_image, "Tampon"),
       // Demande de pièces complémentaires : liste dynamique injectée
       // dans le corps du template via la variable {liste_pieces_a_completer}.
       liste_pieces_a_completer: piecesListHtml || "—",
       nombre_pieces_a_completer: String(requestedPieces.length),
     };
     setSubstitutedHtml(substituteVariables(selected.body, vars));
-  }, [selected, letterhead, dossier, user, signataire, piecesListHtml, requestedPieces.length]);
+  }, [selected, letterhead, dossier, user, signataire, piecesListHtml, requestedPieces.length, appliedSig, appliedTamp]);
 
   // Quand la sélection de pièces change, on repart de la substitution live pour
   // que la balise {liste_pieces_a_completer} reflète toujours la sélection (sinon
@@ -1242,38 +1273,42 @@ export function CourrierModal({
                 automatiquement sur le courrier lors de la signature (handleSign)
                 et restent déplaçables pour le positionnement. */}
             {/* Pièces à demander — visible uniquement en mode pieces_complementaires */}
-            {mode === "pieces_complementaires" && (
+            {mode === "pieces_complementaires" && !signOnly && (
               <button onClick={() => { setShowPiecesPanel((v) => !v); if (showMentions) setShowMentions(false); }}
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showPiecesPanel ? "#B45309" : "#E2E8F0"}`, borderRadius: 7, background: showPiecesPanel ? "#FEF3C7" : "white", color: showPiecesPanel ? "#B45309" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
                 📎 Pièces à demander {requestedPieces.length > 0 ? `(${requestedPieces.length})` : ""}
               </button>
             )}
             {/* Mentions légales toggle */}
-            <button onClick={() => { handleToggleMentions(); if (showPiecesPanel) setShowPiecesPanel(false); }}
-              style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showMentions ? "#0284C7" : "#E2E8F0"}`, borderRadius: 7, background: showMentions ? "#E0F2FE" : "white", color: showMentions ? "#0284C7" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
-              📜 Mentions légales
-            </button>
+            {!signOnly && (
+              <button onClick={() => { handleToggleMentions(); if (showPiecesPanel) setShowPiecesPanel(false); }}
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showMentions ? "#0284C7" : "#E2E8F0"}`, borderRadius: 7, background: showMentions ? "#E0F2FE" : "white", color: showMentions ? "#0284C7" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
+                📜 Mentions légales
+              </button>
+            )}
             {/* Édition du texte (corps HTML uniquement, hors courrier déjà envoyé) */}
-            {canEditBody && (
+            {canEditBody && !signOnly && (
               <button onClick={() => setIsEditingBody((v) => !v)}
                 title="Modifier le texte du courrier avant de l'enregistrer ou de l'envoyer"
                 style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${isEditingBody ? "#6366F1" : "#E2E8F0"}`, borderRadius: 7, background: isEditingBody ? "#EEF2FF" : "white", color: isEditingBody ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
                 <Pencil size={13} /> {isEditingBody ? "Fin d'édition" : "Modifier le texte"}
               </button>
             )}
-            <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
+            {!signOnly && <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />}
             {/* Enregistrer en brouillon — aucun effet métier */}
-            {!isSent && (
+            {!isSent && !signOnly && (
               <button onClick={handleSaveDraft} disabled={saving}
                 title="Enregistrer ce courrier en brouillon, sans l'envoyer ni modifier le dossier"
                 style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", background: "white", color: saving ? "#94a3b8" : "#334155", border: "1px solid #CBD5E1", borderRadius: 8, cursor: saving ? "default" : "pointer", fontSize: 13, fontWeight: 600 }}>
                 <Save size={14} /> {saving ? "Enregistrement…" : (savedAt && !saveError ? "Enregistré ✓" : "Enregistrer le brouillon")}
               </button>
             )}
-            <button onClick={() => window.print()}
-              style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
-              <Printer size={14} /> Imprimer / PDF
-            </button>
+            {!signOnly && (
+              <button onClick={() => window.print()}
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                <Printer size={14} /> Imprimer / PDF
+              </button>
+            )}
             {/* Signature — bouton dynamique selon l'accès : un signataire habilité
                 signe directement ; sinon il demande la signature à un signataire
                 habilité. Les deux boutons sont mutuellement exclusifs. */}
@@ -1312,7 +1347,9 @@ export function CourrierModal({
                 )}
               </>
             )}
-            {/* Envoi — choix du canal de remise au pétitionnaire */}
+            {/* Envoi — choix du canal de remise au pétitionnaire. Masqué en mode
+                signature seule : l'envoi reste la prérogative de l'instructeur. */}
+            {!signOnly && (
             <div style={{ position: "relative" }}>
               <button
                 onClick={() => { if (!sendDisabled) setShowChannelMenu((v) => !v); }}
@@ -1347,6 +1384,7 @@ export function CourrierModal({
                 </>
               )}
             </div>
+            )}
             <button onClick={onClose} style={{ padding: 6, border: "1px solid #E2E8F0", borderRadius: 8, background: "white", cursor: "pointer", display: "flex" }}>
               <X size={16} color="#64748b" />
             </button>
@@ -1372,7 +1410,9 @@ export function CourrierModal({
 
         {/* Body */}
         <div className="print-modal-body" style={{ flex: 1, display: "flex", overflow: "hidden" }}>
-          {/* Template selector */}
+          {/* Template selector — masqué en mode signature seule : le signataire
+              ne choisit pas de modèle, il signe le courrier déjà préparé. */}
+          {!signOnly && (
           <div className="no-print-modal" style={{ width: 200, borderRight: "1px solid #E2E8F0", padding: "16px 12px", overflowY: "auto", flexShrink: 0 }}>
             {loading ? <div style={{ color: "#94a3b8", fontSize: 13 }}>Chargement…</div>
               : templates.length === 0 ? (
@@ -1392,6 +1432,7 @@ export function CourrierModal({
                 );
               })}
           </div>
+          )}
 
           {/* Print preview */}
           <div className="print-area" style={{ flex: 1, minWidth: 0, overflow: "auto", background: "#EEF1F5", display: "flex", justifyContent: "center", alignItems: "flex-start", padding: "24px 20px" }}>
