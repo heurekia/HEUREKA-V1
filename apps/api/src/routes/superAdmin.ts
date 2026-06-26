@@ -1473,7 +1473,7 @@ superAdminRouter.get("/services", async (_req, res) => {
     const [services, userCounts, communeCounts] = await Promise.all([
       db.select().from(external_services).orderBy(external_services.name),
       db.select({ service_id: users.service_id, cnt: count() })
-        .from(users).where(isNotNull(users.service_id)).groupBy(users.service_id),
+        .from(users).where(and(isNotNull(users.service_id), isNull(users.deactivated_at))).groupBy(users.service_id),
       db.select({ service_id: service_communes.service_id, cnt: count() })
         .from(service_communes).groupBy(service_communes.service_id),
     ]);
@@ -1582,7 +1582,7 @@ superAdminRouter.get("/services/:id/users", async (req, res) => {
       nom: users.nom,
       telephone: users.telephone,
       created_at: users.created_at,
-    }).from(users).where(eq(users.service_id, id));
+    }).from(users).where(and(eq(users.service_id, id), isNull(users.deactivated_at)));
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -1648,7 +1648,15 @@ superAdminRouter.post("/services/:id/users", async (req, res) => {
 superAdminRouter.delete("/services/:id/users/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    await db.delete(users).where(eq(users.id, userId));
+    // Comptes service_externe = comptes PRO : offboarding par désactivation,
+    // jamais suppression (cohérent avec DELETE /admin/users/:id). Un DELETE brut
+    // échouerait sur les FK NOT NULL des records légaux et laisserait le compte
+    // visible côté page utilisateurs. On coupe l'accès et on masque la ligne.
+    const [target] = await db.select({ deactivated_at: users.deactivated_at }).from(users).where(eq(users.id, userId)).limit(1);
+    if (!target) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    if (!target.deactivated_at) {
+      await deactivateUser(userId, (req as AuthRequest).user?.id ?? null);
+    }
     res.json({ success: true });
   } catch (err) {
     console.error(err);
