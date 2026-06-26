@@ -141,6 +141,7 @@ passer en `cluster`/multi-instances avant le Palier 4 (état in-memory).
 | 3.2 | `DossiersScreen` : mémoïsation (useMemo) + fin du O(n²) + recompute hors filtre | ✅ Fait | `perf(web): DossiersScreen …` |
 | 3.3 | Retrait de la dépendance morte `recharts` (-32 paquets) | ✅ Fait | `chore(web): retire … recharts` |
 | 3.4 | Cache de données (TanStack Query / SWR) sur les lectures | ⏳ À faire (optionnel) | — |
+| 3.5 | Découpage interne de `MairieApp` : 8 écrans en `lazy()` + `<Suspense>` | ✅ Fait | `perf(web): découpage interne de MairieApp …` |
 
 **Impact mesuré (vite build).** Avant : un unique bundle de **2 541 Ko (693 Ko
 gzip)** chargé sur tous les portails. Après : la landing www ne charge plus que
@@ -148,8 +149,17 @@ l'entrée + `vendor-react`/`vendor-router` + `PublicRouter` (~80–140 Ko gzip) 
 `SuperAdminApp` (303 Ko), `MairieApp` (632 Ko), Leaflet (150 Ko), pdfjs (341 Ko)
 et tiptap (344 Ko) sont sortis du chargement initial et ne sont téléchargés que
 par les routes/portails qui les utilisent (et après authentification pour les
-espaces pro). `MairieApp` reste volumineux (candidat à un découpage interne —
-Palier 3 bis) mais ne pèse plus que sur les utilisateurs mairie authentifiés.
+espaces pro).
+
+**Découpage interne de `MairieApp` (3.5).** L'espace mairie chargeait au login
+ses 8 écrans d'un bloc (**632 Ko / 152 Ko gzip**, le plus gros chunk restant,
+subi par chaque agent). Chaque écran passe en `lazy(() => import(...))` derrière
+une frontière `<Suspense fallback={<PageLoader/>}>` placée sous la barre : la
+coquille tombe à **140 Ko / 37 Ko gzip** (−76 %) et les écrans lourds ne se
+chargent qu'à la navigation — `DossierDetailScreen` (~221 Ko) au clic sur un
+dossier, `ParametresScreen` (~121 Ko, qui embarque réglementation + courrier)
+sur `/parametres`. Deux imports morts retirés au passage (`ReglementationScreen`,
+`TemplateManagerPanel`/`CommuneLetterheadPanel`).
 
 ## 5. Variables d'environnement introduites
 
