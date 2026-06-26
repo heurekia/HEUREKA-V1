@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@heureka-v1/shared": "workspace:*",
+    "@tanstack/react-query": "^5.101.1",
     "@tiptap/core": "^3.23.6",
     "@tiptap/extension-placeholder": "^3.23.6",
     "@tiptap/extension-text-align": "^3.23.6",

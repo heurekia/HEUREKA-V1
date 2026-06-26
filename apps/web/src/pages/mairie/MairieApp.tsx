@@ -1,6 +1,8 @@
 import { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../../lib/api";
+import { NOTIFICATIONS_QUERY_KEY } from "../../lib/queryKeys";
 import { normalizeForSearch } from "../../lib/utils";
 import { useAuth, hasPermission } from "../../hooks/useAuth";
 import { MfaSettings } from "../../components/MfaSettings";
@@ -462,37 +464,35 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchResults, setSearchResults] = useState<ApiDossier[]>([]);
-  const [apiNotifs, setApiNotifs] = useState<ApiNotif[]>([]);
-
-  const loadNotifs = () => {
-    api.get<ApiNotif[]>("/notifications").then(setApiNotifs).catch(() => {});
-  };
-
+  const queryClient = useQueryClient();
   // La cloche est montée en permanence dans le shell : sans rafraîchissement,
-  // son badge reste figé sur l'état du montage et une notification arrivée
-  // entre-temps (ex. « Signature requise ») n'y apparaît jamais tant que l'on
-  // n'ouvre pas le menu — alors qu'elle est bien visible dans l'Historique
-  // (qui se recharge à chaque visite). On rafraîchit donc périodiquement et au
-  // retour de focus, comme le badge des signatures en attente.
-  useEffect(() => {
-    loadNotifs();
-    const timer = setInterval(loadNotifs, 30_000);
-    const onFocus = () => loadNotifs();
-    window.addEventListener("focus", onFocus);
-    return () => { clearInterval(timer); window.removeEventListener("focus", onFocus); };
-  }, []);
+  // son badge resterait figé sur l'état du montage et une notification arrivée
+  // entre-temps (ex. « Signature requise ») n'y apparaîtrait jamais tant que l'on
+  // n'ouvre pas le menu. On confie donc le cycle de vie à react-query :
+  // `refetchInterval` rejoue la requête toutes les 30 s et `refetchOnWindowFocus`
+  // (activé spécifiquement ici, désactivé globalement) la rejoue au retour
+  // d'onglet. Le cache est partagé sous NOTIFICATIONS_QUERY_KEY.
+  const { data: apiNotifs = [], refetch: refetchNotifs } = useQuery({
+    queryKey: NOTIFICATIONS_QUERY_KEY,
+    queryFn: () => api.get<ApiNotif[]>("/notifications"),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  });
 
   const unreadCount = apiNotifs.filter(n => !n.is_read).length;
 
+  // Mises à jour optimistes : on écrit directement dans le cache react-query
+  // (effet immédiat), puis on persiste. En cas d'échec réseau, le prochain
+  // refetch (intervalle/focus) rétablit l'état serveur.
   const markAllRead = async () => {
+    queryClient.setQueryData<ApiNotif[]>(NOTIFICATIONS_QUERY_KEY, (ns) => ns?.map(n => ({ ...n, is_read: true })) ?? []);
     await api.patch("/notifications/read-all").catch(() => {});
-    setApiNotifs(ns => ns.map(n => ({ ...n, is_read: true })));
   };
 
   const handleNotifClick = async (n: ApiNotif) => {
     if (!n.is_read) {
+      queryClient.setQueryData<ApiNotif[]>(NOTIFICATIONS_QUERY_KEY, (ns) => ns?.map(x => x.id === n.id ? { ...x, is_read: true } : x) ?? []);
       api.patch(`/notifications/${n.id}/read`).catch(() => {});
-      setApiNotifs(ns => ns.map(x => x.id === n.id ? { ...x, is_read: true } : x));
     }
     setShowNotifs(false);
     // Bascule la commune active sur celle du dossier visé : un agent
@@ -552,7 +552,7 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
 
         {/* Bell */}
         <div style={{ position: "relative" }}>
-          <button onClick={() => { setShowNotifs(!showNotifs); setShowFAQ(false); if (!showNotifs) loadNotifs(); }} style={{ border: "none", background: showNotifs ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
+          <button onClick={() => { setShowNotifs(!showNotifs); setShowFAQ(false); if (!showNotifs) refetchNotifs(); }} style={{ border: "none", background: showNotifs ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
             <BellIcon size={20} />
           </button>
           {unreadCount > 0 && (
