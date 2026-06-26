@@ -2408,6 +2408,14 @@ export function NouvelleDemandeWizard() {
                       const files = uploadedPieces[piece.code] ?? [];
                       const hasFiles = files.length > 0;
                       const isUploading = uploadingCodes.has(piece.code);
+                      // Statut agrégé de la rubrique pour choisir l'icône :
+                      //  • analyse en cours (upload ou IA pending) → roue crantée animée
+                      //  • au moins un fichier inexploitable (hors-sujet ou « À reprendre ») → croix rouge
+                      //  • sinon, fichiers présents et exploitables → check vert
+                      const isAnalysing = isUploading || files.some((f) => f.aiPending);
+                      const hasUnusable = files.some(
+                        (f) => f.mismatch != null || f.analyse?.score === "non_conforme",
+                      );
                       return (
                         <div
                           key={piece.code}
@@ -2422,8 +2430,33 @@ export function NouvelleDemandeWizard() {
                             transition: "background 0.2s, border-color 0.2s",
                           }}
                         >
-                          <span style={{ fontSize: 22, marginTop: 1, flexShrink: 0 }}>
-                            {hasFiles ? "✅" : piece.requis ? "📄" : "📋"}
+                          <span style={{ fontSize: 22, marginTop: 1, flexShrink: 0, display: "inline-flex", width: 22, height: 22, alignItems: "center", justifyContent: "center" }}>
+                            {isAnalysing ? (
+                              <svg
+                                width={20}
+                                height={20}
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="#B45309"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                style={{ animation: "spin 1.6s linear infinite", display: "block" }}
+                                aria-label="Analyse en cours"
+                                role="img"
+                              >
+                                <circle cx="12" cy="12" r="3" />
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                              </svg>
+                            ) : hasUnusable ? (
+                              <span aria-label="Pièce à reprendre" role="img">❌</span>
+                            ) : hasFiles ? (
+                              "✅"
+                            ) : piece.requis ? (
+                              "📄"
+                            ) : (
+                              "📋"
+                            )}
                           </span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             {/* Name + badges */}
