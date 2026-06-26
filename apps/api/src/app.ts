@@ -22,6 +22,7 @@ import { client } from "@heureka-v1/db";
 import { pinoHttp } from "pino-http";
 import { randomUUID } from "node:crypto";
 import { logger } from "./logger.js";
+import { metricsMiddleware, metricsHandler } from "./metrics.js";
 
 export const app = express();
 
@@ -49,6 +50,11 @@ app.use(pinoHttp({
     ignore: (req) => req.url === "/api/health" || req.url === "/api/health/live",
   },
 }));
+
+// Métriques Prometheus : chronomètre chaque requête (durée + compteur, labellés
+// méthode/route/statut). Placé tôt pour englober tout le pipeline. Le endpoint
+// d'exposition est /metrics (cf. plus bas). Voir src/metrics.ts.
+app.use(metricsMiddleware);
 
 // Skip compression for Server-Sent Events — gzip buffering would hold the
 // stream and the client would receive nothing until the response ends.
@@ -146,6 +152,11 @@ app.get("/api/health", async (_req, res) => {
     res.status(503).json({ status: "degraded", db: "down", version: "1.0.0" });
   }
 });
+
+// Exposition Prometheus. À la RACINE (convention `/metrics`), enregistrée avant
+// le catch-all SPA `app.get("*")` pour ne pas servir l'index.html à sa place.
+// Protégée par METRICS_TOKEN si défini (cf. src/metrics.ts).
+app.get("/metrics", metricsHandler);
 
 // Fichiers déposés (pièces jointes des dossiers) — authentifié et vérifié
 // par routes/uploads.ts (auth + scope commune / propriétaire).
