@@ -825,9 +825,20 @@ export function CourrierModal({
     ]).then(([tpls, lh]) => {
       setTemplates(tpls);
       setLetterhead(lh);
-      // En reprise d'un courrier existant, on n'auto-sélectionne pas de modèle :
-      // le corps enregistré (bodyOverride) prime sur la substitution.
-      if (tpls.length > 0 && !initialCourrier) setSelected(tpls[0]!);
+      if (tpls.length === 0) return;
+      if (initialCourrier) {
+        // Reprise d'un brouillon : on resélectionne le modèle d'origine (par
+        // nom de sujet, puis par catégorie). Sélectionner le modèle n'écrase
+        // pas le corps affiché — bodyOverride (le corps enregistré) prime tant
+        // qu'il n'est pas réinitialisé. Mais sans modèle sélectionné, dès que
+        // la sélection de pièces change et réinitialise bodyOverride, la
+        // substitution live n'a aucun corps de base et l'aperçu se vide.
+        const match = tpls.find((t) => t.name === initialCourrier.subject)
+          ?? tpls.find((t) => t.category === initialCourrier.type);
+        if (match) setSelected(match);
+      } else {
+        setSelected(tpls[0]!);
+      }
     }).catch((e) => {
       // Ne pas avaler l'erreur en silence : un échec serveur affichait
       // « Aucun modèle » à tort (indiscernable d'une liste vide légitime).
@@ -915,10 +926,10 @@ export function CourrierModal({
   // la modale est ouverte en mode demande de pièces — fallback : premier
   // template disponible.
   useEffect(() => {
-    if (mode !== "pieces_complementaires" || selected || templates.length === 0 || initialCourrier) return;
+    if (mode !== "pieces_complementaires" || selected || templates.length === 0) return;
     const preferred = templates.find((t) => t.category === "pieces_complementaires");
     setSelected(preferred ?? templates[0] ?? null);
-  }, [mode, templates, selected, initialCourrier]);
+  }, [mode, templates, selected]);
 
   return (
     <div className="print-modal-overlay" style={{ position: "fixed", inset: 0, zIndex: 1000, display: "flex" }}>
