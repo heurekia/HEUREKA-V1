@@ -12,6 +12,19 @@ import { useState } from "react";
 import type { CSSProperties } from "react";
 import { linkifyArticles } from "../../utils/linkifyArticles";
 
+// Masque de saisie pour la date de naissance — l'utilisateur peut taper les
+// chiffres « au kilomètre » (ex. « 26062026 ») et le champ insère les « / »
+// automatiquement pour produire le format CERFA JJ/MM/AAAA (« 26/06/2026 »).
+// On ne gère jamais de « / » final afin de ne pas bloquer les suppressions.
+function formatDateNaissance(raw: string): string {
+  const digits = raw.replace(/\D/g, "").slice(0, 8);
+  const parts: string[] = [];
+  if (digits.length > 0) parts.push(digits.slice(0, 2));
+  if (digits.length > 2) parts.push(digits.slice(2, 4));
+  if (digits.length > 4) parts.push(digits.slice(4, 8));
+  return parts.join("/");
+}
+
 // ── Types partagés avec le wizard parent ───────────────────────────────────
 
 export type CerfaData = {
@@ -331,9 +344,11 @@ export function Step5CerfaInfos({
               <Field label="Date de naissance" hint="JJ/MM/AAAA">
                 <input
                   type="text"
+                  inputMode="numeric"
                   value={cerfaData.dateNaissance ?? ""}
-                  onChange={(e) => setCerfa("dateNaissance", e.target.value)}
+                  onChange={(e) => setCerfa("dateNaissance", formatDateNaissance(e.target.value))}
                   placeholder="15/06/1985"
+                  maxLength={10}
                   style={inputStyle}
                   onFocus={onFocus}
                   onBlur={onBlur}
