@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import { Link, useSearchParams, useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
+import { useIsMobile } from "../../hooks/useMediaQuery";
 import { MapLeaflet } from "../../components/MapLeaflet";
 import { api } from "../../lib/api";
 import type { BaseLayer } from "../../components/MapLeaflet";
@@ -167,6 +168,7 @@ function floodLabel(v: string) {
 export function AnalyseParcellaire() {
   const [searchParams] = useSearchParams();
   const navigate = useNavigate();
+  const isMobile = useIsMobile();
   const { user, loading: authLoading } = useAuth();
   const [query, setQuery] = useState(searchParams.get("q") ?? "");
 
@@ -413,14 +415,14 @@ export function AnalyseParcellaire() {
   const mapZoom = hasGeoParams ? 18 : 6;
 
   return (
-    <div style={{ display: "flex", flexDirection: "column", height: "100vh", background: "white", fontFamily: "system-ui, -apple-system, sans-serif" }}>
+    <div style={{ display: "flex", flexDirection: "column", height: isMobile ? "auto" : "100vh", minHeight: isMobile ? "100vh" : undefined, background: "white", fontFamily: "system-ui, -apple-system, sans-serif" }}>
       <Seo
         title="Analyse parcellaire — PLU, risques et constructibilité"
         description="Analysez gratuitement une parcelle cadastrale : zone PLU, règles d'urbanisme applicables, risques (inondation, séisme, argile, radon) et constructibilité."
         path="/analyse-parcellaire"
       />
       {/* ── Header ── */}
-      <header style={{ height: 52, borderBottom: "1px solid #E5E7EB", display: "flex", alignItems: "center", padding: "0 20px", gap: 16, flexShrink: 0, background: "white", zIndex: 10 }}>
+      <header style={{ height: isMobile ? "auto" : 52, minHeight: 52, borderBottom: "1px solid #E5E7EB", display: "flex", alignItems: "center", flexWrap: isMobile ? "wrap" : "nowrap", padding: isMobile ? "8px 12px" : "0 20px", gap: isMobile ? 8 : 16, flexShrink: 0, background: "white", zIndex: 10 }}>
         <Link to="/" style={{ display: "flex", alignItems: "center", gap: 8, textDecoration: "none", color: "inherit" }}>
           <div style={{ width: 28, height: 28, background: "#4F46E5", borderRadius: 6, display: "flex", alignItems: "center", justifyContent: "center" }}>
             <span style={{ color: "white", fontWeight: 800, fontSize: 11 }}>H</span>
@@ -428,13 +430,17 @@ export function AnalyseParcellaire() {
           <span style={{ fontWeight: 800, fontSize: 15, color: "#000020" }}>HEUREKIA</span>
         </Link>
 
-        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#D1D5DB" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
-          <polyline points="9 18 15 12 9 6" />
-        </svg>
+        {!isMobile && (
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="#D1D5DB" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
+            <polyline points="9 18 15 12 9 6" />
+          </svg>
+        )}
 
-        <span style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>Analyse de parcelle</span>
+        {!isMobile && (
+          <span style={{ fontSize: 14, fontWeight: 600, color: "#374151" }}>Analyse de parcelle</span>
+        )}
 
-        <div style={{ flex: 1 }} />
+        <div style={{ flex: 1, display: isMobile ? "none" : "block" }} />
 
         {/* Map controls */}
         <button
@@ -479,13 +485,13 @@ export function AnalyseParcellaire() {
       </header>
 
       {/* ── Body ── */}
-      <div style={{ display: "flex", flex: 1, overflow: "hidden" }}>
+      <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", flex: 1, overflow: isMobile ? "visible" : "hidden" }}>
 
         {/* ── Left panel ── */}
-        <div style={{ width: 420, flexShrink: 0, borderRight: "1px solid #E5E7EB", display: "flex", flexDirection: "column", overflowY: "auto", background: "white" }}>
+        <div style={{ width: isMobile ? "100%" : 420, flexShrink: isMobile ? 1 : 0, borderRight: isMobile ? "none" : "1px solid #E5E7EB", borderBottom: isMobile ? "1px solid #E5E7EB" : "none", display: "flex", flexDirection: "column", overflowY: isMobile ? "visible" : "auto", background: "white" }}>
 
           {/* Search */}
-          <div style={{ padding: "14px 16px", borderBottom: "1px solid #F3F4F6", flexShrink: 0, position: "sticky", top: 0, background: "white", zIndex: 5 }}>
+          <div style={{ padding: "14px 16px", borderBottom: "1px solid #F3F4F6", flexShrink: 0, position: isMobile ? "static" : "sticky", top: 0, background: "white", zIndex: 5 }}>
             <div style={{ position: "relative" }}>
               <div style={{ display: "flex", alignItems: "center", gap: 8, border: "1.5px solid #E5E7EB", borderRadius: 10, padding: "0 12px", background: "#F9FAFB" }}>
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -1029,7 +1035,7 @@ export function AnalyseParcellaire() {
         </div>
 
         {/* ── Map panel ── */}
-        <div style={{ flex: 1, position: "relative", overflow: "hidden" }}>
+        <div style={{ flex: isMobile ? "none" : 1, height: isMobile ? "60vh" : undefined, minHeight: isMobile ? 320 : undefined, position: "relative", overflow: "hidden" }}>
           <MapLeaflet
             dossiers={[]}
             height="100%"
