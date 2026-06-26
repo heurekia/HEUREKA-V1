@@ -109,8 +109,9 @@ publicRouter.get("/analyse", analyseLimiter, optionalAuth, async (req: AuthReque
     const citycode = req.query.citycode as string | undefined;
     const zoneOverride = req.query.zone as string | undefined;
     // Groupement foncier : liste d'ids cadastraux séparés par virgule. Quand
-    // présent, l'analyse agrège les surfaces et recalcule la constructibilité sur
-    // l'unité foncière (la principale reste résolue depuis q/coords).
+    // présente, c'est la SÉLECTION EXPLICITE du citoyen (clics carte) : elle fait
+    // FOI. L'analyse agrège ces parcelles et recalcule la constructibilité sur
+    // l'unité foncière.
     const parcellesParam = (req.query.parcelles as string | undefined)?.trim();
     const parcelles = parcellesParam
       ? parcellesParam.split(",").map((p) => p.trim()).filter(Boolean)
@@ -121,14 +122,21 @@ publicRouter.get("/analyse", analyseLimiter, optionalAuth, async (req: AuthReque
       return res.status(400).json({ error: "Paramètre q, (lat+lng) ou parcelles requis" });
     }
 
-    // Si seul `parcelles` est fourni, la 1ère sert de parcelle principale (résolue
-    // par référence cadastrale via le chemin `isCadastralRef` de analyseParcel).
-    const principalQuery = q || (parcelles.length > 0 ? parcelles[0]! : "");
+    // Quand une sélection `parcelles` est fournie, la PRINCIPALE est la 1ère parcelle
+    // sélectionnée — PAS celle résolue depuis l'adresse `q`/`coords`. Sans cela, une
+    // adresse géocodée sur une parcelle voisine (décalage BAN), ou que le citoyen a
+    // justement retirée du groupement, serait réinjectée dans l'unité foncière et
+    // induirait en erreur. `q` reste transmis (libellé d'adresse) mais ne résout
+    // plus de parcelle. Si aucune sélection : comportement adresse/coords classique.
+    const hasSelection = parcelles.length > 0;
+    const principalQuery = hasSelection ? parcelles[0]! : q;
 
     const analysis = await analyseParcel(principalQuery, {
       citycode,
       zoneOverride,
-      coords: hasCoords ? { lat: lat!, lng: lng! } : undefined,
+      // La sélection explicite prime : on n'utilise pas les coords (point cliqué /
+      // GPS) pour résoudre la principale quand des parcelles sont fournies.
+      coords: !hasSelection && hasCoords ? { lat: lat!, lng: lng! } : undefined,
       uniteFonciere: parcelles.length > 1 ? { parcelles } : undefined,
     });
 

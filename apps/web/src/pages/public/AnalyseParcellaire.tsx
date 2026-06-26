@@ -636,12 +636,21 @@ export function AnalyseParcellaire() {
                   {analysis.parcel && (
                     <div style={{ marginBottom: 6 }}>
                       <p style={{ fontSize: 12, color: "#6B7280", margin: "0 0 4px" }}>
-                        {analysis.parcel.commune} ({analysis.parcel.code_insee}) · {analysis.parcel.surface_m2.toLocaleString("fr-FR")} m²
+                        {analysis.parcel.commune} ({analysis.parcel.code_insee})
+                        {analysis.unite_fonciere
+                          // Unité foncière : la surface portée par l'analyse est le
+                          // TOTAL du groupement (et non la seule principale) — c'est
+                          // sur ce total qu'est calculée la constructibilité.
+                          ? ` · ${Math.round(analysis.unite_fonciere.total_surface_m2).toLocaleString("fr-FR")} m² (${analysis.unite_fonciere.parcelles.length} parcelles)`
+                          : ` · ${analysis.parcel.surface_m2.toLocaleString("fr-FR")} m²`}
                       </p>
                       <div style={{ display: "flex", gap: 12, flexWrap: "wrap" as const }}>
                         <span style={{ fontSize: 11, color: "#374151" }}>
-                          <span style={{ color: "#9CA3AF" }}>Réf. cadastrale </span>
+                          <span style={{ color: "#9CA3AF" }}>{analysis.unite_fonciere ? "Parcelle principale " : "Réf. cadastrale "}</span>
                           <strong>{analysis.parcel.parcelle_id}</strong>
+                          {analysis.unite_fonciere && (
+                            <span style={{ color: "#9CA3AF" }}> · {Math.round(analysis.parcel.surface_m2).toLocaleString("fr-FR")} m²</span>
+                          )}
                         </span>
                         <span style={{ fontSize: 11, color: "#374151" }}>
                           <span style={{ color: "#9CA3AF" }}>Section </span>
@@ -724,6 +733,13 @@ export function AnalyseParcellaire() {
                         </span>
                       )}
                     </div>
+                    {/* Rappel explicite : sur une unité foncière, l'emprise/les espaces
+                        verts sont calculés sur la SURFACE TOTALE du groupement. */}
+                    {analysis.unite_fonciere && (
+                      <p style={{ fontSize: 11, color: "#4F46E5", background: "#EEF2FF", borderRadius: 6, padding: "5px 9px", margin: "0 0 8px" }}>
+                        Calcul sur l'unité foncière — {Math.round(analysis.unite_fonciere.total_surface_m2).toLocaleString("fr-FR")} m² ({analysis.unite_fonciere.parcelles.length} parcelles)
+                      </p>
+                    )}
                     <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
                       {[
                         ["Emprise au sol max.", analysis.buildability.maxFootprintM2 > 0 ? `${Math.round(analysis.buildability.maxFootprintM2)} m²` : "—"],
