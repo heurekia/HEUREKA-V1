@@ -266,6 +266,10 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   }, []);
 
   const filtered = userList.filter(u => `${u.prenom} ${u.nom} ${u.email}`.toLowerCase().includes(search.toLowerCase()));
+  // Une commune ne peut affecter que des profils mairie / instructeur : les rôles
+  // des services annexes (base_role service_externe) relèvent de la console
+  // super-admin et seraient refusés par l'API (rôle de base invalide ici).
+  const assignableRoleConfigs = roleConfigs.filter(rc => rc.base_role === "mairie" || rc.base_role === "instructeur");
 
   const addUser = async () => {
     setAddError("");
@@ -390,7 +394,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                       <select value={editRoleConfigId} onChange={e => setEditRoleConfigId(e.target.value)}
                         style={{ padding: "4px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12, maxWidth: 160 }}>
                         <option value="">— Sélectionner —</option>
-                        {roleConfigs.map(rc => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
+                        {assignableRoleConfigs.map(rc => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
                       </select>
                       <button onClick={() => saveRole(u.id)} style={{ padding: "4px 8px", background: "#4F46E5", color: "white", border: "none", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>✓</button>
                       <button onClick={() => setEditingId(null)} style={{ padding: "4px 8px", background: "#F1F5F9", color: "#64748b", border: "none", borderRadius: 6, fontSize: 11, cursor: "pointer" }}>✕</button>
@@ -474,7 +478,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
                     }}
                       style={{ width: "100%", padding: "8px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", background: "white" }}>
                       <option value="">— Sélectionner —</option>
-                      {roleConfigs.map(rc => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
+                      {assignableRoleConfigs.map(rc => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
                     </select>
                   </div>
                   <div>
