@@ -382,6 +382,139 @@ function AddressAutocomplete({
   );
 }
 
+// ── Saisie d'adresse postale : une ligne de recherche, repli manuel ─────────
+// L'adresse postale n'a qu'un champ visible — une ligne de recherche BAN — mais
+// le CERFA exige le détail (n°, voie, CP, localité) en cases séparées. On
+// récupère donc les quatre morceaux dans la réponse de l'API et on les stocke
+// en coulisse. Trois états : recherche (vide), récapitulatif (adresse choisie,
+// éditable), saisie manuelle (repli quand l'adresse n'est pas dans la BAN).
+function PostalAddressInput({
+  numero,
+  voie,
+  codePostal,
+  localite,
+  onChange,
+  inputStyle,
+  onFocus,
+  onBlur,
+}: {
+  numero: string;
+  voie: string;
+  codePostal: string;
+  localite: string;
+  onChange: (field: keyof AddressParts, value: string) => void;
+  inputStyle: CSSProperties;
+  onFocus: (e: React.FocusEvent<HTMLInputElement>) => void;
+  onBlur: (e: React.FocusEvent<HTMLInputElement>) => void;
+}) {
+  const [manual, setManual] = useState(false);
+  const [query, setQuery] = useState("");
+  const filled = !!(numero || voie || codePostal || localite);
+
+  const ligne1 = [numero, voie].filter(Boolean).join(" ");
+  const ligne2 = [codePostal, localite].filter(Boolean).join(" ");
+
+  const linkBtn: CSSProperties = {
+    background: "none", border: "none", padding: 0, cursor: "pointer",
+    color: "#4F46E5", fontSize: 12.5, fontWeight: 600,
+  };
+
+  const clearAll = () => {
+    onChange("numero", "");
+    onChange("voie", "");
+    onChange("codePostal", "");
+    onChange("localite", "");
+    setQuery("");
+    setManual(false);
+  };
+
+  // ── Repli : saisie manuelle des quatre cases CERFA ──
+  if (manual) {
+    return (
+      <div>
+        <div style={{ display: "grid", gridTemplateColumns: "80px 1fr", gap: 12, marginBottom: 12 }}>
+          <input
+            type="text" value={numero} onChange={(e) => onChange("numero", e.target.value)}
+            placeholder="N°" style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+          />
+          <input
+            type="text" value={voie} onChange={(e) => onChange("voie", e.target.value)}
+            placeholder="Rue, avenue…" style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+          />
+        </div>
+        <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 12 }}>
+          <input
+            type="text" value={codePostal} onChange={(e) => onChange("codePostal", e.target.value)}
+            placeholder="CP" maxLength={5} style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+          />
+          <input
+            type="text" value={localite} onChange={(e) => onChange("localite", e.target.value)}
+            placeholder="Ville" style={inputStyle} onFocus={onFocus} onBlur={onBlur}
+          />
+        </div>
+        <button type="button" style={{ ...linkBtn, marginTop: 10 }} onClick={() => setManual(false)}>
+          ← Revenir à la recherche
+        </button>
+      </div>
+    );
+  }
+
+  // ── Récapitulatif : une adresse a été choisie ──
+  if (filled) {
+    return (
+      <div>
+        <div style={{
+          display: "flex", alignItems: "center", gap: 12, padding: "12px 14px",
+          background: "#F0FDF4", border: "1px solid #BBF7D0", borderRadius: 10,
+        }}>
+          <span style={{ fontSize: 18, flexShrink: 0 }}>📮</span>
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{ligne1 || "Adresse"}</div>
+            {ligne2 && <div style={{ fontSize: 12, color: "#64748b", marginTop: 1 }}>{ligne2}</div>}
+          </div>
+          <button type="button" style={linkBtn} onClick={() => setManual(true)}>Modifier</button>
+        </div>
+        <button type="button" style={{ ...linkBtn, marginTop: 10, color: "#64748b" }} onClick={clearAll}>
+          Chercher une autre adresse
+        </button>
+      </div>
+    );
+  }
+
+  // ── Recherche : état initial, rien de saisi ──
+  return (
+    <div>
+      <AddressAutocomplete
+        value={query}
+        onType={setQuery}
+        onPick={(parts) => {
+          onChange("numero", parts.numero);
+          onChange("voie", parts.voie);
+          onChange("codePostal", parts.codePostal);
+          onChange("localite", parts.localite);
+          setQuery("");
+        }}
+        placeholder="Rechercher votre adresse (n°, rue, ville)…"
+        inputStyle={inputStyle}
+        onFocus={onFocus}
+        onBlur={onBlur}
+      />
+      <button
+        type="button"
+        style={{ ...linkBtn, marginTop: 10, color: "#64748b" }}
+        onClick={() => {
+          // L'adresse n'est pas dans la BAN (neuf, lieu-dit…) : on bascule en
+          // saisie manuelle, en reprenant ce qui a déjà été tapé comme voie.
+          if (query.trim()) onChange("voie", query.trim());
+          setManual(true);
+        }}
+      >
+        L'adresse n'est pas trouvée ? Saisir manuellement
+      </button>
+    </div>
+  );
+}
+
 // ── Composant principal ────────────────────────────────────────────────────
 
 export function Step5CerfaInfos({
@@ -654,54 +787,21 @@ export function Step5CerfaInfos({
           label="Adresse"
           help="Renseignez seulement si le courrier doit arriver ailleurs que sur le terrain (ex : vous habitez encore ailleurs)."
         >
-          <div style={{ display: "grid", gridTemplateColumns: "80px 1fr", gap: 12, marginBottom: 12 }}>
-            <input
-              type="text"
-              value={cerfaData.adresseDemandeurNumero ?? ""}
-              onChange={(e) => setCerfa("adresseDemandeurNumero", e.target.value)}
-              placeholder="N°"
-              style={inputStyle}
-              onFocus={onFocus}
-              onBlur={onBlur}
-            />
-            <AddressAutocomplete
-              value={cerfaData.adresseDemandeurVoie ?? ""}
-              onType={(v) => setCerfa("adresseDemandeurVoie", v)}
-              onPick={(parts) => {
-                // Une suggestion choisie remplit les quatre champs d'un coup ;
-                // ils restent ensuite modifiables à la main.
-                setCerfa("adresseDemandeurVoie", parts.voie);
-                if (parts.numero) setCerfa("adresseDemandeurNumero", parts.numero);
-                if (parts.codePostal) setCerfa("adresseDemandeurCodePostal", parts.codePostal);
-                if (parts.localite) setCerfa("adresseDemandeurLocalite", parts.localite);
-              }}
-              placeholder="Rue, avenue…"
-              inputStyle={inputStyle}
-              onFocus={onFocus}
-              onBlur={onBlur}
-            />
-          </div>
-          <div style={{ display: "grid", gridTemplateColumns: "100px 1fr", gap: 12 }}>
-            <input
-              type="text"
-              value={cerfaData.adresseDemandeurCodePostal ?? ""}
-              onChange={(e) => setCerfa("adresseDemandeurCodePostal", e.target.value)}
-              placeholder="CP"
-              maxLength={5}
-              style={inputStyle}
-              onFocus={onFocus}
-              onBlur={onBlur}
-            />
-            <input
-              type="text"
-              value={cerfaData.adresseDemandeurLocalite ?? ""}
-              onChange={(e) => setCerfa("adresseDemandeurLocalite", e.target.value)}
-              placeholder="Ville"
-              style={inputStyle}
-              onFocus={onFocus}
-              onBlur={onBlur}
-            />
-          </div>
+          <PostalAddressInput
+            numero={cerfaData.adresseDemandeurNumero ?? ""}
+            voie={cerfaData.adresseDemandeurVoie ?? ""}
+            codePostal={cerfaData.adresseDemandeurCodePostal ?? ""}
+            localite={cerfaData.adresseDemandeurLocalite ?? ""}
+            onChange={(field, value) => {
+              if (field === "numero") setCerfa("adresseDemandeurNumero", value);
+              else if (field === "voie") setCerfa("adresseDemandeurVoie", value);
+              else if (field === "codePostal") setCerfa("adresseDemandeurCodePostal", value);
+              else setCerfa("adresseDemandeurLocalite", value);
+            }}
+            inputStyle={inputStyle}
+            onFocus={onFocus}
+            onBlur={onBlur}
+          />
         </Field>
       </Section>
 
