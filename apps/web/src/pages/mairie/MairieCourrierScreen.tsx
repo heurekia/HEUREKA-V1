@@ -1214,7 +1214,13 @@ export function CourrierModal({
             <div className="no-print-modal" style={{ width: 300, borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", flexShrink: 0, background: "#FAFAFA" }}>
               {/* Panel header */}
               <div style={{ padding: "12px 14px 10px", borderBottom: "1px solid #E2E8F0", background: "white" }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 8 }}>📜 Mentions légales recommandées</div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A" }}>📜 Mentions légales recommandées</div>
+                  <button onClick={() => setShowMentions(false)} title="Fermer le panneau"
+                    style={{ flexShrink: 0, padding: 4, border: "none", background: "none", cursor: "pointer", display: "flex", color: "#94a3b8", borderRadius: 6 }}>
+                    <X size={16} />
+                  </button>
+                </div>
                 <select
                   value={courrierType}
                   onChange={(e) => {
@@ -1291,7 +1297,13 @@ export function CourrierModal({
             <div className="no-print-modal" style={{ width: 320, borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", flexShrink: 0, background: "#FAFAFA" }}>
               {/* Panel header */}
               <div style={{ padding: "12px 14px 10px", borderBottom: "1px solid #E2E8F0", background: "white" }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 6 }}>📎 Pièces à demander au pétitionnaire</div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A" }}>📎 Pièces à demander au pétitionnaire</div>
+                  <button onClick={() => setShowPiecesPanel(false)} title="Fermer le panneau"
+                    style={{ flexShrink: 0, padding: 4, border: "none", background: "none", cursor: "pointer", display: "flex", color: "#94a3b8", borderRadius: 6 }}>
+                    <X size={16} />
+                  </button>
+                </div>
                 <div style={{ fontSize: 11, color: "#64748b", marginBottom: 8, lineHeight: 1.4 }}>
                   Sélectionnez les pièces déposées à compléter, et ajoutez les pièces absentes.
                 </div>
