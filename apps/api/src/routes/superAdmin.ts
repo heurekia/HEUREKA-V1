@@ -1035,7 +1035,7 @@ superAdminRouter.get("/users", async (req, res) => {
         )
       )`);
     }
-    if (role) conditions.push(eq(users.role, role as "citoyen" | "mairie" | "instructeur" | "admin"));
+    if (role) conditions.push(eq(users.role, role as "citoyen" | "mairie" | "instructeur" | "admin" | "service_externe"));
     // Masque les comptes pro désactivés (offboardés) : du point de vue de la
     // gestion, ils sont « retirés ». La ligne reste en base (records légaux).
     conditions.push(isNull(users.deactivated_at));
@@ -1051,6 +1051,11 @@ superAdminRouter.get("/users", async (req, res) => {
         telephone: users.telephone,
         role_config_id: users.role_config_id,
         created_at: users.created_at,
+        // Services annexes (rôle service_externe) : on remonte le service
+        // rattaché pour afficher sa catégorie (ABF, SDIS, DDT…) côté admin.
+        service_id: users.service_id,
+        service_name: external_services.name,
+        service_type: external_services.type,
         activation_pending: sql<boolean>`EXISTS (
           SELECT 1 FROM password_tokens pt
           WHERE pt.user_id = ${users.id}
@@ -1059,6 +1064,7 @@ superAdminRouter.get("/users", async (req, res) => {
         )`,
       })
       .from(users)
+      .leftJoin(external_services, eq(users.service_id, external_services.id))
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(users.created_at));
 
