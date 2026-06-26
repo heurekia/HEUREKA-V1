@@ -112,6 +112,16 @@ export function MapLeaflet({
   const baseTileRef = useRef<L.TileLayer | null>(null);
   const highlightLayerRef = useRef<L.GeoJSON | null>(null);
   const positionMarkerRef = useRef<L.LayerGroup | null>(null);
+  // Le listener de clic est attaché une seule fois (cf. effet plus bas) et lit le
+  // mode + le callback courants via ces refs. Sans ça, un parent qui passe un
+  // `onMapClick` d'identité changeante (closure recréée à chaque rendu) ferait
+  // détacher/réattacher le listener à chaque rendu — et sur mobile, où le `click`
+  // est synthétisé ~300 ms après le tap, un rendu intercalé supprimerait le
+  // handler avant que le clic différé n'arrive : le tap serait alors perdu.
+  const onMapClickRef = useRef(onMapClick);
+  const clickModeRef = useRef(clickMode);
+  onMapClickRef.current = onMapClick;
+  clickModeRef.current = clickMode;
   // Capture initial center/zoom at mount time (refs avoid re-running the init effect)
   const initialCenterRef = useRef<[number, number]>(defaultCenter ?? DEFAULT_CENTER);
   const initialZoomRef = useRef<number>(defaultZoom ?? DEFAULT_ZOOM);
@@ -339,15 +349,22 @@ export function MapLeaflet({
     }
   }, [positionMarker, highlightGeometry, mapReady]);
 
-  // Map click handler — only active in clickMode
+  // Curseur « crosshair » quand le mode clic est actif (purement visuel).
   useEffect(() => {
     const map = mapRef.current;
     if (!map) return;
-    const container = map.getContainer();
-    container.style.cursor = clickMode ? "crosshair" : "";
+    map.getContainer().style.cursor = clickMode ? "crosshair" : "";
+  }, [clickMode, mapReady]);
+
+  // Map click handler — attaché UNE seule fois (lié à mapReady, pas à clickMode /
+  // onMapClick). Lit le mode et le callback courants via refs. Cf. note sur les
+  // refs plus haut : ré-attacher à chaque rendu casse le clic sur mobile.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
 
     const handler = (e: L.LeafletMouseEvent) => {
-      if (!clickMode || !onMapClick) return;
+      if (!clickModeRef.current || !onMapClickRef.current) return;
       const { lat, lng } = e.latlng;
 
       // Drop a temporary pin at the clicked location
@@ -360,12 +377,12 @@ export function MapLeaflet({
         }),
       }).addTo(map);
 
-      onMapClick(lat, lng);
+      onMapClickRef.current(lat, lng);
     };
 
     map.on("click", handler);
     return () => { map.off("click", handler); };
-  }, [clickMode, onMapClick]);
+  }, [mapReady]);
 
   // Fetch and draw commune boundary
   useEffect(() => {
