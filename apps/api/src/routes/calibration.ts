@@ -211,7 +211,10 @@ calibrationRouter.delete("/rules/:id", requireRole("mairie", "instructeur", "adm
 });
 
 // ── Analyse parcellaire complète ──
-calibrationRouter.get("/analyse-parcelle/:parcelle", async (req: AuthRequest, res) => {
+// Réservée aux agents, comme les autres routes calibration : elle renvoie les
+// règles réglementaires validées d'une zone. Sans requireRole, un citoyen /
+// service_externe authentifié pouvait l'appeler (incohérent avec /zones & co).
+calibrationRouter.get("/analyse-parcelle/:parcelle", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
     const parcelleRef = req.params.parcelle as string;
     const zoneCode = parcelleRef.slice(0, 2).toUpperCase();

@@ -1123,8 +1123,9 @@ function InfosPersoScreen() {
     { type: "pieces_complementaires_recues", label: "Pièces complémentaires reçues", sub: "Quand un pétitionnaire ajoute les pièces demandées" },
     { type: "message_citoyen", label: "Message d'un pétitionnaire", sub: "Quand un pétitionnaire écrit sur un de vos dossiers" },
     { type: "dossier_pret_apres_ocr", label: "Dossier prêt à l'instruction", sub: "Quand l'analyse automatique des pièces est terminée" },
-    { type: "signature_requise", label: "Signature requise", sub: "Quand un projet d'arrêté attend votre signature" },
+    { type: "signature_requise", label: "Signature requise", sub: "Quand un projet d'arrêté ou un courrier attend votre signature" },
     { type: "decision_signee", label: "Arrêté signé", sub: "Quand un arrêté que vous avez instruit est signé" },
+    { type: "courrier_signe", label: "Courrier signé", sub: "Quand un courrier que vous avez préparé est signé par le signataire" },
     { type: "signature_refusee", label: "Signature refusée", sub: "Quand un signataire refuse de signer un arrêté" },
   ];
   const [notifPrefs, setNotifPrefs] = useState<Record<string, boolean>>(user?.notification_prefs ?? {});
@@ -1374,7 +1375,18 @@ function SignaturesPendantesScreen() {
     dossier: { id: string; numero: string; type: string; commune: string | null; adresse: string | null } | null;
     instructeur: { prenom: string | null; nom: string | null } | null;
   };
+  // Courriers (documents) en attente de signature — circuit distinct des arrêtés.
+  type CourrierPendingRow = {
+    id: string;
+    type: string;
+    subject: string | null;
+    signature_requested_at: string | null;
+    emis_le: string;
+    dossier: { id: string; numero: string; type: string; commune: string | null; adresse: string | null } | null;
+    requested_by: { prenom: string | null; nom: string | null } | null;
+  };
   const [rows, setRows] = useState<PendingRow[]>([]);
+  const [courriers, setCourriers] = useState<CourrierPendingRow[]>([]);
   const [loading, setLoading] = useState(true);
   const [signing, setSigning] = useState<string | null>(null);
   const [refusing, setRefusing] = useState<string | null>(null);
@@ -1386,9 +1398,14 @@ function SignaturesPendantesScreen() {
   const routerNavigate = useNavigate();
 
   const load = () => {
-    api.get<PendingRow[]>("/decisions/pending")
-      .then(data => setRows(data))
-      .catch(() => {})
+    Promise.allSettled([
+      api.get<PendingRow[]>("/decisions/pending"),
+      api.get<CourrierPendingRow[]>("/mairie/courriers/pending-signature"),
+    ])
+      .then(([dec, cour]) => {
+        if (dec.status === "fulfilled") setRows(dec.value);
+        if (cour.status === "fulfilled") setCourriers(cour.value);
+      })
       .finally(() => setLoading(false));
   };
 
@@ -1427,11 +1444,19 @@ function SignaturesPendantesScreen() {
     pieces_complementaires: "Demande de pièces", cu_positif: "CU positif", cu_negatif: "CU négatif",
   };
 
+  const COURRIER_LABEL: Record<string, string> = {
+    pieces_complementaires: "Demande de pièces", refus: "Refus", non_opposition: "Non-opposition",
+    majoration_delai: "Majoration de délai", notification_decision: "Notification de décision",
+    general: "Courrier",
+  };
+
+  const empty = rows.length === 0 && courriers.length === 0;
+
   return (
     <div style={{ padding: 24 }}>
       <div style={{ marginBottom: 20 }}>
         <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Signatures en attente</h1>
-        <p style={{ color: "#64748b", fontSize: 13 }}>Projets d'arrêtés soumis pour votre signature.</p>
+        <p style={{ color: "#64748b", fontSize: 13 }}>Projets d'arrêtés et courriers soumis pour votre signature.</p>
       </div>
 
       {/* Erreur d'action hors modale (signature). La modale de refus affiche sa
@@ -1446,11 +1471,11 @@ function SignaturesPendantesScreen() {
 
       {loading ? (
         <div style={{ padding: 48, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>
-      ) : rows.length === 0 ? (
+      ) : empty ? (
         <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: "48px 24px", textAlign: "center" as const }}>
           <div style={{ fontSize: 40, marginBottom: 12 }}>✓</div>
           <div style={{ fontSize: 15, fontWeight: 600, color: "#0F172A", marginBottom: 6 }}>Aucune signature en attente</div>
-          <div style={{ fontSize: 13, color: "#94a3b8" }}>Tous les projets d'arrêtés ont été traités.</div>
+          <div style={{ fontSize: 13, color: "#94a3b8" }}>Tous les projets d'arrêtés et courriers ont été traités.</div>
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
@@ -1484,6 +1509,36 @@ function SignaturesPendantesScreen() {
                 </button>
                 <button onClick={() => { setActionError(null); setRefusing(row.id); }} style={{ background: "white", color: "#EF4444", border: "1px solid #FECACA", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
                   Refuser
+                </button>
+              </div>
+            </div>
+          ))}
+
+          {/* Courriers (documents) en attente de signature. La signature s'effectue
+              depuis l'onglet « Courriers » du dossier (apposition signature/tampon
+              dans l'éditeur), d'où un deep-link plutôt qu'un bouton « Signer » ici. */}
+          {courriers.map(c => (
+            <div key={c.id} style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 18, display: "flex", alignItems: "center", gap: 16 }}>
+              <div style={{ flex: 1 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 4 }}>
+                  <span style={{ fontSize: 14, fontWeight: 700, color: "#6D28D9" }}>{c.dossier?.numero ?? "—"}</span>
+                  <span style={{ fontSize: 11, background: "#EDE9FE", color: "#6D28D9", borderRadius: 6, padding: "2px 8px", fontWeight: 600 }}>Courrier · {COURRIER_LABEL[c.type] ?? c.type}</span>
+                  {c.subject && <span style={{ fontSize: 12.5, color: "#374151" }}>{c.subject}</span>}
+                </div>
+                <div style={{ fontSize: 12.5, color: "#374151", marginBottom: 2 }}>
+                  {c.dossier?.adresse ?? "—"} — {c.dossier?.commune ?? "—"}
+                </div>
+                <div style={{ fontSize: 11, color: "#94a3b8" }}>
+                  Demandé par {c.requested_by?.prenom} {c.requested_by?.nom} · {new Date(c.signature_requested_at ?? c.emis_le).toLocaleDateString("fr-FR")}
+                </div>
+              </div>
+              <div style={{ display: "flex", gap: 8, flexShrink: 0 }}>
+                <button onClick={() => c.dossier?.id && routerNavigate(`/mairie/dossiers/${c.dossier.id}`)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "#374151" }}>
+                  Voir le dossier
+                </button>
+                <button onClick={() => c.dossier?.id && routerNavigate(`/mairie/dossiers/${c.dossier.id}?tab=courriers&courrier=${c.id}`)} style={{ border: "none", background: "linear-gradient(135deg,#7C3AED,#8B5CF6)", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "white", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+                  Voir et signer
                 </button>
               </div>
             </div>
@@ -1859,8 +1914,14 @@ export function MairieApp() {
       .then(d => {
         setIsSignataire(d.isSignataire);
         if (d.isSignataire) {
-          api.get<{ count: number }>("/decisions/pending-count")
-            .then(d2 => setSignaturesBadge(d2.count))
+          // Le badge cumule les deux circuits de signature : projets d'arrêtés
+          // (décisions) ET courriers (documents). Sans le second, un courrier
+          // envoyé en signature n'incrémentait jamais le compteur.
+          Promise.all([
+            api.get<{ count: number }>("/decisions/pending-count").then(d2 => d2.count).catch(() => 0),
+            api.get<{ count: number }>("/mairie/courriers/pending-signature/count").then(d2 => d2.count).catch(() => 0),
+          ])
+            .then(([decCount, courrierCount]) => setSignaturesBadge(decCount + courrierCount))
             .catch(() => {});
         } else {
           setSignaturesBadge(0);

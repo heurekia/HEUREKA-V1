@@ -144,6 +144,25 @@ function CourriersPanel({ dossierId, refreshKey, onRequestNewPiecesCourrier, onR
     // refreshKey force le rechargement après enregistrement / envoi d'un courrier.
   }, [dossierId, refreshKey]);
 
+  // Deep-link « ?courrier=<id> » (ex. depuis l'espace « Signatures en attente ») :
+  // une fois la liste chargée, on ouvre directement le courrier ciblé au lieu de
+  // laisser le signataire le chercher dans l'historique. Le paramètre est ensuite
+  // retiré de l'URL pour ne pas rouvrir la modale à chaque rendu / fermeture.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const autoOpenedRef = useRef(false);
+  useEffect(() => {
+    if (autoOpenedRef.current || !rows) return;
+    const target = searchParams.get("courrier");
+    if (!target) return;
+    const match = rows.find((c) => c.id === target);
+    if (!match) return;
+    autoOpenedRef.current = true;
+    onReopenCourrier(match);
+    const next = new URLSearchParams(searchParams);
+    next.delete("courrier");
+    setSearchParams(next, { replace: true });
+  }, [rows, searchParams, setSearchParams, onReopenCourrier]);
+
   const COURRIER_LABEL: Record<string, { label: string; color: string; bg: string }> = {
     pieces_complementaires: { label: "Demande de pièces", color: "#B45309", bg: "#FEF3C7" },
     refus: { label: "Refus", color: "#B91C1C", bg: "#FEE2E2" },
