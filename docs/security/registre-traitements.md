@@ -82,8 +82,29 @@ Fiches pré-remplies pour la collectivité responsable de traitement utilisant H
 | **Responsable de traitement** | HEUREKIA SAS (en tant qu'exploitant) |
 | **Finalités** | Détection des tentatives d'intrusion, traçabilité légale, réponse à incident |
 | **Base légale** | Obligation légale (art. 6-1-c) — exigence CCSC Art. 4.14 de la DSI Tours Métropole + bonne pratique CNIL |
-| **Catégories de données** | user_id, e-mail, action (login/login_failed/logout/register/data_export/account_deleted/profile_update/password_change/account_activated/password_reset), IP, user-agent, horodatage |
+| **Catégories de données** | user_id, e-mail, action (login/login_failed/logout/register/data_export/account_deleted/profile_update/password_change/account_activated/password_reset/cerfa_profile_update/cerfa_profile_delete), IP, user-agent, horodatage |
 | **Destinataires** | Administrateurs HEUREKIA, DSI collectivité, autorités sur réquisition |
 | **Transferts hors UE** | Aucun |
 | **Durée de conservation** | **12 mois maximum** — purge automatique quotidienne (`jobs/scheduler.ts`) |
 | **Mesures de sécurité** | Index dédié pour la purge, FK `ON DELETE SET NULL` (préservé même après suppression de compte pour la sécurité) |
+
+---
+
+## Fiche n°5 — Mémorisation du profil CERFA (pré-remplissage)
+
+| Champ | Contenu |
+|-------|---------|
+| **Nom du traitement** | Mémorisation de l'état civil du pétitionnaire pour le pré-remplissage des demandes |
+| **Responsable de traitement** | `[À COMPLÉTER : nom + adresse de la collectivité]` |
+| **Sous-traitant principal** | HEUREKIA SAS — exploite la plateforme et stocke le profil chiffré |
+| **Sous-traitants ultérieurs** | OVH SAS (hébergement VPS + base PostgreSQL, datacenters France) |
+| **Finalités** | **Confort de saisie uniquement** : réutiliser, d'une demande à l'autre, l'état civil du pétitionnaire afin de pré-remplir automatiquement le formulaire CERFA (step 5 du tunnel de dépôt). Distincte de la finalité d'instruction (Fiche n°1). |
+| **Base légale** | **Consentement explicite et révocable** (art. 6-1-a) — case à cocher décochée par défaut (« Mémoriser ces informations pour mes prochaines demandes »), opt-in horodaté (`users.cerfa_profile_consent_at`). |
+| **Catégories de personnes concernées** | Citoyens pétitionnaires ayant explicitement opté pour la mémorisation. **Exclus : comptes professionnels** (mairie/instructeur/admin/service). |
+| **Catégories de données** | Sous-ensemble STABLE de l'état civil : civilité, qualité du demandeur, date de naissance, commune/département/pays de naissance, dénomination/forme/SIRET de société + civilité/nom/prénom du représentant, adresse postale du demandeur (n°, voie, localité, code postal). **Aucune donnée propre au projet** (surfaces, hauteur, parcelle, destination, architecte) — minimisation par liste blanche (`services/cerfaProfile.ts`). |
+| **Données sensibles** | Aucune (art. 9). Vigilance : le trio nom + date de naissance + adresse est sensible à l'usurpation d'identité → chiffrement au repos. |
+| **Destinataires** | Le citoyen lui-même (pré-remplissage de ses propres demandes). Aucune transmission à un tiers, ni aux agents instructeurs au titre de ce traitement (les agents ne voient que le CERFA du dossier, Fiche n°1). |
+| **Transferts hors UE** | Aucun |
+| **Durée de conservation** | Durée de vie du compte. Effacé immédiatement sur retrait du consentement (bouton « Oublier ces informations » / décochage de la case) et par cascade à la suppression du compte (colonne portée par `users`). |
+| **Mesures de sécurité** | **Chiffrement au repos AES-256-GCM** (clé `CERFA_PROFILE_ENC_KEY` ou dérivée scrypt du `JWT_SECRET`), liste blanche stricte des champs mémorisables (minimisation côté serveur), réservé au rôle citoyen, journalisation des opérations (`cerfa_profile_update` / `cerfa_profile_delete` dans audit_logs). |
+| **Procédure d'exercice des droits** | **Retrait du consentement** (art. 7-3) : bouton « Oublier ces informations » dans « Mon profil », ou décochage de la case au dépôt. **Droit d'accès** (art. 15) : le profil mémorisé (déchiffré) est inclus dans l'export JSON. **Droit à l'effacement** (art. 17) : couvert par la suppression de compte. |

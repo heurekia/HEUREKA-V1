@@ -101,6 +101,10 @@ interface Props {
   cerfaData: CerfaData;
   setCerfa: <K extends keyof CerfaData>(field: K, value: CerfaData[K]) => void;
   inputStyle: CSSProperties;
+  // RGPD — mémorisation opt-in de l'état civil réutilisable pour les prochaines
+  // demandes. Piloté par le wizard parent (persistance chiffrée côté serveur).
+  rememberProfile: boolean;
+  onToggleRemember: (v: boolean) => void;
   onPrev: () => void;
   onNext: () => void;
 }
@@ -392,6 +396,8 @@ export function Step5CerfaInfos({
   cerfaData,
   setCerfa,
   inputStyle,
+  rememberProfile,
+  onToggleRemember,
   onPrev,
   onNext,
 }: Props) {
@@ -1073,13 +1079,32 @@ export function Step5CerfaInfos({
         />
       </Section>
 
+      {/* ── Mémorisation RGPD (opt-in) ──────────────────────────── */}
+      <div
+        style={{
+          background: "#F5F3FF",
+          border: "1px solid #DDD6FE",
+          borderRadius: 12,
+          padding: "14px 18px",
+          marginTop: 18,
+          marginBottom: 14,
+        }}
+      >
+        <Toggle
+          label="Mémoriser ces informations pour mes prochaines demandes"
+          help="Pré-remplit votre état civil (civilité, date et lieu de naissance, qualité, adresse postale) lors de vos futurs dépôts. Ces données sont conservées chiffrées et liées à votre seul compte ; les informations propres au projet (surfaces, hauteur, parcelle…) ne sont jamais mémorisées. Vous pouvez retirer ce consentement à tout moment depuis « Mon profil » ou en décochant cette case."
+          value={rememberProfile}
+          onChange={onToggleRemember}
+        />
+      </div>
+
       <div
         style={{
           background: "#EFF6FF",
           border: "1px solid #BFDBFE",
           borderRadius: 12,
           padding: "13px 18px",
-          marginTop: 18,
+          marginTop: 4,
           marginBottom: 22,
           fontSize: 12.5,
           color: "#1E40AF",

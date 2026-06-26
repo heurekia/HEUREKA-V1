@@ -1574,6 +1574,16 @@ CREATE INDEX IF NOT EXISTS idx_help_articles_status ON help_articles(status);
 -- Map JSON { type_notification: bool }. Clé absente = activé (opt-out explicite).
 -- Filtrée dans services/notify.ts avant l'insertion d'une notification.
 ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_prefs jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+-- ── Profil CERFA mémorise (RGPD — confort de saisie, citoyens) ──
+-- Sous-ensemble STABLE des donnees d'etat civil du step 5 (civilite, date/lieu
+-- de naissance, qualite, adresse postale du demandeur, societe), CHIFFRE au
+-- repos (AES-256-GCM, cf. apps/api services/cerfaProfile.ts). NULL = aucun
+-- profil. Finalite distincte de l'instruction → base legale consentement
+-- (opt-in revocable, horodate par cerfa_profile_consent_at). Efface par cascade
+-- a la suppression du compte (colonne portee par users).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS cerfa_profile text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS cerfa_profile_consent_at timestamp;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

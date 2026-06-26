@@ -10,6 +10,7 @@ import { getEffectivePermissions } from "../middlewares/permissions.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../services/mailer.js";
 import { logAudit } from "../services/audit.js";
 import { eraseCitizenAccount } from "../services/accountLifecycle.js";
+import { loadCerfaProfile, saveCerfaProfile, clearCerfaProfile } from "../services/cerfaProfile.js";
 import {
   generateTotpSecret, totpKeyUri, totpQrDataUrl, verifyTotp,
   encryptSecret, decryptSecret, generateBackupCodes, consumeBackupCode,
@@ -266,6 +267,10 @@ authRouter.get("/me/export", requireAuth, async (req: AuthRequest, res) => {
       ? await db.select().from(ai_usage_events).where(inArray(ai_usage_events.dossier_id, dossierIds))
       : [];
 
+    // RGPD : profil CERFA mémorisé (déchiffré) + horodatage du consentement à
+    // sa mémorisation. NULL si le citoyen n'a jamais coché « Mémoriser ».
+    const cerfaProfile = await loadCerfaProfile(userId);
+
     const payload = {
       export_date: new Date().toISOString(),
       export_note: "Export complet de vos données conformément au droit d'accès RGPD (art. 15) et au droit à la portabilité (art. 20). Contactez le DPD pour toute question.",
@@ -279,6 +284,11 @@ authRouter.get("/me/export", requireAuth, async (req: AuthRequest, res) => {
         telephone: user.telephone,
         created_at: user.created_at,
       },
+      // RGPD : profil CERFA mémorisé pour le pré-remplissage (état civil
+      // réutilisable). `null` si aucune mémorisation. Le consentement à cette
+      // mémorisation est horodaté séparément (art. 6-1-a).
+      profil_cerfa_memorise: cerfaProfile.profile,
+      profil_cerfa_consentement_date: cerfaProfile.consent_at,
       // RGPD : exposition explicite du consentement à l'analyse IA + son
       // horodatage, pour chaque dossier. Le citoyen voit s'il a accepté ou
       // refusé l'analyse automatisée.
@@ -394,6 +404,57 @@ authRouter.patch("/me", requireAuth, async (req: AuthRequest, res) => {
     if (!updated) return res.status(404).json({ error: "Utilisateur non trouvé" });
     await writeAudit(req.user!.id, req.user!.email, "profile_update", req);
     res.json({ id: updated.id, email: updated.email, prenom: updated.prenom, nom: updated.nom, role: updated.role, commune: updated.commune, commune_insee: updated.commune_insee, telephone: updated.telephone, avatar_url: updated.avatar_url, notification_prefs: updated.notification_prefs });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Profil CERFA mémorisé (RGPD — confort de pré-remplissage, citoyens) ──────
+// Sous-ensemble STABLE de l'état civil saisi au step 5, réutilisable d'une
+// demande à l'autre. Mémorisation = opt-in révocable (consentement art. 6-1-a),
+// chiffrée au repos. Réservée aux citoyens : les comptes pros ne déposent pas.
+
+// Lecture pour le pré-remplissage du tunnel. Renvoie `{ profile: null }` tant
+// que le citoyen n'a rien mémorisé.
+authRouter.get("/me/cerfa-profile", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user!.role !== "citoyen") return res.json({ profile: null, consent_at: null });
+    const { profile, consent_at } = await loadCerfaProfile(req.user!.id);
+    res.json({ profile, consent_at });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Mémorisation (opt-in). Le service minimise l'entrée à la liste blanche : un
+// champ projet envoyé par erreur n'est jamais stocké. Un profil minimisé vide
+// vaut révocation.
+authRouter.put("/me/cerfa-profile", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user!.role !== "citoyen") {
+      return res.status(403).json({ error: "Mémorisation réservée aux comptes citoyens." });
+    }
+    const profileInput = (req.body as { profile?: Record<string, unknown> })?.profile;
+    if (!profileInput || typeof profileInput !== "object" || Array.isArray(profileInput)) {
+      return res.status(400).json({ error: "Profil invalide." });
+    }
+    const saved = await saveCerfaProfile(req.user!.id, profileInput, new Date());
+    await writeAudit(req.user!.id, req.user!.email, "cerfa_profile_update", req);
+    res.json({ profile: saved, consent_at: Object.keys(saved).length > 0 ? new Date().toISOString() : null });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Révocation (retrait du consentement, art. 7-3) : efface profil + horodatage.
+authRouter.delete("/me/cerfa-profile", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    await clearCerfaProfile(req.user!.id);
+    await writeAudit(req.user!.id, req.user!.email, "cerfa_profile_delete", req);
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

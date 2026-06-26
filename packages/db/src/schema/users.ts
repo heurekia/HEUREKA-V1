@@ -55,6 +55,20 @@ export const users = pgTable("users", {
   // { [type]: boolean }. Une clé absente vaut « activé » (modèle opt-out). Lue
   // et filtrée dans services/notify.ts avant l'insertion d'une notification.
   notification_prefs: jsonb("notification_prefs").$type<Record<string, boolean>>().notNull().default({}),
+  // Profil CERFA mémorisé (RGPD — confort de saisie, citoyens). Sous-ensemble
+  // STABLE et réutilisable des données d'état civil saisies au step 5 du tunnel
+  // (civilité, date/lieu de naissance, qualité, adresse postale du demandeur,
+  // société). CHIFFRÉ au repos (AES-256-GCM, cf. services/cerfaProfile.ts) :
+  // un dump de la base n'expose pas la date de naissance en clair. NULL = aucun
+  // profil mémorisé. Finalité distincte de l'instruction → base légale
+  // consentement (opt-in révocable, cf. cerfa_profile_consent_at). Effacé par
+  // cascade à la suppression du compte (colonne portée par users).
+  cerfa_profile: text("cerfa_profile"),
+  // Horodatage du consentement à la mémorisation du profil CERFA (RGPD art.
+  // 6-1-a). NULL = pas de consentement / profil non mémorisé. Posé au moment où
+  // le citoyen coche « Mémoriser ces informations » ; remis à NULL (avec
+  // cerfa_profile) lorsqu'il révoque.
+  cerfa_profile_consent_at: timestamp("cerfa_profile_consent_at"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });
