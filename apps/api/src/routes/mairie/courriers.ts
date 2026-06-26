@@ -2,10 +2,12 @@ import { Router } from "express";
 import { db } from "../../db.js";
 import { dossier_courriers, users, communes, courrier_templates, legal_mentions, user_communes, dossiers, signataires } from "@heureka-v1/db";
 import { eq, and, desc, sql, ilike } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { CODE_URBANISME_ID } from "../../services/legifrance.js";
+import { notifyUser } from "../../services/notify.js";
 import {
   emitPieceComplementRequest,
   renderPieceListHtml,
@@ -382,10 +384,85 @@ courriersRouter.post("/dossiers/:id/courriers/:courrierId/request-signature", re
       signature_requested_by: req.user!.id,
       signature_requested_at: new Date(),
     }).where(eq(dossier_courriers.id, courrierId)).returning();
+    // Prévient le signataire désigné, comme pour un projet d'arrêté soumis. Sans
+    // cette notification, le courrier n'arrivait que dans son espace
+    // « Signatures » sans aucune alerte (cloche / e-mail selon ses préférences).
+    await notifyUser({
+      user_id: targetUserId,
+      dossier_id: dossierId,
+      type: "signature_requise",
+      title: "Signature requise",
+      message: `Un courrier est en attente de votre signature (commune : ${d.commune}).`,
+    });
     res.json(row);
   } catch (err) {
     console.error("[courriers request-signature]", err);
     res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// Auteur de la demande de signature (à ne pas confondre avec le signataire).
+const requesterU = alias(users, "requester_user");
+
+// ── GET /courriers/pending-signature ───────────────────────────────────────
+// Courriers (documents) en attente de la signature de l'utilisateur courant.
+// Pendant exact de /decisions/pending pour les arrêtés : sans cet endpoint, un
+// courrier envoyé en signature à un signataire désigné n'apparaissait NULLE PART
+// dans son espace « Signatures » — celui-ci ne listait que les projets d'arrêtés.
+// Pas de requirePermission (aligné sur /decisions/pending) : l'accès découle de
+// l'habilitation à signer, matérialisée ici par signataire_user_id = soi-même.
+courriersRouter.get("/courriers/pending-signature", async (req: AuthRequest, res) => {
+  try {
+    const rows = await db
+      .select({
+        id: dossier_courriers.id,
+        type: dossier_courriers.type,
+        subject: dossier_courriers.subject,
+        signature_requested_at: dossier_courriers.signature_requested_at,
+        emis_le: dossier_courriers.emis_le,
+        dossier: {
+          id: dossiers.id,
+          numero: dossiers.numero,
+          type: dossiers.type,
+          commune: dossiers.commune,
+          adresse: dossiers.adresse,
+        },
+        requested_by: {
+          prenom: requesterU.prenom,
+          nom: requesterU.nom,
+        },
+      })
+      .from(dossier_courriers)
+      .leftJoin(dossiers, eq(dossiers.id, dossier_courriers.dossier_id))
+      .leftJoin(requesterU, eq(requesterU.id, dossier_courriers.signature_requested_by))
+      .where(and(
+        eq(dossier_courriers.signataire_user_id, req.user!.id),
+        eq(dossier_courriers.signature_status, "a_signer"),
+      ))
+      .orderBy(desc(dossier_courriers.signature_requested_at));
+    res.json(rows);
+  } catch (err) {
+    console.error("[courriers pending-signature]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── GET /courriers/pending-signature/count ─────────────────────────────────
+// Alimente le badge « Signatures » (cumulé avec /decisions/pending-count côté
+// front). Endpoint léger : on ne ramène pas les lignes complètes pour un compteur.
+courriersRouter.get("/courriers/pending-signature/count", async (req: AuthRequest, res) => {
+  try {
+    const rows = await db
+      .select({ id: dossier_courriers.id })
+      .from(dossier_courriers)
+      .where(and(
+        eq(dossier_courriers.signataire_user_id, req.user!.id),
+        eq(dossier_courriers.signature_status, "a_signer"),
+      ));
+    res.json({ count: rows.length });
+  } catch (err) {
+    console.error("[courriers pending-signature/count]", err);
+    res.status(500).json({ error: "Erreur serveur" });
   }
 });
 
