@@ -435,6 +435,9 @@ export function NouvelleDemandeWizard() {
   type CerfaData = {
     // Identité
     qualiteDemandeur?: "particulier" | "sci" | "indivision" | "autre";
+    // Civilité du demandeur (Madame / Monsieur) — réutilisée dans les balises
+    // dynamiques de courrier côté mairie (variable `demandeur_civilite`).
+    civilite?: "madame" | "monsieur";
     dateNaissance?: string;
     communeNaissance?: string;
     deptNaissance?: string;

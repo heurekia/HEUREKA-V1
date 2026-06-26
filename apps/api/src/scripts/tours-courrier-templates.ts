@@ -6,9 +6,9 @@
 //   - plomberie multi-commune (IF CommuneInseeCode, INCLUDETEXT logos, bloc
 //     signataire par commune) SUPPRIMÉE — gérée par commune-letterhead ;
 //   - champs disponibles = variables dynamiques (<span data-variable="…">) ;
-//   - champs pas encore enrichis = ZONES MANUELLES ambrées (à compléter par
-//     l'agent), en attendant la brique `cerfa_data`
-//     (cf. docs/courriers-tours/mapping-courriers-tours.md).
+//   - civilité et adresse du demandeur sont désormais enrichies via la brique
+//     `cerfa_data` (saisie au dépôt citoyen → variables demandeur_civilite /
+//     demandeur_adresse). cf. docs/courriers-tours/mapping-courriers-tours.md.
 
 // Communes de Tours Métropole présentes dans les modèles d'origine (INSEE).
 export const TOURS_METROPOLE_INSEE = [
@@ -31,9 +31,6 @@ export const TOURS_METROPOLE_INSEE = [
 // Variable dynamique (résolue à la génération via substituteVariables).
 const v = (name: string, label: string) =>
   `<span data-variable="${name}" style="background:#EEF2FF;color:#4F46E5;border-radius:3px;padding:1px 5px;font-size:0.92em;font-weight:500;">${label}</span>`;
-// Zone à compléter manuellement par l'agent (donnée pas encore enrichie).
-const manual = (label: string) =>
-  `<span style="background:#FEF3C7;color:#B45309;border-radius:3px;padding:1px 5px;font-size:0.92em;">[${label}]</span>`;
 
 // ── Modèle 1 : Demande de pièces manquantes ────────────────────────────────
 const DEMANDE_PIECES_MANQUANTES = `
@@ -42,23 +39,23 @@ const DEMANDE_PIECES_MANQUANTES = `
 <p style="margin:0 0 18px;font-size:0.9em;color:#475569;">Tél. : ${v("agent_tel", "Tél. agent")} — Courriel : ${v("agent_email", "Email agent")}</p>
 
 <div style="margin:0 0 18px;padding-left:55%;">
-  <p style="margin:0;">${v("demandeur_nom", "Nom du demandeur")}</p>
-  <p style="margin:0;">${manual("Adresse postale du demandeur")}</p>
+  <p style="margin:0;">${v("demandeur_civilite", "Civilité")} ${v("demandeur_nom", "Nom du demandeur")}</p>
+  <p style="margin:0;">${v("demandeur_adresse", "Adresse du demandeur")}</p>
   <p style="margin:6px 0 0;font-style:italic;font-size:0.85em;color:#64748b;">Lettre recommandée avec A.R.</p>
 </div>
 
 <p style="margin:0 0 16px;">${v("commune", "Commune")}, le ${v("date_courrier", "Date du courrier")}</p>
 
 <div style="margin:0 0 18px;padding:12px 14px;border:1px solid #CBD5E1;border-radius:6px;font-size:0.92em;">
-  <p style="margin:0 0 3px;"><strong>Demandeur :</strong> ${v("demandeur_nom", "Nom du demandeur")}</p>
-  <p style="margin:0 0 3px;"><strong>Adresse du demandeur :</strong> ${manual("Adresse postale du demandeur")}</p>
+  <p style="margin:0 0 3px;"><strong>Demandeur :</strong> ${v("demandeur_civilite", "Civilité")} ${v("demandeur_nom", "Nom du demandeur")}</p>
+  <p style="margin:0 0 3px;"><strong>Adresse du demandeur :</strong> ${v("demandeur_adresse", "Adresse du demandeur")}</p>
   <p style="margin:0 0 3px;"><strong>Opération :</strong> ${v("description_projet", "Nature des travaux")}</p>
   <p style="margin:0 0 3px;"><strong>Adresse des travaux :</strong> ${v("adresse_travaux", "Adresse des travaux")}</p>
   <p style="margin:0 0 3px;"><strong>Dossier N° :</strong> ${v("numero_dossier", "N° de dossier")} — <strong>Déposé le :</strong> ${v("date_depot", "Date de dépôt")}</p>
   <p style="margin:0;"><strong>Surface de plancher :</strong> ${v("surface_plancher", "Surface de plancher")}</p>
 </div>
 
-<p style="margin:0 0 12px;">${manual("Madame, Monsieur")},</p>
+<p style="margin:0 0 12px;">${v("demandeur_civilite", "Civilité")},</p>
 
 <p style="margin:0 0 12px;">J'ai l'honneur de vous faire connaître que votre ${v("type_dossier", "Type de dossier")} déposée le ${v("date_depot", "Date de dépôt")} a été enregistrée sous les références portées ci-dessus.</p>
 
@@ -74,7 +71,7 @@ const DEMANDE_PIECES_MANQUANTES = `
 
 <p style="margin:0 0 12px;">Vous disposez de trois mois à compter de la date de réception de cette lettre pour faire parvenir à la mairie l'intégralité des pièces et informations manquantes. Dans le cas contraire, vous serez réputé avoir renoncé à votre projet, et votre demande fera l'objet d'une décision tacite de rejet ou d'opposition selon la nature de votre demande (article R. 423-39 du Code de l'Urbanisme).</p>
 
-<p style="margin:0 0 18px;">Je vous prie d'agréer, ${manual("Madame, Monsieur")}, l'expression de mes sincères salutations.</p>
+<p style="margin:0 0 18px;">Je vous prie d'agréer, ${v("demandeur_civilite", "Civilité")}, l'expression de mes sincères salutations.</p>
 
 <div style="margin-top:24px;">
   <p style="margin:0 0 2px;">Pour le Maire et par délégation,</p>

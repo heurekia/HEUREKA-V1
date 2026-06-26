@@ -20,7 +20,9 @@ const TEMPLATE_VARIABLES = [
   { group: "Références du dossier", vars: [
     { label: "Numéro de dossier", name: "numero_dossier" },
     { label: "Type de dossier", name: "type_dossier" },
+    { label: "Civilité du demandeur", name: "demandeur_civilite" },
     { label: "Identité du demandeur", name: "demandeur_nom" },
+    { label: "Adresse du demandeur", name: "demandeur_adresse" },
     { label: "Email demandeur", name: "demandeur_email" },
     { label: "Date de dépôt", name: "date_depot" },
     { label: "Date de complétude", name: "date_completude" },
@@ -161,6 +163,10 @@ interface Letterhead {
 export interface DossierForCourrier {
   id: string; numero: string; type: string; petitionnaire: string;
   petitionnaire_email?: string | null;
+  // Civilité et adresse postale du demandeur (issues du dépôt citoyen), pour les
+  // balises dynamiques demandeur_civilite / demandeur_adresse.
+  demandeur_civilite?: string;
+  demandeur_adresse?: string;
   adresse?: string; commune?: string; code_postal?: string; parcelle?: string;
   surface_plancher?: string; description?: string | null;
   date_depot?: string; echeance?: string;
@@ -980,7 +986,9 @@ export function CourrierModal({
       // Dossier
       numero_dossier: dossier.numero,
       type_dossier: TYPE_LABEL[dossier.type] ?? dossier.type,
+      demandeur_civilite: dossier.demandeur_civilite || "—",
       demandeur_nom: dossier.petitionnaire,
+      demandeur_adresse: dossier.demandeur_adresse || "—",
       demandeur_email: dossier.petitionnaire_email || "—",
       date_depot: fmtDate(dossier.date_depot),
       date_completude: fmtDate(dossier.date_completude),
