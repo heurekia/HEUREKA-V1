@@ -69,6 +69,11 @@ interface UserItem {
   role_config_id: string | null;
   created_at: string;
   activation_pending: boolean;
+  // Renseignés uniquement pour les comptes de services annexes (service_externe) :
+  // service rattaché + sa catégorie (ABF, SDIS, DDT…).
+  service_id: string | null;
+  service_name: string | null;
+  service_type: string | null;
 }
 
 interface InseeCandidate {
@@ -2848,7 +2853,7 @@ function Utilisateurs() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [filterCommune, setFilterCommune] = useState("");
-  const [activeTab, setActiveTab] = useState<"tous" | "mairie" | "instructeur" | "citoyen" | "admin">("tous");
+  const [activeTab, setActiveTab] = useState<"tous" | "mairie" | "instructeur" | "citoyen" | "admin" | "service_externe">("tous");
   const [search, setSearch] = useState("");
   const [editRole, setEditRole] = useState<{ id: string; role: string; role_config_id: string } | null>(null);
   const [communesModal, setCommunesModal] = useState<{ id: string; name: string } | null>(null);
@@ -2881,6 +2886,7 @@ function Utilisateurs() {
     instructeur: usersData.filter((u) => u.role === "instructeur").length,
     citoyen: usersData.filter((u) => u.role === "citoyen").length,
     admin: usersData.filter((u) => u.role === "admin").length,
+    service_externe: usersData.filter((u) => u.role === "service_externe").length,
   };
 
   const filtered = usersData.filter((u) => {
@@ -2993,6 +2999,7 @@ function Utilisateurs() {
           { key: "mairie", label: "Mairie", icon: "🏛", color: C.blue, bg: C.blueBg },
           { key: "instructeur", label: "Instructeurs", icon: "📋", color: C.green, bg: C.greenBg },
           { key: "citoyen", label: "Citoyens", icon: "🏠", color: "#D97706", bg: "#FEF3C7" },
+          { key: "service_externe", label: "Services annexes", icon: "🏢", color: C.orange, bg: C.orangeBg },
           { key: "admin", label: "Admins", icon: "⭐", color: C.purple, bg: C.purpleBg },
         ];
         return (
@@ -3124,11 +3131,21 @@ function Utilisateurs() {
                     ) : (
                       <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <RoleBadge role={u.role} />
+                        {/* Catégorie du service annexe (ABF, SDIS, DDT…) + nom du service en infobulle. */}
+                        {u.role === "service_externe" && u.service_type && (
+                          <span title={u.service_name ?? undefined} style={{ padding: "2px 8px", borderRadius: 6, background: C.orangeBg, color: C.orange, fontSize: 11, fontWeight: 700 }}>
+                            {u.service_type}
+                          </span>
+                        )}
                         {(() => {
                           const rc = u.role_config_id ? roleConfigs.find((r) => r.id === u.role_config_id) : null;
                           return rc ? <span style={{ padding: "2px 8px", borderRadius: 6, background: `${rc.color}20`, color: rc.color, fontSize: 11, fontWeight: 700 }}>{rc.label}</span> : null;
                         })()}
-                        <button onClick={() => setEditRole({ id: u.id, role: u.role, role_config_id: u.role_config_id ?? "" })} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, fontSize: 12, padding: 2 }}>✏️</button>
+                        {/* Le rôle des services annexes se gère depuis « Services Annexes »
+                            (le sélecteur de rôle ne couvre que les comptes agents). */}
+                        {u.role !== "service_externe" && (
+                          <button onClick={() => setEditRole({ id: u.id, role: u.role, role_config_id: u.role_config_id ?? "" })} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, fontSize: 12, padding: 2 }}>✏️</button>
+                        )}
                       </div>
                     )}
                   </td>
