@@ -8,6 +8,13 @@ if (!process.env.JWT_SECRET) {
   console.error("FATAL: JWT_SECRET env var is not set");
   process.exit(1);
 }
+// Tout repose sur ce secret (sessions, ticket MFA, cookie site-access, état
+// FranceConnect, dérivation de la clé MFA en repli). Un secret court/faible le
+// rend falsifiable hors-ligne : on refuse de démarrer en deçà de 32 caractères.
+if (process.env.JWT_SECRET.length < 32) {
+  console.error("FATAL: JWT_SECRET is too weak (< 32 characters) — set a high-entropy secret (e.g. `openssl rand -hex 32`)");
+  process.exit(1);
+}
 const JWT_SECRET = process.env.JWT_SECRET as string;
 
 export interface AuthRequest extends Request {

@@ -18,6 +18,15 @@ const _scopeCache = new Map<string, CommuneScope>();
  */
 export async function getCommuneScope(userId: string, role: string): Promise<CommuneScope> {
   if (role === "admin") return null;
+  // Seuls les agents mairie/instructeur disposent d'un périmètre commune. Les
+  // citoyens accèdent à leurs dossiers par user_id, les services externes par
+  // leur couverture de consultation (getServiceCommunes) : aucun ne doit hériter
+  // d'un périmètre via ce helper. Auparavant un citoyen retombait sur
+  // users.commune — un champ texte LIBRE choisi à l'inscription — ce qui lui
+  // donnait pour « périmètre » toute la commune déclarée. Renvoyer un set vide
+  // ferme par défaut toute route qui oublierait un requireRole (défense en
+  // profondeur contre les IDOR).
+  if (role !== "mairie" && role !== "instructeur") return new Set();
   const cached = _scopeCache.get(userId);
   if (cached !== undefined) return cached;
 

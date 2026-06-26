@@ -169,7 +169,11 @@ decisionsRouter.get("/pending-count", async (req: AuthRequest, res) => {
 });
 
 // ── GET /api/decisions/dossier/:dossierId ────────────────────────────────────
-decisionsRouter.get("/dossier/:dossierId", async (req: AuthRequest, res) => {
+// Réservé aux agents : la décision expose motif/prescriptions/conditions et
+// l'email du signataire. Sans requireRole, un citoyen (dont le « périmètre »
+// dérivait d'un champ commune librement déclaré) pouvait lire la décision de
+// n'importe quel dossier de la commune qu'il s'attribuait — IDOR inter-citoyens.
+decisionsRouter.get("/dossier/:dossierId", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { dossierId } = req.params as { dossierId: string };
   const dossier = await loadDossierForDossierId(req, res, dossierId);
   if (!dossier) return;
@@ -467,6 +471,20 @@ decisionsRouter.post("/:id/notify", requireRole("mairie", "instructeur", "admin"
   const { date_notification } = req.body as { date_notification?: string };
 
   if (!await loadDossierForDecision(req, res, id)) return;
+
+  // Garde d'état : on ne notifie qu'un arrêté SIGNÉ (idempotent si déjà notifié).
+  // Sans ce contrôle, un POST direct pouvait forcer status="notifie" sur un
+  // brouillon non signé et court-circuiter le circuit de signature.
+  const [current] = await db
+    .select({ status: decisions.status })
+    .from(decisions)
+    .where(eq(decisions.id, id))
+    .limit(1);
+  if (!current) return res.status(404).json({ error: "Décision introuvable" });
+  if (current.status !== "signe" && current.status !== "notifie") {
+    return res.status(409).json({ error: "L'arrêté doit être signé avant d'être notifié." });
+  }
+
   const [decision] = await db
     .update(decisions)
     .set({

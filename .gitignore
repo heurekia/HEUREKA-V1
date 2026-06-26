@@ -7,6 +7,11 @@ dist/
 *.log
 .tmp/
 
+# Pièces déposées par les pétitionnaires (données personnelles RGPD) — ne
+# doivent jamais être committées même par accident via un `git add .`.
+apps/api/uploads/
+uploads/
+
 # Whitelist CrowdSec réelle (IP de l'équipe) — jamais versionnée, seul le
 # .example l'est. Le fichier de prod vit côté VPS dans /etc/crowdsec/.
 infra/crowdsec/whitelists.local.yaml
