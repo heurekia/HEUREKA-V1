@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
@@ -72,23 +72,38 @@ export function DossiersScreen({ commune, onDossierClick }: { commune: string; o
     });
   };
 
-  // Re-fetch when commune or scope changes; compute deadlines on first load
+  // Recalcul des échéances (compute-deadlines) UNIQUEMENT quand la commune change
+  // ou sur refresh explicite — surtout pas à chaque bascule de portée (filtre
+  // client « Tous / Mes dossiers / Non assignés »), qui n'a aucun impact sur les
+  // délais et déclenchait jusqu'ici un job serveur complet à chaque clic.
+  const lastComputeKey = useRef<string | null>(null);
   useEffect(() => {
     setLoading(true);
     const params = new URLSearchParams({ commune, limit: "500" });
     if (scope === "mine") params.set("mine", "true");
     else if (scope === "unassigned") params.set("unassigned", "true");
-    fetch("/api/mairie/admin/compute-deadlines", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } })
-      .catch(() => {})
-      .finally(() => {
-        api.get<ApiDossier[]>(`/mairie/dossiers?${params.toString()}`)
-          .then(d => setApiDossiers(d))
-          .catch(() => {})
-          .finally(() => setLoading(false));
-      });
+    const loadList = () =>
+      api.get<ApiDossier[]>(`/mairie/dossiers?${params.toString()}`)
+        .then(d => setApiDossiers(d))
+        .catch(() => {})
+        .finally(() => setLoading(false));
+
+    const computeKey = `${commune}:${refreshKey}`;
+    if (lastComputeKey.current !== computeKey) {
+      lastComputeKey.current = computeKey;
+      fetch("/api/mairie/admin/compute-deadlines", { method: "POST", credentials: "include", headers: { "Content-Type": "application/json" } })
+        .catch(() => {})
+        .finally(() => { void loadList(); });
+    } else {
+      void loadList();
+    }
   }, [commune, scope, refreshKey]);
 
-  const allRows = apiDossiers.map(d => ({
+  // Mémoïsé : la transformation de jusqu'à 500 dossiers ne doit pas être refaite à
+  // chaque frappe dans la recherche ou changement d'onglet (seulement quand la
+  // source change). `dateLimiteRaw` est propagé pour éviter un find() O(n²) au
+  // rendu de chaque ligne (cf. isOverdue plus bas).
+  const allRows = useMemo(() => apiDossiers.map(d => ({
     id: d.id,
     numero: d.numero,
     pet: d.demandeur,
@@ -97,21 +112,29 @@ export function DossiersScreen({ commune, onDossierClick }: { commune: string; o
     statusLabel: STATUS_LABEL[d.status] ?? d.status,
     statusRaw: d.status,
     ech: fmtDate(d.date_limite_instruction),
+    dateLimiteRaw: d.date_limite_instruction ?? null,
     dateDepot: fmtDate(d.date_depot),
     instructeur: d.instructeur ?? null,
     // Tant que l'OCR/IA tourne sur une pièce, on grise la ligne et on bloque
     // l'ouverture — l'instructeur sera notifié quand tout sera prêt.
     ocrProcessing: !!d.ocr_processing,
-  }));
+  })), [apiDossiers]);
 
-  const tabCounts: Record<string, number> = Object.fromEntries(
-    tabs.map(t => [t, t === "Tous" ? allRows.length : allRows.filter(r => r.statusLabel === t).length])
-  );
-  const rows = allRows.filter(r => {
-    const matchTab = activeTab === "Tous" || r.statusLabel === activeTab;
-    const matchQ = !searchQ || r.numero.toLowerCase().includes(searchQ.toLowerCase()) || r.pet.toLowerCase().includes(searchQ.toLowerCase()) || r.addr.toLowerCase().includes(searchQ.toLowerCase());
-    return matchTab && matchQ;
-  });
+  // Comptes par onglet en UN seul passage O(n) (au lieu de O(onglets × n)).
+  const tabCounts = useMemo<Record<string, number>>(() => {
+    const counts: Record<string, number> = { Tous: allRows.length };
+    for (const r of allRows) counts[r.statusLabel] = (counts[r.statusLabel] ?? 0) + 1;
+    return counts;
+  }, [allRows]);
+
+  const rows = useMemo(() => {
+    const q = searchQ.trim().toLowerCase();
+    return allRows.filter(r => {
+      const matchTab = activeTab === "Tous" || r.statusLabel === activeTab;
+      const matchQ = !q || r.numero.toLowerCase().includes(q) || r.pet.toLowerCase().includes(q) || r.addr.toLowerCase().includes(q);
+      return matchTab && matchQ;
+    });
+  }, [allRows, activeTab, searchQ]);
 
   // N° Dossier + colonnes visibles (en excluant « instructeur » pour les
   // non-superviseurs, qui ne voient pas la colonne) + Actions.
@@ -299,7 +322,7 @@ export function DossiersScreen({ commune, onDossierClick }: { commune: string; o
                   <td style={{ padding: "12px 16px", fontSize: 13 }}>
                     {r.ech
                       ? (() => {
-                          const isOverdue = r.ech !== "—" && new Date(apiDossiers.find(d => d.id === r.id)?.date_limite_instruction ?? "") < new Date();
+                          const isOverdue = r.ech !== "—" && new Date(r.dateLimiteRaw ?? "") < new Date();
                           return <span style={{ color: isOverdue ? "#EF4444" : "#374151", fontWeight: isOverdue ? 600 : 400 }}>{r.ech}{isOverdue ? " ⚠" : ""}</span>;
                         })()
                       : <span style={{ color: "#CBD5E1" }}>—</span>
