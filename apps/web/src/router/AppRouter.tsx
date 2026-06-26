@@ -1,10 +1,12 @@
 import { Routes, Route, Navigate } from "react-router-dom";
 import { lazy, Suspense } from "react";
+import { QueryClientProvider } from "@tanstack/react-query";
 import { AdminPortalRedirect, CrossSubdomainRedirect, ProtectedRoute, PublicOnlyRoute } from "./guards";
 import { ActiverCompte } from "../pages/public/ActiverCompte";
 import { MairieLogin } from "../pages/mairie/MairieLogin";
 import { Seo } from "../components/Seo";
 import { PageLoader } from "../components/PageLoader";
+import { queryClient } from "../lib/queryClient";
 
 // Espaces applicatifs volumineux chargés à la demande : la page de login mairie
 // reste légère et ne tire pas tout MairieApp / ServiceExterneApp.
@@ -14,8 +16,12 @@ const ServiceExterneApp = lazy(() => import("../pages/service/ServiceExterneApp"
 const WWW = "https://www.heurekia.com";
 
 export function AppRouter() {
+  // QueryClientProvider scopé au portail PRO (chunk AppRouter, chargé à la
+  // demande) : le cache de données (§ 3.4) n'est PAS tiré dans le bundle d'entrée
+  // ni sur la landing www, qui n'en a pas l'usage. Adoption incrémentale par les
+  // écrans mairie/service — voir lib/queryClient.ts.
   return (
-    <>
+    <QueryClientProvider client={queryClient}>
       <Seo title="Espace professionnel" noindex />
       <Suspense fallback={<PageLoader />}>
       <Routes>
@@ -53,6 +59,6 @@ export function AppRouter() {
       <Route path="*" element={<Navigate to="/mairie/login" replace />} />
       </Routes>
       </Suspense>
-    </>
+    </QueryClientProvider>
   );
 }

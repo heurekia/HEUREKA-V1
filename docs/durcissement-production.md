@@ -167,14 +167,14 @@ gérées.
 ce n'est pas fait, pm2 lance toujours l'API via `tsx` (inchangé). NB : ne PAS
 passer en `cluster`/multi-instances avant le Palier 4 (état in-memory).
 
-### Palier 3 — frontend ✅ (hors cache react-query, optionnel)
+### Palier 3 — frontend ✅ (cache react-query : fondation posée, adoption incrémentale)
 
 | # | Chantier | État | Commit |
 |---|---|---|---|
 | 3.1 | Code splitting par portail/page (React.lazy + Suspense) + `manualChunks` | ✅ Fait | `perf(web): code splitting … manualChunks` |
 | 3.2 | `DossiersScreen` : mémoïsation (useMemo) + fin du O(n²) + recompute hors filtre | ✅ Fait | `perf(web): DossiersScreen …` |
 | 3.3 | Retrait de la dépendance morte `recharts` (-32 paquets) | ✅ Fait | `chore(web): retire … recharts` |
-| 3.4 | Cache de données (TanStack Query / SWR) sur les lectures | ⏳ À faire (optionnel) | — |
+| 3.4 | Cache de données react-query : fondation + 1er écran (cloche notifs) | 🚧 Fondation posée (adoption incrémentale) | `feat(web): fondation cache de données react-query …` |
 | 3.5 | Découpage interne de `MairieApp` : 8 écrans en `lazy()` + `<Suspense>` | ✅ Fait | `perf(web): découpage interne de MairieApp …` |
 
 **Impact mesuré (vite build).** Avant : un unique bundle de **2 541 Ko (693 Ko
@@ -194,6 +194,26 @@ chargent qu'à la navigation — `DossierDetailScreen` (~221 Ko) au clic sur un
 dossier, `ParametresScreen` (~121 Ko, qui embarque réglementation + courrier)
 sur `/parametres`. Deux imports morts retirés au passage (`ReglementationScreen`,
 `TemplateManagerPanel`/`CommuneLetterheadPanel`).
+
+**Cache de données react-query (3.4) — fondation.** Socle de cache des lectures
+posé pour une **adoption incrémentale** (écran par écran), pas un big-bang.
+- `lib/queryClient.ts` : client aux défauts **conservateurs** (staleTime 30 s,
+  `refetchOnWindowFocus` désactivé globalement, retry 1) — ne change pas le
+  comportement perçu au moment de l'introduction.
+- **Provider scopé au portail PRO** (`AppRouter`, chunk lazy), pas à la racine :
+  react-query + `query-core` sortent dans un chunk `vendor-react-query`
+  (**~10 Ko gzip**) chargé uniquement par les portails pro. La landing **www
+  reste à son poids d'origine** (le « vendor » fourre-tout n'embarque plus
+  react-query). Règle `manualChunks` dédiée (matcher AUSSI `query-core`, qui
+  porte le gros du code).
+- **1er écran migré (exemplaire)** : la cloche de notifications (`Topbar`).
+  `setInterval` + état manuel → `useQuery` (`refetchInterval` 30 s,
+  `refetchOnWindowFocus` réactivé spécifiquement) ; mutations « tout lu » / « lu »
+  en **mises à jour optimistes** du cache. Clé partagée dans `lib/queryKeys.ts`
+  (`NOTIFICATIONS_QUERY_KEY`) pour invalidation depuis d'autres composants.
+
+Prochaines cibles naturelles (quand utile) : lectures relues à chaque navigation
+(listes dossiers, tableaux de bord) — gain anti-flicker + dédup réseau.
 
 ## 5. Variables d'environnement introduites
 
