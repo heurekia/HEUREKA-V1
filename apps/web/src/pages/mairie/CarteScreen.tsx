@@ -78,7 +78,6 @@ export function CarteScreen({ commune, setCommune, communeInseeMap = COMMUNE_INS
           <div style={{ display: "flex", border: "1px solid #E2E8F0", borderRadius: 8, overflow: "hidden", background: "white" }}>
             {([
               { key: "ign-ortho", label: "Photo" },
-              { key: "carto-light", label: "Neutre" },
               { key: "ign-plan", label: "Plan IGN" },
             ] as { key: BaseLayer; label: string }[]).map(({ key, label }) => (
               <button key={key} onClick={() => setBaseLayer(key)} style={{

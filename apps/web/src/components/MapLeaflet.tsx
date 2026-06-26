@@ -52,7 +52,10 @@ const TYPE_LABELS: Record<string, string> = {
 const DEFAULT_CENTER: [number, number] = [47.354, 0.550];
 const DEFAULT_ZOOM = 13;
 
-export type BaseLayer = "osm" | "ign-plan" | "ign-ortho" | "carto-light";
+// Fonds 100 % IGN Géoplateforme (data.geopf.fr) — souverains. « ign-plan » = Plan
+// IGN v2 (carte rue), « ign-ortho » = photo aérienne (rendu naturel). Les anciens
+// fonds OpenStreetMap/CARTO (serveurs hors UE) ont été retirés.
+export type BaseLayer = "ign-plan" | "ign-ortho";
 
 export function MapLeaflet({
   dossiers,
@@ -66,7 +69,7 @@ export function MapLeaflet({
   clickMode = false,
   parcelLayer = false,
   pluZoneLayer = false,
-  baseLayer = "osm",
+  baseLayer = "ign-plan",
   highlightGeometry,
   highlightGeometries,
   positionMarker,
@@ -86,7 +89,7 @@ export function MapLeaflet({
   parcelLayer?: boolean;
   /** Overlay GPU PLU zone polygons (URBANISME.ZONE_URBA — Géoportail de l'Urbanisme) */
   pluZoneLayer?: boolean;
-  /** Base tile layer: osm | ign-plan | ign-ortho | carto-light */
+  /** Base tile layer (IGN Géoplateforme) : ign-plan (carte rue) | ign-ortho (photo aérienne) */
   baseLayer?: BaseLayer;
   /** GeoJSON geometry to highlight (e.g. found parcel polygon) */
   highlightGeometry?: object;
@@ -166,14 +169,12 @@ export function MapLeaflet({
       `https://data.geopf.fr/wmts?SERVICE=WMTS&REQUEST=GetTile&VERSION=1.0.0` +
       `&LAYER=${layer}&STYLE=normal&FORMAT=${format}` +
       `&TILEMATRIXSET=PM&TILEMATRIX={z}&TILEROW={y}&TILECOL={x}`;
-    if (baseLayer === "ign-plan") {
-      baseTileRef.current = L.tileLayer(WMTS("GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2", "image/png"), { attribution: "© IGN — Géoplateforme", maxZoom: 19, zIndex: 1 }).addTo(map);
-    } else if (baseLayer === "ign-ortho") {
+    if (baseLayer === "ign-ortho") {
       baseTileRef.current = L.tileLayer(WMTS("ORTHOIMAGERY.ORTHOPHOTOS", "image/jpeg"), { attribution: "© IGN — Géoplateforme", maxZoom: 21, zIndex: 1 }).addTo(map);
-    } else if (baseLayer === "carto-light") {
-      baseTileRef.current = L.tileLayer("https://{s}.basemaps.cartocdn.com/light_all/{z}/{x}/{y}{r}.png", { attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> © <a href="https://carto.com/">CARTO</a>', maxZoom: 19, zIndex: 1 }).addTo(map);
     } else {
-      baseTileRef.current = L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>', maxZoom: 19, zIndex: 1 }).addTo(map);
+      // Défaut : Plan IGN v2 (carte rue). Toute valeur autre que "ign-ortho"
+      // retombe ici — plus de fonds OpenStreetMap/CARTO hors UE.
+      baseTileRef.current = L.tileLayer(WMTS("GEOGRAPHICALGRIDSYSTEMS.PLANIGNV2", "image/png"), { attribution: "© IGN — Géoplateforme", maxZoom: 19, zIndex: 1 }).addTo(map);
     }
   }, [baseLayer]);
 

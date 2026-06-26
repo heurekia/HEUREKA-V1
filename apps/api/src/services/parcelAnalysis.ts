@@ -195,34 +195,45 @@ export interface ParcelAnalysis {
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
 
-// Nominatim (OpenStreetMap) geocoder — used as fallback when BAN returns nothing.
-// Returns coordinates in AddressResult shape; citycode is injected from the caller
-// since Nominatim doesn't return French INSEE codes.
-async function geocodeNominatim(address: string, citycode?: string): Promise<AddressResult | null> {
+// Géocodeur IGN Géoplateforme (data.geopf.fr) — repli SOUVERAIN quand la BAN
+// (api-adresse) ne renvoie rien. Remplace l'ancien repli Nominatim/OpenStreetMap
+// qui transférait l'adresse hors UE. Le service Géoplateforme est addok-based et
+// expose en plus un index POI (`index=address,poi`), ce qui rattrape certains
+// lieux-dits / points d'intérêt absents de l'index adresses strict. Réponse au
+// format GeoJSON (coordonnées [lng, lat] en WGS84), comme la BAN.
+async function geocodeIGN(address: string, citycode?: string): Promise<AddressResult | null> {
   try {
-    const params = new URLSearchParams({ q: address, format: "json", limit: "1", countrycodes: "fr", addressdetails: "1" });
-    const r = await fetch(`https://nominatim.openstreetmap.org/search?${params.toString()}`, {
+    const params = new URLSearchParams({ q: address, limit: "1", index: "address,poi" });
+    // L'index adresses accepte un filtre `citycode` (INSEE) pour contraindre la
+    // commune et éviter les homonymes de voie ; ignoré par l'index POI.
+    if (citycode) params.set("citycode", citycode);
+    const r = await fetch(`https://data.geopf.fr/geocodage/search?${params.toString()}`, {
       signal: AbortSignal.timeout(5000),
-      headers: { "User-Agent": "Heureka-Urbanisme/1.0" },
     });
     if (!r.ok) return null;
-    const data = await r.json() as Array<{
-      lat: string; lon: string; display_name: string; type: string; class: string;
-      address?: { postcode?: string; city?: string; town?: string; village?: string; municipality?: string };
-    }>;
-    const f = data?.[0];
+    const data = await r.json() as {
+      features?: Array<{
+        geometry: { coordinates: [number, number] };
+        properties: {
+          label?: string; name?: string; score?: number; citycode?: string;
+          postcode?: string; city?: string; type?: string;
+        };
+      }>;
+    };
+    const f = data.features?.[0];
     if (!f) return null;
-    const lat = parseFloat(f.lat);
-    const lng = parseFloat(f.lon);
-    if (isNaN(lat) || isNaN(lng)) return null;
+    const [lng, lat] = f.geometry.coordinates;
+    if (typeof lat !== "number" || typeof lng !== "number" || isNaN(lat) || isNaN(lng)) return null;
+    const p = f.properties;
     return {
-      label: f.display_name,
+      label: p.label ?? p.name ?? address,
       lat, lng,
-      citycode: citycode ?? "",
-      postcode: f.address?.postcode ?? "",
-      city: f.address?.city ?? f.address?.town ?? f.address?.village ?? f.address?.municipality ?? "",
-      score: 0.75,
-      type: f.type === "house" || f.type === "residential" ? "housenumber" : "street",
+      // citycode injecté depuis l'appelant si l'index POI ne le fournit pas.
+      citycode: p.citycode ?? citycode ?? "",
+      postcode: p.postcode ?? "",
+      city: p.city ?? "",
+      score: typeof p.score === "number" ? p.score : 0.75,
+      type: p.type ?? "street",
     };
   } catch {
     return null;
@@ -1454,20 +1465,21 @@ export async function analyseParcel(
       if (unc && unc.score >= 0.6) addr = unc;
     }
 
-    // Strategy 6: Nominatim (OpenStreetMap) — covers addresses not indexed in BAN
+    // Strategy 6: IGN Géoplateforme (souverain) — couvre les adresses/POI non
+    // indexés par la BAN stricte, sans transfert hors UE (ex-repli Nominatim).
     if (!addr) {
-      const nomQuery = hasStreetOnly ? streetOnly : query;
-      const nom = await geocodeNominatim(nomQuery, options?.citycode);
-      if (nom) {
+      const ignQuery = hasStreetOnly ? streetOnly : query;
+      const ign = await geocodeIGN(ignQuery, options?.citycode);
+      if (ign) {
         // Validate: if citycode is known, check result is in the right department
         if (options?.citycode) {
           const dept = options.citycode.slice(0, 2);
-          if (!nom.postcode || nom.postcode.startsWith(dept)) {
-            nom.citycode = options.citycode;
-            addr = nom;
+          if (!ign.postcode || ign.postcode.startsWith(dept)) {
+            ign.citycode = options.citycode;
+            addr = ign;
           }
         } else {
-          addr = nom;
+          addr = ign;
         }
       }
     }
