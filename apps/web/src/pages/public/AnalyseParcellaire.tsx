@@ -464,7 +464,6 @@ export function AnalyseParcellaire() {
         <div style={{ display: "flex", border: "1px solid #E5E7EB", borderRadius: 7, overflow: "hidden" }}>
           {([
             { key: "ign-ortho", label: "Photo" },
-            { key: "carto-light", label: "Neutre" },
             { key: "ign-plan", label: "Plan" },
           ] as { key: BaseLayer; label: string }[]).map(({ key, label }, i, arr) => (
             <button key={key} onClick={() => setBaseLayer(key)} style={{

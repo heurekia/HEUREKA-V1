@@ -72,7 +72,9 @@ app.use(helmet({
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'"],
       styleSrc: ["'self'", "'unsafe-inline'"],
-      imgSrc: ["'self'", "data:", "blob:", "https://data.geopf.fr", "https://*.basemaps.cartocdn.com", "https://*.tile.openstreetmap.org"],
+      // Tuiles cartographiques : IGN Géoplateforme uniquement (souverain). Les
+      // anciens fonds OpenStreetMap/CARTO (serveurs hors UE) ont été retirés.
+      imgSrc: ["'self'", "data:", "blob:", "https://data.geopf.fr"],
       connectSrc: ["'self'", "https://data.geopf.fr", "https://api-adresse.data.gouv.fr", "https://geo.api.gouv.fr"],
       // Vidéos embarquées dans les articles du Centre d'aide (YouTube/Vimeo).
       frameSrc: ["'self'", "https://www.youtube.com", "https://www.youtube-nocookie.com", "https://player.vimeo.com"],
