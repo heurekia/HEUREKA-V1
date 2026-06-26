@@ -549,7 +549,12 @@ export async function findParcelByRef(parcelle_id: string): Promise<ParcelResult
     const f = data.features?.[0];
     if (!f) return null;
     return {
-      parcelle_id: f.properties.id,
+      // L'API apicarto omet parfois `properties.id` : on retombe alors sur la
+      // référence demandée (déjà normalisée à 14 car. par l'appelant), comme le
+      // font les autres parseurs cadastraux. Sans ce fallback, parcelle_id reste
+      // vide et se propage à l'unité foncière (« Parcelle principale : — »,
+      // chips sans référence côté wizard citoyen).
+      parcelle_id: f.properties.id || parcelle_id,
       section: f.properties.section,
       numero: f.properties.numero,
       surface_m2: f.properties.contenance,
