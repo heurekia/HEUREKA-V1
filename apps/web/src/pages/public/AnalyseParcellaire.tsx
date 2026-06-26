@@ -45,11 +45,21 @@ type ParcelAnalysis = {
   municipality?: { is_rnu: boolean; libelle?: string } | null;
   scot?: string;
   synthesis?: ParcelSynthesisData;
+  // Agrégat « unité foncière » présent quand l'analyse porte sur plusieurs parcelles.
+  unite_fonciere?: {
+    parcelles: Array<{ parcelle_id: string; surface_m2?: number; commune?: string; zone_code?: string }>;
+    total_surface_m2: number;
+    zones_distinctes: boolean;
+  };
   data_sources: string[];
   warnings: string[];
 };
 
 type BanSuggestion = { label: string; lat: number; lng: number; citycode: string };
+
+// Une parcelle retenue dans l'unité foncière. On conserve la géométrie pour la
+// surbrillance carte (l'analyse agrégée ne renvoie que celle de la principale).
+type SelectedParcel = { parcelle_id: string; surface_m2: number; commune?: string; geometry?: object };
 
 // Au-delà de ce rayon de précision GPS (mètres), on ne fait PAS confiance à la
 // parcelle située sous le point : en ville les parcelles font souvent moins de
@@ -160,8 +170,19 @@ export function AnalyseParcellaire() {
   const { user, loading: authLoading } = useAuth();
   const [query, setQuery] = useState(searchParams.get("q") ?? "");
 
+  // Unité foncière : parcelles sélectionnées (clic carte successifs). La 1ère est
+  // la « principale ». L'analyse affichée agrège la sélection (surfaces additionnées).
+  const [selectedParcels, setSelectedParcels] = useState<SelectedParcel[]>([]);
+
   const handleDeposer = () => {
-    const wizardUrl = `/citoyen/nouvelle-demande${query.trim() ? `?q=${encodeURIComponent(query.trim())}` : ""}`;
+    const params = new URLSearchParams();
+    if (query.trim()) params.set("q", query.trim());
+    // Transmet la sélection multi-parcelles au wizard de dépôt.
+    if (selectedParcels.length > 0) {
+      params.set("parcelles", selectedParcels.map((p) => p.parcelle_id).join(","));
+    }
+    const qs = params.toString();
+    const wizardUrl = `/citoyen/nouvelle-demande${qs ? `?${qs}` : ""}`;
     if (!authLoading && user?.role === "citoyen") {
       navigate(wizardUrl);
     } else if (!authLoading) {
@@ -181,32 +202,87 @@ export function AnalyseParcellaire() {
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
 
-  const doAnalyse = useCallback(async (params: Record<string, string>) => {
+  // Helper bas-niveau : interroge /public/analyse et renvoie le résultat sans
+  // toucher à la sélection ni à l'analyse affichée (gère loading + erreur).
+  const fetchAnalyse = useCallback(async (params: Record<string, string>): Promise<ParcelAnalysis | null> => {
     setLoading(true);
     setError("");
-    setAnalysis(null);
     setSuggestions([]);
     setShowSuggestions(false);
     try {
       const qs = new URLSearchParams(params).toString();
-      const result = await api.get<ParcelAnalysis>(`/public/analyse?${qs}`);
-      setAnalysis(result);
-      setClickMode(false);
+      return await api.get<ParcelAnalysis>(`/public/analyse?${qs}`);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Erreur de recherche");
+      return null;
     } finally {
       setLoading(false);
     }
   }, []);
 
+  const parcelToSelected = (r: ParcelAnalysis): SelectedParcel | null =>
+    r.parcel
+      ? { parcelle_id: r.parcel.parcelle_id, surface_m2: r.parcel.surface_m2, commune: r.parcel.commune, geometry: r.parcel.geometry as object | undefined }
+      : null;
+
+  // Affiche l'analyse agrégée pour la sélection courante. `preResolved` évite un
+  // 2ᵉ appel réseau quand on vient justement de résoudre la parcelle unique.
+  const showSelection = useCallback(async (sel: SelectedParcel[], preResolved?: ParcelAnalysis) => {
+    if (sel.length === 0) { setAnalysis(null); return; }
+    if (sel.length === 1 && preResolved && preResolved.parcel?.parcelle_id === sel[0]!.parcelle_id) {
+      setAnalysis(preResolved);
+      return;
+    }
+    const result = await fetchAnalyse({ parcelles: sel.map((p) => p.parcelle_id).join(",") });
+    if (result) setAnalysis(result);
+  }, [fetchAnalyse]);
+
+  // Résout une parcelle puis REMPLACE la sélection par celle-ci (point de départ
+  // d'une éventuelle unité foncière). Utilisé par la recherche adresse/cadastre,
+  // les suggestions BAN et l'auto-analyse à l'arrivée (?q= / ?lat=&lng=).
+  const analyseAndSelect = useCallback(async (params: Record<string, string>) => {
+    const result = await fetchAnalyse(params);
+    if (!result) return;
+    setClickMode(false);
+    const sel = parcelToSelected(result);
+    setSelectedParcels(sel ? [sel] : []);
+    setAnalysis(result);
+  }, [fetchAnalyse]);
+
+  // Recherche par adresse / réf. cadastrale.
   const handleSearch = useCallback(() => {
     if (!query.trim()) return;
-    doAnalyse({ q: query.trim() });
-  }, [query, doAnalyse]);
+    void analyseAndSelect({ q: query.trim() });
+  }, [query, analyseAndSelect]);
 
-  const handleMapClick = useCallback((lat: number, lng: number) => {
-    doAnalyse({ lat: String(lat), lng: String(lng) });
-  }, [doAnalyse]);
+  // Clic carte → ajoute / retire la parcelle cliquée de l'unité foncière (toggle).
+  const handleMapClick = useCallback(async (lat: number, lng: number) => {
+    const result = await fetchAnalyse({ lat: String(lat), lng: String(lng) });
+    if (!result) return;
+    const clicked = parcelToSelected(result);
+    if (!clicked) {
+      // Pas de parcelle sous le point : on affiche tout de même l'analyse au point.
+      if (selectedParcels.length === 0) setAnalysis(result);
+      return;
+    }
+    setSelectedParcels((prev) => {
+      const exists = prev.some((p) => p.parcelle_id === clicked.parcelle_id);
+      const next = exists
+        ? prev.filter((p) => p.parcelle_id !== clicked.parcelle_id)
+        : [...prev, clicked];
+      void showSelection(next, result);
+      return next;
+    });
+  }, [fetchAnalyse, showSelection, selectedParcels.length]);
+
+  // Retire une parcelle depuis la liste « unité foncière ».
+  const removeParcel = useCallback((parcelleId: string) => {
+    setSelectedParcels((prev) => {
+      const next = prev.filter((p) => p.parcelle_id !== parcelleId);
+      void showSelection(next);
+      return next;
+    });
+  }, [showSelection]);
 
   // Auto-run when arriving from Accueil with ?q= (address) or ?lat/lng (geoloc)
   useEffect(() => {
@@ -227,11 +303,11 @@ export function AnalyseParcellaire() {
         // BAN est généralement plus fiable qu'un fix GPS bruité, et le citoyen
         // garde la main pour corriger (modifier l'adresse ou cliquer la carte).
         setQuery(q);
-        doAnalyse({ q: q.trim() });
+        analyseAndSelect({ q: q.trim() });
       } else if (accuracy != null && Number.isFinite(accuracy) && accuracy <= GOOD_ACCURACY_M) {
         // Pas d'adresse mais une position GPS précise : on pré-analyse la
         // parcelle sous le point, avec invitation à vérifier (bandeau ci-dessous).
-        doAnalyse({ lat, lng });
+        analyseAndSelect({ lat, lng });
       } else {
         // Ni adresse, ni position fiable : on laisse l'utilisateur confirmer.
         setClickMode(true);
@@ -240,7 +316,7 @@ export function AnalyseParcellaire() {
     }
     if (q?.trim()) {
       setQuery(q);
-      doAnalyse({ q: q.trim() });
+      analyseAndSelect({ q: q.trim() });
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -273,7 +349,7 @@ export function AnalyseParcellaire() {
     setQuery(s.label);
     setSuggestions([]);
     setShowSuggestions(false);
-    doAnalyse({ q: s.label });
+    analyseAndSelect({ q: s.label });
   };
 
   const zone = analysis?.plu_zone ?? (analysis?.db_zone ? {
@@ -284,6 +360,12 @@ export function AnalyseParcellaire() {
 
   const confidence = analysis?.buildability ? Math.round(analysis.buildability.confidence * 100) : null;
   const parcelGeometry = analysis?.parcel?.geometry as object | undefined;
+  // Surbrillance carte : toutes les parcelles sélectionnées (unité foncière) ;
+  // à défaut, la parcelle de l'analyse courante.
+  const selectedGeometries = selectedParcels.map((p) => p.geometry).filter(Boolean) as object[];
+  // Surface totale de l'unité foncière (analyse agrégée, ou somme locale en repli).
+  const totalSurfaceM2 = analysis?.unite_fonciere?.total_surface_m2
+    ?? (selectedParcels.length > 0 ? selectedParcels.reduce((s, p) => s + (p.surface_m2 || 0), 0) : null);
 
   // When arriving via "Me localiser", center the map on the GPS point (read from
   // the URL so it's available before the map mounts) rather than the France view.
@@ -376,7 +458,7 @@ export function AnalyseParcellaire() {
                   style={{ flex: 1, border: "none", background: "transparent", outline: "none", fontSize: 13, color: "#111827", padding: "10px 0" }}
                 />
                 {query && (
-                  <button onClick={() => { setQuery(""); setSuggestions([]); setAnalysis(null); setError(""); inputRef.current?.focus(); }}
+                  <button onClick={() => { setQuery(""); setSuggestions([]); setAnalysis(null); setSelectedParcels([]); setError(""); inputRef.current?.focus(); }}
                     style={{ border: "none", background: "none", cursor: "pointer", color: "#9CA3AF", padding: 0, fontSize: 16, lineHeight: 1 }}>×</button>
                 )}
               </div>
@@ -406,6 +488,7 @@ export function AnalyseParcellaire() {
 
             <p style={{ fontSize: 11, color: "#9CA3AF", marginTop: 7, lineHeight: 1.4 }}>
               Adresse libre · référence cadastrale (37018000AB0050) · ou cliquez sur la carte →
+              <br />Cliquez plusieurs parcelles pour analyser un <strong>groupement foncier</strong>.
             </p>
           </div>
 
@@ -420,6 +503,35 @@ export function AnalyseParcellaire() {
                   {analysis
                     ? <>Parcelle déterminée depuis votre localisation{geoPosition.accuracy != null ? ` (précision ±${Math.round(geoPosition.accuracy)} m)` : ""}. <strong>Vérifiez qu'il s'agit bien de votre terrain</strong> — au besoin, modifiez l'adresse ci-dessus ou cliquez sur la bonne parcelle.</>
                     : <>Position GPS approximative{geoPosition.accuracy != null ? ` (±${Math.round(geoPosition.accuracy)} m)` : ""}. <strong>Cliquez sur votre parcelle</strong> sur la carte pour l'analyser.</>}
+                </p>
+              </div>
+            )}
+
+            {/* Unité foncière — parcelles sélectionnées (groupement foncier) */}
+            {selectedParcels.length > 0 && (
+              <div style={{ background: "#F5F7FF", border: "1px solid #C7D2FE", borderRadius: 10, padding: "10px 14px", marginBottom: 12 }}>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+                  <p style={{ fontSize: 11, fontWeight: 700, color: "#4F46E5", textTransform: "uppercase", letterSpacing: "0.06em", margin: 0 }}>
+                    {selectedParcels.length > 1 ? `Unité foncière — ${selectedParcels.length} parcelles` : "Parcelle"}
+                  </p>
+                  {totalSurfaceM2 != null && (
+                    <span style={{ fontSize: 12, fontWeight: 700, color: "#312E81" }}>
+                      {Math.round(totalSurfaceM2).toLocaleString("fr-FR")} m² au total
+                    </span>
+                  )}
+                </div>
+                <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                  {selectedParcels.map((p) => (
+                    <span key={p.parcelle_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #C7D2FE", borderRadius: 999, padding: "3px 6px 3px 10px", fontSize: 11.5, color: "#312E81", fontWeight: 600 }}>
+                      {p.parcelle_id}
+                      {p.surface_m2 > 0 && <span style={{ color: "#6B7280", fontWeight: 400 }}>· {Math.round(p.surface_m2).toLocaleString("fr-FR")} m²</span>}
+                      <button onClick={() => removeParcel(p.parcelle_id)} title="Retirer cette parcelle"
+                        style={{ border: "none", background: "#EEF2FF", color: "#4F46E5", borderRadius: 999, width: 18, height: 18, cursor: "pointer", fontSize: 13, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}>×</button>
+                    </span>
+                  ))}
+                </div>
+                <p style={{ fontSize: 10.5, color: "#6B7280", margin: "8px 0 0", lineHeight: 1.4 }}>
+                  Cliquez d'autres parcelles sur la carte pour les ajouter au groupement, ou ×&nbsp;pour en retirer.
                 </p>
               </div>
             )}
@@ -532,7 +644,7 @@ export function AnalyseParcellaire() {
                     </p>
                     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
                       {analysis.available_zones.map(z => (
-                        <button key={z.zone_code} onClick={() => doAnalyse({ q: analysis.query, zone: z.zone_code })}
+                        <button key={z.zone_code} onClick={() => { void fetchAnalyse({ q: analysis.query, zone: z.zone_code }).then((r) => { if (r) setAnalysis(r); }); }}
                           style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid #C7D2FE", background: "#EEF2FF", color: "#4F46E5", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
                           {z.zone_code}
                         </button>
@@ -867,13 +979,14 @@ export function AnalyseParcellaire() {
             clickMode={clickMode}
             onMapClick={handleMapClick}
             highlightGeometry={parcelGeometry}
+            highlightGeometries={selectedGeometries}
             positionMarker={geoPosition}
             defaultCenter={mapCenter}
             defaultZoom={mapZoom}
           />
           {clickMode && (
             <div style={{ position: "absolute", bottom: 16, left: "50%", transform: "translateX(-50%)", background: "rgba(79,70,229,0.92)", color: "white", borderRadius: 20, padding: "7px 18px", fontSize: 12, fontWeight: 600, pointerEvents: "none", whiteSpace: "nowrap" }}>
-              Cliquez sur la parcelle à analyser
+              {selectedParcels.length > 0 ? "Cliquez d'autres parcelles à ajouter au groupement" : "Cliquez sur la parcelle à analyser"}
             </div>
           )}
         </div>

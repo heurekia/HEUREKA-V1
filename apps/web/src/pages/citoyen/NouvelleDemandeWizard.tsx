@@ -19,14 +19,25 @@ type NatureId =
   | "division_terrain"
   | "certificat";
 
+// Référence d'une parcelle du groupement foncier (unité foncière).
+interface ParcelleRefUI {
+  parcelle_id: string;
+  surface_m2?: number;
+  commune?: string;
+  zone_code?: string;
+}
+
 interface ParcelInfo {
   adresse?: string;
   commune?: string;
   zone?: string;       // zone_code  e.g. "UA"
   zoneLabel?: string;  // zone_label e.g. "Zone Urbaine Centrale"
-  parcelle?: string;   // parcelle_id e.g. "37218000AB0050"
-  surfaceTerrain?: number; // m²
+  parcelle?: string;   // parcelle_id principal e.g. "37218000AB0050"
+  surfaceTerrain?: number; // m² — total de l'unité foncière le cas échéant
   servitudes?: Array<{ categorie?: string; libelle?: string }>;
+  // Unité foncière : liste complète des parcelles (principale en tête). Présent
+  // quand la demande porte sur un groupement foncier (≥ 2 parcelles).
+  parcelles?: ParcelleRefUI[];
 }
 
 function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): ParcelInfo {
@@ -35,11 +46,15 @@ function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): Par
   type PluZone = { zone_code?: string; zone_label?: string };
   type Municipality = { libelle?: string };
 
+  type Unite = { parcelles?: ParcelleRefUI[]; total_surface_m2?: number };
+
   const address = result.address as Addr | undefined;
   const parcel = result.parcel as Parcel | undefined;
   const pluZone = result.plu_zone as PluZone | undefined;
   const municipality = result.municipality as Municipality | undefined;
   const servitudes = (result.servitudes as Array<{ categorie?: string; libelle?: string }>) ?? [];
+  const unite = result.unite_fonciere as Unite | undefined;
+  const parcelles = unite?.parcelles && unite.parcelles.length > 0 ? unite.parcelles : undefined;
 
   return {
     adresse: address?.label ?? fallbackAdresse,
@@ -47,8 +62,10 @@ function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): Par
     zone: pluZone?.zone_code,
     zoneLabel: pluZone?.zone_label,
     parcelle: parcel?.parcelle_id,
-    surfaceTerrain: parcel?.surface_m2,
+    // Surface = total de l'unité foncière quand un groupement est sélectionné.
+    surfaceTerrain: unite?.total_surface_m2 ?? parcel?.surface_m2,
     servitudes,
+    parcelles,
   };
 }
 
@@ -391,6 +408,8 @@ export function NouvelleDemandeWizard() {
   const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const qParam = searchParams.get("q") ?? "";
+  // Groupement foncier : liste d'ids cadastraux transmise par l'analyse parcellaire.
+  const parcellesParam = searchParams.get("parcelles") ?? "";
   const dossierParam = searchParams.get("dossier");
 
   const [step, setStep] = useState<Step>(1);
@@ -594,12 +613,26 @@ export function NouvelleDemandeWizard() {
   const [aiConsent, setAiConsent] = useState<boolean>(true);
   const [showAiDetails, setShowAiDetails] = useState<boolean>(false);
 
-  // ── Auto-search when wizard is opened with ?q= (from AnalyseParcellaire) ───
+  // ── Auto-search when wizard is opened with ?q= / ?parcelles= (from AnalyseParcellaire) ───
   useEffect(() => {
+    const ids = parcellesParam.split(",").map((s) => s.trim()).filter(Boolean);
+    // Unité foncière : on interroge avec la liste de parcelles pour récupérer
+    // l'agrégat (surface totale + liste). Sinon, recherche adresse classique.
+    if (ids.length > 0) {
+      const qs = new URLSearchParams();
+      if (qParam) qs.set("q", qParam);
+      qs.set("parcelles", ids.join(","));
+      setSearching(true);
+      api.get<Record<string, unknown>>(`/public/analyse?${qs.toString()}`)
+        .then((result) => { setParcel(mapAnalysis(result, qParam)); setParcelRaw(result); })
+        .catch(() => setParcel({ adresse: qParam, parcelle: ids[0], parcelles: ids.map((id) => ({ parcelle_id: id })) }))
+        .finally(() => setSearching(false));
+      return;
+    }
     if (!qParam) return;
     setSearching(true);
     api.get<Record<string, unknown>>(`/public/analyse?q=${encodeURIComponent(qParam)}`)
-      .then((result) => setParcel(mapAnalysis(result, qParam)))
+      .then((result) => { setParcel(mapAnalysis(result, qParam)); setParcelRaw(result); })
       .catch(() => setParcel({ adresse: qParam }))
       .finally(() => setSearching(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -656,6 +689,10 @@ export function NouvelleDemandeWizard() {
           servitudes: Array.isArray(meta.servitudes)
             ? (meta.servitudes as Array<{ categorie?: string; libelle?: string }>)
             : [],
+          // Restaure le groupement foncier saisi avant la mise en pause.
+          parcelles: Array.isArray(meta.parcelles)
+            ? (meta.parcelles as ParcelleRefUI[])
+            : undefined,
         };
         const resumedParcelRaw = (meta.parcel_analysis && typeof meta.parcel_analysis === "object")
           ? (meta.parcel_analysis as Record<string, unknown>)
@@ -905,6 +942,9 @@ export function NouvelleDemandeWizard() {
           natures,
           zone: parcel?.zone,
           parcelle: parcel?.parcelle,
+          // Unité foncière : liste complète des parcelles (groupement foncier).
+          // `parcelle` ci-dessus reste la principale (rétro-compat CERFA/courrier).
+          parcelles: parcel?.parcelles ?? undefined,
           servitudes: parcel?.servitudes ?? [],
           // Analyse parcellaire complète (zone PLU, surface terrain, ABF…) :
           // la mairie l'affiche directement sans re-fetcher /analyse-parcelle.
@@ -1343,7 +1383,9 @@ export function NouvelleDemandeWizard() {
                   <div
                     style={{ fontSize: 13, fontWeight: 700, color: "#15803D", marginBottom: 14 }}
                   >
-                    ✓ Parcelle analysée
+                    {parcel.parcelles && parcel.parcelles.length > 1
+                      ? `✓ Unité foncière analysée — ${parcel.parcelles.length} parcelles`
+                      : "✓ Parcelle analysée"}
                   </div>
                   <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                     {[
@@ -1352,9 +1394,9 @@ export function NouvelleDemandeWizard() {
                       ["🗺️ Zone PLU", parcel.zone
                         ? `${parcel.zone}${parcel.zoneLabel ? ` — ${parcel.zoneLabel}` : ""}`
                         : "Non déterminée"],
-                      ["📐 Référence parcelle", parcel.parcelle ?? "—"],
+                      [parcel.parcelles && parcel.parcelles.length > 1 ? "📐 Parcelle principale" : "📐 Référence parcelle", parcel.parcelle ?? "—"],
                       ...(parcel.surfaceTerrain
-                        ? [["🌿 Surface du terrain", `${parcel.surfaceTerrain.toLocaleString("fr-FR")} m²`] as [string, string]]
+                        ? [[parcel.parcelles && parcel.parcelles.length > 1 ? "🌿 Surface totale du terrain" : "🌿 Surface du terrain", `${parcel.surfaceTerrain.toLocaleString("fr-FR")} m²`] as [string, string]]
                         : []),
                     ].map(([label, value]) => (
                       <div key={label}>
@@ -1363,6 +1405,23 @@ export function NouvelleDemandeWizard() {
                       </div>
                     ))}
                   </div>
+
+                  {/* Détail des parcelles du groupement foncier */}
+                  {parcel.parcelles && parcel.parcelles.length > 1 && (
+                    <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #86EFAC" }}>
+                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>📋 Parcelles du groupement</div>
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+                        {parcel.parcelles.map((p) => (
+                          <span key={p.parcelle_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #86EFAC", borderRadius: 999, padding: "3px 10px", fontSize: 11.5, color: "#0F172A", fontWeight: 600 }}>
+                            {p.parcelle_id}
+                            {p.surface_m2 != null && p.surface_m2 > 0 && (
+                              <span style={{ color: "#64748b", fontWeight: 400 }}>· {Math.round(p.surface_m2).toLocaleString("fr-FR")} m²</span>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                  )}
 
                   {hasABF && (
                     <div

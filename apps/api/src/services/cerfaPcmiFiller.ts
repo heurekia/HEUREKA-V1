@@ -14,7 +14,8 @@
 //
 // Couverture v1 :
 //   - Demandeur personne physique (D1*, D3* adresse, D5GE1 email, D5A accept.)
-//   - Terrain (T2* adresse + cadastre principal — pas encore parcelles addl.)
+//   - Terrain (T2* adresse + cadastre principal + 2 parcelles additionnelles
+//     pour un groupement foncier ; au-delà de 3, liste jointe)
 //   - Description projet (C2ZD1) + cases destination principale
 //   - Surface plancher créée (W3ES2)
 //   - Engagement (E1L/E1D/E1S)
@@ -31,6 +32,7 @@
 import { readFile } from "node:fs/promises";
 import { PDFDocument } from "pdf-lib";
 import { CERFA_TEMPLATE_PATH as PCMI_TEMPLATE_PATH } from "../paths.js";
+import type { ParcelleRef } from "@heureka-v1/shared";
 
 // ── Types d'entrée ──────────────────────────────────────────────────────────
 
@@ -46,6 +48,10 @@ export interface CerfaPcmiDossier {
   commune: string | null;
   code_postal: string | null;
   parcelle: string | null;
+  // Unité foncière : liste complète des parcelles (principale en tête). Quand
+  // renseignée, les triplets cadastraux additionnels du CERFA (2 & 3) sont
+  // remplis. La parcelle principale reste pilotée par `parcelle` ci-dessus.
+  parcelles?: ParcelleRef[] | null;
   description: string | null;
   surface_plancher: string | null;
 }
@@ -175,6 +181,15 @@ const pcmiFieldMap = {
   terrain_section: "T2S_section",
   terrain_numero: "T2N_numero",
   terrain_superficie: "T2T_superficie",
+  // ── Terrain — parcelles additionnelles (groupement foncier, triplets 2 & 3) ──
+  terrain_prefixe2: "T2FP2_prefixe",
+  terrain_section2: "T2SP2_section",
+  terrain_numero2: "T2NP2_numero",
+  terrain_superficie2: "T2TP2_superficie",
+  terrain_prefixe3: "T2FP3_prefixe",
+  terrain_section3: "T2SP3_section",
+  terrain_numero3: "T2NP3_numero",
+  terrain_superficie3: "T2TP3_superficie",
   // ── Architecte / Mandataire ──
   architecte_nom: "H1N_nom",
   architecte_prenom: "H1P_prenom",
@@ -271,6 +286,13 @@ function splitAdresse(adresse: string | null | undefined): { numero: string; voi
  *  Si on ne reconnaît rien, on retombe sur la chaîne brute en section. */
 function parseParcelle(parcelle: string | null | undefined): { prefixe: string; section: string; numero: string } {
   if (!parcelle) return { prefixe: "", section: "", numero: "" };
+  // Référence cadastrale complète sur 14 caractères, sans séparateur — format
+  // renvoyé par l'API IGN et stocké côté dossier (ex. "37018000AB0123" =
+  // INSEE 37018 + préfixe 000 + section AB + n° 0123).
+  const compact = parcelle.trim().replace(/[\s.]/g, "").toUpperCase();
+  if (/^\d{5}[0-9A-Z]{9}$/.test(compact)) {
+    return { prefixe: compact.slice(5, 8), section: compact.slice(8, 10), numero: compact.slice(10) };
+  }
   const cleaned = parcelle.trim().replace(/[-_/]/g, " ").replace(/\s+/g, " ");
   const parts = cleaned.split(" ");
   // Format complet : 3 segments (préfixe 3 chiffres, section, numéro)
@@ -296,6 +318,16 @@ export function buildPcmiFieldValues(input: CerfaPcmiInput): PcmiFieldValues {
   const demCodePostal = cerfa.adresseDemandeurCodePostal ?? dossier.code_postal ?? "";
   const terAdr = splitAdresse(dossier.adresse);
   const cad = parseParcelle(dossier.parcelle);
+  // Parcelles additionnelles (groupement foncier). On retire la principale de la
+  // liste (déjà dans le 1er triplet) et on remplit les triplets 2 & 3 — le CERFA
+  // n'expose que 3 lignes ; au-delà, le pétitionnaire joint une liste.
+  const additionalParcelles = (dossier.parcelles ?? [])
+    .filter((p) => p.parcelle_id && p.parcelle_id !== dossier.parcelle)
+    .slice(0, 2);
+  const cad2 = additionalParcelles[0] ? parseParcelle(additionalParcelles[0].parcelle_id) : null;
+  const cad3 = additionalParcelles[1] ? parseParcelle(additionalParcelles[1].parcelle_id) : null;
+  const superficie2 = additionalParcelles[0]?.surface_m2 != null ? String(Math.round(additionalParcelles[0].surface_m2)) : "";
+  const superficie3 = additionalParcelles[1]?.surface_m2 != null ? String(Math.round(additionalParcelles[1].surface_m2)) : "";
 
   // Cas extension/surélévation : PCMI peut s'appliquer à du construit existant
   // (cf. wizard nature = "agrandissement"). Sinon construction nouvelle.
@@ -335,6 +367,15 @@ export function buildPcmiFieldValues(input: CerfaPcmiInput): PcmiFieldValues {
     terrain_prefixe: cad.prefixe,
     terrain_section: cad.section,
     terrain_numero: cad.numero,
+    // Parcelles additionnelles du groupement foncier (triplets 2 & 3).
+    terrain_prefixe2: cad2?.prefixe ?? "",
+    terrain_section2: cad2?.section ?? "",
+    terrain_numero2: cad2?.numero ?? "",
+    terrain_superficie2: superficie2,
+    terrain_prefixe3: cad3?.prefixe ?? "",
+    terrain_section3: cad3?.section ?? "",
+    terrain_numero3: cad3?.numero ?? "",
+    terrain_superficie3: superficie3,
     // ── Architecte ──
     architecte_nom: cerfa.architecteNom ?? "",
     architecte_prenom: cerfa.architectePrenom ?? "",

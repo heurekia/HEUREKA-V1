@@ -25,6 +25,7 @@ import { loadZoneRulesWithInheritance, pickMostSpecificRule } from "./zoneRules.
 import { resolveCommuneZoneIds } from "./communeZones.js";
 import { getCommunePluContext, findZoneAtPoint, findZonesForParcel, type PluCommuneContext } from "./pluZones.js";
 import { buildParcelSynthesis, type ParcelSynthesis } from "./parcelSynthesis.js";
+import type { ParcelleRef, UniteFonciere } from "@heureka-v1/shared";
 import { loadCommuneHeightLayer, resolveParcelHeight, heightFromPrescriptions, describeHeightCategory, type ParcelHeight } from "./heightLayer.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -185,6 +186,11 @@ export interface ParcelAnalysis {
   // Synthèse thématique bi-audience (citoyen + instructeur), transversale entre
   // documents (PLU + risques + servitudes). Dérivée des champs ci-dessus.
   synthesis?: ParcelSynthesis;
+  // Agrégat « unité foncière » : présent uniquement quand l'analyse porte sur
+  // plusieurs parcelles (groupement foncier). `result.parcel` reste la parcelle
+  // PRINCIPALE (zone/risques/servitudes résolus dessus) ; la constructibilité,
+  // elle, est recalculée sur la SURFACE TOTALE des parcelles.
+  unite_fonciere?: UniteFonciere;
 }
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
@@ -1268,7 +1274,16 @@ function geometryCentroid(geom: Geometry | null | undefined): { lat: number; lng
 
 export async function analyseParcel(
   query: string,
-  options?: { citycode?: string; zoneOverride?: string; coords?: { lat: number; lng: number } }
+  options?: {
+    citycode?: string;
+    zoneOverride?: string;
+    coords?: { lat: number; lng: number };
+    // Unité foncière : liste d'ids cadastraux (14 car.) du groupement. La parcelle
+    // principale (celle résolue depuis `query`/coords) peut y figurer ou non ; elle
+    // est de toute façon comptée. Les surfaces sont additionnées et la
+    // constructibilité recalculée sur le total.
+    uniteFonciere?: { parcelles: string[] };
+  }
 ): Promise<ParcelAnalysis> {
   const result: ParcelAnalysis = {
     query,
@@ -1853,6 +1868,60 @@ export async function analyseParcel(
     }
   }
 
+  // Step 5b: Unité foncière (groupement de parcelles contiguës) ───────────────
+  // Quand plusieurs parcelles sont sélectionnées, on les agrège en une seule
+  // unité foncière : `result.parcel` reste la PRINCIPALE (zone/risques/règles
+  // résolus dessus), mais on additionne les surfaces cadastrales pour recalculer
+  // la constructibilité sur le total. La zone de chaque parcelle est résolue au
+  // centroïde (best-effort) afin de signaler un groupement à cheval sur plusieurs
+  // zones PLU. NB : le bâti existant (`built_footprint_m2`) n'est mesuré que sur
+  // la parcelle principale — l'« emprise restante » reste donc une borne haute
+  // quand des bâtiments existent sur les parcelles additionnelles.
+  let uniteFonciereTotalM2: number | null = null;
+  if (options?.uniteFonciere && result.parcel) {
+    const principal = result.parcel;
+    const wanted = options.uniteFonciere.parcelles
+      .map((p) => p.replace(/[\s.]/g, "").toUpperCase())
+      .filter((p) => p.length >= 14);
+    const seen = new Set<string>([principal.parcelle_id]);
+    const refs: ParcelleRef[] = [{
+      parcelle_id: principal.parcelle_id,
+      surface_m2: principal.surface_m2,
+      commune: principal.commune,
+      zone_code: result.plu_zone?.zone_code,
+    }];
+    for (const id of wanted) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const p = await findParcelByRef(id);
+      if (!p) {
+        result.warnings.push(`Parcelle ${id} introuvable via l'API cadastre — non comptée dans l'unité foncière.`);
+        continue;
+      }
+      let zone_code: string | undefined;
+      const centre = geometryCentroid(p.geometry);
+      if (centre && p.code_insee) {
+        try {
+          const ctx = await communePluContext(p.code_insee);
+          zone_code = findZoneAtPoint(ctx.zones, centre.lat, centre.lng)?.zone_code;
+        } catch { /* zone facultative — ne bloque pas l'agrégation */ }
+      }
+      refs.push({ parcelle_id: p.parcelle_id, surface_m2: p.surface_m2, commune: p.commune, zone_code });
+    }
+    if (refs.length > 1) {
+      const total = refs.reduce((s, r) => s + (r.surface_m2 ?? 0), 0);
+      const zones = new Set(refs.map((r) => r.zone_code).filter(Boolean) as string[]);
+      const zones_distinctes = zones.size > 1;
+      uniteFonciereTotalM2 = total;
+      result.unite_fonciere = { parcelles: refs, total_surface_m2: total, zones_distinctes };
+      if (zones_distinctes) {
+        result.warnings.push(
+          `Les parcelles sélectionnées ne sont pas toutes sur la même zone PLU (${Array.from(zones).join(", ")}). La règle la plus stricte s'applique par partie — vérifiez la zone applicable à chaque emprise.`,
+        );
+      }
+    }
+  }
+
   // Step 6: Buildability calculation
   if (result.rules.length > 0 && result.parcel) {
     const calcVars: BuildabilityInput["calculationVariables"] = {
@@ -1917,7 +1986,9 @@ export async function analyseParcel(
       result.data_sources.push("BD TOPO® (bâtiments)");
     }
     result.buildability = calculateBuildability({
-      parcelSurfaceM2: result.parcel.surface_m2,
+      // Sur une unité foncière, la constructibilité (emprise, espaces verts) se
+      // calcule sur la surface TOTALE du groupement, pas la seule principale.
+      parcelSurfaceM2: uniteFonciereTotalM2 ?? result.parcel.surface_m2,
       existingFootprintM2: existingFootprintM2 ?? 0,
       calculationVariables: calcVars,
     });

@@ -11,6 +11,7 @@ import { db } from "../db.js";
 import { dossiers, dossier_pieces_jointes, users } from "@heureka-v1/db";
 import { getStorageProvider } from "./storage.js";
 import { fillPcmiCerfa, type CerfaPcmiData } from "./cerfaPcmiFiller.js";
+import type { ParcelleRef } from "@heureka-v1/shared";
 
 const PCMI_PIECE_CODE = "PCMI-FORMULAIRE";
 
@@ -19,7 +20,7 @@ const PCMI_PIECE_CODE = "PCMI-FORMULAIRE";
 function generatorFor(dossierType: string, metadata: Record<string, unknown>): null | {
   code: string;
   filename: string;
-  generate: (input: { user: { nom: string; prenom: string; email: string; telephone: string | null }; dossier: { adresse: string | null; commune: string | null; code_postal: string | null; parcelle: string | null; description: string | null; surface_plancher: string | null }; cerfa: CerfaPcmiData }) => Promise<Buffer>;
+  generate: (input: { user: { nom: string; prenom: string; email: string; telephone: string | null }; dossier: { adresse: string | null; commune: string | null; code_postal: string | null; parcelle: string | null; parcelles?: ParcelleRef[] | null; description: string | null; surface_plancher: string | null }; cerfa: CerfaPcmiData }) => Promise<Buffer>;
 } {
   // PCMI = permis de construire pour une maison individuelle. Depuis l'ajout
   // du type `permis_de_construire_mi` au niveau dossier, celui-ci suffit à
@@ -82,6 +83,7 @@ export async function attachCerfaToDossier(dossierId: string): Promise<{ pieceId
       commune: dossier.commune,
       code_postal: dossier.code_postal,
       parcelle: dossier.parcelle,
+      parcelles: (metadata.parcelles as ParcelleRef[] | undefined) ?? null,
       description: dossier.description,
       surface_plancher: dossier.surface_plancher,
     },

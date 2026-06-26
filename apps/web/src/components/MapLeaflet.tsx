@@ -68,6 +68,7 @@ export function MapLeaflet({
   pluZoneLayer = false,
   baseLayer = "osm",
   highlightGeometry,
+  highlightGeometries,
   positionMarker,
   defaultCenter,
   defaultZoom,
@@ -89,6 +90,9 @@ export function MapLeaflet({
   baseLayer?: BaseLayer;
   /** GeoJSON geometry to highlight (e.g. found parcel polygon) */
   highlightGeometry?: object;
+  /** Several GeoJSON geometries to highlight at once (e.g. multi-parcel unité
+   *  foncière selection). Takes precedence over `highlightGeometry` when non-empty. */
+  highlightGeometries?: object[];
   /** User's GPS position to display (dot + accuracy circle). Used by "Me localiser". */
   positionMarker?: { lat: number; lng: number; accuracy?: number } | null;
   /** Override initial map center [lat, lng] */
@@ -279,15 +283,25 @@ export function MapLeaflet({
     const map = mapRef.current;
     if (!map) return;
     if (highlightLayerRef.current) { highlightLayerRef.current.remove(); highlightLayerRef.current = null; }
-    if (!highlightGeometry) return;
+    // Plusieurs géométries (sélection multi-parcelles) priment sur la géométrie
+    // unique. On les emballe dans une FeatureCollection pour une seule couche
+    // GeoJSON (le cadrage `fitBounds` englobe alors toutes les parcelles).
+    const geoms = (highlightGeometries && highlightGeometries.length > 0)
+      ? highlightGeometries
+      : (highlightGeometry ? [highlightGeometry] : []);
+    if (geoms.length === 0) return;
     try {
-      highlightLayerRef.current = L.geoJSON(highlightGeometry as Parameters<typeof L.geoJSON>[0], {
+      const fc = {
+        type: "FeatureCollection",
+        features: geoms.map((g) => ({ type: "Feature", properties: {}, geometry: g })),
+      };
+      highlightLayerRef.current = L.geoJSON(fc as Parameters<typeof L.geoJSON>[0], {
         style: { fillColor: "#4F46E5", fillOpacity: 0.2, color: "#4F46E5", weight: 2.5, opacity: 0.9, dashArray: "5 4" },
       }).addTo(map);
       const bounds = highlightLayerRef.current.getBounds();
       if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60], maxZoom: 19 });
     } catch { /* invalid geometry — ignore */ }
-  }, [highlightGeometry]);
+  }, [highlightGeometry, highlightGeometries]);
 
   // User GPS position (from "Me localiser"): blue dot + accuracy circle so the
   // citizen can see how precise the fix is before trusting the parcel under it.

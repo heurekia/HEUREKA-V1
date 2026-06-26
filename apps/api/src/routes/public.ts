@@ -108,16 +108,28 @@ publicRouter.get("/analyse", analyseLimiter, optionalAuth, async (req: AuthReque
     const lng = req.query.lng !== undefined ? parseFloat(req.query.lng as string) : undefined;
     const citycode = req.query.citycode as string | undefined;
     const zoneOverride = req.query.zone as string | undefined;
+    // Groupement foncier : liste d'ids cadastraux séparés par virgule. Quand
+    // présent, l'analyse agrège les surfaces et recalcule la constructibilité sur
+    // l'unité foncière (la principale reste résolue depuis q/coords).
+    const parcellesParam = (req.query.parcelles as string | undefined)?.trim();
+    const parcelles = parcellesParam
+      ? parcellesParam.split(",").map((p) => p.trim()).filter(Boolean)
+      : [];
 
     const hasCoords = lat !== undefined && lng !== undefined && !isNaN(lat) && !isNaN(lng);
-    if (!q && !hasCoords) {
-      return res.status(400).json({ error: "Paramètre q ou (lat+lng) requis" });
+    if (!q && !hasCoords && parcelles.length === 0) {
+      return res.status(400).json({ error: "Paramètre q, (lat+lng) ou parcelles requis" });
     }
 
-    const analysis = await analyseParcel(q, {
+    // Si seul `parcelles` est fourni, la 1ère sert de parcelle principale (résolue
+    // par référence cadastrale via le chemin `isCadastralRef` de analyseParcel).
+    const principalQuery = q || (parcelles.length > 0 ? parcelles[0]! : "");
+
+    const analysis = await analyseParcel(principalQuery, {
       citycode,
       zoneOverride,
       coords: hasCoords ? { lat: lat!, lng: lng! } : undefined,
+      uniteFonciere: parcelles.length > 1 ? { parcelles } : undefined,
     });
 
     // Traçabilité : enregistrer l'adresse cherchée pour le super admin.

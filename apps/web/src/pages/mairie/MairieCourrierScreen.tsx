@@ -168,6 +168,9 @@ export interface DossierForCourrier {
   demandeur_civilite?: string;
   demandeur_adresse?: string;
   adresse?: string; commune?: string; code_postal?: string; parcelle?: string;
+  // Groupement foncier : toutes les références cadastrales (la balise `parcelle`
+  // les joint si présent).
+  parcelles?: Array<{ parcelle_id: string }>;
   surface_plancher?: string; description?: string | null;
   date_depot?: string; echeance?: string;
   date_completude?: string; date_delivrance?: string;
@@ -998,7 +1001,9 @@ export function CourrierModal({
       adresse_travaux: dossier.adresse ?? "—",
       commune: dossier.commune ?? "—",
       code_postal: dossier.code_postal ?? "—",
-      parcelle: dossier.parcelle ?? "—",
+      parcelle: (dossier.parcelles && dossier.parcelles.length > 1)
+        ? dossier.parcelles.map((p) => p.parcelle_id).join(", ")
+        : (dossier.parcelle ?? "—"),
       surface_plancher: dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—",
       // Projet
       description_projet: dossier.description || "—",
