@@ -214,19 +214,26 @@ export function AnalyseParcellaire() {
     const lat = searchParams.get("lat");
     const lng = searchParams.get("lng");
     // « Me localiser » : on arrive avec des coordonnées GPS (+ précision), et
-    // éventuellement l'adresse re-géocodée à afficher dans la barre. L'analyse
-    // s'appuie sur les coordonnées exactes, plus fiables que l'adresse.
+    // éventuellement l'adresse re-géocodée (BAN) à afficher dans la barre.
     if (lat && lng) {
-      if (q?.trim()) setQuery(q);
       const accParam = searchParams.get("acc");
       const accuracy = accParam != null ? Number(accParam) : undefined;
+      // Les coordonnées servent à centrer la carte et afficher le point de
+      // position ; elles ne pilotent plus forcément l'analyse.
       setGeoPosition({ lat: Number(lat), lng: Number(lng), accuracy });
-      if (accuracy != null && Number.isFinite(accuracy) && accuracy <= GOOD_ACCURACY_M) {
-        // Précision suffisante : on pré-analyse la parcelle sous le point, mais
-        // on invite l'utilisateur à vérifier (bandeau ci-dessous).
+      if (q?.trim()) {
+        // Une adresse a été retrouvée : on lance directement l'analyse dessus
+        // plutôt que de bloquer sur un clic. Le point « snappé » sur une adresse
+        // BAN est généralement plus fiable qu'un fix GPS bruité, et le citoyen
+        // garde la main pour corriger (modifier l'adresse ou cliquer la carte).
+        setQuery(q);
+        doAnalyse({ q: q.trim() });
+      } else if (accuracy != null && Number.isFinite(accuracy) && accuracy <= GOOD_ACCURACY_M) {
+        // Pas d'adresse mais une position GPS précise : on pré-analyse la
+        // parcelle sous le point, avec invitation à vérifier (bandeau ci-dessous).
         doAnalyse({ lat, lng });
       } else {
-        // Précision insuffisante : on laisse l'utilisateur confirmer sa parcelle.
+        // Ni adresse, ni position fiable : on laisse l'utilisateur confirmer.
         setClickMode(true);
       }
       return;
@@ -411,7 +418,7 @@ export function AnalyseParcellaire() {
                 <span style={{ fontSize: 14, flexShrink: 0 }}>📍</span>
                 <p style={{ fontSize: 12, color: "#3730A3", margin: 0, lineHeight: 1.45 }}>
                   {analysis
-                    ? <>Parcelle déterminée depuis votre position GPS{geoPosition.accuracy != null ? ` (précision ±${Math.round(geoPosition.accuracy)} m)` : ""}. <strong>Vérifiez sur la carte qu'il s'agit bien de votre terrain</strong> — au besoin, cliquez sur la bonne parcelle.</>
+                    ? <>Parcelle déterminée depuis votre localisation{geoPosition.accuracy != null ? ` (précision ±${Math.round(geoPosition.accuracy)} m)` : ""}. <strong>Vérifiez qu'il s'agit bien de votre terrain</strong> — au besoin, modifiez l'adresse ci-dessus ou cliquez sur la bonne parcelle.</>
                     : <>Position GPS approximative{geoPosition.accuracy != null ? ` (±${Math.round(geoPosition.accuracy)} m)` : ""}. <strong>Cliquez sur votre parcelle</strong> sur la carte pour l'analyser.</>}
                 </p>
               </div>
