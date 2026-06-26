@@ -13,6 +13,7 @@ import { requireAuth, requireRole, bumpTokenVersion, invalidateTokenVersionCache
 import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
 import { invalidatePermissions, invalidateAllPermissions } from "../middlewares/permissions.js";
 import { logAudit } from "../services/audit.js";
+import { isProfessionalRole, deactivateUser, eraseCitizenAccount } from "../services/accountLifecycle.js";
 import { helpAdminRouter } from "./help.js";
 
 export const superAdminRouter = Router();
@@ -1035,6 +1036,9 @@ superAdminRouter.get("/users", async (req, res) => {
       )`);
     }
     if (role) conditions.push(eq(users.role, role as "citoyen" | "mairie" | "instructeur" | "admin"));
+    // Masque les comptes pro désactivés (offboardés) : du point de vue de la
+    // gestion, ils sont « retirés ». La ligne reste en base (records légaux).
+    conditions.push(isNull(users.deactivated_at));
 
     const rows = await db
       .select({
@@ -1317,24 +1321,33 @@ superAdminRouter.delete("/users/:id", async (req, res) => {
     if (id === (req as AuthRequest).user?.id) {
       return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte." });
     }
-    const [target] = await db.select({ email: users.email, role: users.role }).from(users).where(eq(users.id, id)).limit(1);
-    if (target?.role === "admin") {
-      const adminRows = await db.select({ value: count() }).from(users).where(eq(users.role, "admin"));
-      if ((adminRows[0]?.value ?? 0) <= 1) {
-        return res.status(409).json({ error: "Impossible de supprimer le dernier administrateur." });
+    const [target] = await db.select({ email: users.email, role: users.role, deactivated_at: users.deactivated_at }).from(users).where(eq(users.id, id)).limit(1);
+    if (!target) return res.status(404).json({ error: "Utilisateur non trouvé" });
+
+    // Comptes PROFESSIONNELS (mairie/instructeur/admin/service) : OFFBOARDING par
+    // désactivation, jamais suppression. Ils portent des records légaux dont les
+    // FK NOT NULL interdisent l'effacement (decisions.instructeur_id = arrêté
+    // signé). On préserve la ligne et on coupe l'accès. Les CITOYENS, eux, sont
+    // effacés (RGPD art. 17). Centralisé dans accountLifecycle.
+    if (isProfessionalRole(target.role)) {
+      // Anti-lockout : ne pas désactiver le dernier administrateur ACTIF.
+      if (target.role === "admin") {
+        const [row] = await db.select({ value: count() }).from(users).where(and(eq(users.role, "admin"), isNull(users.deactivated_at)));
+        if ((row?.value ?? 0) <= 1) {
+          return res.status(409).json({ error: "Impossible de désactiver le dernier administrateur." });
+        }
       }
+      if (!target.deactivated_at) {
+        await deactivateUser(id, (req as AuthRequest).user?.id ?? null);
+        await logAudit(req, "admin_user_deactivated", { email: target.email });
+      }
+      return res.json({ success: true, action: "deactivated" });
     }
-    await db.transaction(async (tx) => {
-      // Nullify instructeur_id on dossiers assigned to this user (no cascade in schema)
-      await tx.update(dossiers).set({ instructeur_id: null }).where(eq(dossiers.instructeur_id, id));
-      // Delete pieces jointes uploaded by this user (notNull FK, cannot set null)
-      await tx.delete(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.user_id, id));
-      // Delete the user — cascades through user_id FKs (dossiers, notifications, etc.)
-      await tx.delete(users).where(eq(users.id, id));
-    });
-    invalidateTokenVersionCache(id);
-    await logAudit(req, "admin_user_deleted", { email: target?.email ?? null });
-    res.json({ success: true });
+
+    // Citoyen : effacement définitif (fichiers + pièces + cascade DB).
+    await eraseCitizenAccount(id);
+    await logAudit(req, "admin_user_deleted", { email: target.email });
+    res.json({ success: true, action: "deleted" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });

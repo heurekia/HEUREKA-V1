@@ -5,11 +5,11 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { users, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens, ai_usage_events, audit_logs } from "@heureka-v1/db";
 import { eq, and, gt, isNull, inArray } from "drizzle-orm";
-import { generateToken, requireAuth, bumpTokenVersion, invalidateTokenVersionCache, issueMfaTicket, verifyMfaTicket, type AuthRequest } from "../middlewares/auth.js";
+import { generateToken, requireAuth, bumpTokenVersion, issueMfaTicket, verifyMfaTicket, type AuthRequest } from "../middlewares/auth.js";
 import { getEffectivePermissions } from "../middlewares/permissions.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../services/mailer.js";
 import { logAudit } from "../services/audit.js";
-import { getStorageProvider } from "../services/storage.js";
+import { eraseCitizenAccount } from "../services/accountLifecycle.js";
 import {
   generateTotpSecret, totpKeyUri, totpQrDataUrl, verifyTotp,
   encryptSecret, decryptSecret, generateBackupCodes, consumeBackupCode,
@@ -201,6 +201,13 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
       await writeAudit(null, email, "login_failed", req);
       return res.status(401).json({ error: "Email ou mot de passe incorrect" });
     }
+    // Compte désactivé (offboarding d'un agent/admin) : connexion refusée même
+    // si le mot de passe est correct. Vérifié APRÈS le mot de passe pour ne pas
+    // révéler le statut du compte à une tentative non authentifiée.
+    if (user.deactivated_at) {
+      await writeAudit(user.id, user.email, "login_deactivated", req);
+      return res.status(403).json({ error: "Ce compte a été désactivé. Contactez votre administrateur." });
+    }
     // Email non confirmé → on bloque la session. Le code `email_not_verified`
     // permet au front de proposer le renvoi du lien de vérification.
     if (!user.email_verified_at) {
@@ -348,63 +355,18 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: "Mot de passe incorrect" });
 
-    // RGPD art. 17 (droit à l'effacement) : le simple DELETE en DB laisse les
-    // fichiers physiques (PDF, plans, photos) sur disque/S3 → fuite de données.
-    // On les supprime via l'abstraction StorageProvider (local ou S3-compatible).
-    //
-    // BEST-EFFORT STRICT : le nettoyage des fichiers ne doit JAMAIS faire échouer
-    // l'effacement du compte. Un provider mal configuré (getStorageProvider lève)
-    // ou une URL héritée malformée (keyFromUrl lève sur une URL vide/anormale) ne
-    // doit pas transformer la suppression en 500 et rendre le compte indéfiniment
-    // indélébile : l'effacement en base est la partie légalement critique ; les
-    // fichiers orphelins éventuels sont balayés par la purge planifiée. On logge
-    // donc l'incident (visible en prod) et on poursuit la suppression.
-    let filesDeleted = 0;
-    let filesFailed = 0;
-    try {
-      const storage = getStorageProvider();
-      const userPieces = await db
-        .select({ url: dossier_pieces_jointes.url })
-        .from(dossier_pieces_jointes)
-        .where(eq(dossier_pieces_jointes.user_id, user.id));
-      const keys = userPieces
-        .map((p) => p.url)
-        .filter((u): u is string => !!u)
-        .flatMap((u) => {
-          // Une URL anormale ne fait sauter QUE ce fichier (purge ultérieure),
-          // pas toute la suppression.
-          try { return [storage.keyFromUrl(u)]; } catch { return []; }
-        });
-      ({ deleted: filesDeleted, failed: filesFailed } = await storage.removeBulk(keys));
-      if (filesFailed > 0) {
-        console.warn(`[rgpd] suppression compte ${user.id} : ${filesFailed} fichiers en échec sur ${keys.length}`);
-      }
-    } catch (err) {
-      console.error(`[rgpd] nettoyage fichiers échoué pour le compte ${user.id} (suppression poursuivie) :`, err);
-    }
-
     await writeAudit(user.id, user.email, "account_deleted", req);
-    // Suppression transactionnelle dans l'ordre des dépendances. La cascade DB
-    // (dossiers.user_id ON DELETE CASCADE) emporte bien dossiers → messages →
-    // notifications, MAIS dossier_pieces_jointes.user_id est une FK NOT NULL
-    // SANS cascade (user_id n'y est qu'une dénormalisation du déposant ; la
-    // pièce « appartient » au dossier). Postgres vérifie cette contrainte sans
-    // attendre que la cascade via dossier_id ait effacé les pièces → le DELETE
-    // sur users échouait en violation de clé étrangère (500 « Erreur serveur »)
-    // dès que le citoyen avait déposé la moindre pièce — soit quasi tous les
-    // comptes réels, bloquant le droit à l'effacement (RGPD art. 17). On efface
-    // donc explicitement ses pièces d'abord, puis l'utilisateur (le DELETE users
-    // emporte alors les dossiers par cascade). Même pattern que la suppression
-    // côté super-admin (cf. superAdmin.ts DELETE /users/:id).
-    await db.transaction(async (tx) => {
-      await tx.delete(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.user_id, user.id));
-      await tx.delete(users).where(eq(users.id, user.id));
-    });
-    invalidateTokenVersionCache(user.id);
+    // Effacement RGPD art. 17 : fichiers + pièces + cascade DB. Centralisé dans
+    // accountLifecycle.eraseCitizenAccount pour rester STRICTEMENT identique à la
+    // suppression d'un citoyen côté super-admin — la divergence des deux
+    // implémentations avait laissé passer un 500 (la FK NOT NULL sans cascade
+    // dossier_pieces_jointes.user_id bloquait le DELETE users tant que les pièces
+    // n'étaient pas effacées d'abord ; cf. le commentaire dans le service).
+    const { files_deleted, files_failed } = await eraseCitizenAccount(user.id);
 
     res.clearCookie(cookieNameFor(req), COOKIE_CLEAR_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
-    res.json({ ok: true, files_deleted: filesDeleted, files_failed: filesFailed });
+    res.json({ ok: true, files_deleted, files_failed });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -733,6 +695,11 @@ authRouter.post("/mfa/login-verify", mfaVerifyLimiter, async (req: AuthRequest, 
     if (!uid) return res.status(401).json({ error: "Session de connexion expirée. Recommencez." });
     const [user] = await db.select().from(users).where(eq(users.id, uid)).limit(1);
     if (!user || !user.mfa_enabled || !user.mfa_secret) return res.status(401).json({ error: "Configuration MFA invalide." });
+    // Compte désactivé entre l'étape mot de passe et l'étape MFA : on refuse.
+    if (user.deactivated_at) {
+      await writeAudit(user.id, user.email, "login_deactivated", req);
+      return res.status(403).json({ error: "Ce compte a été désactivé. Contactez votre administrateur." });
+    }
 
     let ok = verifyTotp(String(code), decryptSecret(user.mfa_secret));
     if (!ok) {

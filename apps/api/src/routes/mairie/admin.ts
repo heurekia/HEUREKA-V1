@@ -1,10 +1,12 @@
 import { Router } from "express";
 import { db } from "../../db.js";
 import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_documents, document_communes } from "@heureka-v1/db";
-import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
+import { eq, sql, ilike, inArray, and, ne, isNull } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
-import { requireRole, bumpTokenVersion, invalidateTokenVersionCache } from "../../middlewares/auth.js";
+import { requireRole, bumpTokenVersion } from "../../middlewares/auth.js";
 import { requirePermission, invalidatePermissions } from "../../middlewares/permissions.js";
+import { logAudit } from "../../services/audit.js";
+import { isProfessionalRole, deactivateUser, eraseCitizenAccount } from "../../services/accountLifecycle.js";
 import { getCommuneScope, communeInScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
 import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
@@ -144,6 +146,9 @@ adminRouter.get("/admin/users", requirePermission("utilisateurs.read"), async (r
       // d'une mairie (où l'on ne gère que les rôles mairie / instructeur).
       ne(users.role, "citoyen"),
       ne(users.role, "admin"),
+      // Masque les agents désactivés (offboardés) : ils sont « retirés » de la
+      // gestion mairie ; la ligne reste en base pour les records légaux.
+      isNull(users.deactivated_at),
     ));
     res.json(rows);
   } catch (err) {
@@ -250,15 +255,27 @@ adminRouter.delete("/admin/users/:id", requireRole("mairie", "admin"), requirePe
     const reqUser = req.user as { id: string; role: string; commune?: string };
     const userId = req.params.id as string;
     if (userId === reqUser.id) return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte" });
-    // "mairie" users can only delete agents in their commune
-    if (reqUser.role === "mairie") {
-      const [target] = await db.select({ commune: users.commune }).from(users).where(eq(users.id, userId));
-      if (!target || target.commune?.toLowerCase() !== (reqUser.commune ?? "").toLowerCase()) {
-        return res.status(403).json({ error: "Accès refusé" });
-      }
+    const [target] = await db
+      .select({ commune: users.commune, role: users.role, email: users.email, deactivated_at: users.deactivated_at })
+      .from(users)
+      .where(eq(users.id, userId));
+    if (!target) return res.status(404).json({ error: "Utilisateur introuvable" });
+    // "mairie" users can only manage agents in their own commune
+    if (reqUser.role === "mairie" && target.commune?.toLowerCase() !== (reqUser.commune ?? "").toLowerCase()) {
+      return res.status(403).json({ error: "Accès refusé" });
     }
-    await db.delete(users).where(eq(users.id, userId));
-    invalidateTokenVersionCache(userId);
+    // Les comptes gérés ici sont des agents (mairie/instructeur) : OFFBOARDING par
+    // désactivation — on ne supprime JAMAIS un agent (arrêtés signés, courriers… =
+    // records légaux). Filet de sécurité : un éventuel citoyen serait effacé.
+    if (isProfessionalRole(target.role)) {
+      if (!target.deactivated_at) {
+        await deactivateUser(userId, reqUser.id);
+        await logAudit(req, "admin_user_deactivated", { email: target.email });
+      }
+    } else {
+      await eraseCitizenAccount(userId);
+      await logAudit(req, "admin_user_deleted", { email: target.email });
+    }
     res.status(204).send();
   } catch (err) {
     console.error(err);

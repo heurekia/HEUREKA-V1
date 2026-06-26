@@ -138,7 +138,7 @@ export async function assignInstructeur(
   }
 
   const [target] = await db
-    .select({ id: users.id, role: users.role, prenom: users.prenom, nom: users.nom })
+    .select({ id: users.id, role: users.role, prenom: users.prenom, nom: users.nom, deactivated_at: users.deactivated_at })
     .from(users)
     .where(eq(users.id, effectiveId))
     .limit(1);
@@ -148,6 +148,10 @@ export async function assignInstructeur(
       "INVALID_ASSIGNEE",
       "Cet utilisateur ne peut pas être désigné comme instructeur",
     );
+  }
+  // Un agent désactivé (offboardé) ne peut plus se voir attribuer de dossier.
+  if (target.deactivated_at) {
+    throw new WorkflowError("INVALID_ASSIGNEE", "Cet agent a été désactivé et ne peut pas être assigné.");
   }
 
   if (before.instructeur_id === effectiveId) {
