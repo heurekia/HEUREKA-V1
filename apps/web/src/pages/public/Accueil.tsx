@@ -180,17 +180,17 @@ export function Accueil() {
         jsonLd={[ORGANIZATION_JSON_LD, WEBSITE_JSON_LD]}
       />
       {/* ── Hero ── */}
-      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-20 pb-10 flex items-center justify-between gap-10">
+      <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pt-12 sm:pt-20 pb-10 flex items-center justify-between gap-10">
         <div className="max-w-xl">
-          <h1 className="text-5xl font-black text-[#000020] leading-tight mb-6 tracking-tight">
-            L'urbanisme<br />
+          <h1 className="text-4xl sm:text-5xl font-black text-[#000020] leading-tight mb-6 tracking-tight">
+            L'urbanisme{" "}<br className="hidden sm:block" />
             simplifié,{" "}
             <span className="text-heureka-500">pour tous.</span>
           </h1>
           <p className="text-lg text-gray-500 leading-relaxed mb-8">
-            Comprenez les règles applicables à votre projet,<br />
-            déposez vos demandes et suivez leur avancement,<br />
-            simplement.
+            Comprenez les règles applicables à votre projet,<br className="hidden sm:block" />
+            {" "}déposez vos demandes et suivez leur avancement,<br className="hidden sm:block" />
+            {" "}simplement.
           </p>
           <div className="flex items-center gap-3 flex-wrap">
             <button
@@ -220,25 +220,25 @@ export function Accueil() {
 
       {/* ── Analyser une adresse ── */}
       <section className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-20">
-        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 flex flex-wrap items-center gap-6">
+        <div className="bg-white rounded-2xl border border-gray-200 shadow-sm p-6 flex flex-col sm:flex-row sm:flex-wrap items-stretch sm:items-center gap-6">
           {/* Icon + text */}
-          <div className="flex items-center gap-4 flex-shrink-0">
+          <div className="flex items-center gap-4 sm:flex-shrink-0">
             <div className="w-14 h-14 rounded-2xl bg-indigo-50 flex items-center justify-center flex-shrink-0">
               <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="#4F46E5" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                 <path d="M21 10c0 7-9 13-9 13s-9-6-9-13a9 9 0 0118 0z" /><circle cx="12" cy="10" r="3" />
               </svg>
             </div>
-            <div>
+            <div className="min-w-0">
               <h2 className="text-base font-bold text-[#000020]">Analyser une adresse</h2>
               <p className="text-sm text-gray-500 mt-0.5">
-                Obtenez les règles d'urbanisme applicables<br />et une première analyse de votre projet.
+                Obtenez les règles d'urbanisme applicables<br className="hidden sm:block" /> et une première analyse de votre projet.
               </p>
             </div>
           </div>
 
           {/* Input + button */}
           <div className="flex flex-col flex-1 gap-2 min-w-0">
-           <div className="flex gap-3">
+           <div className="flex flex-col sm:flex-row gap-3">
             <div className="relative flex-1">
               <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-4 bg-gray-50">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -277,6 +277,8 @@ export function Accueil() {
               )}
             </div>
 
+            {/* Boutons d'action — regroupés pour passer sous l'input sur mobile */}
+            <div className="flex gap-3">
             {/* Bouton « Me localiser » (icône) — avant « Analyser mon projet » */}
             <button
               type="button"
@@ -299,13 +301,14 @@ export function Accueil() {
 
             <button
               onClick={() => (query.trim() || geoCoords) && goAnalyse(query)}
-              className="flex-shrink-0 flex items-center gap-2 bg-heureka-500 hover:bg-heureka-600 text-white px-6 py-3.5 rounded-xl font-semibold text-sm transition-colors"
+              className="flex-1 sm:flex-none flex-shrink-0 flex items-center justify-center gap-2 bg-heureka-500 hover:bg-heureka-600 text-white px-6 py-3.5 rounded-xl font-semibold text-sm transition-colors whitespace-nowrap"
             >
               Analyser mon projet
               <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round">
                 <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
               </svg>
             </button>
+            </div>
            </div>
 
            {geoError && <span className="text-xs text-amber-600">{geoError}</span>}
