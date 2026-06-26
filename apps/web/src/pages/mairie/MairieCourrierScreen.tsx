@@ -259,8 +259,8 @@ function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]
   return (
     <div>
       {pages.map((page, i) => (
-        <div key={page.id} style={{
-          position: "relative", width: PAGE_W, height: PAGE_H, background: "white",
+        <div key={page.id} className="courrier-paper" style={{
+          position: "relative", width: PAGE_W, height: PAGE_H, background: "white", boxShadow: "0 2px 16px rgba(15,23,42,0.12)",
           ...(i < pages.length - 1 ? { marginBottom: 32, pageBreakAfter: "always", breakAfter: "page" } : {}),
         }}>
           {hasLH && (
@@ -342,7 +342,7 @@ function CourrierPrintPreview({ html, letterhead, extraHtml, editable = false, o
   const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
   const hasFooter = !!letterhead.footer_text;
   return (
-    <div style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" }}>
+    <div className="courrier-paper" style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B", boxShadow: "0 2px 16px rgba(15,23,42,0.12)" }}>
       {hasHeader && (
         <div className="lh-print-header" style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
           {letterhead.letterhead_logo && (
@@ -953,6 +953,17 @@ export function CourrierModal({
             overflow: visible !important;
             flex: none !important;
             height: auto !important;
+            background: white !important;
+            padding: 0 !important;
+            display: block !important;
+          }
+          /* La « feuille » d'aperçu redevient pleine largeur, sans ombre, à l'impression */
+          .courrier-sheet {
+            width: auto !important;
+            max-width: none !important;
+          }
+          .courrier-paper {
+            box-shadow: none !important;
           }
 
           /* Letterhead header: fixed at top of every page */
@@ -1167,9 +1178,9 @@ export function CourrierModal({
           </div>
 
           {/* Print preview */}
-          <div className="print-area" style={{ flex: 1, minWidth: 0, overflow: "auto" }}>
+          <div className="print-area" style={{ flex: 1, minWidth: 0, overflow: "auto", background: "#EEF1F5", display: "flex", justifyContent: "center", alignItems: "flex-start", padding: "24px 20px" }}>
             {(selected || bodyOverride) ? (
-              <div style={{ position: "relative" }}>
+              <div className="courrier-sheet" style={{ position: "relative", width: PAGE_W, flexShrink: 0 }}>
                 <CourrierPrintPreview html={effectiveBody} letterhead={letterhead} extraHtml={insertedMentionsHtml || undefined} editable={isEditingBody} onBodyChange={handleBodyChange} />
                 {/* Draggable signature */}
                 {showSig && (appliedSig || signataire?.signature_image || letterhead.signature_image) && (
