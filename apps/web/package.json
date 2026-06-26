@@ -27,8 +27,7 @@
     "react-helmet-async": "^3.0.0",
     "react-pdf": "^9",
     "react-rnd": "^10.5.3",
-    "react-router-dom": "^7.6.2",
-    "recharts": "^2.15.3"
+    "react-router-dom": "^7.6.2"
   },
   "devDependencies": {
     "@types/react": "^19.1.2",
