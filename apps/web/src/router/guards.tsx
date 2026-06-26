@@ -65,8 +65,17 @@ export function ProtectedRoute({
   deniedPath?: string;
 }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
   if (loading) return <Spinner />;
-  if (!user) return <Navigate to={loginPath} replace />;
+  if (!user) {
+    // Mémorise la destination demandée (ex. /citoyen/nouvelle-demande) dans
+    // ?next pour y revenir après connexion plutôt que d'atterrir sur l'accueil
+    // de l'espace. La page de connexion citoyen lit et honore ce paramètre ;
+    // les portails mairie/admin l'ignorent sans dommage.
+    const next = `${location.pathname}${location.search}`;
+    const to = `${loginPath}${loginPath.includes("?") ? "&" : "?"}next=${encodeURIComponent(next)}`;
+    return <Navigate to={to} replace />;
+  }
   if (roles && !roles.includes(user.role)) return <Navigate to={deniedPath} replace />;
   return <>{children}</>;
 }

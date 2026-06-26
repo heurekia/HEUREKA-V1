@@ -3,13 +3,14 @@ import { db } from "../db.js";
 import { calendarEvents } from "@heureka-v1/db";
 import { eq, and, gte, lte } from "drizzle-orm";
 import { requireAuth, type AuthRequest } from "../middlewares/auth.js";
+import { requirePermission } from "../middlewares/permissions.js";
 
 export const calendrierRouter = Router();
 
 calendrierRouter.use(requireAuth);
 
 // ── Événements entre deux dates ──
-calendrierRouter.get("/", async (req: AuthRequest, res) => {
+calendrierRouter.get("/", requirePermission("calendrier.read"), async (req: AuthRequest, res) => {
   try {
     const { debut, fin } = req.query;
     // Filtrage strict par user_id : un utilisateur ne voit que ses propres
@@ -41,7 +42,7 @@ calendrierRouter.get("/", async (req: AuthRequest, res) => {
   }
 });
 
-calendrierRouter.post("/", async (req: AuthRequest, res) => {
+calendrierRouter.post("/", requirePermission("calendrier.edit"), async (req: AuthRequest, res) => {
   try {
     const { title, date, end_date, type, dossier_id, description, all_day } = req.body;
     if (!title || !date || !type) {

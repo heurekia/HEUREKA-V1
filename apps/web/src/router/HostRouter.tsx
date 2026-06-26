@@ -1,9 +1,16 @@
+import { lazy, Suspense } from "react";
 import { useLocation } from "react-router-dom";
-import { PublicRouter } from "./PublicRouter";
-import { AppRouter } from "./AppRouter";
-import { AdminRouter } from "./AdminRouter";
 import { ADMIN_HOST } from "./adminBase";
 import { ComingSoonGate } from "../components/ComingSoonGate";
+import { PageLoader } from "../components/PageLoader";
+
+// Code splitting par PORTAIL : chaque routeur (et tout ce qu'il importe) part
+// dans un chunk distinct, chargé à la demande. Un visiteur de www ne télécharge
+// plus le code de l'espace mairie ni du portail super-admin (SuperAdminApp fait
+// ~8000 lignes à lui seul), et inversement.
+const PublicRouter = lazy(() => import("./PublicRouter").then((m) => ({ default: m.PublicRouter })));
+const AppRouter = lazy(() => import("./AppRouter").then((m) => ({ default: m.AppRouter })));
+const AdminRouter = lazy(() => import("./AdminRouter").then((m) => ({ default: m.AdminRouter })));
 
 const APP_PREFIXES = ["/mairie", "/service"];
 
@@ -22,13 +29,17 @@ export function HostRouter() {
   const hostname = window.location.hostname;
   const { pathname } = useLocation();
 
-  if (hostname === ADMIN_HOST) return <AdminRouter />;
-  if (hostname === "app.heurekia.com") return <AppRouter />;
-  if (hostname === "www.heurekia.com") return <PublicPortal />;
-
+  let portal: React.ReactNode;
+  if (hostname === ADMIN_HOST) portal = <AdminRouter />;
+  else if (hostname === "app.heurekia.com") portal = <AppRouter />;
+  else if (hostname === "www.heurekia.com") portal = <PublicPortal />;
   // localhost: route by path prefix. Le portail admin est servi sous /admin
   // (cf. ADMIN_BASE) pour cohabiter avec www/app sur une seule origine.
-  if (pathname === "/admin" || pathname.startsWith("/admin/")) return <AdminRouter />;
-  const isAppPath = APP_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
-  return isAppPath ? <AppRouter /> : <PublicPortal />;
+  else if (pathname === "/admin" || pathname.startsWith("/admin/")) portal = <AdminRouter />;
+  else {
+    const isAppPath = APP_PREFIXES.some((p) => pathname === p || pathname.startsWith(p + "/"));
+    portal = isAppPath ? <AppRouter /> : <PublicPortal />;
+  }
+
+  return <Suspense fallback={<PageLoader />}>{portal}</Suspense>;
 }

@@ -1,25 +1,34 @@
-import { useState, useRef, useEffect, useCallback, useMemo } from "react";
+import { useState, useRef, useEffect, useCallback, useMemo, lazy, Suspense } from "react";
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams, useSearchParams } from "react-router-dom";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { api, ApiError } from "../../lib/api";
+import { NOTIFICATIONS_QUERY_KEY } from "../../lib/queryKeys";
 import { normalizeForSearch } from "../../lib/utils";
-import { useAuth } from "../../hooks/useAuth";
-import { TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
-import { fmtDate, COMMUNE_INSEE, notifIcon, notifColor, relTime, type ApiNotif, type ApiDossier, type DossierInfo, type WorkflowMeta, type DelaiBreakdown } from "./shared";
+import { useAuth, hasPermission } from "../../hooks/useAuth";
+import { MfaSettings } from "../../components/MfaSettings";
+import { fmtDate, COMMUNE_INSEE, notifIcon, notifColor, relTime, resolveCommune, type ApiNotif, type ApiDossier, type DossierInfo, type WorkflowMeta, type DelaiBreakdown } from "./shared";
 import {
   HomeIcon, FolderIcon, CalendarIcon, MessageIcon, MapIcon, ChartIcon, SettingsIcon,
   BellIcon, SearchIcon, PlusIcon, HelpIcon, BuildingIcon, ChevronDownIcon,
   PenIcon,
 } from "./ui";
-import { DashboardScreen } from "./DashboardScreen";
-import { DossiersScreen } from "./DossiersScreen";
-import { MessageScreen } from "./MessageScreen";
-import { CarteScreen } from "./CarteScreen";
-import { ReglementationScreen } from "./ReglementationScreen";
-import { DossierDetailScreen } from "./DossierDetailScreen";
-import { CalendrierScreen } from "./CalendrierScreen";
-import { StatistiquesScreen } from "./StatistiquesScreen";
 import { NouveauDossierModal } from "./NouveauDossierModal";
-import { ParametresScreen } from "./ParametresScreen";
+import { PageLoader } from "../../components/PageLoader";
+
+// Écrans mairie chargés à la demande (chacun dans son propre chunk) : la coquille
+// MairieApp ne tire plus l'intégralité des écrans (DossierDetail, Paramètres —
+// qui embarque réglementation + courrier —, Carte/Leaflet…) au premier
+// chargement de l'espace mairie. Rendus sous le <Suspense> des <Routes>.
+const DashboardScreen = lazy(() => import("./DashboardScreen").then((m) => ({ default: m.DashboardScreen })));
+const DossiersScreen = lazy(() => import("./DossiersScreen").then((m) => ({ default: m.DossiersScreen })));
+const MessageScreen = lazy(() => import("./MessageScreen").then((m) => ({ default: m.MessageScreen })));
+const CarteScreen = lazy(() => import("./CarteScreen").then((m) => ({ default: m.CarteScreen })));
+const DossierDetailScreen = lazy(() => import("./DossierDetailScreen").then((m) => ({ default: m.DossierDetailScreen })));
+const CalendrierScreen = lazy(() => import("./CalendrierScreen").then((m) => ({ default: m.CalendrierScreen })));
+const StatistiquesScreen = lazy(() => import("./StatistiquesScreen").then((m) => ({ default: m.StatistiquesScreen })));
+const ParametresScreen = lazy(() => import("./ParametresScreen").then((m) => ({ default: m.ParametresScreen })));
+import { AideDocumentation } from "./AideDocumentation";
+import { SupportModal } from "./SupportModal";
 
 const NAV_ITEMS = [
   { label: "Tableau de bord", icon: HomeIcon, path: "/mairie" },
@@ -35,6 +44,37 @@ const NAV_ITEMS = [
 const LABEL_TO_PATH: Record<string, string> = Object.fromEntries(NAV_ITEMS.map(n => [n.label, n.path]));
 LABEL_TO_PATH["Infos Perso"] = "/mairie/profil";
 
+// Permissions requises pour accéder à chaque section (au moins une suffit). Les
+// sections absentes (Signatures, Infos Perso) ne sont pas gérées par
+// permission : « Signatures » dépend de l'habilitation signataire, « Infos
+// Perso » est toujours accessible. Un agent sans rôle personnalisé a
+// `permissions === null` → hasPermission renvoie toujours true (accès complet).
+const NAV_PERMS: Record<string, string[]> = {
+  "/mairie": ["dashboard"],
+  "/mairie/dossiers": ["dossiers.read"],
+  "/mairie/calendrier": ["calendrier.read"],
+  "/mairie/messagerie": ["messagerie.read"],
+  "/mairie/carte": ["zones.read"],
+  "/mairie/statistiques": ["stats"],
+  "/mairie/parametres": ["parametres", "utilisateurs.read", "utilisateurs.manage", "signataires.read", "signataires.manage"],
+};
+
+function navAllowed(path: string, user: Parameters<typeof hasPermission>[0]): boolean {
+  const req = NAV_PERMS[path];
+  if (!req) return true;
+  return req.some(p => hasPermission(user, p));
+}
+
+// Garde-fou de route : protège un écran derrière ses permissions. En cas
+// d'accès direct (deep-link) à une section interdite, redirige vers le premier
+// onglet autorisé — ou « Infos Perso » en dernier recours.
+function RequirePerm({ perms, children }: { perms: string[]; children: React.ReactElement }) {
+  const { user } = useAuth();
+  if (perms.some(p => hasPermission(user, p))) return children;
+  const fallback = NAV_ITEMS.find(n => NAV_PERMS[n.path]?.some(p => hasPermission(user, p)))?.path ?? "/mairie/profil";
+  return <Navigate to={fallback} replace />;
+}
+
 function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, signaturesBadge = 0, isSignataire = false, communes = [] }: { active: string; setActive: (s: string) => void; commune: string; setCommune: (c: string) => void; messageBadge?: number; signaturesBadge?: number; isSignataire?: boolean; communes?: string[] }) {
   const [showDrop, setShowDrop] = useState(false);
   const [search, setSearch] = useState("");
@@ -44,7 +84,12 @@ function Sidebar({ active, setActive, commune, setCommune, messageBadge = 0, sig
   const filtered = manyCommunes
     ? communes.filter(c => normalizeForSearch(c).includes(normalizedSearch))
     : communes;
-  const visibleNavItems = NAV_ITEMS.filter(item => item.label !== "Signatures" || isSignataire);
+  const visibleNavItems = NAV_ITEMS.filter(item => {
+    // « Signatures » dépend de l'habilitation signataire, pas d'une permission.
+    if (item.label === "Signatures") return isSignataire;
+    // Les autres sections sont masquées si le rôle personnalisé ne les autorise pas.
+    return navAllowed(item.path, user);
+  });
   return (
     <aside style={{
       width: 200, minWidth: 200, background: "#0f1629",
@@ -412,34 +457,50 @@ function FaqAssistant() {
   );
 }
 
-function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick, commune = "", onViewAllNotifications }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void; commune?: string; onViewAllNotifications?: () => void }) {
+function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDossierClick, commune = "", communes = [], setCommune, onViewAllNotifications }: { title?: string; buttonLabel?: string; onNewDossier?: () => void; navigate?: (s: string) => void; onDossierClick?: (d: DossierInfo) => void; commune?: string; communes?: string[]; setCommune?: (c: string) => void; onViewAllNotifications?: () => void }) {
   const routerNav = useNavigate();
   const [showNotifs, setShowNotifs] = useState(false);
   const [showFAQ, setShowFAQ] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [searchFocused, setSearchFocused] = useState(false);
   const [searchResults, setSearchResults] = useState<ApiDossier[]>([]);
-  const [apiNotifs, setApiNotifs] = useState<ApiNotif[]>([]);
-
-  const loadNotifs = () => {
-    api.get<ApiNotif[]>("/notifications").then(setApiNotifs).catch(() => {});
-  };
-
-  useEffect(() => { loadNotifs(); }, []);
+  const queryClient = useQueryClient();
+  // La cloche est montée en permanence dans le shell : sans rafraîchissement,
+  // son badge resterait figé sur l'état du montage et une notification arrivée
+  // entre-temps (ex. « Signature requise ») n'y apparaîtrait jamais tant que l'on
+  // n'ouvre pas le menu. On confie donc le cycle de vie à react-query :
+  // `refetchInterval` rejoue la requête toutes les 30 s et `refetchOnWindowFocus`
+  // (activé spécifiquement ici, désactivé globalement) la rejoue au retour
+  // d'onglet. Le cache est partagé sous NOTIFICATIONS_QUERY_KEY.
+  const { data: apiNotifs = [], refetch: refetchNotifs } = useQuery({
+    queryKey: NOTIFICATIONS_QUERY_KEY,
+    queryFn: () => api.get<ApiNotif[]>("/notifications"),
+    refetchInterval: 30_000,
+    refetchOnWindowFocus: true,
+  });
 
   const unreadCount = apiNotifs.filter(n => !n.is_read).length;
 
+  // Mises à jour optimistes : on écrit directement dans le cache react-query
+  // (effet immédiat), puis on persiste. En cas d'échec réseau, le prochain
+  // refetch (intervalle/focus) rétablit l'état serveur.
   const markAllRead = async () => {
+    queryClient.setQueryData<ApiNotif[]>(NOTIFICATIONS_QUERY_KEY, (ns) => ns?.map(n => ({ ...n, is_read: true })) ?? []);
     await api.patch("/notifications/read-all").catch(() => {});
-    setApiNotifs(ns => ns.map(n => ({ ...n, is_read: true })));
   };
 
   const handleNotifClick = async (n: ApiNotif) => {
     if (!n.is_read) {
+      queryClient.setQueryData<ApiNotif[]>(NOTIFICATIONS_QUERY_KEY, (ns) => ns?.map(x => x.id === n.id ? { ...x, is_read: true } : x) ?? []);
       api.patch(`/notifications/${n.id}/read`).catch(() => {});
-      setApiNotifs(ns => ns.map(x => x.id === n.id ? { ...x, is_read: true } : x));
     }
     setShowNotifs(false);
+    // Bascule la commune active sur celle du dossier visé : un agent
+    // multi-communes peut cliquer une notif d'une autre ville que celle
+    // actuellement sélectionnée. On résout le nom canonique (la commune du
+    // dossier est saisie librement) avant de naviguer.
+    const target = resolveCommune(n.commune, communes);
+    if (target && target !== commune) setCommune?.(target);
     if (n.dossier_id) routerNav(`/mairie/dossiers/${n.dossier_id}`);
   };
 
@@ -491,7 +552,7 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
 
         {/* Bell */}
         <div style={{ position: "relative" }}>
-          <button onClick={() => { setShowNotifs(!showNotifs); setShowFAQ(false); if (!showNotifs) loadNotifs(); }} style={{ border: "none", background: showNotifs ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
+          <button onClick={() => { setShowNotifs(!showNotifs); setShowFAQ(false); if (!showNotifs) refetchNotifs(); }} style={{ border: "none", background: showNotifs ? "#F1F5F9" : "none", cursor: "pointer", color: "#64748b", display: "flex", alignItems: "center", padding: 6, borderRadius: 6 }}>
             <BellIcon size={20} />
           </button>
           {unreadCount > 0 && (
@@ -512,18 +573,24 @@ function Topbar({ buttonLabel = "Nouveau dossier", onNewDossier, navigate, onDos
               <div style={{ maxHeight: 320, overflowY: "auto" }}>
                 {apiNotifs.length === 0 ? (
                   <div style={{ padding: "24px 16px", textAlign: "center", fontSize: 12, color: "#94a3b8" }}>Aucune notification</div>
-                ) : apiNotifs.slice(0, 8).map(n => (
+                ) : apiNotifs.slice(0, 8).map(n => {
+                  // Agent multi-communes : on préfixe la notif du nom de la ville
+                  // concernée pour lever l'ambiguïté entre communes.
+                  const communeLabel = communes.length > 1 ? (resolveCommune(n.commune, communes) ?? n.commune) : null;
+                  return (
                   <div key={n.id} onClick={() => handleNotifClick(n)}
                     style={{ padding: "10px 16px", display: "flex", alignItems: "flex-start", gap: 10, borderBottom: "1px solid #F8FAFC", cursor: "pointer", background: n.is_read ? "white" : "#F8F7FF", transition: "background 0.15s" }}>
                     <div style={{ width: 32, height: 32, borderRadius: 8, background: notifColor(n.type) + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 15, flexShrink: 0 }}>{notifIcon(n.type)}</div>
                     <div style={{ flex: 1, minWidth: 0 }}>
+                      {communeLabel && <div style={{ display: "inline-block", maxWidth: "100%", fontSize: 9.5, fontWeight: 700, color: "#4F46E5", background: "#EEF2FF", borderRadius: 4, padding: "1px 6px", marginBottom: 3, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{communeLabel}</div>}
                       <div style={{ fontSize: 12, color: "#0F172A", fontWeight: n.is_read ? 400 : 600, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.title}</div>
                       <div style={{ fontSize: 11, color: "#64748b", marginTop: 1, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{n.message}</div>
                       <div style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}>{relTime(n.created_at)}</div>
                     </div>
                     {!n.is_read && <div style={{ width: 7, height: 7, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 4 }} />}
                   </div>
-                ))}
+                  );
+                })}
               </div>
               <div style={{ padding: "10px 16px", textAlign: "center", borderTop: "1px solid #F1F5F9" }}>
                 <button onClick={() => { setShowNotifs(false); onViewAllNotifications?.(); }} style={{ border: "none", background: "none", fontSize: 12, color: "#4F46E5", cursor: "pointer", fontWeight: 500 }}>
@@ -992,6 +1059,12 @@ function InfosPersoScreen() {
   const [stab, setStab] = useState("À propos");
   const [profilParams, setProfilParams] = useSearchParams();
 
+  // Centre d'aide : lecteur de documentation (ouvert depuis la carte
+  // « Documentation » ou une question fréquente, avec recherche pré-remplie).
+  const [docReader, setDocReader] = useState<{ open: boolean; query: string }>({ open: false, query: "" });
+  // Formulaire de contact support (cartes « Chat support » / « Contacter le support »).
+  const [supportModal, setSupportModal] = useState<{ open: boolean; type: string }>({ open: false, type: "question" });
+
   // ── À propos state ──
   const [prenom, setPrenom] = useState(user?.prenom ?? "");
   const [nom, setNom] = useState(user?.nom ?? "");
@@ -1041,14 +1114,44 @@ function InfosPersoScreen() {
     } finally { setSavingPw(false); }
   };
 
+  // ── Notifications perso state ──
+  // Types de notifications réellement émis vers un agent (cf. services/notify.ts
+  // et routes/decisions.ts). On n'expose que ceux-là : chaque interrupteur pilote
+  // donc une notification qui existe vraiment, filtrée à la source selon ce choix.
+  const NOTIF_PREF_TYPES: { type: string; label: string; sub: string }[] = [
+    { type: "dossier_soumis", label: "Nouveau dossier déposé", sub: "Quand un pétitionnaire dépose un nouveau dossier" },
+    { type: "pieces_complementaires_recues", label: "Pièces complémentaires reçues", sub: "Quand un pétitionnaire ajoute les pièces demandées" },
+    { type: "message_citoyen", label: "Message d'un pétitionnaire", sub: "Quand un pétitionnaire écrit sur un de vos dossiers" },
+    { type: "dossier_pret_apres_ocr", label: "Dossier prêt à l'instruction", sub: "Quand l'analyse automatique des pièces est terminée" },
+    { type: "signature_requise", label: "Signature requise", sub: "Quand un projet d'arrêté attend votre signature" },
+    { type: "decision_signee", label: "Arrêté signé", sub: "Quand un arrêté que vous avez instruit est signé" },
+    { type: "signature_refusee", label: "Signature refusée", sub: "Quand un signataire refuse de signer un arrêté" },
+  ];
+  const [notifPrefs, setNotifPrefs] = useState<Record<string, boolean>>(user?.notification_prefs ?? {});
+  const [savingNotifPrefs, setSavingNotifPrefs] = useState(false);
+  const [notifPrefsMsg, setNotifPrefsMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  useEffect(() => { setNotifPrefs(user?.notification_prefs ?? {}); }, [user?.id]);
+  // Modèle opt-out : une clé absente vaut « activé ». Un type vaut false seulement
+  // si l'utilisateur l'a explicitement désactivé.
+  const isNotifOn = (type: string) => notifPrefs[type] !== false;
+  const toggleNotifPref = (type: string) => { setNotifPrefs(p => ({ ...p, [type]: !(p[type] !== false) })); setNotifPrefsMsg(null); };
+  const saveNotifPrefs = async () => {
+    setSavingNotifPrefs(true); setNotifPrefsMsg(null);
+    try {
+      await api.patch("/auth/me", { notification_prefs: notifPrefs });
+      await refreshUser();
+      setNotifPrefsMsg({ ok: true, text: "Préférences enregistrées." });
+    } catch (e) {
+      setNotifPrefsMsg({ ok: false, text: e instanceof Error ? e.message : "Erreur serveur" });
+    } finally { setSavingNotifPrefs(false); }
+  };
+
   const navItems = [
     { label: "À propos", icon: "👤" },
     { label: "Communes & Rôles", icon: "🏛" },
     { label: "Disponibilités", icon: "📅" },
     { label: "Délégations", icon: "🤝" },
-    { label: "Mes Signatures", icon: "✍️" },
     { label: "Notifications", icon: "🔔" },
-    { label: "Préférences", icon: "⚙️" },
     { label: "Sécurité / Connexion", icon: "🔒" },
     { label: "Centre d'aide", icon: "❓" },
   ];
@@ -1158,79 +1261,32 @@ function InfosPersoScreen() {
 
           {stab === "Délégations" && <DelegationsPanel />}
 
-          {stab === "Mes Signatures" && (
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Mes Signatures</div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Signatures électroniques utilisées dans vos courriers et arrêtés.</div>
-              <div style={{ display: "flex", gap: 16, marginBottom: 20 }}>
-                <div style={{ flex: 1, border: "2px solid #4F46E5", borderRadius: 12, padding: 20, position: "relative" }}>
-                  <span style={{ position: "absolute", top: 10, right: 10, background: "#EEF2FF", color: "#4F46E5", fontSize: 10, fontWeight: 700, borderRadius: 4, padding: "2px 6px" }}>Par défaut</span>
-                  <div style={{ height: 60, background: "#F8FAFC", borderRadius: 8, display: "flex", alignItems: "center", justifyContent: "center", marginBottom: 10 }}>
-                    <span style={{ fontFamily: "cursive", fontSize: 22, color: "#0F172A" }}>Marie Lecomte</span>
-                  </div>
-                  <div style={{ fontSize: 12, color: "#64748b" }}>Signature principale — utilisée par défaut</div>
-                </div>
-                <div style={{ flex: 1, border: "1px solid #E2E8F0", borderRadius: 12, padding: 20, cursor: "pointer", display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", gap: 8, color: "#94a3b8" }}>
-                  <span style={{ fontSize: 28 }}>+</span>
-                  <span style={{ fontSize: 12 }}>Ajouter une signature</span>
-                </div>
-              </div>
-            </div>
-          )}
-
           {stab === "Notifications" && (
             <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
               <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Notifications personnelles</div>
-              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Préférences de notification pour votre compte uniquement.</div>
-              {[
-                { label: "Dossier assigné", sub: "Quand un dossier m'est assigné", active: true },
-                { label: "Message reçu", sub: "Quand je reçois un nouveau message", active: true },
-                { label: "Délai proche", sub: "48h avant une échéance", active: true },
-                { label: "Délai dépassé", sub: "Quand un délai est dépassé sur mes dossiers", active: true },
-                { label: "Avis reçu", sub: "Quand un service rend son avis", active: false },
-                { label: "Mises à jour plateforme", sub: "Nouvelles fonctionnalités et correctifs", active: false },
-              ].map(n => (
-                <div key={n.label} style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
+              <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 20 }}>Choisissez les notifications que vous souhaitez recevoir dans la cloche. Ce réglage ne concerne que votre compte.</div>
+              {NOTIF_PREF_TYPES.map(n => (
+                <div key={n.type} style={{ display: "flex", alignItems: "center", padding: "10px 0", borderBottom: "1px solid #F8FAFC" }}>
                   <div style={{ flex: 1 }}>
                     <div style={{ fontSize: 13, fontWeight: 500, color: "#0F172A" }}>{n.label}</div>
                     <div style={{ fontSize: 11, color: "#94a3b8" }}>{n.sub}</div>
                   </div>
-                  <div style={{ width: 36, height: 20, borderRadius: 10, background: n.active ? "#4F46E5" : "#E2E8F0", position: "relative", cursor: "pointer" }}>
-                    <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: n.active ? 18 : 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-                  </div>
+                  <button type="button" role="switch" aria-checked={isNotifOn(n.type)} aria-label={n.label} onClick={() => toggleNotifPref(n.type)}
+                    style={{ width: 36, height: 20, borderRadius: 10, background: isNotifOn(n.type) ? "#4F46E5" : "#E2E8F0", position: "relative", cursor: "pointer", border: "none", padding: 0, flexShrink: 0, transition: "background 0.15s" }}>
+                    <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: isNotifOn(n.type) ? 18 : 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)", transition: "left 0.15s" }} />
+                  </button>
                 </div>
               ))}
-            </div>
-          )}
-
-          {stab === "Préférences" && (
-            <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-              <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 20 }}>Préférences d'affichage</div>
-              {[
-                { label: "Langue", value: "Français" },
-                { label: "Fuseau horaire", value: "Europe/Paris (UTC+2)" },
-                { label: "Format de date", value: "DD/MM/YYYY" },
-                { label: "Dossiers par page", value: "20" },
-              ].map(p => (
-                <div key={p.label} style={{ display: "flex", alignItems: "center", marginBottom: 14, gap: 16 }}>
-                  <div style={{ width: 180, fontSize: 13, color: "#374151", fontWeight: 500 }}>{p.label}</div>
-                  <select style={{ flex: 1, padding: "7px 12px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, color: "#374151" }}><option>{p.value}</option></select>
+              {notifPrefsMsg && (
+                <div style={{ background: notifPrefsMsg.ok ? "#F0FDF4" : "#FEF2F2", border: `1px solid ${notifPrefsMsg.ok ? "#86EFAC" : "#FECACA"}`, borderRadius: 8, padding: "8px 12px", fontSize: 13, color: notifPrefsMsg.ok ? "#15803d" : "#DC2626", marginTop: 16 }}>
+                  {notifPrefsMsg.text}
                 </div>
-              ))}
-              <div style={{ borderTop: "1px solid #F1F5F9", paddingTop: 16, marginTop: 8 }}>
-                <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 12 }}>Thème</div>
-                <div style={{ display: "flex", gap: 10 }}>
-                  {[["Clair","☀️",true],["Sombre","🌙",false],["Système","💻",false]].map(([l,ic,active]) => (
-                    <button key={String(l)} style={{ flex: 1, border: active ? "2px solid #4F46E5" : "1px solid #E2E8F0", background: active ? "#EEF2FF" : "white", borderRadius: 10, padding: "12px 8px", cursor: "pointer", textAlign: "center" }}>
-                      <div style={{ fontSize: 20, marginBottom: 4 }}>{ic as string}</div>
-                      <div style={{ fontSize: 12, color: active ? "#4F46E5" : "#374151", fontWeight: active ? 600 : 400 }}>{l as string}</div>
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 20, gap: 8 }}>
-                <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
-                <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
+              )}
+              <div style={{ display: "flex", justifyContent: "flex-end", gap: 8, marginTop: 20 }}>
+                <button onClick={() => { setNotifPrefs(user?.notification_prefs ?? {}); setNotifPrefsMsg(null); }} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Annuler</button>
+                <button onClick={saveNotifPrefs} disabled={savingNotifPrefs} style={{ background: savingNotifPrefs ? "#A5B4FC" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: savingNotifPrefs ? "not-allowed" : "pointer" }}>
+                  {savingNotifPrefs ? "Enregistrement…" : "Enregistrer"}
+                </button>
               </div>
             </div>
           )}
@@ -1255,13 +1311,7 @@ function InfosPersoScreen() {
                 </button>
               </div>
               <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 24 }}>
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 8 }}>
-                  <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>Double authentification (2FA)</div>
-                  <div style={{ width: 36, height: 20, borderRadius: 10, background: "#E2E8F0", position: "relative", cursor: "not-allowed" }}>
-                    <div style={{ width: 16, height: 16, borderRadius: "50%", background: "white", position: "absolute", top: 2, left: 2, boxShadow: "0 1px 3px rgba(0,0,0,0.2)" }} />
-                  </div>
-                </div>
-                <div style={{ fontSize: 12, color: "#94a3b8" }}>Fonctionnalité à venir — authentification double facteur par application TOTP.</div>
+                <MfaSettings />
               </div>
             </div>
           )}
@@ -1276,9 +1326,15 @@ function InfosPersoScreen() {
               >
                 ✨ Revoir le guide d'accueil
               </button>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12, marginBottom: 20 }}>
-                {[{ icon: "📖", title: "Documentation", sub: "Guides complets sur toutes les fonctionnalités" }, { icon: "🎥", title: "Tutoriels vidéo", sub: "Apprenez avec nos tutoriels pas à pas" }, { icon: "💬", title: "Chat support", sub: "Discutez avec notre équipe de support" }, { icon: "📧", title: "Contacter le support", sub: "Envoyez-nous un message" }].map(c => (
-                  <button key={c.title} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 12, padding: 16, cursor: "pointer", textAlign: "left" }}>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12, marginBottom: 20 }}>
+                {([
+                  { icon: "📖", title: "Documentation", sub: "Guides complets sur toutes les fonctionnalités", onClick: () => setDocReader({ open: true, query: "" }) },
+                  { icon: "💬", title: "Chat support", sub: "Discutez avec notre équipe de support", onClick: () => setSupportModal({ open: true, type: "question" }) },
+                  { icon: "📧", title: "Contacter le support", sub: "Envoyez-nous un message", onClick: () => setSupportModal({ open: true, type: "autre" }) },
+                ]).map(c => (
+                  <button key={c.title} onClick={c.onClick} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 12, padding: 16, cursor: "pointer", textAlign: "left", transition: "border-color 0.15s, box-shadow 0.15s" }}
+                    onMouseEnter={e => { e.currentTarget.style.borderColor = "#C7D2FE"; e.currentTarget.style.boxShadow = "0 4px 12px rgba(79,70,229,0.08)"; }}
+                    onMouseLeave={e => { e.currentTarget.style.borderColor = "#E2E8F0"; e.currentTarget.style.boxShadow = "none"; }}>
                     <div style={{ fontSize: 24, marginBottom: 8 }}>{c.icon}</div>
                     <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 4 }}>{c.title}</div>
                     <div style={{ fontSize: 11, color: "#94a3b8" }}>{c.sub}</div>
@@ -1288,13 +1344,20 @@ function InfosPersoScreen() {
               <div style={{ background: "#F8FAFC", borderRadius: 10, padding: 16 }}>
                 <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A", marginBottom: 10 }}>Questions fréquentes</div>
                 {["Comment créer un nouveau dossier ?","Comment assigner un dossier à un instructeur ?","Comment envoyer une demande de pièce complémentaire ?","Comment consulter les statistiques de ma commune ?"].map(q => (
-                  <div key={q} style={{ padding: "8px 0", borderBottom: "1px solid #E2E8F0", fontSize: 13, color: "#4F46E5", cursor: "pointer" }}>→ {q}</div>
+                  <div key={q} onClick={() => setDocReader({ open: true, query: q })} style={{ padding: "8px 0", borderBottom: "1px solid #E2E8F0", fontSize: 13, color: "#4F46E5", cursor: "pointer" }}>→ {q}</div>
                 ))}
               </div>
             </div>
           )}
         </div>
       </div>
+
+      {docReader.open && (
+        <AideDocumentation initialQuery={docReader.query} onClose={() => setDocReader({ open: false, query: "" })} />
+      )}
+      {supportModal.open && (
+        <SupportModal defaultType={supportModal.type} onClose={() => setSupportModal({ open: false, type: "question" })} />
+      )}
     </div>
   );
 }
@@ -1316,6 +1379,10 @@ function SignaturesPendantesScreen() {
   const [signing, setSigning] = useState<string | null>(null);
   const [refusing, setRefusing] = useState<string | null>(null);
   const [refuseMotif, setRefuseMotif] = useState("");
+  // Erreur de la dernière action (signer/refuser). Sans ça, un échec serveur
+  // (ex. 403 « Vous n'êtes pas signataire actif de cette commune ») était avalé
+  // silencieusement : le bouton « Signer » / « Refuser » semblait ne rien faire.
+  const [actionError, setActionError] = useState<string | null>(null);
   const routerNavigate = useNavigate();
 
   const load = () => {
@@ -1326,6 +1393,32 @@ function SignaturesPendantesScreen() {
   };
 
   useEffect(() => { load(); }, []);
+
+  const handleSign = async (rowId: string) => {
+    setSigning(rowId);
+    setActionError(null);
+    try {
+      await api.post(`/decisions/${rowId}/sign`, {});
+      load();
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : "La signature a échoué. Vérifiez votre connexion et réessayez.");
+    } finally {
+      setSigning(null);
+    }
+  };
+
+  const handleRefuse = async () => {
+    if (!refusing || !refuseMotif.trim()) return;
+    setActionError(null);
+    try {
+      await api.post(`/decisions/${refusing}/refuse-signature`, { motif: refuseMotif });
+      load();
+      setRefusing(null);
+      setRefuseMotif("");
+    } catch (e) {
+      setActionError(e instanceof ApiError ? e.message : "Le refus a échoué. Vérifiez votre connexion et réessayez.");
+    }
+  };
 
   const DECISION_LABEL: Record<string, string> = {
     accord: "Accord", accord_prescription: "Accord avec prescriptions", refus: "Refus",
@@ -1340,6 +1433,16 @@ function SignaturesPendantesScreen() {
         <h1 style={{ fontSize: 22, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Signatures en attente</h1>
         <p style={{ color: "#64748b", fontSize: 13 }}>Projets d'arrêtés soumis pour votre signature.</p>
       </div>
+
+      {/* Erreur d'action hors modale (signature). La modale de refus affiche sa
+          propre bannière puisqu'elle recouvre cette zone. */}
+      {actionError && !refusing && (
+        <div role="alert" style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "10px 14px", marginBottom: 16, background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 9, fontSize: 12.5, color: "#991B1B" }}>
+          <span style={{ fontWeight: 700 }}>⚠</span>
+          <span style={{ flex: 1 }}>{actionError}</span>
+          <button onClick={() => setActionError(null)} aria-label="Fermer" style={{ border: "none", background: "none", color: "#991B1B", cursor: "pointer", fontSize: 15, lineHeight: 1, padding: 0 }}>×</button>
+        </div>
+      )}
 
       {loading ? (
         <div style={{ padding: 48, textAlign: "center", color: "#94a3b8" }}>Chargement…</div>
@@ -1369,16 +1472,17 @@ function SignaturesPendantesScreen() {
                 <button onClick={() => row.dossier?.id && routerNavigate(`/mairie/dossiers/${row.dossier.id}`)} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "#374151" }}>
                   Voir le dossier
                 </button>
-                <button onClick={async () => {
-                  setSigning(row.id);
-                  try {
-                    await api.post(`/decisions/${row.id}/sign`, {});
-                    load();
-                  } catch { /* ignore */ } finally { setSigning(null); }
-                }} disabled={signing === row.id} style={{ background: "linear-gradient(135deg,#059669,#10B981)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: "pointer" }}>
+                {/* Accès direct à la pièce soumise à signature (projet d'arrêté) :
+                    deep-link vers l'onglet Décision, qui en affiche l'aperçu
+                    complet. Évite que le signataire signe sans avoir lu l'acte. */}
+                <button onClick={() => row.dossier?.id && routerNavigate(`/mairie/dossiers/${row.dossier.id}?tab=decision`)} style={{ border: "1px solid #C7D2FE", background: "#EEF2FF", borderRadius: 8, padding: "7px 14px", fontSize: 12, cursor: "pointer", color: "#4F46E5", fontWeight: 600, display: "flex", alignItems: "center", gap: 6 }}>
+                  <svg width={13} height={13} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /></svg>
+                  Voir l'arrêté
+                </button>
+                <button onClick={() => handleSign(row.id)} disabled={signing === row.id} style={{ background: "linear-gradient(135deg,#059669,#10B981)", color: "white", border: "none", borderRadius: 8, padding: "7px 14px", fontSize: 12, fontWeight: 600, cursor: signing === row.id ? "not-allowed" : "pointer" }}>
                   {signing === row.id ? "…" : "Signer"}
                 </button>
-                <button onClick={() => setRefusing(row.id)} style={{ background: "white", color: "#EF4444", border: "1px solid #FECACA", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
+                <button onClick={() => { setActionError(null); setRefusing(row.id); }} style={{ background: "white", color: "#EF4444", border: "1px solid #FECACA", borderRadius: 8, padding: "7px 12px", fontSize: 12, cursor: "pointer" }}>
                   Refuser
                 </button>
               </div>
@@ -1389,18 +1493,16 @@ function SignaturesPendantesScreen() {
 
       {/* Refuse modal */}
       {refusing && (
-        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => { setRefusing(null); setRefuseMotif(""); }}>
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.45)", zIndex: 1000, display: "flex", alignItems: "center", justifyContent: "center" }} onClick={() => { setRefusing(null); setRefuseMotif(""); setActionError(null); }}>
           <div style={{ background: "white", borderRadius: 14, width: 460, padding: 24 }} onClick={e => e.stopPropagation()}>
             <div style={{ fontSize: 16, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Motif du refus</div>
             <textarea value={refuseMotif} onChange={e => setRefuseMotif(e.target.value)} rows={4} placeholder="Précisez la raison du refus…" style={{ width: "100%", border: "1.5px solid #E2E8F0", borderRadius: 9, padding: "10px 12px", fontSize: 12.5, outline: "none", resize: "vertical" as const, fontFamily: "inherit", boxSizing: "border-box" as const, marginBottom: 16 }} />
+            {actionError && (
+              <div role="alert" style={{ padding: "9px 12px", background: "#FEF2F2", border: "1px solid #FECACA", borderRadius: 8, fontSize: 12, color: "#991B1B", marginBottom: 14 }}>{actionError}</div>
+            )}
             <div style={{ display: "flex", gap: 9, justifyContent: "flex-end" }}>
-              <button onClick={() => { setRefusing(null); setRefuseMotif(""); }} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Annuler</button>
-              <button onClick={async () => {
-                if (!refuseMotif.trim()) return;
-                try { await api.post(`/decisions/${refusing}/refuse-signature`, { motif: refuseMotif }); load(); }
-                catch { /* ignore */ }
-                setRefusing(null); setRefuseMotif("");
-              }} disabled={!refuseMotif.trim()} style={{ background: "#EF4444", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+              <button onClick={() => { setRefusing(null); setRefuseMotif(""); setActionError(null); }} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "9px 18px", fontSize: 13, cursor: "pointer" }}>Annuler</button>
+              <button onClick={handleRefuse} disabled={!refuseMotif.trim()} style={{ background: "#EF4444", color: "white", border: "none", borderRadius: 8, padding: "9px 18px", fontSize: 13, fontWeight: 600, cursor: !refuseMotif.trim() ? "not-allowed" : "pointer" }}>
                 Confirmer
               </button>
             </div>
@@ -1411,11 +1513,25 @@ function SignaturesPendantesScreen() {
   );
 }
 
-function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
+function DossierDetailRoute({ navigate, commune, communes, setCommune, communeInseeMap }: { navigate: (s: string) => void; commune: string; communes: string[]; setCommune: (c: string) => void; communeInseeMap: Record<string, string> }) {
   const { id } = useParams<{ id: string }>();
   const routerNavigate = useNavigate();
   const [dossier, setDossier] = useState<DossierInfo | null>(null);
   const [loading, setLoading] = useState(true);
+
+  // On peut arriver sur ce dossier via la liste, la recherche, une notification
+  // (cloche) ou un lien direct — potentiellement vers un dossier d'une autre
+  // commune que celle sélectionnée. On aligne alors la commune active (sidebar,
+  // badges, écrans) sur celle du dossier ouvert. Réf pour appliquer la dernière
+  // logique sans relancer le fetch quand la commune sélectionnée change.
+  const syncCommuneRef = useRef<(c: string | null | undefined) => void>(() => {});
+  syncCommuneRef.current = (c) => {
+    // `c` vient de `dossiers.commune` (texte libre) : on résout le nom canonique
+    // du sélecteur avant de comparer/basculer, sinon une simple différence de
+    // casse/accent empêchait le changement de commune.
+    const target = resolveCommune(c, communes);
+    if (target && target !== commune) setCommune(target);
+  };
 
   useEffect(() => {
     if (!id) return;
@@ -1433,9 +1549,40 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
     };
     api.get<ApiDetail>(`/mairie/dossiers/${id}`)
       .then(data => {
+        // Synchronise la commune sélectionnée sur celle du dossier ouvert.
+        syncCommuneRef.current(data.commune);
         const meta = (data.metadata ?? {}) as Record<string, unknown>;
         const lat = parseFloat(String(meta["lat"] ?? ""));
         const lng = parseFloat(String(meta["lng"] ?? ""));
+        // Données CERFA saisies au dépôt citoyen (metadata.cerfa_data) :
+        // on en dérive la civilité et l'adresse postale du demandeur, réutilisées
+        // par les balises dynamiques de courrier (demandeur_civilite/_adresse).
+        const cerfa = (meta["cerfa_data"] && typeof meta["cerfa_data"] === "object")
+          ? (meta["cerfa_data"] as Record<string, unknown>)
+          : {};
+        const cs = (k: string) => (typeof cerfa[k] === "string" ? (cerfa[k] as string).trim() : "");
+        const civiliteLabel = (raw: string) => raw === "madame" ? "Madame" : raw === "monsieur" ? "Monsieur" : "";
+        // Civilité du demandeur : celle du particulier, à défaut celle du
+        // représentant physique de la personne morale.
+        const civilite = civiliteLabel(cs("civilite")) || civiliteLabel(cs("societeRepresentantCivilite"));
+        const adrLigne1 = [cs("adresseDemandeurNumero"), cs("adresseDemandeurVoie")].filter(Boolean).join(" ");
+        const adrLigne2 = [cs("adresseDemandeurCodePostal"), cs("adresseDemandeurLocalite")].filter(Boolean).join(" ");
+        const adresseDemandeurCerfa = [adrLigne1, adrLigne2].filter(Boolean).join(", ");
+        // À défaut d'adresse personnelle saisie, on retombe sur l'adresse du terrain.
+        const adresseTerrain = [data.adresse, [data.code_postal, data.commune].filter(Boolean).join(" ")]
+          .filter(Boolean).join(", ");
+        const demandeurAdresse = adresseDemandeurCerfa || adresseTerrain;
+        // Représentant physique désigné d'une personne morale (civilité + identité).
+        const representantNom = [
+          civiliteLabel(cs("societeRepresentantCivilite")),
+          cs("societeRepresentantPrenom"),
+          cs("societeRepresentantNom"),
+        ].filter(Boolean).join(" ");
+        // Co-demandeur éventuel (renseigné seulement si la case a été cochée au dépôt).
+        const codemandeurCivilite = cerfa["coDemandeur"] === true ? civiliteLabel(cs("coDemandeurCivilite")) : "";
+        const codemandeurNom = cerfa["coDemandeur"] === true
+          ? [cs("coDemandeurPrenom"), cs("coDemandeurNom")].filter(Boolean).join(" ")
+          : "";
         setDossier({
           id: data.id,
           numero: data.numero,
@@ -1444,6 +1591,11 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
           petitionnaire_email: data.demandeur?.email ?? null,
           petitionnaire_is_placeholder: data.demandeur?.is_placeholder ?? false,
           petitionnaire_can_invite: data.demandeur?.can_invite ?? false,
+          demandeur_civilite: civilite || undefined,
+          demandeur_adresse: demandeurAdresse || undefined,
+          representant_nom: representantNom || undefined,
+          codemandeur_civilite: codemandeurCivilite || undefined,
+          codemandeur_nom: codemandeurNom || undefined,
           adresse: data.adresse ?? "—",
           status: data.status,
           echeance: fmtDate(data.date_limite_instruction),
@@ -1452,6 +1604,9 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
           delai: (meta["delai"] as DelaiBreakdown | undefined) ?? null,
           description: data.description ?? undefined,
           parcelle: data.parcelle ?? undefined,
+          parcelles: Array.isArray(meta["parcelles"])
+            ? (meta["parcelles"] as DossierInfo["parcelles"])
+            : undefined,
           surface_plancher: data.surface_plancher ?? undefined,
           commune: data.commune ?? undefined,
           code_postal: data.code_postal ?? undefined,
@@ -1485,7 +1640,9 @@ function DossierDetailRoute({ navigate }: { navigate: (s: string) => void }) {
 
   if (loading) return <div style={{ padding: 48, textAlign: "center", color: "#94a3b8", fontSize: 14 }}>Chargement…</div>;
   if (!dossier) return null;
-  return <DossierDetailScreen dossier={dossier} onBack={() => routerNavigate(-1 as never)} navigate={navigate} />;
+  // INSEE de la commune du dossier (cf. communeInseeMap, même source que l'écran
+  // Paramètres) — pour que la modale courrier lise les modèles de cette commune.
+  return <DossierDetailScreen dossier={dossier} onBack={() => routerNavigate(-1 as never)} navigate={navigate} inseeCode={dossier.commune ? communeInseeMap[dossier.commune] : undefined} />;
 }
 
 const COMMUNE_STORAGE_KEY = (userId?: string) => `heureka_commune_${userId ?? "anon"}`;
@@ -1632,7 +1789,9 @@ function OnboardingModal({ prenom, onComplete }: { prenom: string; onComplete: (
 export function MairieApp() {
   const { user, refreshUser } = useAuth();
   const isAdmin = user?.role === "admin";
-  const canManageUsers = user?.role === "admin" || user?.role === "mairie";
+  // Gestion des agents : réservée aux responsables (mairie) / super admins ET
+  // conditionnée à la permission « utilisateurs.manage » du rôle personnalisé éventuel.
+  const canManageUsers = (user?.role === "admin" || user?.role === "mairie") && hasPermission(user, "utilisateurs.manage");
   const [commune, setCommuteRaw] = useState(user?.commune ?? "");
   const [userCommunes, setUserCommunes] = useState<string[]>([]);
   const [communesLoaded, setCommunesLoaded] = useState(false);
@@ -1759,22 +1918,28 @@ export function MairieApp() {
       <Sidebar active={active} setActive={setActive} commune={commune} setCommune={setCommune} messageBadge={messageBadge} signaturesBadge={signaturesBadge} isSignataire={isSignataire} communes={userCommunes} />
       <div style={{ marginLeft: 200, flex: 1, minHeight: "100vh", display: "flex", flexDirection: "column" }}>
         {active !== "Messagerie" && (
-          <Topbar onNewDossier={active === "Dossiers" ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} onViewAllNotifications={() => routerNavigate("/mairie/parametres?tab=notifications")} />
+          <Topbar onNewDossier={active === "Dossiers" && hasPermission(user, "dossiers.create") ? () => setShowNouveauDossier(true) : undefined} navigate={setActive} onDossierClick={handleDossierClick} commune={commune} communes={userCommunes} setCommune={setCommune} onViewAllNotifications={() => routerNavigate("/mairie/parametres?tab=notifications")} />
         )}
         <div style={{ flex: 1, overflowY: "auto" }}>
+          {/* Suspense : pendant le chargement du chunk d'un écran lazy (cf. les
+              const lazy() en tête de fichier), on affiche le PageLoader plutôt
+              qu'un blanc. La frontière est ici, sous la Topbar, pour que la
+              coquille (sidebar + barre) reste visible pendant le chargement. */}
+          <Suspense fallback={<PageLoader />}>
           <Routes>
-            <Route index element={<DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} inseeCode={communeInseeMap[commune]} onDossierClick={handleDossierClick} />} />
-            <Route path="dossiers" element={<DossiersScreen commune={commune} onDossierClick={handleDossierClick} />} />
-            <Route path="dossiers/:id" element={<DossierDetailRoute navigate={setActive} />} />
-            <Route path="messagerie" element={<MessageScreen commune={commune} onDossierClick={handleDossierClick} onUnreadChange={setMessageBadge} />} />
-            <Route path="calendrier" element={<CalendrierScreen commune={commune} />} />
-            <Route path="carte" element={<CarteScreen commune={commune} setCommune={setCommune} communeInseeMap={communeInseeMap} />} />
-            <Route path="statistiques" element={<StatistiquesScreen commune={commune} />} />
-            <Route path="parametres" element={<ParametresScreen commune={commune} isAdmin={isAdmin} canManageUsers={canManageUsers} communeInseeMap={communeInseeMap} onInseeUpdated={refreshCommuneInseeMap} />} />
+            <Route index element={<RequirePerm perms={NAV_PERMS["/mairie"]!}><DashboardScreen navigate={setActive} navigateDossiers={navigateDossiers} commune={commune} inseeCode={communeInseeMap[commune]} onDossierClick={handleDossierClick} /></RequirePerm>} />
+            <Route path="dossiers" element={<RequirePerm perms={NAV_PERMS["/mairie/dossiers"]!}><DossiersScreen commune={commune} onDossierClick={handleDossierClick} /></RequirePerm>} />
+            <Route path="dossiers/:id" element={<RequirePerm perms={NAV_PERMS["/mairie/dossiers"]!}><DossierDetailRoute navigate={setActive} commune={commune} communes={userCommunes} setCommune={setCommune} communeInseeMap={communeInseeMap} /></RequirePerm>} />
+            <Route path="messagerie" element={<RequirePerm perms={NAV_PERMS["/mairie/messagerie"]!}><MessageScreen commune={commune} onDossierClick={handleDossierClick} onUnreadChange={setMessageBadge} /></RequirePerm>} />
+            <Route path="calendrier" element={<RequirePerm perms={NAV_PERMS["/mairie/calendrier"]!}><CalendrierScreen commune={commune} /></RequirePerm>} />
+            <Route path="carte" element={<RequirePerm perms={NAV_PERMS["/mairie/carte"]!}><CarteScreen commune={commune} setCommune={setCommune} communeInseeMap={communeInseeMap} /></RequirePerm>} />
+            <Route path="statistiques" element={<RequirePerm perms={NAV_PERMS["/mairie/statistiques"]!}><StatistiquesScreen commune={commune} /></RequirePerm>} />
+            <Route path="parametres" element={<RequirePerm perms={NAV_PERMS["/mairie/parametres"]!}><ParametresScreen commune={commune} communes={userCommunes} isAdmin={isAdmin} canManageUsers={canManageUsers} communeInseeMap={communeInseeMap} onInseeUpdated={refreshCommuneInseeMap} /></RequirePerm>} />
             <Route path="signatures" element={<SignaturesPendantesScreen />} />
             <Route path="profil" element={<InfosPersoScreen />} />
             <Route path="*" element={<Navigate to="/mairie" replace />} />
           </Routes>
+          </Suspense>
         </div>
       </div>
       {showNouveauDossier && <NouveauDossierModal onClose={() => setShowNouveauDossier(false)} commune={commune} />}

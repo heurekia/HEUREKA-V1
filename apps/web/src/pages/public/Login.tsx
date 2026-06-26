@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useNavigate, Link, useSearchParams } from "react-router-dom";
-import { useAuth } from "../../hooks/useAuth";
+import { useAuth, type User } from "../../hooks/useAuth";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Card, CardContent, CardHeader } from "../../components/ui/card";
@@ -18,9 +18,16 @@ export function Login() {
   const [needsVerification, setNeedsVerification] = useState(false);
   const [resendState, setResendState] = useState<"idle" | "sending" | "sent">("idle");
   const [fcEnabled, setFcEnabled] = useState(false);
-  const { login } = useAuth();
+  const { login, verifyMfaLogin } = useAuth();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
+  const [mfaTicket, setMfaTicket] = useState<string | null>(null);
+  const [mfaCode, setMfaCode] = useState("");
+  // Mot de passe oublié : vue dédiée affichée à la place du formulaire de
+  // connexion. Réponse API volontairement opaque (anti-énumération) → on
+  // confirme l'envoi quoi qu'il arrive.
+  const [forgotMode, setForgotMode] = useState(false);
+  const [forgotSent, setForgotSent] = useState(false);
   const next = sanitizeNextParam(searchParams.get("next"));
 
   // Erreur renvoyée par le callback FranceConnect (?fc_error=...).
@@ -42,18 +49,23 @@ export function Login() {
     ? `/api/auth/franceconnect/login?next=${encodeURIComponent(next)}`
     : "/api/auth/franceconnect/login";
 
+  const goAfterLogin = (u: User) => {
+    if (u.role === "mairie" || u.role === "instructeur") {
+      navigate("/mairie", { replace: true });
+    } else {
+      navigate(next ?? "/citoyen", { replace: true });
+    }
+  };
+
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setNeedsVerification(false);
     setLoading(true);
     try {
-      const u = await login(email, password);
-      if (u.role === "mairie" || u.role === "instructeur") {
-        navigate("/mairie", { replace: true });
-      } else {
-        navigate(next ?? "/citoyen", { replace: true });
-      }
+      const r = await login(email, password);
+      if (r.status === "mfa") { setMfaTicket(r.ticket); setLoading(false); return; }
+      goAfterLogin(r.user);
     } catch (err) {
       if (err instanceof ApiError && (err.body as { code?: string })?.code === "email_not_verified") {
         setNeedsVerification(true);
@@ -62,6 +74,32 @@ export function Login() {
     } finally {
       setLoading(false);
     }
+  };
+
+  const handleMfaSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      const u = await verifyMfaLogin(mfaTicket ?? "", mfaCode.trim());
+      goAfterLogin(u);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Code invalide");
+      setLoading(false);
+    }
+  };
+
+  const handleForgotSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    setError("");
+    setLoading(true);
+    try {
+      await api.post("/auth/forgot-password", { email });
+    } catch {
+      /* réponse opaque côté API — on confirme dans tous les cas */
+    }
+    setForgotSent(true);
+    setLoading(false);
   };
 
   const handleResend = async () => {
@@ -96,6 +134,62 @@ export function Login() {
           <p className="text-gray-500 text-sm">Accédez à votre espace personnel</p>
         </CardHeader>
         <CardContent>
+          {mfaTicket ? (
+          <form onSubmit={handleMfaSubmit} className="space-y-4">
+            {error && (
+              <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg text-sm">{error}</div>
+            )}
+            <p className="text-sm text-gray-600">
+              Saisissez le code à 6 chiffres de votre application d'authentification
+              (ou l'un de vos codes de secours).
+            </p>
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Code de vérification</label>
+              <Input value={mfaCode} onChange={(e) => setMfaCode(e.target.value)} required autoFocus placeholder="123 456" autoComplete="one-time-code" />
+            </div>
+            <Button type="submit" className="w-full" disabled={loading}>
+              {loading ? "Vérification..." : "Vérifier"}
+            </Button>
+          </form>
+          ) : forgotMode ? (
+            forgotSent ? (
+            <div className="space-y-4">
+              <div className="bg-green-50 border border-green-100 text-green-700 px-4 py-3 rounded-lg text-sm">
+                Si un compte est associé à cette adresse, un email de réinitialisation vient d'être envoyé. Consultez votre boîte de réception (et vos spams).
+              </div>
+              <button
+                type="button"
+                onClick={() => { setForgotMode(false); setForgotSent(false); setError(""); }}
+                className="w-full text-center text-sm font-medium text-heureka-600 hover:underline"
+              >
+                ← Retour à la connexion
+              </button>
+            </div>
+            ) : (
+            <form onSubmit={handleForgotSubmit} className="space-y-4">
+              {error && (
+                <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg text-sm">{error}</div>
+              )}
+              <p className="text-sm text-gray-600">
+                Saisissez votre adresse email : nous vous enverrons un lien pour définir un nouveau mot de passe.
+              </p>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Email</label>
+                <Input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required placeholder="vous@exemple.fr" />
+              </div>
+              <Button type="submit" className="w-full" disabled={loading}>
+                {loading ? "Envoi..." : "Envoyer le lien"}
+              </Button>
+              <button
+                type="button"
+                onClick={() => { setForgotMode(false); setError(""); }}
+                className="w-full text-center text-sm font-medium text-heureka-600 hover:underline"
+              >
+                ← Retour à la connexion
+              </button>
+            </form>
+            )
+          ) : (
           <form onSubmit={handleSubmit} className="space-y-4">
             {error && (
               <div className="bg-red-50 text-red-700 px-4 py-3 rounded-lg text-sm">
@@ -127,9 +221,17 @@ export function Login() {
             <Button type="submit" className="w-full" disabled={loading}>
               {loading ? "Connexion..." : "Se connecter"}
             </Button>
+            <button
+              type="button"
+              onClick={() => { setForgotMode(true); setError(""); setNeedsVerification(false); }}
+              className="w-full text-center text-sm font-medium text-heureka-600 hover:underline"
+            >
+              Mot de passe oublié ?
+            </button>
           </form>
+          )}
 
-          {fcEnabled && (
+          {!mfaTicket && !forgotMode && fcEnabled && (
             <div className="mt-6">
               <div className="relative">
                 <div className="absolute inset-0 flex items-center">
@@ -155,12 +257,14 @@ export function Login() {
             </div>
           )}
 
-          <p className="text-center text-sm text-gray-500 mt-4">
-            Pas encore de compte ?{" "}
-            <Link to={registerHref} className="text-heureka-600 font-medium hover:underline">
-              S'inscrire gratuitement
-            </Link>
-          </p>
+          {!forgotMode && (
+            <p className="text-center text-sm text-gray-500 mt-4">
+              Pas encore de compte ?{" "}
+              <Link to={registerHref} className="text-heureka-600 font-medium hover:underline">
+                S'inscrire gratuitement
+              </Link>
+            </p>
+          )}
         </CardContent>
       </Card>
     </div>

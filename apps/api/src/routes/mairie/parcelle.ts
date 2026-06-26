@@ -4,6 +4,7 @@ import { dossiers, communes } from "@heureka-v1/db";
 import { eq, desc, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireAuth } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import { analyseParcel } from "../../services/parcelAnalysis.js";
 import {
   computeInstructionDelay,
@@ -23,7 +24,7 @@ import {
 
 export const parcelleRouter = Router();
 
-parcelleRouter.get("/map-dossiers", async (req: AuthRequest, res) => {
+parcelleRouter.get("/map-dossiers", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
 
@@ -109,7 +110,7 @@ function toCadastralRefId(parcelle: string | null | undefined, citycode: string 
   return null;
 }
 
-parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, res) => {
+parcelleRouter.get("/dossiers/:id/analyse-parcelle", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     const qOverride = (req.query.q as string | undefined)?.trim();
 
@@ -283,7 +284,7 @@ parcelleRouter.get("/dossiers/:id/analyse-parcelle", async (req: AuthRequest, re
 // le metadata du dossier (cf. endpoint analyse-parcelle ci-dessus). À défaut
 // on tente de reconstruire le cadastre depuis dossier.parcelle / commune.
 
-parcelleRouter.get("/dossiers/:id/sitadel-history", async (req: AuthRequest, res) => {
+parcelleRouter.get("/dossiers/:id/sitadel-history", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     const [dossier] = await db
       .select()
@@ -345,7 +346,7 @@ parcelleRouter.get("/dossiers/:id/sitadel-history", async (req: AuthRequest, res
   }
 });
 
-parcelleRouter.patch("/dossiers/:id/adresse", requireAuth, async (req: AuthRequest, res) => {
+parcelleRouter.patch("/dossiers/:id/adresse", requirePermission("dossiers.edit"), requireAuth, async (req: AuthRequest, res) => {
   try {
     const { adresse, commune } = req.body as { adresse?: string; commune?: string };
     if (!adresse) return res.status(400).json({ error: "adresse requis" });
@@ -368,7 +369,7 @@ parcelleRouter.patch("/dossiers/:id/adresse", requireAuth, async (req: AuthReque
 // rafraîchit en tâche de fond.
 const PLU_CACHE_CONTROL = "private, max-age=3600, stale-while-revalidate=604800";
 
-parcelleRouter.get("/plu-zones", async (req: AuthRequest, res) => {
+parcelleRouter.get("/plu-zones", requirePermission("zones.read"), async (req: AuthRequest, res) => {
   // Déclaré avant try pour être accessible dans le catch (stale fallback)
   let communeRow: { id: string; plu_zones_geojson: unknown; plu_zones_cached_at: Date | null } | undefined;
 

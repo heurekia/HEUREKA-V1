@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@heureka-v1/shared": "workspace:*",
+    "@tanstack/react-query": "^5.101.1",
     "@tiptap/core": "^3.23.6",
     "@tiptap/extension-placeholder": "^3.23.6",
     "@tiptap/extension-text-align": "^3.23.6",
@@ -27,8 +28,7 @@
     "react-helmet-async": "^3.0.0",
     "react-pdf": "^9",
     "react-rnd": "^10.5.3",
-    "react-router-dom": "^7.6.2",
-    "recharts": "^2.15.3"
+    "react-router-dom": "^7.6.2"
   },
   "devDependencies": {
     "@types/react": "^19.1.2",

@@ -9,21 +9,41 @@ function getResend(): Resend {
 
 const FROM = process.env.SMTP_FROM ?? "Heurekia <notifications@mail.heurekia.com>";
 const BASE_URL = process.env.FRONTEND_URL ?? "https://app.heurekia.com";
+// Boîte de réception des demandes d'aide (bouton « Contacter le support » du
+// Centre d'aide agent). Surchargée par SUPPORT_INBOX en prod ; par défaut on
+// envoie sur contact@heurekia.com dans un premier temps.
+const SUPPORT_INBOX = process.env.SUPPORT_INBOX ?? "contact@heurekia.com";
 // Portail citoyen (www) — distinct du portail pro (app). Les emails destinés à
 // un pétitionnaire doivent renvoyer ici pour que l'activation pose le bon
 // cookie de session (token_www) et atterrisse dans l'espace citoyen.
 const CITIZEN_BASE_URL = process.env.CITIZEN_URL ?? "https://www.heurekia.com";
 
+// Échappe les valeurs interpolées dans le HTML des emails (anti-injection de
+// balises via prénom / nom de service / commune / n° de dossier).
+function esc(s: string): string {
+  return String(s).replace(/[&<>"']/g, (c) =>
+    ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c] ?? c,
+  );
+}
+
+// Garde-fou : `to` doit être UNE adresse simple. Rejette listes / CRLF /
+// virgules qui permettraient d'ajouter des destinataires non voulus.
+function assertEmail(to: string): void {
+  if (typeof to !== "string" || !/^[^\s,;<>"]+@[^\s,;<>"]+\.[^\s,;<>"]+$/.test(to)) {
+    throw new Error(`Adresse email invalide pour l'envoi : ${JSON.stringify(to)}`);
+  }
+}
+
 function formatCommuneList(names: string[]): { html: string; text: string } {
   if (names.length === 0) return { html: "", text: "" };
   if (names.length === 1) return {
-    html: `de <strong>${names[0]}</strong>`,
+    html: `de <strong>${esc(names[0]!)}</strong>`,
     text: `de ${names[0]}`,
   };
   const rest = names.slice(0, -1);
   const last = names[names.length - 1]!;
   return {
-    html: `de <strong>${rest.join("</strong>, <strong>")}</strong> et <strong>${last}</strong>`,
+    html: `de <strong>${rest.map(esc).join("</strong>, <strong>")}</strong> et <strong>${esc(last)}</strong>`,
     text: `de ${rest.join(", ")} et ${last}`,
   };
 }
@@ -36,19 +56,20 @@ export async function sendActivationEmail(opts: {
   roleLabel?: string;
   communeNames?: string[];
 }) {
+  assertEmail(opts.to);
   const link = `${BASE_URL}/activer-compte?token=${opts.token}`;
 
   let identity: string;
   let identityText: string;
   if (opts.roleLabel) {
-    identity = `<strong>${opts.roleLabel}</strong> pour le compte de <strong>${opts.serviceName}</strong>`;
+    identity = `<strong>${esc(opts.roleLabel)}</strong> pour le compte de <strong>${esc(opts.serviceName)}</strong>`;
     identityText = `${opts.roleLabel} pour le compte de ${opts.serviceName}`;
   } else if (opts.communeNames && opts.communeNames.length > 0) {
     const { html, text } = formatCommuneList(opts.communeNames);
     identity = `agent du service urbanisme ${html}`;
     identityText = `agent du service urbanisme ${text}`;
   } else {
-    identity = `agent du service urbanisme de <strong>${opts.serviceName}</strong>`;
+    identity = `agent du service urbanisme de <strong>${esc(opts.serviceName)}</strong>`;
     identityText = `agent du service urbanisme de ${opts.serviceName}`;
   }
 
@@ -79,7 +100,7 @@ export async function sendActivationEmail(opts: {
         <tr>
           <td style="padding:40px 32px 32px">
             <h1 style="margin:0 0 20px;font-size:22px;font-weight:800;color:#0F172A">Activez votre accès Heurekia</h1>
-            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${opts.prenom},</p>
+            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${esc(opts.prenom)},</p>
             <p style="margin:0 0 28px;font-size:15px;color:#374151;line-height:1.7">
               Un accès sécurisé à la plateforme Heurekia vient d'être créé pour vous en tant qu'${identity}.<br><br>
               Afin de finaliser l'activation de votre compte et définir votre mot de passe personnel, cliquez sur le bouton ci-dessous.
@@ -122,9 +143,10 @@ export async function sendPetitionnaireInvitationEmail(opts: {
   communeName?: string;
   token: string;
 }) {
+  assertEmail(opts.to);
   const link = `${CITIZEN_BASE_URL}/activer-compte?token=${opts.token}`;
   const communeHtml = opts.communeName
-    ? `par le service urbanisme de <strong>${opts.communeName}</strong>`
+    ? `par le service urbanisme de <strong>${esc(opts.communeName)}</strong>`
     : "par votre service urbanisme";
   const communeText = opts.communeName
     ? `par le service urbanisme de ${opts.communeName}`
@@ -157,9 +179,9 @@ export async function sendPetitionnaireInvitationEmail(opts: {
         <tr>
           <td style="padding:40px 32px 32px">
             <h1 style="margin:0 0 20px;font-size:22px;font-weight:800;color:#0F172A">Suivez votre dossier en ligne</h1>
-            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${opts.prenom},</p>
+            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${esc(opts.prenom)},</p>
             <p style="margin:0 0 28px;font-size:15px;color:#374151;line-height:1.7">
-              Votre dossier d'urbanisme <strong>${opts.numeroDossier}</strong> a été enregistré ${communeHtml}.<br><br>
+              Votre dossier d'urbanisme <strong>${esc(opts.numeroDossier)}</strong> a été enregistré ${communeHtml}.<br><br>
               Activez votre espace personnel pour suivre son avancement, échanger avec le service instructeur et consulter les décisions. Il vous suffit de définir votre mot de passe.
             </p>
             <table cellpadding="0" cellspacing="0" style="margin:0 0 32px">
@@ -188,6 +210,75 @@ export async function sendPetitionnaireInvitationEmail(opts: {
   });
 }
 
+// Notification au pétitionnaire qu'un courrier d'instruction lui a été adressé
+// (canal email de la remise de courrier). Reste une NOTIFICATION : le courrier
+// lui-même est consultable dans son espace / sa messagerie. L'envoi du PDF en
+// pièce jointe relève d'une étape ultérieure.
+export async function sendCourrierEmail(opts: {
+  to: string;
+  prenom: string;
+  numeroDossier: string;
+  communeName?: string;
+  subject: string;
+  piecesText?: string;
+}) {
+  assertEmail(opts.to);
+  const link = `${CITIZEN_BASE_URL}/`;
+  const commune = opts.communeName
+    ? `le service urbanisme de <strong>${esc(opts.communeName)}</strong>`
+    : "votre service urbanisme";
+  const communeText = opts.communeName ? `le service urbanisme de ${opts.communeName}` : "votre service urbanisme";
+  const piecesHtml = opts.piecesText
+    ? `<div style="margin:0 0 28px;padding:14px 16px;background:#FAFAFA;border:1px solid #E2E8F0;border-radius:8px;font-size:14px;color:#374151;white-space:pre-line">${esc(opts.piecesText)}</div>`
+    : "";
+  await getResend().emails.send({
+    from: FROM,
+    to: opts.to,
+    subject: opts.subject?.trim() || "Courrier de votre service urbanisme",
+    html: `
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#F0F0F0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F0F0F0;padding:40px 0">
+    <tr><td align="center">
+      <table width="560" cellpadding="0" cellspacing="0" style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08)">
+        <tr>
+          <td style="background:#000020;padding:24px 32px">
+            <table cellpadding="0" cellspacing="0"><tr>
+              <td style="width:32px;height:32px;background:#4F46E5;border-radius:8px;text-align:center;vertical-align:middle"><span style="color:white;font-weight:800;font-size:14px">H</span></td>
+              <td style="padding-left:12px;color:white;font-size:18px;font-weight:700">HEUREKIA</td>
+            </tr></table>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:40px 32px 32px">
+            <h1 style="margin:0 0 20px;font-size:22px;font-weight:800;color:#0F172A">${esc(opts.subject?.trim() || "Courrier de votre service urbanisme")}</h1>
+            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${esc(opts.prenom)},</p>
+            <p style="margin:0 0 24px;font-size:15px;color:#374151;line-height:1.7">
+              ${commune} vous a adressé un courrier concernant votre dossier <strong>${esc(opts.numeroDossier)}</strong>.
+            </p>
+            ${piecesHtml}
+            <table cellpadding="0" cellspacing="0" style="margin:0 0 28px"><tr>
+              <td style="background:#4F46E5;border-radius:8px;padding:14px 32px"><a href="${link}" style="color:white;text-decoration:none;font-size:15px;font-weight:600">Consulter mon espace →</a></td>
+            </tr></table>
+            <p style="margin:0;font-size:13px;color:#94a3b8">Retrouvez le détail et échangez avec le service instructeur depuis votre espace personnel.</p>
+          </td>
+        </tr>
+        <tr>
+          <td style="padding:20px 32px;border-top:1px solid #F1F5F9;background:#FAFAFA">
+            <p style="margin:0;font-size:12px;color:#94a3b8">Heurekia — Plateforme intelligente de gestion des autorisations d'urbanisme</p>
+          </td>
+        </tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`,
+    text: `Bonjour ${opts.prenom},\n\n${communeText} vous a adressé un courrier concernant votre dossier ${opts.numeroDossier}.\n\n${opts.subject?.trim() ?? ""}${opts.piecesText ? `\n\n${opts.piecesText}` : ""}\n\nConsultez votre espace : ${link}\n\nHeurekia — Plateforme intelligente de gestion des autorisations d'urbanisme`,
+  });
+}
+
 export async function sendVerificationEmail(opts: {
   to: string;
   prenom: string;
@@ -197,6 +288,7 @@ export async function sendVerificationEmail(opts: {
   // bon sous-domaine ; à défaut on retombe sur BASE_URL.
   baseUrl?: string;
 }) {
+  assertEmail(opts.to);
   const base = opts.baseUrl ?? BASE_URL;
   const link = `${base}/verifier-email?token=${opts.token}`;
   await getResend().emails.send({
@@ -226,7 +318,7 @@ export async function sendVerificationEmail(opts: {
         <tr>
           <td style="padding:40px 32px 32px">
             <h1 style="margin:0 0 20px;font-size:22px;font-weight:800;color:#0F172A">Confirmez votre adresse email</h1>
-            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${opts.prenom},</p>
+            <p style="margin:0 0 20px;font-size:15px;color:#374151">Bonjour ${esc(opts.prenom)},</p>
             <p style="margin:0 0 28px;font-size:15px;color:#374151;line-height:1.7">
               Merci d'avoir créé votre compte Heurekia. Pour finaliser votre inscription et
               accéder à votre espace, confirmez votre adresse email en cliquant sur le bouton ci-dessous.
@@ -257,11 +349,75 @@ export async function sendVerificationEmail(opts: {
   });
 }
 
+// Demande d'aide envoyée depuis le Centre d'aide d'un agent. Part vers la boîte
+// support interne ; `replyTo` est positionné sur l'agent pour qu'une réponse lui
+// revienne directement. Le contexte (rôle, commune, page, navigateur) est joint
+// pour traiter sans aller-retour. Tout est échappé (esc) avant interpolation.
+export async function sendSupportRequestEmail(opts: {
+  type: string;
+  subject: string;
+  message: string;
+  requester: { name: string; email: string; roleLabel: string; commune?: string | null };
+  context: { url?: string; userAgent?: string; at: string };
+}) {
+  assertEmail(opts.requester.email);
+  const r = opts.requester;
+  const messageHtml = esc(opts.message).replace(/\n/g, "<br>");
+  const ctxRows: [string, string][] = [
+    ["Demandeur", `${r.name} (${r.email})`],
+    ["Rôle", r.roleLabel],
+    ...(r.commune ? [["Commune", r.commune] as [string, string]] : []),
+    ...(opts.context.url ? [["Page", opts.context.url] as [string, string]] : []),
+    ["Reçu le", new Date(opts.context.at).toLocaleString("fr-FR")],
+    ...(opts.context.userAgent ? [["Navigateur", opts.context.userAgent] as [string, string]] : []),
+  ];
+
+  await getResend().emails.send({
+    from: FROM,
+    to: SUPPORT_INBOX,
+    replyTo: r.email,
+    subject: `[Support · ${opts.type}] ${opts.subject}`,
+    html: `
+<!DOCTYPE html>
+<html lang="fr">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#F0F0F0;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#F0F0F0;padding:32px 0">
+    <tr><td align="center">
+      <table width="600" cellpadding="0" cellspacing="0" style="background:white;border-radius:12px;overflow:hidden;box-shadow:0 2px 8px rgba(0,0,0,0.08)">
+        <tr><td style="background:#000020;padding:20px 28px">
+          <span style="color:white;font-size:16px;font-weight:700">HEUREKIA · Support</span>
+        </td></tr>
+        <tr><td style="padding:28px 28px 8px">
+          <div style="display:inline-block;background:#EEF2FF;color:#4F46E5;font-size:12px;font-weight:700;border-radius:6px;padding:4px 10px;margin-bottom:14px">${esc(opts.type)}</div>
+          <h1 style="margin:0 0 18px;font-size:19px;font-weight:800;color:#0F172A">${esc(opts.subject)}</h1>
+          <div style="background:#F8FAFC;border:1px solid #E2E8F0;border-radius:10px;padding:16px 18px;font-size:15px;color:#1F2937;line-height:1.7">${messageHtml}</div>
+        </td></tr>
+        <tr><td style="padding:16px 28px 28px">
+          <table width="100%" cellpadding="0" cellspacing="0" style="border:1px solid #F1F5F9;border-radius:10px">
+            ${ctxRows.map(([k, v], i) => `
+            <tr${i % 2 ? ' style="background:#FAFAFA"' : ""}>
+              <td style="padding:8px 14px;font-size:12px;color:#94a3b8;width:110px;vertical-align:top">${esc(k)}</td>
+              <td style="padding:8px 14px;font-size:13px;color:#374151">${esc(v)}</td>
+            </tr>`).join("")}
+          </table>
+          <p style="margin:16px 0 0;font-size:12px;color:#94a3b8">Répondez directement à cet email pour contacter ${esc(r.name)}.</p>
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>`,
+    text: `[Support · ${opts.type}] ${opts.subject}\n\n${opts.message}\n\n---\n${ctxRows.map(([k, v]) => `${k} : ${v}`).join("\n")}\n\nRépondez directement à cet email pour contacter ${r.name}.`,
+  });
+}
+
 export async function sendPasswordResetEmail(opts: {
   to: string;
   prenom: string;
   token: string;
 }) {
+  assertEmail(opts.to);
   const link = `${BASE_URL}/activer-compte?token=${opts.token}&mode=reset`;
   await getResend().emails.send({
     from: FROM,
@@ -287,7 +443,7 @@ export async function sendPasswordResetEmail(opts: {
         </td></tr>
         <tr><td style="padding:40px 32px 32px">
           <h1 style="margin:0 0 24px;font-size:22px;color:#0F172A">Réinitialisez votre mot de passe</h1>
-          <p style="margin:0 0 24px;font-size:15px;color:#374151;line-height:1.6">Bonjour ${opts.prenom},<br><br>Une demande de réinitialisation de mot de passe a été effectuée pour votre compte.</p>
+          <p style="margin:0 0 24px;font-size:15px;color:#374151;line-height:1.6">Bonjour ${esc(opts.prenom)},<br><br>Une demande de réinitialisation de mot de passe a été effectuée pour votre compte.</p>
           <table cellpadding="0" cellspacing="0" style="margin:0 0 32px">
             <tr><td style="background:#4F46E5;border-radius:8px;padding:14px 28px">
               <a href="${link}" style="color:white;text-decoration:none;font-size:15px;font-weight:600">Définir un nouveau mot de passe →</a>

@@ -1,5 +1,5 @@
 import path from "path";
-import { fileURLToPath } from "url";
+import { UPLOADS_DIR } from "../paths.js";
 import { and, eq, isNull, sql } from "drizzle-orm";
 import { db } from "../db.js";
 import {
@@ -32,8 +32,6 @@ import { ilike } from "drizzle-orm";
 import { communes, regulatory_documents } from "@heureka-v1/db";
 import type { PieceExtraction } from "./pieceExtractor.js";
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
 
 // ── Mapping pièce → thèmes PLU vérifiables sur la pièce ──────────────────────
 // Pour chaque famille de pièce, on liste les "topics" de règles que ce document

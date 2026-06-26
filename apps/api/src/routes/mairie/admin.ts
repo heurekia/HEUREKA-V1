@@ -1,9 +1,13 @@
 import { Router } from "express";
 import { db } from "../../db.js";
 import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_documents, document_communes } from "@heureka-v1/db";
-import { eq, sql, ilike, inArray, and, ne } from "drizzle-orm";
+import { eq, sql, ilike, inArray, and, ne, isNull } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
-import { requireRole } from "../../middlewares/auth.js";
+import { requireRole, bumpTokenVersion } from "../../middlewares/auth.js";
+import { requirePermission, invalidatePermissions } from "../../middlewares/permissions.js";
+import { logAudit } from "../../services/audit.js";
+import { isProfessionalRole, deactivateUser, eraseCitizenAccount } from "../../services/accountLifecycle.js";
+import { getCommuneScope, communeInScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
 import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
 import { PLU_SAVE_RULE_TOOL, PLU_EXTRACTION_CALIBRATION, coerceCases, coerceAppliesIf, type PluRuleInput } from "./pluSaveRuleTool.js";
@@ -54,6 +58,10 @@ adminRouter.get("/admin/commune-details", async (req: AuthRequest, res) => {
   try {
     const communeName = (req.query.commune as string ?? "").trim();
     if (!communeName) return res.status(400).json({ error: "Paramètre commune requis" });
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    if (!communeInScope(communeName, scope)) {
+      return res.status(403).json({ error: "Commune hors de votre périmètre" });
+    }
     const [row] = await db.select().from(communes).where(ilike(communes.name, communeName));
     if (!row) return res.status(404).json({ error: "Commune non trouvée" });
     res.json(row);
@@ -106,16 +114,42 @@ adminRouter.post("/admin/communes", requireRole("admin"), async (req: AuthReques
 });
 
 // ── Liste des utilisateurs d'une commune ──
-adminRouter.get("/admin/users", async (req: AuthRequest, res) => {
+adminRouter.get("/admin/users", requirePermission("utilisateurs.read"), async (req: AuthRequest, res) => {
   try {
     const communeName = (req.query.commune as string ?? "").trim();
     if (!communeName) return res.status(400).json({ error: "Paramètre commune requis" });
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    if (!communeInScope(communeName, scope)) {
+      return res.status(403).json({ error: "Commune hors de votre périmètre" });
+    }
     const rows = await db.select({
       id: users.id, email: users.email, prenom: users.prenom, nom: users.nom,
       role: users.role, commune: users.commune, telephone: users.telephone,
       role_config_id: users.role_config_id,
       created_at: users.created_at,
-    }).from(users).where(and(ilike(users.commune, communeName), ne(users.role, "citoyen")));
+    }).from(users).where(and(
+      // Inclure aussi les agents multi-communes : `users.commune` ne stocke que
+      // la commune principale (1re saisie), donc un agent rattaché à plusieurs
+      // villes via user_communes n'apparaîtrait que dans sa commune principale.
+      // L'accès réel s'appuie sur user_communes (cf. getCommuneScope).
+      sql`(
+        lower(${users.commune}) = lower(${communeName})
+        OR EXISTS (
+          SELECT 1 FROM user_communes uc
+          JOIN communes c ON c.id = uc.commune_id
+          WHERE uc.user_id = ${users.id} AND lower(c.name) = lower(${communeName})
+        )
+      )`,
+      // On exclut citoyens ET admins : un compte "admin" est un super-admin
+      // plateforme (Heurekia), géré dans la console super-admin — pas un agent
+      // de la commune. Il n'a donc pas sa place dans la liste Utilisateurs
+      // d'une mairie (où l'on ne gère que les rôles mairie / instructeur).
+      ne(users.role, "citoyen"),
+      ne(users.role, "admin"),
+      // Masque les agents désactivés (offboardés) : ils sont « retirés » de la
+      // gestion mairie ; la ligne reste en base pour les records légaux.
+      isNull(users.deactivated_at),
+    ));
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -124,7 +158,7 @@ adminRouter.get("/admin/users", async (req: AuthRequest, res) => {
 });
 
 // ── Création d'un utilisateur (admin ou mairie pour leur commune) ──
-adminRouter.post("/admin/users", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+adminRouter.post("/admin/users", requireRole("mairie", "admin"), requirePermission("utilisateurs.manage"), async (req: AuthRequest, res) => {
   try {
     // "mairie" users can only create agents for their own commune
     const communeName = req.user?.role === "admin"
@@ -169,7 +203,7 @@ adminRouter.post("/admin/users", requireRole("mairie", "admin"), async (req: Aut
 });
 
 // ── Mise à jour rôle/infos d'un utilisateur (admin ou mairie pour leur commune) ──
-adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), requirePermission("utilisateurs.manage"), async (req: AuthRequest, res) => {
   try {
     const userId = req.params.id as string;
     const { role, prenom, nom, telephone, role_config_id } = req.body as Record<string, string | undefined>;
@@ -182,6 +216,12 @@ adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), async (req
     }
     const validRoles = req.user?.role === "admin" ? ["mairie", "instructeur", "admin", "citoyen"] : ["mairie", "instructeur"];
     if (role && !validRoles.includes(role)) return res.status(400).json({ error: "Rôle invalide" });
+    // Rôle précédent : un changement de rôle révoque les jetons existants (cf. plus bas).
+    let prevRole: string | undefined;
+    if (role) {
+      const [cur] = await db.select({ role: users.role }).from(users).where(eq(users.id, userId)).limit(1);
+      prevRole = cur?.role;
+    }
     await db.update(users).set({
       ...(role ? { role: role as "mairie" | "instructeur" | "admin" | "citoyen" } : {}),
       ...(prenom ? { prenom } : {}),
@@ -190,11 +230,18 @@ adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), async (req
       ...(role_config_id !== undefined ? { role_config_id: role_config_id || null } : {}),
       updated_at: new Date(),
     }).where(eq(users.id, userId));
+    // Rôle de base et/ou rôle personnalisé ont pu changer → purger le cache de
+    // permissions de l'agent pour une prise d'effet immédiate.
+    invalidatePermissions(userId);
     const [updated] = await db.select({
       id: users.id, email: users.email, prenom: users.prenom, nom: users.nom,
       role: users.role, commune: users.commune, telephone: users.telephone,
       role_config_id: users.role_config_id,
     }).from(users).where(eq(users.id, userId));
+    // Changement de rôle = changement de privilèges → révoquer les jetons émis.
+    if (role && prevRole !== undefined && role !== prevRole) {
+      await bumpTokenVersion(userId);
+    }
     res.json(updated);
   } catch (err) {
     console.error(err);
@@ -203,19 +250,32 @@ adminRouter.patch("/admin/users/:id", requireRole("mairie", "admin"), async (req
 });
 
 // ── Suppression d'un utilisateur (admin ou mairie pour leur commune) ──
-adminRouter.delete("/admin/users/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+adminRouter.delete("/admin/users/:id", requireRole("mairie", "admin"), requirePermission("utilisateurs.manage"), async (req: AuthRequest, res) => {
   try {
     const reqUser = req.user as { id: string; role: string; commune?: string };
     const userId = req.params.id as string;
     if (userId === reqUser.id) return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte" });
-    // "mairie" users can only delete agents in their commune
-    if (reqUser.role === "mairie") {
-      const [target] = await db.select({ commune: users.commune }).from(users).where(eq(users.id, userId));
-      if (!target || target.commune?.toLowerCase() !== (reqUser.commune ?? "").toLowerCase()) {
-        return res.status(403).json({ error: "Accès refusé" });
-      }
+    const [target] = await db
+      .select({ commune: users.commune, role: users.role, email: users.email, deactivated_at: users.deactivated_at })
+      .from(users)
+      .where(eq(users.id, userId));
+    if (!target) return res.status(404).json({ error: "Utilisateur introuvable" });
+    // "mairie" users can only manage agents in their own commune
+    if (reqUser.role === "mairie" && target.commune?.toLowerCase() !== (reqUser.commune ?? "").toLowerCase()) {
+      return res.status(403).json({ error: "Accès refusé" });
     }
-    await db.delete(users).where(eq(users.id, userId));
+    // Les comptes gérés ici sont des agents (mairie/instructeur) : OFFBOARDING par
+    // désactivation — on ne supprime JAMAIS un agent (arrêtés signés, courriers… =
+    // records légaux). Filet de sécurité : un éventuel citoyen serait effacé.
+    if (isProfessionalRole(target.role)) {
+      if (!target.deactivated_at) {
+        await deactivateUser(userId, reqUser.id);
+        await logAudit(req, "admin_user_deactivated", { email: target.email });
+      }
+    } else {
+      await eraseCitizenAccount(userId);
+      await logAudit(req, "admin_user_deleted", { email: target.email });
+    }
     res.status(204).send();
   } catch (err) {
     console.error(err);
@@ -227,12 +287,16 @@ adminRouter.delete("/admin/users/:id", requireRole("mairie", "admin"), async (re
 adminRouter.post("/admin/compute-deadlines", async (req: AuthRequest, res) => {
   try {
     const force = (req.body as { force?: boolean } | undefined)?.force === true;
+    // Périmètre : un agent ne recalcule que les échéances de SES communes.
+    // Admin (scope null) → communeScopeFilter renvoie 1=1 (toutes communes).
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    const scopeFilter = communeScopeFilter(sql`dossiers.commune`, scope);
     const baseQuery = db
       .select({ id: dossiers.id, type: dossiers.type, date_depot: dossiers.date_depot, date_completude: dossiers.date_completude, metadata: dossiers.metadata })
       .from(dossiers);
     const toUpdate = await (force
-      ? baseQuery.where(sql`date_depot IS NOT NULL`)
-      : baseQuery.where(sql`date_depot IS NOT NULL AND date_limite_instruction IS NULL`));
+      ? baseQuery.where(sql`date_depot IS NOT NULL AND (${scopeFilter})`)
+      : baseQuery.where(sql`date_depot IS NOT NULL AND date_limite_instruction IS NULL AND (${scopeFilter})`));
 
     let updated = 0;
     const breakdown_samples: Array<{ id: string; type: string; total_mois: number; breakdown: DeadlineBreakdownItem[] }> = [];
@@ -277,7 +341,7 @@ adminRouter.post("/admin/compute-deadlines", async (req: AuthRequest, res) => {
 // (partagé entre les sous-pipelines, aligné sur le format canonique +
 // calibration UC).
 
-adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
+adminRouter.post("/admin/ingest-plu-pdf", requirePermission("zones.import"), async (req: AuthRequest, res) => {
   // Endpoint legacy SSE. Conservé pour rétrocompat ; le nouveau front utilise
   // /admin/ingest-plu-pdf/start + /batch + /commit (cf. plus bas).
   const { commune_name, insee_code, zip_code, pdf_base64 } = req.body as {
@@ -289,6 +353,23 @@ adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
 
   if (!commune_name || !insee_code || !pdf_base64) {
     return res.status(400).json({ error: "commune_name, insee_code et pdf_base64 requis" });
+  }
+
+  // Périmètre : un agent (non-admin) ne peut ingérer/écraser le PLU que d'une
+  // commune de SON périmètre. Vérifié AVANT les en-têtes SSE pour répondre un
+  // JSON 403 propre. Admin (scope === null) : non restreint, peut aussi créer
+  // une commune absente.
+  try {
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    if (scope !== null) {
+      const [c] = await db.select({ name: communes.name }).from(communes).where(eq(communes.insee_code, insee_code)).limit(1);
+      if (!c || !communeInScope(c.name, scope)) {
+        return res.status(403).json({ error: "Commune hors de votre périmètre" });
+      }
+    }
+  } catch (err) {
+    console.error("[ingest-plu-pdf:legacy] scope", err);
+    return res.status(500).json({ error: "Erreur serveur" });
   }
 
   // SSE streaming so the client sees progress zone by zone
@@ -349,8 +430,8 @@ adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
     const totalPages = pdfDoc.getPageCount();
 
-    const renderPagesAsBlocks = (firstPage: number, maxPages: number): AiContentBlock[] => {
-      const pngs = convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 150 });
+    const renderPagesAsBlocks = async (firstPage: number, maxPages: number): Promise<AiContentBlock[]> => {
+      const pngs = await convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 150 });
       return pngs.map<AiContentBlock>((png) => ({
         type: "image",
         source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
@@ -362,7 +443,7 @@ adminRouter.post("/admin/ingest-plu-pdf", async (req: AuthRequest, res) => {
     // tronçon" : un seul appel ciblé qui pilote tout le découpage qui suit.
     send({ type: "phase", message: "Lecture du sommaire…" });
     const TOC_PAGES = Math.min(5, totalPages);
-    const tocBlocks = renderPagesAsBlocks(1, TOC_PAGES);
+    const tocBlocks = await renderPagesAsBlocks(1, TOC_PAGES);
     const tocMsg = await callAi(
       { purpose: "plu_toc_detect", userId: req.user?.id ?? null, communeId: commune.id },
       {
@@ -435,7 +516,7 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].`,
           page_from: first, page_to: last,
         });
         try {
-          const blocks = renderPagesAsBlocks(first, last - first + 1);
+          const blocks = await renderPagesAsBlocks(first, last - first + 1);
           const ruleMsg = await callAi(
             { purpose: "plu_rule_extract", userId: req.user?.id ?? null, communeId: commune.id },
             {
@@ -716,11 +797,11 @@ function gcIngestJobs() {
   }
 }
 
-function renderPagesAsBlocksFor(pdfBuffer: Buffer, firstPage: number, maxPages: number): AiContentBlock[] {
+async function renderPagesAsBlocksFor(pdfBuffer: Buffer, firstPage: number, maxPages: number): Promise<AiContentBlock[]> {
   // DPI 130 : compromis taille payload Mistral / lisibilité tableaux. À 150 le
   // payload (8 × ~350 KB base64) faisait dépasser le proxy nginx (504) sur
   // les batches lents — 130 réduit ~25 % le poids et la latence Pixtral.
-  const pngs = convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 130 });
+  const pngs = await convertPdfPagesToPng(pdfBuffer, { firstPage, maxPages, dpi: 130 });
   return pngs.map<AiContentBlock>((png) => ({
     type: "image",
     source: { type: "base64", media_type: "image/png", data: png.toString("base64") },
@@ -757,14 +838,14 @@ async function detectPluToc(
   }
 
   const tocPages = Math.min(15, totalPages);
-  const nativeText = extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
+  const nativeText = await extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
   let toc: TocEntry[] = nativeText ? parseTocFromNativeText(nativeText) : [];
 
   if (toc.length === 0) {
     // Bascule Pixtral. Sur PDF normal, on n'arrive ici que pour des PLU à
     // sommaire inhabituel — coût modéré et acceptable.
     const TOC_PAGES = Math.min(5, totalPages);
-    const tocBlocks = renderPagesAsBlocksFor(pdfBuffer, 1, TOC_PAGES);
+    const tocBlocks = await renderPagesAsBlocksFor(pdfBuffer, 1, TOC_PAGES);
     const tocMsg = await callAi(
       { purpose: "plu_toc_detect", userId: ctx.userId, communeId: ctx.communeId },
       {
@@ -832,9 +913,12 @@ function dedupeTocByCode(entries: TocEntry[]): TocEntry[] {
 //    purge/insère par source_document_id, pose commune_id NULL si porteur
 //    EPCI (zones partagées) ou commune.id si porteur commune. Les communes
 //    rattachées sont lues depuis document_communes.
-adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) => {
+adminRouter.post("/admin/ingest-plu-pdf/start", requirePermission("zones.import"), async (req: AuthRequest, res) => {
   try {
     gcIngestJobs();
+    // Périmètre de l'agent : utilisé plus bas pour interdire l'ingestion d'un
+    // PLU hors de ses communes (admin → scope null → non restreint).
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
     const { commune_name, insee_code, zip_code, pdf_base64, pdfs_base64, doc_id, manual_toc } = req.body as {
       commune_name?: string; insee_code?: string; zip_code?: string;
       pdf_base64?: string; pdfs_base64?: string[]; doc_id?: string;
@@ -878,6 +962,14 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
       if (communeIds.length === 0) {
         return res.status(400).json({ error: "Document sans commune rattachée — rattachez au moins une commune avant d'ingérer." });
       }
+      // Périmètre : au moins une commune couverte par le document doit être dans
+      // celui de l'agent (cas PLUi : N communes membres). Admin : non restreint.
+      if (scope !== null) {
+        const names = await db.select({ name: communes.name }).from(communes).where(inArray(communes.id, communeIds));
+        if (!names.some((c) => communeInScope(c.name, scope))) {
+          return res.status(403).json({ error: "Document hors de votre périmètre" });
+        }
+      }
 
       // On choisit une commune de référence pour le logging/imputation des
       // coûts IA. En mode PLU communal historique, le porteur_commune_id ;
@@ -901,9 +993,15 @@ adminRouter.post("/admin/ingest-plu-pdf/start", async (req: AuthRequest, res) =>
       }
       const existing = (await db.select().from(communes).where(eq(communes.insee_code, insee_code)).limit(1))[0];
       if (!existing) {
+        // Créer une commune absente du référentiel est une action admin : un
+        // agent ne peut ingérer que dans une commune existante de son périmètre.
+        if (scope !== null) return res.status(403).json({ error: "Commune hors de votre périmètre" });
         const [created] = await db.insert(communes).values({ name: commune_name, insee_code, zip_code: zip_code ?? "" }).returning();
         commune = created!;
       } else {
+        if (scope !== null && !communeInScope(existing.name, scope)) {
+          return res.status(403).json({ error: "Commune hors de votre périmètre" });
+        }
         await db.update(communes).set({ name: commune_name, zip_code: zip_code ?? existing.zip_code ?? "", updated_at: new Date() }).where(eq(communes.id, existing.id));
         commune = existing;
       }
@@ -1075,7 +1173,7 @@ async function runIngestJob(job: IngestJob): Promise<void> {
     const seg = job.segments[segmentIndex]!;
     const zone = seg.zones.find((z) => z.code === zoneCode)!;
     const batch = zone.batches[batchIndex]!;
-    const blocks = renderPagesAsBlocksFor(seg.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
+    const blocks = await renderPagesAsBlocksFor(seg.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
     const ruleMsg = await callAi(
       { purpose: "plu_rule_extract", userId: job.userId, communeId: job.commune.id },
       {
@@ -1284,6 +1382,11 @@ adminRouter.get("/admin/ingest-plu-pdf/status", async (req: AuthRequest, res) =>
   if (!jobId) return res.status(400).json({ error: "jobId requis" });
   const job = INGEST_JOBS.get(jobId);
   if (!job) return res.status(404).json({ error: "Job introuvable ou expiré" });
+  // Un job d'ingestion n'est consultable que par son initiateur (ou un admin) :
+  // sinon un autre agent pourrait suivre/lire un job via un jobId deviné.
+  if (req.user!.role !== "admin" && job.userId !== req.user!.id) {
+    return res.status(404).json({ error: "Job introuvable ou expiré" });
+  }
 
   // Une entrée par (segment, zone). Le front somme total_batches/done_batches
   // pour la barre de progression — l'agrégation par somme reste correcte même

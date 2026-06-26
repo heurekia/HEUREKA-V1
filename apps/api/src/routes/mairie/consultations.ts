@@ -3,15 +3,27 @@ import { db } from "../../db.js";
 import { dossiers, communes, regulatory_documents, dossier_consultations, external_services, service_communes, dossier_messages } from "@heureka-v1/db";
 import { eq, desc, and, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
+import { documentInScope } from "../../middlewares/regulatoryScope.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 
 export const consultationsRouter = Router();
 
+// Les routes /documents* adressent le référentiel réglementaire par commune ou
+// par :id : hors préfixe /dossiers/:id, elles échappent à enforceDossierAccess
+// et doivent vérifier elles-mêmes le périmètre commune.
+
 // ── Référentiel documentaire par commune ──────────────────────────────────────
 
-consultationsRouter.get("/documents", async (req: AuthRequest, res) => {
+consultationsRouter.get("/documents", requirePermission("consultations.read"), async (req: AuthRequest, res) => {
   try {
     const communeName = req.query.commune as string | undefined;
     if (!communeName) return res.status(400).json({ error: "Paramètre commune requis" });
+
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    if (!communeInScope(communeName, scope)) {
+      return res.status(403).json({ error: "Commune hors de votre périmètre" });
+    }
 
     const [commune] = await db.select({ id: communes.id })
       .from(communes).where(ilike(communes.name, communeName)).limit(1);
@@ -43,7 +55,7 @@ consultationsRouter.get("/documents", async (req: AuthRequest, res) => {
   }
 });
 
-consultationsRouter.post("/documents", async (req: AuthRequest, res) => {
+consultationsRouter.post("/documents", requirePermission("consultations.documents"), async (req: AuthRequest, res) => {
   try {
     const { commune_name, type, name, original_filename, file_size, pdf_base64, synthese } = req.body as {
       commune_name: string;
@@ -62,6 +74,11 @@ consultationsRouter.post("/documents", async (req: AuthRequest, res) => {
     const [commune] = await db.select({ id: communes.id, insee_code: communes.insee_code, name: communes.name })
       .from(communes).where(ilike(communes.name, commune_name)).limit(1);
     if (!commune) return res.status(404).json({ error: "Commune introuvable" });
+
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    if (!communeInScope(commune.name, scope)) {
+      return res.status(403).json({ error: "Commune hors de votre périmètre" });
+    }
 
     const [doc] = await db.insert(regulatory_documents).values({
       commune_id: commune.id,
@@ -129,8 +146,12 @@ consultationsRouter.post("/documents", async (req: AuthRequest, res) => {
 //    l'instruction.
 //  - Passer à "valide" exige un utilisateur authentifié (validated_by) et
 //    horodate la décision (validated_at) — c'est l'amorce de l'audit trail.
-consultationsRouter.patch("/documents/:id", async (req: AuthRequest, res) => {
+consultationsRouter.patch("/documents/:id", requirePermission("consultations.documents"), async (req: AuthRequest, res) => {
   try {
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    if (!(await documentInScope(req.params.id as string, scope))) {
+      return res.status(404).json({ error: "Document introuvable" });
+    }
     const { synthese, name, validation_status } = req.body as {
       synthese?: string | null;
       name?: string;
@@ -189,9 +210,13 @@ consultationsRouter.patch("/documents/:id", async (req: AuthRequest, res) => {
   }
 });
 
-consultationsRouter.delete("/documents/:id", async (req: AuthRequest, res) => {
+consultationsRouter.delete("/documents/:id", requirePermission("consultations.documents"), async (req: AuthRequest, res) => {
   try {
     const documentId = req.params.id as string;
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    if (!(await documentInScope(documentId, scope))) {
+      return res.status(404).json({ error: "Document introuvable" });
+    }
     // Nettoyer l'index RAG avant de supprimer la ligne : sinon on laisse des
     // segments orphelins pointant vers un source_id qui n'existe plus.
     try {
@@ -212,9 +237,13 @@ consultationsRouter.delete("/documents/:id", async (req: AuthRequest, res) => {
 // Comparer du viewer d'instruction qui charge un PLU / PPRI / OAP à côté de
 // la pièce du pétitionnaire. Content-Disposition inline pour que le viewer
 // navigateur le rende sans déclencher de téléchargement.
-consultationsRouter.get("/documents/:id/pdf", async (req: AuthRequest, res) => {
+consultationsRouter.get("/documents/:id/pdf", requirePermission("consultations.read"), async (req: AuthRequest, res) => {
   try {
     const documentId = req.params.id as string;
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    if (!(await documentInScope(documentId, scope))) {
+      return res.status(404).json({ error: "PDF indisponible" });
+    }
     const [doc] = await db
       .select({
         pdf_content: regulatory_documents.pdf_content,
@@ -239,7 +268,7 @@ consultationsRouter.get("/documents/:id/pdf", async (req: AuthRequest, res) => {
 // Documents thématiques de la commune du dossier, retournés avec leur synthèse
 // pour servir de support à l'instruction (l'outil les consulte avant d'analyser
 // la conformité d'une demande).
-consultationsRouter.get("/dossiers/:id/commune-documents", async (req: AuthRequest, res) => {
+consultationsRouter.get("/dossiers/:id/commune-documents", requirePermission("consultations.read"), async (req: AuthRequest, res) => {
   try {
     const [dossier] = await db.select({ commune: dossiers.commune })
       .from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
@@ -277,7 +306,7 @@ consultationsRouter.get("/dossiers/:id/commune-documents", async (req: AuthReque
 // peupler le sélecteur "Missionner un service" côté instructeur : seuls ces
 // services disposent d'un compte capable de recevoir la consultation et de
 // répondre dans la messagerie. On renvoie aussi le type pour l'affichage.
-consultationsRouter.get("/dossiers/:id/available-services", async (req: AuthRequest, res) => {
+consultationsRouter.get("/dossiers/:id/available-services", requirePermission("consultations.read"), async (req: AuthRequest, res) => {
   try {
     const [dossierRow] = await db.select({ commune: dossiers.commune })
       .from(dossiers).where(eq(dossiers.id, req.params.id as string)).limit(1);
@@ -307,7 +336,7 @@ consultationsRouter.get("/dossiers/:id/available-services", async (req: AuthRequ
   }
 });
 
-consultationsRouter.get("/dossiers/:id/consultations", async (req: AuthRequest, res) => {
+consultationsRouter.get("/dossiers/:id/consultations", requirePermission("consultations.read"), async (req: AuthRequest, res) => {
   try {
     const rows = await db
       .select()
@@ -321,7 +350,7 @@ consultationsRouter.get("/dossiers/:id/consultations", async (req: AuthRequest, 
   }
 });
 
-consultationsRouter.post("/dossiers/:id/consultations", async (req: AuthRequest, res) => {
+consultationsRouter.post("/dossiers/:id/consultations", requirePermission("consultations.create"), async (req: AuthRequest, res) => {
   try {
     const { service_name, service_type, avis, external_service_id, message } = req.body as {
       service_name: string;
@@ -394,7 +423,7 @@ consultationsRouter.post("/dossiers/:id/consultations", async (req: AuthRequest,
   }
 });
 
-consultationsRouter.patch("/dossiers/:id/consultations/:consultationId", async (req: AuthRequest, res) => {
+consultationsRouter.patch("/dossiers/:id/consultations/:consultationId", requirePermission("consultations.update"), async (req: AuthRequest, res) => {
   try {
     const { status, favorable, avis, date_reponse } = req.body as {
       status?: string;

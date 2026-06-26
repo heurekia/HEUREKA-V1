@@ -2,8 +2,10 @@ import { useState, useEffect, useCallback, useMemo, useRef, Fragment } from "rea
 import { Routes, Route, Navigate, useNavigate, useLocation, useParams } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
+import { MfaSettings } from "../../components/MfaSettings";
 import { adminPath } from "../../router/adminBase";
 import { CATEGORIES } from "@heureka-v1/shared";
+import { DocumentationAdmin } from "./DocumentationAdmin";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 interface DashboardStats {
@@ -67,6 +69,11 @@ interface UserItem {
   role_config_id: string | null;
   created_at: string;
   activation_pending: boolean;
+  // Renseignés uniquement pour les comptes de services annexes (service_externe) :
+  // service rattaché + sa catégorie (ABF, SDIS, DDT…).
+  service_id: string | null;
+  service_name: string | null;
+  service_type: string | null;
 }
 
 interface InseeCandidate {
@@ -304,6 +311,9 @@ function RoleBadge({ role }: { role: string }) {
   if (role === "admin") return <Badge label="Admin" color={C.purple} bg={C.purpleBg} />;
   if (role === "mairie") return <Badge label="Mairie" color={C.blue} bg={C.blueBg} />;
   if (role === "instructeur") return <Badge label="Instructeur" color={C.green} bg={C.greenBg} />;
+  // Services annexes (ABF, SDIS, DDT…) : sans cas dédié, ces comptes
+  // retombaient sur le badge « Citoyen » et apparaissaient à tort comme tels.
+  if (role === "service_externe") return <Badge label="Service annexe" color={C.orange} bg={C.orangeBg} />;
   return <Badge label="Citoyen" color={C.textMuted} bg={C.bg} />;
 }
 
@@ -402,6 +412,12 @@ const navGroups: NavGroup[] = [
     items: [
       { path: adminPath("/audit"), icon: "🔒", label: "Audit sécurité" },
       { path: adminPath("/conformite"), icon: "🛡", label: "Conformité RGPD" },
+    ],
+  },
+  {
+    title: "Contenu",
+    items: [
+      { path: adminPath("/documentation"), icon: "📚", label: "Centre d'aide" },
     ],
   },
   {
@@ -2837,25 +2853,28 @@ function Utilisateurs() {
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const [showModal, setShowModal] = useState(false);
   const [filterCommune, setFilterCommune] = useState("");
-  const [activeTab, setActiveTab] = useState<"tous" | "mairie" | "instructeur" | "citoyen" | "admin">("tous");
+  const [activeTab, setActiveTab] = useState<"tous" | "mairie" | "instructeur" | "citoyen" | "admin" | "service_externe">("tous");
   const [search, setSearch] = useState("");
-  const [editRole, setEditRole] = useState<{ id: string; role: string } | null>(null);
+  const [editRole, setEditRole] = useState<{ id: string; role: string; role_config_id: string } | null>(null);
   const [communesModal, setCommunesModal] = useState<{ id: string; name: string } | null>(null);
   const [userCommuneIds, setUserCommuneIds] = useState<Set<string>>(new Set());
   const [formCommuneIds, setFormCommuneIds] = useState<Set<string>>(new Set());
-  const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
+  const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "", role_config_id: "" });
+  const [roleConfigs, setRoleConfigs] = useState<RolePermission[]>([]);
   const [resendingId, setResendingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     const params = new URLSearchParams();
     if (filterCommune) params.set("commune", filterCommune);
-    const [users, communes] = await Promise.all([
+    const [users, communes, roles] = await Promise.all([
       api.get<UserItem[]>(`/admin/users?${params.toString()}`),
       api.get<Commune[]>("/admin/communes"),
+      api.get<RolePermission[]>("/admin/roles"),
     ]);
     setUsersData(users);
     setAllCommunes(communes);
+    setRoleConfigs(roles);
     setLoading(false);
   }, [filterCommune]);
 
@@ -2867,6 +2886,7 @@ function Utilisateurs() {
     instructeur: usersData.filter((u) => u.role === "instructeur").length,
     citoyen: usersData.filter((u) => u.role === "citoyen").length,
     admin: usersData.filter((u) => u.role === "admin").length,
+    service_externe: usersData.filter((u) => u.role === "service_externe").length,
   };
 
   const filtered = usersData.filter((u) => {
@@ -2881,10 +2901,10 @@ function Utilisateurs() {
       setToast({ msg: "Tous les champs obligatoires sont requis", type: "error" }); return;
     }
     try {
-      await api.post("/admin/users", { ...form, communeIds: [...formCommuneIds] });
+      await api.post("/admin/users", { ...form, role_config_id: form.role_config_id || null, communeIds: [...formCommuneIds] });
       setToast({ msg: `Invitation envoyée à ${form.email} — lien valable 7 jours.`, type: "success" });
       setShowModal(false);
-      setForm({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
+      setForm({ prenom: "", nom: "", email: "", role: "mairie", telephone: "", role_config_id: "" });
       setFormCommuneIds(new Set());
       load();
     } catch (e) {
@@ -2904,9 +2924,9 @@ function Utilisateurs() {
     }
   };
 
-  const handleRoleUpdate = async (id: string, role: string) => {
+  const handleRoleUpdate = async (id: string, role: string, role_config_id: string) => {
     try {
-      await api.patch(`/admin/users/${id}`, { role });
+      await api.patch(`/admin/users/${id}`, { role, role_config_id: role_config_id || null });
       setToast({ msg: "Rôle mis à jour", type: "success" });
       setEditRole(null);
       load();
@@ -2979,6 +2999,7 @@ function Utilisateurs() {
           { key: "mairie", label: "Mairie", icon: "🏛", color: C.blue, bg: C.blueBg },
           { key: "instructeur", label: "Instructeurs", icon: "📋", color: C.green, bg: C.greenBg },
           { key: "citoyen", label: "Citoyens", icon: "🏠", color: "#D97706", bg: "#FEF3C7" },
+          { key: "service_externe", label: "Services annexes", icon: "🏢", color: C.orange, bg: C.orangeBg },
           { key: "admin", label: "Admins", icon: "⭐", color: C.purple, bg: C.purpleBg },
         ];
         return (
@@ -3071,10 +3092,16 @@ function Utilisateurs() {
                   <td style={{ padding: "12px 16px", color: C.textMuted, fontSize: 13 }}>{u.email}</td>
                   <td style={{ padding: "12px 16px" }}>
                     {editRole?.id === u.id ? (
-                      <div style={{ display: "flex", gap: 6, alignItems: "center" }}>
+                      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
                         <select
                           value={editRole.role}
-                          onChange={(e) => setEditRole({ ...editRole, role: e.target.value })}
+                          onChange={(e) => {
+                            // Changer de rôle de base : on ne garde un rôle
+                            // personnalisé que pour mairie / instructeur.
+                            const role = e.target.value;
+                            const keepConfig = role === "mairie" || role === "instructeur";
+                            setEditRole({ ...editRole, role, role_config_id: keepConfig ? editRole.role_config_id : "" });
+                          }}
                           style={{ padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, color: C.text, background: C.white, outline: "none" }}
                         >
                           <option value="admin">Admin</option>
@@ -3082,13 +3109,43 @@ function Utilisateurs() {
                           <option value="instructeur">Instructeur</option>
                           <option value="citoyen">Citoyen</option>
                         </select>
-                        <button onClick={() => handleRoleUpdate(u.id, editRole.role)} style={{ padding: "4px 10px", background: C.green, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓</button>
+                        {(editRole.role === "mairie" || editRole.role === "instructeur") && (
+                          <select
+                            value={editRole.role_config_id}
+                            onChange={(e) => {
+                              // Sélectionner un rôle personnalisé aligne le rôle
+                              // de base sur celui défini par le profil.
+                              const id = e.target.value;
+                              const rc = roleConfigs.find((r) => r.id === id);
+                              setEditRole({ ...editRole, role_config_id: id, role: rc ? rc.base_role : editRole.role });
+                            }}
+                            style={{ padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, color: C.text, background: C.white, outline: "none", maxWidth: 170 }}
+                          >
+                            <option value="">— Rôle personnalisé —</option>
+                            {roleConfigs.map((rc) => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
+                          </select>
+                        )}
+                        <button onClick={() => handleRoleUpdate(u.id, editRole.role, editRole.role_config_id)} style={{ padding: "4px 10px", background: C.green, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓</button>
                         <button onClick={() => setEditRole(null)} style={{ padding: "4px 8px", background: C.bg, border: `1px solid ${C.border}`, borderRadius: 6, cursor: "pointer", fontSize: 12 }}>✕</button>
                       </div>
                     ) : (
-                      <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                         <RoleBadge role={u.role} />
-                        <button onClick={() => setEditRole({ id: u.id, role: u.role })} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, fontSize: 12, padding: 2 }}>✏️</button>
+                        {/* Catégorie du service annexe (ABF, SDIS, DDT…) + nom du service en infobulle. */}
+                        {u.role === "service_externe" && u.service_type && (
+                          <span title={u.service_name ?? undefined} style={{ padding: "2px 8px", borderRadius: 6, background: C.orangeBg, color: C.orange, fontSize: 11, fontWeight: 700 }}>
+                            {u.service_type}
+                          </span>
+                        )}
+                        {(() => {
+                          const rc = u.role_config_id ? roleConfigs.find((r) => r.id === u.role_config_id) : null;
+                          return rc ? <span style={{ padding: "2px 8px", borderRadius: 6, background: `${rc.color}20`, color: rc.color, fontSize: 11, fontWeight: 700 }}>{rc.label}</span> : null;
+                        })()}
+                        {/* Le rôle des services annexes se gère depuis « Services Annexes »
+                            (le sélecteur de rôle ne couvre que les comptes agents). */}
+                        {u.role !== "service_externe" && (
+                          <button onClick={() => setEditRole({ id: u.id, role: u.role, role_config_id: u.role_config_id ?? "" })} style={{ background: "none", border: "none", cursor: "pointer", color: C.textLight, fontSize: 12, padding: 2 }}>✏️</button>
+                        )}
                       </div>
                     )}
                   </td>
@@ -3144,14 +3201,34 @@ function Utilisateurs() {
             <Field label="Email *">
               <Input type="email" value={form.email} onChange={(v) => setForm({ ...form, email: v })} />
             </Field>
-            <Field label="Rôle *">
-              <Select value={form.role} onChange={(v) => setForm({ ...form, role: v })}>
-                <option value="admin">Admin</option>
-                <option value="mairie">Mairie</option>
-                <option value="instructeur">Instructeur</option>
-                <option value="citoyen">Citoyen</option>
-              </Select>
-            </Field>
+            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <Field label="Rôle *">
+                <Select value={form.role} onChange={(v) => setForm({ ...form, role: v, role_config_id: (v === "mairie" || v === "instructeur") ? form.role_config_id : "" })}>
+                  <option value="admin">Admin</option>
+                  <option value="mairie">Mairie</option>
+                  <option value="instructeur">Instructeur</option>
+                  <option value="citoyen">Citoyen</option>
+                </Select>
+              </Field>
+              <Field label="Rôle personnalisé">
+                {(form.role === "mairie" || form.role === "instructeur") ? (
+                  <Select
+                    value={form.role_config_id}
+                    onChange={(v) => {
+                      const rc = roleConfigs.find((r) => r.id === v);
+                      setForm({ ...form, role_config_id: v, role: rc ? rc.base_role : form.role });
+                    }}
+                  >
+                    <option value="">— Aucun —</option>
+                    {roleConfigs.map((rc) => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
+                  </Select>
+                ) : (
+                  <Select value="" onChange={() => {}} disabled>
+                    <option value="">— Non applicable —</option>
+                  </Select>
+                )}
+              </Field>
+            </div>
             <Field label={`Communes${formCommuneIds.size > 0 ? ` (${formCommuneIds.size} sélectionnée${formCommuneIds.size > 1 ? "s" : ""})` : ""}`}>
               <CoverageSelector allCommunes={allCommunes} selectedIds={formCommuneIds} onChange={setFormCommuneIds} />
             </Field>
@@ -3198,27 +3275,64 @@ function Utilisateurs() {
 
 // ─── Rôles & Permissions ──────────────────────────────────────────────────────
 const PERMISSION_MODULES = [
+  { group: "Tableau de bord", items: [
+    { key: "dashboard",  label: "Tableau de bord", desc: "Accès à la vue d'ensemble de la commune" },
+  ]},
   { group: "Dossiers", items: [
-    { key: "dossiers.read",     label: "Consulter les dossiers",  desc: "Voir la liste et le détail des dossiers" },
-    { key: "dossiers.instruct", label: "Instruire",               desc: "Changer le statut, ajouter des événements" },
-    { key: "dossiers.decision", label: "Émettre une décision",    desc: "Accepter, refuser ou prescrire un dossier" },
+    { key: "dossiers.read",     label: "Consulter les dossiers",       desc: "Liste, détail, terrain, chronologie" },
+    { key: "dossiers.create",   label: "Créer un dossier",             desc: "Enregistrer une nouvelle demande (guichet, OCR CERFA)" },
+    { key: "dossiers.status",   label: "Changer le statut",            desc: "Faire avancer le dossier dans le workflow" },
+    { key: "dossiers.deadline", label: "Modifier les délais",          desc: "Ajuster les échéances réglementaires" },
+    { key: "dossiers.edit",     label: "Modifier le dossier",          desc: "Type, adresse et informations du dossier" },
+    { key: "dossiers.invite",   label: "Inviter le pétitionnaire",     desc: "Créer un accès pétitionnaire au dossier" },
+    { key: "dossiers.assign",   label: "Affecter / prendre en charge", desc: "S'attribuer un dossier ou l'assigner à un agent" },
+    { key: "dossiers.decision", label: "Émettre une décision",         desc: "Rédiger et soumettre l'arrêté (accord, refus, prescriptions)" },
+    { key: "dossiers.delete",   label: "Supprimer un dossier",         desc: "Suppression définitive d'un dossier" },
+  ]},
+  { group: "Pièces", items: [
+    { key: "pieces.read",     label: "Consulter les pièces", desc: "Voir et télécharger les pièces jointes" },
+    { key: "pieces.upload",   label: "Déposer des pièces",   desc: "Téléverser des pièces au dossier" },
+    { key: "pieces.validate", label: "Classer / valider",    desc: "Classification et statut des pièces" },
+    { key: "pieces.annotate", label: "Annoter les pièces",   desc: "Annotations et marquage sur les pièces" },
+    { key: "pieces.extract",  label: "Extraction OCR",       desc: "Lancer l'extraction automatique d'une pièce" },
+  ]},
+  { group: "Conformité", items: [
+    { key: "conformite.read", label: "Consulter la conformité", desc: "Voir l'analyse réglementaire du dossier" },
+    { key: "conformite.run",  label: "Lancer l'analyse",        desc: "Déclencher l'analyse de conformité (working + finale)" },
+  ]},
+  { group: "Courriers", items: [
+    { key: "courriers.read",      label: "Consulter les courriers", desc: "Voir les courriers et modèles de la commune" },
+    { key: "courriers.generate",  label: "Générer un courrier",     desc: "Produire un courrier sur un dossier (pièces complémentaires…)" },
+    { key: "courriers.templates", label: "Gérer les modèles",       desc: "Créer / modifier les modèles de courrier et l'en-tête" },
+  ]},
+  { group: "Services annexes", items: [
+    { key: "consultations.read",      label: "Consulter les consultations", desc: "Voir les consultations de services et leurs avis" },
+    { key: "consultations.create",    label: "Lancer une consultation",     desc: "Missionner un service annexe" },
+    { key: "consultations.update",    label: "Mettre à jour un avis",       desc: "Marquer un avis reçu / changer le statut" },
+    { key: "consultations.documents", label: "Documents de service",        desc: "Gérer les documents des services annexes" },
   ]},
   { group: "Communication", items: [
-    { key: "messagerie", label: "Messagerie",  desc: "Envoyer et recevoir des messages" },
-    { key: "documents",  label: "Documents",   desc: "Consulter et télécharger les pièces jointes" },
+    { key: "messagerie.read", label: "Lire la messagerie",   desc: "Consulter les échanges pétitionnaire & services" },
+    { key: "messagerie.send", label: "Envoyer des messages", desc: "Répondre au pétitionnaire et aux services" },
   ]},
   { group: "Planification", items: [
-    { key: "calendrier", label: "Calendrier",     desc: "Gérer les événements et délais réglementaires" },
-    { key: "stats",      label: "Statistiques",   desc: "Tableaux de bord et indicateurs" },
-    { key: "dashboard",  label: "Tableau de bord",desc: "Accès au dashboard de la commune" },
+    { key: "calendrier.read", label: "Consulter le calendrier", desc: "Voir les événements et échéances" },
+    { key: "calendrier.edit", label: "Gérer le calendrier",     desc: "Créer et modifier des événements" },
+    { key: "stats",           label: "Statistiques",            desc: "Indicateurs et tableaux de suivi" },
   ]},
-  { group: "Réglementation", items: [
-    { key: "zones.read", label: "Consulter le PLU", desc: "Accès en lecture au règlement de zonage" },
-    { key: "zones.edit", label: "Modifier le PLU",  desc: "Créer et éditer les zones et règles PLU" },
+  { group: "Réglementation (PLU)", items: [
+    { key: "zones.read",     label: "Consulter le PLU",            desc: "Carte et règlement de zonage en lecture" },
+    { key: "zones.edit",     label: "Modifier le PLU",             desc: "Zones et règles du règlement" },
+    { key: "zones.import",   label: "Importer un PLU",             desc: "Ingestion d'un règlement PLU (PDF)" },
+    { key: "zones.annotate", label: "Annoter le règlement",        desc: "Annotations sur les documents réglementaires" },
+    { key: "documentation",  label: "Documentation réglementaire", desc: "Recherche documentaire et favoris sur un dossier" },
   ]},
   { group: "Administration", items: [
-    { key: "utilisateurs", label: "Gestion des agents",   desc: "Créer, modifier et désactiver les agents" },
-    { key: "parametres",   label: "Paramètres commune",   desc: "Modifier les informations de la commune" },
+    { key: "utilisateurs.read",   label: "Voir les agents",      desc: "Consulter la liste des agents de la commune" },
+    { key: "utilisateurs.manage", label: "Gérer les agents",     desc: "Créer, modifier et désactiver les agents" },
+    { key: "parametres",          label: "Paramètres commune",   desc: "Modifier les informations de la commune" },
+    { key: "signataires.read",    label: "Voir les signataires", desc: "Consulter les signataires d'arrêtés" },
+    { key: "signataires.manage",  label: "Gérer les signataires",desc: "Habiliter et gérer les signataires d'arrêtés" },
   ]},
 ];
 
@@ -4139,6 +4253,11 @@ function Configuration() {
         <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>Paramètres avancés de la plateforme</p>
       </div>
 
+      {/* ── Sécurité de mon compte (double authentification) ── */}
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, padding: 24, marginBottom: 24 }}>
+        <MfaSettings />
+      </div>
+
       {/* ── Demandes d'articles manquants (issues des clics utilisateurs) ── */}
       <MissingArticlesPanel
         onCreated={(row) => setArticles(prev => [...prev.filter(a => a.id !== row.id), row].sort((a, b) => a.article_ref.localeCompare(b.article_ref)))}
@@ -4766,8 +4885,8 @@ function ServicesAnnexes() {
       loadUsers(selected.id);
       loadServices();
     } catch (err: unknown) {
-      const msg = (err as { message?: string }).message ?? "";
-      showToast(msg.includes("409") ? "Cet email est déjà utilisé" : "Erreur lors de la création", "error");
+      const conflict = err instanceof ApiError && err.status === 409;
+      showToast(conflict ? "Cet email est déjà utilisé" : "Erreur lors de la création", "error");
     } finally {
       setSaving(false);
     }
@@ -7942,6 +8061,7 @@ export function SuperAdminApp() {
           <Route path="/facturation" element={<Facturation />} />
           <Route path="/audit" element={<AuditLogs />} />
           <Route path="/conformite" element={<Conformite />} />
+          <Route path="/documentation" element={<DocumentationAdmin />} />
           <Route path="/site" element={<SitePublic />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="*" element={<Navigate to={adminPath()} replace />} />

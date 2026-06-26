@@ -5,10 +5,16 @@ import { z } from "zod";
 import { db } from "../db.js";
 import { users, dossiers, dossier_messages, dossier_pieces_jointes, notifications, password_tokens, ai_usage_events, audit_logs } from "@heureka-v1/db";
 import { eq, and, gt, isNull, inArray } from "drizzle-orm";
-import { generateToken, requireAuth, type AuthRequest } from "../middlewares/auth.js";
+import { generateToken, requireAuth, bumpTokenVersion, issueMfaTicket, verifyMfaTicket, type AuthRequest } from "../middlewares/auth.js";
+import { getEffectivePermissions } from "../middlewares/permissions.js";
 import { sendPasswordResetEmail, sendVerificationEmail } from "../services/mailer.js";
 import { logAudit } from "../services/audit.js";
-import { getStorageProvider } from "../services/storage.js";
+import { eraseCitizenAccount } from "../services/accountLifecycle.js";
+import { loadCerfaProfile, saveCerfaProfile, clearCerfaProfile } from "../services/cerfaProfile.js";
+import {
+  generateTotpSecret, totpKeyUri, totpQrDataUrl, verifyTotp,
+  encryptSecret, decryptSecret, generateBackupCodes, consumeBackupCode,
+} from "../services/mfa.js";
 import crypto from "crypto";
 
 export const authRouter = Router();
@@ -196,6 +202,13 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
       await writeAudit(null, email, "login_failed", req);
       return res.status(401).json({ error: "Email ou mot de passe incorrect" });
     }
+    // Compte désactivé (offboarding d'un agent/admin) : connexion refusée même
+    // si le mot de passe est correct. Vérifié APRÈS le mot de passe pour ne pas
+    // révéler le statut du compte à une tentative non authentifiée.
+    if (user.deactivated_at) {
+      await writeAudit(user.id, user.email, "login_deactivated", req);
+      return res.status(403).json({ error: "Ce compte a été désactivé. Contactez votre administrateur." });
+    }
     // Email non confirmé → on bloque la session. Le code `email_not_verified`
     // permet au front de proposer le renvoi du lien de vérification.
     if (!user.email_verified_at) {
@@ -205,7 +218,14 @@ authRouter.post("/login", loginLimiter, async (req: AuthRequest, res) => {
         code: "email_not_verified",
       });
     }
-    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
+    // MFA activée : le mot de passe est bon mais on n'ouvre PAS la session ;
+    // on renvoie un ticket court (preuve mot-de-passe-OK) à présenter avec un
+    // code TOTP à /auth/mfa/login-verify.
+    if (user.mfa_enabled) {
+      await writeAudit(user.id, user.email, "login_mfa_challenge", req);
+      return res.json({ mfa_required: true, mfa_ticket: issueMfaTicket(user.id) });
+    }
+    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: user.token_version });
     res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, "login", req);
@@ -247,6 +267,10 @@ authRouter.get("/me/export", requireAuth, async (req: AuthRequest, res) => {
       ? await db.select().from(ai_usage_events).where(inArray(ai_usage_events.dossier_id, dossierIds))
       : [];
 
+    // RGPD : profil CERFA mémorisé (déchiffré) + horodatage du consentement à
+    // sa mémorisation. NULL si le citoyen n'a jamais coché « Mémoriser ».
+    const cerfaProfile = await loadCerfaProfile(userId);
+
     const payload = {
       export_date: new Date().toISOString(),
       export_note: "Export complet de vos données conformément au droit d'accès RGPD (art. 15) et au droit à la portabilité (art. 20). Contactez le DPD pour toute question.",
@@ -260,6 +284,11 @@ authRouter.get("/me/export", requireAuth, async (req: AuthRequest, res) => {
         telephone: user.telephone,
         created_at: user.created_at,
       },
+      // RGPD : profil CERFA mémorisé pour le pré-remplissage (état civil
+      // réutilisable). `null` si aucune mémorisation. Le consentement à cette
+      // mémorisation est horodaté séparément (art. 6-1-a).
+      profil_cerfa_memorise: cerfaProfile.profile,
+      profil_cerfa_consentement_date: cerfaProfile.consent_at,
       // RGPD : exposition explicite du consentement à l'analyse IA + son
       // horodatage, pour chaque dossier. Le citoyen voit s'il a accepté ou
       // refusé l'analyse automatisée.
@@ -315,6 +344,18 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
 
+    // Comptes professionnels (mairie/instructeur/admin/service_externe) : la
+    // suppression en libre-service échouerait sur des FK conservées pour raisons
+    // légales/d'audit (dossiers instruits, décisions signées — ON DELETE RESTRICT)
+    // et renvoyait jusqu'ici un 500 opaque. Ces comptes sont gérés par
+    // l'administrateur ; la purge passe par le flux admin (réassignation des
+    // références). On renvoie donc un message explicite plutôt qu'un échec brut.
+    if (user.role !== "citoyen") {
+      return res.status(409).json({
+        error: "Les comptes professionnels sont gérés par votre administrateur. Pour la suppression de votre compte, contactez votre administrateur ou le délégué à la protection des données (DPD).",
+      });
+    }
+
     // Compte « 100 % FranceConnect » : aucun mot de passe local à vérifier.
     // La suppression par ce flux (qui exige le mot de passe) n'est pas
     // applicable — l'utilisateur devra passer par une procédure dédiée.
@@ -324,32 +365,18 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
     const valid = await bcrypt.compare(password, user.password_hash);
     if (!valid) return res.status(401).json({ error: "Mot de passe incorrect" });
 
-    // RGPD art. 17 (droit à l'effacement) : le simple DELETE en DB laisse les
-    // fichiers physiques (PDF, plans, photos) sur disque/S3 → fuite de données.
-    // On les supprime AVANT le DELETE en base via l'abstraction StorageProvider
-    // qui gère indifféremment local et S3-compatible.
-    const storage = getStorageProvider();
-    const userPieces = await db
-      .select({ url: dossier_pieces_jointes.url })
-      .from(dossier_pieces_jointes)
-      .where(eq(dossier_pieces_jointes.user_id, user.id));
-    const keys = userPieces
-      .map((p) => p.url)
-      .filter((u): u is string => !!u)
-      .map((u) => storage.keyFromUrl(u));
-    const { deleted: filesDeleted, failed: filesFailed } = await storage.removeBulk(keys);
-    if (filesFailed > 0) {
-      console.warn(`[rgpd] suppression compte ${user.id} : ${filesFailed} fichiers en échec sur ${keys.length}`);
-    }
-
     await writeAudit(user.id, user.email, "account_deleted", req);
-    // La cascade DB supprime dossiers → pieces → messages → notifications.
-    // audit_logs.user_id est ON DELETE SET NULL (préservé pour la sécurité).
-    await db.delete(users).where(eq(users.id, user.id));
+    // Effacement RGPD art. 17 : fichiers + pièces + cascade DB. Centralisé dans
+    // accountLifecycle.eraseCitizenAccount pour rester STRICTEMENT identique à la
+    // suppression d'un citoyen côté super-admin — la divergence des deux
+    // implémentations avait laissé passer un 500 (la FK NOT NULL sans cascade
+    // dossier_pieces_jointes.user_id bloquait le DELETE users tant que les pièces
+    // n'étaient pas effacées d'abord ; cf. le commentaire dans le service).
+    const { files_deleted, files_failed } = await eraseCitizenAccount(user.id);
 
     res.clearCookie(cookieNameFor(req), COOKIE_CLEAR_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
-    res.json({ ok: true, files_deleted: filesDeleted, files_failed: filesFailed });
+    res.json({ ok: true, files_deleted, files_failed });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -358,15 +385,76 @@ authRouter.delete("/me", requireAuth, async (req: AuthRequest, res) => {
 
 authRouter.patch("/me", requireAuth, async (req: AuthRequest, res) => {
   try {
-    const { prenom, nom, telephone } = req.body as { prenom?: string; nom?: string; telephone?: string };
+    const { prenom, nom, telephone, notification_prefs } = req.body as { prenom?: string; nom?: string; telephone?: string; notification_prefs?: Record<string, unknown> };
     const update: Record<string, unknown> = { updated_at: new Date() };
     if (prenom?.trim()) update.prenom = prenom.trim();
     if (nom?.trim()) update.nom = nom.trim();
     if (telephone !== undefined) update.telephone = telephone?.trim() || null;
+    // Préférences de notification : on n'accepte qu'une map plate { type: bool }.
+    // Toute valeur non booléenne est ignorée pour ne pas stocker de structure
+    // arbitraire fournie par le client.
+    if (notification_prefs && typeof notification_prefs === "object" && !Array.isArray(notification_prefs)) {
+      const clean: Record<string, boolean> = {};
+      for (const [k, v] of Object.entries(notification_prefs)) {
+        if (typeof v === "boolean") clean[k] = v;
+      }
+      update.notification_prefs = clean;
+    }
     const [updated] = await db.update(users).set(update).where(eq(users.id, req.user!.id)).returning();
     if (!updated) return res.status(404).json({ error: "Utilisateur non trouvé" });
     await writeAudit(req.user!.id, req.user!.email, "profile_update", req);
-    res.json({ id: updated.id, email: updated.email, prenom: updated.prenom, nom: updated.nom, role: updated.role, commune: updated.commune, commune_insee: updated.commune_insee, telephone: updated.telephone, avatar_url: updated.avatar_url });
+    res.json({ id: updated.id, email: updated.email, prenom: updated.prenom, nom: updated.nom, role: updated.role, commune: updated.commune, commune_insee: updated.commune_insee, telephone: updated.telephone, avatar_url: updated.avatar_url, notification_prefs: updated.notification_prefs });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── Profil CERFA mémorisé (RGPD — confort de pré-remplissage, citoyens) ──────
+// Sous-ensemble STABLE de l'état civil saisi au step 5, réutilisable d'une
+// demande à l'autre. Mémorisation = opt-in révocable (consentement art. 6-1-a),
+// chiffrée au repos. Réservée aux citoyens : les comptes pros ne déposent pas.
+
+// Lecture pour le pré-remplissage du tunnel. Renvoie `{ profile: null }` tant
+// que le citoyen n'a rien mémorisé.
+authRouter.get("/me/cerfa-profile", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user!.role !== "citoyen") return res.json({ profile: null, consent_at: null });
+    const { profile, consent_at } = await loadCerfaProfile(req.user!.id);
+    res.json({ profile, consent_at });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Mémorisation (opt-in). Le service minimise l'entrée à la liste blanche : un
+// champ projet envoyé par erreur n'est jamais stocké. Un profil minimisé vide
+// vaut révocation.
+authRouter.put("/me/cerfa-profile", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    if (req.user!.role !== "citoyen") {
+      return res.status(403).json({ error: "Mémorisation réservée aux comptes citoyens." });
+    }
+    const profileInput = (req.body as { profile?: Record<string, unknown> })?.profile;
+    if (!profileInput || typeof profileInput !== "object" || Array.isArray(profileInput)) {
+      return res.status(400).json({ error: "Profil invalide." });
+    }
+    const saved = await saveCerfaProfile(req.user!.id, profileInput, new Date());
+    await writeAudit(req.user!.id, req.user!.email, "cerfa_profile_update", req);
+    res.json({ profile: saved, consent_at: Object.keys(saved).length > 0 ? new Date().toISOString() : null });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Révocation (retrait du consentement, art. 7-3) : efface profil + horodatage.
+authRouter.delete("/me/cerfa-profile", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    await clearCerfaProfile(req.user!.id);
+    await writeAudit(req.user!.id, req.user!.email, "cerfa_profile_delete", req);
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -389,6 +477,10 @@ authRouter.patch("/me/password", requireAuth, async (req: AuthRequest, res) => {
     if (!valid) return res.status(401).json({ error: "Mot de passe actuel incorrect" });
     const password_hash = await bcrypt.hash(new_password, 10);
     await db.update(users).set({ password_hash, updated_at: new Date() }).where(eq(users.id, user.id));
+    // Révocation : invalide TOUTES les sessions existantes, mais réémet le cookie
+    // de CELLE-ci pour ne pas déconnecter l'utilisateur qui change son mot de passe.
+    const newTv = await bumpTokenVersion(user.id);
+    res.cookie(cookieNameFor(req), generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: newTv }), COOKIE_OPTIONS);
     await writeAudit(user.id, user.email, "password_change", req);
     res.json({ ok: true });
   } catch (err) {
@@ -401,6 +493,10 @@ authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {
   try {
     const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
     if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    // Permissions effectives : null = accès complet (super admin ou agent sans
+    // rôle personnalisé) ; sinon liste blanche issue du profil assigné. Le front
+    // s'en sert pour masquer la navigation / les actions non autorisées.
+    const permSet = await getEffectivePermissions(user.id, user.role);
     res.json({
       id: user.id,
       email: user.email,
@@ -413,6 +509,11 @@ authRouter.get("/me", requireAuth, async (req: AuthRequest, res) => {
       avatar_url: user.avatar_url,
       created_at: user.created_at,
       onboarding_completed: !!user.onboarding_completed_at,
+      mfa_enabled: user.mfa_enabled,
+      // La MFA n'est proposée qu'aux comptes agents/admin.
+      mfa_available: ["mairie", "instructeur", "admin"].includes(user.role),
+      permissions: permSet === null ? null : [...permSet],
+      notification_prefs: user.notification_prefs ?? {},
     });
   } catch (err) {
     console.error(err);
@@ -481,8 +582,17 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     if (!token || !password) return res.status(400).json({ error: "Token et mot de passe requis" });
     if (passwordPolicyErrors(password).length > 0) return res.status(400).json({ error: PASSWORD_POLICY_MESSAGE });
 
+    // Cette route DÉFINIT un mot de passe : elle n'accepte que les tokens prévus
+    // pour ça (invitation « activation » ou « reset »). Un token « verification »
+    // (confirmation d'email, mot de passe déjà défini) ne doit PAS permettre de
+    // réécrire le mot de passe — il passe par /verify-email.
     const [row] = await db.select().from(password_tokens)
-      .where(and(eq(password_tokens.token, token), isNull(password_tokens.used_at), gt(password_tokens.expires_at, new Date())))
+      .where(and(
+        eq(password_tokens.token, token),
+        inArray(password_tokens.type, ["activation", "reset"]),
+        isNull(password_tokens.used_at),
+        gt(password_tokens.expires_at, new Date()),
+      ))
       .limit(1);
     if (!row) return res.status(400).json({ error: "Lien invalide ou expiré" });
 
@@ -497,7 +607,9 @@ authRouter.post("/activate", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, lega
     const [user] = await db.select().from(users).where(eq(users.id, row.user_id)).limit(1);
     if (!user) return res.status(500).json({ error: "Erreur serveur" });
 
-    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
+    // Nouveau mot de passe défini → invalide toute session antérieure.
+    const newTv = await bumpTokenVersion(user.id);
+    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: newTv });
     res.cookie(cookieNameFor(req), jwtToken, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, row.type === "activation" ? "account_activated" : "password_reset", req);
@@ -535,7 +647,7 @@ authRouter.post("/verify-email", rateLimit({ windowMs: 15 * 60 * 1000, max: 10, 
     const [user] = await db.select().from(users).where(eq(users.id, row.user_id)).limit(1);
     if (!user) return res.status(500).json({ error: "Erreur serveur" });
 
-    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined });
+    const jwtToken = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: user.token_version });
     res.cookie(cookieNameFor(req), jwtToken, COOKIE_OPTIONS);
     res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
     await writeAudit(user.id, user.email, "email_verified", req);
@@ -564,6 +676,116 @@ authRouter.post("/resend-verification", rateLimit({ windowMs: 60 * 60 * 1000, ma
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── MFA (TOTP) — opt-in, comptes agents/admin ───────────────────────────────
+const MFA_ROLES = new Set(["mairie", "instructeur", "admin"]);
+const mfaVerifyLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, max: 10, legacyHeaders: false,
+  message: { error: "Trop de tentatives. Réessayez dans 15 minutes." },
+});
+
+// Démarre la configuration : génère un secret (stocké CHIFFRÉ, non encore actif)
+// et renvoie le QR + le secret base32 pour saisie manuelle dans l'app TOTP.
+authRouter.post("/mfa/setup", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    if (!MFA_ROLES.has(user.role)) return res.status(403).json({ error: "La double authentification n'est pas disponible pour ce type de compte." });
+    if (user.mfa_enabled) return res.status(409).json({ error: "MFA déjà activée. Désactivez-la d'abord pour la reconfigurer." });
+    const secret = generateTotpSecret();
+    await db.update(users).set({ mfa_secret: encryptSecret(secret), updated_at: new Date() }).where(eq(users.id, user.id));
+    const uri = totpKeyUri(user.email, secret);
+    res.json({ secret, otpauth_uri: uri, qr_data_url: await totpQrDataUrl(uri) });
+  } catch (err) {
+    console.error("[mfa:setup]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Confirme la configuration avec un 1er code → active la MFA et renvoie les
+// codes de secours (affichés UNE seule fois ; stockés uniquement hachés).
+authRouter.post("/mfa/enable", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { code } = req.body as { code?: string };
+    if (!code) return res.status(400).json({ error: "Code requis" });
+    const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    if (user.mfa_enabled) return res.status(409).json({ error: "MFA déjà activée." });
+    if (!user.mfa_secret) return res.status(400).json({ error: "Aucune configuration en cours. Lancez d'abord la configuration." });
+    if (!verifyTotp(String(code), decryptSecret(user.mfa_secret))) return res.status(400).json({ error: "Code invalide." });
+    const { plain, hashes } = generateBackupCodes();
+    await db.update(users).set({ mfa_enabled: true, mfa_backup_codes: hashes, updated_at: new Date() }).where(eq(users.id, user.id));
+    await writeAudit(user.id, user.email, "mfa_enabled", req);
+    res.json({ ok: true, backup_codes: plain });
+  } catch (err) {
+    console.error("[mfa:enable]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Désactive la MFA — exige un code TOTP valide OU le mot de passe du compte.
+authRouter.post("/mfa/disable", requireAuth, async (req: AuthRequest, res) => {
+  try {
+    const { code, password } = req.body as { code?: string; password?: string };
+    const [user] = await db.select().from(users).where(eq(users.id, req.user!.id)).limit(1);
+    if (!user) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    if (!user.mfa_enabled) return res.status(400).json({ error: "MFA non activée." });
+    let ok = false;
+    if (code && user.mfa_secret && verifyTotp(String(code), decryptSecret(user.mfa_secret))) ok = true;
+    else if (password && user.password_hash && (await bcrypt.compare(String(password), user.password_hash))) ok = true;
+    if (!ok) return res.status(400).json({ error: "Code ou mot de passe invalide." });
+    await db.update(users).set({ mfa_enabled: false, mfa_secret: null, mfa_backup_codes: null, updated_at: new Date() }).where(eq(users.id, user.id));
+    await writeAudit(user.id, user.email, "mfa_disabled", req);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error("[mfa:disable]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// 2e étape du login : valide un code TOTP (ou un code de secours) contre le
+// ticket émis par /login, puis ouvre la session.
+authRouter.post("/mfa/login-verify", mfaVerifyLimiter, async (req: AuthRequest, res) => {
+  try {
+    const { mfa_ticket, code } = req.body as { mfa_ticket?: string; code?: string };
+    if (!mfa_ticket || !code) return res.status(400).json({ error: "Ticket et code requis" });
+    const uid = verifyMfaTicket(String(mfa_ticket));
+    if (!uid) return res.status(401).json({ error: "Session de connexion expirée. Recommencez." });
+    const [user] = await db.select().from(users).where(eq(users.id, uid)).limit(1);
+    if (!user || !user.mfa_enabled || !user.mfa_secret) return res.status(401).json({ error: "Configuration MFA invalide." });
+    // Compte désactivé entre l'étape mot de passe et l'étape MFA : on refuse.
+    if (user.deactivated_at) {
+      await writeAudit(user.id, user.email, "login_deactivated", req);
+      return res.status(403).json({ error: "Ce compte a été désactivé. Contactez votre administrateur." });
+    }
+
+    let ok = verifyTotp(String(code), decryptSecret(user.mfa_secret));
+    if (!ok) {
+      // Repli : code de secours à usage unique.
+      const remaining = consumeBackupCode(String(code), user.mfa_backup_codes);
+      if (remaining) {
+        ok = true;
+        await db.update(users).set({ mfa_backup_codes: remaining, updated_at: new Date() }).where(eq(users.id, user.id));
+        await writeAudit(user.id, user.email, "mfa_backup_code_used", req);
+      }
+    }
+    if (!ok) {
+      await writeAudit(user.id, user.email, "mfa_failed", req);
+      return res.status(401).json({ error: "Code invalide." });
+    }
+
+    const token = generateToken({ id: user.id, email: user.email, role: user.role, commune: user.commune ?? undefined, commune_insee: user.commune_insee ?? undefined, token_version: user.token_version });
+    res.cookie(cookieNameFor(req), token, COOKIE_OPTIONS);
+    res.clearCookie("token", COOKIE_CLEAR_OPTIONS);
+    await writeAudit(user.id, user.email, "login", req);
+    res.json({
+      user: { id: user.id, email: user.email, prenom: user.prenom, nom: user.nom, role: user.role, commune: user.commune, commune_insee: user.commune_insee, onboarding_completed: !!user.onboarding_completed_at },
+    });
+  } catch (err) {
+    console.error("[mfa:login-verify]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

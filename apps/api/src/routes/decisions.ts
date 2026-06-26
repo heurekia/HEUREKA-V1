@@ -1,13 +1,15 @@
 import { Router } from "express";
 import { db } from "../db.js";
 import {
-  decisions, decision_events, signataires, notifications, users, dossiers,
+  decisions, decision_events, signataires, users, dossiers,
 } from "@heureka-v1/db";
-import { eq, and, or, desc } from "drizzle-orm";
+import { eq, and, or, desc, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
+import { requirePermission } from "../middlewares/permissions.js";
 import { getCommuneScope, communeInScope } from "../middlewares/dossierAccess.js";
-import { changeDossierStatus } from "../services/dossierWorkflow.js";
+import { changeDossierStatus, ensureAssignedToActor } from "../services/dossierWorkflow.js";
+import { notifyUser } from "../services/notify.js";
 
 /**
  * Charge le dossier référencé par une décision et vérifie que sa commune
@@ -71,6 +73,37 @@ function addMonths(date: Date, months: number): string {
 
 const instructeurU = alias(users, "instructeur_user");
 const signataireU = alias(users, "signataire_user");
+
+// Comparaison de commune insensible à la casse et aux espaces, alignée sur
+// getCommuneScope/communeInScope (lower+trim). Indispensable ici car la commune
+// d'une décision dérive de dossiers.commune — texte libre saisi tel quel
+// (« TOURS ») — alors que signataires.commune provient des Paramètres
+// (« Tours »). Un eq() strict ne matchait jamais : le signataire restait
+// invisible dans le panneau Décision (« Aucun signataire configuré pour cette
+// commune ») et, plus grave, la signature lui était refusée à tort
+// (« Vous n'êtes pas signataire actif de cette commune »).
+const signataireCommuneEq = (value: string) =>
+  sql`lower(trim(${signataires.commune})) = ${value.trim().toLowerCase()}`;
+
+// Le pouvoir de signer — ou de refuser de signer — un arrêté découle de
+// l'appartenance ACTIVE à la liste des signataires de la commune, et non du
+// rôle de compte. Dans une petite commune, la même personne instruit et signe :
+// un agent de rôle « instructeur » désigné signataire doit donc pouvoir agir.
+// (C'est cette habilitation, et non le rôle, qui rend visibles l'onglet
+// « Signatures » et la liste des arrêtés en attente — cf. /is-signataire et
+// /pending, sans restriction de rôle.)
+async function isActiveSignataire(userId: string, commune: string): Promise<boolean> {
+  const [row] = await db
+    .select({ id: signataires.id })
+    .from(signataires)
+    .where(and(
+      eq(signataires.user_id, userId),
+      signataireCommuneEq(commune),
+      eq(signataires.active, true),
+    ))
+    .limit(1);
+  return !!row;
+}
 
 // ── GET /api/decisions/pending ──────────────────────────────────────────────
 decisionsRouter.get("/pending", async (req: AuthRequest, res) => {
@@ -159,6 +192,15 @@ decisionsRouter.get("/dossier/:dossierId", async (req: AuthRequest, res) => {
       motif_refus_signature: decisions.motif_refus_signature,
       created_at: decisions.created_at,
       updated_at: decisions.updated_at,
+      // Instructeur AUTEUR de la décision (instructeur_id est NOT NULL : toujours
+      // présent). À ne pas confondre avec l'instructeur ASSIGNÉ au dossier, qui
+      // peut être « Non assigné ». Le panneau Décision affiche cet auteur dans
+      // le circuit de signature (ligne « Instructeur·trice »).
+      instructeur: {
+        id: instructeurU.id,
+        prenom: instructeurU.prenom,
+        nom: instructeurU.nom,
+      },
       signataire: {
         id: signataireU.id,
         prenom: signataireU.prenom,
@@ -167,6 +209,7 @@ decisionsRouter.get("/dossier/:dossierId", async (req: AuthRequest, res) => {
       },
     })
     .from(decisions)
+    .leftJoin(instructeurU, eq(decisions.instructeur_id, instructeurU.id))
     .leftJoin(signataireU, eq(decisions.signataire_id, signataireU.id))
     .where(eq(decisions.dossier_id, dossierId))
     .orderBy(desc(decisions.created_at))
@@ -176,7 +219,7 @@ decisionsRouter.get("/dossier/:dossierId", async (req: AuthRequest, res) => {
 
 // ── POST /api/decisions/dossier/:dossierId ───────────────────────────────────
 // Create or update the draft decision (upsert)
-decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur", "admin"), requirePermission("dossiers.decision"), async (req: AuthRequest, res) => {
   const { dossierId } = req.params as { dossierId: string };
   const dossier = await loadDossierForDossierId(req, res, dossierId);
   if (!dossier) return;
@@ -192,6 +235,11 @@ decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur",
   // n'a pas accès via le scope user_communes.
   const commune = dossier.commune ?? "";
   if (!commune) return res.status(400).json({ error: "Dossier sans commune" });
+
+  // Prise en charge implicite : produire un arrêté est un acte d'instruction.
+  // On évite ainsi qu'une décision soit créée (et son bloc signature renseigné)
+  // sur un dossier resté « Non assigné ». No-op si déjà pris en charge.
+  await ensureAssignedToActor(dossierId, req.user!.id, req.user!.role);
 
   const existing = await db
     .select({ id: decisions.id })
@@ -256,7 +304,7 @@ decisionsRouter.post("/dossier/:dossierId", requireRole("mairie", "instructeur",
 });
 
 // ── POST /api/decisions/:id/submit ──────────────────────────────────────────
-decisionsRouter.post("/:id/submit", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.post("/:id/submit", requireRole("mairie", "instructeur", "admin"), requirePermission("dossiers.decision"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
 
   const [decision] = await db
@@ -278,7 +326,7 @@ decisionsRouter.post("/:id/submit", requireRole("mairie", "instructeur", "admin"
   });
 
   if (decision.signataire_id) {
-    await db.insert(notifications).values({
+    await notifyUser({
       user_id: decision.signataire_id,
       dossier_id: decision.dossier_id,
       type: "signature_requise",
@@ -291,7 +339,7 @@ decisionsRouter.post("/:id/submit", requireRole("mairie", "instructeur", "admin"
 });
 
 // ── POST /api/decisions/:id/sign ────────────────────────────────────────────
-decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.post("/:id/sign", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const { arrete_numero } = req.body as { arrete_numero?: string };
 
@@ -303,17 +351,26 @@ decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: Au
   if (!existing.length) return res.status(404).json({ error: "Décision introuvable" });
   const dec = existing[0]!;
   // Le signataire doit appartenir à la liste active des signataires de la
-  // commune de la décision. Empêche un mairie d'une autre commune (mais
-  // figurant dans son scope) de signer un arrêté qui ne le concerne pas.
-  const [isSign] = await db.select({ id: signataires.id })
-    .from(signataires)
-    .where(and(
-      eq(signataires.user_id, req.user!.id),
-      eq(signataires.commune, dec.commune),
-      eq(signataires.active, true),
-    ))
-    .limit(1);
-  if (!isSign) return res.status(403).json({ error: "Vous n'êtes pas signataire actif de cette commune" });
+  // commune de la décision. C'est cette habilitation — et non le rôle de
+  // compte — qui autorise la signature : empêche un agent d'une autre commune
+  // (mais figurant dans son scope) de signer un arrêté qui ne le concerne pas.
+  if (!await isActiveSignataire(req.user!.id, dec.commune)) {
+    return res.status(403).json({ error: "Vous n'êtes pas signataire actif de cette commune" });
+  }
+
+  // Le circuit de signature ne peut être court-circuité : on ne signe qu'un
+  // arrêté effectivement soumis à la signature. Bloque la signature directe
+  // d'un brouillon / d'une révision et la re-signature d'un arrêté déjà signé
+  // ou notifié (la machine d'état de l'UI ne propose « Signer » que depuis
+  // soumis_signature ; ce garde-fou ferme le contournement par appel direct).
+  if (dec.status !== "soumis_signature") {
+    const already = dec.status === "signe" || dec.status === "notifie";
+    return res.status(409).json({
+      error: already
+        ? "Cet arrêté est déjà signé."
+        : "Cet arrêté doit d'abord être soumis à la signature.",
+    });
+  }
 
   // Any signataire of the commune can sign, or the assigned signataire
   const dossierRow = await db.select({ type: dossiers.type }).from(dossiers)
@@ -357,7 +414,7 @@ decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: Au
     decision_id: id, user_id: req.user!.id, event_type: "signe",
   });
 
-  await db.insert(notifications).values({
+  await notifyUser({
     user_id: decision.instructeur_id,
     dossier_id: decision.dossier_id,
     type: "decision_signee",
@@ -369,11 +426,18 @@ decisionsRouter.post("/:id/sign", requireRole("mairie", "admin"), async (req: Au
 });
 
 // ── POST /api/decisions/:id/refuse-signature ─────────────────────────────────
-decisionsRouter.post("/:id/refuse-signature", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.post("/:id/refuse-signature", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const { motif } = req.body as { motif: string };
+  if (!motif || !motif.trim()) return res.status(400).json({ error: "Motif du refus requis" });
 
-  if (!await loadDossierForDecision(req, res, id)) return;
+  const ctx = await loadDossierForDecision(req, res, id);
+  if (!ctx) return;
+  // Même règle d'autorisation que la signature : refuser de signer (et renvoyer
+  // l'arrêté en révision) est un acte réservé au signataire actif de la commune.
+  if (!await isActiveSignataire(req.user!.id, ctx.commune)) {
+    return res.status(403).json({ error: "Vous n'êtes pas signataire actif de cette commune" });
+  }
   const [decision] = await db
     .update(decisions)
     .set({ status: "revision_necessaire", motif_refus_signature: motif, updated_at: new Date() })
@@ -386,7 +450,7 @@ decisionsRouter.post("/:id/refuse-signature", requireRole("mairie", "admin"), as
     decision_id: id, user_id: req.user!.id, event_type: "refuse", note: motif,
   });
 
-  await db.insert(notifications).values({
+  await notifyUser({
     user_id: decision.instructeur_id,
     dossier_id: decision.dossier_id,
     type: "signature_refusee",
@@ -423,8 +487,15 @@ decisionsRouter.post("/:id/notify", requireRole("mairie", "instructeur", "admin"
 });
 
 // ── GET /api/decisions/communes/:commune/signataires ─────────────────────────
-decisionsRouter.get("/communes/:commune/signataires", async (req: AuthRequest, res) => {
+// Réservé aux agents ET au périmètre commune de l'appelant : la réponse expose
+// signature_image / tampon_image (signature manuscrite + cachet officiel), des
+// données qui permettraient la contrefaçon d'arrêtés si elles fuyaient.
+decisionsRouter.get("/communes/:commune/signataires", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(commune, scope)) {
+    return res.status(403).json({ error: "Commune hors de votre périmètre" });
+  }
   const rows = await db
     .select({
       id: signataires.id,
@@ -446,12 +517,12 @@ decisionsRouter.get("/communes/:commune/signataires", async (req: AuthRequest, r
     })
     .from(signataires)
     .leftJoin(users, eq(signataires.user_id, users.id))
-    .where(and(eq(signataires.commune, commune), eq(signataires.active, true)));
+    .where(and(signataireCommuneEq(commune), eq(signataires.active, true)));
   res.json(rows);
 });
 
 // ── POST /api/decisions/communes/:commune/signataires ────────────────────────
-decisionsRouter.post("/communes/:commune/signataires", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.post("/communes/:commune/signataires", requirePermission("signataires.manage"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
   const scope = await getCommuneScope(req.user!.id, req.user!.role);
   if (!communeInScope(commune, scope)) {
@@ -475,12 +546,20 @@ decisionsRouter.post("/communes/:commune/signataires", requireRole("mairie", "ad
 });
 
 // ── PUT /api/decisions/communes/:commune/signataires/:id ─────────────────────
-decisionsRouter.put("/communes/:commune/signataires/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.put("/communes/:commune/signataires/:id", requirePermission("signataires.manage"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
   const scope = await getCommuneScope(req.user!.id, req.user!.role);
   if (!communeInScope(commune, scope)) {
     return res.status(403).json({ error: "Commune hors de votre périmètre" });
+  }
+  // Anti-IDOR : le :commune (vérifié ci-dessus) ne garantit pas que :id lui
+  // appartient. On vérifie la commune RÉELLE du signataire ciblé, sinon un
+  // agent pourrait réécrire la signature d'une commune hors de son périmètre
+  // en passant un :commune valide et un :id arbitraire.
+  const [existingSig] = await db.select({ commune: signataires.commune }).from(signataires).where(eq(signataires.id, id)).limit(1);
+  if (!existingSig || !communeInScope(existingSig.commune, scope)) {
+    return res.status(404).json({ error: "Signataire introuvable" });
   }
   const { role, fonction, signature_image, tampon_image, delegation_arrete, delegation_date, active } = req.body as {
     role?: string; fonction?: string | null; signature_image?: string | null; tampon_image?: string | null;
@@ -501,31 +580,44 @@ decisionsRouter.put("/communes/:commune/signataires/:id", requireRole("mairie", 
 });
 
 // ── DELETE /api/decisions/communes/:commune/signataires/:id ──────────────────
-decisionsRouter.delete("/communes/:commune/signataires/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+decisionsRouter.delete("/communes/:commune/signataires/:id", requirePermission("signataires.manage"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   const { id } = req.params as { id: string };
   const commune = decodeURIComponent(String(req.params["commune"] ?? ""));
   const scope = await getCommuneScope(req.user!.id, req.user!.role);
   if (!communeInScope(commune, scope)) {
     return res.status(403).json({ error: "Commune hors de votre périmètre" });
   }
+  // Anti-IDOR : vérifier la commune RÉELLE du signataire ciblé (cf. PUT).
+  const [existingSig] = await db.select({ commune: signataires.commune }).from(signataires).where(eq(signataires.id, id)).limit(1);
+  if (!existingSig || !communeInScope(existingSig.commune, scope)) {
+    return res.status(404).json({ error: "Signataire introuvable" });
+  }
   await db.update(signataires).set({ active: false }).where(eq(signataires.id, id));
   res.json({ ok: true });
 });
 
 // ── GET /api/decisions/:id/events ────────────────────────────────────────────
-decisionsRouter.get("/:id/events", async (req: AuthRequest, res) => {
-  const { id } = req.params as { id: string };
-  const rows = await db
-    .select({
-      id: decision_events.id,
-      event_type: decision_events.event_type,
-      note: decision_events.note,
-      created_at: decision_events.created_at,
-      user: { prenom: users.prenom, nom: users.nom },
-    })
-    .from(decision_events)
-    .leftJoin(users, eq(decision_events.user_id, users.id))
-    .where(eq(decision_events.decision_id, id))
-    .orderBy(desc(decision_events.created_at));
-  res.json(rows);
+// Réservé aux agents ET au périmètre : l'historique contient les motifs de
+// refus de signature et les noms d'agents — pas de lecture cross-commune.
+decisionsRouter.get("/:id/events", requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const { id } = req.params as { id: string };
+    if (!(await loadDossierForDecision(req, res, id))) return;
+    const rows = await db
+      .select({
+        id: decision_events.id,
+        event_type: decision_events.event_type,
+        note: decision_events.note,
+        created_at: decision_events.created_at,
+        user: { prenom: users.prenom, nom: users.nom },
+      })
+      .from(decision_events)
+      .leftJoin(users, eq(decision_events.user_id, users.id))
+      .where(eq(decision_events.decision_id, id))
+      .orderBy(desc(decision_events.created_at));
+    res.json(rows);
+  } catch (err) {
+    console.error("[decisions:events]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
 });

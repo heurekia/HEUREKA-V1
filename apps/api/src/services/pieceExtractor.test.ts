@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { parseExtraction, reconcileCoupeHeights } from "./pieceExtractor.js";
+import { parseExtraction, reconcileCoupeHeights, detectRubricMismatch } from "./pieceExtractor.js";
 
 describe("reconcileCoupeHeights — recalage hauteurs sur NGF (anti-rotation)", () => {
   const base = {
@@ -282,5 +282,49 @@ describe("parseExtraction — fallback", () => {
     expect(r.quality).toBe("illisible");
     expect(r.graphics).toBeNull();
     expect(r.parcelles_observees).toBeNull();
+  });
+});
+
+describe("detectRubricMismatch — document hors-sujet pour sa rubrique", () => {
+  it("bloque une photo (graphique) déposée dans l'emplacement CERFA (texte)", () => {
+    const m = detectRubricMismatch("CERFA", { piece_type: "photo", confidence_type: 0.9 });
+    expect(m).not.toBeNull();
+    expect(m?.expected).toBe("cerfa");
+    expect(m?.detected).toBe("photo");
+  });
+
+  it("bloque un CERFA (texte) déposé dans l'emplacement plan de masse (graphique)", () => {
+    const m = detectRubricMismatch("PCMI2", { piece_type: "cerfa", confidence_type: 0.85 });
+    expect(m).not.toBeNull();
+    expect(m?.expected).toBe("plan_masse");
+  });
+
+  it("bloque une notice (texte) déposée dans un emplacement plan (graphique)", () => {
+    const m = detectRubricMismatch("DP2", { piece_type: "notice", confidence_type: 0.8 });
+    expect(m).not.toBeNull();
+  });
+
+  it("ne bloque PAS une confusion intra-famille (plan_coupe là où plan_masse attendu)", () => {
+    expect(detectRubricMismatch("PCMI2", { piece_type: "plan_coupe", confidence_type: 0.95 })).toBeNull();
+  });
+
+  it("ne bloque PAS quand la confiance sur le type détecté est faible", () => {
+    expect(detectRubricMismatch("CERFA", { piece_type: "photo", confidence_type: 0.4 })).toBeNull();
+  });
+
+  it("ne bloque PAS quand le type détecté correspond au type attendu", () => {
+    expect(detectRubricMismatch("PCMI2", { piece_type: "plan_masse", confidence_type: 0.99 })).toBeNull();
+  });
+
+  it("ne bloque PAS un type indéterminé ('autre')", () => {
+    expect(detectRubricMismatch("CERFA", { piece_type: "autre", confidence_type: 0.99 })).toBeNull();
+  });
+
+  it("ne bloque PAS une rubrique sans type attendu strict (code inconnu)", () => {
+    expect(detectRubricMismatch("DIVERS", { piece_type: "photo", confidence_type: 0.99 })).toBeNull();
+  });
+
+  it("ne bloque PAS sans extraction (analyse absente)", () => {
+    expect(detectRubricMismatch("CERFA", null)).toBeNull();
   });
 });

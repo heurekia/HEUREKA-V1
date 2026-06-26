@@ -1,5 +1,6 @@
 import { useState, useEffect } from "react";
 import { api, ApiError } from "../../lib/api";
+import { useAuth, hasPermission } from "../../hooks/useAuth";
 import { ROLE_LABELS, type DossierInfo } from "./shared";
 
 // Onglet "Décision" du détail dossier : projet d'arrêté, type de décision,
@@ -27,6 +28,9 @@ type DecisionData = {
   motif_refus_signature: string | null;
   created_at: string;
   updated_at: string;
+  // Auteur de la décision (instructeur_id, toujours renseigné). Distinct de
+  // l'instructeur assigné au dossier (dossier.instructeur), qui peut être absent.
+  instructeur?: { id: string; prenom: string; nom: string } | null;
   signataire?: { id: string; prenom: string; nom: string; email: string } | null;
 };
 
@@ -97,10 +101,18 @@ function decisionStepIndex(status: DecisionStatus): number {
   return 0;
 }
 
-export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
+export function DecisionPanel({ dossier, liveCommune, currentUserId, liveInstructeur, onDecisionChange }: {
   dossier: DossierInfo;
   liveCommune: string | null;
   currentUserId?: string;
+  // Nom de l'instructeur tenu à jour par le parent (prise en charge implicite à
+  // la création de la décision) : évite un bloc « Instructeur·trice — » vide
+  // tant que la page n'a pas été rechargée.
+  liveInstructeur?: string | null;
+  // Notifie le parent après chaque action de décision (création/soumission/
+  // signature/refus/notification) pour qu'il rafraîchisse l'en-tête du dossier
+  // (badge de statut + instructeur), sans recharger la page.
+  onDecisionChange?: () => void;
 }) {
   const [decision, setDecision] = useState<DecisionData | null>(null);
   const [loadingDecision, setLoadingDecision] = useState(true);
@@ -121,9 +133,13 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
   const [localConditions, setLocalConditions] = useState("");
   const [localSignataireId, setLocalSignataireId] = useState<string | null>(null);
 
+  const { user } = useAuth();
+  // Permission « Émettre une décision » (rédaction + soumission). La signature
+  // reste régie séparément par l'habilitation signataire (cf. isSignataire).
+  const canDecide = hasPermission(user, "dossiers.decision");
   const communeName = liveCommune ?? dossier.commune ?? "";
   const decisionOptions = (DECISION_OPTIONS[dossier.type] ?? DECISION_OPTIONS["permis_de_construire"]) as Array<{ key: string; label: string; sub: string }>;
-  const isEditable = !decision || decision.status === "brouillon" || decision.status === "revision_necessaire";
+  const isEditable = canDecide && (!decision || decision.status === "brouillon" || decision.status === "revision_necessaire");
   const isSignataire = communeSignataires.some(s => s.user_id === currentUserId);
 
   useEffect(() => {
@@ -157,6 +173,10 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
     setActionError(null);
     try {
       setDecision(await fn());
+      // Le statut du dossier et son instructeur ont pu changer côté serveur
+      // (passage en « décision en cours », prise en charge implicite, statut
+      // terminal après signature…) : on demande au parent de se rafraîchir.
+      onDecisionChange?.();
       return true;
     } catch (e) {
       setActionError(e instanceof ApiError ? e.message : "L'opération a échoué. Vérifiez votre connexion et réessayez.");
@@ -201,6 +221,15 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
 
   const stepIdx = decision ? decisionStepIndex(decision.status) : 0;
   const typeLabel = decisionOptions.find(o => o.key === (decision?.type ?? localType))?.label ?? "—";
+  // Nom de l'instructeur·trice à afficher dans le circuit de signature : on prend
+  // l'AUTEUR de la décision (toujours renseigné), avec repli sur l'instructeur
+  // assigné au dossier — d'abord la valeur tenue à jour par le parent
+  // (liveInstructeur, qui reflète la prise en charge implicite sans rechargement),
+  // puis la valeur du prop initial. Sans ça, la ligne restait « non nommée » (—)
+  // dès que le dossier n'avait pas d'instructeur assigné.
+  const instructeurLabel = decision?.instructeur
+    ? `${decision.instructeur.prenom} ${decision.instructeur.nom}`.trim()
+    : (liveInstructeur ?? dossier.instructeur ?? null);
   const signataireLabel = (() => {
     if (decision?.signataire) return `${decision.signataire.prenom} ${decision.signataire.nom}`;
     const row = communeSignataires.find(s => s.user_id === (localSignataireId ?? decision?.signataire_id));
@@ -276,6 +305,11 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
 
         {/* Decision form / read-only view */}
         <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
+          {!canDecide && (
+            <div style={{ marginBottom: 16, padding: "10px 14px", background: "#FFF7ED", borderRadius: 8, border: "1px solid #FED7AA", fontSize: 12, color: "#C2410C", fontWeight: 600 }}>
+              Votre rôle ne vous autorise pas à rédiger ou soumettre une décision. Consultation seule.
+            </div>
+          )}
           <div style={{ fontSize: 14, fontWeight: 800, color: "#0F172A", marginBottom: 18 }}>
             {isEditable ? "Projet de décision" : "Décision"}
             {decision && !isEditable && <span style={{ marginLeft: 8, fontSize: 11, fontWeight: 500, color: "#4F46E5", background: "#EEF2FF", borderRadius: 6, padding: "2px 8px" }}>{typeLabel}</span>}
@@ -428,7 +462,7 @@ export function DecisionPanel({ dossier, liveCommune, currentUserId }: {
           <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 16 }}>
             <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Signatures</div>
             {[
-              { label: "Instructeur·trice", name: dossier.instructeur ?? "—", signed: true, date: decision.created_at?.split("T")[0] },
+              { label: "Instructeur·trice", name: instructeurLabel ?? "—", signed: !!instructeurLabel, date: decision.created_at?.split("T")[0] },
               { label: ROLE_LABELS[communeSignataires.find(s => s.user_id === decision.signataire_id)?.role ?? ""] ?? "Signataire", name: signataireLabel, signed: decision.status === "signe" || decision.status === "notifie", date: decision.date_decision },
             ].map((sig, i) => (
               <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 0", borderBottom: i === 0 ? "1px solid #F1F5F9" : "none" }}>

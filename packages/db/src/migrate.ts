@@ -337,6 +337,19 @@ CREATE INDEX IF NOT EXISTS idx_dossiers_instructeur_id ON dossiers(instructeur_i
 CREATE INDEX IF NOT EXISTS idx_zones_commune_id ON zones(commune_id);
 CREATE INDEX IF NOT EXISTS idx_notifications_user_id ON notifications(user_id);
 
+-- Index de chemins chauds identifiés à l'audit de performance (Palier 0).
+-- Jointure/filtre des règles par zone (instruction, viewer réglementation, ingestion) :
+-- sans index, chaque lecture des règles d'une zone faisait un seq scan de toute la table,
+-- qui grossit avec chaque PLU ingéré. Le composite (zone_id, validation_status) couvre
+-- à la fois les lookups par zone seule et le filtre fréquent validation_status = 'valide'.
+CREATE INDEX IF NOT EXISTS idx_zone_regulatory_rules_zone ON zone_regulatory_rules(zone_id, validation_status);
+-- Timeline d'un dossier (instruction_events), lue à chaque ouverture de fiche dossier.
+CREATE INDEX IF NOT EXISTS idx_instruction_events_dossier ON instruction_events(dossier_id);
+-- Notifications rattachées à un dossier (jointure GET /notifications) + lookup inverse.
+CREATE INDEX IF NOT EXISTS idx_notifications_dossier ON notifications(dossier_id);
+-- Événements de calendrier rattachés à un dossier.
+CREATE INDEX IF NOT EXISTS idx_calendar_events_dossier ON calendar_events(dossier_id);
+
 -- Legal mentions cache (Légifrance / Code de l'urbanisme)
 CREATE TABLE IF NOT EXISTS legal_mentions (
   id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -763,6 +776,17 @@ ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS metadata jsonb;
 CREATE INDEX IF NOT EXISTS idx_audit_logs_role ON audit_logs(role);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_target ON audit_logs(target_type, target_id);
 
+-- ── Offboarding des comptes professionnels (désactivation, pas suppression) ──
+-- Un agent/admin n'est JAMAIS supprimé : ses arrêtés signés (decisions.instructeur_id
+-- est NOT NULL), courriers émis, etc. sont des records légaux à conserver, et leurs
+-- FK interdisent de toute façon l'effacement de la ligne users. On le DÉSACTIVE :
+-- deactivated_at non NULL ⇒ connexion refusée + sessions révoquées (token_version),
+-- et l'agent disparaît des listes/assignations. Les citoyens, eux, restent effacés
+-- (RGPD art. 17). deactivated_by = uuid de l'admin (sans FK, cf. instructeur_status_by).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_at timestamp;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_by uuid;
+CREATE INDEX IF NOT EXISTS idx_users_deactivated_at ON users(deactivated_at);
+
 -- ── Annotations chunk-level sur documents indexés (Phase 1 niveau B) ──
 -- Une annotation valide est INJECTÉE à côté du chunk lors du search RAG.
 -- Permet à l'instructeur de "patcher" un PDF sans le réécrire : corrections
@@ -843,6 +867,14 @@ CREATE TABLE IF NOT EXISTS dossier_courriers (
   emis_par uuid REFERENCES users(id),
   emis_le timestamp NOT NULL DEFAULT now(),
   delivery_method text,
+  statut text NOT NULL DEFAULT 'envoye',
+  signature_status text NOT NULL DEFAULT 'non_requise',
+  signataire_user_id uuid REFERENCES users(id),
+  signature_requested_by uuid REFERENCES users(id),
+  signature_requested_at timestamp,
+  signed_at timestamp,
+  signature_image text,
+  tampon_image text,
   created_at timestamp NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_dossier_courriers_dossier ON dossier_courriers(dossier_id);
@@ -1185,6 +1217,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS uniq_users_fc_sub ON users(fc_sub) WHERE fc_su
 -- hash ; seuls les comptes issus de FranceConnect ont password_hash = NULL.
 ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL;
 
+-- Revocation de session : compteur embarque dans le JWT (claim tv). Incremente
+-- lors d'un changement de mot de passe / de role / d'une revocation -> tous les
+-- jetons emis avant deviennent invalides (cf. middlewares/auth.ts). DEFAULT 0 :
+-- les jetons deja emis (tv absent => 0) restent valides jusqu'a leur expiration.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS token_version integer NOT NULL DEFAULT 0;
+
+-- MFA TOTP (opt-in agents/admin). mfa_secret = secret TOTP chiffre au repos
+-- (AES-256-GCM) ; mfa_enabled true apres confirmation d'un 1er code ;
+-- mfa_backup_codes = empreintes SHA-256 des codes de secours a usage unique.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_secret text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_enabled boolean NOT NULL DEFAULT false;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS mfa_backup_codes jsonb;
+
 -- ── Traçabilité fine règle → passage source ────────────────────────────────
 -- Jusqu'ici une règle ne pointait que vers son DOCUMENT (source_document_id).
 -- On ajoute de quoi retrouver le PASSAGE exact :
@@ -1275,6 +1320,20 @@ CREATE INDEX IF NOT EXISTS idx_piece_annotations_dossier ON dossier_piece_annota
 -- dossier_documents — aucune duplication de fichier).
 ALTER TABLE dossier_messages ADD COLUMN IF NOT EXISTS attachments jsonb NOT NULL DEFAULT '[]'::jsonb;
 ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS attachments jsonb DEFAULT '[]'::jsonb;
+
+-- ── Cycle de vie des courriers : brouillon (sans effet) → envoyé (figé) ──────
+-- Default 'envoye' : les courriers déjà en base ont tous été émis directement
+-- (le brouillon n'existait pas), le backfill les classe donc correctement.
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS statut text NOT NULL DEFAULT 'envoye';
+
+-- ── Circuit de signature des courriers ──────────────────────────────────────
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signature_status text NOT NULL DEFAULT 'non_requise';
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signataire_user_id uuid REFERENCES users(id);
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signature_requested_by uuid REFERENCES users(id);
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signature_requested_at timestamp;
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signed_at timestamp;
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS signature_image text;
+ALTER TABLE dossier_courriers ADD COLUMN IF NOT EXISTS tampon_image text;
 
 -- ── Dépôt groupé : un seul fichier OCR éclaté en plusieurs pièces ───────────
 -- Flux historique (1 fichier = 1 pièce) inchangé : ces objets sont additifs.
@@ -1474,6 +1533,57 @@ CREATE TABLE IF NOT EXISTS site_settings (
   updated_at                  timestamp NOT NULL DEFAULT now()
 );
 INSERT INTO site_settings (id) VALUES (1) ON CONFLICT DO NOTHING;
+
+-- ── Centre d'aide : documentation rédigée depuis le super-admin ────────────
+-- Deux tables : les thèmes (sommaire) et les articles qui leur sont rattachés.
+-- Le contenu HTML est produit par l'éditeur riche (mise en page, images en
+-- data URL, vidéos embarquées) et assaini avant rendu côté agent mairie.
+CREATE TABLE IF NOT EXISTS help_themes (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  slug          text NOT NULL UNIQUE,
+  title         text NOT NULL,
+  description   text,
+  icon          text,
+  sort_order    integer NOT NULL DEFAULT 0,
+  is_published  boolean NOT NULL DEFAULT true,
+  created_at    timestamp NOT NULL DEFAULT now(),
+  updated_at    timestamp NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS help_articles (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  theme_id      uuid NOT NULL REFERENCES help_themes(id) ON DELETE CASCADE,
+  slug          text NOT NULL,
+  title         text NOT NULL,
+  excerpt       text,
+  content_html  text NOT NULL DEFAULT '',
+  cover_image   text,
+  status        text NOT NULL DEFAULT 'draft',
+  sort_order    integer NOT NULL DEFAULT 0,
+  author_id     uuid REFERENCES users(id) ON DELETE SET NULL,
+  view_count    integer NOT NULL DEFAULT 0,
+  published_at  timestamp,
+  created_at    timestamp NOT NULL DEFAULT now(),
+  updated_at    timestamp NOT NULL DEFAULT now(),
+  CONSTRAINT help_articles_theme_slug UNIQUE (theme_id, slug)
+);
+CREATE INDEX IF NOT EXISTS idx_help_articles_theme ON help_articles(theme_id);
+CREATE INDEX IF NOT EXISTS idx_help_articles_status ON help_articles(status);
+
+-- ── Préférences de notification par utilisateur (cloche mairie) ──
+-- Map JSON { type_notification: bool }. Clé absente = activé (opt-out explicite).
+-- Filtrée dans services/notify.ts avant l'insertion d'une notification.
+ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_prefs jsonb NOT NULL DEFAULT '{}'::jsonb;
+
+-- ── Profil CERFA mémorise (RGPD — confort de saisie, citoyens) ──
+-- Sous-ensemble STABLE des donnees d'etat civil du step 5 (civilite, date/lieu
+-- de naissance, qualite, adresse postale du demandeur, societe), CHIFFRE au
+-- repos (AES-256-GCM, cf. apps/api services/cerfaProfile.ts). NULL = aucun
+-- profil. Finalite distincte de l'instruction → base legale consentement
+-- (opt-in revocable, horodate par cerfa_profile_consent_at). Efface par cascade
+-- a la suppression du compte (colonne portee par users).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS cerfa_profile text;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS cerfa_profile_consent_at timestamp;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

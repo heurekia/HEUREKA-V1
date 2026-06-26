@@ -3,9 +3,11 @@ import { api } from "../../lib/api";
 import BundleSplitModal from "./BundleSplitModal";
 import { DOSSIER_TYPE_OPTIONS, type NouveauDossierType } from "./shared";
 
-// Modale "Nouveau dossier" : choix dépôt OCR (CERFA) ou saisie manuelle,
-// reconnaissance des pièces, création du dossier. Types et sous-composants
-// (overlay, en-tête, devinette de code pièce) locaux. Extrait de MairieApp.tsx.
+// Modale "Nouveau dossier" : dépôt OCR (CERFA + pièces), reconnaissance des
+// pièces, création du dossier. La saisie 100 % manuelle a été retirée — le
+// formulaire reste éditable à la main après dépôt (option « aucun CERFA »).
+// Types et sous-composants (overlay, en-tête, devinette de code pièce) locaux.
+// Extrait de MairieApp.tsx.
 
 type NouveauDossierForm = {
   type: NouveauDossierType;
@@ -40,21 +42,40 @@ type OcrExtraction = {
   confidence: number;
 };
 
-// Heuristique : à quel code_piece (DP/PC*) correspond le fichier d'après son nom ?
+// Famille de codes d'emplacement CERFA selon le type de dossier. Aligné sur
+// pieceCodeFamily() côté serveur : un PC porte des pièces PC*, une DP des DP*…
+type CodeFamily = "PCMI" | "PC" | "DP";
+function codeFamilyFromDossierType(type: string | null | undefined): CodeFamily | null {
+  switch (type) {
+    case "permis_de_construire_mi": return "PCMI";
+    case "permis_de_construire":    return "PC";
+    case "declaration_prealable":   return "DP";
+    // PA / PD / lotissement / CU : pas de convention auto fiable → pas de code.
+    default: return null;
+  }
+}
+
+// Heuristique : à quel code_piece correspond le fichier d'après son nom ?
 // Permet de pré-coder la pièce avant upload pour que l'extracteur côté serveur
-// reçoive un hint pertinent (plan_masse, plan_facade, etc.).
-function guessCodePieceFromName(name: string): string {
+// reçoive un hint pertinent (plan_masse, plan_facade, etc.). Le préfixe (PC/
+// PCMI/DP) dépend du TYPE de dossier : un PC ne doit pas ressortir en DP*.
+function guessCodePieceFromName(name: string, family: CodeFamily | null): string {
   const n = name.toLowerCase().normalize("NFD").replace(/[̀-ͯ]/g, "");
   if (/cerfa|13406|13703|13409|13405|13410/.test(n)) return "CERFA";
-  if (/situation|dp1\b|pc1\b/.test(n)) return "DP1";
-  if (/masse|dp2\b|pc2\b/.test(n)) return "DP2";
-  if (/coupe|dp3\b|pc3\b/.test(n)) return "DP3";
-  if (/notice|dp4\b|pc4\b/.test(n)) return "DP4";
-  if (/facade|dp5\b|pc5\b/.test(n)) return "DP5";
-  if (/insertion|paysag|pc6\b/.test(n)) return "PC6";
-  if (/photo.*proche|dp7\b|pc7\b/.test(n)) return "PC7";
-  if (/photo.*lointain|dp8\b|pc8\b/.test(n)) return "PC8";
-  return "";
+  if (!family) return ""; // type sans nomenclature gérée → l'instructeur tranche
+  // Détermine le numéro d'emplacement (1..8) : mot-clé, ou numéro explicite
+  // précédé d'un préfixe connu (pc2, dp2, pcmi2…) pour éviter les faux positifs.
+  const num = /situation|(?:pcmi|dpmi|pc|dp)\s*0?1\b/.test(n) ? 1
+    : /masse|(?:pcmi|dpmi|pc|dp)\s*0?2\b/.test(n) ? 2
+    : /coupe|(?:pcmi|dpmi|pc|dp)\s*0?3\b/.test(n) ? 3
+    : /notice|(?:pcmi|dpmi|pc|dp)\s*0?4\b/.test(n) ? 4
+    : /facade|(?:pcmi|dpmi|pc|dp)\s*0?5\b/.test(n) ? 5
+    : /insertion|paysag|(?:pcmi|dpmi|pc|dp)\s*0?6\b/.test(n) ? 6
+    : /photo.*proche|(?:pcmi|dpmi|pc|dp)\s*0?7\b/.test(n) ? 7
+    : /photo.*lointain|(?:pcmi|dpmi|pc|dp)\s*0?8\b/.test(n) ? 8
+    : /photo/.test(n) ? 7
+    : null;
+  return num ? `${family}${num}` : "";
 }
 
 type StagedFile = {
@@ -90,7 +111,6 @@ export function NouveauDossierModalHeader({ title, back, onClose }: { title: str
 }
 
 export function NouveauDossierModal({ onClose, commune }: { onClose: () => void; commune: string }) {
-  const [mode, setMode] = useState<"choose" | "manual" | "ocr">("choose");
   const today = useMemo(() => new Date().toISOString().slice(0, 10), []);
 
   const emptyForm: NouveauDossierForm = {
@@ -206,7 +226,7 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
       for (const file of arr) {
         // Évite les doublons exacts (nom + taille) si l'opérateur ré-importe.
         if (next.some(f => f.file.name === file.name && f.file.size === file.size)) continue;
-        const guessed = guessCodePieceFromName(file.name);
+        const guessed = guessCodePieceFromName(file.name, codeFamilyFromDossierType(form.type));
         const looksLikeCerfa = guessed === "CERFA";
         next.push({
           id: `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
@@ -287,7 +307,7 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
       // created_via pilote la génération du CERFA prérempli côté API : en OCR
       // (dossier scanné), la mairie a déjà le vrai CERFA signé dans les pièces
       // numérisées → aucun CERFA prérempli n'est généré.
-      const meta: Record<string, unknown> = { created_via: mode === "manual" ? "manual" : "ocr" };
+      const meta: Record<string, unknown> = { created_via: "ocr" };
       if (ocrNumero) meta["numero_cerfa"] = ocrNumero;
       payload["metadata"] = meta;
       const created = await api.post<{ id: string; numero: string }>("/mairie/dossiers", payload);
@@ -322,7 +342,7 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
           try {
             const fd = new FormData();
             fd.append("file", f.file);
-            const code = f.isCerfa ? "CERFA" : guessCodePieceFromName(f.file.name);
+            const code = f.isCerfa ? "CERFA" : guessCodePieceFromName(f.file.name, codeFamilyFromDossierType(form.type));
             if (code) fd.append("code_piece", code);
             fd.append("nom_piece", f.file.name);
             const res = await fetch(`/api/mairie/dossiers/${created.id}/pieces/upload`, {
@@ -446,29 +466,6 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
     </NouveauDossierOverlay>
   );
 
-  if (mode === "choose") return (
-    <NouveauDossierOverlay onClose={onClose}>
-      <NouveauDossierModalHeader title="Nouveau dossier" onClose={onClose} />
-      <div style={{ padding: "24px", display: "flex", flexDirection: "column" as const, gap: 12 }}>
-        <p style={{ fontSize: 13, color: "#64748b", margin: 0 }}>Choisissez le mode de saisie du dossier.</p>
-        <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 14, marginTop: 4 }}>
-          <button onClick={() => setMode("manual")} style={{ border: "2px solid #E2E8F0", borderRadius: 14, padding: "24px 20px", cursor: "pointer", background: "white", textAlign: "left", transition: "border-color 0.15s" }}
-            onMouseEnter={e => (e.currentTarget.style.borderColor = "#4F46E5")} onMouseLeave={e => (e.currentTarget.style.borderColor = "#E2E8F0")}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>📝</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Saisie manuelle</div>
-            <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>Remplissez le formulaire CERFA et les pièces complémentaires manuellement.</div>
-          </button>
-          <button onClick={() => setMode("ocr")} style={{ border: "2px solid #E2E8F0", borderRadius: 14, padding: "24px 20px", cursor: "pointer", background: "white", textAlign: "left", transition: "border-color 0.15s" }}
-            onMouseEnter={e => (e.currentTarget.style.borderColor = "#4F46E5")} onMouseLeave={e => (e.currentTarget.style.borderColor = "#E2E8F0")}>
-            <div style={{ fontSize: 32, marginBottom: 12 }}>📷</div>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Reconnaissance OCR</div>
-            <div style={{ fontSize: 12, color: "#64748b", lineHeight: 1.5 }}>Importez un CERFA scanné ou des pièces complémentaires — les données seront extraites automatiquement.</div>
-          </button>
-        </div>
-      </div>
-    </NouveauDossierOverlay>
-  );
-
   const formFields = (
     <div style={{ display: "flex", flexDirection: "column" as const, gap: 14 }}>
       <div>
@@ -554,7 +551,7 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
 
   const submitLabel = submitting
     ? (uploadProgress ? `Dépôt ${uploadProgress.done}/${uploadProgress.total}…` : "Création…")
-    : (mode === "ocr" && stagedFiles.length > 0 ? `Créer le dossier (${stagedFiles.length} pièce${stagedFiles.length > 1 ? "s" : ""})` : "Créer le dossier");
+    : (stagedFiles.length > 0 ? `Créer le dossier (${stagedFiles.length} pièce${stagedFiles.length > 1 ? "s" : ""})` : "Créer le dossier");
 
   const footer = (
     <div style={{ padding: "14px 24px", borderTop: "1px solid #E2E8F0" }}>
@@ -580,7 +577,7 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
         <span style={{ textTransform: "none" as const, letterSpacing: 0, fontWeight: 500 }}>{singleFile ? "Découpage automatique" : "Choisissez le CERFA"}</span>
       </div>
       {stagedFiles.map(f => {
-        const code = f.isCerfa ? "CERFA" : guessCodePieceFromName(f.file.name);
+        const code = f.isCerfa ? "CERFA" : guessCodePieceFromName(f.file.name, codeFamilyFromDossierType(form.type));
         return (
           <div key={f.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 12px", borderTop: "1px solid #F1F5F9", fontSize: 13 }}>
             {!singleFile && <input type="radio" checked={f.isCerfa} onChange={() => setCerfa(f.id)} title="Désigner comme CERFA" />}
@@ -616,9 +613,9 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
     </div>
   );
 
-  if (mode === "ocr") return (
+  return (
     <NouveauDossierOverlay onClose={onClose}>
-      <NouveauDossierModalHeader title="Reconnaissance OCR" onClose={onClose} back={() => { setMode("choose"); setStagedFiles([]); setCerfaDone(false); setOcrError(null); setOcrNumero(null); }} />
+      <NouveauDossierModalHeader title="Nouveau dossier" onClose={onClose} />
       <div style={{ padding: "20px 24px", display: "flex", flexDirection: "column" as const, gap: 16 }}>
         {stagedFiles.length > 0 && !submitting && (
           <div style={{ display: "flex", gap: 10, alignItems: "flex-start", background: "#F0F9FF", border: "1px solid #BAE6FD", borderRadius: 8, padding: "10px 14px" }}>
@@ -682,14 +679,6 @@ export function NouveauDossierModal({ onClose, commune }: { onClose: () => void;
         )}
       </div>
       {stagedFiles.length > 0 && footer}
-    </NouveauDossierOverlay>
-  );
-
-  return (
-    <NouveauDossierOverlay onClose={onClose}>
-      <NouveauDossierModalHeader title="Nouveau dossier — Saisie manuelle" onClose={onClose} back={() => setMode("choose")} />
-      <div style={{ padding: "20px 24px" }}>{formFields}</div>
-      {footer}
     </NouveauDossierOverlay>
   );
 }

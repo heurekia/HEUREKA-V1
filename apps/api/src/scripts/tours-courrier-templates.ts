@@ -7,9 +7,11 @@
 //     signataire par commune) SUPPRIMÉE — gérée par commune-letterhead ;
 //   - en-tête/signature/tampon gérés par la commune et le signataire désigné ;
 //   - champs disponibles = variables dynamiques (<span data-variable="…">) ;
-//   - champs pas encore enrichis (adresse/civilité demandeur, prescriptions,
-//     dispositions d'urbanisme…) = ZONES MANUELLES ambrées à compléter par
-//     l'agent (cf. docs/courriers-tours/mapping-courriers-tours.md) ;
+//   - civilité et adresse du demandeur sont enrichies via la brique `cerfa_data`
+//     (saisie au dépôt citoyen → demandeur_civilite / demandeur_adresse) ;
+//   - restent en ZONES MANUELLES ambrées les champs non encore automatisés
+//     (prescriptions, dispositions d'urbanisme / zone PLU, motifs de refus,
+//     surface du terrain…) — cf. docs/courriers-tours/mapping-courriers-tours.md ;
 //   - variantes par type de dossier neutralisées en formulation valable pour
 //     tous ; volets « taxes »/« ABF » traités en modèles séparés.
 
@@ -44,19 +46,19 @@ const enteteReferences = `
 <p style="margin:0 0 2px;font-size:0.9em;color:#475569;">Affaire suivie par : ${v("nom_agent", "Agent instructeur")}</p>
 <p style="margin:0 0 18px;font-size:0.9em;color:#475569;">Tél. : ${v("agent_tel", "Tél. agent")} — Courriel : ${v("agent_email", "Email agent")}</p>`;
 
-// Bloc destinataire (fenêtre enveloppe).
+// Bloc destinataire (fenêtre enveloppe) — demandeur enrichi via cerfa_data.
 const blocDestinataire = `
 <div style="margin:0 0 18px;padding-left:55%;">
-  <p style="margin:0;">${v("demandeur_nom", "Nom du demandeur")}</p>
-  <p style="margin:0;">${manual("Adresse postale du demandeur")}</p>
+  <p style="margin:0;">${v("demandeur_civilite", "Civilité")} ${v("demandeur_nom", "Nom du demandeur")}</p>
+  <p style="margin:0;">${v("demandeur_adresse", "Adresse du demandeur")}</p>
   <p style="margin:6px 0 0;font-style:italic;font-size:0.85em;color:#64748b;">Lettre recommandée avec A.R.</p>
 </div>`;
 
 // Cartouche d'identification du dossier (demandeur + projet + terrain).
 const cartoucheDossier = `
 <div style="margin:0 0 18px;padding:12px 14px;border:1px solid #CBD5E1;border-radius:6px;font-size:0.92em;">
-  <p style="margin:0 0 3px;"><strong>Demandeur :</strong> ${v("demandeur_nom", "Nom du demandeur")}</p>
-  <p style="margin:0 0 3px;"><strong>Adresse du demandeur :</strong> ${manual("Adresse postale du demandeur")}</p>
+  <p style="margin:0 0 3px;"><strong>Demandeur :</strong> ${v("demandeur_civilite", "Civilité")} ${v("demandeur_nom", "Nom du demandeur")}</p>
+  <p style="margin:0 0 3px;"><strong>Adresse du demandeur :</strong> ${v("demandeur_adresse", "Adresse du demandeur")}</p>
   <p style="margin:0 0 3px;"><strong>Opération :</strong> ${v("description_projet", "Nature des travaux")}</p>
   <p style="margin:0 0 3px;"><strong>Adresse des travaux :</strong> ${v("adresse_travaux", "Adresse des travaux")}</p>
   <p style="margin:0 0 3px;"><strong>Références cadastrales :</strong> ${v("parcelle", "Références cadastrales")}</p>
@@ -93,8 +95,10 @@ const infosMajoration = `
   <p style="margin:0;">Si, à l'issue du délai d'instruction, vous n'avez pas reçu de réponse de l'administration, ce silence équivaudra à un refus susceptible de recours dans les conditions de droit commun (recours gracieux dans un délai d'un mois, recours contentieux devant le tribunal administratif dans un délai de deux mois).</p>
 </div>`;
 
-// Salutation / civilité (en attente d'enrichissement cerfa_data).
-const salutation = `${manual("Madame, Monsieur")},`;
+// Salutation / civilité (enrichie via cerfa_data).
+const salutation = `${v("demandeur_civilite", "Civilité")},`;
+// Formule de politesse de fin.
+const politesse = `<p style="margin:0 0 18px;">Je vous prie d'agréer, ${v("demandeur_civilite", "Civilité")}, l'expression de mes sincères salutations.</p>`;
 
 // ── Corps des modèles ──────────────────────────────────────────────────────
 
@@ -112,7 +116,7 @@ ${cartoucheDossier}
 <p style="margin:0 0 12px;">Dans le cas d'une demande formulée par voie électronique, ces pièces devront être déposées sur le guichet numérique des autorisations d'urbanisme : <a href="https://gnau.tours-metropole.fr/gnau/#/">https://gnau.tours-metropole.fr/gnau/#/</a>.</p>
 <p style="margin:0 0 12px;">Je vous rappelle que le délai d'instruction de votre dossier commencera à courir à partir de la date de réception de la totalité des informations et pièces manquantes.</p>
 <p style="margin:0 0 12px;">Vous disposez de trois mois à compter de la date de réception de cette lettre pour faire parvenir à la mairie l'intégralité des pièces et informations manquantes. À défaut, vous serez réputé avoir renoncé à votre projet et votre demande fera l'objet d'une décision tacite de rejet ou d'opposition selon sa nature (article R.423-39 du Code de l'urbanisme).</p>
-<p style="margin:0 0 18px;">Je vous prie d'agréer, ${manual("Madame, Monsieur")}, l'expression de mes sincères salutations.</p>
+${politesse}
 ${signatureBloc}
 `.trim();
 
@@ -128,7 +132,7 @@ ${cartoucheDossier}
 <p style="margin:0 0 12px;">Lors de ce dépôt, le récépissé de votre dossier indiquait qu'en cas de silence de l'Administration à la fin du délai d'instruction de droit commun, vous bénéficieriez d'une autorisation tacite, et que ce délai pouvait être modifié dans les conditions fixées par le Code de l'urbanisme.</p>
 <p style="margin:0 0 12px;">${motifHtml}</p>
 <p style="margin:0 0 12px;">Sauf avis contraire de ma part, la date limite d'instruction de votre dossier est portée au ${v("date_limite_instruction", "Date limite d'instruction")}.</p>
-<p style="margin:0 0 18px;">Je vous prie d'agréer, ${manual("Madame, Monsieur")}, l'expression de mes sincères salutations.</p>
+${politesse}
 ${signatureBloc}
 ${infosMajoration}
 `.trim();
@@ -152,7 +156,7 @@ ${cartoucheDossier}
 <p style="margin:0 0 12px;">Ces pièces devront être déposées sur le guichet numérique des autorisations d'urbanisme : <a href="https://gnau.tours-metropole.fr/gnau/#/">https://gnau.tours-metropole.fr/gnau/#/</a>. Le délai d'instruction commencera à courir à compter de la réception de l'intégralité des pièces manquantes ; à défaut de production dans les trois mois, votre demande fera l'objet d'une décision tacite de rejet ou d'opposition (article R.423-39 du Code de l'urbanisme).</p>
 <p style="margin:0 0 12px;">${motifHtml}</p>
 <p style="margin:0 0 12px;">Sauf avis contraire de ma part, la date limite d'instruction de votre dossier est portée au ${v("date_limite_instruction", "Date limite d'instruction")}.</p>
-<p style="margin:0 0 18px;">Je vous prie d'agréer, ${manual("Madame, Monsieur")}, l'expression de mes sincères salutations.</p>
+${politesse}
 ${signatureBloc}
 ${infosMajoration}
 `.trim();
@@ -163,8 +167,8 @@ const MOTIF_ERP_SEUL = `À cet effet, je vous informe que votre projet portant s
 const cadresDecision = `
 <p style="margin:0 0 4px;font-weight:700;font-size:0.85em;color:#64748b;">CADRE 1</p>
 <div style="margin:0 0 12px;font-size:0.92em;">
-  <p style="margin:0 0 3px;"><strong>Nom du demandeur :</strong> ${v("demandeur_nom", "Nom du demandeur")}</p>
-  <p style="margin:0 0 3px;"><strong>Adresse du demandeur :</strong> ${manual("Adresse postale du demandeur")}</p>
+  <p style="margin:0 0 3px;"><strong>Nom du demandeur :</strong> ${v("demandeur_civilite", "Civilité")} ${v("demandeur_nom", "Nom du demandeur")}</p>
+  <p style="margin:0 0 3px;"><strong>Adresse du demandeur :</strong> ${v("demandeur_adresse", "Adresse du demandeur")}</p>
   <p style="margin:0 0 3px;"><strong>Opération :</strong> ${v("description_projet", "Nature des travaux")}</p>
   <p style="margin:0;"><strong>Adresse des travaux :</strong> ${v("adresse_travaux", "Adresse des travaux")}</p>
 </div>
@@ -246,8 +250,8 @@ const CU_SIMPLE = `
 <p style="margin:0 0 2px;text-align:center;font-weight:700;letter-spacing:0.04em;">CERTIFICAT D'URBANISME DE SIMPLE INFORMATION</p>
 <p style="margin:0 0 16px;text-align:center;font-size:0.9em;">DÉLIVRÉ PAR LE MAIRE AU NOM DE LA COMMUNE</p>
 <div style="margin:0 0 16px;padding:12px 14px;border:1px solid #CBD5E1;border-radius:6px;font-size:0.92em;">
-  <p style="margin:0 0 3px;"><strong>Nom du demandeur :</strong> ${v("demandeur_nom", "Nom du demandeur")}</p>
-  <p style="margin:0 0 3px;"><strong>Adresse du demandeur :</strong> ${manual("Adresse postale du demandeur")}</p>
+  <p style="margin:0 0 3px;"><strong>Nom du demandeur :</strong> ${v("demandeur_civilite", "Civilité")} ${v("demandeur_nom", "Nom du demandeur")}</p>
+  <p style="margin:0 0 3px;"><strong>Adresse du demandeur :</strong> ${v("demandeur_adresse", "Adresse du demandeur")}</p>
   <p style="margin:0 0 3px;"><strong>Dossier N° :</strong> ${v("numero_dossier", "N° de dossier")} — <strong>Déposé le :</strong> ${v("date_depot", "Date de dépôt")}</p>
   <p style="margin:0 0 3px;"><strong>Adresse du terrain :</strong> ${v("adresse_travaux", "Adresse des travaux")}</p>
   <p style="margin:0 0 3px;"><strong>Références cadastrales :</strong> ${v("parcelle", "Références cadastrales")}</p>

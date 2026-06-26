@@ -4,7 +4,7 @@ import compression from "compression";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import path from "path";
-import { fileURLToPath } from "url";
+import { FRONTEND_DIST_DIR } from "./paths.js";
 import { publicRouter } from "./routes/public.js";
 import { authRouter } from "./routes/auth.js";
 import { franceConnectRouter } from "./routes/franceConnect.js";
@@ -18,11 +18,44 @@ import { serviceRouter } from "./routes/service.js";
 import { decisionsRouter } from "./routes/decisions.js";
 import { regulatoryRouter } from "./routes/regulatory.js";
 import { uploadsRouter } from "./routes/uploads.js";
+import { client } from "@heureka-v1/db";
+import { pinoHttp } from "pino-http";
+import { randomUUID } from "node:crypto";
+import { logger } from "./logger.js";
+import { metricsMiddleware, metricsHandler } from "./metrics.js";
+import { setupSentryErrorHandler } from "./sentry.js";
 
 export const app = express();
 
 // Trust the first proxy (nginx en frontal du VPS OVH) so rate-limiters see the real client IP
 app.set("trust proxy", 1);
+
+// Log structuré de chaque requête (méthode, route, status, durée) avec un reqId
+// de corrélation — réutilise le X-Request-Id de nginx s'il existe, sinon en
+// génère un (renvoyé au client). Placé tôt pour couvrir toutes les routes ; le
+// health-check est exclu pour ne pas noyer les logs sous le polling du gate.
+app.use(pinoHttp({
+  logger,
+  genReqId: (req, res) => {
+    const hdr = req.headers["x-request-id"];
+    const id = (Array.isArray(hdr) ? hdr[0] : hdr) || randomUUID();
+    res.setHeader("X-Request-Id", id);
+    return id;
+  },
+  customLogLevel: (_req, res, err) => {
+    if (err || res.statusCode >= 500) return "error";
+    if (res.statusCode >= 400) return "warn";
+    return "info";
+  },
+  autoLogging: {
+    ignore: (req) => req.url === "/api/health" || req.url === "/api/health/live",
+  },
+}));
+
+// Métriques Prometheus : chronomètre chaque requête (durée + compteur, labellés
+// méthode/route/statut). Placé tôt pour englober tout le pipeline. Le endpoint
+// d'exposition est /metrics (cf. plus bas). Voir src/metrics.ts.
+app.use(metricsMiddleware);
 
 // Skip compression for Server-Sent Events — gzip buffering would hold the
 // stream and the client would receive nothing until the response ends.
@@ -41,6 +74,10 @@ app.use(helmet({
       styleSrc: ["'self'", "'unsafe-inline'"],
       imgSrc: ["'self'", "data:", "blob:", "https://data.geopf.fr", "https://*.basemaps.cartocdn.com", "https://*.tile.openstreetmap.org"],
       connectSrc: ["'self'", "https://data.geopf.fr", "https://api-adresse.data.gouv.fr", "https://geo.api.gouv.fr"],
+      // Vidéos embarquées dans les articles du Centre d'aide (YouTube/Vimeo).
+      frameSrc: ["'self'", "https://www.youtube.com", "https://www.youtube-nocookie.com", "https://player.vimeo.com"],
+      // Lectures vidéo/audio uploadées (data/blob) en plus du same-origin.
+      mediaSrc: ["'self'", "data:", "blob:"],
       fontSrc: ["'self'"],
       frameAncestors: ["'none'"],
     },
@@ -72,6 +109,9 @@ app.use(cors({
 app.use("/api/mairie/admin/ingest-plu-pdf", express.json({ limit: "300mb" }));
 // Référentiel documentaire commune (OAP, PPRI, PEB…) : PDFs envoyés en base64.
 app.use("/api/mairie/documents", express.json({ limit: "60mb" }));
+// Centre d'aide (super-admin) : articles avec images de couverture/illustrations
+// en data URL base64 — la limite globale 2 Mo serait vite atteinte.
+app.use("/api/admin/help", express.json({ limit: "30mb" }));
 // Analyse d'article avec image (tableau/croquis) en base64.
 app.use("/api/mairie/reglementation/structure-article", express.json({ limit: "15mb" }));
 app.use(express.json({ limit: "2mb" }));
@@ -89,12 +129,35 @@ app.use("/api/service", serviceRouter);
 app.use("/api/decisions", decisionsRouter);
 app.use("/api/regulatory", regulatoryRouter);
 
-app.get("/api/health", (_req, res) => {
+// Liveness : le process répond-il ? Superficiel et sans I/O — à utiliser pour
+// un probe qui ne doit PAS tuer le process sur un simple incident DB transitoire.
+app.get("/api/health/live", (_req, res) => {
   res.json({ status: "ok", version: "1.0.0" });
 });
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const frontendDist = path.resolve(__dirname, "../../web/dist");
+// Readiness / healthcheck PROFOND : vérifie que la base répond (SELECT 1 borné).
+// Le gate de déploiement (deploy.yml) et tout uptime monitor externe doivent voir
+// "degraded" (503) quand la DB est injoignable, plutôt qu'un faux "ok" qui
+// laisserait passer un déploiement contre une base cassée ou marquerait l'app
+// "up" alors qu'elle sert des 500. `curl -f` du gate échoue bien sur le 503.
+app.get("/api/health", async (_req, res) => {
+  try {
+    await Promise.race([
+      client`SELECT 1`,
+      new Promise((_resolve, reject) =>
+        setTimeout(() => reject(new Error("db healthcheck timeout")), 2000),
+      ),
+    ]);
+    res.json({ status: "ok", db: "ok", version: "1.0.0" });
+  } catch {
+    res.status(503).json({ status: "degraded", db: "down", version: "1.0.0" });
+  }
+});
+
+// Exposition Prometheus. À la RACINE (convention `/metrics`), enregistrée avant
+// le catch-all SPA `app.get("*")` pour ne pas servir l'index.html à sa place.
+// Protégée par METRICS_TOKEN si défini (cf. src/metrics.ts).
+app.get("/metrics", metricsHandler);
 
 // Fichiers déposés (pièces jointes des dossiers) — authentifié et vérifié
 // par routes/uploads.ts (auth + scope commune / propriétaire).
@@ -109,7 +172,7 @@ app.use("/api", (_req, res) => {
 });
 
 // Hashed JS/CSS assets → cache 1 year
-app.use(express.static(frontendDist, {
+app.use(express.static(FRONTEND_DIST_DIR, {
   maxAge: "1y",
   immutable: true,
   setHeaders(res, filePath) {
@@ -130,5 +193,10 @@ app.use(express.static(frontendDist, {
 
 app.get("*", (_req, res) => {
   res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(frontendDist, "index.html"));
+  res.sendFile(path.join(FRONTEND_DIST_DIR, "index.html"));
 });
+
+// Handler d'erreurs Sentry — APRÈS toutes les routes (no-op si SENTRY_DSN absent).
+// Capture les erreurs propagées via next(err) ; les crashs (uncaughtException /
+// unhandledRejection) sont pris par les intégrations globales de Sentry.
+setupSentryErrorHandler(app);

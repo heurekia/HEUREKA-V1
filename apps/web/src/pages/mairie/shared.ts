@@ -1,4 +1,5 @@
 import type { DossierStatus, NextAction } from "@heureka-v1/shared";
+import { normalizeForSearch } from "../../lib/utils";
 
 // Types et constantes transverses au module mairie, extraits de MairieApp.tsx
 // (qui dépassait 11 000 lignes) afin d'être partagés entre écrans
@@ -28,6 +29,9 @@ export type DossierInfo = {
   date_completude?: string;
   delai?: DelaiBreakdown | null;
   description?: string; parcelle?: string; surface_plancher?: string;
+  // Unité foncière : liste complète des parcelles quand la demande porte sur un
+  // groupement foncier (≥ 2 parcelles). `parcelle` reste la principale.
+  parcelles?: Array<{ parcelle_id: string; surface_m2?: number; commune?: string; zone_code?: string }>;
   commune?: string; code_postal?: string;
   instructeur?: string;
   instructeur_id?: string;
@@ -37,6 +41,17 @@ export type DossierInfo = {
   petitionnaire_email?: string | null;
   petitionnaire_is_placeholder?: boolean;
   petitionnaire_can_invite?: boolean;
+  // Civilité (« Madame »/« Monsieur ») et adresse postale du demandeur, dérivées
+  // de metadata.cerfa_data (saisies au dépôt citoyen). Réutilisées dans les
+  // balises dynamiques de courrier (variables demandeur_civilite / demandeur_adresse).
+  demandeur_civilite?: string;
+  demandeur_adresse?: string;
+  // Représentant physique désigné (personne morale) et co-demandeur éventuel,
+  // dérivés de metadata.cerfa_data. Réutilisés dans les balises de courrier
+  // (representant_nom, codemandeur_civilite, codemandeur_nom).
+  representant_nom?: string;
+  codemandeur_civilite?: string;
+  codemandeur_nom?: string;
   lat?: number; lng?: number;
   // Analyse parcellaire propagée depuis la création du dossier côté citoyen,
   // évite un re-fetch /analyse-parcelle à l'ouverture.
@@ -150,7 +165,20 @@ export const DOSSIER_TYPE_OPTIONS: { value: NouveauDossierType; label: string }[
 ];
 
 // Notifications : forme API + helpers d'affichage (icône, couleur, temps relatif).
-export type ApiNotif = { id: string; type: string; title: string; message: string; is_read: boolean; dossier_id: string | null; created_at: string };
+// `commune` provient du dossier lié (texte libre, null si la notif n'est pas
+// rattachée à un dossier) — sert à basculer la commune active au clic et à
+// préfixer la notification du nom de la ville pour les agents multi-communes.
+export type ApiNotif = { id: string; type: string; title: string; message: string; is_read: boolean; dossier_id: string | null; commune?: string | null; created_at: string };
+
+// Résout le nom canonique d'une commune (tel qu'affiché dans le sélecteur) à
+// partir d'une valeur potentiellement saisie librement côté `dossiers.commune`
+// (casse, accents et espaces variables). Retourne null si la commune n'est pas
+// dans le périmètre accessible — on ne peut alors pas la sélectionner.
+export function resolveCommune(raw: string | null | undefined, communes: string[]): string | null {
+  if (!raw) return null;
+  const norm = normalizeForSearch(raw);
+  return communes.find((c) => normalizeForSearch(c) === norm) ?? null;
+}
 
 export function notifIcon(type: string) {
   if (type.includes("message")) return "💬";

@@ -25,6 +25,7 @@ import { loadZoneRulesWithInheritance, pickMostSpecificRule } from "./zoneRules.
 import { resolveCommuneZoneIds } from "./communeZones.js";
 import { getCommunePluContext, findZoneAtPoint, findZonesForParcel, type PluCommuneContext } from "./pluZones.js";
 import { buildParcelSynthesis, type ParcelSynthesis } from "./parcelSynthesis.js";
+import type { ParcelleRef, UniteFonciere } from "@heureka-v1/shared";
 import { loadCommuneHeightLayer, resolveParcelHeight, heightFromPrescriptions, describeHeightCategory, type ParcelHeight } from "./heightLayer.js";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -185,6 +186,11 @@ export interface ParcelAnalysis {
   // Synthèse thématique bi-audience (citoyen + instructeur), transversale entre
   // documents (PLU + risques + servitudes). Dérivée des champs ci-dessus.
   synthesis?: ParcelSynthesis;
+  // Agrégat « unité foncière » : présent uniquement quand l'analyse porte sur
+  // plusieurs parcelles (groupement foncier). `result.parcel` reste la parcelle
+  // PRINCIPALE (zone/risques/servitudes résolus dessus) ; la constructibilité,
+  // elle, est recalculée sur la SURFACE TOTALE des parcelles.
+  unite_fonciere?: UniteFonciere;
 }
 
 // ── Geocoding ────────────────────────────────────────────────────────────────
@@ -254,6 +260,50 @@ export async function geocodeAddress(address: string, citycode?: string): Promis
       score: f.properties.score,
       type: f.properties.type ?? "housenumber",
       id: f.properties.id,
+    };
+  } catch {
+    return null;
+  }
+}
+
+// ── Reverse-geocode coordinates → nearest postal address (BAN) ────────────────
+// Quand l'analyse part d'une parcelle (réf. cadastrale ou sélection carte) et non
+// d'une adresse, on récupère l'adresse OFFICIELLE la plus proche du point (en
+// pratique le centroïde de la parcelle) via le géocodage inverse de la BAN. Le
+// dossier d'urbanisme étant juridiquement rattaché À LA FOIS à la parcelle et à
+// l'adresse, c'est cette adresse — cohérente avec la parcelle retenue — qui doit
+// figurer au dossier (et non une adresse saisie qui pointerait une parcelle
+// voisine). Best-effort : null si la BAN ne renvoie rien ou est injoignable.
+export async function reverseGeocode(lat: number, lng: number): Promise<(AddressResult & { distance_m?: number }) | null> {
+  try {
+    const url = `https://api-adresse.data.gouv.fr/reverse/?lon=${lng}&lat=${lat}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return null;
+    const data = await r.json() as {
+      features?: Array<{
+        geometry: { coordinates: [number, number] };
+        properties: {
+          id?: string;
+          label: string; score: number; citycode: string;
+          postcode: string; city: string; type: string;
+          // Distance (m) entre le point interrogé et l'adresse renvoyée par la BAN.
+          distance?: number;
+        };
+      }>;
+    };
+    const f = data.features?.[0];
+    if (!f) return null;
+    return {
+      label: f.properties.label,
+      lat: f.geometry.coordinates[1],
+      lng: f.geometry.coordinates[0],
+      citycode: f.properties.citycode,
+      postcode: f.properties.postcode,
+      city: f.properties.city,
+      score: f.properties.score,
+      type: f.properties.type ?? "housenumber",
+      id: f.properties.id,
+      distance_m: typeof f.properties.distance === "number" ? f.properties.distance : undefined,
     };
   } catch {
     return null;
@@ -1268,7 +1318,16 @@ function geometryCentroid(geom: Geometry | null | undefined): { lat: number; lng
 
 export async function analyseParcel(
   query: string,
-  options?: { citycode?: string; zoneOverride?: string; coords?: { lat: number; lng: number } }
+  options?: {
+    citycode?: string;
+    zoneOverride?: string;
+    coords?: { lat: number; lng: number };
+    // Unité foncière : liste d'ids cadastraux (14 car.) du groupement. La parcelle
+    // principale (celle résolue depuis `query`/coords) peut y figurer ou non ; elle
+    // est de toute façon comptée. Les surfaces sont additionnées et la
+    // constructibilité recalculée sur le total.
+    uniteFonciere?: { parcelles: string[] };
+  }
 ): Promise<ParcelAnalysis> {
   const result: ParcelAnalysis = {
     query,
@@ -1320,7 +1379,38 @@ export async function analyseParcel(
       // la résolution de zone PLU / servitudes. Sans ce centre, le bloc zonage
       // (gardé par `if (lat && lng)`) est sauté et la zone reste « non déterminée ».
       const centre = geometryCentroid(parcel.geometry);
-      if (centre) { lat = centre.lat; lng = centre.lng; }
+      if (centre) {
+        lat = centre.lat; lng = centre.lng;
+        // Adresse rattachée à la parcelle : on géocode en inverse le centroïde
+        // pour récupérer l'adresse officielle (BAN) la plus proche. Le dossier
+        // est juridiquement lié à la parcelle ET à l'adresse — il faut donc
+        // l'adresse cohérente avec la parcelle retenue, pas une saisie initiale.
+        const addr = await reverseGeocode(centre.lat, centre.lng);
+        if (addr) {
+          result.address = addr;
+          result.data_sources.push("BAN (géocodage inverse)");
+          // Réglementation : le terrain est identifié de façon authentique par sa
+          // RÉFÉRENCE CADASTRALE (CERFA — commune/section/numéro). L'adresse est
+          // l'information complémentaire. Quand la BAN ne renvoie pas un NUMÉRO de
+          // voirie sur (ou tout près de) la parcelle — typiquement un terrain nu où
+          // n'existe qu'une voie / un lieu-dit, ou un numéro voisin distant — on ne
+          // doit PAS l'affirmer comme adresse exacte : on la marque indicative et on
+          // rappelle que la réf. cadastrale fait foi, à charge pour le citoyen de
+          // confirmer/compléter l'adresse exacte du terrain.
+          const numberedOnParcel =
+            (addr.type === "housenumber" || addr.type === "interpolation") &&
+            (addr.distance_m == null || addr.distance_m <= 100);
+          if (!numberedOnParcel) {
+            result.address.score = Math.min(result.address.score, 0.5); // déclenche l'indicateur « approx. » côté UI
+            result.warnings.push(
+              `Adresse « ${addr.label} » déduite de la parcelle à titre indicatif ` +
+              `(pas de numéro de voirie sur la parcelle). La référence cadastrale ` +
+              `${parcel.parcelle_id} fait foi pour localiser le terrain — vérifiez ou ` +
+              `complétez l'adresse exacte avant le dépôt.`
+            );
+          }
+        }
+      }
     } else {
       result.warnings.push("Parcelle cadastrale non trouvée via API IGN.");
     }
@@ -1853,6 +1943,60 @@ export async function analyseParcel(
     }
   }
 
+  // Step 5b: Unité foncière (groupement de parcelles contiguës) ───────────────
+  // Quand plusieurs parcelles sont sélectionnées, on les agrège en une seule
+  // unité foncière : `result.parcel` reste la PRINCIPALE (zone/risques/règles
+  // résolus dessus), mais on additionne les surfaces cadastrales pour recalculer
+  // la constructibilité sur le total. La zone de chaque parcelle est résolue au
+  // centroïde (best-effort) afin de signaler un groupement à cheval sur plusieurs
+  // zones PLU. NB : le bâti existant (`built_footprint_m2`) n'est mesuré que sur
+  // la parcelle principale — l'« emprise restante » reste donc une borne haute
+  // quand des bâtiments existent sur les parcelles additionnelles.
+  let uniteFonciereTotalM2: number | null = null;
+  if (options?.uniteFonciere && result.parcel) {
+    const principal = result.parcel;
+    const wanted = options.uniteFonciere.parcelles
+      .map((p) => p.replace(/[\s.]/g, "").toUpperCase())
+      .filter((p) => p.length >= 14);
+    const seen = new Set<string>([principal.parcelle_id]);
+    const refs: ParcelleRef[] = [{
+      parcelle_id: principal.parcelle_id,
+      surface_m2: principal.surface_m2,
+      commune: principal.commune,
+      zone_code: result.plu_zone?.zone_code,
+    }];
+    for (const id of wanted) {
+      if (seen.has(id)) continue;
+      seen.add(id);
+      const p = await findParcelByRef(id);
+      if (!p) {
+        result.warnings.push(`Parcelle ${id} introuvable via l'API cadastre — non comptée dans l'unité foncière.`);
+        continue;
+      }
+      let zone_code: string | undefined;
+      const centre = geometryCentroid(p.geometry);
+      if (centre && p.code_insee) {
+        try {
+          const ctx = await communePluContext(p.code_insee);
+          zone_code = findZoneAtPoint(ctx.zones, centre.lat, centre.lng)?.zone_code;
+        } catch { /* zone facultative — ne bloque pas l'agrégation */ }
+      }
+      refs.push({ parcelle_id: p.parcelle_id, surface_m2: p.surface_m2, commune: p.commune, zone_code });
+    }
+    if (refs.length > 1) {
+      const total = refs.reduce((s, r) => s + (r.surface_m2 ?? 0), 0);
+      const zones = new Set(refs.map((r) => r.zone_code).filter(Boolean) as string[]);
+      const zones_distinctes = zones.size > 1;
+      uniteFonciereTotalM2 = total;
+      result.unite_fonciere = { parcelles: refs, total_surface_m2: total, zones_distinctes };
+      if (zones_distinctes) {
+        result.warnings.push(
+          `Les parcelles sélectionnées ne sont pas toutes sur la même zone PLU (${Array.from(zones).join(", ")}). La règle la plus stricte s'applique par partie — vérifiez la zone applicable à chaque emprise.`,
+        );
+      }
+    }
+  }
+
   // Step 6: Buildability calculation
   if (result.rules.length > 0 && result.parcel) {
     const calcVars: BuildabilityInput["calculationVariables"] = {
@@ -1917,7 +2061,9 @@ export async function analyseParcel(
       result.data_sources.push("BD TOPO® (bâtiments)");
     }
     result.buildability = calculateBuildability({
-      parcelSurfaceM2: result.parcel.surface_m2,
+      // Sur une unité foncière, la constructibilité (emprise, espaces verts) se
+      // calcule sur la surface TOTALE du groupement, pas la seule principale.
+      parcelSurfaceM2: uniteFonciereTotalM2 ?? result.parcel.surface_m2,
       existingFootprintM2: existingFootprintM2 ?? 0,
       calculationVariables: calcVars,
     });

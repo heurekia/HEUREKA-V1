@@ -1,18 +1,28 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossier_courriers, users, communes, courrier_templates, legal_mentions, user_communes } from "@heureka-v1/db";
-import { eq, desc, sql, ilike } from "drizzle-orm";
+import { dossier_courriers, users, communes, courrier_templates, legal_mentions, user_communes, dossiers, signataires } from "@heureka-v1/db";
+import { eq, and, desc, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
+import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { CODE_URBANISME_ID } from "../../services/legifrance.js";
 import {
   emitPieceComplementRequest,
   renderPieceListHtml,
   type PieceRequestItem,
 } from "../../services/pieceRequest.js";
+import { deliverCourrier, isCourrierChannel } from "../../services/courrierDelivery.js";
+
+// Corps HTML → texte brut lisible (pour la remise en messagerie d'un courrier
+// général, où dossier_messages.content est du texte).
+function htmlToText(html: string | null | undefined): string {
+  if (!html) return "";
+  return html.replace(/<[^>]+>/g, " ").replace(/&nbsp;/g, " ").replace(/\s+/g, " ").trim();
+}
 
 export const courriersRouter = Router();
 
-courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires", async (req: AuthRequest, res) => {
+courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const body = (req.body ?? {}) as {
@@ -53,40 +63,329 @@ courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires", async (re
       attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
       emis_par: req.user!.id,
     });
-    res.status(201).json(result);
+    const delivery = isCourrierChannel(body.delivery_method)
+      ? await deliverCourrier({
+          dossier_id: dossierId,
+          channel: body.delivery_method,
+          subject: body.subject ?? "Demande de pièces complémentaires",
+          pieces: cleaned,
+          attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
+          emis_par: req.user!.id,
+          emis_par_role: req.user!.role,
+        })
+      : null;
+    res.status(201).json({ ...result, delivery });
   } catch (err) {
     console.error("[courriers/pieces-complementaires]", err);
     res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
   }
 });
 
-courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires/preview", async (req: AuthRequest, res) => {
+courriersRouter.post("/dossiers/:id/courriers/pieces-complementaires/preview", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
   const body = (req.body ?? {}) as { pieces?: PieceRequestItem[] };
   const pieces = Array.isArray(body.pieces) ? body.pieces.filter((p) => p && typeof p.nom === "string" && p.nom.trim()) : [];
   res.json({ html: renderPieceListHtml(pieces) });
 });
 
-courriersRouter.get("/dossiers/:id/courriers", async (req: AuthRequest, res) => {
+courriersRouter.get("/dossiers/:id/courriers", requirePermission("courriers.read"), async (req: AuthRequest, res) => {
   try {
     const rows = await db
       .select({
         id: dossier_courriers.id,
         type: dossier_courriers.type,
         subject: dossier_courriers.subject,
+        body_snapshot: dossier_courriers.body_snapshot,
         pieces_jointes_ids: dossier_courriers.pieces_jointes_ids,
         articles_cites: dossier_courriers.articles_cites,
         attachments: dossier_courriers.attachments,
         emis_par: dossier_courriers.emis_par,
         emis_le: dossier_courriers.emis_le,
         delivery_method: dossier_courriers.delivery_method,
+        statut: dossier_courriers.statut,
+        signature_status: dossier_courriers.signature_status,
+        signataire_user_id: dossier_courriers.signataire_user_id,
+        signature_requested_at: dossier_courriers.signature_requested_at,
+        signed_at: dossier_courriers.signed_at,
+        signataire_prenom: users.prenom,
+        signataire_nom: users.nom,
       })
       .from(dossier_courriers)
+      .leftJoin(users, eq(users.id, dossier_courriers.signataire_user_id))
       .where(eq(dossier_courriers.dossier_id, req.params.id as string))
       .orderBy(desc(dossier_courriers.emis_le));
     res.json(rows);
   } catch (err) {
     console.error("[courriers list]", err);
     res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Nettoie une liste de pièces venue du client : on ne garde que nom + raison +
+// flags attendus (jamais d'HTML brut), et on rejette les noms vides.
+function cleanPieces(raw: unknown): PieceRequestItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((p): p is PieceRequestItem => !!p && typeof p === "object" && typeof (p as PieceRequestItem).nom === "string" && (p as PieceRequestItem).nom.trim().length > 0)
+    .map((p) => ({
+      piece_id: typeof p.piece_id === "string" ? p.piece_id : undefined,
+      code_piece: typeof p.code_piece === "string" ? p.code_piece : undefined,
+      nom: p.nom.trim(),
+      raison: typeof p.raison === "string" && p.raison.trim() ? p.raison.trim() : undefined,
+      manquante: p.manquante === true || !p.piece_id,
+    }));
+}
+
+// ── Brouillons de courrier ────────────────────────────────────────────────
+// Un brouillon est un courrier enregistré SANS effet métier : le dossier ne
+// bascule pas en incomplet et les pièces ne sont pas marquées. Il reste
+// modifiable jusqu'à son envoi. L'accès au dossier est déjà contrôlé par
+// enforceDossierAccess (monté sur /dossiers/:id, cf. mairie/index.ts).
+
+// Crée un brouillon (tout type de courrier).
+courriersRouter.post("/dossiers/:id/courriers/drafts", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const body = (req.body ?? {}) as {
+      type?: string;
+      subject?: string | null;
+      body_snapshot?: string | null;
+      articles_cites?: string[];
+      pieces?: unknown;
+      delivery_method?: string | null;
+    };
+    const type = typeof body.type === "string" && body.type.trim() ? body.type.trim() : "general";
+    const articles = Array.isArray(body.articles_cites) ? body.articles_cites.filter((a) => typeof a === "string") : [];
+    const [row] = await db.insert(dossier_courriers).values({
+      dossier_id: dossierId,
+      type,
+      subject: body.subject ?? null,
+      body_snapshot: body.body_snapshot ?? null,
+      pieces_jointes_ids: cleanPieces(body.pieces),
+      articles_cites: articles,
+      delivery_method: body.delivery_method ?? null,
+      statut: "brouillon",
+      emis_par: req.user!.id,
+    }).returning();
+    res.status(201).json(row);
+  } catch (err) {
+    console.error("[courriers/drafts create]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// Met à jour un brouillon (refusé si déjà envoyé — un courrier émis est figé).
+courriersRouter.put("/dossiers/:id/courriers/:courrierId", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const courrierId = req.params.courrierId as string;
+    const [existing] = await db.select({ id: dossier_courriers.id, statut: dossier_courriers.statut })
+      .from(dossier_courriers)
+      .where(and(eq(dossier_courriers.id, courrierId), eq(dossier_courriers.dossier_id, dossierId)))
+      .limit(1);
+    if (!existing) return res.status(404).json({ error: "Courrier introuvable" });
+    if (existing.statut !== "brouillon") {
+      return res.status(409).json({ error: "Ce courrier a déjà été envoyé : il n'est plus modifiable." });
+    }
+    const body = (req.body ?? {}) as {
+      type?: string;
+      subject?: string | null;
+      body_snapshot?: string | null;
+      articles_cites?: string[];
+      pieces?: unknown;
+      delivery_method?: string | null;
+    };
+    const patch: Partial<typeof dossier_courriers.$inferInsert> = {};
+    if (typeof body.type === "string" && body.type.trim()) patch.type = body.type.trim();
+    if ("subject" in body) patch.subject = body.subject ?? null;
+    if ("body_snapshot" in body) patch.body_snapshot = body.body_snapshot ?? null;
+    if ("delivery_method" in body) patch.delivery_method = body.delivery_method ?? null;
+    if (Array.isArray(body.articles_cites)) patch.articles_cites = body.articles_cites.filter((a) => typeof a === "string");
+    if ("pieces" in body) patch.pieces_jointes_ids = cleanPieces(body.pieces);
+    if (Object.keys(patch).length === 0) {
+      const [row] = await db.select().from(dossier_courriers).where(eq(dossier_courriers.id, courrierId)).limit(1);
+      return res.json(row);
+    }
+    const [row] = await db.update(dossier_courriers).set(patch).where(eq(dossier_courriers.id, courrierId)).returning();
+    res.json(row);
+  } catch (err) {
+    console.error("[courriers update draft]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// Envoie un courrier (brouillon → envoyé). Pour une demande de pièces, déclenche
+// les effets métier (marquage des pièces, bascule du dossier, événement) via le
+// service dédié. Pour les autres types, fige simplement le snapshot et horodate.
+courriersRouter.post("/dossiers/:id/courriers/:courrierId/send", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const courrierId = req.params.courrierId as string;
+    const [existing] = await db.select()
+      .from(dossier_courriers)
+      .where(and(eq(dossier_courriers.id, courrierId), eq(dossier_courriers.dossier_id, dossierId)))
+      .limit(1);
+    if (!existing) return res.status(404).json({ error: "Courrier introuvable" });
+    if (existing.statut === "envoye") return res.status(409).json({ error: "Ce courrier a déjà été envoyé." });
+    if (existing.signature_status === "a_signer") {
+      return res.status(409).json({ error: "Ce courrier est en attente de signature et ne peut pas encore être envoyé." });
+    }
+
+    const body = (req.body ?? {}) as {
+      body_snapshot?: string | null;
+      subject?: string | null;
+      delivery_method?: string | null;
+      attachment_document_ids?: string[];
+      pieces?: unknown;
+      articles_cites?: string[];
+    };
+    const bodySnapshot = body.body_snapshot ?? existing.body_snapshot ?? null;
+    const subject = body.subject ?? existing.subject ?? null;
+    const deliveryMethod = body.delivery_method ?? existing.delivery_method ?? null;
+
+    if (existing.type === "pieces_complementaires") {
+      // Pièces / articles à jour fournis par le client (la sélection a pu changer
+      // depuis l'enregistrement) ; à défaut on retombe sur l'état stocké.
+      const fromClient = cleanPieces(body.pieces);
+      const pieces = fromClient.length ? fromClient : cleanPieces(existing.pieces_jointes_ids);
+      if (pieces.length === 0) return res.status(400).json({ error: "Aucune pièce associée à ce courrier" });
+      const articles = Array.isArray(body.articles_cites)
+        ? body.articles_cites.filter((a) => typeof a === "string")
+        : ((existing.articles_cites as string[]) ?? []);
+      const result = await emitPieceComplementRequest({
+        dossier_id: dossierId,
+        existing_courrier_id: courrierId,
+        pieces,
+        articles_cites: articles,
+        body_snapshot: bodySnapshot,
+        subject,
+        delivery_method: deliveryMethod ?? "print",
+        attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
+        emis_par: req.user!.id,
+      });
+      const delivery = isCourrierChannel(deliveryMethod)
+        ? await deliverCourrier({
+            dossier_id: dossierId,
+            channel: deliveryMethod,
+            subject: subject ?? "Demande de pièces complémentaires",
+            pieces,
+            attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
+            emis_par: req.user!.id,
+            emis_par_role: req.user!.role,
+          })
+        : null;
+      return res.json({ ...result, statut: "envoye", delivery });
+    }
+
+    const [row] = await db.update(dossier_courriers).set({
+      statut: "envoye",
+      body_snapshot: bodySnapshot,
+      subject,
+      delivery_method: deliveryMethod,
+      emis_par: req.user!.id,
+      emis_le: new Date(),
+    }).where(eq(dossier_courriers.id, courrierId)).returning();
+    const delivery = isCourrierChannel(deliveryMethod)
+      ? await deliverCourrier({
+          dossier_id: dossierId,
+          channel: deliveryMethod,
+          subject: subject ?? "Courrier du service urbanisme",
+          body_text: htmlToText(bodySnapshot),
+          attachment_document_ids: Array.isArray(body.attachment_document_ids) ? body.attachment_document_ids : [],
+          emis_par: req.user!.id,
+          emis_par_role: req.user!.role,
+        })
+      : null;
+    res.json({ courrier_id: courrierId, statut: "envoye", row, delivery });
+  } catch (err) {
+    console.error("[courriers send]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// ── Circuit de signature ──────────────────────────────────────────────────
+// Renvoie le signataire ACTIF de la commune rattaché à un utilisateur (= preuve
+// d'habilitation à signer), ou null. signataires.commune est le nom de commune.
+//
+// La comparaison de commune est insensible à la casse et aux espaces : la
+// commune d'un dossier dérive de dossiers.commune — texte libre saisi tel quel
+// (« TOURS ») — alors que signataires.commune provient des Paramètres
+// (« Tours »). Un eq() strict ne matchait jamais et la signature était refusée à
+// tort au signataire pourtant habilité (« Le destinataire n'est pas un
+// signataire habilité de la commune. »). Aligné sur signataireCommuneEq /
+// isActiveSignataire dans decisions.ts.
+async function findSignataire(commune: string, userId: string) {
+  const [sig] = await db.select().from(signataires)
+    .where(and(
+      sql`lower(trim(${signataires.commune})) = ${commune.trim().toLowerCase()}`,
+      eq(signataires.user_id, userId),
+      eq(signataires.active, true),
+    ))
+    .limit(1);
+  return sig ?? null;
+}
+
+// Le rédacteur, s'il est lui-même habilité, appose sa signature/tampon sur place.
+// L'habilitation est vérifiée côté serveur (présence d'un signataire actif).
+courriersRouter.post("/dossiers/:id/courriers/:courrierId/sign", async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const courrierId = req.params.courrierId as string;
+    const [existing] = await db
+      .select({ id: dossier_courriers.id, signature_status: dossier_courriers.signature_status })
+      .from(dossier_courriers)
+      .where(and(eq(dossier_courriers.id, courrierId), eq(dossier_courriers.dossier_id, dossierId)))
+      .limit(1);
+    if (!existing) return res.status(404).json({ error: "Courrier introuvable" });
+    if (existing.signature_status === "signee") return res.status(409).json({ error: "Ce courrier est déjà signé." });
+    const [d] = await db.select({ commune: dossiers.commune }).from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+    if (!d?.commune) return res.status(400).json({ error: "Commune du dossier introuvable" });
+    const sig = await findSignataire(d.commune, req.user!.id);
+    if (!sig) return res.status(403).json({ error: "Vous n'êtes pas habilité à signer pour cette commune." });
+    const body = (req.body ?? {}) as { body_snapshot?: string | null };
+    const [row] = await db.update(dossier_courriers).set({
+      signature_status: "signee",
+      signataire_user_id: req.user!.id,
+      signed_at: new Date(),
+      signature_image: sig.signature_image ?? null,
+      tampon_image: sig.tampon_image ?? null,
+      ...(typeof body.body_snapshot === "string" ? { body_snapshot: body.body_snapshot } : {}),
+    }).where(eq(dossier_courriers.id, courrierId)).returning();
+    res.json(row);
+  } catch (err) {
+    console.error("[courriers sign]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
+  }
+});
+
+// Envoi en signature à un signataire désigné (le rédacteur n'a pas — ou ne veut
+// pas exercer — son pouvoir de signature). Traçabilité : demandeur + date + cible.
+courriersRouter.post("/dossiers/:id/courriers/:courrierId/request-signature", requirePermission("courriers.generate"), async (req: AuthRequest, res) => {
+  try {
+    const dossierId = req.params.id as string;
+    const courrierId = req.params.courrierId as string;
+    const targetUserId = typeof req.body?.signataire_user_id === "string" ? req.body.signataire_user_id : null;
+    if (!targetUserId) return res.status(400).json({ error: "Signataire requis" });
+    const [existing] = await db
+      .select({ id: dossier_courriers.id, signature_status: dossier_courriers.signature_status })
+      .from(dossier_courriers)
+      .where(and(eq(dossier_courriers.id, courrierId), eq(dossier_courriers.dossier_id, dossierId)))
+      .limit(1);
+    if (!existing) return res.status(404).json({ error: "Courrier introuvable" });
+    if (existing.signature_status === "signee") return res.status(409).json({ error: "Ce courrier est déjà signé." });
+    const [d] = await db.select({ commune: dossiers.commune }).from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+    if (!d?.commune) return res.status(400).json({ error: "Commune du dossier introuvable" });
+    const target = await findSignataire(d.commune, targetUserId);
+    if (!target) return res.status(400).json({ error: "Le destinataire n'est pas un signataire habilité de la commune." });
+    const [row] = await db.update(dossier_courriers).set({
+      signature_status: "a_signer",
+      signataire_user_id: targetUserId,
+      signature_requested_by: req.user!.id,
+      signature_requested_at: new Date(),
+    }).where(eq(dossier_courriers.id, courrierId)).returning();
+    res.json(row);
+  } catch (err) {
+    console.error("[courriers request-signature]", err);
+    res.status(500).json({ error: err instanceof Error ? err.message : "Erreur serveur" });
   }
 });
 
@@ -179,8 +478,48 @@ async function getCommuneForUser(req: AuthRequest): Promise<string | null> {
   return u?.commune_insee ?? u?.commune?.trim() ?? null;
 }
 
-courriersRouter.get("/templates", async (req: AuthRequest, res) => {
+// Commune (ligne complète) d'un dossier, APRÈS contrôle d'accès au dossier
+// (même périmètre que enforceDossierAccess : user_communes ou commune du
+// compte ; admin = tout). Sert à scoper modèles & en-tête sur la commune DU
+// DOSSIER quand la modale courrier passe ?dossier_id=, indépendamment de la
+// commune principale du compte et de toute correspondance nom→INSEE côté front.
+async function getDossierCommuneRow(req: AuthRequest, dossierId: string) {
+  const [d] = await db.select({ commune: dossiers.commune })
+    .from(dossiers).where(eq(dossiers.id, dossierId)).limit(1);
+  if (!d?.commune) return null;
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(d.commune, scope)) return null;
+  const name = d.commune.trim();
+  const [byName] = await db.select().from(communes).where(ilike(communes.name, name)).limit(1);
+  if (byName) return byName;
+  const [byUnaccent] = await db.select().from(communes)
+    .where(sql`unaccent(name) ILIKE unaccent(${name})`).limit(1);
+  return byUnaccent ?? null;
+}
+
+courriersRouter.get("/templates", requirePermission("courriers.read"), async (req: AuthRequest, res) => {
   try {
+    // Priorité au périmètre DU DOSSIER (modale courrier) : on résout la commune
+    // du dossier côté serveur et on matche les modèles par INSEE *ou* par nom —
+    // robuste quel que soit le stockage (seed = INSEE, modèles anciens = nom).
+    const dossierId = typeof req.query.dossier_id === "string" && req.query.dossier_id.trim()
+      ? req.query.dossier_id.trim() : null;
+    if (dossierId) {
+      const row = await getDossierCommuneRow(req, dossierId);
+      if (row) {
+        // Match par INSEE *ou* par nom. NB : surtout pas `ANY(${tableau})` —
+        // drizzle développe un tableau JS en `($1,$2)` (une ROW), alors que
+        // ANY() exige un vrai tableau SQL → erreur 500. On compare donc des
+        // scalaires explicites (commune_insee et name sont NOT NULL).
+        const insee = row.insee_code;
+        const name = row.name;
+        const rows = await db.select().from(courrier_templates)
+          .where(sql`commune_insee IN (${insee}, ${name}) OR commune ILIKE ${insee} OR commune ILIKE ${name}`)
+          .orderBy(courrier_templates.created_at);
+        return res.json(rows);
+      }
+      // Dossier introuvable ou hors périmètre : repli sur la commune du compte.
+    }
     const communeKey = await getCommuneForUser(req);
     if (!communeKey) return res.json([]);
     const rows = await db.select().from(courrier_templates)
@@ -193,7 +532,7 @@ courriersRouter.get("/templates", async (req: AuthRequest, res) => {
   }
 });
 
-courriersRouter.post("/templates", async (req: AuthRequest, res) => {
+courriersRouter.post("/templates", requirePermission("courriers.templates"), async (req: AuthRequest, res) => {
   try {
     const communeKey = await getCommuneForUser(req);
     if (!communeKey) return res.status(400).json({ error: "Commune introuvable" });
@@ -212,7 +551,7 @@ courriersRouter.post("/templates", async (req: AuthRequest, res) => {
   }
 });
 
-courriersRouter.put("/templates/:templateId", async (req: AuthRequest, res) => {
+courriersRouter.put("/templates/:templateId", requirePermission("courriers.templates"), async (req: AuthRequest, res) => {
   try {
     const templateId = req.params.templateId as string;
     const communeKey = await getCommuneForUser(req);
@@ -232,7 +571,7 @@ courriersRouter.put("/templates/:templateId", async (req: AuthRequest, res) => {
   }
 });
 
-courriersRouter.delete("/templates/:templateId", async (req: AuthRequest, res) => {
+courriersRouter.delete("/templates/:templateId", requirePermission("courriers.templates"), async (req: AuthRequest, res) => {
   try {
     const templateId = req.params.templateId as string;
     const communeKey = await getCommuneForUser(req);
@@ -248,9 +587,13 @@ courriersRouter.delete("/templates/:templateId", async (req: AuthRequest, res) =
   }
 });
 
-courriersRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
+courriersRouter.get("/commune-letterhead", requirePermission("courriers.read"), async (req: AuthRequest, res) => {
   try {
-    const commune = await getCommuneRowForUser(req);
+    // En-tête de la commune DU DOSSIER si la modale passe ?dossier_id= (sinon
+    // commune du compte), pour que logo/titre/signature correspondent au dossier.
+    const dossierId = typeof req.query.dossier_id === "string" && req.query.dossier_id.trim()
+      ? req.query.dossier_id.trim() : null;
+    const commune = (dossierId ? await getDossierCommuneRow(req, dossierId) : null) ?? await getCommuneRowForUser(req);
     if (!commune) return res.json({ commune_configured: false });
     res.json({
       commune_configured: true,
@@ -269,7 +612,7 @@ courriersRouter.get("/commune-letterhead", async (req: AuthRequest, res) => {
   }
 });
 
-courriersRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
+courriersRouter.put("/commune-letterhead", requirePermission("courriers.templates"), async (req: AuthRequest, res) => {
   try {
     const commune = await getCommuneRowForUser(req);
     if (!commune) return res.status(404).json({ error: "Commune introuvable — vérifiez que votre compte est bien rattaché à une commune dans l'administration." });
@@ -292,7 +635,7 @@ courriersRouter.put("/commune-letterhead", async (req: AuthRequest, res) => {
 });
 
 // ── Legal mentions (Code de l'urbanisme cache) ────────────────────────────────
-courriersRouter.get("/legal-mentions", async (req: AuthRequest, res) => {
+courriersRouter.get("/legal-mentions", requirePermission("courriers.read"), async (req: AuthRequest, res) => {
   try {
     const dossierType = (req.query.type as string | undefined) ?? "";
     const courrierType = (req.query.courrier_type as string | undefined) ?? "";

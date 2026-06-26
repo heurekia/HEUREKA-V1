@@ -1,10 +1,15 @@
 import { Routes, Route, Navigate } from "react-router-dom";
+import { lazy, Suspense } from "react";
 import { ProtectedRoute, PublicOnlyRoute } from "./guards";
 import { ADMIN_BASE, adminPath } from "./adminBase";
 import { AdminLogin } from "../pages/admin/AdminLogin";
-import { SuperAdminApp } from "../pages/admin/SuperAdminApp";
 import { ActiverCompte } from "../pages/public/ActiverCompte";
 import { Seo } from "../components/Seo";
+import { PageLoader } from "../components/PageLoader";
+
+// SuperAdminApp pèse ~8000 lignes : on la charge à la demande pour que la page
+// de login admin reste légère.
+const SuperAdminApp = lazy(() => import("../pages/admin/SuperAdminApp").then((m) => ({ default: m.SuperAdminApp })));
 
 // Portail super-admin servi sur admin.heurekia.com (et sous /admin en local).
 // Session isolée : SuperAdminApp s'authentifie via le cookie `token_admin`,
@@ -26,7 +31,9 @@ export function AdminRouter() {
           path={`${ADMIN_BASE}/*`}
           element={
             <ProtectedRoute roles={["admin"]} loginPath={adminPath("/login")} deniedPath={adminPath("/login")}>
-              <SuperAdminApp />
+              <Suspense fallback={<PageLoader />}>
+                <SuperAdminApp />
+              </Suspense>
             </ProtectedRoute>
           }
         />

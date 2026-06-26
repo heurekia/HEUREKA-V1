@@ -1,4 +1,4 @@
-import jwt from "jsonwebtoken";
+import { createRemoteJWKSet, jwtVerify, type JWTPayload } from "jose";
 
 // ─────────────────────────────────────────────────────────────────────────────
 // FranceConnect (OpenID Connect, Authorization Code Flow)
@@ -16,11 +16,11 @@ import jwt from "jsonwebtoken";
 // Pour passer en production, il suffit de surcharger FC_ISSUER_URL et de
 // fournir les identifiants (client_id / client_secret) du FS de production.
 //
-// ⚠️ Durcissement à prévoir AVANT toute mise en production (hors périmètre de
-//    ce scaffold sandbox, signalé par des `TODO[prod]`) :
-//      - vérifier la signature JWS de l'id_token ET du userinfo via le JWKS
-//        FranceConnect ({issuer}/jwks), au lieu de seulement décoder le payload.
-//      - vérifier `iss`, `aud` (== client_id) et `exp` de l'id_token.
+// Sécurité OIDC mise en œuvre (cf. verifyIdToken / fetchUserInfo) :
+//   - signature JWS de l'id_token ET de la réponse userinfo vérifiée contre le
+//     JWKS FranceConnect ({issuer}/jwks) ;
+//   - `iss`, `aud` (== client_id) et `exp` de l'id_token contrôlés, plus le
+//     `nonce` anti-rejeu.
 // ─────────────────────────────────────────────────────────────────────────────
 
 export interface FranceConnectConfig {
@@ -119,13 +119,50 @@ export async function exchangeCodeForTokens(
   return (await res.json()) as FranceConnectTokens;
 }
 
+// JWKS distant de l'issuer, mis en cache par issuer. jose gère en interne la
+// récupération, le cache et la rotation des clés (cooldown HTTP sur /jwks).
+const _jwksByIssuer = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
+function getJwks(issuer: string): ReturnType<typeof createRemoteJWKSet> {
+  let jwks = _jwksByIssuer.get(issuer);
+  if (!jwks) {
+    jwks = createRemoteJWKSet(new URL(`${issuer}/jwks`));
+    _jwksByIssuer.set(issuer, jwks);
+  }
+  return jwks;
+}
+
+// FranceConnect FCP « low » signe en ES256 ; on accepte aussi RS256 (prod /
+// autres FS) et on fige la liste pour éviter toute confusion d'algorithme.
+const FC_SIGNING_ALGS = ["ES256", "RS256"];
+
+/**
+ * Vérifie l'id_token FranceConnect : signature JWS via le JWKS de l'issuer,
+ * `iss`, `aud` (== client_id) et `exp` (jwtVerify) + anti-rejeu `nonce`.
+ * Lève une erreur si une quelconque vérification échoue.
+ */
+export async function verifyIdToken(
+  cfg: FranceConnectConfig,
+  idToken: string,
+  expectedNonce: string,
+): Promise<JWTPayload> {
+  const { payload } = await jwtVerify(idToken, getJwks(cfg.issuer), {
+    issuer: cfg.issuer,
+    audience: cfg.clientId,
+    algorithms: FC_SIGNING_ALGS,
+    // Petite tolérance pour absorber un léger décalage d'horloge serveur/IdP.
+    clockTolerance: 5,
+  });
+  if (typeof payload.nonce !== "string" || payload.nonce !== expectedNonce) {
+    throw new Error("nonce de l'id_token FranceConnect invalide");
+  }
+  return payload;
+}
+
 /**
  * Récupère l'identité via /userinfo. FranceConnect v2 répond en
- * `application/jwt` (JWS signé) : on décode le payload.
- *
- * TODO[prod] : vérifier la signature du JWS contre le JWKS FranceConnect.
- * Ici la confiance repose sur l'appel back-channel direct en TLS (la réponse
- * n'a pas transité par le navigateur), acceptable pour le bac à sable.
+ * `application/jwt` (JWS signé) : on VÉRIFIE la signature contre le JWKS FC et
+ * l'issuer avant de faire confiance aux claims (défense en profondeur en plus
+ * du canal back-channel TLS).
  */
 export async function fetchUserInfo(
   cfg: FranceConnectConfig,
@@ -141,11 +178,11 @@ export async function fetchUserInfo(
   const contentType = res.headers.get("content-type") ?? "";
   const raw = (await res.text()).trim();
   if (contentType.includes("application/jwt") || !raw.startsWith("{")) {
-    const decoded = jwt.decode(raw);
-    if (!decoded || typeof decoded !== "object") {
-      throw new Error("FranceConnect userinfo : JWT illisible");
-    }
-    return decoded as FranceConnectIdentity;
+    const { payload } = await jwtVerify(raw, getJwks(cfg.issuer), {
+      issuer: cfg.issuer,
+      algorithms: FC_SIGNING_ALGS,
+    });
+    return payload as FranceConnectIdentity;
   }
   return JSON.parse(raw) as FranceConnectIdentity;
 }

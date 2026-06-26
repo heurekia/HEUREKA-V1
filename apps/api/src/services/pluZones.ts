@@ -639,13 +639,18 @@ export function findZonesForParcel(
 // Source de vérité unique pour parcelAnalysis : renvoie partition + zones +
 // raison d'indisponibilité, en rafraîchissant uniquement quand nécessaire.
 //
-//   - cache frais (< PLU_REFRESH_AFTER_MS) → renvoyé tel quel
-//   - cache stale (> seuil) ou absent     → refreshPluZones synchrone
-//   - GPU KO + cache stale présent        → on retourne le stale + flag
-//   - jamais de cache + GPU KO            → null partition + reason="gpu_error"
+//   - cache de zones frais (< PLU_REFRESH_AFTER_MS) → renvoyé tel quel
+//   - cache de zones présent mais périmé            → servi IMMÉDIATEMENT (stale)
+//     + refresh EN ARRIÈRE-PLAN dédupliqué (stale-while-revalidate)
+//   - aucune zone en cache (cold start)             → refreshPluZones synchrone
+//   - jamais de cache + GPU KO                      → null partition + reason="gpu_error"
 //
-// Conséquence : si refreshPluZones a réussi UNE FOIS (cron ou requête /plu-zones),
-// tous les appels suivants servent depuis le cache, gratuits et déterministes.
+// On ne bloque donc JAMAIS /analyse sur un refresh tant qu'on a des zones à
+// servir : le PLU change trop rarement pour justifier, dans le cycle requête,
+// les fetches IGN + le clip plein résolution de milliers de polygones (plusieurs
+// secondes, event-loop gelé). Conséquence : si refreshPluZones a réussi UNE FOIS
+// (cron ou requête /plu-zones), tous les appels suivants servent depuis le cache,
+// gratuits et déterministes.
 
 export type PluCommuneContext = {
   partition: string | null;
@@ -653,6 +658,23 @@ export type PluCommuneContext = {
   unavailableReason: PluUnavailableReason | null;
   stale: boolean;
 };
+
+// Refreshs PLU en cours (dédup, in-memory par process) : empêche N requêtes
+// concurrentes sur une commune au cache périmé de lancer N refreshs simultanés
+// (chacun = fetches IGN + clip plein). Cohérent avec le mono-instance ; au
+// passage multi-instances, remplacer par un verrou partagé (Postgres advisory
+// lock / Redis) pour ne pas dédoubler le travail entre répliques.
+const inFlightPluRefresh = new Set<string>();
+
+function triggerBackgroundPluRefresh(inseeCode: string): void {
+  if (inFlightPluRefresh.has(inseeCode)) return;
+  inFlightPluRefresh.add(inseeCode);
+  // Fire-and-forget : on ne bloque pas la requête. En cas d'échec, le cache
+  // stale reste servi jusqu'au prochain refresh réussi (cron ou requête).
+  void refreshPluZones(inseeCode)
+    .catch((err) => console.warn(`[plu] refresh arrière-plan échoué (${inseeCode}):`, err))
+    .finally(() => inFlightPluRefresh.delete(inseeCode));
+}
 
 export async function getCommunePluContext(inseeCode: string): Promise<PluCommuneContext> {
   const [row] = await db.select({
@@ -675,20 +697,25 @@ export async function getCommunePluContext(inseeCode: string): Promise<PluCommun
     };
   }
 
-  // Cache stale ou inexistant → tente un refresh.
-  const result = await refreshPluZones(inseeCode);
-  if (result.ok) {
-    return { partition: result.partition, zones: result.zones, unavailableReason: null, stale: false };
-  }
-
-  // Échec du refresh : si on a un cache (même stale), on le sert avec le flag.
+  // Cache de zones présent mais périmé → stale-while-revalidate : on sert les
+  // zones en cache IMMÉDIATEMENT et on déclenche le refresh EN ARRIÈRE-PLAN
+  // (dédupliqué), sans bloquer la requête sur les fetches IGN + le clip plein.
   if (row?.plu_zones_geojson) {
+    triggerBackgroundPluRefresh(inseeCode);
     return {
       partition: row.plu_partition ?? null,
       zones: row.plu_zones_geojson as PluZonesGeoJson,
       unavailableReason: (row.plu_unavailable_reason as PluUnavailableReason | null) ?? null,
       stale: true,
     };
+  }
+
+  // Aucune zone exploitable en cache (commune jamais chargée) : on n'a rien à
+  // servir, donc refresh SYNCHRONE (cas rare — une fois par commune ; le cron
+  // refresh-plu-cache pré-chauffe normalement avant la première analyse).
+  const result = await refreshPluZones(inseeCode);
+  if (result.ok) {
+    return { partition: result.partition, zones: result.zones, unavailableReason: null, stale: false };
   }
 
   // Distinction : 404 GPU = pas de PLU pour cette commune (refresh aura déjà

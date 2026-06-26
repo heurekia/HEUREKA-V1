@@ -1,6 +1,7 @@
 import fs from "fs";
-import { extractFirstJson, sanitizePieceName, sha256Buffer } from "./pieceAnalyzer.js";
+import { extractFirstJson, sanitizePieceName } from "./pieceAnalyzer.js";
 import { callAi } from "./aiUsage.js";
+import { sha256HexAsync, toBase64Async } from "./cpuOffload.js";
 
 /**
  * Extraction structurée d'une pièce du dossier d'urbanisme.
@@ -784,8 +785,10 @@ export async function extractPiece(
   }
   if (buf.length > MAX_INLINE_BYTES) return null;
 
-  const base64 = buf.toString("base64");
-  const fileHash = sha256Buffer(buf);
+  // base64 + hash coopératifs (cèdent l'event loop pour les gros buffers) —
+  // cf. services/cpuOffload.ts.
+  const base64 = await toBase64Async(buf);
+  const fileHash = await sha256HexAsync(buf);
   const isPdfFile = isPdf(mimeType);
 
   const documentBlock = isPdfFile
@@ -850,6 +853,66 @@ export function expectedTypeFromCode(code: string | null | undefined): PieceType
   if (/^(DP)0?7$/.test(c) || /^PC0?7$/.test(c)) return "photo";
   if (/^PC0?8$/.test(c)) return "insertion";
   return undefined;
+}
+
+// ── Détection « document hors-sujet pour sa rubrique » ───────────────────────
+// Bloque le dépôt quand un citoyen téléverse un document SANS RAPPORT avec
+// l'emplacement choisi (ex. une photo ou un CERFA déposé là où un plan est
+// attendu). On reste VOLONTAIREMENT conservateur pour ne pas bloquer un citoyen
+// à tort (l'IA confond facilement deux plans entre eux) :
+//   - on ne compare que par FAMILLE grossière (texte/formulaire vs graphique) :
+//     une confusion intra-famille (plan_coupe vs plan_masse) n'est jamais bloquée ;
+//   - on exige une confiance élevée sur le type détecté ;
+//   - un type inconnu ("autre") ou une rubrique sans type attendu strict ne
+//     bloque jamais (bénéfice du doute).
+type RubricFamily = "texte" | "graphique";
+
+function pieceRubricFamily(t: PieceType): RubricFamily | null {
+  switch (t) {
+    case "cerfa":
+    case "notice":
+      return "texte";
+    case "plan_situation":
+    case "plan_masse":
+    case "plan_coupe":
+    case "plan_facade":
+    case "insertion":
+    case "photo":
+      return "graphique";
+    case "autre":
+    default:
+      return null; // type indéterminé → on ne bloque jamais
+  }
+}
+
+// Seuil de confiance minimal sur le type détecté pour oser bloquer. Configurable.
+const RUBRIC_MISMATCH_MIN_CONFIDENCE = Number(
+  process.env.RUBRIC_MISMATCH_MIN_CONFIDENCE ?? 0.75,
+);
+
+export interface RubricMismatch {
+  expected: PieceType;
+  detected: PieceType;
+  confidence: number;
+}
+
+// Renvoie un mismatch UNIQUEMENT si le document est manifestement hors-sujet :
+// type attendu connu, type détecté de famille DIFFÉRENTE, confiance élevée.
+// Sinon null. `extraction` = sortie de extractPiece (ou null si pas d'analyse).
+export function detectRubricMismatch(
+  codePiece: string | null | undefined,
+  extraction: { piece_type: PieceType; confidence_type: number } | null | undefined,
+): RubricMismatch | null {
+  if (!extraction) return null;
+  const expected = expectedTypeFromCode(codePiece);
+  if (!expected) return null; // rubrique sans type attendu strict
+  const detected = extraction.piece_type;
+  if (detected === expected) return null;
+  if ((extraction.confidence_type ?? 0) < RUBRIC_MISMATCH_MIN_CONFIDENCE) return null;
+  const fe = pieceRubricFamily(expected);
+  const fd = pieceRubricFamily(detected);
+  if (!fe || !fd || fe === fd) return null; // famille inconnue ou identique → toléré
+  return { expected, detected, confidence: extraction.confidence_type };
 }
 
 // ── Mapping inverse type → code d'emplacement, dépendant du type de dossier ──

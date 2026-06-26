@@ -74,7 +74,12 @@ export function ActiverCompte() {
       // Auto-redirect after 2s
       setTimeout(() => {
         const role = res.user.role;
-        navigate(role === "citoyen" ? "/citoyen" : role === "admin" ? adminPath() : "/mairie");
+        navigate(
+          role === "citoyen" ? "/citoyen"
+          : role === "admin" ? adminPath()
+          : role === "service_externe" ? "/service"
+          : "/mairie",
+        );
       }, 2000);
     } catch (err: unknown) {
       setError(err instanceof Error ? err.message : "Erreur lors de l'activation");

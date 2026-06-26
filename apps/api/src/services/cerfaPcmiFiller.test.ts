@@ -61,6 +61,9 @@ describe("parseParcelle", () => {
   it("parse format réduit AB 123", () => {
     expect(parseParcelle("AB 123")).toEqual({ prefixe: "", section: "AB", numero: "123" });
   });
+  it("parse la référence cadastrale compacte sur 14 caractères", () => {
+    expect(parseParcelle("37018000AB0123")).toEqual({ prefixe: "000", section: "AB", numero: "0123" });
+  });
   it("retourne vides sur null", () => {
     expect(parseParcelle(null)).toEqual({ prefixe: "", section: "", numero: "" });
   });
@@ -90,6 +93,60 @@ describe("buildPcmiFieldValues", () => {
     expect(v.text.terrain_prefixe).toBe("000");
     expect(v.text.terrain_section).toBe("AB");
     expect(v.text.terrain_numero).toBe("0123");
+  });
+
+  it("laisse les triplets cadastraux additionnels vides sans groupement foncier", () => {
+    const v = buildPcmiFieldValues(baseInput);
+    expect(v.text.terrain_prefixe2).toBe("");
+    expect(v.text.terrain_section2).toBe("");
+    expect(v.text.terrain_numero2).toBe("");
+    expect(v.text.terrain_prefixe3).toBe("");
+  });
+
+  it("remplit les parcelles additionnelles d'un groupement foncier (triplets 2 & 3)", () => {
+    const v = buildPcmiFieldValues({
+      ...baseInput,
+      dossier: {
+        ...baseInput.dossier,
+        parcelle: "37018000AB0123",
+        parcelles: [
+          { parcelle_id: "37018000AB0123", surface_m2: 500 }, // principale → triplet 1
+          { parcelle_id: "37018000AB0124", surface_m2: 320 }, // → triplet 2
+          { parcelle_id: "37018000AB0125", surface_m2: 180 }, // → triplet 3
+        ],
+      },
+    });
+    // Principale = 1er triplet (préfixe/section/numéro tels que parsés).
+    expect(v.text.terrain_section).toBe("AB");
+    expect(v.text.terrain_numero).toBe("0123");
+    // 2e parcelle.
+    expect(v.text.terrain_section2).toBe("AB");
+    expect(v.text.terrain_numero2).toBe("0124");
+    expect(v.text.terrain_superficie2).toBe("320");
+    // 3e parcelle.
+    expect(v.text.terrain_section3).toBe("AB");
+    expect(v.text.terrain_numero3).toBe("0125");
+    expect(v.text.terrain_superficie3).toBe("180");
+  });
+
+  it("au-delà de 3 parcelles, ne remplit que les 2 additionnelles disponibles", () => {
+    const v = buildPcmiFieldValues({
+      ...baseInput,
+      dossier: {
+        ...baseInput.dossier,
+        parcelle: "37018000AB0123",
+        parcelles: [
+          { parcelle_id: "37018000AB0123" },
+          { parcelle_id: "37018000AB0124" },
+          { parcelle_id: "37018000AB0125" },
+          { parcelle_id: "37018000AB0126" }, // ignorée (le CERFA n'a que 3 lignes)
+        ],
+      },
+    });
+    expect(v.text.terrain_numero2).toBe("0124");
+    expect(v.text.terrain_numero3).toBe("0125");
+    // La 4e n'apparaît dans aucun triplet.
+    expect(Object.values(v.text)).not.toContain("0126");
   });
 
   it("construction neuve par défaut (pas de surface existante)", () => {

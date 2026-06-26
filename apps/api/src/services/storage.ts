@@ -16,7 +16,7 @@
  */
 import fs from "node:fs";
 import path from "node:path";
-import { fileURLToPath } from "node:url";
+import { UPLOADS_DIR as DEFAULT_LOCAL_UPLOADS_DIR } from "../paths.js";
 import { Readable } from "node:stream";
 import { Buffer } from "node:buffer";
 import {
@@ -29,9 +29,6 @@ import {
   NoSuchKey,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DEFAULT_LOCAL_UPLOADS_DIR = path.resolve(__dirname, "../../uploads");
 
 export interface StoredFile {
   /** Identifiant unique sans extension de chemin (ex: "a1b2c3.pdf"). */

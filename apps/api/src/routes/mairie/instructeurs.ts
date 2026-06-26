@@ -1,17 +1,62 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { users, user_availability, user_absences, user_delegations } from "@heureka-v1/db";
+import { users, user_availability, user_absences, user_delegations, communes, user_communes } from "@heureka-v1/db";
 import { eq, and, sql, inArray } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
+import { getCommuneScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 
 export const instructeursRouter = Router();
 
-instructeursRouter.get("/instructeurs", async (_req: AuthRequest, res) => {
-  try {
-    const instructeurs = await db
+// Agents habilités de la mairie (rôles instructeur/mairie) qui partagent au
+// moins une commune avec l'appelant — via user_communes OU le champ legacy
+// users.commune. Sert au sélecteur d'assignation/délégation : un agent ne doit
+// pas énumérer ni déléguer vers des agents hors de son périmètre.
+// On EXCLUT les citoyens ET les super-admins : un compte "admin" est un compte
+// plateforme (Heurekia), pas un agent de la commune — il n'a donc pas sa place
+// parmi les délégués/instructeurs assignables (cohérent avec la liste
+// Utilisateurs d'une mairie, cf. routes/mairie/admin.ts). Un appelant super-admin
+// (scope null) voit tous les agents mairie/instructeur, jamais d'autres admins.
+// `restrictToIds` limite la résolution à un sous-ensemble (validation de délégués).
+async function agentsInCallerScope(
+  req: AuthRequest,
+  restrictToIds?: string[],
+): Promise<Array<{ id: string; prenom: string; nom: string; email: string }>> {
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  // Exclut les agents désactivés (offboardés) : ils ne doivent plus apparaître
+  // dans les sélecteurs d'assignation / délégation.
+  const roleFilter = sql`${users.role} IN ('instructeur', 'mairie') AND ${users.deactivated_at} IS NULL`;
+  const idFilter = restrictToIds && restrictToIds.length > 0 ? inArray(users.id, restrictToIds) : undefined;
+
+  if (scope === null) {
+    const rows = await db
       .select({ id: users.id, prenom: users.prenom, nom: users.nom, email: users.email })
       .from(users)
-      .where(sql`role IN ('instructeur', 'mairie', 'admin')`);
+      .where(idFilter ? and(roleFilter, idFilter) : roleFilter);
+    return rows;
+  }
+  if (scope.size === 0) return [];
+
+  const viaTable = await db
+    .selectDistinct({ id: users.id, prenom: users.prenom, nom: users.nom, email: users.email })
+    .from(users)
+    .innerJoin(user_communes, eq(user_communes.user_id, users.id))
+    .innerJoin(communes, eq(communes.id, user_communes.commune_id))
+    .where(and(roleFilter, communeScopeFilter(sql`${communes.name}`, scope), ...(idFilter ? [idFilter] : [])));
+  const viaPrimary = await db
+    .select({ id: users.id, prenom: users.prenom, nom: users.nom, email: users.email })
+    .from(users)
+    .where(and(roleFilter, communeScopeFilter(sql`${users.commune}`, scope), ...(idFilter ? [idFilter] : [])));
+
+  const merged = new Map<string, { id: string; prenom: string; nom: string; email: string }>();
+  for (const r of [...viaTable, ...viaPrimary]) merged.set(r.id, r);
+  return [...merged.values()];
+}
+
+instructeursRouter.get("/instructeurs", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
+  try {
+    // Restreint aux agents du périmètre de l'appelant (cf. agentsInCallerScope).
+    const instructeurs = await agentsInCallerScope(req);
     res.json(instructeurs);
   } catch (err) {
     console.error(err);
@@ -66,6 +111,13 @@ instructeursRouter.post("/my-absences", async (req: AuthRequest, res) => {
       start_date: string; end_date: string; reason?: string; note?: string; delegate_user_id?: string;
     };
     if (!start_date || !end_date) return res.status(400).json({ error: "start_date et end_date requis" });
+    // Le suppléant désigné doit être un agent du périmètre de l'appelant.
+    if (delegate_user_id) {
+      const valid = await agentsInCallerScope(req, [delegate_user_id]);
+      if (valid.length === 0) {
+        return res.status(400).json({ error: "Le délégué doit être un agent de votre périmètre" });
+      }
+    }
     const [row] = await db.insert(user_absences)
       .values({ user_id: userId, start_date, end_date, reason: reason ?? "conges", note: note ?? null, delegate_user_id: delegate_user_id ?? null })
       .returning();
@@ -124,14 +176,11 @@ instructeursRouter.put("/my-delegations", async (req: AuthRequest, res) => {
     });
 
     if (ordered.length > 0) {
-      const found = await db
-        .select({ id: users.id })
-        .from(users)
-        .where(and(inArray(users.id, ordered), sql`role IN ('instructeur', 'mairie', 'admin')`));
-      const validIds = new Set(found.map((r) => r.id));
-      const filtered = ordered.filter((d) => validIds.has(d));
-      if (filtered.length !== ordered.length) {
-        return res.status(400).json({ error: "Un ou plusieurs délégués n'ont pas les droits d'instruction" });
+      // Les délégués doivent être des agents du périmètre de l'appelant (rôle
+      // d'instruction ET au moins une commune partagée).
+      const valid = new Set((await agentsInCallerScope(req, ordered)).map((r) => r.id));
+      if (ordered.some((d) => !valid.has(d))) {
+        return res.status(400).json({ error: "Un ou plusieurs délégués ne sont pas des agents de votre périmètre" });
       }
     }
 

@@ -33,6 +33,10 @@ export interface PieceRequestItem {
 
 export interface EmitPieceRequestInput {
   dossier_id: string;
+  // Si fourni, on transforme un brouillon existant en courrier émis (UPDATE)
+  // au lieu d'insérer une nouvelle ligne. Évite les doublons quand l'instructeur
+  // a d'abord enregistré le courrier puis l'envoie.
+  existing_courrier_id?: string;
   pieces: PieceRequestItem[];
   articles_cites: string[];
   // Snapshot du corps de courrier après substitution (HTML ou JSON canvas).
@@ -79,7 +83,7 @@ function escapeHtml(s: string): string {
 export async function emitPieceComplementRequest(
   input: EmitPieceRequestInput,
 ): Promise<EmitPieceRequestResult> {
-  const { dossier_id, pieces, articles_cites, body_snapshot, subject, delivery_method, attachment_document_ids, emis_par } = input;
+  const { dossier_id, existing_courrier_id, pieces, articles_cites, body_snapshot, subject, delivery_method, attachment_document_ids, emis_par } = input;
 
   if (pieces.length === 0) {
     throw new Error("Au moins une pièce doit être sélectionnée pour la demande de complément");
@@ -88,82 +92,123 @@ export async function emitPieceComplementRequest(
   // Documents GED joints (plan annoté…) : résolus + partagés au citoyen.
   const attachments = await resolveAttachmentRefs(dossier_id, attachment_document_ids, "citoyen");
 
-  // 1) Persiste le courrier (snapshot figé).
-  const [courrier] = await db
-    .insert(dossier_courriers)
-    .values({
-      dossier_id,
-      type: "pieces_complementaires",
-      subject: subject ?? "Demande de pièces complémentaires",
-      body_snapshot: body_snapshot ?? null,
-      pieces_jointes_ids: pieces.map((p) => ({
-        piece_id: p.piece_id,
-        code_piece: p.code_piece,
-        nom: p.nom,
-        raison: p.raison,
-        manquante: p.manquante ?? !p.piece_id,
-      })),
-      articles_cites,
-      attachments,
-      emis_par,
-      delivery_method: delivery_method ?? null,
-    })
-    .returning({ id: dossier_courriers.id });
+  const piecesPayload = pieces.map((p) => ({
+    piece_id: p.piece_id,
+    code_piece: p.code_piece,
+    nom: p.nom,
+    raison: p.raison,
+    manquante: p.manquante ?? !p.piece_id,
+  }));
 
-  if (!courrier) throw new Error("Échec de l'enregistrement du courrier");
-
-  // 2) Marque les pièces déjà déposées en "complement_demande" si elles
-  //    n'étaient pas déjà refusées. On ne touche pas aux pièces "valide" ou
-  //    "rejete" déjà posées : l'instructeur garde la main.
+  // Pièces déjà déposées à marquer en "complement_demande" (hors pièces
+  // manquantes, qui n'ont pas de ligne). Calcul pur, fait avant la transaction.
   const existingPieceIds = pieces
     .filter((p) => !!p.piece_id && !p.manquante)
     .map((p) => p.piece_id as string);
-  let pieces_marked = 0;
-  if (existingPieceIds.length > 0) {
-    const rows = await db
-      .update(dossier_pieces_jointes)
-      .set({
-        instructeur_status: "complement_demande",
-        instructeur_status_at: new Date(),
-        instructeur_status_by: emis_par,
-      })
-      .where(inArray(dossier_pieces_jointes.id, existingPieceIds))
-      .returning({ id: dossier_pieces_jointes.id });
-    pieces_marked = rows.length;
-  }
 
-  // 3) Trace dans la chronologie d'instruction.
-  await db.insert(instruction_events).values({
-    dossier_id,
-    type: "pieces_complementaires_demandees",
-    user_id: emis_par,
-    description: `Demande de ${pieces.length} pièce${pieces.length > 1 ? "s" : ""} complémentaire${pieces.length > 1 ? "s" : ""}`,
-    metadata: {
-      courrier_id: courrier.id,
-      pieces_count: pieces.length,
-      manquantes_count: pieces.filter((p) => p.manquante || !p.piece_id).length,
-      articles_cites,
-    },
-  });
-
-  // 4) Transition vers "incomplet" si la machine à états le permet.
-  //    Si le dossier est déjà en "incomplet" ou hors phase de complétude
-  //    (ex. en_instruction), on n'essaie pas de forcer — la machine refusera
-  //    proprement et la levée d'exception serait un faux positif.
-  let status_changed = false;
-  try {
-    const result = await changeDossierStatus(dossier_id, "incomplet", emis_par, {
-      reason: "demande de pièces complémentaires émise",
-      extraMetadata: { courrier_id: courrier.id },
-    });
-    status_changed = result.changed;
-  } catch (err) {
-    if (err instanceof WorkflowError && err.code === "INVALID_TRANSITION") {
-      // OK : on reste sur le statut courant, le courrier est tracé.
+  // Émission ATOMIQUE : le courrier "envoyé", le marquage des pièces, l'event de
+  // chronologie et la transition de statut sont écrits dans UNE seule transaction.
+  // Auparavant ces 4 écritures étaient séquentielles et non atomiques : un échec
+  // en cours de route pouvait laisser un courrier marqué "envoyé" alors que les
+  // pièces n'étaient pas passées en "complement_demande" et que le dossier n'avait
+  // pas changé de statut — incohérence visible côté citoyen comme instructeur.
+  return await db.transaction(async (tx) => {
+    // 1) Persiste le courrier en statut "envoye" (snapshot figé). Si un brouillon
+    //    préexiste (existing_courrier_id), on le transforme en émission plutôt
+    //    que d'insérer un doublon — et on réhorodate l'envoi.
+    let courrierId: string;
+    if (existing_courrier_id) {
+      const [updated] = await tx
+        .update(dossier_courriers)
+        .set({
+          type: "pieces_complementaires",
+          subject: subject ?? "Demande de pièces complémentaires",
+          body_snapshot: body_snapshot ?? null,
+          pieces_jointes_ids: piecesPayload,
+          articles_cites,
+          attachments,
+          emis_par,
+          delivery_method: delivery_method ?? null,
+          statut: "envoye",
+          emis_le: new Date(),
+        })
+        .where(eq(dossier_courriers.id, existing_courrier_id))
+        .returning({ id: dossier_courriers.id });
+      if (!updated) throw new Error("Brouillon de courrier introuvable");
+      courrierId = updated.id;
     } else {
-      throw err;
+      const [courrier] = await tx
+        .insert(dossier_courriers)
+        .values({
+          dossier_id,
+          type: "pieces_complementaires",
+          subject: subject ?? "Demande de pièces complémentaires",
+          body_snapshot: body_snapshot ?? null,
+          pieces_jointes_ids: piecesPayload,
+          articles_cites,
+          attachments,
+          emis_par,
+          delivery_method: delivery_method ?? null,
+          statut: "envoye",
+        })
+        .returning({ id: dossier_courriers.id });
+      if (!courrier) throw new Error("Échec de l'enregistrement du courrier");
+      courrierId = courrier.id;
     }
-  }
 
-  return { courrier_id: courrier.id, pieces_marked, status_changed };
+    // 2) Marque les pièces déjà déposées en "complement_demande" si elles
+    //    n'étaient pas déjà refusées. On ne touche pas aux pièces "valide" ou
+    //    "rejete" déjà posées : l'instructeur garde la main.
+    let pieces_marked = 0;
+    if (existingPieceIds.length > 0) {
+      const rows = await tx
+        .update(dossier_pieces_jointes)
+        .set({
+          instructeur_status: "complement_demande",
+          instructeur_status_at: new Date(),
+          instructeur_status_by: emis_par,
+        })
+        .where(inArray(dossier_pieces_jointes.id, existingPieceIds))
+        .returning({ id: dossier_pieces_jointes.id });
+      pieces_marked = rows.length;
+    }
+
+    // 3) Trace dans la chronologie d'instruction.
+    await tx.insert(instruction_events).values({
+      dossier_id,
+      type: "pieces_complementaires_demandees",
+      user_id: emis_par,
+      description: `Demande de ${pieces.length} pièce${pieces.length > 1 ? "s" : ""} complémentaire${pieces.length > 1 ? "s" : ""}`,
+      metadata: {
+        courrier_id: courrierId,
+        pieces_count: pieces.length,
+        manquantes_count: pieces.filter((p) => p.manquante || !p.piece_id).length,
+        articles_cites,
+      },
+    });
+
+    // 4) Transition vers "incomplet" si la machine à états le permet, DANS la
+    //    même transaction (paramètre `tx`). Si le dossier est déjà en "incomplet"
+    //    ou hors phase de complétude (ex. en_instruction), on n'essaie pas de
+    //    forcer — la machine refuse proprement AVANT toute écriture (le SELECT de
+    //    garde a déjà eu lieu mais aucun write), donc capturer INVALID_TRANSITION
+    //    ici n'abîme pas la transaction, qui commit le courrier + les pièces.
+    let status_changed = false;
+    try {
+      const result = await changeDossierStatus(dossier_id, "incomplet", emis_par, {
+        reason: "demande de pièces complémentaires émise",
+        extraMetadata: { courrier_id: courrierId },
+        tx,
+      });
+      status_changed = result.changed;
+    } catch (err) {
+      if (err instanceof WorkflowError && err.code === "INVALID_TRANSITION") {
+        // OK : on reste sur le statut courant, le courrier est tracé.
+      } else {
+        throw err;
+      }
+    }
+
+    return { courrier_id: courrierId, pieces_marked, status_changed };
+  });
 }

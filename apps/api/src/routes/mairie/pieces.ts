@@ -6,7 +6,8 @@ import path from "path";
 import multer from "multer";
 import crypto from "crypto";
 import { type AuthRequest } from "../../middlewares/auth.js";
-import { autoAdvanceIfAllPiecesValid } from "../../services/dossierWorkflow.js";
+import { requirePermission } from "../../middlewares/permissions.js";
+import { autoAdvanceIfAllPiecesValid, ensureAssignedToActor } from "../../services/dossierWorkflow.js";
 import { extractPiece, expectedTypeFromCode, codeFromType, defaultPieceName, type PieceType } from "../../services/pieceExtractor.js";
 import { getStorageProvider } from "../../services/storage.js";
 import { archivePreviousComplementDemande } from "../../services/pieceArchive.js";
@@ -14,6 +15,7 @@ import { queuePieceOcr, notifyIfAlreadyComplete } from "../../services/pieceOcrQ
 import { segmentBundle, applySegmentation, type SegmentationResult, type ApplySegmentInput } from "../../services/pieceSegmenter.js";
 import { resolveCommuneIdFromUser } from "./_shared.js";
 import { sql } from "drizzle-orm";
+import { uploadLimiter } from "../../middlewares/rateLimiters.js";
 
 export const piecesRouter = Router();
 
@@ -58,7 +60,7 @@ function pieceUploadSingle(req: AuthRequest, res: import("express").Response, ne
   });
 }
 
-piecesRouter.get("/dossiers/:id/pieces", async (req: AuthRequest, res) => {
+piecesRouter.get("/dossiers/:id/pieces", requirePermission("pieces.read"), async (req: AuthRequest, res) => {
   try {
     // Par défaut on masque les pièces archivées (remplacées suite à un
     // complément). L'UI peut explicitement demander les versions précédentes
@@ -78,7 +80,7 @@ piecesRouter.get("/dossiers/:id/pieces", async (req: AuthRequest, res) => {
   }
 });
 
-piecesRouter.patch("/dossiers/:id/pieces/:pieceId/annotation", async (req: AuthRequest, res) => {
+piecesRouter.patch("/dossiers/:id/pieces/:pieceId/annotation", requirePermission("pieces.annotate"), async (req: AuthRequest, res) => {
   try {
     const body = (req.body ?? {}) as { status?: string | null; note?: string | null };
     const VALID_STATUSES = new Set(["valide", "rejete", "complement_demande", null]);
@@ -151,6 +153,18 @@ piecesRouter.patch("/dossiers/:id/pieces/:pieceId/annotation", async (req: AuthR
       });
     }
 
+    // Prise en charge implicite : statuer sur une pièce (valider / rejeter /
+    // demander un complément) est un acte d'instruction. Best-effort, no-op si
+    // déjà pris en charge. Posé AVANT l'auto-bascule pour que l'événement
+    // « pris en charge » précède le « dossier complet » dans la chronologie.
+    if (statusChanged && rawStatus != null) {
+      try {
+        await ensureAssignedToActor(piece.dossier_id, req.user?.id ?? null, req.user?.role);
+      } catch (e) {
+        console.warn("[pieces/annotation] ensureAssignedToActor:", e);
+      }
+    }
+
     // Auto-bascule pre_instruction → en_instruction si la dernière pièce
     // restante vient d'être validée. Best-effort : on n'échoue jamais la
     // route d'annotation pour un problème de transition.
@@ -183,7 +197,7 @@ piecesRouter.patch("/dossiers/:id/pieces/:pieceId/annotation", async (req: AuthR
 // devant le pétitionnaire. La notification "dossier prêt" est envoyée à
 // l'instructeur quand toutes les pièces ont été traitées ET que l'agent a
 // finalisé sa session via POST /finalize-upload-session.
-piecesRouter.post("/dossiers/:id/pieces/upload", pieceUploadSingle, async (req: AuthRequest, res) => {
+piecesRouter.post("/dossiers/:id/pieces/upload", requirePermission("pieces.upload"), uploadLimiter, pieceUploadSingle, async (req: AuthRequest, res) => {
   const storage = getStorageProvider();
   const fileKey = req.file
     ? `${crypto.randomUUID()}${path.extname(req.file.originalname)}`
@@ -305,7 +319,7 @@ piecesRouter.post("/dossiers/:id/pieces/upload", pieceUploadSingle, async (req: 
 // cloche sonne entre la pièce 1 (déjà OCRisée) et la pièce 2 (pas encore
 // uploadée par l'agent). Si toutes les pièces sont déjà passées par le
 // worker au moment de l'appel, la notification part immédiatement.
-piecesRouter.post("/dossiers/:id/pieces/finalize-upload-session", async (req: AuthRequest, res) => {
+piecesRouter.post("/dossiers/:id/pieces/finalize-upload-session", requirePermission("pieces.upload"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const dossier = (req as AuthRequest & { dossier?: { id: string; user_id: string } }).dossier;
@@ -354,7 +368,7 @@ piecesRouter.post("/dossiers/:id/pieces/finalize-upload-session", async (req: Au
   }
 });
 
-piecesRouter.post("/dossiers/:id/pieces/:pieceId/extract", async (req: AuthRequest, res) => {
+piecesRouter.post("/dossiers/:id/pieces/:pieceId/extract", requirePermission("pieces.extract"), uploadLimiter, async (req: AuthRequest, res) => {
   try {
     const [piece] = await db
       .select()
@@ -437,7 +451,7 @@ function sanitizeSegments(raw: unknown[], dossierType: string | null): ApplySegm
 }
 
 // ── Dépôt d'un dossier complet en un seul PDF (segmentation asynchrone) ──────
-piecesRouter.post("/dossiers/:id/pieces/upload-bundle", pieceUploadSingle, async (req: AuthRequest, res) => {
+piecesRouter.post("/dossiers/:id/pieces/upload-bundle", requirePermission("pieces.upload"), uploadLimiter, pieceUploadSingle, async (req: AuthRequest, res) => {
   const storage = getStorageProvider();
   const fileKey = req.file
     ? `${crypto.randomUUID()}${path.extname(req.file.originalname)}`
@@ -513,7 +527,7 @@ piecesRouter.post("/dossiers/:id/pieces/upload-bundle", pieceUploadSingle, async
 });
 
 // ── Récupère un bundle (statut + proposition de découpage) — polling front ──
-piecesRouter.get("/dossiers/:id/pieces/bundles/:bundleId", async (req: AuthRequest, res) => {
+piecesRouter.get("/dossiers/:id/pieces/bundles/:bundleId", requirePermission("pieces.read"), async (req: AuthRequest, res) => {
   try {
     const [bundle] = await db
       .select()
@@ -532,7 +546,7 @@ piecesRouter.get("/dossiers/:id/pieces/bundles/:bundleId", async (req: AuthReque
 });
 
 // ── Applique le découpage validé → crée les pièces + relance l'OCR ──────────
-piecesRouter.post("/dossiers/:id/pieces/bundles/:bundleId/apply", async (req: AuthRequest, res) => {
+piecesRouter.post("/dossiers/:id/pieces/bundles/:bundleId/apply", requirePermission("pieces.validate"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     const dossier = (req as AuthRequest & { dossier?: { id: string; user_id: string; type: string; commune: string | null } }).dossier;
@@ -586,7 +600,7 @@ piecesRouter.post("/dossiers/:id/pieces/bundles/:bundleId/apply", async (req: Au
 });
 
 // ── Abandonne une proposition de découpage (le fichier source est conservé) ──
-piecesRouter.post("/dossiers/:id/pieces/bundles/:bundleId/discard", async (req: AuthRequest, res) => {
+piecesRouter.post("/dossiers/:id/pieces/bundles/:bundleId/discard", requirePermission("pieces.validate"), async (req: AuthRequest, res) => {
   try {
     const [bundle] = await db
       .select()
@@ -612,7 +626,7 @@ piecesRouter.post("/dossiers/:id/pieces/bundles/:bundleId/discard", async (req: 
 // ── Recatégorisation manuelle d'une pièce par l'instructeur (correction) ─────
 // Vaut aussi bien pour une pièce issue d'un éclatement que pour une pièce
 // déposée individuellement. Trace l'action dans la chronologie d'instruction.
-piecesRouter.patch("/dossiers/:id/pieces/:pieceId/classification", async (req: AuthRequest, res) => {
+piecesRouter.patch("/dossiers/:id/pieces/:pieceId/classification", requirePermission("pieces.validate"), async (req: AuthRequest, res) => {
   try {
     const body = (req.body ?? {}) as { code_piece?: string | null; type?: string; nom?: string | null };
     const [piece] = await db

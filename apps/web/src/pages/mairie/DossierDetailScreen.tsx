@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback } from "react";
+import { useState, useEffect, useRef, useCallback, useMemo } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api, ApiError } from "../../lib/api";
 import { MapLeaflet } from "../../components/MapLeaflet";
@@ -13,7 +13,7 @@ import { DecisionPanel } from "./DecisionPanel";
 import PieceReclassControl from "./PieceReclassControl";
 import { StatusBadge } from "./ui";
 import { fmtDate, TYPE_LABEL, DOSSIER_TYPE_OPTIONS, type DossierInfo, type WorkflowMeta } from "./shared";
-import { useAuth } from "../../hooks/useAuth";
+import { useAuth, hasPermission } from "../../hooks/useAuth";
 import { PieceMarkupEditor } from "../../components/PieceMarkupEditor";
 import { useInstructionViewMode } from "../../hooks/useInstructionViewMode";
 import { useLocalStorageBool } from "../../hooks/useLocalStorageBool";
@@ -45,6 +45,16 @@ import {
 const DETAIL_TABS = ["Résumé", "Terrain", "Documents", "Instruction", "Consultations", "Courriers", "Chronologie", "Décision"] as const;
 type DetailTab = typeof DETAIL_TABS[number];
 
+// Onglets nécessitant une permission distincte du simple « dossiers.read »
+// (celle-ci est déjà requise pour ouvrir un dossier). Les onglets absents de
+// cette table sont visibles dès qu'on a accès au dossier. Un agent sans rôle
+// personnalisé (permissions null) voit tout (hasPermission renvoie true).
+const TAB_PERM: Partial<Record<DetailTab, string>> = {
+  "Documents": "pieces.read",
+  "Consultations": "consultations.read",
+  "Courriers": "courriers.read",
+};
+
 // Slugs d'URL pour chaque onglet du détail dossier : ils permettent de restituer
 // l'onglet courant après un rechargement de page (ou via un lien direct), au lieu
 // de retomber systématiquement sur "Résumé".
@@ -75,23 +85,52 @@ const TAB_ICONS: Record<string, React.ReactNode> = {
 
 
 // ─── Onglet "Courriers" ──────────────────────────────────────────────────────
-// Historique des courriers d'instruction émis pour un dossier. Liste, type,
-// auteur, pièces visées, articles cités. Sert de référence auditable pour
-// le pétitionnaire et l'instructeur.
-function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGeneralCourrier }: {
+// Courrier existant transmis au modal pour reprise (brouillon à modifier ou
+// courrier émis à consulter). Forme alignée sur CourrierModal.initialCourrier.
+type ReopenCourrier = {
+  id: string;
+  type: string;
+  subject: string | null;
+  body_snapshot: string | null;
+  statut: "brouillon" | "envoye";
+  articles_cites?: string[];
+  pieces_jointes_ids?: Array<{ piece_id?: string; code_piece?: string; nom: string; raison?: string; manquante?: boolean }>;
+  delivery_method?: string | null;
+  signature_status?: "non_requise" | "a_signer" | "signee";
+  signataire_user_id?: string | null;
+  signataire_prenom?: string | null;
+  signataire_nom?: string | null;
+  signed_at?: string | null;
+};
+
+// Historique des courriers d'instruction d'un dossier : brouillons en cours et
+// courriers émis. Liste, type, statut, auteur, pièces visées, articles cités.
+// Sert de référence auditable pour le pétitionnaire et l'instructeur.
+function CourriersPanel({ dossierId, refreshKey, onRequestNewPiecesCourrier, onRequestNewGeneralCourrier, onReopenCourrier, canGenerate }: {
   dossierId: string;
+  refreshKey: number;
   onRequestNewPiecesCourrier: () => void;
   onRequestNewGeneralCourrier: () => void;
+  onReopenCourrier: (c: ReopenCourrier) => void;
+  canGenerate: boolean;
 }) {
   type CourrierRow = {
     id: string;
     type: string;
     subject: string | null;
+    body_snapshot: string | null;
     pieces_jointes_ids: Array<{ piece_id?: string; code_piece?: string; nom: string; raison?: string; manquante?: boolean }>;
     articles_cites: string[];
     emis_par: string | null;
     emis_le: string;
     delivery_method: string | null;
+    statut: "brouillon" | "envoye";
+    signature_status: "non_requise" | "a_signer" | "signee";
+    signataire_user_id: string | null;
+    signataire_prenom: string | null;
+    signataire_nom: string | null;
+    signed_at: string | null;
+    signature_requested_at: string | null;
   };
   const [rows, setRows] = useState<CourrierRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -102,7 +141,8 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
       .then((d) => { if (!cancelled) setRows(d); })
       .catch((e) => { if (!cancelled) setError(e instanceof Error ? e.message : "Erreur"); });
     return () => { cancelled = true; };
-  }, [dossierId]);
+    // refreshKey force le rechargement après enregistrement / envoi d'un courrier.
+  }, [dossierId, refreshKey]);
 
   const COURRIER_LABEL: Record<string, { label: string; color: string; bg: string }> = {
     pieces_complementaires: { label: "Demande de pièces", color: "#B45309", bg: "#FEF3C7" },
@@ -119,19 +159,21 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
         <div>
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Courriers émis</div>
-          <div style={{ fontSize: 12, color: "#64748b" }}>Historique de tous les courriers envoyés au pétitionnaire pour ce dossier.</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Courriers</div>
+          <div style={{ fontSize: 12, color: "#64748b" }}>Brouillons en cours et courriers émis pour ce dossier.</div>
         </div>
-        <div style={{ display: "flex", gap: 8 }}>
-          <button onClick={onRequestNewPiecesCourrier}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", background: "white", color: "#B45309", border: "1px solid #FDE68A", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
-            📎 Demander des pièces
-          </button>
-          <button onClick={onRequestNewGeneralCourrier}
-            style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
-            + Nouveau courrier
-          </button>
-        </div>
+        {canGenerate && (
+          <div style={{ display: "flex", gap: 8 }}>
+            <button onClick={onRequestNewPiecesCourrier}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", background: "white", color: "#B45309", border: "1px solid #FDE68A", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+              📎 Demander des pièces
+            </button>
+            <button onClick={onRequestNewGeneralCourrier}
+              style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 13px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, fontSize: 12.5, fontWeight: 600, cursor: "pointer" }}>
+              + Nouveau courrier
+            </button>
+          </div>
+        )}
       </div>
 
       {error && (
@@ -142,24 +184,49 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
         <div style={{ padding: 32, background: "white", borderRadius: 12, border: "1px solid #E8EEF4", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Chargement…</div>
       ) : rows.length === 0 ? (
         <div style={{ padding: 32, background: "white", borderRadius: 12, border: "1px dashed #CBD5E1", textAlign: "center", color: "#64748b", fontSize: 13 }}>
-          Aucun courrier émis pour ce dossier.
+          Aucun courrier pour ce dossier.
         </div>
       ) : (
         <div style={{ display: "flex", flexDirection: "column", gap: 10 }}>
           {rows.map((c) => {
             const meta = COURRIER_LABEL[c.type] ?? COURRIER_LABEL.general!;
+            const isDraft = c.statut === "brouillon";
+            // Reprise (édition/envoi) réservée à qui peut générer ; sinon lecture seule.
+            const canResume = isDraft && canGenerate;
+            const sigName = (c.signataire_prenom || c.signataire_nom)
+              ? `${c.signataire_prenom ?? ""} ${c.signataire_nom ?? ""}`.trim()
+              : null;
             const pieces = Array.isArray(c.pieces_jointes_ids) ? c.pieces_jointes_ids : [];
-            const articles = Array.isArray(c.articles_cites) ? c.articles_cites : [];
             return (
               <div key={c.id} style={{ background: "white", border: "1px solid #E8EEF4", borderRadius: 12, padding: 16 }}>
                 <div style={{ display: "flex", justifyContent: "space-between", gap: 12, alignItems: "flex-start", marginBottom: 10 }}>
                   <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
                     <span style={{ fontSize: 11, fontWeight: 700, color: meta.color, background: meta.bg, padding: "2px 8px", borderRadius: 5 }}>{meta.label}</span>
+                    <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: isDraft ? "#B45309" : "#15803D", background: isDraft ? "#FEF3C7" : "#DCFCE7" }}>
+                      {isDraft ? "Brouillon" : "Envoyé"}
+                    </span>
+                    {c.signature_status === "a_signer" && (
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: "#6D28D9", background: "#EDE9FE" }}>
+                        ⏳ À signer{sigName ? ` · ${sigName}` : ""}
+                      </span>
+                    )}
+                    {c.signature_status === "signee" && (
+                      <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: "#15803D", background: "#DCFCE7" }}>
+                        ✍️ Signé{sigName ? ` · ${sigName}` : ""}{c.signed_at ? ` le ${new Date(c.signed_at).toLocaleDateString("fr-FR")}` : ""}
+                      </span>
+                    )}
                     {c.subject && <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.subject}</span>}
                   </div>
-                  <div style={{ fontSize: 11.5, color: "#64748b", whiteSpace: "nowrap" as const }}>
-                    {new Date(c.emis_le).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
-                    {c.delivery_method && <> · <span style={{ textTransform: "capitalize" as const }}>{c.delivery_method}</span></>}
+                  <div style={{ display: "flex", flexDirection: "column", alignItems: "flex-end", gap: 6 }}>
+                    <div style={{ fontSize: 11.5, color: "#64748b", whiteSpace: "nowrap" as const }}>
+                      {isDraft ? "Modifié le " : ""}{new Date(c.emis_le).toLocaleString("fr-FR", { day: "2-digit", month: "short", year: "numeric", hour: "2-digit", minute: "2-digit" })}
+                      {!isDraft && c.delivery_method && <> · <span style={{ textTransform: "capitalize" as const }}>{c.delivery_method}</span></>}
+                    </div>
+                    <button onClick={() => onReopenCourrier(c)}
+                      title={c.signature_status === "a_signer" ? "Ouvrir pour signer (réservé aux signataires habilités)" : canResume ? "Reprendre ce brouillon (modifier / envoyer)" : isDraft ? "Consulter ce brouillon" : "Consulter le courrier émis"}
+                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "4px 10px", border: `1px solid ${c.signature_status === "a_signer" ? "#DDD6FE" : canResume ? "#FDE68A" : "#E2E8F0"}`, borderRadius: 7, background: c.signature_status === "a_signer" ? "#F5F3FF" : canResume ? "#FFFBEB" : "white", color: c.signature_status === "a_signer" ? "#6D28D9" : canResume ? "#B45309" : "#475569", fontSize: 11.5, fontWeight: 600, cursor: "pointer", whiteSpace: "nowrap" as const }}>
+                      {c.signature_status === "a_signer" ? "✍️ Signer" : canResume ? "✏️ Reprendre" : "Consulter"}
+                    </button>
                   </div>
                 </div>
 
@@ -180,19 +247,6 @@ function CourriersPanel({ dossierId, onRequestNewPiecesCourrier, onRequestNewGen
                         </li>
                       ))}
                     </ul>
-                  </div>
-                )}
-
-                {articles.length > 0 && (
-                  <div>
-                    <div style={{ fontSize: 10.5, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase" as const, marginBottom: 5 }}>
-                      Articles cités
-                    </div>
-                    <div style={{ display: "flex", gap: 6, flexWrap: "wrap" as const }}>
-                      {articles.map((a) => (
-                        <span key={a} style={{ fontSize: 11, fontWeight: 600, color: "#374151", background: "#F1F5F9", padding: "2px 8px", borderRadius: 5, fontFamily: "monospace" }}>Art. {a}</span>
-                      ))}
-                    </div>
                   </div>
                 )}
               </div>
@@ -297,10 +351,13 @@ function InvitePetitionnaireModal({ dossierId, initialEmail, isPlaceholder, peti
   );
 }
 
-export function DossierDetailScreen({ dossier, onBack, navigate }: {
+export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
   dossier: DossierInfo;
   onBack: () => void;
   navigate: (s: string) => void;
+  // INSEE de la commune du dossier — transmis à la modale courrier pour lire les
+  // modèles et l'en-tête de la bonne commune (cf. CourrierModal.inseeCode).
+  inseeCode?: string;
 }) {
   const { user } = useAuth();
   // Invitation du pétitionnaire (compte placeholder / jamais activé). `invited`
@@ -326,6 +383,15 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
     const t = SLUG_TO_DETAIL_TAB[searchParams.get("tab") ?? ""];
     if (t && t !== activeTab) setActiveTabState(t);
   }, [searchParams]);
+  // Onglets visibles selon le rôle personnalisé. Si l'onglet actif (ex. via un
+  // lien direct ?tab=courriers) n'est pas autorisé, on retombe sur « Résumé ».
+  const visibleTabs = useMemo(
+    () => DETAIL_TABS.filter(t => !TAB_PERM[t] || hasPermission(user, TAB_PERM[t]!)),
+    [user],
+  );
+  useEffect(() => {
+    if (!visibleTabs.includes(activeTab)) setActiveTab("Résumé");
+  }, [visibleTabs, activeTab, setActiveTab]);
   // Onglet Documents : mode d'affichage côté instructeur — aperçu (3 col.),
   // comparer (pièce ↔ document réglementaire), lecture (plein écran).
   // Persisté en localStorage entre dossiers (préférence utilisateur).
@@ -396,6 +462,10 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
   // workflow. Le mode pilote le panneau de sélection des pièces et le bouton
   // "Émettre" dans la modale.
   const [courrierMode, setCourrierMode] = useState<null | "general" | "pieces_complementaires">(null);
+  // Courrier existant rouvert depuis l'historique (brouillon repris ou émis consulté).
+  const [reopenCourrier, setReopenCourrier] = useState<ReopenCourrier | null>(null);
+  // Incrémenté à la fermeture du modal courrier pour rafraîchir l'historique.
+  const [courriersRefreshKey, setCourriersRefreshKey] = useState(0);
   const [showMapFull, setShowMapFull] = useState(false);
 
   // ── Analyse parcellaire réelle ──
@@ -682,7 +752,12 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
   const [extractingPieceId, setExtractingPieceId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (activeTab !== "Documents" || documents !== null) return;
+    // Les pièces sont nécessaires à l'onglet Documents, mais aussi à la modale
+    // courrier (panneau « Pièces à demander » + variable {liste_pieces_a_completer}).
+    // Sans cette seconde condition, ouvrir le courrier sans être passé par
+    // l'onglet Documents affichait « Aucune pièce déposée sur ce dossier ».
+    const needsPieces = activeTab === "Documents" || courrierMode !== null || reopenCourrier !== null;
+    if (!needsPieces || documents !== null) return;
     setDocumentsLoading(true);
     api.get<DossierPiece[]>(`/mairie/dossiers/${dossier.id}/pieces`)
       // Ne réinitialise pas la sélection à 0 si une pièce précise est en
@@ -691,7 +766,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
       .then((data) => { setDocuments(data); if (!pendingPieceId) setSelectedDoc(0); })
       .catch(() => setDocuments([]))
       .finally(() => setDocumentsLoading(false));
-  }, [activeTab, documents, dossier.id, pendingPieceId]);
+  }, [activeTab, courrierMode, reopenCourrier, documents, dossier.id, pendingPieceId]);
 
   // Résout une demande d'ouverture de pièce différée : dès que `documents` est
   // chargé, on sélectionne la pièce ciblée puis on purge la demande (qu'elle
@@ -1153,11 +1228,19 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
     [dossier.id, runWorkflowAction]);
 
   // Fallback si l'API ne renvoie pas encore le bloc workflow (ex. cache front).
-  const nextAction = workflow?.next_action ?? primaryNextActionFor(currentStatus as DossierStatus);
-  const allowedTransitions = workflow?.allowed_transitions ?? [];
-  const canTakeCharge = workflow?.can_take_charge ?? false;
-  const canReassign = workflow?.can_reassign ?? false;
-  const canUnassign = workflow?.can_unassign ?? false;
+  // Permissions du rôle personnalisé (null = accès complet). Elles masquent les
+  // actions correspondantes ; le backend les refuse aussi (défense en profondeur).
+  const canStatus = hasPermission(user, "dossiers.status");
+  const canRunConformite = hasPermission(user, "conformite.run");
+  const canAssign = hasPermission(user, "dossiers.assign");
+  const canGenerateCourrier = hasPermission(user, "courriers.generate");
+  const canCreateConsult = hasPermission(user, "consultations.create");
+  const canUpdateConsult = hasPermission(user, "consultations.update");
+  const nextAction = canStatus ? (workflow?.next_action ?? primaryNextActionFor(currentStatus as DossierStatus)) : null;
+  const allowedTransitions = canStatus ? (workflow?.allowed_transitions ?? []) : [];
+  const canTakeCharge = canAssign && (workflow?.can_take_charge ?? false);
+  const canReassign = canAssign && (workflow?.can_reassign ?? false);
+  const canUnassign = canAssign && (workflow?.can_unassign ?? false);
 
   const CARD: React.CSSProperties = { background: "white", borderRadius: 14, border: "1px solid #E8EEF4", padding: 22, boxShadow: "0 1px 4px rgba(0,0,0,0.06), 0 1px 2px rgba(0,0,0,0.04)" };
   const SH: React.CSSProperties = { fontSize: 13, fontWeight: 700, color: "#0F172A", marginBottom: 18 };
@@ -1423,7 +1506,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
                   la phase de complétude (pre_instruction / incomplet) et même
                   une fois passé à en_instruction si un complément est jugé
                   nécessaire au fond. */}
-              {(["pre_instruction", "incomplet", "en_instruction"] as const).includes(currentStatus as "pre_instruction" | "incomplet" | "en_instruction") && (
+              {canGenerateCourrier && (["pre_instruction", "incomplet", "en_instruction"] as const).includes(currentStatus as "pre_instruction" | "incomplet" | "en_instruction") && (
                 <button
                   onClick={() => setCourrierMode("pieces_complementaires")}
                   disabled={workflowBusy}
@@ -1545,7 +1628,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
 
         {/* Tab bar */}
         <div style={{ display: "flex", gap: 0 }}>
-          {DETAIL_TABS.map(tab => (
+          {visibleTabs.map(tab => (
             <button key={tab} onClick={() => setActiveTab(tab)} style={{
               display: "flex", alignItems: "center", gap: 6,
               border: "none", background: "none", padding: "10px 18px", fontSize: 12.5, cursor: "pointer",
@@ -1575,14 +1658,21 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
                   {(() => {
                     const pp = parcelAnalysis?.parcel;
-                    const parcelleLabel = dossier.parcelle
-                      ?? (pp ? `${pp.section} ${pp.numero}` : null)
-                      ?? (parcelLoading ? "Identification…" : "—");
+                    const hasGroupement = (dossier.parcelles?.length ?? 0) > 1;
+                    const totalSurface = hasGroupement
+                      ? dossier.parcelles!.reduce((s, p) => s + (p.surface_m2 ?? 0), 0)
+                      : 0;
+                    const parcelleLabel = hasGroupement
+                      // Groupement foncier : on liste toutes les références + surface totale.
+                      ? `${dossier.parcelles!.map((p) => p.parcelle_id).join(", ")}${totalSurface > 0 ? ` — ${Math.round(totalSurface).toLocaleString("fr-FR")} m² au total` : ""}`
+                      : (dossier.parcelle
+                        ?? (pp ? `${pp.section} ${pp.numero}` : null)
+                        ?? (parcelLoading ? "Identification…" : "—"));
                     return [
                       ["Pétitionnaire", dossier.petitionnaire],
                       ["Adresse", liveAdresse ?? "—"],
                       ["Commune", `${liveCommune ?? "—"}${dossier.code_postal ? ` (${dossier.code_postal})` : ""}`],
-                      ["Parcelle", parcelleLabel],
+                      [hasGroupement ? `Parcelles (${dossier.parcelles!.length})` : "Parcelle", parcelleLabel],
                       ["Surface de plancher", dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—"],
                       ["Date de dépôt", dossier.date_depot ? fmtDate(dossier.date_depot) : "—"],
                       ["Échéance", dossier.echeance],
@@ -1886,13 +1976,15 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
                         <div style={{ flex: 1 }}>
                           <div style={{ fontSize: 13, fontWeight: 700, color: "#92400E", marginBottom: 4 }}>Périmètre ABF — consultation obligatoire</div>
                           <div style={{ fontSize: 12, color: "#B45309", lineHeight: 1.6, marginBottom: 12 }}>Cette parcelle est en périmètre de protection des Monuments Historiques. L'avis de l'Architecte des Bâtiments de France est requis avant toute décision.</div>
-                          <button
-                            onClick={() => openMissionModal("ABF")}
-                            disabled={consultationsMissioning}
-                            style={{ background: consultationsMissioning ? "#F5F3FF" : "linear-gradient(135deg,#8B5CF6,#7C3AED)", color: consultationsMissioning ? "#8B5CF6" : "white", border: consultationsMissioning ? "1px solid #C4B5FD" : "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(124,58,237,0.3)" }}
-                          >
-                            {consultationsMissioning ? "Envoi en cours…" : "Missionner l'ABF"}
-                          </button>
+                          {canCreateConsult && (
+                            <button
+                              onClick={() => openMissionModal("ABF")}
+                              disabled={consultationsMissioning}
+                              style={{ background: consultationsMissioning ? "#F5F3FF" : "linear-gradient(135deg,#8B5CF6,#7C3AED)", color: consultationsMissioning ? "#8B5CF6" : "white", border: consultationsMissioning ? "1px solid #C4B5FD" : "none", borderRadius: 8, padding: "7px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(124,58,237,0.3)" }}
+                            >
+                              {consultationsMissioning ? "Envoi en cours…" : "Missionner l'ABF"}
+                            </button>
+                          )}
                         </div>
                       </div>
                     </div>
@@ -2356,24 +2448,26 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
                     </div>
                   )}
                 </div>
-                <button
-                  onClick={() => void relaunchWorkingAnalysis()}
-                  disabled={workingLoading}
-                  style={{
-                    background: "white",
-                    border: "1px solid #C7D2FE",
-                    color: "#4F46E5",
-                    borderRadius: 9,
-                    padding: "9px 16px",
-                    fontSize: 12.5,
-                    fontWeight: 700,
-                    cursor: workingLoading ? "default" : "pointer",
-                    whiteSpace: "nowrap" as const,
-                    opacity: workingLoading ? 0.6 : 1,
-                  }}
-                >
-                  {workingLoading ? "Analyse en cours…" : hasWorkingData ? "↻ Relancer l'analyse" : "Lancer l'analyse"}
-                </button>
+                {canRunConformite && (
+                  <button
+                    onClick={() => void relaunchWorkingAnalysis()}
+                    disabled={workingLoading}
+                    style={{
+                      background: "white",
+                      border: "1px solid #C7D2FE",
+                      color: "#4F46E5",
+                      borderRadius: 9,
+                      padding: "9px 16px",
+                      fontSize: 12.5,
+                      fontWeight: 700,
+                      cursor: workingLoading ? "default" : "pointer",
+                      whiteSpace: "nowrap" as const,
+                      opacity: workingLoading ? 0.6 : 1,
+                    }}
+                  >
+                    {workingLoading ? "Analyse en cours…" : hasWorkingData ? "↻ Relancer l'analyse" : "Lancer l'analyse"}
+                  </button>
+                )}
               </div>
               {conformiteError && (
                 <div style={{ margin: "0 20px 14px", padding: "8px 12px", borderRadius: 8, background: "#FEF2F2", border: "1px solid #FECACA", fontSize: 12, color: "#991B1B" }}>
@@ -2408,28 +2502,30 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
                       </div>
                     )}
                   </div>
-                  <button
-                    onClick={() => void launchConformiteFinale()}
-                    disabled={conformiteFinaleLaunching}
-                    style={{
-                      background: conformiteFinaleLaunching ? "#C7D2FE" : "#4F46E5",
-                      color: "white",
-                      border: "none",
-                      borderRadius: 9,
-                      padding: "10px 18px",
-                      fontSize: 13,
-                      fontWeight: 700,
-                      cursor: conformiteFinaleLaunching ? "default" : "pointer",
-                      boxShadow: "0 2px 6px rgba(79,70,229,0.25)",
-                      whiteSpace: "nowrap" as const,
-                    }}
-                  >
-                    {conformiteFinaleLaunching
-                      ? "Analyse en cours…"
-                      : conformiteFinale?.status === "done"
-                        ? "↻ Relancer l'analyse finale"
-                        : "Lancer l'analyse finale"}
-                  </button>
+                  {canRunConformite && (
+                    <button
+                      onClick={() => void launchConformiteFinale()}
+                      disabled={conformiteFinaleLaunching}
+                      style={{
+                        background: conformiteFinaleLaunching ? "#C7D2FE" : "#4F46E5",
+                        color: "white",
+                        border: "none",
+                        borderRadius: 9,
+                        padding: "10px 18px",
+                        fontSize: 13,
+                        fontWeight: 700,
+                        cursor: conformiteFinaleLaunching ? "default" : "pointer",
+                        boxShadow: "0 2px 6px rgba(79,70,229,0.25)",
+                        whiteSpace: "nowrap" as const,
+                      }}
+                    >
+                      {conformiteFinaleLaunching
+                        ? "Analyse en cours…"
+                        : conformiteFinale?.status === "done"
+                          ? "↻ Relancer l'analyse finale"
+                          : "Lancer l'analyse finale"}
+                    </button>
+                  )}
                 </div>
                 {finaleBlockers && (
                   <div style={{ marginTop: 12, padding: 12, borderRadius: 9, background: "#FEF2F2", border: "1px solid #FECACA" }}>
@@ -3452,13 +3548,15 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
                       <span style={{ width: 3, height: 14, background: "#4F46E5", borderRadius: 2, display: "inline-block" }} />
                       Organismes consultés
                     </div>
-                    <button
-                      onClick={() => openMissionModal()}
-                      disabled={consultationsMissioning}
-                      style={{ background: consultationsMissioning ? "#EEF2FF" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: consultationsMissioning ? "#4F46E5" : "white", border: consultationsMissioning ? "1px solid #C7D2FE" : "none", borderRadius: 9, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(79,70,229,0.3)" }}
-                    >
-                      {consultationsMissioning ? "En cours…" : "+ Missionner un service"}
-                    </button>
+                    {canCreateConsult && (
+                      <button
+                        onClick={() => openMissionModal()}
+                        disabled={consultationsMissioning}
+                        style={{ background: consultationsMissioning ? "#EEF2FF" : "linear-gradient(135deg,#4F46E5,#6366F1)", color: consultationsMissioning ? "#4F46E5" : "white", border: consultationsMissioning ? "1px solid #C7D2FE" : "none", borderRadius: 9, padding: "8px 16px", fontSize: 12, fontWeight: 600, cursor: consultationsMissioning ? "default" : "pointer", boxShadow: consultationsMissioning ? "none" : "0 2px 5px rgba(79,70,229,0.3)" }}
+                      >
+                        {consultationsMissioning ? "En cours…" : "+ Missionner un service"}
+                      </button>
+                    )}
                   </div>
                   {consultationsLoading ? (
                     <div style={{ textAlign: "center" as const, padding: "32px 0", color: "#94a3b8", fontSize: 13 }}>Chargement…</div>
@@ -3496,7 +3594,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
                       ) : (
                         <div style={{ fontSize: 12.5, color: "#94a3b8", lineHeight: 1.7, padding: "13px 14px", background: "#F8FAFC", borderRadius: 10, border: "1px solid #EAECF0", fontStyle: "italic" }}>Aucun avis reçu pour l'instant.</div>
                       )}
-                      {selectedC.status === "en_attente" && (
+                      {canUpdateConsult && selectedC.status === "en_attente" && (
                         <button
                           onClick={() => {
                             api.patch(`/mairie/dossiers/${dossier.id}/consultations/${selectedC.id}`, { status: "avis_recu", favorable: true })
@@ -3670,36 +3768,53 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
         {activeTab === "Courriers" && (
           <CourriersPanel
             dossierId={dossier.id}
+            refreshKey={courriersRefreshKey}
             onRequestNewPiecesCourrier={() => setCourrierMode("pieces_complementaires")}
             onRequestNewGeneralCourrier={() => setCourrierMode("general")}
+            onReopenCourrier={(c) => setReopenCourrier(c)}
+            canGenerate={canGenerateCourrier}
           />
         )}
 
         {/* ── DÉCISION ── */}
         {activeTab === "Décision" && (
-          <DecisionPanel dossier={dossier} liveCommune={liveCommune} currentUserId={user?.id} />
+          <DecisionPanel
+            dossier={dossier}
+            liveCommune={liveCommune}
+            currentUserId={user?.id}
+            liveInstructeur={currentInstructeur ?? dossier.instructeur ?? null}
+            onDecisionChange={refreshWorkflow}
+          />
         )}
 
       </div>
-      {courrierMode && (
+      {(courrierMode || reopenCourrier) && (
         <CourrierModal
+          inseeCode={inseeCode}
           dossier={{
             id: dossier.id,
             numero: dossier.numero,
             type: dossier.type,
             petitionnaire: dossier.petitionnaire,
             petitionnaire_email: dossier.petitionnaire_email,
+            demandeur_civilite: dossier.demandeur_civilite,
+            demandeur_adresse: dossier.demandeur_adresse,
+            representant_nom: dossier.representant_nom,
+            codemandeur_civilite: dossier.codemandeur_civilite,
+            codemandeur_nom: dossier.codemandeur_nom,
             adresse: dossier.adresse,
             commune: dossier.commune,
             code_postal: dossier.code_postal,
             parcelle: dossier.parcelle,
+            parcelles: dossier.parcelles,
             surface_plancher: dossier.surface_plancher,
             description: dossier.description,
             date_depot: dossier.date_depot,
             date_completude: dossier.date_completude,
             echeance: dossier.echeance,
           }}
-          mode={courrierMode}
+          mode={reopenCourrier ? (reopenCourrier.type === "pieces_complementaires" ? "pieces_complementaires" : "general") : courrierMode!}
+          initialCourrier={reopenCourrier ?? undefined}
           availablePieces={(documents ?? []).map((d) => ({
             id: d.id,
             nom: d.nom,
@@ -3714,7 +3829,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate }: {
             void refreshWorkflow();
             setDocuments(null); // force le rechargement au prochain accès onglet
           }}
-          onClose={() => setCourrierMode(null)}
+          onClose={() => { setCourrierMode(null); setReopenCourrier(null); setCourriersRefreshKey((k) => k + 1); }}
         />
       )}
     </div>

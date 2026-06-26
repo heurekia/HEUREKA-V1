@@ -1,9 +1,11 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
-import { api } from "../../lib/api";
+import { useIsMobile } from "../../hooks/useMediaQuery";
+import { api, ApiError } from "../../lib/api";
 import { linkifyArticles } from "../../utils/linkifyArticles";
 import { Step5CerfaInfos } from "./Step5CerfaInfos";
+import { MapLeaflet, type BaseLayer } from "../../components/MapLeaflet";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -19,14 +21,25 @@ type NatureId =
   | "division_terrain"
   | "certificat";
 
+// Référence d'une parcelle du groupement foncier (unité foncière).
+interface ParcelleRefUI {
+  parcelle_id: string;
+  surface_m2?: number;
+  commune?: string;
+  zone_code?: string;
+}
+
 interface ParcelInfo {
   adresse?: string;
   commune?: string;
   zone?: string;       // zone_code  e.g. "UA"
   zoneLabel?: string;  // zone_label e.g. "Zone Urbaine Centrale"
-  parcelle?: string;   // parcelle_id e.g. "37218000AB0050"
-  surfaceTerrain?: number; // m²
+  parcelle?: string;   // parcelle_id principal e.g. "37218000AB0050"
+  surfaceTerrain?: number; // m² — total de l'unité foncière le cas échéant
   servitudes?: Array<{ categorie?: string; libelle?: string }>;
+  // Unité foncière : liste complète des parcelles (principale en tête). Présent
+  // quand la demande porte sur un groupement foncier (≥ 2 parcelles).
+  parcelles?: ParcelleRefUI[];
 }
 
 function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): ParcelInfo {
@@ -35,11 +48,15 @@ function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): Par
   type PluZone = { zone_code?: string; zone_label?: string };
   type Municipality = { libelle?: string };
 
+  type Unite = { parcelles?: ParcelleRefUI[]; total_surface_m2?: number };
+
   const address = result.address as Addr | undefined;
   const parcel = result.parcel as Parcel | undefined;
   const pluZone = result.plu_zone as PluZone | undefined;
   const municipality = result.municipality as Municipality | undefined;
   const servitudes = (result.servitudes as Array<{ categorie?: string; libelle?: string }>) ?? [];
+  const unite = result.unite_fonciere as Unite | undefined;
+  const parcelles = unite?.parcelles && unite.parcelles.length > 0 ? unite.parcelles : undefined;
 
   return {
     adresse: address?.label ?? fallbackAdresse,
@@ -47,8 +64,10 @@ function mapAnalysis(result: Record<string, unknown>, fallbackAdresse = ""): Par
     zone: pluZone?.zone_code,
     zoneLabel: pluZone?.zone_label,
     parcelle: parcel?.parcelle_id,
-    surfaceTerrain: parcel?.surface_m2,
+    // Surface = total de l'unité foncière quand un groupement est sélectionné.
+    surfaceTerrain: unite?.total_surface_m2 ?? parcel?.surface_m2,
     servitudes,
+    parcelles,
   };
 }
 
@@ -90,6 +109,14 @@ interface UploadedPiece {
   // exposé publiquement aux citoyens en prod — réservé au cas où la
   // chaîne IA est mal configurée et qu'on veut un signal lisible.
   aiError?: string | null;
+  // Analyse IA en cours en arrière-plan : le serveur a répondu ai_pending et le
+  // wizard interroge la pièce jusqu'au verdict. Bloque la soumission le temps de
+  // pouvoir statuer sur le hors-sujet.
+  aiPending?: boolean;
+  // Pièce hors-sujet : ne correspond pas à sa rubrique (ex. photo déposée dans
+  // l'emplacement CERFA). Renseigné par le serveur (rubric_mismatch). Bloque la
+  // soumission tant qu'il est présent — le citoyen doit redéposer le bon document.
+  mismatch?: { expected: string; detected: string } | null;
 }
 
 function getScoreConfig(score: string): { label: string; bg: string; color: string } | null {
@@ -381,8 +408,15 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
 export function NouvelleDemandeWizard() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const isMobile = useIsMobile();
   const [searchParams] = useSearchParams();
   const qParam = searchParams.get("q") ?? "";
+  // Groupement foncier : liste d'ids cadastraux transmise par l'analyse parcellaire.
+  const parcellesParam = searchParams.get("parcelles") ?? "";
+  // Quand le wizard est ouvert depuis l'analyse parcellaire avec des parcelles
+  // déjà sélectionnées (param ?parcelles=…), l'unité foncière a été constituée
+  // en amont : on n'expose pas le choix multi-parcelles ici (lecture seule).
+  const parcellesPreselected = parcellesParam.trim().length > 0;
   const dossierParam = searchParams.get("dossier");
 
   const [step, setStep] = useState<Step>(1);
@@ -399,6 +433,22 @@ export function NouvelleDemandeWizard() {
   const [banSuggestions, setBanSuggestions] = useState<{ label: string }[]>([]);
   const [showBanSuggestions, setShowBanSuggestions] = useState(false);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Attache d'une parcelle supplémentaire au projet (unité foncière) directement
+  // depuis le wizard, sans repasser par l'outil d'analyse parcellaire — par ex.
+  // un citoyen déjà connecté qui démarre une nouvelle demande et veut ajouter une
+  // parcelle adjacente par sa seule référence cadastrale.
+  const [extraParcelInput, setExtraParcelInput] = useState("");
+  const [attachingParcel, setAttachingParcel] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
+  // Sélection des parcelles à la carte (plan cadastral cliquable) — la plupart des
+  // citoyens ne connaissent pas leur référence cadastrale. On réutilise le même
+  // composant carte que l'espace public d'analyse parcellaire.
+  const [showParcelMap, setShowParcelMap] = useState(false);
+  const [mapBaseLayer, setMapBaseLayer] = useState<BaseLayer>("ign-plan");
+  // Géométries connues par référence cadastrale (principale + parcelles cliquées),
+  // pour la surbrillance carte. La réponse agrégée ne porte que la principale, on
+  // mémorise donc au fil des clics celles des parcelles ajoutées.
+  const [parcelGeoms, setParcelGeoms] = useState<Record<string, object>>({});
 
   // Step 2 – Nature (multi-select)
   const [natures, setNatures] = useState<NatureId[]>([]);
@@ -427,6 +477,9 @@ export function NouvelleDemandeWizard() {
   type CerfaData = {
     // Identité
     qualiteDemandeur?: "particulier" | "sci" | "indivision" | "autre";
+    // Civilité du demandeur (Madame / Monsieur) — réutilisée dans les balises
+    // dynamiques de courrier côté mairie (variable `demandeur_civilite`).
+    civilite?: "madame" | "monsieur";
     dateNaissance?: string;
     communeNaissance?: string;
     deptNaissance?: string;
@@ -434,8 +487,17 @@ export function NouvelleDemandeWizard() {
     societeDenomination?: string;
     societeTypeJuridique?: string;
     societeSiret?: string;
+    // Représentant physique désigné de la personne morale (civilité incluse) —
+    // alimente la balise de courrier `representant_nom`.
+    societeRepresentantCivilite?: "madame" | "monsieur";
     societeRepresentantNom?: string;
     societeRepresentantPrenom?: string;
+    // Co-demandeur (second pétitionnaire) — balises `codemandeur_civilite` /
+    // `codemandeur_nom`.
+    coDemandeur?: boolean;
+    coDemandeurCivilite?: "madame" | "monsieur";
+    coDemandeurNom?: string;
+    coDemandeurPrenom?: string;
     // Adresse demandeur si différente du terrain
     adresseDemandeurNumero?: string;
     adresseDemandeurVoie?: string;
@@ -498,6 +560,38 @@ export function NouvelleDemandeWizard() {
     });
   }, [surface, empriseExistante]);
 
+  // ── Profil CERFA mémorisé (RGPD — confort de pré-remplissage) ───────────────
+  // Si le citoyen a déjà coché « Mémoriser » lors d'une demande précédente
+  // (opt-in révocable, état civil chiffré côté serveur), on pré-remplit le
+  // step 5. Uniquement pour une NOUVELLE demande : en reprise de brouillon, le
+  // cerfa_data déjà enregistré fait foi et ne doit pas être écrasé.
+  const [rememberProfile, setRememberProfile] = useState(false);
+  const hadStoredProfile = useRef(false);
+  const profilePrefilled = useRef(false);
+  useEffect(() => {
+    if (dossierParam || profilePrefilled.current) return;
+    if (!user || user.role !== "citoyen") return;
+    profilePrefilled.current = true;
+    void api
+      .get<{ profile: Record<string, string> | null }>("/auth/me/cerfa-profile")
+      .then((res) => {
+        if (!res.profile || Object.keys(res.profile).length === 0) return;
+        hadStoredProfile.current = true;
+        setRememberProfile(true);
+        setCerfaData((prev) => {
+          const next = { ...prev } as Record<string, unknown>;
+          // Ne jamais écraser un champ déjà saisi par le citoyen.
+          for (const [k, v] of Object.entries(res.profile!)) {
+            if (next[k] === undefined || next[k] === "") next[k] = v;
+          }
+          return next as CerfaData;
+        });
+      })
+      .catch(() => {
+        /* pré-remplissage best-effort : ne bloque jamais le dépôt */
+      });
+  }, [user, dossierParam]);
+
   // Step 6 – Infos personnelles
   const [nom, setNom] = useState(user?.nom ?? "");
   const [prenom, setPrenom] = useState(user?.prenom ?? "");
@@ -516,6 +610,65 @@ export function NouvelleDemandeWizard() {
   const [dossierNumero, setDossierNumero] = useState<string | null>(null);
   const [uploadedPieces, setUploadedPieces] = useState<Record<string, UploadedPiece[]>>({});
   const [uploadingCodes, setUploadingCodes] = useState<Set<string>>(new Set());
+
+  // Le composant est-il toujours monté ? Stoppe les boucles de polling d'analyse
+  // si le citoyen quitte le wizard.
+  const mountedRef = useRef(true);
+  useEffect(() => () => { mountedRef.current = false; }, []);
+
+  // Interroge une pièce jusqu'à ce que son analyse IA soit terminée (ocr_status
+  // done/failed/skipped), puis met à jour son verdict + le flag « hors-sujet ».
+  // Borné dans le temps : au-delà on cesse d'attendre (le serveur reste l'autorité
+  // au moment de la soumission, cf. /soumettre). Utilisé après chaque upload et à
+  // la reprise d'un brouillon dont une pièce était encore en cours d'analyse.
+  const pollPieceStatus = useCallback(async (codePiece: string, pieceId: string) => {
+    if (!dossierId) return;
+    interface PieceStatusApi {
+      id: string;
+      ocr_status: string | null;
+      analyse_ia: PieceAnalysis | null;
+      rubric_mismatch: { expected: string; detected: string } | null;
+    }
+    const INTERVAL_MS = 3000;
+    const MAX_ATTEMPTS = 60; // ~3 min — le worker plafonne déjà chaque pièce à 4 min
+    for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt++) {
+      await new Promise((r) => setTimeout(r, INTERVAL_MS));
+      if (!mountedRef.current) return;
+      let pieces: PieceStatusApi[];
+      try {
+        pieces = await api.get<PieceStatusApi[]>(`/dossiers/${dossierId}/pieces`);
+      } catch {
+        continue; // erreur réseau passagère → on retente
+      }
+      const p = pieces.find((x) => x.id === pieceId);
+      if (!p) return; // pièce supprimée entre-temps
+      const settled = p.ocr_status === "done" || p.ocr_status === "failed" || p.ocr_status === "skipped";
+      if (!settled) continue;
+      setUploadedPieces((prev) => {
+        const list = prev[codePiece];
+        if (!list) return prev;
+        return {
+          ...prev,
+          [codePiece]: list.map((it) => it.id === pieceId ? {
+            ...it,
+            analyse: p.analyse_ia ?? null,
+            aiPending: false,
+            aiUnavailable: p.ocr_status === "failed" && !p.analyse_ia,
+            mismatch: p.rubric_mismatch,
+          } : it),
+        };
+      });
+      return;
+    }
+    // Plafond atteint : on lève l'état « en cours » pour ne pas bloquer le bouton
+    // indéfiniment (la soumission est de toute façon revérifiée côté serveur).
+    if (!mountedRef.current) return;
+    setUploadedPieces((prev) => {
+      const list = prev[codePiece];
+      if (!list) return prev;
+      return { ...prev, [codePiece]: list.map((it) => it.id === pieceId ? { ...it, aiPending: false } : it) };
+    });
+  }, [dossierId]);
   const [creatingDossier, setCreatingDossier] = useState(false);
   // RGPD — consentement explicite à l'analyse IA des pièces (art. 13 + 22).
   // true par défaut (le service est conçu autour de l'analyse), mais le
@@ -524,12 +677,26 @@ export function NouvelleDemandeWizard() {
   const [aiConsent, setAiConsent] = useState<boolean>(true);
   const [showAiDetails, setShowAiDetails] = useState<boolean>(false);
 
-  // ── Auto-search when wizard is opened with ?q= (from AnalyseParcellaire) ───
+  // ── Auto-search when wizard is opened with ?q= / ?parcelles= (from AnalyseParcellaire) ───
   useEffect(() => {
+    const ids = parcellesParam.split(",").map((s) => s.trim()).filter(Boolean);
+    // Unité foncière : on interroge avec la liste de parcelles pour récupérer
+    // l'agrégat (surface totale + liste). Sinon, recherche adresse classique.
+    if (ids.length > 0) {
+      const qs = new URLSearchParams();
+      if (qParam) qs.set("q", qParam);
+      qs.set("parcelles", ids.join(","));
+      setSearching(true);
+      api.get<Record<string, unknown>>(`/public/analyse?${qs.toString()}`)
+        .then((result) => { setParcel(mapAnalysis(result, qParam)); setParcelRaw(result); })
+        .catch(() => setParcel({ adresse: qParam, parcelle: ids[0], parcelles: ids.map((id) => ({ parcelle_id: id })) }))
+        .finally(() => setSearching(false));
+      return;
+    }
     if (!qParam) return;
     setSearching(true);
     api.get<Record<string, unknown>>(`/public/analyse?q=${encodeURIComponent(qParam)}`)
-      .then((result) => setParcel(mapAnalysis(result, qParam)))
+      .then((result) => { setParcel(mapAnalysis(result, qParam)); setParcelRaw(result); })
       .catch(() => setParcel({ adresse: qParam }))
       .finally(() => setSearching(false));
   // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -559,6 +726,8 @@ export function NouvelleDemandeWizard() {
       code_piece: string | null;
       url: string;
       analyse_ia: PieceAnalysis | null;
+      ocr_status: string | null;
+      rubric_mismatch: { expected: string; detected: string } | null;
     }
 
     (async () => {
@@ -584,6 +753,10 @@ export function NouvelleDemandeWizard() {
           servitudes: Array.isArray(meta.servitudes)
             ? (meta.servitudes as Array<{ categorie?: string; libelle?: string }>)
             : [],
+          // Restaure le groupement foncier saisi avant la mise en pause.
+          parcelles: Array.isArray(meta.parcelles)
+            ? (meta.parcelles as ParcelleRefUI[])
+            : undefined,
         };
         const resumedParcelRaw = (meta.parcel_analysis && typeof meta.parcel_analysis === "object")
           ? (meta.parcel_analysis as Record<string, unknown>)
@@ -614,14 +787,19 @@ export function NouvelleDemandeWizard() {
 
         // Regroupe les pièces déjà uploadées par code_piece (ou ANNEXE_KEY).
         const grouped: Record<string, UploadedPiece[]> = {};
+        const resumePending: Array<{ key: string; id: string }> = [];
         for (const p of existingPieces) {
           const key = p.code_piece ?? ANNEXE_KEY;
+          const aiPending = p.ocr_status === "pending" || p.ocr_status === "processing";
+          if (aiPending) resumePending.push({ key, id: p.id });
           (grouped[key] ??= []).push({
             id: p.id,
             nom: p.nom,
             url: p.url,
             analyse: p.analyse_ia ?? null,
             autoGenerated: !!p.code_piece?.endsWith("-FORMULAIRE"),
+            aiPending,
+            mismatch: p.rubric_mismatch,
           });
         }
 
@@ -644,6 +822,8 @@ export function NouvelleDemandeWizard() {
         setClassification(resumedClassification);
         setUploadedPieces(grouped);
         setStep(7);
+        // Reprend l'interrogation des pièces dont l'analyse n'était pas terminée.
+        for (const x of resumePending) void pollPieceStatus(x.key, x.id);
       } catch {
         if (!cancelled) setResumeError("Impossible de reprendre ce dossier. Réessayez ou contactez le support.");
       } finally {
@@ -677,6 +857,10 @@ export function NouvelleDemandeWizard() {
     if (!query) return;
     setBanSuggestions([]);
     setShowBanSuggestions(false);
+    // Nouvelle recherche → on repart d'un terrain « propre » : on réinitialise la
+    // saisie d'ajout de parcelle et son éventuelle erreur.
+    setExtraParcelInput("");
+    setAttachError(null);
     setSearching(true);
     try {
       const result = await api.get<Record<string, unknown>>(
@@ -691,6 +875,143 @@ export function NouvelleDemandeWizard() {
       setSearching(false);
     }
   }, [search]);
+
+  // ── Unité foncière : attache / détache d'une parcelle cadastrale ──────────────
+  // Liste ordonnée des parcelles actuellement rattachées au projet (principale en
+  // tête). Sert de base au rendu des « chips » et aux ajouts/retraits.
+  const attachedParcelles: ParcelleRefUI[] =
+    parcel?.parcelles && parcel.parcelles.length > 0
+      ? parcel.parcelles
+      : parcel?.parcelle
+        ? [{ parcelle_id: parcel.parcelle, surface_m2: parcel.surfaceTerrain, commune: parcel.commune }]
+        : [];
+
+  // Recalcule l'unité foncière pour une nouvelle liste d'ids (principale en tête)
+  // via /public/analyse?parcelles=… puis met à jour l'état du wizard. L'adresse et
+  // la commune saisies à l'origine sont conservées (l'agrégat repart de la
+  // référence cadastrale principale et n'a pas toujours d'adresse postale).
+  const reanalyseUnite = useCallback(async (ids: string[]): Promise<ParcelInfo | null> => {
+    if (ids.length === 0) return null;
+    setAttachingParcel(true);
+    setAttachError(null);
+    try {
+      const result = await api.get<Record<string, unknown>>(
+        `/public/analyse?parcelles=${encodeURIComponent(ids.join(","))}`,
+      );
+      const mapped = mapAnalysis(result, parcel?.adresse ?? "");
+      const merged: ParcelInfo = {
+        ...mapped,
+        adresse: parcel?.adresse || mapped.adresse,
+        commune: parcel?.commune || mapped.commune,
+      };
+      setParcel(merged);
+      setParcelRaw(result);
+      return merged;
+    } catch {
+      setAttachError("Impossible d'analyser cette parcelle. Vérifiez votre connexion et réessayez.");
+      return null;
+    } finally {
+      setAttachingParcel(false);
+    }
+  }, [parcel?.adresse, parcel?.commune]);
+
+  // Ajoute une parcelle cadastrale au projet à partir de sa seule référence.
+  const attachParcelle = useCallback(async (rawRef: string) => {
+    // Normalisation alignée sur l'API : majuscules, sans espaces ni points
+    // (ex. « 4129 5000 DB 0264 » ou « 41295.000.DB.0264 » → « 41295000DB0264 »).
+    const ref = rawRef.trim().toUpperCase().replace(/[\s.]/g, "");
+    if (!ref) return;
+    // Une référence cadastrale complète fait 14 caractères (5 INSEE + 3 préfixe +
+    // 2 section + 4 numéro). L'API n'agrège que les références de cette longueur,
+    // on valide donc strictement pour éviter une erreur « introuvable » trompeuse.
+    if (!/^[0-9A-Z]{14}$/.test(ref)) {
+      setAttachError("Référence cadastrale invalide — 14 caractères attendus (ex. 41295000DB0264).");
+      return;
+    }
+    const existing = attachedParcelles.map((p) => p.parcelle_id);
+    if (existing.includes(ref)) {
+      setAttachError("Cette parcelle est déjà rattachée au projet.");
+      return;
+    }
+    const merged = await reanalyseUnite([...existing, ref]);
+    if (!merged) return;
+    // Confirme que la référence a bien été reconnue dans l'agrégat renvoyé ; sinon
+    // on revient à la liste précédente et on signale une référence introuvable.
+    if (!merged.parcelles?.some((p) => p.parcelle_id === ref)) {
+      // Restaure la liste précédente avant d'afficher l'erreur (reanalyseUnite
+      // remet attachError à null en début d'appel, d'où cet ordre).
+      if (existing.length > 0) await reanalyseUnite(existing);
+      setAttachError("Référence cadastrale introuvable. Vérifiez-la (ex. 41295000DB0264).");
+      return;
+    }
+    setExtraParcelInput("");
+  }, [attachedParcelles, reanalyseUnite]);
+
+  // Détache une parcelle. On interdit le retrait de la dernière (un projet a
+  // toujours au moins une parcelle).
+  const detachParcelle = useCallback(async (parcelleId: string) => {
+    const ids = attachedParcelles.map((p) => p.parcelle_id).filter((id) => id !== parcelleId);
+    if (ids.length === 0) return;
+    await reanalyseUnite(ids);
+  }, [attachedParcelles, reanalyseUnite]);
+
+  // Mémorise la géométrie de la parcelle principale dès qu'une analyse aboutit,
+  // pour la surbrillance carte (la réponse /analyse ne porte que la principale).
+  useEffect(() => {
+    const p = parcelRaw?.parcel as { parcelle_id?: string; geometry?: object } | undefined;
+    if (p?.parcelle_id && p.geometry) {
+      const id = p.parcelle_id;
+      const geom = p.geometry;
+      setParcelGeoms((prev) => (prev[id] ? prev : { ...prev, [id]: geom }));
+    }
+  }, [parcelRaw]);
+
+  // Clic sur le plan cadastral : résout la parcelle sous le point puis l'ajoute
+  // (ou la retire si déjà présente) à l'unité foncière. Évite au citoyen d'avoir
+  // à connaître la référence cadastrale.
+  const handleMapPick = useCallback(async (lat: number, lng: number) => {
+    setAttachingParcel(true);
+    setAttachError(null);
+    let clicked: { parcelle_id: string; geometry?: object } | null = null;
+    try {
+      const result = await api.get<Record<string, unknown>>(
+        `/public/analyse?lat=${lat}&lng=${lng}`,
+      );
+      clicked = (result.parcel as { parcelle_id: string; geometry?: object } | undefined) ?? null;
+    } catch {
+      setAttachError("Impossible d'identifier la parcelle. Réessayez.");
+    } finally {
+      setAttachingParcel(false);
+    }
+    if (!clicked?.parcelle_id) {
+      setAttachError("Aucune parcelle cadastrale à cet endroit — cliquez à l'intérieur d'une parcelle.");
+      return;
+    }
+    const clickedId = clicked.parcelle_id;
+    if (clicked.geometry) {
+      const geom = clicked.geometry;
+      setParcelGeoms((prev) => ({ ...prev, [clickedId]: geom }));
+    }
+    const existing = attachedParcelles.map((p) => p.parcelle_id);
+    if (existing.includes(clickedId)) {
+      // Re-clic sur une parcelle déjà retenue → on la retire (sauf si c'est la
+      // dernière du projet).
+      if (existing.length > 1) await reanalyseUnite(existing.filter((id) => id !== clickedId));
+      return;
+    }
+    await reanalyseUnite([...existing, clickedId]);
+  }, [attachedParcelles, reanalyseUnite]);
+
+  // Centre initial de la carte : coordonnées de l'adresse analysée si connues.
+  const mapCenter: [number, number] | undefined = (() => {
+    const addr = parcelRaw?.address as { lat?: number; lng?: number } | undefined;
+    return addr?.lat != null && addr?.lng != null ? [addr.lat, addr.lng] : undefined;
+  })();
+
+  // Géométries des parcelles retenues, pour la surbrillance carte.
+  const highlightGeoms = attachedParcelles
+    .map((p) => parcelGeoms[p.parcelle_id])
+    .filter((g): g is object => !!g);
 
   // ── AI classification ────────────────────────────────────────────────────────
   const classify = useCallback(async () => {
@@ -757,26 +1078,35 @@ export function NouvelleDemandeWizard() {
       url: string;
       code_piece: string | null;
       analyse_ia: PieceAnalysis | null;
+      ocr_status: string | null;
+      rubric_mismatch: { expected: string; detected: string } | null;
     }
     try {
       const pieces = await api.get<PieceApi[]>(`/dossiers/${id}/pieces`);
       const grouped: Record<string, UploadedPiece[]> = {};
+      const resumePending: Array<{ key: string; id: string }> = [];
       for (const p of pieces) {
         const key = p.code_piece ?? ANNEXE_KEY;
+        const aiPending = p.ocr_status === "pending" || p.ocr_status === "processing";
+        if (aiPending) resumePending.push({ key, id: p.id });
         (grouped[key] ??= []).push({
           id: p.id,
           nom: p.nom,
           url: p.url,
           analyse: p.analyse_ia ?? null,
           autoGenerated: !!p.code_piece?.endsWith("-FORMULAIRE"),
+          aiPending,
+          mismatch: p.rubric_mismatch,
         });
       }
       setUploadedPieces(grouped);
+      // Reprend l'interrogation des pièces encore en cours d'analyse.
+      for (const x of resumePending) void pollPieceStatus(x.key, x.id);
     } catch {
       // Non-bloquant : si le refetch échoue, l'utilisateur peut toujours
       // uploader manuellement.
     }
-  }, []);
+  }, [pollPieceStatus]);
 
   // La génération du CERFA prérempli côté API est lancée en arrière-plan
   // (best-effort) au POST/PATCH du dossier. On attend brièvement puis on
@@ -817,6 +1147,9 @@ export function NouvelleDemandeWizard() {
           natures,
           zone: parcel?.zone,
           parcelle: parcel?.parcelle,
+          // Unité foncière : liste complète des parcelles (groupement foncier).
+          // `parcelle` ci-dessus reste la principale (rétro-compat CERFA/courrier).
+          parcelles: parcel?.parcelles ?? undefined,
           servitudes: parcel?.servitudes ?? [],
           // Analyse parcellaire complète (zone PLU, surface terrain, ABF…) :
           // la mairie l'affiche directement sans re-fetcher /analyse-parcelle.
@@ -833,6 +1166,20 @@ export function NouvelleDemandeWizard() {
         setDossierNumero(result.numero);
         id = result.id;
       }
+      // RGPD : mémorisation opt-in du profil CERFA pour les prochaines demandes.
+      // Le serveur minimise l'entrée (seul l'état civil réutilisable est gardé)
+      // et la chiffre. Non bloquant : la demande est déjà enregistrée.
+      try {
+        if (rememberProfile) {
+          await api.put("/auth/me/cerfa-profile", { profile: cerfaData });
+          hadStoredProfile.current = true;
+        } else if (hadStoredProfile.current) {
+          await api.delete("/auth/me/cerfa-profile");
+          hadStoredProfile.current = false;
+        }
+      } catch {
+        /* la mémorisation est un confort : un échec ne doit pas casser le dépôt */
+      }
       setStep((s) => (s + 1) as Step);
       // Attend que la génération du CERFA prérempli aboutisse côté API,
       // puis remonte la pièce dans l'UI. Volontairement non-bloquant pour
@@ -843,7 +1190,7 @@ export function NouvelleDemandeWizard() {
     } finally {
       setCreatingDossier(false);
     }
-  }, [dossierId, classification, parcel, parcelRaw, description, natures, surface, cerfaData, waitForCerfa]);
+  }, [dossierId, classification, parcel, parcelRaw, description, natures, surface, cerfaData, rememberProfile, waitForCerfa]);
 
   // ── Upload a piece and get AI analysis ───────────────────────────────────────
   // `rubricLabel` = libellé de la catégorie (ex. "Plan de situation" ou "Annexe")
@@ -876,9 +1223,10 @@ export function NouvelleDemandeWizard() {
         url: string;
         analyse_ia: PieceAnalysis | null;
         ai_requested?: boolean;
+        ai_pending?: boolean;
         ai_error?: string | null;
       };
-      const aiUnavailable = (data.ai_requested ?? aiConsent) && data.analyse_ia === null;
+      const pending = !!data.ai_pending;
       setUploadedPieces((prev) => {
         const current = prev[codePiece] ?? [];
         return {
@@ -888,11 +1236,17 @@ export function NouvelleDemandeWizard() {
             nom: file.name,
             url: data.url,
             analyse: data.analyse_ia,
-            aiUnavailable,
+            // En attente d'analyse en arrière-plan : ni indisponible, ni
+            // hors-sujet pour l'instant — le polling tranchera.
+            aiPending: pending,
+            aiUnavailable: false,
             aiError: data.ai_error ?? null,
+            mismatch: null,
           }],
         };
       });
+      // Interroge la pièce jusqu'au verdict (analyse qualitative + hors-sujet).
+      if (pending) void pollPieceStatus(codePiece, data.id);
     } catch (e) {
       const msg = e instanceof Error && e.message ? e.message : "Erreur inconnue";
       alert(`Erreur lors du dépôt : ${msg}`);
@@ -903,7 +1257,7 @@ export function NouvelleDemandeWizard() {
         return next;
       });
     }
-  }, [dossierId, aiConsent]);
+  }, [dossierId, aiConsent, pollPieceStatus]);
 
   // ── Delete a previously uploaded piece ─────────────────────────────────────
   const deletePiece = useCallback(async (codePiece: string, pieceId: string) => {
@@ -937,12 +1291,20 @@ export function NouvelleDemandeWizard() {
     try {
       await api.post(`/dossiers/${dossierId}/soumettre`, {});
       setSubmitted({ id: dossierId, numero: dossierNumero });
-    } catch {
-      alert("Erreur lors de la soumission. Réessayez.");
+    } catch (e) {
+      // Garde-fous serveur : 422 = pièce hors-sujet (ne correspond pas à sa
+      // rubrique), 409 = analyse encore en cours. On resynchronise l'état des
+      // pièces pour refléter le problème dans l'UI, et on affiche le message.
+      if (e instanceof ApiError && (e.status === 422 || e.status === 409)) {
+        await refetchPieces(dossierId).catch(() => {});
+        alert(e.message);
+      } else {
+        alert("Erreur lors de la soumission. Réessayez.");
+      }
     } finally {
       setSubmitting(false);
     }
-  }, [dossierId, dossierNumero]);
+  }, [dossierId, dossierNumero, refetchPieces]);
 
   const next = () => setStep((s) => (s + 1) as Step);
   const prev = () => setStep((s) => (s - 1) as Step);
@@ -1162,7 +1524,7 @@ export function NouvelleDemandeWizard() {
                 </p>
               </div>
 
-              <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "flex-start" }}>
+              <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: 10, marginBottom: 16, alignItems: isMobile ? "stretch" : "flex-start" }}>
                 <div style={{ flex: 1, position: "relative" }}>
                   <input
                     value={search}
@@ -1240,18 +1602,20 @@ export function NouvelleDemandeWizard() {
                   <div
                     style={{ fontSize: 13, fontWeight: 700, color: "#15803D", marginBottom: 14 }}
                   >
-                    ✓ Parcelle analysée
+                    {parcel.parcelles && parcel.parcelles.length > 1
+                      ? `✓ Unité foncière analysée — ${parcel.parcelles.length} parcelles`
+                      : "✓ Parcelle analysée"}
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
                     {[
                       ["📌 Adresse", parcel.adresse],
                       ["🏘️ Commune", parcel.commune ?? "—"],
                       ["🗺️ Zone PLU", parcel.zone
                         ? `${parcel.zone}${parcel.zoneLabel ? ` — ${parcel.zoneLabel}` : ""}`
                         : "Non déterminée"],
-                      ["📐 Référence parcelle", parcel.parcelle ?? "—"],
+                      [parcel.parcelles && parcel.parcelles.length > 1 ? "📐 Parcelle principale" : "📐 Référence parcelle", parcel.parcelle ?? "—"],
                       ...(parcel.surfaceTerrain
-                        ? [["🌿 Surface du terrain", `${parcel.surfaceTerrain.toLocaleString("fr-FR")} m²`] as [string, string]]
+                        ? [[parcel.parcelles && parcel.parcelles.length > 1 ? "🌿 Surface totale du terrain" : "🌿 Surface du terrain", `${parcel.surfaceTerrain.toLocaleString("fr-FR")} m²`] as [string, string]]
                         : []),
                     ].map(([label, value]) => (
                       <div key={label}>
@@ -1259,6 +1623,126 @@ export function NouvelleDemandeWizard() {
                         <div style={{ fontSize: 13, fontWeight: 700, color: "#0F172A" }}>{value}</div>
                       </div>
                     ))}
+                  </div>
+
+                  {/* Parcelles du projet (unité foncière) — ajout/retrait direct
+                      depuis le wizard, sans repasser par l'analyse parcellaire. */}
+                  <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #86EFAC" }}>
+                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>
+                      📋 Parcelles du projet{attachedParcelles.length > 1 ? ` (${attachedParcelles.length})` : ""}
+                    </div>
+                    {attachedParcelles.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                        {attachedParcelles.map((p, i) => (
+                          <span key={p.parcelle_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #86EFAC", borderRadius: 999, padding: attachedParcelles.length > 1 && !parcellesPreselected ? "3px 6px 3px 10px" : "3px 10px", fontSize: 11.5, color: "#0F172A", fontWeight: 600 }}>
+                            {p.parcelle_id}
+                            {p.surface_m2 != null && p.surface_m2 > 0 && (
+                              <span style={{ color: "#64748b", fontWeight: 400 }}>· {Math.round(p.surface_m2).toLocaleString("fr-FR")} m²</span>
+                            )}
+                            {i === 0 && attachedParcelles.length > 1 && (
+                              <span title="Parcelle principale" style={{ color: "#15803D", fontWeight: 700 }}>★</span>
+                            )}
+                            {attachedParcelles.length > 1 && !parcellesPreselected && (
+                              <button
+                                onClick={() => void detachParcelle(p.parcelle_id)}
+                                disabled={attachingParcel}
+                                title="Retirer cette parcelle"
+                                style={{ border: "none", background: "#F0FDF4", color: "#15803D", borderRadius: 999, width: 18, height: 18, cursor: attachingParcel ? "not-allowed" : "pointer", fontSize: 13, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}
+                              >×</button>
+                            )}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+
+                    {/* Choix multi-parcelles (carte cadastrale + saisie manuelle).
+                        Masqué quand les parcelles ont déjà été choisies via l'analyse
+                        parcellaire : l'unité foncière est figée, lecture seule ici. */}
+                    {parcellesPreselected ? (
+                      attachedParcelles.length > 1 && (
+                        <div style={{ fontSize: 11, color: "#64748b", marginTop: 2, lineHeight: 1.4 }}>
+                          Unité foncière constituée lors de l'analyse parcellaire (★ = parcelle principale).
+                        </div>
+                      )
+                    ) : (
+                      <>
+                    {/* Sélection à la carte — moyen principal : le citoyen clique
+                        ses parcelles sur le plan cadastral sans connaître leur réf. */}
+                    <button
+                      onClick={() => setShowParcelMap((v) => !v)}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: "10px 16px", background: showParcelMap ? "#15803D" : "white", color: showParcelMap ? "white" : "#15803D", border: "1.5px solid #15803D", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", transition: "all 0.12s" }}
+                    >
+                      🗺️ {showParcelMap ? "Masquer la carte cadastrale" : "Choisir mes parcelles sur la carte"}
+                    </button>
+
+                    {showParcelMap && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 11.5, color: "#166534", fontWeight: 600 }}>
+                            Cliquez une parcelle pour l'ajouter — cliquez-la à nouveau pour la retirer.
+                          </span>
+                          <div style={{ display: "flex", border: "1px solid #E5E7EB", borderRadius: 7, overflow: "hidden", flexShrink: 0 }}>
+                            {([
+                              { key: "ign-plan", label: "Plan" },
+                              { key: "ign-ortho", label: "Photo" },
+                            ] as { key: BaseLayer; label: string }[]).map(({ key, label }, i, arr) => (
+                              <button key={key} onClick={() => setMapBaseLayer(key)} style={{
+                                padding: "4px 12px", border: "none",
+                                borderRight: i < arr.length - 1 ? "1px solid #E5E7EB" : "none",
+                                cursor: "pointer", fontSize: 11.5, fontWeight: mapBaseLayer === key ? 700 : 400,
+                                background: mapBaseLayer === key ? "#15803D" : "white",
+                                color: mapBaseLayer === key ? "white" : "#6B7280",
+                              }}>{label}</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid #86EFAC" }}>
+                          <MapLeaflet
+                            dossiers={[]}
+                            height={320}
+                            baseLayer={mapBaseLayer}
+                            parcelLayer={true}
+                            clickMode={true}
+                            onMapClick={(lat, lng) => void handleMapPick(lat, lng)}
+                            highlightGeometries={highlightGeoms}
+                            defaultCenter={mapCenter}
+                            defaultZoom={mapCenter ? 18 : undefined}
+                          />
+                          {attachingParcel && (
+                            <div style={{ position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)", background: "rgba(21,128,61,0.92)", color: "white", borderRadius: 20, padding: "5px 14px", fontSize: 11.5, fontWeight: 600, pointerEvents: "none", zIndex: 1000 }}>
+                              Analyse de la parcelle…
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Saisie manuelle de la référence — repli pour qui la connaît. */}
+                    <div style={{ display: "flex", gap: 8, alignItems: "stretch", marginTop: 10 }}>
+                      <input
+                        value={extraParcelInput}
+                        onChange={(e) => { setExtraParcelInput(e.target.value); if (attachError) setAttachError(null); }}
+                        onKeyDown={(e) => { if (e.key === "Enter" && !attachingParcel) void attachParcelle(extraParcelInput); }}
+                        placeholder="ou saisir la réf. cadastrale (ex : 41295000DB0264)"
+                        style={{ flex: 1, padding: "8px 12px", border: "1.5px solid #86EFAC", borderRadius: 9, fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box", background: "white" }}
+                      />
+                      <button
+                        onClick={() => void attachParcelle(extraParcelInput)}
+                        disabled={attachingParcel || !extraParcelInput.trim()}
+                        style={{ padding: "8px 16px", background: "#15803D", color: "white", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: attachingParcel || !extraParcelInput.trim() ? "not-allowed" : "pointer", opacity: attachingParcel || !extraParcelInput.trim() ? 0.6 : 1, whiteSpace: "nowrap", flexShrink: 0 }}
+                      >
+                        {attachingParcel ? "Ajout…" : "+ Ajouter"}
+                      </button>
+                    </div>
+                    {attachError ? (
+                      <div style={{ fontSize: 11.5, color: "#DC2626", marginTop: 6 }}>{attachError}</div>
+                    ) : (
+                      <div style={{ fontSize: 11, color: "#64748b", marginTop: 6, lineHeight: 1.4 }}>
+                        Votre projet s'étend sur plusieurs parcelles ? Sélectionnez-les sur la carte (ou par référence) pour constituer un groupement foncier.
+                      </div>
+                    )}
+                      </>
+                    )}
                   </div>
 
                   {hasABF && (
@@ -1339,7 +1823,7 @@ export function NouvelleDemandeWizard() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 1fr 1fr",
+                  gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr",
                   gap: 10,
                   marginBottom: 16,
                 }}
@@ -1962,6 +2446,8 @@ export function NouvelleDemandeWizard() {
               cerfaData={cerfaData}
               setCerfa={setCerfa}
               inputStyle={inputStyle}
+              rememberProfile={rememberProfile}
+              onToggleRemember={setRememberProfile}
               onPrev={prev}
               onNext={next}
             />
@@ -1983,7 +2469,7 @@ export function NouvelleDemandeWizard() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
+                  gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
                   gap: 14,
                   marginBottom: 14,
                 }}
@@ -2160,6 +2646,22 @@ export function NouvelleDemandeWizard() {
                         ⓘ Analyse indisponible
                       </span>
                     )}
+                    {file.aiPending && (
+                      <span
+                        style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: "#FEF3C7", color: "#B45309", flexShrink: 0 }}
+                        title="Analyse automatique en cours — le verdict s'affichera dans quelques instants."
+                      >
+                        ⏳ Analyse en cours…
+                      </span>
+                    )}
+                    {file.mismatch && (
+                      <span
+                        style={{ padding: "2px 8px", borderRadius: 20, fontSize: 11, fontWeight: 700, background: "#FEE2E2", color: "#DC2626", flexShrink: 0 }}
+                        title="Ce document ne semble pas correspondre à cette rubrique. Vérifiez que vous avez déposé le bon fichier au bon endroit."
+                      >
+                        🚫 Ne correspond pas à cette rubrique
+                      </span>
+                    )}
                     {!file.autoGenerated && (
                       <button
                         onClick={() => void deletePiece(codePiece, file.id)}
@@ -2292,6 +2794,14 @@ export function NouvelleDemandeWizard() {
                       const files = uploadedPieces[piece.code] ?? [];
                       const hasFiles = files.length > 0;
                       const isUploading = uploadingCodes.has(piece.code);
+                      // Statut agrégé de la rubrique pour choisir l'icône :
+                      //  • analyse en cours (upload ou IA pending) → roue crantée animée
+                      //  • au moins un fichier inexploitable (hors-sujet ou « À reprendre ») → croix rouge
+                      //  • sinon, fichiers présents et exploitables → check vert
+                      const isAnalysing = isUploading || files.some((f) => f.aiPending);
+                      const hasUnusable = files.some(
+                        (f) => f.mismatch != null || f.analyse?.score === "non_conforme",
+                      );
                       return (
                         <div
                           key={piece.code}
@@ -2306,8 +2816,33 @@ export function NouvelleDemandeWizard() {
                             transition: "background 0.2s, border-color 0.2s",
                           }}
                         >
-                          <span style={{ fontSize: 22, marginTop: 1, flexShrink: 0 }}>
-                            {hasFiles ? "✅" : piece.requis ? "📄" : "📋"}
+                          <span style={{ fontSize: 22, marginTop: 1, flexShrink: 0, display: "inline-flex", width: 22, height: 22, alignItems: "center", justifyContent: "center" }}>
+                            {isAnalysing ? (
+                              <svg
+                                width={20}
+                                height={20}
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="#B45309"
+                                strokeWidth="2"
+                                strokeLinecap="round"
+                                strokeLinejoin="round"
+                                style={{ animation: "spin 1.6s linear infinite", display: "block" }}
+                                aria-label="Analyse en cours"
+                                role="img"
+                              >
+                                <circle cx="12" cy="12" r="3" />
+                                <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z" />
+                              </svg>
+                            ) : hasUnusable ? (
+                              <span aria-label="Pièce à reprendre" role="img">❌</span>
+                            ) : hasFiles ? (
+                              "✅"
+                            ) : piece.requis ? (
+                              "📄"
+                            ) : (
+                              "📋"
+                            )}
                           </span>
                           <div style={{ flex: 1, minWidth: 0 }}>
                             {/* Name + badges */}
@@ -2575,7 +3110,14 @@ export function NouvelleDemandeWizard() {
                 const pieces = classification?.pieces_requises ?? [];
                 const required = pieces.filter((p) => p.requis);
                 const missing = required.filter((p) => (uploadedPieces[p.code]?.length ?? 0) === 0).length;
-                const canSubmit = missing === 0 && !!dossierId && !submitting;
+                // Contrôles IA sur toutes les pièces déposées (toutes rubriques) :
+                // on ne soumet pas tant qu'une analyse est en cours, ni si une pièce
+                // est hors-sujet (ne correspond pas à sa rubrique). Le serveur
+                // re-vérifie ces deux conditions au moment de /soumettre.
+                const allUploaded = Object.values(uploadedPieces).flat();
+                const anyPending = allUploaded.some((p) => p.aiPending);
+                const horsSujet = allUploaded.filter((p) => p.mismatch);
+                const canSubmit = missing === 0 && !anyPending && horsSujet.length === 0 && !!dossierId && !submitting;
                 return (
                   <>
                     {missing > 0 ? (
@@ -2587,7 +3129,17 @@ export function NouvelleDemandeWizard() {
                         ✓ Toutes les pièces obligatoires ont été déposées.
                       </div>
                     ) : null}
-                    {missing === 0 && (
+                    {horsSujet.length > 0 && (
+                      <div style={{ background: "#FEE2E2", border: "1px solid #FECACA", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#DC2626", lineHeight: 1.5, fontWeight: 500 }}>
+                        🚫 {horsSujet.length > 1 ? `${horsSujet.length} pièces ne correspondent` : "Une pièce ne correspond"} pas à {horsSujet.length > 1 ? "leur" : "sa"} rubrique : {horsSujet.map((p) => p.nom).join(", ")}. Vérifiez que le bon document est déposé dans chaque emplacement avant de soumettre.
+                      </div>
+                    )}
+                    {anyPending && horsSujet.length === 0 && (
+                      <div style={{ background: "#FEF3C7", border: "1px solid #FDE68A", borderRadius: 12, padding: "13px 18px", marginBottom: 16, fontSize: 13, color: "#B45309", lineHeight: 1.5 }}>
+                        ⏳ Analyse de vos pièces en cours… La soumission sera disponible dès qu'elle sera terminée (quelques instants).
+                      </div>
+                    )}
+                    {missing === 0 && !anyPending && horsSujet.length === 0 && (
                       <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 12, padding: "13px 18px", marginBottom: 24, fontSize: 13, color: "#15803D", lineHeight: 1.5 }}>
                         ✓ Votre dossier sera transmis à la mairie de{" "}
                         <strong>{parcel?.commune ?? "votre commune"}</strong>. Vous recevrez un

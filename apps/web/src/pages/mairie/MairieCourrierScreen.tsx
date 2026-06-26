@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useCallback, type Dispatch, type SetStateAction } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import DOMPurify from "dompurify";
 import { Rnd } from "react-rnd";
 import { api } from "../../lib/api";
@@ -20,8 +20,13 @@ const TEMPLATE_VARIABLES = [
   { group: "Références du dossier", vars: [
     { label: "Numéro de dossier", name: "numero_dossier" },
     { label: "Type de dossier", name: "type_dossier" },
+    { label: "Civilité du demandeur", name: "demandeur_civilite" },
     { label: "Identité du demandeur", name: "demandeur_nom" },
+    { label: "Adresse du demandeur", name: "demandeur_adresse" },
     { label: "Email demandeur", name: "demandeur_email" },
+    { label: "Représentant (personne morale)", name: "representant_nom" },
+    { label: "Civilité du co-demandeur", name: "codemandeur_civilite" },
+    { label: "Identité du co-demandeur", name: "codemandeur_nom" },
     { label: "Date de dépôt", name: "date_depot" },
     { label: "Date de complétude", name: "date_completude" },
     { label: "Date de délivrance", name: "date_delivrance" },
@@ -162,7 +167,18 @@ interface Letterhead {
 export interface DossierForCourrier {
   id: string; numero: string; type: string; petitionnaire: string;
   petitionnaire_email?: string | null;
+  // Civilité et adresse postale du demandeur (issues du dépôt citoyen), pour les
+  // balises dynamiques demandeur_civilite / demandeur_adresse.
+  demandeur_civilite?: string;
+  demandeur_adresse?: string;
+  // Représentant physique d'une personne morale + co-demandeur éventuel.
+  representant_nom?: string;
+  codemandeur_civilite?: string;
+  codemandeur_nom?: string;
   adresse?: string; commune?: string; code_postal?: string; parcelle?: string;
+  // Groupement foncier : toutes les références cadastrales (la balise `parcelle`
+  // les joint si présent).
+  parcelles?: Array<{ parcelle_id: string }>;
   surface_plancher?: string; description?: string | null;
   date_depot?: string; echeance?: string;
   date_completude?: string; date_delivrance?: string;
@@ -253,16 +269,107 @@ function DraggableStamp({ src, pos, setPos, caption, onHide }: {
   );
 }
 
-// ─── Canvas print view (multi-page A4) ───────────────────────────────────────
+// Marge haute des feuilles de continuation engendrées par un bloc qui déborde.
+const CANVAS_CONT_TOP = 24;
+const canvasFontFamily = (f: CanvasBlock["fontFamily"]) => (f === "serif" ? "Georgia, serif" : "system-ui, sans-serif");
+
+// ─── Canvas print view (multi-page A4, repagination auto) ─────────────────────
+// Les blocs canvas sont positionnés à hauteur fixe (overflow caché). Un bloc de
+// texte dont le contenu dépasse sa boîte était simplement rogné, sans page 2.
+// On mesure ici la hauteur réelle de chaque bloc : s'il déborde l'espace
+// disponible jusqu'au bas de la feuille, on répartit son contenu sur des feuilles
+// supplémentaires (en-tête/pied/compteur répétés).
 function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]; letterhead: Letterhead; extraHtml?: string }) {
   const hasLH = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
   const hH = hasLH ? HDR_H : 0;
+  const regionH = PAGE_H - hH - FTR_H;
+
+  const measRefs = useRef(new Map<string, HTMLDivElement>());
+  const [flowed, setFlowed] = useState<CanvasPage[] | null>(null);
+  // Signature stable du contenu : évite de re-mesurer à chaque re-render parent
+  // (parseCanvasDoc recrée le tableau `pages` à chaque fois).
+  const sig = pages.map((p) => p.blocks.map((b) => `${b.id}:${b.x},${b.y},${b.w},${b.h},${b.padding}|${b.html.length}`).join(";")).join("||");
+
+  useLayoutEffect(() => {
+    const out: CanvasPage[] = [];
+    for (let pi = 0; pi < pages.length; pi++) {
+      const page = pages[pi];
+      if (!page) continue;
+      const baseBlocks: CanvasBlock[] = [];
+      const spawned: CanvasBlock[] = [];
+      // Traite les blocs du plus haut au plus bas pour que les continuations
+      // d'un bloc de corps (le plus bas dans une lettre) viennent en dernier.
+      const ordered = [...page.blocks].sort((a, b) => a.y - b.y);
+      for (const b of ordered) {
+        const padding = b.padding || 0;
+        const measEl = measRefs.current.get(`${pi}:${b.id}`);
+        const naturalTotal = (measEl ? measEl.scrollHeight : 0) + 2 * padding;
+        const avail = regionH - b.y;
+        if (naturalTotal <= b.h) {
+          baseBlocks.push(b); // tient dans sa boîte → inchangé
+        } else if (naturalTotal <= avail) {
+          baseBlocks.push({ ...b, h: naturalTotal }); // grandit sur place
+        } else {
+          // Déborde : répartit les blocs de premier niveau du contenu en chunks.
+          const kids = measEl ? (Array.from(measEl.children) as HTMLElement[]) : [];
+          const firstMax = avail - 2 * padding;
+          const contMax = regionH - CANVAS_CONT_TOP - 2 * padding;
+          const chunks: string[][] = [];
+          let cur: string[] = [];
+          let curH = 0;
+          let max = firstMax;
+          for (const kid of kids) {
+            const cs = getComputedStyle(kid);
+            const kh = kid.offsetHeight + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+            if (curH > 0 && curH + kh > max) { chunks.push(cur); cur = []; curH = 0; max = contMax; }
+            cur.push(kid.outerHTML);
+            curH += kh;
+          }
+          if (cur.length) chunks.push(cur);
+          const [firstChunk, ...restChunks] = chunks;
+          if (!firstChunk) { baseBlocks.push(b); continue; } // contenu non sécable
+          baseBlocks.push({ ...b, h: avail, html: firstChunk.join("") });
+          restChunks.forEach((chunk, c) => {
+            spawned.push({ ...b, id: `${b.id}-c${c + 1}`, x: b.x, y: CANVAS_CONT_TOP, h: regionH - CANVAS_CONT_TOP, html: chunk.join("") });
+          });
+        }
+      }
+      out.push({ id: page.id, blocks: baseBlocks });
+      spawned.forEach((blk, n) => out.push({ id: `${page.id}-cont${n}`, blocks: [blk] }));
+    }
+    setFlowed(out);
+  }, [sig, regionH]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const renderPages = flowed ?? pages;
+  const blockStyle = (b: CanvasBlock): CSSProperties => ({
+    position: "absolute", left: b.x, top: b.y, width: b.w, height: b.h,
+    display: "flex", flexDirection: "column",
+    justifyContent: b.verticalAlign === "middle" ? "center" : b.verticalAlign === "bottom" ? "flex-end" : "flex-start",
+    padding: b.padding, fontSize: b.fontSize, lineHeight: 1.6, boxSizing: "border-box",
+    fontFamily: canvasFontFamily(b.fontFamily),
+    textAlign: b.textAlign, background: BLOCK_BG[b.background],
+    border: BLOCK_BORDER[b.borderStyle], overflow: "hidden",
+  });
+
   return (
     <div>
-      {pages.map((page, i) => (
-        <div key={page.id} style={{
-          position: "relative", width: PAGE_W, height: PAGE_H, background: "white",
-          ...(i < pages.length - 1 ? { marginBottom: 32, pageBreakAfter: "always", breakAfter: "page" } : {}),
+      {/* Mesureur hors écran : hauteur réelle de chaque bloc, à la largeur de
+          contenu de sa boîte (b.w − 2·padding). Jamais imprimé ni visible. */}
+      <div className="no-print-modal" aria-hidden style={{ position: "absolute", left: -99999, top: 0, visibility: "hidden", pointerEvents: "none" }}>
+        {pages.map((p, pi) => p.blocks.map((b) => (
+          <div
+            key={`${pi}:${b.id}`}
+            ref={(el) => { if (el) measRefs.current.set(`${pi}:${b.id}`, el); else measRefs.current.delete(`${pi}:${b.id}`); }}
+            style={{ width: Math.max(0, b.w - 2 * (b.padding || 0)), fontSize: b.fontSize, lineHeight: 1.6, fontFamily: canvasFontFamily(b.fontFamily), textAlign: b.textAlign }}
+            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(b.html) }}
+          />
+        )))}
+      </div>
+
+      {renderPages.map((page, i) => (
+        <div key={page.id} className="courrier-paper" style={{
+          position: "relative", width: PAGE_W, height: PAGE_H, background: "white", boxShadow: "0 2px 16px rgba(15,23,42,0.12)",
+          ...(i < renderPages.length - 1 ? { marginBottom: 32, pageBreakAfter: "always", breakAfter: "page" } : {}),
         }}>
           {hasLH && (
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: hH, overflow: "hidden", borderBottom: "2px solid #1E293B", display: "flex", alignItems: "center", padding: "0 20px", gap: 14, background: "white" }}>
@@ -276,20 +383,12 @@ function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]
           )}
           <div style={{ position: "absolute", top: hH, left: 0, right: 0, bottom: FTR_H }}>
             {page.blocks.map(b => (
-              <div key={b.id} style={{
-                position: "absolute", left: b.x, top: b.y, width: b.w, height: b.h,
-                display: "flex", flexDirection: "column",
-                justifyContent: b.verticalAlign === "middle" ? "center" : b.verticalAlign === "bottom" ? "flex-end" : "flex-start",
-                padding: b.padding, fontSize: b.fontSize, lineHeight: 1.6, boxSizing: "border-box",
-                fontFamily: b.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif",
-                textAlign: b.textAlign, background: BLOCK_BG[b.background],
-                border: BLOCK_BORDER[b.borderStyle], overflow: "hidden",
-              }} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(b.html) }} />
+              <div key={b.id} style={blockStyle(b)} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(b.html) }} />
             ))}
           </div>
           <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: FTR_H, borderTop: "1px solid #CBD5E1", display: "flex", alignItems: "center", padding: "0 20px", background: "white" }}>
             <span style={{ fontSize: 10, color: "#64748b", flex: 1 }}>{letterhead.footer_text ?? ""}</span>
-            <span style={{ fontSize: 11, color: "#94a3b8" }}>{i + 1} / {pages.length}</span>
+            <span style={{ fontSize: 11, color: "#94a3b8" }}>{i + 1} / {renderPages.length}</span>
           </div>
         </div>
       ))}
@@ -305,30 +404,78 @@ function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]
   );
 }
 
-// ─── Courrier preview (print-ready, multi-page) ───────────────────────────
-function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; letterhead: Letterhead; extraHtml?: string }) {
-  if (isCanvasBody(html)) {
-    return <CanvasPrintView pages={parseCanvasDoc(html)} letterhead={letterhead} extraHtml={extraHtml} />;
-  }
-
-  const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
-  const hasFooter = !!letterhead.footer_text;
+// ─── Corps de courrier éditable (contentEditable, seedé une fois au montage) ──
+// Monté uniquement en mode édition : on injecte le HTML au montage puis on laisse
+// l'utilisateur taper librement (aucune ré-injection → pas de saut de curseur).
+// Chaque frappe remonte le HTML courant via onChange.
+function EditableBody({ html, onChange }: { html: string; onChange: (html: string) => void }) {
+  const ref = useRef<HTMLDivElement>(null);
+  const focusedRef = useRef(false);
+  // Synchronise le DOM depuis `html` tant que l'utilisateur ne tape pas (focus) :
+  // les mises à jour live (liste de pièces, variables) se reflètent dans
+  // l'éditeur, sans réinitialiser le curseur pendant la saisie.
+  useLayoutEffect(() => {
+    if (ref.current && !focusedRef.current && ref.current.innerHTML !== html) {
+      ref.current.innerHTML = DOMPurify.sanitize(html);
+    }
+  }, [html]);
   return (
-    <div style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" }}>
-      {hasHeader && (
-        <div className="lh-print-header" style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
-          {letterhead.letterhead_logo && (
-            <img src={letterhead.letterhead_logo} alt="" style={{ height: 56, width: "auto", objectFit: "contain", flexShrink: 0 }} />
-          )}
-          <div>
-            {letterhead.letterhead_title && <div style={{ fontSize: 16, fontWeight: 700 }}>{letterhead.letterhead_title}</div>}
-            {letterhead.letterhead_subtitle && <div style={{ fontSize: 13 }}>{letterhead.letterhead_subtitle}</div>}
-            {letterhead.letterhead_address && <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{letterhead.letterhead_address}</div>}
-          </div>
-        </div>
+    <div
+      ref={ref}
+      className="tiptap-preview-mairie courrier-editable-active"
+      contentEditable
+      suppressContentEditableWarning
+      onFocus={() => { focusedRef.current = true; }}
+      onBlur={() => { focusedRef.current = false; }}
+      onInput={(e) => onChange(e.currentTarget.innerHTML)}
+      style={{ outline: "2px dashed #6366F1", outlineOffset: 6, borderRadius: 4, minHeight: 60 }}
+    />
+  );
+}
+
+// Padding intérieur du corps de la lettre (aligné sur .lh-print-body).
+const LETTER_PAD_X = 36;
+const LETTER_PAD_Y = 24;
+
+// En-tête réutilisé par la vue continue (édition) et la vue paginée (aperçu).
+function letterHeaderEl(letterhead: Letterhead, className?: string) {
+  if (!(letterhead.letterhead_logo || letterhead.letterhead_title)) return null;
+  return (
+    <div className={className} style={{ display: "flex", alignItems: "flex-start", gap: 18, padding: "20px 36px 14px", borderBottom: "2px solid #1E293B", background: "white" }}>
+      {letterhead.letterhead_logo && (
+        <img src={letterhead.letterhead_logo} alt="" style={{ height: 56, width: "auto", objectFit: "contain", flexShrink: 0 }} />
       )}
-      <div className="lh-print-body" style={{ padding: "24px 36px", minHeight: 400 }}>
-        <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />
+      <div>
+        {letterhead.letterhead_title && <div style={{ fontSize: 16, fontWeight: 700 }}>{letterhead.letterhead_title}</div>}
+        {letterhead.letterhead_subtitle && <div style={{ fontSize: 13 }}>{letterhead.letterhead_subtitle}</div>}
+        {letterhead.letterhead_address && <div style={{ fontSize: 12, color: "#64748b", marginTop: 2, whiteSpace: "pre-line" }}>{letterhead.letterhead_address}</div>}
+      </div>
+    </div>
+  );
+}
+
+// Construit le HTML complet du corps (lettre + bloc « références ») tel qu'il
+// sera mesuré PUIS rendu, pour que la pagination corresponde au rendu final.
+function buildLetterBodyHtml(html: string, extraHtml?: string): string {
+  const extraBlock = extraHtml
+    ? `<div style="margin-top:28px;padding-top:18px;border-top:1px solid #CBD5E1;">`
+      + `<div style="font-size:10px;font-weight:700;color:#94a3b8;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:10px;">Références législatives et réglementaires</div>`
+      + `<div class="tiptap-preview-mairie">${extraHtml}</div></div>`
+    : "";
+  return DOMPurify.sanitize(html + extraBlock);
+}
+
+// ─── Vue continue (mode édition) ──────────────────────────────────────────
+// Surface unique non paginée : le contentEditable ne peut pas être découpé en
+// feuilles sans casser le curseur. En-tête/pied fixes à l'impression (CSS).
+function LetterFlowView({ html, letterhead, extraHtml, editable, onBodyChange }: { html: string; letterhead: Letterhead; extraHtml?: string; editable: boolean; onBodyChange?: (html: string) => void }) {
+  return (
+    <div className="courrier-paper" style={{ background: "white", fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B", boxShadow: "0 2px 16px rgba(15,23,42,0.12)" }}>
+      {letterHeaderEl(letterhead, "lh-print-header")}
+      <div className="lh-print-body" style={{ padding: `${LETTER_PAD_Y}px ${LETTER_PAD_X}px`, minHeight: 400 }}>
+        {editable
+          ? <EditableBody html={html} onChange={onBodyChange ?? (() => {})} />
+          : <div className="tiptap-preview-mairie" dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(html) }} />}
         {extraHtml && (
           <div style={{ marginTop: 28, paddingTop: 18, borderTop: "1px solid #CBD5E1" }}>
             <div style={{ fontSize: 10, fontWeight: 700, color: "#94a3b8", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 10 }}>
@@ -338,13 +485,94 @@ function CourrierPrintPreview({ html, letterhead, extraHtml }: { html: string; l
           </div>
         )}
       </div>
-      {hasFooter && (
+      {letterhead.footer_text && (
         <div className="lh-print-footer" style={{ padding: "10px 36px 14px", borderTop: "1px solid #CBD5E1", fontSize: 11, color: "#64748b", textAlign: "center", whiteSpace: "pre-line", background: "white" }}>
           {letterhead.footer_text}
         </div>
       )}
     </div>
   );
+}
+
+// ─── Vue paginée (mode aperçu) ────────────────────────────────────────────
+// Mesure le corps rendu hors écran, répartit ses blocs de premier niveau en
+// feuilles A4 successives (en-tête + pied + compteur « page X / Y » répétés),
+// pour que l'aperçu reflète la pagination réelle au lieu de tronquer le texte.
+function PaginatedLetterView({ html, letterhead, extraHtml }: { html: string; letterhead: Letterhead; extraHtml?: string }) {
+  const hasHeader = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
+  const footerText = letterhead.footer_text ?? "";
+  const bodyHtml = buildLetterBodyHtml(html, extraHtml);
+
+  const headerRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  const footerRef = useRef<HTMLDivElement>(null);
+  const [layout, setLayout] = useState<{ pages: string[]; headerH: number; footerH: number } | null>(null);
+
+  useLayoutEffect(() => {
+    const bodyEl = bodyRef.current;
+    if (!bodyEl) return;
+    const headerH = headerRef.current?.offsetHeight ?? 0;
+    const footerH = footerRef.current?.offsetHeight ?? FTR_H;
+    const contentH = PAGE_H - headerH - footerH - LETTER_PAD_Y * 2;
+    const kids = Array.from(bodyEl.children) as HTMLElement[];
+    if (kids.length === 0) { setLayout({ pages: [bodyHtml], headerH, footerH }); return; }
+    // Répartit chaque bloc de premier niveau ; un bloc plus haut qu'une page
+    // occupe sa propre feuille (et déborde, accepté pour un courrier).
+    const groups: string[][] = [];
+    let cur: string[] = [];
+    let curH = 0;
+    for (const el of kids) {
+      const cs = getComputedStyle(el);
+      const h = el.offsetHeight + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+      if (curH > 0 && curH + h > contentH) { groups.push(cur); cur = []; curH = 0; }
+      cur.push(el.outerHTML);
+      curH += h;
+    }
+    if (cur.length) groups.push(cur);
+    setLayout({ pages: groups.map((g) => g.join("")), headerH, footerH });
+  }, [bodyHtml, hasHeader, footerText]);
+
+  const fontStyle = { fontFamily: "Georgia, serif", fontSize: 13, lineHeight: 1.7, color: "#1E293B" } as const;
+  const pages = layout?.pages ?? [];
+
+  return (
+    <div>
+      {/* Mesureur hors écran : sert à connaître la hauteur de chaque bloc et
+          des bandeaux en-tête/pied. Jamais imprimé ni visible. */}
+      <div className="no-print-modal" aria-hidden style={{ position: "absolute", left: -99999, top: 0, width: PAGE_W, visibility: "hidden", pointerEvents: "none" }}>
+        <div ref={headerRef}>{letterHeaderEl(letterhead)}</div>
+        <div ref={bodyRef} className="tiptap-preview-mairie" style={{ width: PAGE_W - LETTER_PAD_X * 2, ...fontStyle }} dangerouslySetInnerHTML={{ __html: bodyHtml }} />
+        <div ref={footerRef} style={{ width: PAGE_W, boxSizing: "border-box", minHeight: FTR_H, borderTop: "1px solid #CBD5E1", padding: "8px 36px", fontSize: 11, lineHeight: 1.4, whiteSpace: "pre-line" }}>{footerText || " "}</div>
+      </div>
+
+      {/* Feuilles A4 paginées */}
+      {pages.map((pageHtml, i) => (
+        <div key={i} className="courrier-paper" style={{
+          position: "relative", width: PAGE_W, height: PAGE_H, background: "white", boxShadow: "0 2px 16px rgba(15,23,42,0.12)", ...fontStyle,
+          ...(i < pages.length - 1 ? { marginBottom: 32, pageBreakAfter: "always", breakAfter: "page" } : {}),
+        }}>
+          {hasHeader && <div style={{ position: "absolute", top: 0, left: 0, right: 0 }}>{letterHeaderEl(letterhead)}</div>}
+          <div className="tiptap-preview-mairie" style={{ position: "absolute", top: layout?.headerH ?? 0, left: 0, right: 0, bottom: layout?.footerH ?? FTR_H, padding: `${LETTER_PAD_Y}px ${LETTER_PAD_X}px`, overflow: "hidden", boxSizing: "border-box" }} dangerouslySetInnerHTML={{ __html: pageHtml }} />
+          <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: layout?.footerH ?? FTR_H, borderTop: "1px solid #CBD5E1", background: "white", display: "flex", alignItems: "center", gap: 12, padding: "0 36px", boxSizing: "border-box" }}>
+            <span style={{ flex: 1, fontSize: 11, color: "#64748b", whiteSpace: "pre-line", textAlign: footerText ? "left" : "right" }}>{footerText}</span>
+            <span style={{ fontSize: 11, color: "#94a3b8", flexShrink: 0 }}>{i + 1} / {pages.length}</span>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ─── Courrier preview (print-ready, multi-page) ───────────────────────────
+function CourrierPrintPreview({ html, letterhead, extraHtml, editable = false, onBodyChange }: { html: string; letterhead: Letterhead; extraHtml?: string; editable?: boolean; onBodyChange?: (html: string) => void }) {
+  if (isCanvasBody(html)) {
+    return <CanvasPrintView pages={parseCanvasDoc(html)} letterhead={letterhead} extraHtml={extraHtml} />;
+  }
+  // Édition : surface continue (curseur libre). Aperçu : feuilles A4 paginées.
+  if (editable) {
+    return <LetterFlowView html={html} letterhead={letterhead} extraHtml={extraHtml} editable onBodyChange={onBodyChange} />;
+  }
+  return <PaginatedLetterView html={html} letterhead={letterhead} extraHtml={extraHtml} />;
 }
 
 // ─── Courrier Modal ────────────────────────────────────────────────────────
@@ -367,9 +595,55 @@ export interface CourrierModalProps {
   aiSuggestedMissingPieces?: Array<{ code: string; nom: string }>;
   // Callback appelé après une émission réussie (le parent rafraîchit le dossier).
   onEmitted?: () => void;
+  // INSEE de la commune du dossier. Sans lui, les modèles et l'en-tête sont lus
+  // sur la commune principale du compte et non sur celle du dossier : un agent
+  // multi-communes qui a créé ses modèles sous la commune sélectionnée ne les
+  // retrouvait pas dans l'onglet Courriers. On relit donc sur le même périmètre
+  // que la création (cf. TemplateManagerPanel).
+  inseeCode?: string;
+  // Courrier existant à rouvrir (brouillon à reprendre, ou courrier émis à
+  // consulter). Quand fourni, le corps enregistré prime sur la substitution du
+  // modèle et le modal s'ouvre en reprise plutôt qu'en création.
+  initialCourrier?: {
+    id: string;
+    type: string;
+    subject: string | null;
+    body_snapshot: string | null;
+    statut: "brouillon" | "envoye";
+    articles_cites?: string[];
+    pieces_jointes_ids?: Array<{ piece_id?: string; code_piece?: string; nom: string; raison?: string; manquante?: boolean }>;
+    delivery_method?: string | null;
+    signature_status?: SignatureStatus;
+    signataire_user_id?: string | null;
+    signataire_prenom?: string | null;
+    signataire_nom?: string | null;
+    signed_at?: string | null;
+    signature_image?: string | null;
+    tampon_image?: string | null;
+  };
 }
 
 const NO_AI_HINTS_KEY = "heureka_no_ai_hints";
+
+// Canaux de remise d'un courrier au pétitionnaire (cf. service courrierDelivery).
+type CourrierChannel = "messagerie" | "email" | "postal" | "ar";
+type DeliveryResult = { channel: string; delivered: boolean; via: string; note?: string };
+type SendResponse = { delivery?: DeliveryResult | null };
+const SEND_CHANNELS: { value: CourrierChannel; label: string; icon: string; hint: string }[] = [
+  { value: "messagerie", label: "Messagerie interne", icon: "📨", hint: "Dépose le courrier dans l'espace du pétitionnaire (instantané, dématérialisé)" },
+  { value: "email", label: "Email", icon: "✉️", hint: "Notifie le pétitionnaire par email avec un lien vers son espace" },
+  { value: "postal", label: "Courrier postal", icon: "🖨️", hint: "À imprimer et poster — aucun envoi automatique" },
+  { value: "ar", label: "Recommandé (LRAR)", icon: "📦", hint: "À imprimer et envoyer en recommandé avec A.R." },
+];
+
+// Signataire habilité d'une commune (réponse /decisions/communes/:c/signataires).
+type SignataireRow = {
+  user_id: string;
+  role: string; fonction: string | null; active?: boolean; delegation_arrete: string | null;
+  signature_image: string | null; tampon_image: string | null;
+  user: { id?: string; prenom: string; nom: string } | null;
+};
+type SignatureStatus = "non_requise" | "a_signer" | "signee";
 
 export function CourrierModal({
   dossier, onClose,
@@ -377,6 +651,8 @@ export function CourrierModal({
   availablePieces = [],
   aiSuggestedMissingPieces = [],
   onEmitted,
+  inseeCode,
+  initialCourrier,
 }: CourrierModalProps) {
   const { user } = useAuth();
   const [templates, setTemplates] = useState<CourrierTemplate[]>([]);
@@ -390,13 +666,13 @@ export function CourrierModal({
   // Draggable signature & tampon
   const [sigPos, setSigPos] = useState<Pos>({ x: 60, y: 520 });
   const [tampPos, setTampPos] = useState<Pos>({ x: 340, y: 520 });
-  const [showSig, setShowSig] = useState(false);
-  const [showTamp, setShowTamp] = useState(false);
+  const [showSig, setShowSig] = useState(initialCourrier?.signature_status === "signee");
+  const [showTamp, setShowTamp] = useState(initialCourrier?.signature_status === "signee");
   // Legal mentions panel
   const [showMentions, setShowMentions] = useState(false);
   const [mentionsLoading, setMentionsLoading] = useState(false);
   const [allMentions, setAllMentions] = useState<MentionRow[]>([]);
-  const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set());
+  const [selectedRefs, setSelectedRefs] = useState<Set<string>>(new Set(initialCourrier?.articles_cites ?? []));
   const [courrierType, setCourrierType] = useState(mode === "pieces_complementaires" ? "pieces_complementaires" : "");
   const [insertedMentionsHtml, setInsertedMentionsHtml] = useState("");
   const [viewingArticle, setViewingArticle] = useState<MentionRow | null>(null);
@@ -425,13 +701,60 @@ export function CourrierModal({
     }
     return s;
   };
-  const [selectedPieceIds, setSelectedPieceIds] = useState<Set<string>>(initialSelected);
-  const [pieceReasons, setPieceReasons] = useState<Record<string, string>>({});
-  const [extraPieces, setExtraPieces] = useState<Array<{ id: string; nom: string; code_piece: string; raison: string }>>([]);
+  // À la réouverture d'un courrier de pièces, on reconstruit la sélection depuis
+  // les pièces enregistrées (sinon un ré-enregistrement écraserait la liste).
+  const [selectedPieceIds, setSelectedPieceIds] = useState<Set<string>>(() => {
+    if (initialCourrier?.pieces_jointes_ids) {
+      return new Set(initialCourrier.pieces_jointes_ids.filter((p) => p.piece_id).map((p) => p.piece_id as string));
+    }
+    return initialSelected();
+  });
+  const [pieceReasons, setPieceReasons] = useState<Record<string, string>>(() => {
+    const r: Record<string, string> = {};
+    for (const p of initialCourrier?.pieces_jointes_ids ?? []) {
+      if (p.piece_id && p.raison) r[p.piece_id] = p.raison;
+    }
+    return r;
+  });
+  const [extraPieces, setExtraPieces] = useState<Array<{ id: string; nom: string; code_piece: string; raison: string }>>(
+    () => (initialCourrier?.pieces_jointes_ids ?? [])
+      .filter((p) => !p.piece_id)
+      .map((p, i) => ({ id: `seed-${i}`, nom: p.nom, code_piece: p.code_piece ?? "", raison: p.raison ?? "" })),
+  );
   const [showPiecesPanel, setShowPiecesPanel] = useState<boolean>(mode === "pieces_complementaires");
   const [emitting, setEmitting] = useState(false);
   const [emitError, setEmitError] = useState<string | null>(null);
-  const [emittedAt, setEmittedAt] = useState<string | null>(null);
+  const [emittedAt, setEmittedAt] = useState<string | null>(initialCourrier?.statut === "envoye" ? new Date().toISOString() : null);
+
+  // ── Cycle de vie : brouillon (enregistré, modifiable) / envoyé (figé) ──
+  // draftId non nul = le courrier existe en base. bodyOverride prime sur la
+  // substitution du modèle dès qu'on rouvre un enregistrement ou qu'on édite
+  // le texte à la main.
+  const [draftId, setDraftId] = useState<string | null>(initialCourrier?.id ?? null);
+  const [statut, setStatut] = useState<"brouillon" | "envoye" | null>(initialCourrier?.statut ?? null);
+  const [bodyOverride, setBodyOverride] = useState<string | null>(initialCourrier?.body_snapshot ?? null);
+  const [isEditingBody, setIsEditingBody] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
+  // Menu de choix du canal d'envoi + retour de remise (via/note).
+  const [showChannelMenu, setShowChannelMenu] = useState(false);
+  const [deliveryResult, setDeliveryResult] = useState<DeliveryResult | null>(null);
+  const isSent = statut === "envoye";
+  // ── Circuit de signature ──
+  const [signataireRows, setSignataireRows] = useState<SignataireRow[]>([]);
+  const [signatureStatus, setSignatureStatus] = useState<SignatureStatus>(initialCourrier?.signature_status ?? "non_requise");
+  const [signataireUserId, setSignataireUserId] = useState<string | null>(initialCourrier?.signataire_user_id ?? null);
+  const [signedByName, setSignedByName] = useState<string | null>(
+    initialCourrier?.signataire_prenom || initialCourrier?.signataire_nom
+      ? `${initialCourrier?.signataire_prenom ?? ""} ${initialCourrier?.signataire_nom ?? ""}`.trim()
+      : null,
+  );
+  const [signedAt, setSignedAt] = useState<string | null>(initialCourrier?.signed_at ?? null);
+  const [appliedSig, setAppliedSig] = useState<string | null>(initialCourrier?.signature_image ?? null);
+  const [appliedTamp, setAppliedTamp] = useState<string | null>(initialCourrier?.tampon_image ?? null);
+  const [showSignPicker, setShowSignPicker] = useState(false);
+  const [signWorking, setSignWorking] = useState(false);
 
   // Synthèse des pièces sélectionnées (pour la prévisualisation HTML et la
   // bascule serveur). Ordre : pièces déposées sélectionnées, puis ajouts libres.
@@ -451,6 +774,14 @@ export function CourrierModal({
     })),
   ];
   const piecesListHtml = renderPieceListHtmlClient(requestedPieces);
+
+  // Corps réellement affiché / imprimé / enregistré. Un brouillon rouvert ou une
+  // édition manuelle (bodyOverride) priment sur la substitution live du modèle.
+  const effectiveBody = bodyOverride ?? substitutedHtml;
+  const canEditBody = !isSent && !isCanvasBody(effectiveBody);
+  // Envoi impossible si : en cours, déjà envoyé, ou rien à envoyer (aucune pièce
+  // en mode demande de pièces ; ni modèle ni brouillon en mode général).
+  const sendDisabled = emitting || isSent || signatureStatus === "a_signer" || (mode === "pieces_complementaires" ? requestedPieces.length === 0 : (!selected && !draftId));
 
   const loadMentions = useCallback((ct: string) => {
     setMentionsLoading(true);
@@ -489,28 +820,183 @@ export function CourrierModal({
   //    statut et le marquage des pièces côté serveur. 2) verrouille la modale
   //    (emittedAt) pour éviter une double émission. 3) notifie le parent
   //    pour qu'il rafraîchisse le dossier.
-  const handleEmitPieceRequest = useCallback(async () => {
-    if (requestedPieces.length === 0 || emitting || emittedAt) return;
+  // Type métier persisté (pilote le libellé dans l'historique des courriers).
+  const courrierTypeForSave = mode === "pieces_complementaires"
+    ? "pieces_complementaires"
+    : (selected?.category ?? initialCourrier?.type ?? "general");
+
+  // Enregistre / met à jour le courrier en BROUILLON — sans aucun effet métier
+  // (le dossier ne bascule pas, les pièces ne sont pas marquées). Permet de
+  // préparer un courrier et de décider plus tard quoi en faire.
+  const handleSaveDraft = useCallback(async () => {
+    if (saving || isSent) return;
+    setSaving(true);
+    setSaveError(null);
+    try {
+      const payload = {
+        type: courrierTypeForSave,
+        subject: selected?.name ?? null,
+        body_snapshot: effectiveBody || null,
+        articles_cites: Array.from(selectedRefs),
+        pieces: mode === "pieces_complementaires" ? requestedPieces : [],
+      };
+      if (draftId) {
+        await api.put(`/mairie/dossiers/${dossier.id}/courriers/${draftId}`, payload);
+      } else {
+        const row = await api.post<{ id: string }>(`/mairie/dossiers/${dossier.id}/courriers/drafts`, payload);
+        setDraftId(row.id);
+      }
+      setStatut("brouillon");
+      setSavedAt(new Date().toISOString());
+    } catch (e) {
+      setSaveError(e instanceof Error ? e.message : "Enregistrement impossible");
+    } finally {
+      setSaving(false);
+    }
+  }, [saving, isSent, courrierTypeForSave, selected, effectiveBody, selectedRefs, mode, requestedPieces, draftId, dossier.id]);
+
+  // Envoie le courrier (brouillon → envoyé). Pour une demande de pièces,
+  // déclenche les effets métier côté serveur (marquage des pièces, bascule du
+  // dossier). Si un brouillon existe, on l'envoie via /send (le serveur réutilise
+  // les pièces stockées) ; sinon émission directe (pièces) ou création+envoi.
+  const handleSend = useCallback(async (channel: CourrierChannel) => {
+    if (emitting || isSent) return;
+    setShowChannelMenu(false);
     setEmitting(true);
     setEmitError(null);
     try {
-      const articles = Array.from(selectedRefs);
-      await api.post(`/mairie/dossiers/${dossier.id}/courriers/pieces-complementaires`, {
-        pieces: requestedPieces,
-        articles_cites: articles,
-        body_snapshot: substitutedHtml || null,
-        subject: selected?.name ?? "Demande de pièces complémentaires",
-        delivery_method: "print",
-        attachment_document_ids: Array.from(attachDocIds),
-      });
+      let resp: SendResponse | null = null;
+      if (mode === "pieces_complementaires" && !draftId) {
+        if (requestedPieces.length === 0) { setEmitError("Sélectionnez au moins une pièce"); return; }
+        resp = await api.post<SendResponse>(`/mairie/dossiers/${dossier.id}/courriers/pieces-complementaires`, {
+          pieces: requestedPieces,
+          articles_cites: Array.from(selectedRefs),
+          body_snapshot: effectiveBody || null,
+          subject: selected?.name ?? "Demande de pièces complémentaires",
+          delivery_method: channel,
+          attachment_document_ids: Array.from(attachDocIds),
+        });
+      } else {
+        let id = draftId;
+        if (!id) {
+          const row = await api.post<{ id: string }>(`/mairie/dossiers/${dossier.id}/courriers/drafts`, {
+            type: courrierTypeForSave,
+            subject: selected?.name ?? null,
+            body_snapshot: effectiveBody || null,
+            articles_cites: Array.from(selectedRefs),
+            pieces: mode === "pieces_complementaires" ? requestedPieces : [],
+          });
+          id = row.id;
+          setDraftId(id);
+        }
+        resp = await api.post<SendResponse>(`/mairie/dossiers/${dossier.id}/courriers/${id}/send`, {
+          body_snapshot: effectiveBody || null,
+          delivery_method: channel,
+          attachment_document_ids: Array.from(attachDocIds),
+          // Pour une demande de pièces, on transmet la sélection à jour (le
+          // serveur retombe sur l'état stocké si on n'envoie rien).
+          ...(mode === "pieces_complementaires"
+            ? { pieces: requestedPieces, articles_cites: Array.from(selectedRefs) }
+            : {}),
+        });
+      }
       setEmittedAt(new Date().toISOString());
+      setStatut("envoye");
+      setIsEditingBody(false);
+      setDeliveryResult(resp?.delivery ?? null);
       onEmitted?.();
     } catch (e) {
-      setEmitError(e instanceof Error ? e.message : "Émission impossible");
+      setEmitError(e instanceof Error ? e.message : "Envoi impossible");
     } finally {
       setEmitting(false);
     }
-  }, [dossier.id, requestedPieces, emitting, emittedAt, selectedRefs, substitutedHtml, selected, onEmitted, attachDocIds]);
+  }, [emitting, isSent, mode, draftId, requestedPieces, selectedRefs, effectiveBody, selected, attachDocIds, courrierTypeForSave, dossier.id, onEmitted]);
+
+  // Sélection d'un modèle par l'utilisateur : on repart de la substitution du
+  // modèle (abandon d'une édition manuelle ou d'un corps rouvert).
+  const selectTemplate = useCallback((tpl: CourrierTemplate) => {
+    setSelected(tpl);
+    setBodyOverride(null);
+    setIsEditingBody(false);
+  }, []);
+
+  // Édition manuelle du corps : on capte le HTML et on invalide l'indicateur
+  // "Enregistré ✓" (il y a de nouveau des modifications non sauvegardées).
+  const handleBodyChange = useCallback((html: string) => {
+    setBodyOverride(html);
+    setSavedAt(null);
+  }, []);
+
+  // ── Habilitation à signer : l'utilisateur courant est-il signataire actif ? ──
+  const mySignataire = user ? (signataireRows.find((r) => r.user_id === user.id) ?? null) : null;
+  const canSign = !!mySignataire;
+  const assignedName = signedByName
+    ?? (signataireRows.find((r) => r.user_id === signataireUserId)?.user
+      ? `${signataireRows.find((r) => r.user_id === signataireUserId)!.user!.prenom} ${signataireRows.find((r) => r.user_id === signataireUserId)!.user!.nom}`
+      : null);
+
+  // Garantit un courrier persisté (id) avant signature/demande : enregistre un
+  // brouillon à la volée si besoin.
+  const ensureDraft = useCallback(async (): Promise<string> => {
+    if (draftId) return draftId;
+    const row = await api.post<{ id: string }>(`/mairie/dossiers/${dossier.id}/courriers/drafts`, {
+      type: courrierTypeForSave,
+      subject: selected?.name ?? null,
+      body_snapshot: effectiveBody || null,
+      articles_cites: Array.from(selectedRefs),
+      pieces: mode === "pieces_complementaires" ? requestedPieces : [],
+    });
+    setDraftId(row.id);
+    return row.id;
+  }, [draftId, dossier.id, courrierTypeForSave, selected, effectiveBody, selectedRefs, mode, requestedPieces]);
+
+  // Le rédacteur habilité appose sa signature/tampon sur place.
+  const handleSign = useCallback(async () => {
+    if (signWorking || signatureStatus === "signee") return;
+    setSignWorking(true);
+    setEmitError(null);
+    try {
+      const id = await ensureDraft();
+      const res = await api.post<{ signature_image?: string | null; tampon_image?: string | null; signed_at?: string | null }>(
+        `/mairie/dossiers/${dossier.id}/courriers/${id}/sign`,
+        { body_snapshot: effectiveBody || null },
+      );
+      setSignatureStatus("signee");
+      setSignataireUserId(user?.id ?? null);
+      setSignedByName(user ? `${user.prenom} ${user.nom}` : null);
+      setSignedAt(res.signed_at ?? new Date().toISOString());
+      const sigImg = res.signature_image ?? mySignataire?.signature_image ?? null;
+      const tampImg = res.tampon_image ?? mySignataire?.tampon_image ?? null;
+      setAppliedSig(sigImg);
+      setAppliedTamp(tampImg);
+      if (sigImg) setShowSig(true);
+      if (tampImg) setShowTamp(true);
+    } catch (e) {
+      setEmitError(e instanceof Error ? e.message : "Signature impossible");
+    } finally {
+      setSignWorking(false);
+    }
+  }, [signWorking, signatureStatus, ensureDraft, dossier.id, effectiveBody, user, mySignataire]);
+
+  // Envoi du courrier en signature à un signataire désigné (traçabilité serveur).
+  const handleRequestSignature = useCallback(async (targetUserId: string) => {
+    if (signWorking) return;
+    setShowSignPicker(false);
+    setSignWorking(true);
+    setEmitError(null);
+    try {
+      const id = await ensureDraft();
+      await api.post(`/mairie/dossiers/${dossier.id}/courriers/${id}/request-signature`, { signataire_user_id: targetUserId });
+      setSignatureStatus("a_signer");
+      setSignataireUserId(targetUserId);
+      const t = signataireRows.find((r) => r.user_id === targetUserId);
+      setSignedByName(t?.user ? `${t.user.prenom} ${t.user.nom}` : null);
+    } catch (e) {
+      setEmitError(e instanceof Error ? e.message : "Demande de signature impossible");
+    } finally {
+      setSignWorking(false);
+    }
+  }, [signWorking, ensureDraft, dossier.id, signataireRows]);
 
   const handleInsertMentions = useCallback(() => {
     if (selectedRefs.size === 0) return;
@@ -525,30 +1011,49 @@ export function CourrierModal({
   }, [allMentions, selectedRefs]);
 
   useEffect(() => {
+    // Périmètre = commune DU DOSSIER, résolue côté serveur via dossier_id : ça
+    // ne dépend ni de la commune principale du compte ni d'une table nom→INSEE
+    // côté client. insee_code reste transmis comme secours (repli serveur).
+    const params = new URLSearchParams({ dossier_id: dossier.id });
+    if (inseeCode) params.set("insee_code", inseeCode);
+    const q = `?${params.toString()}`;
     Promise.all([
-      api.get<CourrierTemplate[]>("/mairie/templates"),
-      api.get<Letterhead & { commune_configured?: boolean }>("/mairie/commune-letterhead"),
+      api.get<CourrierTemplate[]>(`/mairie/templates${q}`),
+      api.get<Letterhead & { commune_configured?: boolean }>(`/mairie/commune-letterhead${q}`),
     ]).then(([tpls, lh]) => {
       setTemplates(tpls);
       setLetterhead(lh);
-      if (tpls.length > 0) setSelected(tpls[0]!);
-    }).catch(() => {}).finally(() => setLoading(false));
-  }, []);
+      if (tpls.length === 0) return;
+      if (initialCourrier) {
+        // Reprise d'un brouillon : on resélectionne le modèle d'origine (par
+        // nom de sujet, puis par catégorie). Sélectionner le modèle n'écrase
+        // pas le corps affiché — bodyOverride (le corps enregistré) prime tant
+        // qu'il n'est pas réinitialisé. Mais sans modèle sélectionné, dès que
+        // la sélection de pièces change et réinitialise bodyOverride, la
+        // substitution live n'a aucun corps de base et l'aperçu se vide.
+        const match = tpls.find((t) => t.name === initialCourrier.subject)
+          ?? tpls.find((t) => t.category === initialCourrier.type);
+        if (match) setSelected(match);
+      } else {
+        setSelected(tpls[0]!);
+      }
+    }).catch((e) => {
+      // Ne pas avaler l'erreur en silence : un échec serveur affichait
+      // « Aucun modèle » à tort (indiscernable d'une liste vide légitime).
+      console.error("[CourrierModal] chargement modèles/en-tête échoué", e);
+    }).finally(() => setLoading(false));
+  }, [dossier.id, inseeCode]);
 
   // Signataire de la commune pour le bloc signature. Hors décision (ex. pièces
   // manquantes), on retient le signataire délégué (arrêté de délégation), sinon
   // le maire, sinon le premier actif. La fonction libre prime sur le rôle.
   useEffect(() => {
     const commune = dossier.commune;
-    if (!commune) { setSignataire(null); return; }
-    type SignataireRow = {
-      role: string; fonction: string | null; active?: boolean; delegation_arrete: string | null;
-      signature_image: string | null; tampon_image: string | null;
-      user: { prenom: string; nom: string } | null;
-    };
+    if (!commune) { setSignataire(null); setSignataireRows([]); return; }
     api.get<SignataireRow[]>(`/decisions/communes/${encodeURIComponent(commune)}/signataires`)
       .then((rows) => {
         const actifs = rows.filter((r) => r.active !== false);
+        setSignataireRows(actifs);
         const chosen = actifs.find((r) => r.delegation_arrete) ?? actifs.find((r) => r.role === "maire") ?? actifs[0] ?? null;
         if (!chosen) { setSignataire(null); return; }
         setSignataire({
@@ -558,7 +1063,7 @@ export function CourrierModal({
           tampon_image: chosen.tampon_image ?? null,
         });
       })
-      .catch(() => setSignataire(null));
+      .catch(() => { setSignataire(null); setSignataireRows([]); });
   }, [dossier.commune]);
 
   useEffect(() => {
@@ -575,8 +1080,13 @@ export function CourrierModal({
       // Dossier
       numero_dossier: dossier.numero,
       type_dossier: TYPE_LABEL[dossier.type] ?? dossier.type,
+      demandeur_civilite: dossier.demandeur_civilite || "—",
       demandeur_nom: dossier.petitionnaire,
+      demandeur_adresse: dossier.demandeur_adresse || "—",
       demandeur_email: dossier.petitionnaire_email || "—",
+      representant_nom: dossier.representant_nom || "—",
+      codemandeur_civilite: dossier.codemandeur_civilite || "—",
+      codemandeur_nom: dossier.codemandeur_nom || "—",
       date_depot: fmtDate(dossier.date_depot),
       date_completude: fmtDate(dossier.date_completude),
       date_delivrance: fmtDate(dossier.date_delivrance),
@@ -585,7 +1095,9 @@ export function CourrierModal({
       adresse_travaux: dossier.adresse ?? "—",
       commune: dossier.commune ?? "—",
       code_postal: dossier.code_postal ?? "—",
-      parcelle: dossier.parcelle ?? "—",
+      parcelle: (dossier.parcelles && dossier.parcelles.length > 1)
+        ? dossier.parcelles.map((p) => p.parcelle_id).join(", ")
+        : (dossier.parcelle ?? "—"),
       surface_plancher: dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—",
       // Projet
       description_projet: dossier.description || "—",
@@ -599,6 +1111,21 @@ export function CourrierModal({
     };
     setSubstitutedHtml(substituteVariables(selected.body, vars));
   }, [selected, letterhead, dossier, user, signataire, piecesListHtml, requestedPieces.length]);
+
+  // Quand la sélection de pièces change, on repart de la substitution live pour
+  // que la balise {liste_pieces_a_completer} reflète toujours la sélection (sinon
+  // une édition manuelle antérieure du corps figeait la liste). Le garde
+  // prevPiecesKey évite de réinitialiser au montage — ce qui préserve le corps
+  // d'un brouillon rouvert.
+  const piecesKey = JSON.stringify(requestedPieces);
+  const prevPiecesKey = useRef(piecesKey);
+  useEffect(() => {
+    if (prevPiecesKey.current === piecesKey) return;
+    prevPiecesKey.current = piecesKey;
+    // On revient au corps live ; EditableBody se resynchronise (le mode édition
+    // peut rester actif, la liste de pièces s'y met à jour automatiquement).
+    setBodyOverride(null);
+  }, [piecesKey]);
 
   // Auto-sélection d'un template de catégorie "pieces_complementaires" quand
   // la modale est ouverte en mode demande de pièces — fallback : premier
@@ -642,6 +1169,17 @@ export function CourrierModal({
             overflow: visible !important;
             flex: none !important;
             height: auto !important;
+            background: white !important;
+            padding: 0 !important;
+            display: block !important;
+          }
+          /* La « feuille » d'aperçu redevient pleine largeur, sans ombre, à l'impression */
+          .courrier-sheet {
+            width: auto !important;
+            max-width: none !important;
+          }
+          .courrier-paper {
+            box-shadow: none !important;
           }
 
           /* Letterhead header: fixed at top of every page */
@@ -665,31 +1203,44 @@ export function CourrierModal({
             padding-top: 160px !important;
             padding-bottom: 70px !important;
           }
+
+          /* L'encadré d'édition ne doit jamais apparaître à l'impression. */
+          .courrier-editable-active { outline: none !important; }
         }
       `}</style>
       <div className="no-print-modal" style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.5)" }} onClick={onClose} />
-      <div className="print-modal-box" style={{ position: "relative", width: "90vw", maxWidth: 1100, maxHeight: "92vh", margin: "auto", background: "white", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 60px rgba(0,0,0,0.25)" }}>
+      <div className="print-modal-box" style={{ position: "relative", width: "92vw", maxWidth: 1400, maxHeight: "92vh", margin: "auto", background: "white", borderRadius: 16, display: "flex", flexDirection: "column", overflow: "hidden", boxShadow: "0 24px 60px rgba(0,0,0,0.25)" }}>
         {/* Header */}
         <div className="no-print-modal" style={{ padding: "12px 20px", borderBottom: "1px solid #E2E8F0", display: "flex", alignItems: "center", justifyContent: "space-between", gap: 12, flexWrap: "wrap" }}>
           <div>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Générer un courrier</div>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 15, fontWeight: 700, color: "#0F172A" }}>Générer un courrier</span>
+              {statut && (
+                <span style={{
+                  fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5,
+                  color: isSent ? "#15803D" : "#B45309",
+                  background: isSent ? "#DCFCE7" : "#FEF3C7",
+                }}>
+                  {isSent ? "Envoyé" : "Brouillon"}
+                </span>
+              )}
+              {signatureStatus === "a_signer" && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: "#6D28D9", background: "#EDE9FE" }}>
+                  ⏳ À signer{assignedName ? ` · ${assignedName}` : ""}
+                </span>
+              )}
+              {signatureStatus === "signee" && (
+                <span style={{ fontSize: 11, fontWeight: 700, padding: "2px 8px", borderRadius: 5, color: "#15803D", background: "#DCFCE7" }}>
+                  ✍️ Signé{signedByName ? ` · ${signedByName}` : ""}
+                </span>
+              )}
+            </div>
             <div style={{ fontSize: 12, color: "#64748b" }}>{dossier.numero} — {dossier.petitionnaire}</div>
           </div>
           <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
-            {/* Signature toggle */}
-            {(signataire?.signature_image || letterhead.signature_image) && (
-              <button onClick={() => setShowSig(v => !v)}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showSig ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 7, background: showSig ? "#EEF2FF" : "white", color: showSig ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
-                ✍️ Signature
-              </button>
-            )}
-            {/* Tampon toggle */}
-            {(signataire?.tampon_image || letterhead.tampon_image) && (
-              <button onClick={() => setShowTamp(v => !v)}
-                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showTamp ? "#4F46E5" : "#E2E8F0"}`, borderRadius: 7, background: showTamp ? "#EEF2FF" : "white", color: showTamp ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
-                🔵 Tampon
-              </button>
-            )}
+            {/* Signature & tampon : plus de bouton manuel ici. Ils s'apposent
+                automatiquement sur le courrier lors de la signature (handleSign)
+                et restent déplaçables pour le positionnement. */}
             {/* Pièces à demander — visible uniquement en mode pieces_complementaires */}
             {mode === "pieces_complementaires" && (
               <button onClick={() => { setShowPiecesPanel((v) => !v); if (showMentions) setShowMentions(false); }}
@@ -702,27 +1253,100 @@ export function CourrierModal({
               style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${showMentions ? "#0284C7" : "#E2E8F0"}`, borderRadius: 7, background: showMentions ? "#E0F2FE" : "white", color: showMentions ? "#0284C7" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
               📜 Mentions légales
             </button>
+            {/* Édition du texte (corps HTML uniquement, hors courrier déjà envoyé) */}
+            {canEditBody && (
+              <button onClick={() => setIsEditingBody((v) => !v)}
+                title="Modifier le texte du courrier avant de l'enregistrer ou de l'envoyer"
+                style={{ display: "flex", alignItems: "center", gap: 5, padding: "5px 11px", border: `1px solid ${isEditingBody ? "#6366F1" : "#E2E8F0"}`, borderRadius: 7, background: isEditingBody ? "#EEF2FF" : "white", color: isEditingBody ? "#4F46E5" : "#64748b", fontSize: 12, cursor: "pointer", fontWeight: 500 }}>
+                <Pencil size={13} /> {isEditingBody ? "Fin d'édition" : "Modifier le texte"}
+              </button>
+            )}
             <div style={{ width: 1, height: 20, background: "#E2E8F0" }} />
+            {/* Enregistrer en brouillon — aucun effet métier */}
+            {!isSent && (
+              <button onClick={handleSaveDraft} disabled={saving}
+                title="Enregistrer ce courrier en brouillon, sans l'envoyer ni modifier le dossier"
+                style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 14px", background: "white", color: saving ? "#94a3b8" : "#334155", border: "1px solid #CBD5E1", borderRadius: 8, cursor: saving ? "default" : "pointer", fontSize: 13, fontWeight: 600 }}>
+                <Save size={14} /> {saving ? "Enregistrement…" : (savedAt && !saveError ? "Enregistré ✓" : "Enregistrer le brouillon")}
+              </button>
+            )}
             <button onClick={() => window.print()}
               style={{ display: "flex", alignItems: "center", gap: 6, padding: "7px 16px", background: "#0F172A", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
               <Printer size={14} /> Imprimer / PDF
             </button>
-            {mode === "pieces_complementaires" && (
+            {/* Signature — bouton dynamique selon l'accès : un signataire habilité
+                signe directement ; sinon il demande la signature à un signataire
+                habilité. Les deux boutons sont mutuellement exclusifs. */}
+            {signatureStatus !== "signee" && (
+              <>
+                {canSign && (
+                  <button onClick={handleSign} disabled={signWorking}
+                    title="Apposer votre signature (et votre tampon) sur ce courrier"
+                    style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: signWorking ? "#E2E8F0" : "#4F46E5", color: signWorking ? "#94a3b8" : "white", border: "none", borderRadius: 8, cursor: signWorking ? "default" : "pointer", fontSize: 13, fontWeight: 600 }}>
+                    ✍️ {signWorking ? "Signature…" : "Signer"}
+                  </button>
+                )}
+                {!canSign && signataireRows.length > 0 && (
+                  <div style={{ position: "relative" }}>
+                    <button onClick={() => setShowSignPicker((v) => !v)} disabled={signWorking}
+                      title="Envoyer le courrier en signature à un signataire habilité"
+                      style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: showSignPicker ? "#EEF2FF" : "white", color: "#4F46E5", border: "1px solid #C7D2FE", borderRadius: 8, cursor: signWorking ? "default" : "pointer", fontSize: 13, fontWeight: 600 }}>
+                      📤 {signatureStatus === "a_signer" ? "Réassigner" : "Demander la signature"} <span style={{ fontSize: 10 }}>▾</span>
+                    </button>
+                    {showSignPicker && (
+                      <>
+                        <div onClick={() => setShowSignPicker(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                        <div style={{ position: "absolute", left: 0, top: "calc(100% + 6px)", zIndex: 50, width: 264, maxWidth: "calc(100vw - 32px)", background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 14px 36px rgba(0,0,0,0.18)", overflow: "hidden" }}>
+                          <div style={{ padding: "8px 12px", fontSize: 10, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase", borderBottom: "1px solid #F1F5F9" }}>Envoyer en signature à</div>
+                          {signataireRows.map((s) => (
+                            <button key={s.user_id} onClick={() => handleRequestSignature(s.user_id)}
+                              style={{ display: "flex", flexDirection: "column", gap: 1, width: "100%", textAlign: "left", padding: "8px 12px", border: "none", borderTop: "1px solid #F8FAFC", background: "white", cursor: "pointer" }}>
+                              <span style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{s.user ? `${s.user.prenom} ${s.user.nom}` : "—"}</span>
+                              <span style={{ fontSize: 11, color: "#94a3b8" }}>{(s.fonction || ROLE_LABELS[s.role] || s.role)}{s.delegation_arrete ? " · délégation" : ""}</span>
+                            </button>
+                          ))}
+                        </div>
+                      </>
+                    )}
+                  </div>
+                )}
+              </>
+            )}
+            {/* Envoi — choix du canal de remise au pétitionnaire */}
+            <div style={{ position: "relative" }}>
               <button
-                onClick={handleEmitPieceRequest}
-                disabled={emitting || requestedPieces.length === 0 || !!emittedAt}
-                title={emittedAt ? "Courrier déjà émis pour cette session" : requestedPieces.length === 0 ? "Sélectionnez au moins une pièce" : "Émettre et basculer le dossier en incomplet"}
+                onClick={() => { if (!sendDisabled) setShowChannelMenu((v) => !v); }}
+                disabled={sendDisabled}
+                title={isSent ? "Courrier déjà envoyé" : signatureStatus === "a_signer" ? "En attente de signature — l'envoi sera possible une fois le courrier signé" : (mode === "pieces_complementaires" && requestedPieces.length === 0) ? "Sélectionnez au moins une pièce" : "Choisir le canal d'envoi au pétitionnaire"}
                 style={{
                   display: "flex", alignItems: "center", gap: 6, padding: "7px 16px",
-                  background: (emitting || requestedPieces.length === 0 || !!emittedAt) ? "#E2E8F0" : "linear-gradient(135deg,#D97706,#F59E0B)",
-                  color: (emitting || requestedPieces.length === 0 || !!emittedAt) ? "#94a3b8" : "white",
+                  background: sendDisabled ? "#E2E8F0" : (mode === "pieces_complementaires" ? "linear-gradient(135deg,#D97706,#F59E0B)" : "linear-gradient(135deg,#0F766E,#10B981)"),
+                  color: sendDisabled ? "#94a3b8" : "white",
                   border: "none", borderRadius: 8,
-                  cursor: (emitting || requestedPieces.length === 0 || !!emittedAt) ? "default" : "pointer",
-                  fontSize: 13, fontWeight: 600,
+                  cursor: sendDisabled ? "default" : "pointer", fontSize: 13, fontWeight: 600,
                 }}>
-                {emittedAt ? "✓ Émise" : emitting ? "Émission…" : "Émettre la demande"}
+                {isSent ? "✓ Envoyé" : emitting ? "Envoi…" : (mode === "pieces_complementaires" ? "Émettre la demande" : "Envoyer")}
+                {!isSent && !emitting && <span style={{ fontSize: 10 }}>▾</span>}
               </button>
-            )}
+              {showChannelMenu && !sendDisabled && (
+                <>
+                  <div onClick={() => setShowChannelMenu(false)} style={{ position: "fixed", inset: 0, zIndex: 40 }} />
+                  <div style={{ position: "absolute", right: 0, top: "calc(100% + 6px)", zIndex: 50, width: 272, background: "white", border: "1px solid #E2E8F0", borderRadius: 10, boxShadow: "0 14px 36px rgba(0,0,0,0.18)", overflow: "hidden" }}>
+                    <div style={{ padding: "8px 12px", fontSize: 10, fontWeight: 700, color: "#94a3b8", letterSpacing: "0.06em", textTransform: "uppercase", borderBottom: "1px solid #F1F5F9" }}>Envoyer par</div>
+                    {SEND_CHANNELS.map((c) => (
+                      <button key={c.value} onClick={() => handleSend(c.value)}
+                        style={{ display: "flex", alignItems: "flex-start", gap: 9, width: "100%", textAlign: "left", padding: "9px 12px", border: "none", borderTop: "1px solid #F8FAFC", background: "white", cursor: "pointer" }}>
+                        <span style={{ fontSize: 15, lineHeight: "18px" }}>{c.icon}</span>
+                        <span style={{ minWidth: 0 }}>
+                          <span style={{ display: "block", fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{c.label}</span>
+                          <span style={{ display: "block", fontSize: 11, color: "#94a3b8", lineHeight: 1.35 }}>{c.hint}</span>
+                        </span>
+                      </button>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
             <button onClick={onClose} style={{ padding: 6, border: "1px solid #E2E8F0", borderRadius: 8, background: "white", cursor: "pointer", display: "flex" }}>
               <X size={16} color="#64748b" />
             </button>
@@ -732,6 +1356,17 @@ export function CourrierModal({
         {emitError && (
           <div className="no-print-modal" style={{ padding: "8px 20px", background: "#FEE2E2", color: "#991B1B", fontSize: 12, borderBottom: "1px solid #FCA5A5" }}>
             {emitError}
+          </div>
+        )}
+        {saveError && (
+          <div className="no-print-modal" style={{ padding: "8px 20px", background: "#FEE2E2", color: "#991B1B", fontSize: 12, borderBottom: "1px solid #FCA5A5" }}>
+            {saveError}
+          </div>
+        )}
+        {deliveryResult && (
+          <div className="no-print-modal" style={{ padding: "8px 20px", background: deliveryResult.delivered ? "#DCFCE7" : "#FEF3C7", color: deliveryResult.delivered ? "#15803D" : "#92400E", fontSize: 12, borderBottom: `1px solid ${deliveryResult.delivered ? "#86EFAC" : "#FDE68A"}` }}>
+            {deliveryResult.delivered ? `✓ Courrier transmis via ${deliveryResult.via}.` : `Courrier émis, mais non transmis via ${deliveryResult.via}.`}
+            {deliveryResult.note ? ` ${deliveryResult.note}` : ""}
           </div>
         )}
 
@@ -749,7 +1384,7 @@ export function CourrierModal({
                 const cat = CATEGORY_CONFIG[tpl.category] ?? CATEGORY_CONFIG.general!;
                 const isSelected = selected?.id === tpl.id;
                 return (
-                  <button key={tpl.id} onClick={() => setSelected(tpl)}
+                  <button key={tpl.id} onClick={() => selectTemplate(tpl)}
                     style={{ width: "100%", padding: "9px 12px", border: `2px solid ${isSelected ? cat.color : "#E2E8F0"}`, borderRadius: 8, background: isSelected ? cat.bg : "white", color: isSelected ? cat.color : "#374151", fontSize: 12, fontWeight: isSelected ? 700 : 400, cursor: "pointer", textAlign: "left", marginBottom: 6, transition: "all 0.1s" }}>
                     <div style={{ marginBottom: 2 }}>{tpl.name}</div>
                     <div style={{ fontSize: 10, opacity: 0.7 }}>{cat.label}</div>
@@ -759,14 +1394,14 @@ export function CourrierModal({
           </div>
 
           {/* Print preview */}
-          <div className="print-area" style={{ flex: 1, overflowY: "auto" }}>
-            {selected ? (
-              <div style={{ position: "relative" }}>
-                <CourrierPrintPreview html={substitutedHtml} letterhead={letterhead} extraHtml={insertedMentionsHtml || undefined} />
+          <div className="print-area" style={{ flex: 1, minWidth: 0, overflow: "auto", background: "#EEF1F5", display: "flex", justifyContent: "center", alignItems: "flex-start", padding: "24px 20px" }}>
+            {(selected || bodyOverride) ? (
+              <div className="courrier-sheet" style={{ position: "relative", width: PAGE_W, flexShrink: 0 }}>
+                <CourrierPrintPreview html={effectiveBody} letterhead={letterhead} extraHtml={insertedMentionsHtml || undefined} editable={isEditingBody} onBodyChange={handleBodyChange} />
                 {/* Draggable signature */}
-                {showSig && (signataire?.signature_image || letterhead.signature_image) && (
+                {showSig && (appliedSig || signataire?.signature_image || letterhead.signature_image) && (
                   <DraggableStamp
-                    src={signataire?.signature_image || letterhead.signature_image || ""}
+                    src={appliedSig || signataire?.signature_image || letterhead.signature_image || ""}
                     pos={sigPos}
                     setPos={setSigPos}
                     caption={signataire?.nom || `${user?.prenom ?? ""} ${user?.nom ?? ""}`}
@@ -774,9 +1409,9 @@ export function CourrierModal({
                   />
                 )}
                 {/* Draggable tampon */}
-                {showTamp && (signataire?.tampon_image || letterhead.tampon_image) && (
+                {showTamp && (appliedTamp || signataire?.tampon_image || letterhead.tampon_image) && (
                   <DraggableStamp
-                    src={signataire?.tampon_image || letterhead.tampon_image || ""}
+                    src={appliedTamp || signataire?.tampon_image || letterhead.tampon_image || ""}
                     pos={tampPos}
                     setPos={setTampPos}
                     onHide={() => setShowTamp(false)}
@@ -795,7 +1430,13 @@ export function CourrierModal({
             <div className="no-print-modal" style={{ width: 300, borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", flexShrink: 0, background: "#FAFAFA" }}>
               {/* Panel header */}
               <div style={{ padding: "12px 14px 10px", borderBottom: "1px solid #E2E8F0", background: "white" }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 8 }}>📜 Mentions légales recommandées</div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 8 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A" }}>📜 Mentions légales recommandées</div>
+                  <button onClick={() => setShowMentions(false)} title="Fermer le panneau"
+                    style={{ flexShrink: 0, padding: 4, border: "none", background: "none", cursor: "pointer", display: "flex", color: "#94a3b8", borderRadius: 6 }}>
+                    <X size={16} />
+                  </button>
+                </div>
                 <select
                   value={courrierType}
                   onChange={(e) => {
@@ -872,7 +1513,13 @@ export function CourrierModal({
             <div className="no-print-modal" style={{ width: 320, borderLeft: "1px solid #E2E8F0", display: "flex", flexDirection: "column", flexShrink: 0, background: "#FAFAFA" }}>
               {/* Panel header */}
               <div style={{ padding: "12px 14px 10px", borderBottom: "1px solid #E2E8F0", background: "white" }}>
-                <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A", marginBottom: 6 }}>📎 Pièces à demander au pétitionnaire</div>
+                <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8, marginBottom: 6 }}>
+                  <div style={{ fontWeight: 700, fontSize: 13, color: "#0F172A" }}>📎 Pièces à demander au pétitionnaire</div>
+                  <button onClick={() => setShowPiecesPanel(false)} title="Fermer le panneau"
+                    style={{ flexShrink: 0, padding: 4, border: "none", background: "none", cursor: "pointer", display: "flex", color: "#94a3b8", borderRadius: 6 }}>
+                    <X size={16} />
+                  </button>
+                </div>
                 <div style={{ fontSize: 11, color: "#64748b", marginBottom: 8, lineHeight: 1.4 }}>
                   Sélectionnez les pièces déposées à compléter, et ajoutez les pièces absentes.
                 </div>
@@ -894,12 +1541,24 @@ export function CourrierModal({
                     {availablePieces.map((p) => {
                       const checked = selectedPieceIds.has(p.id);
                       const score = p.ia_score;
-                      const scoreLabel = score && !noAiHints ? (
-                        <span title={`Avis IA : ${score}`} style={{
+                      // Pas de notion « conforme / non conforme » exposée à l'instructeur :
+                      // on traduit l'avis IA en libellés d'exploitabilité, alignés sur
+                      // ceux de la fiche dossier (scoreToStatus dans DossierDetailScreen).
+                      const scoreInfo = score === "non_conforme"
+                        ? { label: "À reprendre", color: "#B91C1C", background: "#FEE2E2" }
+                        : score === "incomplet"
+                          ? { label: "À compléter", color: "#B91C1C", background: "#FEE2E2" }
+                          : score === "acceptable"
+                            ? { label: "Exploitable avec réserves", color: "#B45309", background: "#FEF3C7" }
+                            : score === "conforme"
+                              ? { label: "Exploitable", color: "#15803D", background: "#DCFCE7" }
+                              : null;
+                      const scoreLabel = scoreInfo && !noAiHints ? (
+                        <span title={`Avis IA : ${scoreInfo.label}`} style={{
                           fontSize: 9.5, fontWeight: 700, padding: "1px 5px", borderRadius: 4, marginLeft: 6,
-                          color: score === "non_conforme" || score === "incomplet" ? "#B91C1C" : score === "acceptable" ? "#B45309" : "#15803D",
-                          background: score === "non_conforme" || score === "incomplet" ? "#FEE2E2" : score === "acceptable" ? "#FEF3C7" : "#DCFCE7",
-                        }}>IA: {score.replace("_", " ")}</span>
+                          color: scoreInfo.color,
+                          background: scoreInfo.background,
+                        }}>IA: {scoreInfo.label}</span>
                       ) : null;
                       const statusBadge = p.instructeur_status === "valide"
                         ? <span style={{ fontSize: 9.5, fontWeight: 600, color: "#15803D", marginLeft: 6 }}>✓ validée</span>

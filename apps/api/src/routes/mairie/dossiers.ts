@@ -6,13 +6,15 @@ import { alias } from "drizzle-orm/pg-core";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { inArray } from "drizzle-orm";
 import { requireRole } from "../../middlewares/auth.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import multer from "multer";
 import crypto from "crypto";
 import path from "path";
 import { z } from "zod";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
-import { extractFirstJson, sha256Buffer } from "../../services/pieceAnalyzer.js";
+import { extractFirstJson } from "../../services/pieceAnalyzer.js";
+import { sha256HexAsync, toBase64Async } from "../../services/cpuOffload.js";
 import { attachCerfaToDossier } from "../../services/cerfaAttachment.js";
 import { prefetchSitadelHistory } from "../../services/sitadelPrefetch.js";
 import { notifyUser } from "../../services/notify.js";
@@ -36,6 +38,7 @@ import {
   changeDossierStatus,
   assignInstructeur,
   unassignInstructeur,
+  ensureAssignedToActor,
   WorkflowError,
   workflowErrorToHttp,
 } from "../../services/dossierWorkflow.js";
@@ -74,7 +77,7 @@ export const dossiersRouter = Router();
 const DOSSIERS_DEFAULT_LIMIT = 100;
 const DOSSIERS_MAX_LIMIT = 500;
 
-dossiersRouter.get("/dossiers", async (req: AuthRequest, res) => {
+dossiersRouter.get("/dossiers", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     const search = req.query.search as string | undefined;
     const status = req.query.status as string | undefined;
@@ -168,7 +171,7 @@ dossiersRouter.get("/dossiers", async (req: AuthRequest, res) => {
   }
 });
 
-dossiersRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
+dossiersRouter.get("/dossiers/export", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   const commune = req.query.commune as string | undefined;
 
   const esc = (v: unknown): string => {
@@ -253,7 +256,7 @@ dossiersRouter.get("/dossiers/export", async (req: AuthRequest, res) => {
   }
 });
 
-dossiersRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
+dossiersRouter.get("/dossiers/:id", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     let [dossier] = await db
       .select()
@@ -370,7 +373,7 @@ dossiersRouter.get("/dossiers/:id", async (req: AuthRequest, res) => {
   }
 });
 
-dossiersRouter.get("/dossiers/:id/events", async (req: AuthRequest, res) => {
+dossiersRouter.get("/dossiers/:id/events", requirePermission("dossiers.read"), async (req: AuthRequest, res) => {
   try {
     const events = await db
       .select()
@@ -401,7 +404,7 @@ dossiersRouter.get("/dossiers/:id/events", async (req: AuthRequest, res) => {
   }
 });
 
-dossiersRouter.patch("/dossiers/:id/status", async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/status", requirePermission("dossiers.status"), async (req: AuthRequest, res) => {
   try {
     const { status, reason } = (req.body ?? {}) as { status?: string; reason?: string | null };
     if (!status) return res.status(400).json({ error: "Statut requis" });
@@ -412,6 +415,15 @@ dossiersRouter.patch("/dossiers/:id/status", async (req: AuthRequest, res) => {
 
     // 1) Transition de statut via la machine à états (refuse si interdite).
     await changeDossierStatus(dossierId, status as DossierStatus, req.user?.id ?? null, { reason: reason ?? null });
+
+    // 1bis) Prise en charge implicite : faire avancer manuellement le dossier
+    // est un acte d'instruction. Best-effort — ne fait jamais échouer la
+    // transition pour un souci d'affectation ; no-op si déjà pris en charge.
+    try {
+      await ensureAssignedToActor(dossierId, req.user?.id ?? null, req.user?.role);
+    } catch (e) {
+      console.warn("[mairie/dossiers/status] ensureAssignedToActor:", e);
+    }
 
     // 2) Effets de bord : date de dépôt + recalcul d'échéance.
     const sideEffects: Partial<typeof before> & { updated_at?: Date } = {};
@@ -474,7 +486,7 @@ const ALLOWED_DOSSIER_TYPES = new Set([
   "certificat_urbanisme_b",
 ]);
 
-dossiersRouter.patch("/dossiers/:id/type", requireRole("mairie", "admin", "instructeur"), async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/type", requirePermission("dossiers.edit"), requireRole("mairie", "admin", "instructeur"), async (req: AuthRequest, res) => {
   try {
     const { type, reason } = (req.body ?? {}) as { type?: string; reason?: string | null };
     if (!type || !ALLOWED_DOSSIER_TYPES.has(type)) {
@@ -533,7 +545,7 @@ dossiersRouter.patch("/dossiers/:id/type", requireRole("mairie", "admin", "instr
   }
 });
 
-dossiersRouter.patch("/dossiers/:id/deadline", async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/deadline", requirePermission("dossiers.deadline"), async (req: AuthRequest, res) => {
   try {
     const body = (req.body ?? {}) as {
       date_completude?: string | null;
@@ -588,7 +600,7 @@ dossiersRouter.patch("/dossiers/:id/deadline", async (req: AuthRequest, res) => 
   }
 });
 
-dossiersRouter.patch("/dossiers/:id/assign", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+dossiersRouter.patch("/dossiers/:id/assign", requirePermission("dossiers.assign"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   try {
     const { instructeur_id, reason } = (req.body ?? {}) as { instructeur_id?: string; reason?: string | null };
     if (!instructeur_id) return res.status(400).json({ error: "instructeur_id requis" });
@@ -605,7 +617,7 @@ dossiersRouter.patch("/dossiers/:id/assign", requireRole("mairie", "admin"), asy
   }
 });
 
-dossiersRouter.delete("/dossiers/:id/assign", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+dossiersRouter.delete("/dossiers/:id/assign", requirePermission("dossiers.assign"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   try {
     const { reason } = (req.body ?? {}) as { reason?: string | null };
     await unassignInstructeur(req.params.id as string, req.user?.id ?? null, { reason: reason ?? null });
@@ -633,7 +645,7 @@ dossiersRouter.delete("/dossiers/:id/assign", requireRole("mairie", "admin"), as
 // ⚠️ À RETIRER avant la mise en production réelle. Rechercher "TEMP_DELETE_DOSSIER"
 // (back + front) pour le retrait complet.
 // ─────────────────────────────────────────────────────────────────────────
-dossiersRouter.delete("/dossiers/:id", requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
+dossiersRouter.delete("/dossiers/:id", requirePermission("dossiers.delete"), requireRole("mairie", "admin"), async (req: AuthRequest, res) => {
   try {
     const dossierId = req.params.id as string;
     // enforceDossierAccess (cf. mairie/index.ts) a déjà chargé le dossier et
@@ -666,7 +678,7 @@ dossiersRouter.delete("/dossiers/:id", requireRole("mairie", "admin"), async (re
   }
 });
 
-dossiersRouter.post("/dossiers/:id/take-charge", async (req: AuthRequest, res) => {
+dossiersRouter.post("/dossiers/:id/take-charge", requirePermission("dossiers.assign"), async (req: AuthRequest, res) => {
   try {
     const role = req.user?.role ?? "";
     if (!ASSIGNABLE_ROLES.has(role)) {
@@ -766,7 +778,7 @@ async function invitePetitionnaireToActivate(opts: {
   });
 }
 
-dossiersRouter.post("/dossiers", async (req: AuthRequest, res) => {
+dossiersRouter.post("/dossiers", requirePermission("dossiers.create"), async (req: AuthRequest, res) => {
   try {
     const data = mairieCreateDossierSchema.parse(req.body);
 
@@ -946,7 +958,7 @@ const invitePetitionnaireSchema = z.object({
   confirm: z.boolean().optional(),
 });
 
-dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", async (req: AuthRequest, res) => {
+dossiersRouter.post("/dossiers/:id/inviter-petitionnaire", requirePermission("dossiers.invite"), async (req: AuthRequest, res) => {
   try {
     const { email: rawEmail, confirm } = invitePetitionnaireSchema.parse(req.body ?? {});
     const providedEmail = rawEmail?.trim().toLowerCase() || null;
@@ -1152,7 +1164,7 @@ function ocrSingle(req: AuthRequest, res: import("express").Response, next: impo
   });
 }
 
-dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
+dossiersRouter.post("/ocr-cerfa", requirePermission("dossiers.create"), ocrSingle, async (req: AuthRequest, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: "Fichier requis" });
     const sniffed = ocrSniff(req.file.buffer);
@@ -1161,7 +1173,10 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
     }
 
     const buf = req.file.buffer;
-    const fileHash = sha256Buffer(buf);
+    // Hash coopératif : l'upload peut atteindre 60 Mo et ce handler est sur le
+    // chemin requête — un sha256 synchrone gèlerait l'event loop ~160 ms pour
+    // tous les utilisateurs (cf. services/cpuOffload.ts).
+    const fileHash = await sha256HexAsync(buf);
     const communeIdForTrace = await resolveCommuneIdFromUser(req);
 
     // Pixtral n'accepte pas le PDF natif → on rend les pages utiles en PNG
@@ -1175,7 +1190,7 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
       source: { type: "base64"; media_type: "image/png" | "image/jpeg"; data: string };
     }> = [];
     if (sniffed === "pdf") {
-      const pages = convertPdfPagesToPng(buf, { maxPages: 8 });
+      const pages = await convertPdfPagesToPng(buf, { maxPages: 8 });
       for (const png of pages) {
         imageBlocks.push({
           type: "image",
@@ -1188,7 +1203,7 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
         source: {
           type: "base64",
           media_type: sniffed === "jpeg" ? "image/jpeg" : "image/png",
-          data: buf.toString("base64"),
+          data: await toBase64Async(buf),
         },
       });
     }
@@ -1201,7 +1216,7 @@ dossiersRouter.post("/ocr-cerfa", ocrSingle, async (req: AuthRequest, res) => {
     // compresse l'espacement pour que tout le document tienne dans le budget de
     // 30k caractères (sinon les valeurs en fin de document seraient tronquées).
     const pdfText = sniffed === "pdf"
-      ? (extractPdfText(buf) ?? "")
+      ? ((await extractPdfText(buf)) ?? "")
           .replace(/\f/g, "\n")
           .replace(/[ \t]{2,}/g, " ")
           .replace(/\n[ \t]+/g, "\n")

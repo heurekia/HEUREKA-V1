@@ -16,6 +16,11 @@ import {
 } from "@heureka-v1/shared";
 import { resolveEffectiveInstructeur } from "./absenceDelegation.js";
 
+// Exécuteur DB : soit le client global, soit une transaction Drizzle. Permet de
+// composer plusieurs écritures de services différents dans UNE même transaction
+// (atomicité inter-services — ex. émission de courrier + transition de statut).
+export type DbExecutor = typeof db | Parameters<Parameters<typeof db.transaction>[0]>[0];
+
 export type WorkflowErrorCode =
   | "DOSSIER_NOT_FOUND"
   | "INVALID_TRANSITION"
@@ -41,6 +46,10 @@ export interface StatusChangeOptions {
   // Type d'event à utiliser. Par défaut "status_changed". Permet aux
   // déclencheurs métiers (ex. décision signée) de poser un type distinct.
   eventType?: string;
+  // Exécuteur transactionnel optionnel : si fourni, le SELECT de garde,
+  // l'UPDATE du statut et l'INSERT de l'event passent par cette transaction —
+  // garantissant l'atomicité avec les écritures de l'appelant.
+  tx?: DbExecutor;
 }
 
 export interface StatusChangeResult {
@@ -55,7 +64,8 @@ export async function changeDossierStatus(
   actorId: string | null,
   opts: StatusChangeOptions = {},
 ): Promise<StatusChangeResult> {
-  const [before] = await db
+  const exec = opts.tx ?? db;
+  const [before] = await exec
     .select({ id: dossiers.id, status: dossiers.status })
     .from(dossiers)
     .where(eq(dossiers.id, dossierId))
@@ -73,12 +83,12 @@ export async function changeDossierStatus(
     );
   }
 
-  await db
+  await exec
     .update(dossiers)
     .set({ status: newStatus, updated_at: new Date() })
     .where(eq(dossiers.id, dossierId));
 
-  await db.insert(instruction_events).values({
+  await exec.insert(instruction_events).values({
     dossier_id: dossierId,
     type: opts.eventType ?? "status_changed",
     user_id: actorId,
@@ -128,7 +138,7 @@ export async function assignInstructeur(
   }
 
   const [target] = await db
-    .select({ id: users.id, role: users.role, prenom: users.prenom, nom: users.nom })
+    .select({ id: users.id, role: users.role, prenom: users.prenom, nom: users.nom, deactivated_at: users.deactivated_at })
     .from(users)
     .where(eq(users.id, effectiveId))
     .limit(1);
@@ -138,6 +148,10 @@ export async function assignInstructeur(
       "INVALID_ASSIGNEE",
       "Cet utilisateur ne peut pas être désigné comme instructeur",
     );
+  }
+  // Un agent désactivé (offboardé) ne peut plus se voir attribuer de dossier.
+  if (target.deactivated_at) {
+    throw new WorkflowError("INVALID_ASSIGNEE", "Cet agent a été désactivé et ne peut pas être assigné.");
   }
 
   if (before.instructeur_id === effectiveId) {
@@ -212,6 +226,45 @@ export async function unassignInstructeur(
   });
 
   return { changed: true, previous_instructeur_id: before.instructeur_id };
+}
+
+// ── Prise en charge implicite ────────────────────────────────────────────────
+// Affecte le dossier à l'agent qui agit, s'il n'est encore assigné à personne.
+// Garantit l'invariant : aucun dossier ne peut être instruit, décidé ou signé
+// tout en restant « Non assigné ». Tout premier acte d'instruction (validation
+// de pièce, transition de statut manuelle, création de décision) emporte donc
+// la prise en charge.
+//
+// Idempotent et NON volant : no-op si le dossier est déjà pris en charge — que
+// ce soit par l'acteur lui-même ou par un tiers (un simple acte ne réassigne
+// jamais le dossier d'un collègue). Silencieux si l'acteur n'a pas un rôle
+// affectable (cf. ASSIGNABLE_ROLES, ex. service_externe) : on ne bloque jamais
+// l'action principale, on s'abstient simplement d'affecter.
+export async function ensureAssignedToActor(
+  dossierId: string,
+  actorId: string | null | undefined,
+  actorRole: string | null | undefined,
+): Promise<{ assigned: boolean }> {
+  if (!actorId || !actorRole || !ASSIGNABLE_ROLES.has(actorRole)) {
+    return { assigned: false };
+  }
+  const [before] = await db
+    .select({ instructeur_id: dossiers.instructeur_id })
+    .from(dossiers)
+    .where(eq(dossiers.id, dossierId))
+    .limit(1);
+  // Dossier introuvable (la route gère le 404) ou déjà pris en charge → no-op.
+  if (!before || before.instructeur_id) return { assigned: false };
+
+  // L'acteur agit en personne : pas de redirection d'absence (il EST présent),
+  // on le pose donc directement comme instructeur. assignInstructeur journalise
+  // « Dossier pris en charge par X » (type instructeur_assigned) dans
+  // instruction_events.
+  const res = await assignInstructeur(dossierId, actorId, actorId, {
+    reason: "prise en charge automatique (premier acte d'instruction)",
+    skipAbsenceRedirection: true,
+  });
+  return { assigned: res.changed };
 }
 
 // Helper utilisé par les routes pour renvoyer une 4xx propre.

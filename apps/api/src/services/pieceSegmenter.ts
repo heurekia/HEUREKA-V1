@@ -190,7 +190,7 @@ async function classifyByVision(
     const count = Math.min(VISION_BATCH, total - start);
     let pngs: Buffer[];
     try {
-      pngs = convertPdfPagesToPng(buffer, { firstPage, maxPages: count, dpi: VISION_DPI });
+      pngs = await convertPdfPagesToPng(buffer, { firstPage, maxPages: count, dpi: VISION_DPI });
     } catch (err) {
       console.warn("[pieceSegmenter] convertPdfPagesToPng a échoué:", err instanceof Error ? err.message : err);
       break;
@@ -341,7 +341,7 @@ export async function segmentBundle(
   }
 
   // Texte natif en une seule passe (pdftotext insère \f entre les pages).
-  const raw = extractPdfText(buffer) ?? "";
+  const raw = (await extractPdfText(buffer)) ?? "";
   const chunks = raw.split("\f");
   const pageTexts: string[] = Array.from({ length: pageCount }, (_, i) => chunks[i] ?? "");
   const hasText = pageTexts.join("").replace(/\s/g, "").length > 60;

@@ -1,9 +1,9 @@
 import { useState, useEffect, useRef } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
-import { DotsIcon, StatusBadge } from "./ui";
-import { COMMUNE_INSEE, notifIcon, notifColor, relTime, type ApiNotif } from "./shared";
+import { StatusBadge } from "./ui";
+import { COMMUNE_INSEE, notifIcon, notifColor, relTime, resolveCommune, type ApiNotif } from "./shared";
 import { ReglementationScreen } from "./ReglementationScreen";
 import { TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 
@@ -339,8 +339,8 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
       <div style={{ display: "grid", gridTemplateColumns: "repeat(3,1fr)", gap: 12 }}>
         {[
           ["Agents", String(userList.length), "#4F46E5"],
+          ["Mairie", String(userList.filter(u => u.role === "mairie").length), "#7C3AED"],
           ["Instructeurs", String(userList.filter(u => u.role === "instructeur").length), "#0891B2"],
-          ["Admins", String(userList.filter(u => u.role === "admin").length), "#DC2626"],
         ].map(([l, v, c]) => (
           <div key={l} style={{ background: "white", border: "1px solid #E2E8F0", borderRadius: 10, padding: "14px 16px", display: "flex", alignItems: "center", gap: 12 }}>
             <span style={{ fontSize: 22, fontWeight: 700, color: c }}>{v}</span>
@@ -591,15 +591,14 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
   );
 }
 
-export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
+export function ParametresScreen({ commune = "", communes = [], isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; communes?: string[]; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
-  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Workflow & Délais", "Notifications", "Courriers", "Intégrations"];
+  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Notifications", "Courriers", "Intégrations"];
   const TAB_SLUGS: Record<string, string> = {
     "Général": "general",
     "Utilisateurs": "utilisateurs",
     "Réglementation": "reglementation",
     "Documents": "documents",
-    "Workflow & Délais": "workflow",
     "Notifications": "notifications",
     "Courriers": "courriers",
     "Intégrations": "integrations",
@@ -608,6 +607,7 @@ export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers
   const NOTIF_SUBS = ["historique", "evenements", "canaux"] as const;
   type NotifSub = (typeof NOTIF_SUBS)[number];
   const [searchParams, setSearchParams] = useSearchParams();
+  const navigate = useNavigate();
   const [stab, setStab] = useState(() => SLUG_TO_TAB[searchParams.get("tab") ?? ""] ?? "Réglementation");
   const selectTab = (t: string) => {
     setStab(t);
@@ -671,6 +671,14 @@ export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers
       api.patch(`/notifications/${n.id}/read`).catch(() => {});
       setHistNotifs(ns => ns.map(x => x.id === n.id ? { ...x, is_read: true } : x));
     }
+  };
+  // Au clic, on marque la notification lue ET on renvoie vers son objet (le
+  // dossier concerné), comme depuis la cloche. La commune active est
+  // resynchronisée par l'écran de détail à l'ouverture du dossier (cf.
+  // DossierDetailRoute), donc inutile de la basculer ici.
+  const handleHistNotifClick = (n: ApiNotif) => {
+    markOneRead(n);
+    if (n.dossier_id) navigate(`/mairie/dossiers/${n.dossier_id}`);
   };
   return (
     <div style={{ padding: 24 }}>
@@ -742,12 +750,16 @@ export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers
                   <div style={{ fontSize: 14, fontWeight: 600, color: "#374151", marginBottom: 4 }}>Aucune notification</div>
                   <div style={{ fontSize: 12, color: "#94a3b8" }}>Vous êtes à jour !</div>
                 </div>
-              ) : histNotifs.map(n => (
-                <div key={n.id} onClick={() => markOneRead(n)}
+              ) : histNotifs.map(n => {
+                // Agent multi-communes : préfixe le nom de la ville concernée.
+                const communeLabel = communes.length > 1 ? (resolveCommune(n.commune, communes) ?? n.commune) : null;
+                return (
+                <div key={n.id} onClick={() => handleHistNotifClick(n)}
                   style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 20px", borderBottom: "1px solid #F8FAFC", background: n.is_read ? "white" : "#F8F7FF", cursor: "pointer", transition: "background 0.15s" }}>
                   <div style={{ width: 36, height: 36, borderRadius: 10, background: notifColor(n.type) + "18", display: "flex", alignItems: "center", justifyContent: "center", fontSize: 16, flexShrink: 0 }}>{notifIcon(n.type)}</div>
                   <div style={{ flex: 1, minWidth: 0 }}>
-                    <div style={{ display: "flex", alignItems: "baseline", gap: 8 }}>
+                    <div style={{ display: "flex", alignItems: "baseline", gap: 8, flexWrap: "wrap" as const }}>
+                      {communeLabel && <span style={{ fontSize: 10, fontWeight: 700, color: "#4F46E5", background: "#EEF2FF", borderRadius: 4, padding: "1px 7px" }}>{communeLabel}</span>}
                       <span style={{ fontSize: 13, fontWeight: n.is_read ? 500 : 700, color: "#0F172A" }}>{n.title}</span>
                       <span style={{ fontSize: 11, color: "#94a3b8", flexShrink: 0 }}>{relTime(n.created_at)}</span>
                     </div>
@@ -755,7 +767,8 @@ export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers
                   </div>
                   {!n.is_read && <div style={{ width: 8, height: 8, borderRadius: "50%", background: "#4F46E5", flexShrink: 0, marginTop: 6 }} />}
                 </div>
-              ))}
+                );
+              })}
             </div>
           )}
 
@@ -842,73 +855,13 @@ export function ParametresScreen({ commune = "", isAdmin = false, canManageUsers
           )}
         </div>
       )}
-      {stab === "Workflow & Délais" && (
-        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Délais légaux par type de dossier</div>
-            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Configurez les délais d'instruction pour chaque type de dossier.</div>
-            <table style={{ width: "100%", borderCollapse: "collapse" }}>
-              <thead>
-                <tr style={{ background: "#F8FAFC" }}>
-                  {["Type de dossier","Délai légal","Délai alerte","Délai maxi","Actions"].map(h => (
-                    <th key={h} style={{ padding: "9px 12px", textAlign: "left", fontSize: 12, fontWeight: 600, color: "#64748b", borderBottom: "1px solid #E2E8F0" }}>{h}</th>
-                  ))}
-                </tr>
-              </thead>
-              <tbody>
-                {[
-                  { type: "Permis de construire (PC)", legal: "90j", alert: "75j", max: "120j" },
-                  { type: "Déclaration préalable (DP)", legal: "30j", alert: "25j", max: "60j" },
-                  { type: "Permis d'aménager (PA)", legal: "90j", alert: "75j", max: "120j" },
-                  { type: "Certificat d'urbanisme (CU)", legal: "30j", alert: "25j", max: "45j" },
-                  { type: "Permis de démolir (PD)", legal: "60j", alert: "50j", max: "90j" },
-                ].map((r, i) => (
-                  <tr key={i} style={{ borderBottom: "1px solid #F8FAFC" }}>
-                    <td style={{ padding: "10px 12px", fontSize: 13, color: "#374151", fontWeight: 500 }}>{r.type}</td>
-                    {[r.legal, r.alert, r.max].map((v, j) => (
-                      <td key={j} style={{ padding: "10px 12px" }}>
-                        <input defaultValue={v} style={{ width: 70, padding: "5px 8px", border: "1px solid #E2E8F0", borderRadius: 6, fontSize: 12, color: "#374151", textAlign: "center" }} />
-                      </td>
-                    ))}
-                    <td style={{ padding: "10px 12px" }}>
-                      <button style={{ border: "none", background: "none", cursor: "pointer", color: "#94a3b8", padding: 4 }}><DotsIcon /></button>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 16, gap: 8 }}>
-              <button style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 8, padding: "8px 16px", fontSize: 13, color: "#64748b", cursor: "pointer" }}>Réinitialiser</button>
-              <button style={{ background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, padding: "8px 16px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>Enregistrer</button>
-            </div>
-          </div>
-          <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
-            <div style={{ fontSize: 14, fontWeight: 700, color: "#0F172A", marginBottom: 12 }}>Étapes du workflow</div>
-            {[
-              { step: "1", label: "Réception & Enregistrement", desc: "Accusé de réception automatique + création du dossier", auto: true },
-              { step: "2", label: "Vérification de complétude", desc: "Vérification des pièces dans les 15 premiers jours", auto: false },
-              { step: "3", label: "Consultation des services", desc: "Envoi aux organismes consultés selon le type", auto: false },
-              { step: "4", label: "Instruction", desc: "Analyse et rédaction de la décision", auto: false },
-              { step: "5", label: "Décision & Notification", desc: "Signature et envoi de la décision au pétitionnaire", auto: false },
-            ].map((w) => (
-              <div key={w.step} style={{ display: "flex", alignItems: "flex-start", gap: 12, marginBottom: 12, padding: "10px 12px", background: "#F8FAFC", borderRadius: 8 }}>
-                <div style={{ width: 28, height: 28, borderRadius: "50%", background: "#4F46E5", color: "white", fontSize: 12, fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{w.step}</div>
-                <div style={{ flex: 1 }}>
-                  <div style={{ fontSize: 13, fontWeight: 600, color: "#0F172A" }}>{w.label}</div>
-                  <div style={{ fontSize: 11, color: "#94a3b8" }}>{w.desc}</div>
-                </div>
-                {w.auto && <span style={{ background: "#EEF2FF", color: "#4F46E5", fontSize: 10, fontWeight: 700, borderRadius: 4, padding: "2px 6px", flexShrink: 0 }}>AUTO</span>}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
       {stab === "Courriers" && (
         <div style={{ display: "flex", flexDirection: "column", gap: 32 }}>
           <CommuneLetterheadPanel inseeCode={communeInseeMap[commune]} />
           <div style={{ borderTop: "1px solid #E2E8F0", paddingTop: 28 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Modèles de courrier</div>
-            <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 16 }}>Créez et gérez vos modèles de courrier avec variables dynamiques.</div>
+            {/* Pas de titre ici : TemplateManagerPanel rend déjà son propre
+                en-tête (« Mes Modèles de Courrier » + bouton « Nouveau modèle »).
+                Le doublon de titres a été retiré. */}
             <TemplateManagerPanel inseeCode={communeInseeMap[commune]} />
           </div>
         </div>

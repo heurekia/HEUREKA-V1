@@ -1,7 +1,8 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useAuth } from "../../hooks/useAuth";
+import { useAuth, type User } from "../../hooks/useAuth";
 import { adminPath } from "../../router/adminBase";
+import { MfaLoginStep } from "../../components/MfaLoginStep";
 
 // Connexion du portail super-admin (admin.heurekia.com). La session est isolée
 // des portails www/app : la requête /auth/login pose ici le cookie `token_admin`
@@ -12,24 +13,30 @@ export function AdminLogin() {
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
   const [loading, setLoading] = useState(false);
+  const [mfaTicket, setMfaTicket] = useState<string | null>(null);
   const { login, logout } = useAuth();
   const navigate = useNavigate();
+
+  const goAfterLogin = async (u: User) => {
+    if (u.role === "admin") {
+      navigate(adminPath(), { replace: true });
+    } else {
+      // /auth/login a déjà posé un cookie token_admin pour ce host : on le purge
+      // immédiatement pour ne pas laisser une session non-admin traîner sur le
+      // portail d'administration.
+      await logout();
+      setError("Ce portail est réservé aux administrateurs Heurekia.");
+    }
+  };
 
   const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
     setError("");
     setLoading(true);
     try {
-      const u = await login(email, password);
-      if (u.role === "admin") {
-        navigate(adminPath(), { replace: true });
-      } else {
-        // /auth/login a déjà posé un cookie token_admin pour ce host : on le
-        // purge immédiatement pour ne pas laisser une session non-admin traîner
-        // sur le portail d'administration.
-        await logout();
-        setError("Ce portail est réservé aux administrateurs Heurekia.");
-      }
+      const r = await login(email, password);
+      if (r.status === "mfa") { setMfaTicket(r.ticket); setLoading(false); return; }
+      await goAfterLogin(r.user);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Identifiants incorrects");
     } finally {
@@ -82,7 +89,10 @@ export function AdminLogin() {
             Accédez à la console d'administration de la plateforme.
           </p>
 
-          {/* Form */}
+          {/* Form (ou 2e étape MFA) */}
+          {mfaTicket ? (
+            <MfaLoginStep ticket={mfaTicket} onVerified={goAfterLogin} />
+          ) : (
           <form onSubmit={handleSubmit} style={{ display: "flex", flexDirection: "column", gap: 16 }}>
             {error && (
               <div style={{ background: "rgba(239,68,68,0.12)", border: "1px solid rgba(239,68,68,0.25)", color: "#FCA5A5", borderRadius: 10, padding: "10px 14px", fontSize: 13 }}>
@@ -149,6 +159,7 @@ export function AdminLogin() {
               {loading ? "Connexion en cours…" : "Se connecter"}
             </button>
           </form>
+          )}
 
           {/* Footer */}
           <div style={{ marginTop: 24, paddingTop: 20, borderTop: "1px solid rgba(255,255,255,0.06)", textAlign: "center" }}>

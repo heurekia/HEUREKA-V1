@@ -1,11 +1,11 @@
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
 import { Card, CardContent } from "../../components/ui/card";
 import { Button } from "../../components/ui/button";
 import { Input } from "../../components/ui/input";
 import { Avatar } from "../../components/ui/avatar";
-import { Camera, Save, Download, Trash2, AlertTriangle, X } from "lucide-react";
+import { Camera, Save, Download, Trash2, AlertTriangle, X, IdCard } from "lucide-react";
 
 export function Profil() {
   const { user, logout } = useAuth();
@@ -16,6 +16,36 @@ export function Profil() {
   const [deleteError, setDeleteError] = useState("");
   const [deleting, setDeleting] = useState(false);
   const [exporting, setExporting] = useState(false);
+
+  // Profil CERFA mémorisé (RGPD — consentement révocable). consentAt = date de
+  // l'opt-in ; null = aucune mémorisation. Chargé une fois à l'affichage.
+  const [cerfaConsentAt, setCerfaConsentAt] = useState<string | null>(null);
+  const [forgettingProfile, setForgettingProfile] = useState(false);
+
+  useEffect(() => {
+    let alive = true;
+    void fetch("/api/auth/me/cerfa-profile", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((d: { profile?: unknown; consent_at?: string | null } | null) => {
+        if (alive && d && d.profile && Object.keys(d.profile).length > 0) {
+          setCerfaConsentAt(d.consent_at ?? null);
+        }
+      })
+      .catch(() => { /* non bloquant */ });
+    return () => { alive = false; };
+  }, []);
+
+  const handleForgetCerfaProfile = async () => {
+    setForgettingProfile(true);
+    try {
+      const res = await fetch("/api/auth/me/cerfa-profile", { method: "DELETE", credentials: "include" });
+      if (res.ok) setCerfaConsentAt(null);
+    } catch {
+      // non bloquant — l'utilisateur peut réessayer
+    } finally {
+      setForgettingProfile(false);
+    }
+  };
 
   const handleExport = async () => {
     setExporting(true);
@@ -142,6 +172,34 @@ export function Profil() {
               </div>
             </div>
           </div>
+
+          {/* Profil CERFA mémorisé — affiché seulement si une mémorisation est active */}
+          {cerfaConsentAt !== null && (
+            <div className="rounded-lg border border-violet-100 bg-violet-50/40 p-4 mb-3">
+              <div className="flex items-start justify-between gap-4 flex-wrap">
+                <div className="flex-1 min-w-0">
+                  <div className="font-semibold text-sm text-[#000020] mb-1 flex items-center gap-2">
+                    <IdCard className="w-4 h-4 text-violet-600" />
+                    Informations mémorisées pour le pré-remplissage
+                  </div>
+                  <div className="text-xs text-gray-500 leading-relaxed mb-3">
+                    Vous avez accepté de mémoriser votre état civil (civilité, date et lieu de naissance, qualité,
+                    adresse postale) pour pré-remplir vos prochaines demandes. Ces données sont conservées chiffrées
+                    et ne sont jamais transmises à des tiers. Retrait du consentement (RGPD art. 7-3) :
+                  </div>
+                  <Button
+                    variant="secondary"
+                    className="gap-2"
+                    onClick={handleForgetCerfaProfile}
+                    disabled={forgettingProfile}
+                  >
+                    <Trash2 className="w-4 h-4" />
+                    {forgettingProfile ? "Suppression…" : "Oublier ces informations"}
+                  </Button>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Droit à l'effacement */}
           <div className="rounded-lg border border-red-100 bg-red-50/30 p-4">

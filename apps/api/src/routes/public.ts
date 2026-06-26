@@ -108,16 +108,36 @@ publicRouter.get("/analyse", analyseLimiter, optionalAuth, async (req: AuthReque
     const lng = req.query.lng !== undefined ? parseFloat(req.query.lng as string) : undefined;
     const citycode = req.query.citycode as string | undefined;
     const zoneOverride = req.query.zone as string | undefined;
+    // Groupement foncier : liste d'ids cadastraux séparés par virgule. Quand
+    // présente, c'est la SÉLECTION EXPLICITE du citoyen (clics carte) : elle fait
+    // FOI. L'analyse agrège ces parcelles et recalcule la constructibilité sur
+    // l'unité foncière.
+    const parcellesParam = (req.query.parcelles as string | undefined)?.trim();
+    const parcelles = parcellesParam
+      ? parcellesParam.split(",").map((p) => p.trim()).filter(Boolean)
+      : [];
 
     const hasCoords = lat !== undefined && lng !== undefined && !isNaN(lat) && !isNaN(lng);
-    if (!q && !hasCoords) {
-      return res.status(400).json({ error: "Paramètre q ou (lat+lng) requis" });
+    if (!q && !hasCoords && parcelles.length === 0) {
+      return res.status(400).json({ error: "Paramètre q, (lat+lng) ou parcelles requis" });
     }
 
-    const analysis = await analyseParcel(q, {
+    // Quand une sélection `parcelles` est fournie, la PRINCIPALE est la 1ère parcelle
+    // sélectionnée — PAS celle résolue depuis l'adresse `q`/`coords`. Sans cela, une
+    // adresse géocodée sur une parcelle voisine (décalage BAN), ou que le citoyen a
+    // justement retirée du groupement, serait réinjectée dans l'unité foncière et
+    // induirait en erreur. `q` reste transmis (libellé d'adresse) mais ne résout
+    // plus de parcelle. Si aucune sélection : comportement adresse/coords classique.
+    const hasSelection = parcelles.length > 0;
+    const principalQuery = hasSelection ? parcelles[0]! : q;
+
+    const analysis = await analyseParcel(principalQuery, {
       citycode,
       zoneOverride,
-      coords: hasCoords ? { lat: lat!, lng: lng! } : undefined,
+      // La sélection explicite prime : on n'utilise pas les coords (point cliqué /
+      // GPS) pour résoudre la principale quand des parcelles sont fournies.
+      coords: !hasSelection && hasCoords ? { lat: lat!, lng: lng! } : undefined,
+      uniteFonciere: parcelles.length > 1 ? { parcelles } : undefined,
     });
 
     // Traçabilité : enregistrer l'adresse cherchée pour le super admin.

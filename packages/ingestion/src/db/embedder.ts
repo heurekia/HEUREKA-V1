@@ -10,6 +10,8 @@
  * indépendant). Sans callback, l'appel reste fonctionnel mais invisible
  * dans l'onglet Coûts IA.
  */
+import { fetchWithRetry } from "../llm-fetch.ts";
+
 const MISTRAL_API_BASE = process.env.MISTRAL_API_BASE ?? "https://api.mistral.ai/v1";
 const MODEL = "mistral-embed";
 const MAX_BATCH = 128;
@@ -39,11 +41,11 @@ export async function embedTexts(texts: string[], opts: EmbedOptions = {}): Prom
   for (let i = 0; i < texts.length; i += MAX_BATCH) {
     const batch = texts.slice(i, i + MAX_BATCH);
     const startedAt = Date.now();
-    const r = await fetch(`${MISTRAL_API_BASE}/embeddings`, {
+    const r = await fetchWithRetry(`${MISTRAL_API_BASE}/embeddings`, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${apiKey}` },
       body: JSON.stringify({ model: MODEL, input: batch }),
-    });
+    }, { timeoutMs: 60_000, retries: 3, label: "Mistral embeddings" });
     if (!r.ok) {
       throw new Error(`Mistral embeddings API ${r.status} : ${await r.text().catch(() => r.statusText)}`);
     }

@@ -9,6 +9,7 @@ import { runAnalysis } from "@heureka-v1/regulatory-engine";
 import { syncDossierFactsFromPieces } from "../services/dossierFacts.js";
 import { enrichAnalysisCitations } from "../services/citationResolver.js";
 import { EDITABLE_FACT_KEYS, isEditableKey } from "../services/dossierFactsAllowlist.js";
+import { analyzeLimiter } from "../middlewares/rateLimiters.js";
 
 export const regulatoryRouter = Router();
 regulatoryRouter.use(requireAuth);
@@ -43,6 +44,7 @@ async function loadOwnedDossier(req: AuthRequest, res: Response, dossierId: stri
 regulatoryRouter.post(
   "/analyze/:dossierId",
   requireRole(...INSTRUCTOR_ROLES),
+  analyzeLimiter,
   async (req: AuthRequest, res: Response) => {
     try {
       const dossierId = z.string().uuid().parse(req.params.dossierId);

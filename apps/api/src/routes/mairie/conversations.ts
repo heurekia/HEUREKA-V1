@@ -1,17 +1,50 @@
 import { Router } from "express";
+import type { Response } from "express";
 import { db } from "../../db.js";
 import { dossiers, users, dossier_messages, dossier_consultations } from "@heureka-v1/db";
 import { eq, desc, and, sql, isNull } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
+import { getCommuneScope, communeScopeFilter, communeInScope } from "../../middlewares/dossierAccess.js";
+import { requirePermission } from "../../middlewares/permissions.js";
 import { resolveAttachmentRefs } from "../../services/gedAttachments.js";
 
 export const conversationsRouter = Router();
 
+// Les routes de LISTE (/conversations, /service-conversations) et celles
+// adressées par :consultationId ne passent pas par enforceDossierAccess (qui ne
+// couvre que /dossiers/:id et /conversations/:dossierId). Elles doivent donc
+// appliquer elles-mêmes le périmètre commune — le ?commune= n'est PAS une
+// frontière de sécurité.
+
+/** Vérifie que la consultation appartient à un dossier du périmètre de l'agent.
+ *  Renvoie le dossier_id, ou null après avoir répondu 404 (pas de fuite
+ *  d'existence d'une consultation hors périmètre). */
+async function consultationInScopeOr404(req: AuthRequest, res: Response, consultationId: string): Promise<string | null> {
+  const [row] = await db
+    .select({ dossier_id: dossier_consultations.dossier_id, commune: dossiers.commune })
+    .from(dossier_consultations)
+    .leftJoin(dossiers, eq(dossier_consultations.dossier_id, dossiers.id))
+    .where(eq(dossier_consultations.id, consultationId))
+    .limit(1);
+  if (!row) {
+    res.status(404).json({ error: "Consultation introuvable" });
+    return null;
+  }
+  const scope = await getCommuneScope(req.user!.id, req.user!.role);
+  if (!communeInScope(row.commune, scope)) {
+    res.status(404).json({ error: "Consultation introuvable" });
+    return null;
+  }
+  return row.dossier_id;
+}
+
 // ── Conversations : liste avec preview et non-lus ──
-conversationsRouter.get("/conversations", async (req: AuthRequest, res) => {
+conversationsRouter.get("/conversations", requirePermission("messagerie.read"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
-    const communeFilter = commune ? sql`AND d.commune ILIKE ${commune}` : sql``;
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    // Périmètre commune appliqué côté SQL ; ?commune= n'est qu'un filtre additionnel.
+    const communeFilter = sql`AND (${communeScopeFilter(sql`d.commune`, scope, commune)})`;
     const rows = await db.execute(sql`
       WITH last_msg AS (
         SELECT DISTINCT ON (dossier_id) dossier_id, content, from_role, created_at
@@ -51,10 +84,11 @@ conversationsRouter.get("/conversations", async (req: AuthRequest, res) => {
 // Combine les fils citoyen↔mairie (messages 'citoyen' non lus) et les fils
 // mairie↔service externe (messages 'service_externe%' non lus) pour rester
 // cohérent avec le badge maintenu en temps réel par MessageScreen.
-conversationsRouter.get("/conversations/unread-count", async (req: AuthRequest, res) => {
+conversationsRouter.get("/conversations/unread-count", requirePermission("messagerie.read"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
-    const communeFilter = commune ? sql`AND d.commune ILIKE ${commune}` : sql``;
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    const communeFilter = sql`AND (${communeScopeFilter(sql`d.commune`, scope, commune)})`;
     const rows = await db.execute(sql`
       SELECT (
         SELECT COUNT(DISTINCT dm.dossier_id)::int
@@ -80,7 +114,7 @@ conversationsRouter.get("/conversations/unread-count", async (req: AuthRequest, 
 });
 
 // ── Thread d'une conversation ──
-conversationsRouter.get("/conversations/:dossierId", async (req: AuthRequest, res) => {
+conversationsRouter.get("/conversations/:dossierId", requirePermission("messagerie.read"), async (req: AuthRequest, res) => {
   try {
     const msgs = await db
       .select({
@@ -107,7 +141,7 @@ conversationsRouter.get("/conversations/:dossierId", async (req: AuthRequest, re
 });
 
 // ── Envoyer un message à un citoyen depuis le dossier ──
-conversationsRouter.post("/conversations/:dossierId", async (req: AuthRequest, res) => {
+conversationsRouter.post("/conversations/:dossierId", requirePermission("messagerie.send"), async (req: AuthRequest, res) => {
   try {
     const content = (req.body?.content as string | undefined)?.trim() ?? "";
     const dossierId = req.params.dossierId as string;
@@ -150,7 +184,7 @@ conversationsRouter.post("/conversations/:dossierId", async (req: AuthRequest, r
 });
 
 // ── Marquer tous les messages citoyens d'une conversation comme lus ──
-conversationsRouter.post("/conversations/:dossierId/read", async (req: AuthRequest, res) => {
+conversationsRouter.post("/conversations/:dossierId/read", requirePermission("messagerie.read"), async (req: AuthRequest, res) => {
   try {
     await db
       .update(dossier_messages)
@@ -171,7 +205,7 @@ conversationsRouter.post("/conversations/:dossierId/read", async (req: AuthReque
 });
 
 // ── Remettre la conversation en non-lu (efface read_at du dernier message citoyen) ──
-conversationsRouter.post("/conversations/:dossierId/unread", async (req: AuthRequest, res) => {
+conversationsRouter.post("/conversations/:dossierId/unread", requirePermission("messagerie.read"), async (req: AuthRequest, res) => {
   try {
     const [last] = await db
       .select({ id: dossier_messages.id })
@@ -201,10 +235,11 @@ conversationsRouter.post("/conversations/:dossierId/unread", async (req: AuthReq
 // Une conversation = une consultation_id. Le service rattaché est résolu via
 // dossier_consultations.external_service_id (peut être NULL si le service n'a
 // pas encore de compte/lien — on retombe sur service_name).
-conversationsRouter.get("/service-conversations", async (req: AuthRequest, res) => {
+conversationsRouter.get("/service-conversations", requirePermission("messagerie.read"), async (req: AuthRequest, res) => {
   try {
     const commune = req.query.commune as string | undefined;
-    const communeFilter = commune ? sql`AND d.commune ILIKE ${commune}` : sql``;
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    const communeFilter = sql`AND (${communeScopeFilter(sql`d.commune`, scope, commune)})`;
     const rows = await db.execute(sql`
       WITH last_msg AS (
         SELECT DISTINCT ON (dm.consultation_id)
@@ -253,8 +288,10 @@ conversationsRouter.get("/service-conversations", async (req: AuthRequest, res) 
   }
 });
 
-conversationsRouter.get("/service-conversations/:consultationId", async (req: AuthRequest, res) => {
+conversationsRouter.get("/service-conversations/:consultationId", requirePermission("messagerie.read"), async (req: AuthRequest, res) => {
   try {
+    const inScope = await consultationInScopeOr404(req, res, req.params.consultationId as string);
+    if (!inScope) return;
     const msgs = await db
       .select({
         id: dossier_messages.id,
@@ -275,23 +312,20 @@ conversationsRouter.get("/service-conversations/:consultationId", async (req: Au
   }
 });
 
-conversationsRouter.post("/service-conversations/:consultationId", async (req: AuthRequest, res) => {
+conversationsRouter.post("/service-conversations/:consultationId", requirePermission("messagerie.send"), async (req: AuthRequest, res) => {
   try {
     const content = (req.body?.content as string | undefined)?.trim();
     if (!content) return res.status(400).json({ error: "Contenu requis" });
 
-    const [consult] = await db
-      .select({ id: dossier_consultations.id, dossier_id: dossier_consultations.dossier_id })
-      .from(dossier_consultations)
-      .where(eq(dossier_consultations.id, req.params.consultationId as string))
-      .limit(1);
-    if (!consult) return res.status(404).json({ error: "Consultation introuvable" });
+    const consultationId = req.params.consultationId as string;
+    const dossierId = await consultationInScopeOr404(req, res, consultationId);
+    if (!dossierId) return;
 
     const [msg] = await db
       .insert(dossier_messages)
       .values({
-        dossier_id: consult.dossier_id,
-        consultation_id: consult.id,
+        dossier_id: dossierId,
+        consultation_id: consultationId,
         from_user_id: req.user!.id,
         from_role: req.user!.role,
         content,
@@ -311,13 +345,16 @@ conversationsRouter.post("/service-conversations/:consultationId", async (req: A
   }
 });
 
-conversationsRouter.post("/service-conversations/:consultationId/read", async (req: AuthRequest, res) => {
+conversationsRouter.post("/service-conversations/:consultationId/read", requirePermission("messagerie.read"), async (req: AuthRequest, res) => {
   try {
+    const consultationId = req.params.consultationId as string;
+    const dossierId = await consultationInScopeOr404(req, res, consultationId);
+    if (!dossierId) return;
     await db
       .update(dossier_messages)
       .set({ read_at: new Date() })
       .where(and(
-        eq(dossier_messages.consultation_id, req.params.consultationId as string),
+        eq(dossier_messages.consultation_id, consultationId),
         sql`from_role LIKE 'service_externe%'`,
         sql`read_at IS NULL`,
       ));

@@ -1,0 +1,29 @@
+# Whitelist LOCALE CrowdSec — IP réelles de l'équipe (NON VERSIONNÉ).
+#
+# install.sh copie ce modèle côté serveur s'il est absent (et ne l'écrase
+# jamais), sous :
+#   /etc/crowdsec/parsers/s02-enrich/heureka-whitelists-local.yaml
+# Recharger après édition : sudo systemctl reload crowdsec
+#
+# On ne met PAS les IP de l'équipe dans le dépôt public → ce fichier réel reste
+# côté VPS uniquement. Le présent .example est le seul versionné.
+#
+# Préférer une IP de SORTIE STABLE :
+#   - VPN à IP fixe (recommandé pour un admin nomade) ou bastion/jump host ;
+#   - bureau à IP statique.
+# Éviter les IP résidentielles DYNAMIQUES :
+#   - IPv4 FAI qui change à la reconnexion box ;
+#   - IPv6 « privacy extension » (sans ff:fe dans la partie hôte) régénérée
+#     toutes les ~24 h → whitelister au mieux le /64, jamais le /128, en sachant
+#     que le préfixe lui-même peut bouger. La whitelist y est vite caduque.
+#
+# Exemples (décommenter et adapter dans le fichier serveur) :
+#   cidr:
+#     - "203.0.113.42/32"          # VPN admin (IP de sortie fixe) — recommandé
+#     - "198.51.100.7/32"          # bureau (IP statique)
+#     - "2a01:db8:1234:5600::/64"  # bureau IPv6 (le /64, pas le /128)
+name: heureka/whitelists-local
+description: "IP de confiance équipe HEUREKIA (fichier local non versionné)"
+whitelist:
+  reason: "HEUREKIA team trusted sources"
+  cidr: []

@@ -1,0 +1,21 @@
+# Whitelist CrowdSec — base versionnée (loopback uniquement).
+#
+# Copié par install.sh dans :
+#   /etc/crowdsec/parsers/s02-enrich/heureka-whitelists.yaml
+#
+# Ce fichier est PUBLIC (versionné) : n'y mets JAMAIS d'IP personnelle ou de
+# bureau (géolocalisable). Les IP réelles de l'équipe (bureau fixe, VPN admin,
+# monitoring) vont dans le fichier LOCAL non versionné, déposé côté serveur :
+#   /etc/crowdsec/parsers/s02-enrich/heureka-whitelists-local.yaml
+# (cf. whitelists.local.example.yaml — install.sh le sème s'il est absent et ne
+# l'écrase jamais).
+#
+# Rappel : avec SSH par clé only + la console OVH comme secours, une whitelist
+# n'est PAS obligatoire (cf. README, section « Ne pas se faire bannir »).
+name: heureka/whitelists
+description: "Loopback de confiance — jamais bloqué par CrowdSec"
+whitelist:
+  reason: "HEUREKIA loopback"
+  ip:
+    - "127.0.0.1"
+    - "::1"

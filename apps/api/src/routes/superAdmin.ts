@@ -9,15 +9,22 @@ import { eq, sql, count, desc, and, or, isNull, isNotNull, ilike, asc, gte, lt, 
 import crypto from "crypto";
 import { sendActivationEmail } from "../services/mailer.js";
 import bcrypt from "bcryptjs";
-import { requireAuth, requireRole, type AuthRequest } from "../middlewares/auth.js";
+import { requireAuth, requireRole, bumpTokenVersion, invalidateTokenVersionCache, type AuthRequest } from "../middlewares/auth.js";
 import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
+import { invalidatePermissions, invalidateAllPermissions } from "../middlewares/permissions.js";
 import { logAudit } from "../services/audit.js";
+import { isProfessionalRole, offboardProfessional, eraseCitizenAccount } from "../services/accountLifecycle.js";
+import { helpAdminRouter } from "./help.js";
 
 export const superAdminRouter = Router();
 
 // All routes require authentication + admin role
 superAdminRouter.use(requireAuth);
 superAdminRouter.use(requireRole("admin"));
+
+// Centre d'aide — outil de rédaction (thèmes + articles). Hérite des gardes
+// requireAuth + requireRole("admin") posées juste au-dessus.
+superAdminRouter.use("/help", helpAdminRouter);
 
 // ─── Dashboard ───────────────────────────────────────────────────────────────
 superAdminRouter.get("/dashboard", async (_req, res) => {
@@ -1013,8 +1020,25 @@ superAdminRouter.get("/users", async (req, res) => {
     const { commune, role } = req.query as { commune?: string; role?: string };
 
     const conditions = [];
-    if (commune) conditions.push(eq(users.commune, commune));
-    if (role) conditions.push(eq(users.role, role as "citoyen" | "mairie" | "instructeur" | "admin"));
+    if (commune) {
+      // Un agent peut être rattaché à PLUSIEURS communes (table user_communes).
+      // `users.commune` ne porte que la commune PRINCIPALE (la 1re saisie à la
+      // création) : filtrer dessus seul masque l'agent dans ses communes
+      // secondaires. On retient donc aussi les agents reliés à la commune via
+      // user_communes (cf. getCommuneScope, qui fait foi pour l'accès réel).
+      conditions.push(sql`(
+        lower(${users.commune}) = lower(${commune})
+        OR EXISTS (
+          SELECT 1 FROM user_communes uc
+          JOIN communes c ON c.id = uc.commune_id
+          WHERE uc.user_id = ${users.id} AND lower(c.name) = lower(${commune})
+        )
+      )`);
+    }
+    if (role) conditions.push(eq(users.role, role as "citoyen" | "mairie" | "instructeur" | "admin" | "service_externe"));
+    // Masque les comptes pro désactivés (offboardés) : du point de vue de la
+    // gestion, ils sont « retirés ». La ligne reste en base (records légaux).
+    conditions.push(isNull(users.deactivated_at));
 
     const rows = await db
       .select({
@@ -1027,6 +1051,11 @@ superAdminRouter.get("/users", async (req, res) => {
         telephone: users.telephone,
         role_config_id: users.role_config_id,
         created_at: users.created_at,
+        // Services annexes (rôle service_externe) : on remonte le service
+        // rattaché pour afficher sa catégorie (ABF, SDIS, DDT…) côté admin.
+        service_id: users.service_id,
+        service_name: external_services.name,
+        service_type: external_services.type,
         activation_pending: sql<boolean>`EXISTS (
           SELECT 1 FROM password_tokens pt
           WHERE pt.user_id = ${users.id}
@@ -1035,6 +1064,7 @@ superAdminRouter.get("/users", async (req, res) => {
         )`,
       })
       .from(users)
+      .leftJoin(external_services, eq(users.service_id, external_services.id))
       .where(conditions.length > 0 ? and(...conditions) : undefined)
       .orderBy(desc(users.created_at));
 
@@ -1180,6 +1210,21 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
       role_config_id: string | null;
     }>;
 
+    // Rôle précédent (pour détecter un changement → révocation des sessions) +
+    // garde anti-lockout : refuser la rétrogradation du DERNIER administrateur
+    // (sinon plus aucun compte n'accède à /api/admin → récupération SQL manuelle).
+    let prevRole: string | undefined;
+    if (role !== undefined) {
+      const [target] = await db.select({ role: users.role }).from(users).where(eq(users.id, id)).limit(1);
+      prevRole = target?.role;
+      if (role !== "admin" && prevRole === "admin") {
+        const adminRows = await db.select({ value: count() }).from(users).where(eq(users.role, "admin"));
+        if ((adminRows[0]?.value ?? 0) <= 1) {
+          return res.status(409).json({ error: "Impossible de rétrograder le dernier administrateur." });
+        }
+      }
+    }
+
     const [updated] = await db
       .update(users)
       .set({ role, prenom, nom, commune, commune_insee, telephone, role_config_id, updated_at: new Date() })
@@ -1202,8 +1247,34 @@ superAdminRouter.patch("/users/:id", async (req, res) => {
     // Rôle et/ou commune ont pu changer → purger le cache de périmètre de cet
     // agent, sinon il garde son ancien scope jusqu'au redémarrage du process.
     invalidateCommuneScope(id);
+    // Changement de rôle = changement de privilèges → révoquer les jetons émis
+    // avec l'ancien rôle (ne pas attendre l'expiration 7 j).
+    if (role !== undefined && prevRole !== undefined && role !== prevRole) {
+      await bumpTokenVersion(id);
+    }
+    // Idem pour le cache de permissions (role_config_id a pu changer).
+    invalidatePermissions(id);
     await logAudit(req, "admin_user_updated", { email: updated.email });
     res.json(updated);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Réinitialise (désactive) la MFA d'un utilisateur — secours opérationnel en cas
+// de perte de l'appareil ET des codes de secours. L'utilisateur devra la
+// reconfigurer à sa prochaine connexion.
+superAdminRouter.post("/users/:id/mfa-reset", async (req, res) => {
+  try {
+    const { id } = req.params;
+    const [u] = await db.update(users)
+      .set({ mfa_enabled: false, mfa_secret: null, mfa_backup_codes: null, updated_at: new Date() })
+      .where(eq(users.id, id))
+      .returning({ email: users.email });
+    if (!u) return res.status(404).json({ error: "Utilisateur introuvable" });
+    await logAudit(req, "admin_mfa_reset", { email: u.email });
+    res.json({ ok: true });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -1252,17 +1323,36 @@ superAdminRouter.put("/users/:id/communes", async (req, res) => {
 superAdminRouter.delete("/users/:id", async (req, res) => {
   try {
     const { id } = req.params;
-    const [target] = await db.select({ email: users.email }).from(users).where(eq(users.id, id)).limit(1);
-    await db.transaction(async (tx) => {
-      // Nullify instructeur_id on dossiers assigned to this user (no cascade in schema)
-      await tx.update(dossiers).set({ instructeur_id: null }).where(eq(dossiers.instructeur_id, id));
-      // Delete pieces jointes uploaded by this user (notNull FK, cannot set null)
-      await tx.delete(dossier_pieces_jointes).where(eq(dossier_pieces_jointes.user_id, id));
-      // Delete the user — cascades through user_id FKs (dossiers, notifications, etc.)
-      await tx.delete(users).where(eq(users.id, id));
-    });
-    await logAudit(req, "admin_user_deleted", { email: target?.email ?? null });
-    res.json({ success: true });
+    // Anti auto-suppression (cohérent avec le flux mairie) et anti-lockout.
+    if (id === (req as AuthRequest).user?.id) {
+      return res.status(400).json({ error: "Vous ne pouvez pas supprimer votre propre compte." });
+    }
+    const [target] = await db.select({ email: users.email, role: users.role, deactivated_at: users.deactivated_at }).from(users).where(eq(users.id, id)).limit(1);
+    if (!target) return res.status(404).json({ error: "Utilisateur non trouvé" });
+
+    // Comptes PROFESSIONNELS (mairie/instructeur/admin/service) : OFFBOARDING.
+    // Un compte qui porte des records légaux (dossier instruit, arrêté signé,
+    // courrier émis…) ne peut être effacé (FK NOT NULL/NO ACTION) : on le
+    // DÉSACTIVE. Un compte qui n'a ni signé ni instruit aucun dossier est en
+    // revanche SUPPRIMÉ réellement, ce qui libère son email. Arbitrage centralisé
+    // dans offboardProfessional. Les CITOYENS, eux, sont effacés (RGPD art. 17).
+    if (isProfessionalRole(target.role)) {
+      // Anti-lockout : ne pas retirer le dernier administrateur ACTIF.
+      if (target.role === "admin") {
+        const [row] = await db.select({ value: count() }).from(users).where(and(eq(users.role, "admin"), isNull(users.deactivated_at)));
+        if ((row?.value ?? 0) <= 1) {
+          return res.status(409).json({ error: "Impossible de retirer le dernier administrateur." });
+        }
+      }
+      const { action } = await offboardProfessional(id, (req as AuthRequest).user?.id ?? null);
+      await logAudit(req, action === "deleted" ? "admin_user_deleted" : "admin_user_deactivated", { email: target.email });
+      return res.json({ success: true, action });
+    }
+
+    // Citoyen : effacement définitif (fichiers + pièces + cascade DB).
+    await eraseCitizenAccount(id);
+    await logAudit(req, "admin_user_deleted", { email: target.email });
+    res.json({ success: true, action: "deleted" });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -1308,6 +1398,7 @@ superAdminRouter.post("/roles", async (req, res) => {
       })
       .returning();
 
+    invalidateAllPermissions();
     await logAudit(req, "admin_role_created");
     res.status(201).json(newRole);
   } catch (err) {
@@ -1344,6 +1435,8 @@ superAdminRouter.patch("/roles/:id", async (req, res) => {
       .where(eq(role_permissions.id, id))
       .returning();
 
+    // Les permissions du profil ont pu changer → invalider tous les agents.
+    invalidateAllPermissions();
     await logAudit(req, "admin_role_updated");
     res.json(updated);
   } catch (err) {
@@ -1364,6 +1457,7 @@ superAdminRouter.delete("/roles/:id", async (req, res) => {
     }
 
     await db.delete(role_permissions).where(eq(role_permissions.id, id));
+    invalidateAllPermissions();
     await logAudit(req, "admin_role_deleted");
     res.json({ success: true });
   } catch (err) {
@@ -1378,7 +1472,7 @@ superAdminRouter.get("/services", async (_req, res) => {
     const [services, userCounts, communeCounts] = await Promise.all([
       db.select().from(external_services).orderBy(external_services.name),
       db.select({ service_id: users.service_id, cnt: count() })
-        .from(users).where(isNotNull(users.service_id)).groupBy(users.service_id),
+        .from(users).where(and(isNotNull(users.service_id), isNull(users.deactivated_at))).groupBy(users.service_id),
       db.select({ service_id: service_communes.service_id, cnt: count() })
         .from(service_communes).groupBy(service_communes.service_id),
     ]);
@@ -1487,7 +1581,7 @@ superAdminRouter.get("/services/:id/users", async (req, res) => {
       nom: users.nom,
       telephone: users.telephone,
       created_at: users.created_at,
-    }).from(users).where(eq(users.service_id, id));
+    }).from(users).where(and(eq(users.service_id, id), isNull(users.deactivated_at)));
     res.json(rows);
   } catch (err) {
     console.error(err);
@@ -1508,14 +1602,41 @@ superAdminRouter.post("/services/:id/users", async (req, res) => {
     const [service] = await db.select().from(external_services).where(eq(external_services.id, id));
     if (!service) return res.status(404).json({ error: "Service introuvable" });
 
+    // Email déjà en base ? Un compte ACTIF est un vrai conflit (409). Un compte
+    // DÉSACTIVÉ (offboardé) garde l'email par la contrainte d'unicité mais n'est
+    // plus utilisé : on le RÉACTIVE et on le rattache à ce service plutôt que de
+    // bloquer. Préserve d'éventuels records légaux ; remet un mot de passe
+    // verrouillé + un nouvel email d'activation, comme pour un nouvel accès.
+    const [existing] = await db
+      .select({ id: users.id, deactivated_at: users.deactivated_at })
+      .from(users).where(eq(users.email, email)).limit(1);
+    if (existing && !existing.deactivated_at) {
+      return res.status(409).json({ error: "Cet email est déjà utilisé" });
+    }
+
     // Create account with locked password — user sets it via activation email
     const locked_hash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
-    const [user] = await db.insert(users).values({
-      email, prenom, nom, telephone,
-      password_hash: locked_hash,
-      role: "service_externe" as const,
-      service_id: id,
-    }).returning({ id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, telephone: users.telephone, created_at: users.created_at });
+    const userCols = { id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, telephone: users.telephone, created_at: users.created_at };
+    let user;
+    if (existing) {
+      [user] = await db.update(users).set({
+        prenom, nom, telephone,
+        password_hash: locked_hash,
+        role: "service_externe" as const,
+        service_id: id,
+        deactivated_at: null,
+        deactivated_by: null,
+        updated_at: new Date(),
+      }).where(eq(users.id, existing.id)).returning(userCols);
+      await bumpTokenVersion(existing.id);
+    } else {
+      [user] = await db.insert(users).values({
+        email, prenom, nom, telephone,
+        password_hash: locked_hash,
+        role: "service_externe" as const,
+        service_id: id,
+      }).returning(userCols);
+    }
 
     // Generate activation token (valid 7 days)
     const token = crypto.randomBytes(32).toString("hex");
@@ -1553,8 +1674,14 @@ superAdminRouter.post("/services/:id/users", async (req, res) => {
 superAdminRouter.delete("/services/:id/users/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    await db.delete(users).where(eq(users.id, userId));
-    res.json({ success: true });
+    // Compte service_externe = compte PRO : même arbitrage que la page utilisateurs
+    // (offboardProfessional). Sans aucun record légal (ni avis signé ni dossier
+    // instruit), le compte est SUPPRIMÉ — son email redevient disponible. Sinon il
+    // est désactivé (records préservés) et masqué de la liste du service.
+    const [target] = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
+    if (!target) return res.status(404).json({ error: "Utilisateur non trouvé" });
+    const { action } = await offboardProfessional(userId, (req as AuthRequest).user?.id ?? null);
+    res.json({ success: true, action });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
