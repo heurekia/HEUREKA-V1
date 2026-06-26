@@ -44,7 +44,7 @@ pilote mono-instance** une fois le Palier 0 traité. Ce n'est pas un audit
 |---|---|---|---|
 | **0** | Garde-fous à faible risque (index, timeouts, rate-limit) | Faible | ✅ Fait |
 | **1** | Sortir le travail lourd du cycle requête + transactions | Moyen | ✅ Fait (hors 1.3b mineur) |
-| **2** | Exécution (build JS, fin du `tsx`) & observabilité | Moyen | 🚧 Bundle prêt + boot vérifié (reste l'activation pm2 sur le VPS) |
+| **2** | Exécution (build JS, fin du `tsx`) & observabilité | Moyen | ✅ `tsx`→`node` activé en prod ; healthcheck + logs (reste métriques/Sentry) |
 | **3** | Frontend (code splitting, mémoïsation, cache données) | Faible | ✅ Fait (hors cache react-query, optionnel) |
 | **4** | Scaling horizontal (Redis, clustering, Postgres séparé) | Élevé | ⏳ À faire |
 
@@ -98,7 +98,7 @@ bloquant** AVEC préservation/renforcement du blocage de soumission.
 | 2.4 | Sentry (back + front) | ⏸️ Reporté | — |
 | 2.5a | Refactor des chemins (`src/paths.ts`) — prérequis bundle | ✅ Fait | `refactor(api): centralise la résolution des chemins` |
 | 2.5b | Bundle tsup + config pm2 `node` — **prêt + boot vérifié localement** | ✅ Fait (activation déploiement restante) | `build(api): bundle … tsup + config pm2 node` |
-| 2.5c | Activation : bascule pm2 `tsx` → `node dist/index.js` sur le VPS | ⏳ À faire (accès déploiement) | — |
+| 2.5c | Activation : bascule pm2 `tsx` → `node dist/index.js` sur le VPS | ✅ Fait (en prod, `/api/health` → 200) ; deploy.yml bascule sur `startOrReload ecosystem` | `fix(deploy): ecosystem … cwd racine` |
 
 **2.3 / 2.4 — pourquoi reportés.** `prom-client` et `@sentry/node` v8+ tirent
 tous deux `@opentelemetry/api`, qui est un **peer optionnel de drizzle-orm** : sa

@@ -48,7 +48,10 @@ jobs:
               exit 1
             fi
 
-            pm2 restart heurekia-api --update-env
+            # L'API tourne désormais sur le bundle node (apps/api/dist/index.js)
+            # via ecosystem.config.cjs. startOrReload relit la config et relance
+            # le process avec le dist fraîchement reconstruit par `pnpm build`.
+            pm2 startOrReload ecosystem.config.cjs --update-env
             pm2 save
 
             for i in {1..20}; do
