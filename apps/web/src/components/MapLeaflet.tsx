@@ -68,6 +68,7 @@ export function MapLeaflet({
   pluZoneLayer = false,
   baseLayer = "osm",
   highlightGeometry,
+  positionMarker,
   defaultCenter,
   defaultZoom,
 }: {
@@ -88,6 +89,8 @@ export function MapLeaflet({
   baseLayer?: BaseLayer;
   /** GeoJSON geometry to highlight (e.g. found parcel polygon) */
   highlightGeometry?: object;
+  /** User's GPS position to display (dot + accuracy circle). Used by "Me localiser". */
+  positionMarker?: { lat: number; lng: number; accuracy?: number } | null;
   /** Override initial map center [lat, lng] */
   defaultCenter?: [number, number];
   /** Override initial map zoom level */
@@ -104,6 +107,7 @@ export function MapLeaflet({
   const clickPinRef = useRef<L.Marker | null>(null);
   const baseTileRef = useRef<L.TileLayer | null>(null);
   const highlightLayerRef = useRef<L.GeoJSON | null>(null);
+  const positionMarkerRef = useRef<L.LayerGroup | null>(null);
   // Capture initial center/zoom at mount time (refs avoid re-running the init effect)
   const initialCenterRef = useRef<[number, number]>(defaultCenter ?? DEFAULT_CENTER);
   const initialZoomRef = useRef<number>(defaultZoom ?? DEFAULT_ZOOM);
@@ -134,6 +138,7 @@ export function MapLeaflet({
       parcelLayerRef.current = null;
       pluLayerRef.current = null;
       highlightLayerRef.current = null;
+      positionMarkerRef.current = null;
       setMapReady(false);
     };
   }, []);
@@ -283,6 +288,42 @@ export function MapLeaflet({
       if (bounds.isValid()) map.fitBounds(bounds, { padding: [60, 60], maxZoom: 19 });
     } catch { /* invalid geometry — ignore */ }
   }, [highlightGeometry]);
+
+  // User GPS position (from "Me localiser"): blue dot + accuracy circle so the
+  // citizen can see how precise the fix is before trusting the parcel under it.
+  useEffect(() => {
+    const map = mapRef.current;
+    if (!map) return;
+    if (positionMarkerRef.current) { positionMarkerRef.current.remove(); positionMarkerRef.current = null; }
+    if (!positionMarker) return;
+
+    const { lat, lng, accuracy } = positionMarker;
+    const group = L.layerGroup();
+    let circle: L.Circle | null = null;
+    if (accuracy && accuracy > 0) {
+      circle = L.circle([lat, lng], {
+        radius: accuracy,
+        color: "#4F46E5", weight: 1, opacity: 0.5,
+        fillColor: "#4F46E5", fillOpacity: 0.12,
+      });
+      circle.addTo(group);
+    }
+    L.marker([lat, lng], {
+      icon: L.divIcon({
+        html: `<div style="width:18px;height:18px;background:#4F46E5;border:3px solid white;border-radius:50%;box-shadow:0 0 0 2px rgba(79,70,229,0.4),0 2px 6px rgba(0,0,0,0.4);transform:translate(-50%,-50%)"></div>`,
+        iconSize: [0, 0],
+        className: "",
+      }),
+    }).addTo(group);
+    group.addTo(map);
+    positionMarkerRef.current = group;
+
+    // Frame the accuracy circle (unless a parcel highlight already drives the view).
+    if (circle && !highlightGeometry) {
+      const bounds = circle.getBounds();
+      if (bounds.isValid()) map.fitBounds(bounds, { padding: [40, 40], maxZoom: 18 });
+    }
+  }, [positionMarker, highlightGeometry, mapReady]);
 
   // Map click handler — only active in clickMode
   useEffect(() => {

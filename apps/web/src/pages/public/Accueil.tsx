@@ -91,9 +91,46 @@ export function Accueil() {
   const [query, setQuery] = useState("");
   const [suggestions, setSuggestions] = useState<BanSuggestion[]>([]);
   const [showSugg, setShowSugg] = useState(false);
+  const [geoLoading, setGeoLoading] = useState(false);
+  const [geoError, setGeoError] = useState("");
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const navigate = useNavigate();
   const { user } = useAuth();
+
+  // « Me localiser » : on récupère la position GPS du navigateur puis on bascule
+  // sur l'analyse parcellaire centrée sur ce point. On ne sélectionne PAS la
+  // parcelle aveuglément : la page d'analyse laisse l'utilisateur confirmer
+  // (et n'auto-analyse que si la précision GPS est suffisante). Voir
+  // AnalyseParcellaire — la précision (`acc`, en mètres) est transmise telle quelle.
+  const handleLocate = () => {
+    setGeoError("");
+    if (!("geolocation" in navigator)) {
+      setGeoError("La géolocalisation n'est pas disponible sur votre appareil.");
+      return;
+    }
+    setGeoLoading(true);
+    navigator.geolocation.getCurrentPosition(
+      (pos) => {
+        setGeoLoading(false);
+        const { latitude, longitude, accuracy } = pos.coords;
+        const params = new URLSearchParams({
+          lat: latitude.toFixed(6),
+          lng: longitude.toFixed(6),
+          acc: String(Math.round(accuracy)),
+        });
+        navigate(`/analyse-parcellaire?${params.toString()}`);
+      },
+      (err) => {
+        setGeoLoading(false);
+        setGeoError(
+          err.code === err.PERMISSION_DENIED
+            ? "Localisation refusée. Autorisez l'accès ou saisissez votre adresse."
+            : "Impossible de vous localiser. Saisissez votre adresse ci-dessus."
+        );
+      },
+      { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 }
+    );
+  };
 
   const handleDeposer = () => {
     if (user?.role === "citoyen") navigate("/citoyen/nouvelle-demande");
@@ -185,7 +222,8 @@ export function Accueil() {
           </div>
 
           {/* Input + button */}
-          <div className="flex flex-1 gap-3 min-w-0">
+          <div className="flex flex-col flex-1 gap-2 min-w-0">
+           <div className="flex gap-3">
             <div className="relative flex-1">
               <div className="flex items-center gap-2 border border-gray-200 rounded-xl px-4 bg-gray-50">
                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="#9CA3AF" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -233,6 +271,31 @@ export function Accueil() {
                 <line x1="5" y1="12" x2="19" y2="12" /><polyline points="12 5 19 12 12 19" />
               </svg>
             </button>
+           </div>
+
+           {/* Géolocalisation */}
+           <div className="flex items-center gap-3 flex-wrap">
+             <button
+               type="button"
+               onClick={handleLocate}
+               disabled={geoLoading}
+               className="flex items-center gap-1.5 text-sm font-medium text-heureka-600 hover:text-heureka-700 disabled:opacity-60 disabled:cursor-default transition-colors"
+             >
+               {geoLoading ? (
+                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="animate-spin">
+                   <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+                 </svg>
+               ) : (
+                 <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                   <circle cx="12" cy="12" r="3" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3" />
+                 </svg>
+               )}
+               {geoLoading ? "Localisation en cours…" : "Me localiser"}
+             </button>
+             {geoError
+               ? <span className="text-xs text-amber-600">{geoError}</span>
+               : <span className="text-xs text-gray-400">Utilisez votre position pour trouver votre parcelle.</span>}
+           </div>
           </div>
         </div>
       </section>
