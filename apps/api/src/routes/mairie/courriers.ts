@@ -7,6 +7,7 @@ import { type AuthRequest } from "../../middlewares/auth.js";
 import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { CODE_URBANISME_ID } from "../../services/legifrance.js";
+import { TEMPLATES as TOURS_TEMPLATES } from "../../scripts/tours-courrier-templates.js";
 import { notifyUser } from "../../services/notify.js";
 import {
   emitPieceComplementRequest,
@@ -640,6 +641,41 @@ courriersRouter.post("/templates", requirePermission("courriers.templates"), asy
     res.status(201).json(tpl);
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Import en un clic des modèles de courrier de Tours Métropole pour la commune
+// de l'agent. Idempotent : un modèle déjà présent (même nom + commune) est
+// ignoré, jamais dupliqué. Les modèles importés deviennent des lignes en base,
+// éditables/supprimables comme n'importe quel modèle.
+courriersRouter.post("/templates/import-tours", requirePermission("courriers.templates"), async (req: AuthRequest, res) => {
+  try {
+    const communeKey = await getCommuneForUser(req);
+    if (!communeKey) return res.status(400).json({ error: "Commune introuvable" });
+    let inserted = 0;
+    let skipped = 0;
+    for (const tpl of TOURS_TEMPLATES) {
+      const [existing] = await db
+        .select({ id: courrier_templates.id })
+        .from(courrier_templates)
+        .where(and(eq(courrier_templates.commune_insee, communeKey), eq(courrier_templates.name, tpl.name)))
+        .limit(1);
+      if (existing) {
+        skipped++;
+        continue;
+      }
+      await db.insert(courrier_templates).values({
+        commune_insee: communeKey,
+        name: tpl.name,
+        category: tpl.category,
+        body: tpl.body,
+      });
+      inserted++;
+    }
+    res.json({ inserted, skipped, total: TOURS_TEMPLATES.length });
+  } catch (err) {
+    console.error("[templates/import-tours]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
