@@ -426,6 +426,13 @@ export function NouvelleDemandeWizard() {
   const [banSuggestions, setBanSuggestions] = useState<{ label: string }[]>([]);
   const [showBanSuggestions, setShowBanSuggestions] = useState(false);
   const suggestTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Attache d'une parcelle supplémentaire au projet (unité foncière) directement
+  // depuis le wizard, sans repasser par l'outil d'analyse parcellaire — par ex.
+  // un citoyen déjà connecté qui démarre une nouvelle demande et veut ajouter une
+  // parcelle adjacente par sa seule référence cadastrale.
+  const [extraParcelInput, setExtraParcelInput] = useState("");
+  const [attachingParcel, setAttachingParcel] = useState(false);
+  const [attachError, setAttachError] = useState<string | null>(null);
 
   // Step 2 – Nature (multi-select)
   const [natures, setNatures] = useState<NatureId[]>([]);
@@ -802,6 +809,10 @@ export function NouvelleDemandeWizard() {
     if (!query) return;
     setBanSuggestions([]);
     setShowBanSuggestions(false);
+    // Nouvelle recherche → on repart d'un terrain « propre » : on réinitialise la
+    // saisie d'ajout de parcelle et son éventuelle erreur.
+    setExtraParcelInput("");
+    setAttachError(null);
     setSearching(true);
     try {
       const result = await api.get<Record<string, unknown>>(
@@ -816,6 +827,85 @@ export function NouvelleDemandeWizard() {
       setSearching(false);
     }
   }, [search]);
+
+  // ── Unité foncière : attache / détache d'une parcelle cadastrale ──────────────
+  // Liste ordonnée des parcelles actuellement rattachées au projet (principale en
+  // tête). Sert de base au rendu des « chips » et aux ajouts/retraits.
+  const attachedParcelles: ParcelleRefUI[] =
+    parcel?.parcelles && parcel.parcelles.length > 0
+      ? parcel.parcelles
+      : parcel?.parcelle
+        ? [{ parcelle_id: parcel.parcelle, surface_m2: parcel.surfaceTerrain, commune: parcel.commune }]
+        : [];
+
+  // Recalcule l'unité foncière pour une nouvelle liste d'ids (principale en tête)
+  // via /public/analyse?parcelles=… puis met à jour l'état du wizard. L'adresse et
+  // la commune saisies à l'origine sont conservées (l'agrégat repart de la
+  // référence cadastrale principale et n'a pas toujours d'adresse postale).
+  const reanalyseUnite = useCallback(async (ids: string[]): Promise<ParcelInfo | null> => {
+    if (ids.length === 0) return null;
+    setAttachingParcel(true);
+    setAttachError(null);
+    try {
+      const result = await api.get<Record<string, unknown>>(
+        `/public/analyse?parcelles=${encodeURIComponent(ids.join(","))}`,
+      );
+      const mapped = mapAnalysis(result, parcel?.adresse ?? "");
+      const merged: ParcelInfo = {
+        ...mapped,
+        adresse: parcel?.adresse || mapped.adresse,
+        commune: parcel?.commune || mapped.commune,
+      };
+      setParcel(merged);
+      setParcelRaw(result);
+      return merged;
+    } catch {
+      setAttachError("Impossible d'analyser cette parcelle. Vérifiez votre connexion et réessayez.");
+      return null;
+    } finally {
+      setAttachingParcel(false);
+    }
+  }, [parcel?.adresse, parcel?.commune]);
+
+  // Ajoute une parcelle cadastrale au projet à partir de sa seule référence.
+  const attachParcelle = useCallback(async (rawRef: string) => {
+    // Normalisation alignée sur l'API : majuscules, sans espaces ni points
+    // (ex. « 4129 5000 DB 0264 » ou « 41295.000.DB.0264 » → « 41295000DB0264 »).
+    const ref = rawRef.trim().toUpperCase().replace(/[\s.]/g, "");
+    if (!ref) return;
+    // Une référence cadastrale complète fait 14 caractères (5 INSEE + 3 préfixe +
+    // 2 section + 4 numéro). L'API n'agrège que les références de cette longueur,
+    // on valide donc strictement pour éviter une erreur « introuvable » trompeuse.
+    if (!/^[0-9A-Z]{14}$/.test(ref)) {
+      setAttachError("Référence cadastrale invalide — 14 caractères attendus (ex. 41295000DB0264).");
+      return;
+    }
+    const existing = attachedParcelles.map((p) => p.parcelle_id);
+    if (existing.includes(ref)) {
+      setAttachError("Cette parcelle est déjà rattachée au projet.");
+      return;
+    }
+    const merged = await reanalyseUnite([...existing, ref]);
+    if (!merged) return;
+    // Confirme que la référence a bien été reconnue dans l'agrégat renvoyé ; sinon
+    // on revient à la liste précédente et on signale une référence introuvable.
+    if (!merged.parcelles?.some((p) => p.parcelle_id === ref)) {
+      // Restaure la liste précédente avant d'afficher l'erreur (reanalyseUnite
+      // remet attachError à null en début d'appel, d'où cet ordre).
+      if (existing.length > 0) await reanalyseUnite(existing);
+      setAttachError("Référence cadastrale introuvable. Vérifiez-la (ex. 41295000DB0264).");
+      return;
+    }
+    setExtraParcelInput("");
+  }, [attachedParcelles, reanalyseUnite]);
+
+  // Détache une parcelle. On interdit le retrait de la dernière (un projet a
+  // toujours au moins une parcelle).
+  const detachParcelle = useCallback(async (parcelleId: string) => {
+    const ids = attachedParcelles.map((p) => p.parcelle_id).filter((id) => id !== parcelleId);
+    if (ids.length === 0) return;
+    await reanalyseUnite(ids);
+  }, [attachedParcelles, reanalyseUnite]);
 
   // ── AI classification ────────────────────────────────────────────────────────
   const classify = useCallback(async () => {
@@ -1415,22 +1505,61 @@ export function NouvelleDemandeWizard() {
                     ))}
                   </div>
 
-                  {/* Détail des parcelles du groupement foncier */}
-                  {parcel.parcelles && parcel.parcelles.length > 1 && (
-                    <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #86EFAC" }}>
-                      <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>📋 Parcelles du groupement</div>
-                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-                        {parcel.parcelles.map((p) => (
-                          <span key={p.parcelle_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #86EFAC", borderRadius: 999, padding: "3px 10px", fontSize: 11.5, color: "#0F172A", fontWeight: 600 }}>
+                  {/* Parcelles du projet (unité foncière) — ajout/retrait direct
+                      depuis le wizard, sans repasser par l'analyse parcellaire. */}
+                  <div style={{ marginTop: 14, paddingTop: 12, borderTop: "1px dashed #86EFAC" }}>
+                    <div style={{ fontSize: 11, color: "#64748b", marginBottom: 6 }}>
+                      📋 Parcelles du projet{attachedParcelles.length > 1 ? ` (${attachedParcelles.length})` : ""}
+                    </div>
+                    {attachedParcelles.length > 0 && (
+                      <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
+                        {attachedParcelles.map((p, i) => (
+                          <span key={p.parcelle_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #86EFAC", borderRadius: 999, padding: attachedParcelles.length > 1 ? "3px 6px 3px 10px" : "3px 10px", fontSize: 11.5, color: "#0F172A", fontWeight: 600 }}>
                             {p.parcelle_id}
                             {p.surface_m2 != null && p.surface_m2 > 0 && (
                               <span style={{ color: "#64748b", fontWeight: 400 }}>· {Math.round(p.surface_m2).toLocaleString("fr-FR")} m²</span>
                             )}
+                            {i === 0 && attachedParcelles.length > 1 && (
+                              <span title="Parcelle principale" style={{ color: "#15803D", fontWeight: 700 }}>★</span>
+                            )}
+                            {attachedParcelles.length > 1 && (
+                              <button
+                                onClick={() => void detachParcelle(p.parcelle_id)}
+                                disabled={attachingParcel}
+                                title="Retirer cette parcelle"
+                                style={{ border: "none", background: "#F0FDF4", color: "#15803D", borderRadius: 999, width: 18, height: 18, cursor: attachingParcel ? "not-allowed" : "pointer", fontSize: 13, lineHeight: 1, display: "flex", alignItems: "center", justifyContent: "center", padding: 0 }}
+                              >×</button>
+                            )}
                           </span>
                         ))}
                       </div>
+                    )}
+
+                    {/* Ajout d'une parcelle par référence cadastrale */}
+                    <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+                      <input
+                        value={extraParcelInput}
+                        onChange={(e) => { setExtraParcelInput(e.target.value); if (attachError) setAttachError(null); }}
+                        onKeyDown={(e) => { if (e.key === "Enter" && !attachingParcel) void attachParcelle(extraParcelInput); }}
+                        placeholder="Réf. cadastrale (ex : 41295000DB0264)"
+                        style={{ flex: 1, padding: "8px 12px", border: "1.5px solid #86EFAC", borderRadius: 9, fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box", background: "white" }}
+                      />
+                      <button
+                        onClick={() => void attachParcelle(extraParcelInput)}
+                        disabled={attachingParcel || !extraParcelInput.trim()}
+                        style={{ padding: "8px 16px", background: "#15803D", color: "white", border: "none", borderRadius: 9, fontSize: 13, fontWeight: 600, cursor: attachingParcel || !extraParcelInput.trim() ? "not-allowed" : "pointer", opacity: attachingParcel || !extraParcelInput.trim() ? 0.6 : 1, whiteSpace: "nowrap", flexShrink: 0 }}
+                      >
+                        {attachingParcel ? "Ajout…" : "+ Ajouter"}
+                      </button>
                     </div>
-                  )}
+                    {attachError ? (
+                      <div style={{ fontSize: 11.5, color: "#DC2626", marginTop: 6 }}>{attachError}</div>
+                    ) : (
+                      <div style={{ fontSize: 11, color: "#64748b", marginTop: 6, lineHeight: 1.4 }}>
+                        Votre projet s'étend sur plusieurs parcelles ? Ajoutez-les ici par leur référence cadastrale pour constituer un groupement foncier.
+                      </div>
+                    )}
+                  </div>
 
                   {hasABF && (
                     <div
