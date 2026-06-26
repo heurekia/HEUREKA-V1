@@ -4885,8 +4885,8 @@ function ServicesAnnexes() {
       loadUsers(selected.id);
       loadServices();
     } catch (err: unknown) {
-      const msg = (err as { message?: string }).message ?? "";
-      showToast(msg.includes("409") ? "Cet email est déjà utilisé" : "Erreur lors de la création", "error");
+      const conflict = err instanceof ApiError && err.status === 409;
+      showToast(conflict ? "Cet email est déjà utilisé" : "Erreur lors de la création", "error");
     } finally {
       setSaving(false);
     }
