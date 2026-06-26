@@ -2170,6 +2170,20 @@ export function TemplateManagerPanel({ inseeCode }: { inseeCode?: string }) {
     await load();
   };
 
+  const [importing, setImporting] = useState(false);
+  const handleImportTours = async () => {
+    setImporting(true);
+    try {
+      const r = await api.post<{ inserted: number; skipped: number; total: number }>(`/mairie/templates/import-tours${q}`, {});
+      await load();
+      window.alert(`${r.inserted} modèle(s) importé(s)${r.skipped ? `, ${r.skipped} déjà présent(s)` : ""}.`);
+    } catch (e) {
+      window.alert(e instanceof Error ? e.message : "Échec de l'import — vérifiez que votre compte est rattaché à une commune.");
+    } finally {
+      setImporting(false);
+    }
+  };
+
   if (editing !== null) {
     return (
       <CanvasTemplateEditor
@@ -2190,10 +2204,16 @@ export function TemplateManagerPanel({ inseeCode }: { inseeCode?: string }) {
           <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 2 }}>Mes Modèles de Courrier</div>
           <div style={{ fontSize: 12, color: "#94a3b8" }}>Modèles partagés avec toute la commune, avec variables dynamiques.</div>
         </div>
-        <button onClick={() => setEditing({ name: "", category: "general", body: "" })}
-          style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
-          <Plus size={13} /> Nouveau modèle
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          <button onClick={handleImportTours} disabled={importing}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: "white", color: "#4F46E5", border: "1px solid #C7D2FE", borderRadius: 8, cursor: importing ? "default" : "pointer", fontSize: 13, fontWeight: 600, opacity: importing ? 0.6 : 1 }}>
+            <FileText size={13} /> {importing ? "Import…" : "Importer les modèles de Tours Métropole"}
+          </button>
+          <button onClick={() => setEditing({ name: "", category: "general", body: "" })}
+            style={{ display: "flex", alignItems: "center", gap: 5, padding: "7px 14px", background: "linear-gradient(135deg,#4F46E5,#6366F1)", color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+            <Plus size={13} /> Nouveau modèle
+          </button>
+        </div>
       </div>
 
       {loading ? <div style={{ color: "#94a3b8", fontSize: 13, padding: 20, textAlign: "center" }}>Chargement…</div>
@@ -2201,10 +2221,16 @@ export function TemplateManagerPanel({ inseeCode }: { inseeCode?: string }) {
           <div style={{ border: "1px dashed #CBD5E1", borderRadius: 10, padding: 36, textAlign: "center" }}>
             <FileText size={32} color="#CBD5E1" style={{ marginBottom: 10 }} />
             <p style={{ color: "#94a3b8", fontSize: 13, margin: "0 0 14px" }}>Aucun modèle de courrier</p>
-            <button onClick={() => setEditing({ name: "", category: "general", body: "" })}
-              style={{ padding: "7px 18px", background: "#4F46E5", color: "white", border: "none", borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
-              Créer un modèle
-            </button>
+            <div style={{ display: "flex", gap: 8, justifyContent: "center", flexWrap: "wrap" }}>
+              <button onClick={handleImportTours} disabled={importing}
+                style={{ padding: "7px 18px", background: "white", color: "#4F46E5", border: "1px solid #C7D2FE", borderRadius: 7, cursor: importing ? "default" : "pointer", fontSize: 13, fontWeight: 600, opacity: importing ? 0.6 : 1 }}>
+                {importing ? "Import…" : "Importer les modèles de Tours Métropole"}
+              </button>
+              <button onClick={() => setEditing({ name: "", category: "general", body: "" })}
+                style={{ padding: "7px 18px", background: "#4F46E5", color: "white", border: "none", borderRadius: 7, cursor: "pointer", fontSize: 13, fontWeight: 600 }}>
+                Créer un modèle
+              </button>
+            </div>
           </div>
         ) : (
           <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
