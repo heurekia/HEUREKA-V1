@@ -1,4 +1,4 @@
-import { useState, useEffect, useLayoutEffect, useRef, useCallback, type Dispatch, type SetStateAction } from "react";
+import { useState, useEffect, useLayoutEffect, useRef, useCallback, type CSSProperties, type Dispatch, type SetStateAction } from "react";
 import DOMPurify from "dompurify";
 import { Rnd } from "react-rnd";
 import { api } from "../../lib/api";
@@ -252,16 +252,107 @@ function DraggableStamp({ src, pos, setPos, caption, onHide }: {
   );
 }
 
-// ─── Canvas print view (multi-page A4) ───────────────────────────────────────
+// Marge haute des feuilles de continuation engendrées par un bloc qui déborde.
+const CANVAS_CONT_TOP = 24;
+const canvasFontFamily = (f: CanvasBlock["fontFamily"]) => (f === "serif" ? "Georgia, serif" : "system-ui, sans-serif");
+
+// ─── Canvas print view (multi-page A4, repagination auto) ─────────────────────
+// Les blocs canvas sont positionnés à hauteur fixe (overflow caché). Un bloc de
+// texte dont le contenu dépasse sa boîte était simplement rogné, sans page 2.
+// On mesure ici la hauteur réelle de chaque bloc : s'il déborde l'espace
+// disponible jusqu'au bas de la feuille, on répartit son contenu sur des feuilles
+// supplémentaires (en-tête/pied/compteur répétés).
 function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]; letterhead: Letterhead; extraHtml?: string }) {
   const hasLH = !!(letterhead.letterhead_logo || letterhead.letterhead_title);
   const hH = hasLH ? HDR_H : 0;
+  const regionH = PAGE_H - hH - FTR_H;
+
+  const measRefs = useRef(new Map<string, HTMLDivElement>());
+  const [flowed, setFlowed] = useState<CanvasPage[] | null>(null);
+  // Signature stable du contenu : évite de re-mesurer à chaque re-render parent
+  // (parseCanvasDoc recrée le tableau `pages` à chaque fois).
+  const sig = pages.map((p) => p.blocks.map((b) => `${b.id}:${b.x},${b.y},${b.w},${b.h},${b.padding}|${b.html.length}`).join(";")).join("||");
+
+  useLayoutEffect(() => {
+    const out: CanvasPage[] = [];
+    for (let pi = 0; pi < pages.length; pi++) {
+      const page = pages[pi];
+      if (!page) continue;
+      const baseBlocks: CanvasBlock[] = [];
+      const spawned: CanvasBlock[] = [];
+      // Traite les blocs du plus haut au plus bas pour que les continuations
+      // d'un bloc de corps (le plus bas dans une lettre) viennent en dernier.
+      const ordered = [...page.blocks].sort((a, b) => a.y - b.y);
+      for (const b of ordered) {
+        const padding = b.padding || 0;
+        const measEl = measRefs.current.get(`${pi}:${b.id}`);
+        const naturalTotal = (measEl ? measEl.scrollHeight : 0) + 2 * padding;
+        const avail = regionH - b.y;
+        if (naturalTotal <= b.h) {
+          baseBlocks.push(b); // tient dans sa boîte → inchangé
+        } else if (naturalTotal <= avail) {
+          baseBlocks.push({ ...b, h: naturalTotal }); // grandit sur place
+        } else {
+          // Déborde : répartit les blocs de premier niveau du contenu en chunks.
+          const kids = measEl ? (Array.from(measEl.children) as HTMLElement[]) : [];
+          const firstMax = avail - 2 * padding;
+          const contMax = regionH - CANVAS_CONT_TOP - 2 * padding;
+          const chunks: string[][] = [];
+          let cur: string[] = [];
+          let curH = 0;
+          let max = firstMax;
+          for (const kid of kids) {
+            const cs = getComputedStyle(kid);
+            const kh = kid.offsetHeight + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+            if (curH > 0 && curH + kh > max) { chunks.push(cur); cur = []; curH = 0; max = contMax; }
+            cur.push(kid.outerHTML);
+            curH += kh;
+          }
+          if (cur.length) chunks.push(cur);
+          const [firstChunk, ...restChunks] = chunks;
+          if (!firstChunk) { baseBlocks.push(b); continue; } // contenu non sécable
+          baseBlocks.push({ ...b, h: avail, html: firstChunk.join("") });
+          restChunks.forEach((chunk, c) => {
+            spawned.push({ ...b, id: `${b.id}-c${c + 1}`, x: b.x, y: CANVAS_CONT_TOP, h: regionH - CANVAS_CONT_TOP, html: chunk.join("") });
+          });
+        }
+      }
+      out.push({ id: page.id, blocks: baseBlocks });
+      spawned.forEach((blk, n) => out.push({ id: `${page.id}-cont${n}`, blocks: [blk] }));
+    }
+    setFlowed(out);
+  }, [sig, regionH]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const renderPages = flowed ?? pages;
+  const blockStyle = (b: CanvasBlock): CSSProperties => ({
+    position: "absolute", left: b.x, top: b.y, width: b.w, height: b.h,
+    display: "flex", flexDirection: "column",
+    justifyContent: b.verticalAlign === "middle" ? "center" : b.verticalAlign === "bottom" ? "flex-end" : "flex-start",
+    padding: b.padding, fontSize: b.fontSize, lineHeight: 1.6, boxSizing: "border-box",
+    fontFamily: canvasFontFamily(b.fontFamily),
+    textAlign: b.textAlign, background: BLOCK_BG[b.background],
+    border: BLOCK_BORDER[b.borderStyle], overflow: "hidden",
+  });
+
   return (
     <div>
-      {pages.map((page, i) => (
+      {/* Mesureur hors écran : hauteur réelle de chaque bloc, à la largeur de
+          contenu de sa boîte (b.w − 2·padding). Jamais imprimé ni visible. */}
+      <div className="no-print-modal" aria-hidden style={{ position: "absolute", left: -99999, top: 0, visibility: "hidden", pointerEvents: "none" }}>
+        {pages.map((p, pi) => p.blocks.map((b) => (
+          <div
+            key={`${pi}:${b.id}`}
+            ref={(el) => { if (el) measRefs.current.set(`${pi}:${b.id}`, el); else measRefs.current.delete(`${pi}:${b.id}`); }}
+            style={{ width: Math.max(0, b.w - 2 * (b.padding || 0)), fontSize: b.fontSize, lineHeight: 1.6, fontFamily: canvasFontFamily(b.fontFamily), textAlign: b.textAlign }}
+            dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(b.html) }}
+          />
+        )))}
+      </div>
+
+      {renderPages.map((page, i) => (
         <div key={page.id} className="courrier-paper" style={{
           position: "relative", width: PAGE_W, height: PAGE_H, background: "white", boxShadow: "0 2px 16px rgba(15,23,42,0.12)",
-          ...(i < pages.length - 1 ? { marginBottom: 32, pageBreakAfter: "always", breakAfter: "page" } : {}),
+          ...(i < renderPages.length - 1 ? { marginBottom: 32, pageBreakAfter: "always", breakAfter: "page" } : {}),
         }}>
           {hasLH && (
             <div style={{ position: "absolute", top: 0, left: 0, right: 0, height: hH, overflow: "hidden", borderBottom: "2px solid #1E293B", display: "flex", alignItems: "center", padding: "0 20px", gap: 14, background: "white" }}>
@@ -275,20 +366,12 @@ function CanvasPrintView({ pages, letterhead, extraHtml }: { pages: CanvasPage[]
           )}
           <div style={{ position: "absolute", top: hH, left: 0, right: 0, bottom: FTR_H }}>
             {page.blocks.map(b => (
-              <div key={b.id} style={{
-                position: "absolute", left: b.x, top: b.y, width: b.w, height: b.h,
-                display: "flex", flexDirection: "column",
-                justifyContent: b.verticalAlign === "middle" ? "center" : b.verticalAlign === "bottom" ? "flex-end" : "flex-start",
-                padding: b.padding, fontSize: b.fontSize, lineHeight: 1.6, boxSizing: "border-box",
-                fontFamily: b.fontFamily === "serif" ? "Georgia, serif" : "system-ui, sans-serif",
-                textAlign: b.textAlign, background: BLOCK_BG[b.background],
-                border: BLOCK_BORDER[b.borderStyle], overflow: "hidden",
-              }} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(b.html) }} />
+              <div key={b.id} style={blockStyle(b)} dangerouslySetInnerHTML={{ __html: DOMPurify.sanitize(b.html) }} />
             ))}
           </div>
           <div style={{ position: "absolute", bottom: 0, left: 0, right: 0, height: FTR_H, borderTop: "1px solid #CBD5E1", display: "flex", alignItems: "center", padding: "0 20px", background: "white" }}>
             <span style={{ fontSize: 10, color: "#64748b", flex: 1 }}>{letterhead.footer_text ?? ""}</span>
-            <span style={{ fontSize: 11, color: "#94a3b8" }}>{i + 1} / {pages.length}</span>
+            <span style={{ fontSize: 11, color: "#94a3b8" }}>{i + 1} / {renderPages.length}</span>
           </div>
         </div>
       ))}
