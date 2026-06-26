@@ -13,7 +13,7 @@ import { requireAuth, requireRole, bumpTokenVersion, invalidateTokenVersionCache
 import { invalidateCommuneScope } from "../middlewares/dossierAccess.js";
 import { invalidatePermissions, invalidateAllPermissions } from "../middlewares/permissions.js";
 import { logAudit } from "../services/audit.js";
-import { isProfessionalRole, deactivateUser, eraseCitizenAccount } from "../services/accountLifecycle.js";
+import { isProfessionalRole, offboardProfessional, eraseCitizenAccount } from "../services/accountLifecycle.js";
 import { helpAdminRouter } from "./help.js";
 
 export const superAdminRouter = Router();
@@ -1330,24 +1330,23 @@ superAdminRouter.delete("/users/:id", async (req, res) => {
     const [target] = await db.select({ email: users.email, role: users.role, deactivated_at: users.deactivated_at }).from(users).where(eq(users.id, id)).limit(1);
     if (!target) return res.status(404).json({ error: "Utilisateur non trouvé" });
 
-    // Comptes PROFESSIONNELS (mairie/instructeur/admin/service) : OFFBOARDING par
-    // désactivation, jamais suppression. Ils portent des records légaux dont les
-    // FK NOT NULL interdisent l'effacement (decisions.instructeur_id = arrêté
-    // signé). On préserve la ligne et on coupe l'accès. Les CITOYENS, eux, sont
-    // effacés (RGPD art. 17). Centralisé dans accountLifecycle.
+    // Comptes PROFESSIONNELS (mairie/instructeur/admin/service) : OFFBOARDING.
+    // Un compte qui porte des records légaux (dossier instruit, arrêté signé,
+    // courrier émis…) ne peut être effacé (FK NOT NULL/NO ACTION) : on le
+    // DÉSACTIVE. Un compte qui n'a ni signé ni instruit aucun dossier est en
+    // revanche SUPPRIMÉ réellement, ce qui libère son email. Arbitrage centralisé
+    // dans offboardProfessional. Les CITOYENS, eux, sont effacés (RGPD art. 17).
     if (isProfessionalRole(target.role)) {
-      // Anti-lockout : ne pas désactiver le dernier administrateur ACTIF.
+      // Anti-lockout : ne pas retirer le dernier administrateur ACTIF.
       if (target.role === "admin") {
         const [row] = await db.select({ value: count() }).from(users).where(and(eq(users.role, "admin"), isNull(users.deactivated_at)));
         if ((row?.value ?? 0) <= 1) {
-          return res.status(409).json({ error: "Impossible de désactiver le dernier administrateur." });
+          return res.status(409).json({ error: "Impossible de retirer le dernier administrateur." });
         }
       }
-      if (!target.deactivated_at) {
-        await deactivateUser(id, (req as AuthRequest).user?.id ?? null);
-        await logAudit(req, "admin_user_deactivated", { email: target.email });
-      }
-      return res.json({ success: true, action: "deactivated" });
+      const { action } = await offboardProfessional(id, (req as AuthRequest).user?.id ?? null);
+      await logAudit(req, action === "deleted" ? "admin_user_deleted" : "admin_user_deactivated", { email: target.email });
+      return res.json({ success: true, action });
     }
 
     // Citoyen : effacement définitif (fichiers + pièces + cascade DB).
@@ -1603,14 +1602,41 @@ superAdminRouter.post("/services/:id/users", async (req, res) => {
     const [service] = await db.select().from(external_services).where(eq(external_services.id, id));
     if (!service) return res.status(404).json({ error: "Service introuvable" });
 
+    // Email déjà en base ? Un compte ACTIF est un vrai conflit (409). Un compte
+    // DÉSACTIVÉ (offboardé) garde l'email par la contrainte d'unicité mais n'est
+    // plus utilisé : on le RÉACTIVE et on le rattache à ce service plutôt que de
+    // bloquer. Préserve d'éventuels records légaux ; remet un mot de passe
+    // verrouillé + un nouvel email d'activation, comme pour un nouvel accès.
+    const [existing] = await db
+      .select({ id: users.id, deactivated_at: users.deactivated_at })
+      .from(users).where(eq(users.email, email)).limit(1);
+    if (existing && !existing.deactivated_at) {
+      return res.status(409).json({ error: "Cet email est déjà utilisé" });
+    }
+
     // Create account with locked password — user sets it via activation email
     const locked_hash = await bcrypt.hash(crypto.randomBytes(32).toString("hex"), 10);
-    const [user] = await db.insert(users).values({
-      email, prenom, nom, telephone,
-      password_hash: locked_hash,
-      role: "service_externe" as const,
-      service_id: id,
-    }).returning({ id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, telephone: users.telephone, created_at: users.created_at });
+    const userCols = { id: users.id, email: users.email, prenom: users.prenom, nom: users.nom, telephone: users.telephone, created_at: users.created_at };
+    let user;
+    if (existing) {
+      [user] = await db.update(users).set({
+        prenom, nom, telephone,
+        password_hash: locked_hash,
+        role: "service_externe" as const,
+        service_id: id,
+        deactivated_at: null,
+        deactivated_by: null,
+        updated_at: new Date(),
+      }).where(eq(users.id, existing.id)).returning(userCols);
+      await bumpTokenVersion(existing.id);
+    } else {
+      [user] = await db.insert(users).values({
+        email, prenom, nom, telephone,
+        password_hash: locked_hash,
+        role: "service_externe" as const,
+        service_id: id,
+      }).returning(userCols);
+    }
 
     // Generate activation token (valid 7 days)
     const token = crypto.randomBytes(32).toString("hex");
@@ -1648,16 +1674,14 @@ superAdminRouter.post("/services/:id/users", async (req, res) => {
 superAdminRouter.delete("/services/:id/users/:userId", async (req, res) => {
   try {
     const { userId } = req.params;
-    // Comptes service_externe = comptes PRO : offboarding par désactivation,
-    // jamais suppression (cohérent avec DELETE /admin/users/:id). Un DELETE brut
-    // échouerait sur les FK NOT NULL des records légaux et laisserait le compte
-    // visible côté page utilisateurs. On coupe l'accès et on masque la ligne.
-    const [target] = await db.select({ deactivated_at: users.deactivated_at }).from(users).where(eq(users.id, userId)).limit(1);
+    // Compte service_externe = compte PRO : même arbitrage que la page utilisateurs
+    // (offboardProfessional). Sans aucun record légal (ni avis signé ni dossier
+    // instruit), le compte est SUPPRIMÉ — son email redevient disponible. Sinon il
+    // est désactivé (records préservés) et masqué de la liste du service.
+    const [target] = await db.select({ id: users.id }).from(users).where(eq(users.id, userId)).limit(1);
     if (!target) return res.status(404).json({ error: "Utilisateur non trouvé" });
-    if (!target.deactivated_at) {
-      await deactivateUser(userId, (req as AuthRequest).user?.id ?? null);
-    }
-    res.json({ success: true });
+    const { action } = await offboardProfessional(userId, (req as AuthRequest).user?.id ?? null);
+    res.json({ success: true, action });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
