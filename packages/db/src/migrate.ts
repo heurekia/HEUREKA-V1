@@ -209,6 +209,85 @@ CREATE TABLE IF NOT EXISTS role_permissions (
 );
 ALTER TABLE users ADD COLUMN IF NOT EXISTS role_config_id uuid REFERENCES role_permissions(id) ON DELETE SET NULL;
 
+-- ─── Catalogue des rôles système ────────────────────────────────────────────
+-- Répartition type des accréditations à l'échelle d'une commune, d'une
+-- métropole (instruction mutualisée / EPCI) et des services annexes consultés.
+-- Seed idempotent : on ne touche QUE le périmètre de permissions, la famille
+-- (base_role) et le flag système ; le libellé, la description et la couleur
+-- restent éditables côté super-admin sans être écrasés à chaque migration.
+-- base_role correspond au user_role de base de l'agent (mairie / instructeur /
+-- service_externe pour les services annexes) ; le détail des droits est porté
+-- par le tableau permissions (clés alignées sur PERMISSION_MODULES côté web).
+INSERT INTO role_permissions (name, label, base_role, description, color, permissions, is_system) VALUES
+  -- ── Échelle commune ──────────────────────────────────────────────────────
+  ('agent_accueil', 'Agent d''accueil – Guichet unique', 'mairie',
+   'Accueille le public, enregistre les demandes et numérise les CERFA au guichet.',
+   '#0EA5E9',
+   '["dashboard","dossiers.read","dossiers.create","dossiers.invite","pieces.read","pieces.upload","pieces.extract","courriers.read","messagerie.read","messagerie.send","calendrier.read","zones.read"]'::jsonb,
+   true),
+  ('agent_administratif', 'Agent administratif', 'mairie',
+   'Suivi administratif en lecture : dossiers, courriers, échanges et statistiques.',
+   '#7C3AED',
+   '["dashboard","dossiers.read","pieces.read","conformite.read","courriers.read","courriers.generate","consultations.read","messagerie.read","messagerie.send","calendrier.read","zones.read","stats"]'::jsonb,
+   true),
+  ('secretaire_mairie', 'Secrétaire de mairie', 'mairie',
+   'Polyvalence des petites communes : enregistrement, pièces, courriers et secrétariat.',
+   '#DB2777',
+   '["dashboard","dossiers.read","dossiers.create","dossiers.edit","dossiers.invite","pieces.read","pieces.upload","pieces.validate","conformite.read","courriers.read","courriers.generate","consultations.read","consultations.update","messagerie.read","messagerie.send","calendrier.read","calendrier.edit","zones.read","stats"]'::jsonb,
+   true),
+  ('instructeur', 'Instructeur', 'instructeur',
+   'Instruit les dossiers : complétude, pièces, conformité et consultations des services.',
+   '#0891B2',
+   '["dashboard","dossiers.read","dossiers.status","dossiers.deadline","dossiers.edit","dossiers.invite","dossiers.assign","pieces.read","pieces.upload","pieces.validate","pieces.annotate","pieces.extract","conformite.read","conformite.run","courriers.read","courriers.generate","consultations.read","consultations.create","consultations.update","consultations.documents","messagerie.read","messagerie.send","calendrier.read","calendrier.edit","zones.read","zones.annotate","documentation","stats"]'::jsonb,
+   true),
+  ('instructeur_referent', 'Instructeur référent', 'instructeur',
+   'Instructeur expérimenté : prépare les projets de décision et encadre l''équipe.',
+   '#0D9488',
+   '["dashboard","dossiers.read","dossiers.status","dossiers.deadline","dossiers.edit","dossiers.invite","dossiers.assign","dossiers.decision","pieces.read","pieces.upload","pieces.validate","pieces.annotate","pieces.extract","conformite.read","conformite.run","courriers.read","courriers.generate","consultations.read","consultations.create","consultations.update","consultations.documents","messagerie.read","messagerie.send","calendrier.read","calendrier.edit","zones.read","zones.annotate","documentation","stats","signataires.read"]'::jsonb,
+   true),
+  ('responsable_urbanisme', 'Responsable urbanisme', 'mairie',
+   'Chef du service urbanisme : pilotage complet de l''instruction, du PLU et du service.',
+   '#4F46E5',
+   '["dashboard","dossiers.read","dossiers.create","dossiers.status","dossiers.deadline","dossiers.edit","dossiers.invite","dossiers.assign","dossiers.decision","dossiers.delete","pieces.read","pieces.upload","pieces.validate","pieces.annotate","pieces.extract","conformite.read","conformite.run","courriers.read","courriers.generate","courriers.templates","consultations.read","consultations.create","consultations.update","consultations.documents","messagerie.read","messagerie.send","calendrier.read","calendrier.edit","stats","zones.read","zones.edit","zones.import","zones.annotate","documentation","utilisateurs.read","utilisateurs.manage","parametres","signataires.read","signataires.manage"]'::jsonb,
+   true),
+  ('elu_signataire', 'Élu délégué à l''urbanisme', 'mairie',
+   'Élu délégué : consulte les dossiers et signe les arrêtés, sans instruction.',
+   '#B45309',
+   '["dashboard","dossiers.read","dossiers.decision","conformite.read","courriers.read","messagerie.read","calendrier.read","zones.read","stats","signataires.read"]'::jsonb,
+   true),
+  ('dgs', 'Directeur Général des Services', 'mairie',
+   'Direction générale : supervision transverse, statistiques, agents et paramétrage.',
+   '#1E293B',
+   '["dashboard","dossiers.read","conformite.read","courriers.read","consultations.read","messagerie.read","calendrier.read","zones.read","stats","utilisateurs.read","utilisateurs.manage","parametres","signataires.read","signataires.manage"]'::jsonb,
+   true),
+  -- ── Échelle métropole / EPCI (instruction mutualisée) ────────────────────
+  ('instructeur_mutualise', 'Instructeur mutualisé (EPCI / Métropole)', 'instructeur',
+   'Service ADS mutualisé : instruit pour le compte des communes membres de l''intercommunalité.',
+   '#2563EB',
+   '["dashboard","dossiers.read","dossiers.status","dossiers.deadline","dossiers.edit","dossiers.invite","dossiers.assign","dossiers.decision","pieces.read","pieces.upload","pieces.validate","pieces.annotate","pieces.extract","conformite.read","conformite.run","courriers.read","courriers.generate","consultations.read","consultations.create","consultations.update","consultations.documents","messagerie.read","messagerie.send","calendrier.read","calendrier.edit","zones.read","zones.annotate","documentation","stats","signataires.read"]'::jsonb,
+   true),
+  ('responsable_ads_mutualise', 'Responsable du service ADS mutualisé', 'mairie',
+   'Pilote le service instructeur mutualisé de la métropole et ses instructeurs.',
+   '#4338CA',
+   '["dashboard","dossiers.read","dossiers.create","dossiers.status","dossiers.deadline","dossiers.edit","dossiers.invite","dossiers.assign","dossiers.decision","dossiers.delete","pieces.read","pieces.upload","pieces.validate","pieces.annotate","pieces.extract","conformite.read","conformite.run","courriers.read","courriers.generate","courriers.templates","consultations.read","consultations.create","consultations.update","consultations.documents","messagerie.read","messagerie.send","calendrier.read","calendrier.edit","stats","zones.read","zones.edit","zones.import","zones.annotate","documentation","utilisateurs.read","utilisateurs.manage","parametres","signataires.read","signataires.manage"]'::jsonb,
+   true),
+  -- ── Services annexes consultés (ABF, SDIS, DDT, réseaux…) ─────────────────
+  ('service_agent', 'Service consulté – Agent', 'service_externe',
+   'Service extérieur consulté (ABF, SDIS, réseaux…) : consulte le dossier et rend son avis.',
+   '#059669',
+   '["dossiers.read","pieces.read","pieces.upload","conformite.read","consultations.read","consultations.update","consultations.documents","courriers.read","messagerie.read","messagerie.send","calendrier.read","zones.read"]'::jsonb,
+   true),
+  ('service_responsable', 'Service consulté – Responsable', 'service_externe',
+   'Référent d''un service consulté : pilote les avis, documents et l''équipe du service.',
+   '#047857',
+   '["dashboard","dossiers.read","pieces.read","pieces.upload","conformite.read","consultations.read","consultations.create","consultations.update","consultations.documents","courriers.read","courriers.generate","courriers.templates","messagerie.read","messagerie.send","calendrier.read","calendrier.edit","zones.read","stats","utilisateurs.read","utilisateurs.manage"]'::jsonb,
+   true)
+ON CONFLICT (name) DO UPDATE SET
+  base_role = EXCLUDED.base_role,
+  permissions = EXCLUDED.permissions,
+  is_system = true,
+  updated_at = now();
+
 -- Services annexes (ABF, SDIS, DDT, etc.)
 ALTER TYPE user_role ADD VALUE IF NOT EXISTS 'service_externe';
 

@@ -2861,6 +2861,10 @@ function Utilisateurs() {
   const [formCommuneIds, setFormCommuneIds] = useState<Set<string>>(new Set());
   const [form, setForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "", role_config_id: "" });
   const [roleConfigs, setRoleConfigs] = useState<RolePermission[]>([]);
+  // Profils proposés à l'affectation d'un agent commune : on exclut les rôles
+  // des services annexes (base_role service_externe), gérés via la section
+  // Services et non rattachés à une commune.
+  const assignableRoleConfigs = roleConfigs.filter((rc) => rc.base_role === "mairie" || rc.base_role === "instructeur");
   const [resendingId, setResendingId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
@@ -3122,7 +3126,7 @@ function Utilisateurs() {
                             style={{ padding: "4px 8px", border: `1px solid ${C.border}`, borderRadius: 6, fontSize: 13, color: C.text, background: C.white, outline: "none", maxWidth: 170 }}
                           >
                             <option value="">— Rôle personnalisé —</option>
-                            {roleConfigs.map((rc) => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
+                            {assignableRoleConfigs.map((rc) => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
                           </select>
                         )}
                         <button onClick={() => handleRoleUpdate(u.id, editRole.role, editRole.role_config_id)} style={{ padding: "4px 10px", background: C.green, color: "white", border: "none", borderRadius: 6, cursor: "pointer", fontSize: 12, fontWeight: 700 }}>✓</button>
@@ -3220,7 +3224,7 @@ function Utilisateurs() {
                     }}
                   >
                     <option value="">— Aucun —</option>
-                    {roleConfigs.map((rc) => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
+                    {assignableRoleConfigs.map((rc) => <option key={rc.id} value={rc.id}>{rc.label}</option>)}
                   </Select>
                 ) : (
                   <Select value="" onChange={() => {}} disabled>
@@ -3339,6 +3343,16 @@ const PERMISSION_MODULES = [
 const ALL_PERM_KEYS = PERMISSION_MODULES.flatMap(m => m.items.map(i => i.key));
 const PERM_LABEL: Record<string, string> = Object.fromEntries(PERMISSION_MODULES.flatMap(m => m.items.map(i => [i.key, i.label])));
 
+// Familles d'agents (user_role de base) : libellé + icône affichés sur la carte
+// de rôle. `service_externe` couvre les services annexes consultés (ABF, SDIS…).
+type BaseRoleMeta = { label: string; icon: string };
+const BASE_ROLE_META: Record<string, BaseRoleMeta> = {
+  mairie:          { label: "Mairie",         icon: "🏛" },
+  instructeur:     { label: "Instructeur",    icon: "📋" },
+  service_externe: { label: "Service annexe", icon: "🏢" },
+};
+const baseRoleMeta = (base: string): BaseRoleMeta => BASE_ROLE_META[base] ?? { label: "Instructeur", icon: "📋" };
+
 interface RoleFormState { label: string; name: string; base_role: string; description: string; color: string; permissions: string[] }
 
 function RoleFormPanel({ form, setForm, isSystem }: { form: RoleFormState; setForm: React.Dispatch<React.SetStateAction<RoleFormState>>; isSystem?: boolean }) {
@@ -3353,8 +3367,8 @@ function RoleFormPanel({ form, setForm, isSystem }: { form: RoleFormState; setFo
         <Field label="Rôle de base *">
           <Select value={form.base_role} onChange={(v) => setForm(f => ({ ...f, base_role: v }))}>
             {isSystem
-              ? <option value={form.base_role}>{form.base_role === "mairie" ? "Mairie" : "Instructeur"}</option>
-              : <><option value="instructeur">Instructeur</option><option value="mairie">Mairie</option></>}
+              ? <option value={form.base_role}>{baseRoleMeta(form.base_role).label}</option>
+              : <><option value="instructeur">Instructeur</option><option value="mairie">Mairie</option><option value="service_externe">Service annexe</option></>}
           </Select>
         </Field>
       </div>
@@ -3470,14 +3484,14 @@ function Roles() {
           {roleList.map(role => (
             <div key={role.id} style={{ background: C.white, border: `1px solid ${C.border}`, borderRadius: 12, padding: "16px 20px", display: "flex", alignItems: "flex-start", gap: 16 }}>
               <div style={{ width: 44, height: 44, borderRadius: 10, background: `${role.color}20`, display: "flex", alignItems: "center", justifyContent: "center", fontSize: 20, flexShrink: 0 }}>
-                {role.base_role === "mairie" ? "🏛" : "📋"}
+                {baseRoleMeta(role.base_role).icon}
               </div>
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 4 }}>
                   <span style={{ fontWeight: 700, fontSize: 15, color: C.text }}>{role.label}</span>
                   {role.is_system && <span style={{ fontSize: 10, background: C.bg, border: `1px solid ${C.border}`, borderRadius: 4, padding: "2px 6px", color: C.textMuted, fontWeight: 600 }}>🔒 Système</span>}
                   <span style={{ padding: "3px 8px", borderRadius: 6, background: `${role.color}20`, color: role.color, fontSize: 11, fontWeight: 700 }}>
-                    {role.base_role === "mairie" ? "Mairie" : "Instructeur"}
+                    {baseRoleMeta(role.base_role).label}
                   </span>
                 </div>
                 {role.description && <div style={{ fontSize: 12, color: C.textMuted, marginBottom: 6 }}>{role.description}</div>}
