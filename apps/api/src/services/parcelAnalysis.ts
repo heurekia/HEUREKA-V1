@@ -274,7 +274,7 @@ export async function geocodeAddress(address: string, citycode?: string): Promis
 // l'adresse, c'est cette adresse — cohérente avec la parcelle retenue — qui doit
 // figurer au dossier (et non une adresse saisie qui pointerait une parcelle
 // voisine). Best-effort : null si la BAN ne renvoie rien ou est injoignable.
-export async function reverseGeocode(lat: number, lng: number): Promise<AddressResult | null> {
+export async function reverseGeocode(lat: number, lng: number): Promise<(AddressResult & { distance_m?: number }) | null> {
   try {
     const url = `https://api-adresse.data.gouv.fr/reverse/?lon=${lng}&lat=${lat}`;
     const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
@@ -286,6 +286,8 @@ export async function reverseGeocode(lat: number, lng: number): Promise<AddressR
           id?: string;
           label: string; score: number; citycode: string;
           postcode: string; city: string; type: string;
+          // Distance (m) entre le point interrogé et l'adresse renvoyée par la BAN.
+          distance?: number;
         };
       }>;
     };
@@ -301,6 +303,7 @@ export async function reverseGeocode(lat: number, lng: number): Promise<AddressR
       score: f.properties.score,
       type: f.properties.type ?? "housenumber",
       id: f.properties.id,
+      distance_m: typeof f.properties.distance === "number" ? f.properties.distance : undefined,
     };
   } catch {
     return null;
@@ -1386,6 +1389,26 @@ export async function analyseParcel(
         if (addr) {
           result.address = addr;
           result.data_sources.push("BAN (géocodage inverse)");
+          // Réglementation : le terrain est identifié de façon authentique par sa
+          // RÉFÉRENCE CADASTRALE (CERFA — commune/section/numéro). L'adresse est
+          // l'information complémentaire. Quand la BAN ne renvoie pas un NUMÉRO de
+          // voirie sur (ou tout près de) la parcelle — typiquement un terrain nu où
+          // n'existe qu'une voie / un lieu-dit, ou un numéro voisin distant — on ne
+          // doit PAS l'affirmer comme adresse exacte : on la marque indicative et on
+          // rappelle que la réf. cadastrale fait foi, à charge pour le citoyen de
+          // confirmer/compléter l'adresse exacte du terrain.
+          const numberedOnParcel =
+            (addr.type === "housenumber" || addr.type === "interpolation") &&
+            (addr.distance_m == null || addr.distance_m <= 100);
+          if (!numberedOnParcel) {
+            result.address.score = Math.min(result.address.score, 0.5); // déclenche l'indicateur « approx. » côté UI
+            result.warnings.push(
+              `Adresse « ${addr.label} » déduite de la parcelle à titre indicatif ` +
+              `(pas de numéro de voirie sur la parcelle). La référence cadastrale ` +
+              `${parcel.parcelle_id} fait foi pour localiser le terrain — vérifiez ou ` +
+              `complétez l'adresse exacte avant le dépôt.`
+            );
+          }
         }
       }
     } else {
