@@ -67,7 +67,7 @@ pilote mono-instance** une fois le Palier 0 traité. Ce n'est pas un audit
 | 1.5 | Transactions sur émission de courrier (`pieceRequest`) et `applyDossierFacts` (+ batch des écritures) | ✅ Fait | `fix(courrier): émission … atomique` ; `fix(facts): applyDossierFacts atomique` |
 | 1.2 | `refreshPluZones` hors du chemin `/analyse` (fond + service *stale*) | ✅ Fait | `perf(plu): stale-while-revalidate du contexte PLU` |
 | 1.3 | CPU bloquant : `execFileSync`→async (rendu/extraction PDF) | ✅ Fait | `perf(pdf): rendu et extraction PDF asynchrones` |
-| 1.3b | Offload base64/hash de gros buffers vers worker_threads + plafond de taille cumulée | ⏳ À faire (impact moindre) | |
+| 1.3b | base64/hash de gros buffers : découpage coopératif (cession event loop) + plafonds de taille | ✅ Fait | `perf(api): base64/sha256 coopératifs (cpuOffload)` |
 | 1.1 | Upload citoyen → file OCR asynchrone (réponse 201 immédiate) — **BLOQUANT** | ✅ Fait | `perf(upload citoyen): analyse IA en arrière-plan` |
 | 1.1b | Garde-fou « document hors-sujet » : blocage du dépôt si une pièce ne correspond pas à sa rubrique (serveur + wizard) | ✅ Fait | `feat(pieces): detectRubricMismatch` ; `feat(soumission): bloque le dépôt … hors-sujet` ; `feat(wizard citoyen): polling … hors-sujet` |
 
@@ -87,6 +87,40 @@ bloquant** AVEC préservation/renforcement du blocage de soumission.
   **serveur** sur `/soumettre` (422), **plus** blocage du bouton côté wizard.
   Le blocage existant sur les pièces obligatoires manquantes est conservé ;
   le verdict qualitatif (« À reprendre ») reste indicatif, comme avant.
+
+### Détail — 1.3b (base64/hash coopératifs)
+
+`Buffer.toString("base64")` et `sha256` sont du C++ **synchrone** : sur un gros
+buffer ils monopolisent l'unique event loop (API en mono-instance `fork`).
+Mesuré sur la machine de build :
+
+| taille | base64 encode | sha256 |
+|---|---|---|
+| 20 Mo | ~13 ms | ~53 ms |
+| 60 Mo | ~41 ms | ~159 ms |
+
+Les uploads vont jusqu'à 60 Mo (espace mairie) : un seul hash sur le **chemin
+requête** (`/ocr-cerfa`) gelait l'API ~160 ms pour *tous* les utilisateurs, et
+ces gels se cumulent sous concurrence.
+
+**Solution (`services/cpuOffload.ts`)** : `sha256HexAsync`, `sha256HexConcatAsync`
+et `toBase64Async` découpent le buffer en tranches et **rendent la main à
+l'event loop** (`setImmediate`) entre chaque tranche. Le coût CPU total est
+identique mais étalé : les autres requêtes (dont le healthcheck) avancent
+pendant l'opération. Sous un seuil (`CPU_YIELD_THRESHOLD_BYTES`, défaut 8 Mo) on
+garde le chemin natif synchrone (plus rapide, gel négligeable). Câblé dans
+`/ocr-cerfa` (chemin requête), `analyzePiece`/`analyzePieceGroup` et
+`extractPiece` (file OCR). Équivalence stricte avec les appels natifs prouvée par
+`cpuOffload.test.ts` (frontières base64 multiples/non-multiples de 3, concat).
+
+**Pourquoi pas `worker_threads`** : pour cette magnitude (≤ ~160 ms, chemins
+d'analyse déjà plafonnés à 30 Mo `MAX_INLINE_BYTES` et sérialisés par la file
+OCR), un pool de workers (transfert des buffers, cycle de vie, point d'entrée à
+gérer dans le bundle) serait disproportionné. À reconsidérer en multi-instances
+(Palier 4) ou si des buffers >> 60 Mo deviennent fréquents sur le chemin requête.
+Le décodage base64 de l'ingestion PLU admin (jusqu'à ~300 Mo, ~2 s) reste
+synchrone : opération admin rare, déjà bornée par la limite de corps (300 Mo) et
+dominée par le `JSON.parse` du corps — hors périmètre de ce palier.
 
 ### Palier 2 — exécution & observabilité 🚧
 
@@ -174,6 +208,8 @@ sur `/parametres`. Deux imports morts retirés au passage (`ReglementationScreen
 | `RL_LLM_MAX` / `RL_LLM_WINDOW_MS` | `40` / `300000` | Quota IA interactive (assistant, structuration) |
 | `RL_ANALYZE_MAX` / `RL_ANALYZE_WINDOW_MS` | `60` / `300000` | Quota analyses réglementaires |
 | `RUBRIC_MISMATCH_MIN_CONFIDENCE` | `0.75` | Confiance min. sur le type détecté pour bloquer un dépôt « hors-sujet » |
+| `CPU_YIELD_THRESHOLD_BYTES` | `8388608` (8 Mo) | Seuil au-delà duquel base64/sha256 cèdent l'event loop par tranches (cf. 1.3b) |
+| `CPU_CHUNK_BYTES` | `2097152` (2 Mo) | Taille d'une tranche de base64/sha256 coopératif (arrondie à un multiple de 12) |
 | `LOG_LEVEL` | `info` (prod) / `debug` | Niveau du logger pino |
 | `UPLOADS_DIR` | `apps/api/uploads` | Dossier des pièces déposées (stockage local) |
 | `FRONTEND_DIST` | `apps/web/dist` | Build frontend servi par Express en fallback |
