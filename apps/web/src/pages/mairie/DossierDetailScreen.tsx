@@ -752,7 +752,12 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
   const [extractingPieceId, setExtractingPieceId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (activeTab !== "Documents" || documents !== null) return;
+    // Les pièces sont nécessaires à l'onglet Documents, mais aussi à la modale
+    // courrier (panneau « Pièces à demander » + variable {liste_pieces_a_completer}).
+    // Sans cette seconde condition, ouvrir le courrier sans être passé par
+    // l'onglet Documents affichait « Aucune pièce déposée sur ce dossier ».
+    const needsPieces = activeTab === "Documents" || courrierMode !== null || reopenCourrier !== null;
+    if (!needsPieces || documents !== null) return;
     setDocumentsLoading(true);
     api.get<DossierPiece[]>(`/mairie/dossiers/${dossier.id}/pieces`)
       // Ne réinitialise pas la sélection à 0 si une pièce précise est en
@@ -761,7 +766,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
       .then((data) => { setDocuments(data); if (!pendingPieceId) setSelectedDoc(0); })
       .catch(() => setDocuments([]))
       .finally(() => setDocumentsLoading(false));
-  }, [activeTab, documents, dossier.id, pendingPieceId]);
+  }, [activeTab, courrierMode, reopenCourrier, documents, dossier.id, pendingPieceId]);
 
   // Résout une demande d'ouverture de pièce différée : dès que `documents` est
   // chargé, on sélectionne la pièce ciblée puis on purge la demande (qu'elle
