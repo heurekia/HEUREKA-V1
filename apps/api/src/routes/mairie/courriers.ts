@@ -7,7 +7,6 @@ import { type AuthRequest } from "../../middlewares/auth.js";
 import { requirePermission } from "../../middlewares/permissions.js";
 import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { CODE_URBANISME_ID } from "../../services/legifrance.js";
-import { notifyUser } from "../../services/notify.js";
 import {
   emitPieceComplementRequest,
   renderPieceListHtml,
@@ -384,16 +383,6 @@ courriersRouter.post("/dossiers/:id/courriers/:courrierId/request-signature", re
       signature_requested_by: req.user!.id,
       signature_requested_at: new Date(),
     }).where(eq(dossier_courriers.id, courrierId)).returning();
-    // Prévient le signataire désigné, comme pour un projet d'arrêté soumis. Sans
-    // cette notification, le courrier n'arrivait que dans son espace
-    // « Signatures » sans aucune alerte (cloche / e-mail selon ses préférences).
-    await notifyUser({
-      user_id: targetUserId,
-      dossier_id: dossierId,
-      type: "signature_requise",
-      title: "Signature requise",
-      message: `Un courrier est en attente de votre signature (commune : ${d.commune}).`,
-    });
     res.json(row);
   } catch (err) {
     console.error("[courriers request-signature]", err);
