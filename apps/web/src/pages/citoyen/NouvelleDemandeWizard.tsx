@@ -5,6 +5,7 @@ import { useIsMobile } from "../../hooks/useMediaQuery";
 import { api, ApiError } from "../../lib/api";
 import { linkifyArticles } from "../../utils/linkifyArticles";
 import { Step5CerfaInfos } from "./Step5CerfaInfos";
+import { MapLeaflet, type BaseLayer } from "../../components/MapLeaflet";
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -435,6 +436,15 @@ export function NouvelleDemandeWizard() {
   const [extraParcelInput, setExtraParcelInput] = useState("");
   const [attachingParcel, setAttachingParcel] = useState(false);
   const [attachError, setAttachError] = useState<string | null>(null);
+  // Sélection des parcelles à la carte (plan cadastral cliquable) — la plupart des
+  // citoyens ne connaissent pas leur référence cadastrale. On réutilise le même
+  // composant carte que l'espace public d'analyse parcellaire.
+  const [showParcelMap, setShowParcelMap] = useState(false);
+  const [mapBaseLayer, setMapBaseLayer] = useState<BaseLayer>("ign-plan");
+  // Géométries connues par référence cadastrale (principale + parcelles cliquées),
+  // pour la surbrillance carte. La réponse agrégée ne porte que la principale, on
+  // mémorise donc au fil des clics celles des parcelles ajoutées.
+  const [parcelGeoms, setParcelGeoms] = useState<Record<string, object>>({});
 
   // Step 2 – Nature (multi-select)
   const [natures, setNatures] = useState<NatureId[]>([]);
@@ -908,6 +918,64 @@ export function NouvelleDemandeWizard() {
     if (ids.length === 0) return;
     await reanalyseUnite(ids);
   }, [attachedParcelles, reanalyseUnite]);
+
+  // Mémorise la géométrie de la parcelle principale dès qu'une analyse aboutit,
+  // pour la surbrillance carte (la réponse /analyse ne porte que la principale).
+  useEffect(() => {
+    const p = parcelRaw?.parcel as { parcelle_id?: string; geometry?: object } | undefined;
+    if (p?.parcelle_id && p.geometry) {
+      const id = p.parcelle_id;
+      const geom = p.geometry;
+      setParcelGeoms((prev) => (prev[id] ? prev : { ...prev, [id]: geom }));
+    }
+  }, [parcelRaw]);
+
+  // Clic sur le plan cadastral : résout la parcelle sous le point puis l'ajoute
+  // (ou la retire si déjà présente) à l'unité foncière. Évite au citoyen d'avoir
+  // à connaître la référence cadastrale.
+  const handleMapPick = useCallback(async (lat: number, lng: number) => {
+    setAttachingParcel(true);
+    setAttachError(null);
+    let clicked: { parcelle_id: string; geometry?: object } | null = null;
+    try {
+      const result = await api.get<Record<string, unknown>>(
+        `/public/analyse?lat=${lat}&lng=${lng}`,
+      );
+      clicked = (result.parcel as { parcelle_id: string; geometry?: object } | undefined) ?? null;
+    } catch {
+      setAttachError("Impossible d'identifier la parcelle. Réessayez.");
+    } finally {
+      setAttachingParcel(false);
+    }
+    if (!clicked?.parcelle_id) {
+      setAttachError("Aucune parcelle cadastrale à cet endroit — cliquez à l'intérieur d'une parcelle.");
+      return;
+    }
+    const clickedId = clicked.parcelle_id;
+    if (clicked.geometry) {
+      const geom = clicked.geometry;
+      setParcelGeoms((prev) => ({ ...prev, [clickedId]: geom }));
+    }
+    const existing = attachedParcelles.map((p) => p.parcelle_id);
+    if (existing.includes(clickedId)) {
+      // Re-clic sur une parcelle déjà retenue → on la retire (sauf si c'est la
+      // dernière du projet).
+      if (existing.length > 1) await reanalyseUnite(existing.filter((id) => id !== clickedId));
+      return;
+    }
+    await reanalyseUnite([...existing, clickedId]);
+  }, [attachedParcelles, reanalyseUnite]);
+
+  // Centre initial de la carte : coordonnées de l'adresse analysée si connues.
+  const mapCenter: [number, number] | undefined = (() => {
+    const addr = parcelRaw?.address as { lat?: number; lng?: number } | undefined;
+    return addr?.lat != null && addr?.lng != null ? [addr.lat, addr.lng] : undefined;
+  })();
+
+  // Géométries des parcelles retenues, pour la surbrillance carte.
+  const highlightGeoms = attachedParcelles
+    .map((p) => parcelGeoms[p.parcelle_id])
+    .filter((g): g is object => !!g);
 
   // ── AI classification ────────────────────────────────────────────────────────
   const classify = useCallback(async () => {
@@ -1537,13 +1605,64 @@ export function NouvelleDemandeWizard() {
                       </div>
                     )}
 
-                    {/* Ajout d'une parcelle par référence cadastrale */}
-                    <div style={{ display: "flex", gap: 8, alignItems: "stretch" }}>
+                    {/* Sélection à la carte — moyen principal : le citoyen clique
+                        ses parcelles sur le plan cadastral sans connaître leur réf. */}
+                    <button
+                      onClick={() => setShowParcelMap((v) => !v)}
+                      style={{ display: "flex", alignItems: "center", justifyContent: "center", gap: 8, width: "100%", padding: "10px 16px", background: showParcelMap ? "#15803D" : "white", color: showParcelMap ? "white" : "#15803D", border: "1.5px solid #15803D", borderRadius: 10, fontSize: 13, fontWeight: 600, cursor: "pointer", transition: "all 0.12s" }}
+                    >
+                      🗺️ {showParcelMap ? "Masquer la carte cadastrale" : "Choisir mes parcelles sur la carte"}
+                    </button>
+
+                    {showParcelMap && (
+                      <div style={{ marginTop: 10 }}>
+                        <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8, gap: 8, flexWrap: "wrap" }}>
+                          <span style={{ fontSize: 11.5, color: "#166534", fontWeight: 600 }}>
+                            Cliquez une parcelle pour l'ajouter — cliquez-la à nouveau pour la retirer.
+                          </span>
+                          <div style={{ display: "flex", border: "1px solid #E5E7EB", borderRadius: 7, overflow: "hidden", flexShrink: 0 }}>
+                            {([
+                              { key: "ign-plan", label: "Plan" },
+                              { key: "ign-ortho", label: "Photo" },
+                            ] as { key: BaseLayer; label: string }[]).map(({ key, label }, i, arr) => (
+                              <button key={key} onClick={() => setMapBaseLayer(key)} style={{
+                                padding: "4px 12px", border: "none",
+                                borderRight: i < arr.length - 1 ? "1px solid #E5E7EB" : "none",
+                                cursor: "pointer", fontSize: 11.5, fontWeight: mapBaseLayer === key ? 700 : 400,
+                                background: mapBaseLayer === key ? "#15803D" : "white",
+                                color: mapBaseLayer === key ? "white" : "#6B7280",
+                              }}>{label}</button>
+                            ))}
+                          </div>
+                        </div>
+                        <div style={{ position: "relative", borderRadius: 12, overflow: "hidden", border: "1px solid #86EFAC" }}>
+                          <MapLeaflet
+                            dossiers={[]}
+                            height={320}
+                            baseLayer={mapBaseLayer}
+                            parcelLayer={true}
+                            clickMode={true}
+                            onMapClick={(lat, lng) => void handleMapPick(lat, lng)}
+                            highlightGeometries={highlightGeoms}
+                            defaultCenter={mapCenter}
+                            defaultZoom={mapCenter ? 18 : undefined}
+                          />
+                          {attachingParcel && (
+                            <div style={{ position: "absolute", top: 10, left: "50%", transform: "translateX(-50%)", background: "rgba(21,128,61,0.92)", color: "white", borderRadius: 20, padding: "5px 14px", fontSize: 11.5, fontWeight: 600, pointerEvents: "none", zIndex: 1000 }}>
+                              Analyse de la parcelle…
+                            </div>
+                          )}
+                        </div>
+                      </div>
+                    )}
+
+                    {/* Saisie manuelle de la référence — repli pour qui la connaît. */}
+                    <div style={{ display: "flex", gap: 8, alignItems: "stretch", marginTop: 10 }}>
                       <input
                         value={extraParcelInput}
                         onChange={(e) => { setExtraParcelInput(e.target.value); if (attachError) setAttachError(null); }}
                         onKeyDown={(e) => { if (e.key === "Enter" && !attachingParcel) void attachParcelle(extraParcelInput); }}
-                        placeholder="Réf. cadastrale (ex : 41295000DB0264)"
+                        placeholder="ou saisir la réf. cadastrale (ex : 41295000DB0264)"
                         style={{ flex: 1, padding: "8px 12px", border: "1.5px solid #86EFAC", borderRadius: 9, fontSize: 13, outline: "none", fontFamily: "inherit", boxSizing: "border-box", background: "white" }}
                       />
                       <button
@@ -1558,7 +1677,7 @@ export function NouvelleDemandeWizard() {
                       <div style={{ fontSize: 11.5, color: "#DC2626", marginTop: 6 }}>{attachError}</div>
                     ) : (
                       <div style={{ fontSize: 11, color: "#64748b", marginTop: 6, lineHeight: 1.4 }}>
-                        Votre projet s'étend sur plusieurs parcelles ? Ajoutez-les ici par leur référence cadastrale pour constituer un groupement foncier.
+                        Votre projet s'étend sur plusieurs parcelles ? Sélectionnez-les sur la carte (ou par référence) pour constituer un groupement foncier.
                       </div>
                     )}
                   </div>
