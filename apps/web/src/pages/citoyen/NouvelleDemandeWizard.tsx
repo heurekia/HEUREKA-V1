@@ -413,6 +413,10 @@ export function NouvelleDemandeWizard() {
   const qParam = searchParams.get("q") ?? "";
   // Groupement foncier : liste d'ids cadastraux transmise par l'analyse parcellaire.
   const parcellesParam = searchParams.get("parcelles") ?? "";
+  // Quand le wizard est ouvert depuis l'analyse parcellaire avec des parcelles
+  // déjà sélectionnées (param ?parcelles=…), l'unité foncière a été constituée
+  // en amont : on n'expose pas le choix multi-parcelles ici (lecture seule).
+  const parcellesPreselected = parcellesParam.trim().length > 0;
   const dossierParam = searchParams.get("dossier");
 
   const [step, setStep] = useState<Step>(1);
@@ -1584,7 +1588,7 @@ export function NouvelleDemandeWizard() {
                     {attachedParcelles.length > 0 && (
                       <div style={{ display: "flex", flexWrap: "wrap", gap: 6, marginBottom: 10 }}>
                         {attachedParcelles.map((p, i) => (
-                          <span key={p.parcelle_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #86EFAC", borderRadius: 999, padding: attachedParcelles.length > 1 ? "3px 6px 3px 10px" : "3px 10px", fontSize: 11.5, color: "#0F172A", fontWeight: 600 }}>
+                          <span key={p.parcelle_id} style={{ display: "inline-flex", alignItems: "center", gap: 6, background: "white", border: "1px solid #86EFAC", borderRadius: 999, padding: attachedParcelles.length > 1 && !parcellesPreselected ? "3px 6px 3px 10px" : "3px 10px", fontSize: 11.5, color: "#0F172A", fontWeight: 600 }}>
                             {p.parcelle_id}
                             {p.surface_m2 != null && p.surface_m2 > 0 && (
                               <span style={{ color: "#64748b", fontWeight: 400 }}>· {Math.round(p.surface_m2).toLocaleString("fr-FR")} m²</span>
@@ -1592,7 +1596,7 @@ export function NouvelleDemandeWizard() {
                             {i === 0 && attachedParcelles.length > 1 && (
                               <span title="Parcelle principale" style={{ color: "#15803D", fontWeight: 700 }}>★</span>
                             )}
-                            {attachedParcelles.length > 1 && (
+                            {attachedParcelles.length > 1 && !parcellesPreselected && (
                               <button
                                 onClick={() => void detachParcelle(p.parcelle_id)}
                                 disabled={attachingParcel}
@@ -1605,6 +1609,17 @@ export function NouvelleDemandeWizard() {
                       </div>
                     )}
 
+                    {/* Choix multi-parcelles (carte cadastrale + saisie manuelle).
+                        Masqué quand les parcelles ont déjà été choisies via l'analyse
+                        parcellaire : l'unité foncière est figée, lecture seule ici. */}
+                    {parcellesPreselected ? (
+                      attachedParcelles.length > 1 && (
+                        <div style={{ fontSize: 11, color: "#64748b", marginTop: 2, lineHeight: 1.4 }}>
+                          Unité foncière constituée lors de l'analyse parcellaire (★ = parcelle principale).
+                        </div>
+                      )
+                    ) : (
+                      <>
                     {/* Sélection à la carte — moyen principal : le citoyen clique
                         ses parcelles sur le plan cadastral sans connaître leur réf. */}
                     <button
@@ -1679,6 +1694,8 @@ export function NouvelleDemandeWizard() {
                       <div style={{ fontSize: 11, color: "#64748b", marginTop: 6, lineHeight: 1.4 }}>
                         Votre projet s'étend sur plusieurs parcelles ? Sélectionnez-les sur la carte (ou par référence) pour constituer un groupement foncier.
                       </div>
+                    )}
+                      </>
                     )}
                   </div>
 
