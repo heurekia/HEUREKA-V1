@@ -1336,12 +1336,24 @@ export function CourrierModal({
                     {availablePieces.map((p) => {
                       const checked = selectedPieceIds.has(p.id);
                       const score = p.ia_score;
-                      const scoreLabel = score && !noAiHints ? (
-                        <span title={`Avis IA : ${score}`} style={{
+                      // Pas de notion « conforme / non conforme » exposée à l'instructeur :
+                      // on traduit l'avis IA en libellés d'exploitabilité, alignés sur
+                      // ceux de la fiche dossier (scoreToStatus dans DossierDetailScreen).
+                      const scoreInfo = score === "non_conforme"
+                        ? { label: "À reprendre", color: "#B91C1C", background: "#FEE2E2" }
+                        : score === "incomplet"
+                          ? { label: "À compléter", color: "#B91C1C", background: "#FEE2E2" }
+                          : score === "acceptable"
+                            ? { label: "Exploitable avec réserves", color: "#B45309", background: "#FEF3C7" }
+                            : score === "conforme"
+                              ? { label: "Exploitable", color: "#15803D", background: "#DCFCE7" }
+                              : null;
+                      const scoreLabel = scoreInfo && !noAiHints ? (
+                        <span title={`Avis IA : ${scoreInfo.label}`} style={{
                           fontSize: 9.5, fontWeight: 700, padding: "1px 5px", borderRadius: 4, marginLeft: 6,
-                          color: score === "non_conforme" || score === "incomplet" ? "#B91C1C" : score === "acceptable" ? "#B45309" : "#15803D",
-                          background: score === "non_conforme" || score === "incomplet" ? "#FEE2E2" : score === "acceptable" ? "#FEF3C7" : "#DCFCE7",
-                        }}>IA: {score.replace("_", " ")}</span>
+                          color: scoreInfo.color,
+                          background: scoreInfo.background,
+                        }}>IA: {scoreInfo.label}</span>
                       ) : null;
                       const statusBadge = p.instructeur_status === "valide"
                         ? <span style={{ fontSize: 9.5, fontWeight: 600, color: "#15803D", marginLeft: 6 }}>✓ validée</span>
