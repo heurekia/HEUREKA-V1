@@ -11,6 +11,7 @@
 import { useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { linkifyArticles } from "../../utils/linkifyArticles";
+import { useIsMobile } from "../../hooks/useMediaQuery";
 
 // Masque de saisie pour la date de naissance — l'utilisateur peut taper les
 // chiffres « au kilomètre » (ex. « 26062026 ») et le champ insère les « / »
@@ -394,6 +395,7 @@ export function Step5CerfaInfos({
   onPrev,
   onNext,
 }: Props) {
+  const isMobile = useIsMobile();
   const isPCMI = classification?.type === "permis_de_construire_mi"
     || (classification?.type === "permis_de_construire" && natures.includes("maison_neuve"));
   const isExtension = natures.includes("agrandissement");
@@ -455,7 +457,7 @@ export function Step5CerfaInfos({
                 ]}
               />
             </Field>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
               <Field label="Date de naissance" hint="JJ/MM/AAAA">
                 <input
                   type="text"
@@ -481,7 +483,7 @@ export function Step5CerfaInfos({
                 />
               </Field>
             </div>
-            <div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "2fr 1fr", gap: 12 }}>
               <Field label="Commune de naissance">
                 <input
                   type="text"
@@ -526,7 +528,7 @@ export function Step5CerfaInfos({
                 onBlur={onBlur}
               />
             </Field>
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 2fr", gap: 12 }}>
               <Field label="Type juridique">
                 <select
                   value={cerfaData.societeTypeJuridique ?? ""}
@@ -572,7 +574,7 @@ export function Step5CerfaInfos({
                   ]}
                 />
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
                 <input
                   type="text"
                   value={cerfaData.societeRepresentantPrenom ?? ""}
@@ -619,7 +621,7 @@ export function Step5CerfaInfos({
                   ]}
                 />
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
                 <input
                   type="text"
                   value={cerfaData.coDemandeurPrenom ?? ""}
@@ -713,7 +715,7 @@ export function Step5CerfaInfos({
           subtitle="Dimensions, logements, annexes"
           defaultOpen
         >
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
             <Field label="Emprise au sol créée" hint="m²" help="Projection au sol de la construction.">
               <input
                 type="number"
@@ -740,7 +742,7 @@ export function Step5CerfaInfos({
           </div>
 
           {isPCMI && (
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+            <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 12 }}>
               <Field label="Nombre de logements">
                 <input
                   type="number"
@@ -816,7 +818,7 @@ export function Step5CerfaInfos({
           subtitle="Surfaces avant / après"
           defaultOpen
         >
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr 1fr", gap: 12 }}>
             <Field label="Surface existante" hint="m²" help="Avant les travaux.">
               <input
                 type="number"
@@ -863,7 +865,7 @@ export function Step5CerfaInfos({
       {/* ── Section 5 : Changement de destination ────────────────── */}
       {isChangementDest && (
         <Section emoji="🔄" title="Changement de destination" defaultOpen>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+          <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
             <Field label="Destination actuelle">
               <select
                 value={cerfaData.destinationActuelle ?? ""}
@@ -939,7 +941,7 @@ export function Step5CerfaInfos({
 
           {(architecteObligatoire || cerfaData.architecteRequis === true) && (
             <>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
                 <Field label="Prénom">
                   <input
                     type="text"
@@ -961,7 +963,7 @@ export function Step5CerfaInfos({
                   />
                 </Field>
               </div>
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+              <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
                 <Field label="N° d'inscription à l'Ordre" hint="6 chiffres">
                   <input
                     type="text"

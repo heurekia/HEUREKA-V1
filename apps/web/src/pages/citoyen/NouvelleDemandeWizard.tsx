@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../../hooks/useAuth";
+import { useIsMobile } from "../../hooks/useMediaQuery";
 import { api, ApiError } from "../../lib/api";
 import { linkifyArticles } from "../../utils/linkifyArticles";
 import { Step5CerfaInfos } from "./Step5CerfaInfos";
@@ -406,6 +407,7 @@ const STEP3_CONFIGS: Record<NatureId, Step3Config> = {
 export function NouvelleDemandeWizard() {
   const navigate = useNavigate();
   const { user } = useAuth();
+  const isMobile = useIsMobile();
   const [searchParams] = useSearchParams();
   const qParam = searchParams.get("q") ?? "";
   // Groupement foncier : liste d'ids cadastraux transmise par l'analyse parcellaire.
@@ -1404,7 +1406,7 @@ export function NouvelleDemandeWizard() {
                 </p>
               </div>
 
-              <div style={{ display: "flex", gap: 10, marginBottom: 16, alignItems: "flex-start" }}>
+              <div style={{ display: "flex", flexDirection: isMobile ? "column" : "row", gap: 10, marginBottom: 16, alignItems: isMobile ? "stretch" : "flex-start" }}>
                 <div style={{ flex: 1, position: "relative" }}>
                   <input
                     value={search}
@@ -1486,7 +1488,7 @@ export function NouvelleDemandeWizard() {
                       ? `✓ Unité foncière analysée — ${parcel.parcelles.length} parcelles`
                       : "✓ Parcelle analysée"}
                   </div>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                  <div style={{ display: "grid", gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr", gap: 12 }}>
                     {[
                       ["📌 Adresse", parcel.adresse],
                       ["🏘️ Commune", parcel.commune ?? "—"],
@@ -1639,7 +1641,7 @@ export function NouvelleDemandeWizard() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 1fr 1fr",
+                  gridTemplateColumns: isMobile ? "1fr 1fr" : "1fr 1fr 1fr",
                   gap: 10,
                   marginBottom: 16,
                 }}
@@ -2283,7 +2285,7 @@ export function NouvelleDemandeWizard() {
               <div
                 style={{
                   display: "grid",
-                  gridTemplateColumns: "1fr 1fr",
+                  gridTemplateColumns: isMobile ? "1fr" : "1fr 1fr",
                   gap: 14,
                   marginBottom: 14,
                 }}
