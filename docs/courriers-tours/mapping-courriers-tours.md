@@ -72,8 +72,8 @@ absente, à créer + alimenter · ⚪ plomberie à supprimer.
 | **Coordonnées agent** | `INSTRTELEPHONE1/2`, `INSTRMEL` | `agent_tel`, `agent_email` *(nouv.)* | 🟡 | `users.telephone` / `users.email` |
 | Date d'incomplétude | `incompletudedate` | `date_incompletude` *(nouv.)* | 🟡 | instruction (ou = date courrier) |
 | Date début d'affichage | `datedebaffich` | `date_debut_affichage` *(nouv.)* | 🟡 | instruction |
-| **Civilité / qualité demandeur** | `DEMANDQUALITE`, `Demandcategorie` | `demandeur_civilite` *(nouv.)* | 🔴 | CERFA → OCR → manuel |
-| **Adresse postale demandeur** | `DEMANDADRNUMVOIE/TYPEVOIE/LIBVOIE/BTVOIE/EXCIPIENT`, `DemandAdrComplement`, `DemandAdrBP`, `DemandAdrCodePostal`, `DemandAdrCommune`, `DemandAdrCedex` | `demandeur_adresse` *(nouv., composé)* | 🔴 | CERFA → OCR → manuel |
+| **Civilité / qualité demandeur** | `DEMANDQUALITE`, `Demandcategorie` | `demandeur_civilite` *(intégré)* | ✅ | dépôt citoyen (`cerfa_data.civilite`) → OCR → manuel |
+| **Adresse postale demandeur** | `DEMANDADRNUMVOIE/TYPEVOIE/LIBVOIE/BTVOIE/EXCIPIENT`, `DemandAdrComplement`, `DemandAdrBP`, `DemandAdrCodePostal`, `DemandAdrCommune`, `DemandAdrCedex` | `demandeur_adresse` *(intégré, composé)* | ✅ | dépôt citoyen (`cerfa_data.adresseDemandeur*`, fallback terrain) → OCR → manuel |
 | **Mandataire / représentant** | `representant`, `REPRESNOM`, `REPRESPRENOM`, `REPRESQUALITE` | `mandataire_nom`, `mandataire_qualite` *(nouv.)* | 🔴 | CERFA → OCR → manuel |
 | **Destinataire (si ≠ demandeur)** | `destinataire`, `destinataireadresse`, `DestAdr*` | `destinataire_*` *(nouv., dérivé)* | 🔴 | logique (mandataire sinon demandeur) |
 | **Surfaces & comptages détaillés** | `TotalShonDemoli`, `lognbcrees`, `totalnbcree`, `PROJETSHOB`, `PROJETSURFACE` | `surface_demolie`, `nb_logements`, `nb_batiments`, `surface_terrain` *(nouv.)* | 🔴 | CERFA → OCR → manuel |
@@ -107,8 +107,8 @@ Non créées pour l'instant : aucune donnée ne circule encore dans l'outil.
 
 | Variable cible | Champ Operis | Modèle CERFA existant (`CerfaPcmiData`) |
 |---|---|---|
-| `demandeur_civilite` | `DEMANDQUALITE` | (état civil D1*) |
-| `demandeur_adresse` | `DEMANDADR*` | `adresseDemandeur*` / `demandeur_voie*` (D3*) ✔ déjà modélisé |
+| `demandeur_civilite` ✅ *intégré* | `DEMANDQUALITE` | `cerfa_data.civilite` (saisi au dépôt citoyen) |
+| `demandeur_adresse` ✅ *intégré* | `DEMANDADR*` | `cerfa_data.adresseDemandeur*` (D3*), fallback adresse terrain |
 | `mandataire_nom`, `mandataire_qualite` | `representant`, `REPRES*` | `societe_representant*` (D2*) ✔ |
 | `destinataire_bloc` | `destinataire*` | dérivé (mandataire sinon demandeur) |
 | `destination_projet` | `S_SEP_STD_DESTINATION` | `destinationActuelle/Future/Usage` ✔ |
@@ -180,7 +180,7 @@ Ce sont des blocs de texte tirés de la base ADS d'Operis. Équivalents Heureka 
 
 | Modèle | État | Notes |
 |---|---|---|
-| **Demande de pièces manquantes** | ✅ **intégré** | Catégorie `pieces_complementaires`. Liste des pièces ← `liste_pieces_a_completer`. Seed `pnpm -F @heureka-v1/api seed:courrier-tours` (idempotent, communes de Tours Métropole). 6 zones manuelles (adresse demandeur/destinataire, civilité, signataire) en attendant `cerfa_data`. |
+| **Demande de pièces manquantes** | ✅ **intégré** | Catégorie `pieces_complementaires`. Liste des pièces ← `liste_pieces_a_completer`. Seed `pnpm -F @heureka-v1/api seed:courrier-tours` (idempotent, communes de Tours Métropole). Civilité et adresse du demandeur désormais branchées sur `cerfa_data` (`demandeur_civilite` / `demandeur_adresse`) ; restent manuelles : destinataire (si ≠ demandeur) et signataire. |
 | 16 autres modèles | ⏳ à venir | Même gabarit une fois ce 1er modèle validé. |
 
 Données : `apps/api/src/scripts/tours-courrier-templates.ts` (corps des modèles),

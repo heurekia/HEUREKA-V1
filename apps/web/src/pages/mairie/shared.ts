@@ -38,6 +38,11 @@ export type DossierInfo = {
   petitionnaire_email?: string | null;
   petitionnaire_is_placeholder?: boolean;
   petitionnaire_can_invite?: boolean;
+  // Civilité (« Madame »/« Monsieur ») et adresse postale du demandeur, dérivées
+  // de metadata.cerfa_data (saisies au dépôt citoyen). Réutilisées dans les
+  // balises dynamiques de courrier (variables demandeur_civilite / demandeur_adresse).
+  demandeur_civilite?: string;
+  demandeur_adresse?: string;
   lat?: number; lng?: number;
   // Analyse parcellaire propagée depuis la création du dossier côté citoyen,
   // évite un re-fetch /analyse-parcelle à l'ouverture.

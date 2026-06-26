@@ -16,6 +16,9 @@ import { linkifyArticles } from "../../utils/linkifyArticles";
 
 export type CerfaData = {
   qualiteDemandeur?: "particulier" | "sci" | "indivision" | "autre";
+  // Civilité du demandeur personne physique (Madame / Monsieur). Réutilisée
+  // dans les balises dynamiques de courrier (variable `demandeur_civilite`).
+  civilite?: "madame" | "monsieur";
   dateNaissance?: string;
   communeNaissance?: string;
   deptNaissance?: string;
@@ -305,6 +308,16 @@ export function Step5CerfaInfos({
         {/* État civil — section CERFA "Identité du demandeur" */}
         {!isSociete && (
           <>
+            <Field label="Civilité" help="Utilisée pour vous adresser les courriers de la mairie (« Madame », « Monsieur »).">
+              <ChoiceGroup<NonNullable<CerfaData["civilite"]>>
+                value={cerfaData.civilite}
+                onChange={(v) => setCerfa("civilite", v)}
+                options={[
+                  { value: "madame", label: "Madame", emoji: "👩" },
+                  { value: "monsieur", label: "Monsieur", emoji: "👨" },
+                ]}
+              />
+            </Field>
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
               <Field label="Date de naissance" hint="JJ/MM/AAAA">
                 <input

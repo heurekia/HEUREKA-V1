@@ -3785,6 +3785,8 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
             type: dossier.type,
             petitionnaire: dossier.petitionnaire,
             petitionnaire_email: dossier.petitionnaire_email,
+            demandeur_civilite: dossier.demandeur_civilite,
+            demandeur_adresse: dossier.demandeur_adresse,
             adresse: dossier.adresse,
             commune: dossier.commune,
             code_postal: dossier.code_postal,

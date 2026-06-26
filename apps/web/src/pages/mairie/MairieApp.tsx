@@ -1554,6 +1554,22 @@ function DossierDetailRoute({ navigate, commune, communes, setCommune, communeIn
         const meta = (data.metadata ?? {}) as Record<string, unknown>;
         const lat = parseFloat(String(meta["lat"] ?? ""));
         const lng = parseFloat(String(meta["lng"] ?? ""));
+        // Données CERFA saisies au dépôt citoyen (metadata.cerfa_data) :
+        // on en dérive la civilité et l'adresse postale du demandeur, réutilisées
+        // par les balises dynamiques de courrier (demandeur_civilite/_adresse).
+        const cerfa = (meta["cerfa_data"] && typeof meta["cerfa_data"] === "object")
+          ? (meta["cerfa_data"] as Record<string, unknown>)
+          : {};
+        const cs = (k: string) => (typeof cerfa[k] === "string" ? (cerfa[k] as string).trim() : "");
+        const civilite = cs("civilite") === "madame" ? "Madame"
+          : cs("civilite") === "monsieur" ? "Monsieur" : "";
+        const adrLigne1 = [cs("adresseDemandeurNumero"), cs("adresseDemandeurVoie")].filter(Boolean).join(" ");
+        const adrLigne2 = [cs("adresseDemandeurCodePostal"), cs("adresseDemandeurLocalite")].filter(Boolean).join(" ");
+        const adresseDemandeurCerfa = [adrLigne1, adrLigne2].filter(Boolean).join(", ");
+        // À défaut d'adresse personnelle saisie, on retombe sur l'adresse du terrain.
+        const adresseTerrain = [data.adresse, [data.code_postal, data.commune].filter(Boolean).join(" ")]
+          .filter(Boolean).join(", ");
+        const demandeurAdresse = adresseDemandeurCerfa || adresseTerrain;
         setDossier({
           id: data.id,
           numero: data.numero,
@@ -1562,6 +1578,8 @@ function DossierDetailRoute({ navigate, commune, communes, setCommune, communeIn
           petitionnaire_email: data.demandeur?.email ?? null,
           petitionnaire_is_placeholder: data.demandeur?.is_placeholder ?? false,
           petitionnaire_can_invite: data.demandeur?.can_invite ?? false,
+          demandeur_civilite: civilite || undefined,
+          demandeur_adresse: demandeurAdresse || undefined,
           adresse: data.adresse ?? "—",
           status: data.status,
           echeance: fmtDate(data.date_limite_instruction),
