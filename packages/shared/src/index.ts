@@ -24,6 +24,24 @@ export type NotificationEvent = "nouveau_dossier" | "changement_statut" | "messa
 export type ParcelleStatus = "conforme" | "non_conforme" | "a_verifier" | "en_attente";
 export type Decision = "favorable" | "defavorable" | "avec_reserves";
 
+// ── Unité foncière (groupement de parcelles) ──
+// Une demande peut porter sur plusieurs parcelles cadastrales contiguës formant
+// une seule unité foncière (groupement foncier). La première parcelle de la liste
+// est la « principale » (rétro-compat : champ texte `dossiers.parcelle`, CERFA,
+// courriers). La liste complète est persistée dans `metadata.parcelles`.
+export interface ParcelleRef {
+  parcelle_id: string;        // ex. "37018000AB0050"
+  surface_m2?: number;        // contenance cadastrale
+  commune?: string;
+  zone_code?: string;         // zone PLU au centroïde de la parcelle
+}
+// Agrégat renvoyé par l'analyse quand plusieurs parcelles sont sélectionnées.
+export interface UniteFonciere {
+  parcelles: ParcelleRef[];
+  total_surface_m2: number;
+  zones_distinctes: boolean;  // true si les parcelles ne sont pas toutes sur la même zone PLU
+}
+
 // ── Core ──
 export interface User {
   id: string;

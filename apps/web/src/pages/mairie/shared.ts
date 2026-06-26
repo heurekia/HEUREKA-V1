@@ -29,6 +29,9 @@ export type DossierInfo = {
   date_completude?: string;
   delai?: DelaiBreakdown | null;
   description?: string; parcelle?: string; surface_plancher?: string;
+  // Unité foncière : liste complète des parcelles quand la demande porte sur un
+  // groupement foncier (≥ 2 parcelles). `parcelle` reste la principale.
+  parcelles?: Array<{ parcelle_id: string; surface_m2?: number; commune?: string; zone_code?: string }>;
   commune?: string; code_postal?: string;
   instructeur?: string;
   instructeur_id?: string;

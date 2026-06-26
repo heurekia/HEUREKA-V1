@@ -1658,14 +1658,21 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
                 <div style={{ display: "flex", flexDirection: "column" as const, gap: 12 }}>
                   {(() => {
                     const pp = parcelAnalysis?.parcel;
-                    const parcelleLabel = dossier.parcelle
-                      ?? (pp ? `${pp.section} ${pp.numero}` : null)
-                      ?? (parcelLoading ? "Identification…" : "—");
+                    const hasGroupement = (dossier.parcelles?.length ?? 0) > 1;
+                    const totalSurface = hasGroupement
+                      ? dossier.parcelles!.reduce((s, p) => s + (p.surface_m2 ?? 0), 0)
+                      : 0;
+                    const parcelleLabel = hasGroupement
+                      // Groupement foncier : on liste toutes les références + surface totale.
+                      ? `${dossier.parcelles!.map((p) => p.parcelle_id).join(", ")}${totalSurface > 0 ? ` — ${Math.round(totalSurface).toLocaleString("fr-FR")} m² au total` : ""}`
+                      : (dossier.parcelle
+                        ?? (pp ? `${pp.section} ${pp.numero}` : null)
+                        ?? (parcelLoading ? "Identification…" : "—"));
                     return [
                       ["Pétitionnaire", dossier.petitionnaire],
                       ["Adresse", liveAdresse ?? "—"],
                       ["Commune", `${liveCommune ?? "—"}${dossier.code_postal ? ` (${dossier.code_postal})` : ""}`],
-                      ["Parcelle", parcelleLabel],
+                      [hasGroupement ? `Parcelles (${dossier.parcelles!.length})` : "Parcelle", parcelleLabel],
                       ["Surface de plancher", dossier.surface_plancher ? `${dossier.surface_plancher} m²` : "—"],
                       ["Date de dépôt", dossier.date_depot ? fmtDate(dossier.date_depot) : "—"],
                       ["Échéance", dossier.echeance],
@@ -3799,6 +3806,7 @@ export function DossierDetailScreen({ dossier, onBack, navigate, inseeCode }: {
             commune: dossier.commune,
             code_postal: dossier.code_postal,
             parcelle: dossier.parcelle,
+            parcelles: dossier.parcelles,
             surface_plancher: dossier.surface_plancher,
             description: dossier.description,
             date_depot: dossier.date_depot,

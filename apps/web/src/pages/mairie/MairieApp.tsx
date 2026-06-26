@@ -1604,6 +1604,9 @@ function DossierDetailRoute({ navigate, commune, communes, setCommune, communeIn
           delai: (meta["delai"] as DelaiBreakdown | undefined) ?? null,
           description: data.description ?? undefined,
           parcelle: data.parcelle ?? undefined,
+          parcelles: Array.isArray(meta["parcelles"])
+            ? (meta["parcelles"] as DossierInfo["parcelles"])
+            : undefined,
           surface_plancher: data.surface_plancher ?? undefined,
           commune: data.commune ?? undefined,
           code_postal: data.code_postal ?? undefined,
