@@ -2,8 +2,8 @@
 
 > Document vivant. Tient le fil de l'audit de performance et du durcissement de
 > la plateforme en vue d'une montée en charge. Mis à jour **au fur et à mesure**
-> de l'avancement (cf. § Journal d'avancement). Dernière mise à jour : Palier 2
-> entamé (healthcheck profond + logs structurés ; build/tsx à coordonner).
+> de l'avancement (cf. § Journal d'avancement). Dernière mise à jour : Palier 3
+> terminé (code splitting + DossiersScreen + recharts) ; Palier 2 build/tsx à coordonner.
 
 ## 1. Contexte & verdict
 
@@ -45,7 +45,7 @@ pilote mono-instance** une fois le Palier 0 traité. Ce n'est pas un audit
 | **0** | Garde-fous à faible risque (index, timeouts, rate-limit) | Faible | ✅ Fait |
 | **1** | Sortir le travail lourd du cycle requête + transactions | Moyen | ✅ Fait (hors 1.3b mineur) |
 | **2** | Exécution (build JS, fin du `tsx`) & observabilité | Moyen | 🚧 Partiel (observabilité entamée ; build/tsx à coordonner) |
-| **3** | Frontend (code splitting, mémoïsation, cache données) | Faible | ⏳ À faire |
+| **3** | Frontend (code splitting, mémoïsation, cache données) | Faible | ✅ Fait (hors cache react-query, optionnel) |
 | **4** | Scaling horizontal (Redis, clustering, Postgres séparé) | Élevé | ⏳ À faire |
 
 ## 4. Journal d'avancement
@@ -128,6 +128,24 @@ Ce n'est PAS un simple changement de script `start`. Bloqueurs réels :
 Approche recommandée : `tsup` (bundle ESM, workspace inliné, node_modules
 externes) APRÈS le refactor des chemins (point 1), avec un boot local
 `node dist/index.js` comme garde-fou, puis validation déploiement.
+
+### Palier 3 — frontend ✅ (hors cache react-query, optionnel)
+
+| # | Chantier | État | Commit |
+|---|---|---|---|
+| 3.1 | Code splitting par portail/page (React.lazy + Suspense) + `manualChunks` | ✅ Fait | `perf(web): code splitting … manualChunks` |
+| 3.2 | `DossiersScreen` : mémoïsation (useMemo) + fin du O(n²) + recompute hors filtre | ✅ Fait | `perf(web): DossiersScreen …` |
+| 3.3 | Retrait de la dépendance morte `recharts` (-32 paquets) | ✅ Fait | `chore(web): retire … recharts` |
+| 3.4 | Cache de données (TanStack Query / SWR) sur les lectures | ⏳ À faire (optionnel) | — |
+
+**Impact mesuré (vite build).** Avant : un unique bundle de **2 541 Ko (693 Ko
+gzip)** chargé sur tous les portails. Après : la landing www ne charge plus que
+l'entrée + `vendor-react`/`vendor-router` + `PublicRouter` (~80–140 Ko gzip) ;
+`SuperAdminApp` (303 Ko), `MairieApp` (632 Ko), Leaflet (150 Ko), pdfjs (341 Ko)
+et tiptap (344 Ko) sont sortis du chargement initial et ne sont téléchargés que
+par les routes/portails qui les utilisent (et après authentification pour les
+espaces pro). `MairieApp` reste volumineux (candidat à un découpage interne —
+Palier 3 bis) mais ne pèse plus que sur les utilisateurs mairie authentifiés.
 
 ## 5. Variables d'environnement introduites
 
