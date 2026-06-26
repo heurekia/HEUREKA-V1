@@ -2,6 +2,7 @@ import { Link, Outlet, useLocation } from "react-router-dom";
 import { useAuth } from "../hooks/useAuth";
 import { Avatar } from "../components/ui/avatar";
 import { Button } from "../components/ui/button";
+import { sanitizeNextParam } from "../router/guards";
 
 const navLinks = [
   { to: "/", label: "Accueil", exact: true },
@@ -13,6 +14,15 @@ const navLinks = [
 export function PublicLayout() {
   const { user, logout } = useAuth();
   const location = useLocation();
+
+  // Conserve la destination en cours (?next=/citoyen/nouvelle-demande…) sur les
+  // boutons « Se connecter » / « Créer un compte » de l'en-tête : sans cela, un
+  // pétitionnaire engagé dans un dépôt qui clique ici repart sans next et
+  // atterrit sur l'accueil de l'espace au lieu de revenir à sa démarche.
+  const next = sanitizeNextParam(new URLSearchParams(location.search).get("next"));
+  const authSuffix = next ? `?next=${encodeURIComponent(next)}` : "";
+  const loginHref = `/login${authSuffix}`;
+  const registerHref = `/register${authSuffix}`;
 
   return (
     <div className="min-h-screen bg-[#F0F0F0] flex flex-col">
@@ -64,12 +74,12 @@ export function PublicLayout() {
                 </div>
               ) : (
                 <div className="flex items-center gap-2">
-                  <Link to="/login">
+                  <Link to={loginHref}>
                     <Button variant="ghost" size="sm">
                       Se connecter
                     </Button>
                   </Link>
-                  <Link to="/register">
+                  <Link to={registerHref}>
                     <Button size="sm">
                       Créer un compte
                     </Button>
