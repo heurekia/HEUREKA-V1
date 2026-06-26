@@ -266,6 +266,47 @@ export async function geocodeAddress(address: string, citycode?: string): Promis
   }
 }
 
+// ── Reverse-geocode coordinates → nearest postal address (BAN) ────────────────
+// Quand l'analyse part d'une parcelle (réf. cadastrale ou sélection carte) et non
+// d'une adresse, on récupère l'adresse OFFICIELLE la plus proche du point (en
+// pratique le centroïde de la parcelle) via le géocodage inverse de la BAN. Le
+// dossier d'urbanisme étant juridiquement rattaché À LA FOIS à la parcelle et à
+// l'adresse, c'est cette adresse — cohérente avec la parcelle retenue — qui doit
+// figurer au dossier (et non une adresse saisie qui pointerait une parcelle
+// voisine). Best-effort : null si la BAN ne renvoie rien ou est injoignable.
+export async function reverseGeocode(lat: number, lng: number): Promise<AddressResult | null> {
+  try {
+    const url = `https://api-adresse.data.gouv.fr/reverse/?lon=${lng}&lat=${lat}`;
+    const r = await fetch(url, { signal: AbortSignal.timeout(5000) });
+    if (!r.ok) return null;
+    const data = await r.json() as {
+      features?: Array<{
+        geometry: { coordinates: [number, number] };
+        properties: {
+          id?: string;
+          label: string; score: number; citycode: string;
+          postcode: string; city: string; type: string;
+        };
+      }>;
+    };
+    const f = data.features?.[0];
+    if (!f) return null;
+    return {
+      label: f.properties.label,
+      lat: f.geometry.coordinates[1],
+      lng: f.geometry.coordinates[0],
+      citycode: f.properties.citycode,
+      postcode: f.properties.postcode,
+      city: f.properties.city,
+      score: f.properties.score,
+      type: f.properties.type ?? "housenumber",
+      id: f.properties.id,
+    };
+  } catch {
+    return null;
+  }
+}
+
 // ── Reverse-geocode coordinates to commune INSEE code ─────────────────────────
 // Uses geo.api.gouv.fr which returns the commune that spatially contains (lat, lng).
 // Called before IGN Cadastre lookups to constrain results to the correct commune
@@ -1335,7 +1376,18 @@ export async function analyseParcel(
       // la résolution de zone PLU / servitudes. Sans ce centre, le bloc zonage
       // (gardé par `if (lat && lng)`) est sauté et la zone reste « non déterminée ».
       const centre = geometryCentroid(parcel.geometry);
-      if (centre) { lat = centre.lat; lng = centre.lng; }
+      if (centre) {
+        lat = centre.lat; lng = centre.lng;
+        // Adresse rattachée à la parcelle : on géocode en inverse le centroïde
+        // pour récupérer l'adresse officielle (BAN) la plus proche. Le dossier
+        // est juridiquement lié à la parcelle ET à l'adresse — il faut donc
+        // l'adresse cohérente avec la parcelle retenue, pas une saisie initiale.
+        const addr = await reverseGeocode(centre.lat, centre.lng);
+        if (addr) {
+          result.address = addr;
+          result.data_sources.push("BAN (géocodage inverse)");
+        }
+      }
     } else {
       result.warnings.push("Parcelle cadastrale non trouvée via API IGN.");
     }
