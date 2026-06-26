@@ -29,11 +29,11 @@ export function PublicLayout() {
       <header className="bg-white border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex items-center justify-between h-16">
-            <Link to="/" className="flex items-center gap-2">
-              <div className="w-7 h-7 bg-heureka-500 rounded flex items-center justify-center">
+            <Link to="/" className="flex items-center gap-2 flex-shrink-0">
+              <div className="w-7 h-7 bg-heureka-500 rounded flex items-center justify-center flex-shrink-0">
                 <span className="text-white font-bold text-xs">H</span>
               </div>
-              <span className="text-lg font-bold text-[#000020]">HEUREKIA</span>
+              <span className="text-lg font-bold text-[#000020] whitespace-nowrap hidden sm:inline">HEUREKIA</span>
             </Link>
             <nav className="hidden md:flex items-center gap-6">
               {navLinks.map((link) => {
@@ -73,14 +73,14 @@ export function PublicLayout() {
                   </Button>
                 </div>
               ) : (
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-shrink-0">
                   <Link to={loginHref}>
-                    <Button variant="ghost" size="sm">
+                    <Button variant="ghost" size="sm" className="whitespace-nowrap px-2.5 text-xs sm:px-3 sm:text-sm">
                       Se connecter
                     </Button>
                   </Link>
                   <Link to={registerHref}>
-                    <Button size="sm">
+                    <Button size="sm" className="whitespace-nowrap px-2.5 text-xs sm:px-3 sm:text-sm">
                       Créer un compte
                     </Button>
                   </Link>
