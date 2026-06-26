@@ -445,8 +445,17 @@ export function NouvelleDemandeWizard() {
     societeDenomination?: string;
     societeTypeJuridique?: string;
     societeSiret?: string;
+    // Représentant physique désigné de la personne morale (civilité incluse) —
+    // alimente la balise de courrier `representant_nom`.
+    societeRepresentantCivilite?: "madame" | "monsieur";
     societeRepresentantNom?: string;
     societeRepresentantPrenom?: string;
+    // Co-demandeur (second pétitionnaire) — balises `codemandeur_civilite` /
+    // `codemandeur_nom`.
+    coDemandeur?: boolean;
+    coDemandeurCivilite?: "madame" | "monsieur";
+    coDemandeurNom?: string;
+    coDemandeurPrenom?: string;
     // Adresse demandeur si différente du terrain
     adresseDemandeurNumero?: string;
     adresseDemandeurVoie?: string;

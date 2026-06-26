@@ -24,6 +24,9 @@ const TEMPLATE_VARIABLES = [
     { label: "Identité du demandeur", name: "demandeur_nom" },
     { label: "Adresse du demandeur", name: "demandeur_adresse" },
     { label: "Email demandeur", name: "demandeur_email" },
+    { label: "Représentant (personne morale)", name: "representant_nom" },
+    { label: "Civilité du co-demandeur", name: "codemandeur_civilite" },
+    { label: "Identité du co-demandeur", name: "codemandeur_nom" },
     { label: "Date de dépôt", name: "date_depot" },
     { label: "Date de complétude", name: "date_completude" },
     { label: "Date de délivrance", name: "date_delivrance" },
@@ -167,6 +170,10 @@ export interface DossierForCourrier {
   // balises dynamiques demandeur_civilite / demandeur_adresse.
   demandeur_civilite?: string;
   demandeur_adresse?: string;
+  // Représentant physique d'une personne morale + co-demandeur éventuel.
+  representant_nom?: string;
+  codemandeur_civilite?: string;
+  codemandeur_nom?: string;
   adresse?: string; commune?: string; code_postal?: string; parcelle?: string;
   surface_plancher?: string; description?: string | null;
   date_depot?: string; echeance?: string;
@@ -892,6 +899,9 @@ export function CourrierModal({
       demandeur_nom: dossier.petitionnaire,
       demandeur_adresse: dossier.demandeur_adresse || "—",
       demandeur_email: dossier.petitionnaire_email || "—",
+      representant_nom: dossier.representant_nom || "—",
+      codemandeur_civilite: dossier.codemandeur_civilite || "—",
+      codemandeur_nom: dossier.codemandeur_nom || "—",
       date_depot: fmtDate(dossier.date_depot),
       date_completude: fmtDate(dossier.date_completude),
       date_delivrance: fmtDate(dossier.date_delivrance),

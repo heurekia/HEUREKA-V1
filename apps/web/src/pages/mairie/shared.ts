@@ -43,6 +43,12 @@ export type DossierInfo = {
   // balises dynamiques de courrier (variables demandeur_civilite / demandeur_adresse).
   demandeur_civilite?: string;
   demandeur_adresse?: string;
+  // Représentant physique désigné (personne morale) et co-demandeur éventuel,
+  // dérivés de metadata.cerfa_data. Réutilisés dans les balises de courrier
+  // (representant_nom, codemandeur_civilite, codemandeur_nom).
+  representant_nom?: string;
+  codemandeur_civilite?: string;
+  codemandeur_nom?: string;
   lat?: number; lng?: number;
   // Analyse parcellaire propagée depuis la création du dossier côté citoyen,
   // évite un re-fetch /analyse-parcelle à l'ouverture.

@@ -26,8 +26,17 @@ export type CerfaData = {
   societeDenomination?: string;
   societeTypeJuridique?: string;
   societeSiret?: string;
+  // Représentant physique désigné de la personne morale (obligatoire) — sa
+  // civilité alimente la variable de courrier `representant_nom`.
+  societeRepresentantCivilite?: "madame" | "monsieur";
   societeRepresentantNom?: string;
   societeRepresentantPrenom?: string;
+  // Co-demandeur (second pétitionnaire, ex. conjoint) — réutilisé dans les
+  // balises de courrier `codemandeur_civilite` / `codemandeur_nom`.
+  coDemandeur?: boolean;
+  coDemandeurCivilite?: "madame" | "monsieur";
+  coDemandeurNom?: string;
+  coDemandeurPrenom?: string;
   adresseDemandeurNumero?: string;
   adresseDemandeurVoie?: string;
   adresseDemandeurLocalite?: string;
@@ -418,7 +427,21 @@ export function Step5CerfaInfos({
                 />
               </Field>
             </div>
-            <Field label="Représentant légal" help="Le gérant/président qui signera la demande.">
+            <Field
+              label="Représentant physique désigné"
+              hint="obligatoire"
+              help="La personne morale agit toujours par l'intermédiaire d'une personne physique (gérant, président…) qui signe la demande et à qui les courriers sont adressés."
+            >
+              <div style={{ marginBottom: 12 }}>
+                <ChoiceGroup<NonNullable<CerfaData["societeRepresentantCivilite"]>>
+                  value={cerfaData.societeRepresentantCivilite}
+                  onChange={(v) => setCerfa("societeRepresentantCivilite", v)}
+                  options={[
+                    { value: "madame", label: "Madame", emoji: "👩" },
+                    { value: "monsieur", label: "Monsieur", emoji: "👨" },
+                  ]}
+                />
+              </div>
               <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                 <input
                   type="text"
@@ -442,6 +465,53 @@ export function Step5CerfaInfos({
             </Field>
           </>
         )}
+
+        {/* Co-demandeur — second pétitionnaire (ex. conjoint, indivisaire) */}
+        <Field
+          label="Co-demandeur"
+          hint="facultatif"
+          help="Si la demande est déposée à deux noms (ex. votre conjoint), ajoutez-le ici. Il sera mentionné sur les courriers de la mairie."
+        >
+          <Toggle
+            label="➕ Ajouter un co-demandeur"
+            value={cerfaData.coDemandeur}
+            onChange={(v) => setCerfa("coDemandeur", v)}
+          />
+          {cerfaData.coDemandeur === true && (
+            <div style={{ marginTop: 8 }}>
+              <div style={{ marginBottom: 12 }}>
+                <ChoiceGroup<NonNullable<CerfaData["coDemandeurCivilite"]>>
+                  value={cerfaData.coDemandeurCivilite}
+                  onChange={(v) => setCerfa("coDemandeurCivilite", v)}
+                  options={[
+                    { value: "madame", label: "Madame", emoji: "👩" },
+                    { value: "monsieur", label: "Monsieur", emoji: "👨" },
+                  ]}
+                />
+              </div>
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <input
+                  type="text"
+                  value={cerfaData.coDemandeurPrenom ?? ""}
+                  onChange={(e) => setCerfa("coDemandeurPrenom", e.target.value)}
+                  placeholder="Prénom"
+                  style={inputStyle}
+                  onFocus={onFocus}
+                  onBlur={onBlur}
+                />
+                <input
+                  type="text"
+                  value={cerfaData.coDemandeurNom ?? ""}
+                  onChange={(e) => setCerfa("coDemandeurNom", e.target.value)}
+                  placeholder="Nom"
+                  style={inputStyle}
+                  onFocus={onFocus}
+                  onBlur={onBlur}
+                />
+              </div>
+            </div>
+          )}
+        </Field>
       </Section>
 
       {/* ── Section 2 : Adresse postale (si différente du terrain) ─── */}

@@ -1561,8 +1561,10 @@ function DossierDetailRoute({ navigate, commune, communes, setCommune, communeIn
           ? (meta["cerfa_data"] as Record<string, unknown>)
           : {};
         const cs = (k: string) => (typeof cerfa[k] === "string" ? (cerfa[k] as string).trim() : "");
-        const civilite = cs("civilite") === "madame" ? "Madame"
-          : cs("civilite") === "monsieur" ? "Monsieur" : "";
+        const civiliteLabel = (raw: string) => raw === "madame" ? "Madame" : raw === "monsieur" ? "Monsieur" : "";
+        // Civilité du demandeur : celle du particulier, à défaut celle du
+        // représentant physique de la personne morale.
+        const civilite = civiliteLabel(cs("civilite")) || civiliteLabel(cs("societeRepresentantCivilite"));
         const adrLigne1 = [cs("adresseDemandeurNumero"), cs("adresseDemandeurVoie")].filter(Boolean).join(" ");
         const adrLigne2 = [cs("adresseDemandeurCodePostal"), cs("adresseDemandeurLocalite")].filter(Boolean).join(" ");
         const adresseDemandeurCerfa = [adrLigne1, adrLigne2].filter(Boolean).join(", ");
@@ -1570,6 +1572,17 @@ function DossierDetailRoute({ navigate, commune, communes, setCommune, communeIn
         const adresseTerrain = [data.adresse, [data.code_postal, data.commune].filter(Boolean).join(" ")]
           .filter(Boolean).join(", ");
         const demandeurAdresse = adresseDemandeurCerfa || adresseTerrain;
+        // Représentant physique désigné d'une personne morale (civilité + identité).
+        const representantNom = [
+          civiliteLabel(cs("societeRepresentantCivilite")),
+          cs("societeRepresentantPrenom"),
+          cs("societeRepresentantNom"),
+        ].filter(Boolean).join(" ");
+        // Co-demandeur éventuel (renseigné seulement si la case a été cochée au dépôt).
+        const codemandeurCivilite = cerfa["coDemandeur"] === true ? civiliteLabel(cs("coDemandeurCivilite")) : "";
+        const codemandeurNom = cerfa["coDemandeur"] === true
+          ? [cs("coDemandeurPrenom"), cs("coDemandeurNom")].filter(Boolean).join(" ")
+          : "";
         setDossier({
           id: data.id,
           numero: data.numero,
@@ -1580,6 +1593,9 @@ function DossierDetailRoute({ navigate, commune, communes, setCommune, communeIn
           petitionnaire_can_invite: data.demandeur?.can_invite ?? false,
           demandeur_civilite: civilite || undefined,
           demandeur_adresse: demandeurAdresse || undefined,
+          representant_nom: representantNom || undefined,
+          codemandeur_civilite: codemandeurCivilite || undefined,
+          codemandeur_nom: codemandeurNom || undefined,
           adresse: data.adresse ?? "—",
           status: data.status,
           echeance: fmtDate(data.date_limite_instruction),
