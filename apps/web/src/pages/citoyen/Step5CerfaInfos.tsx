@@ -8,7 +8,7 @@
 // Toutes les questions sont facultatives — le PDF prérempli côté API reste
 // modifiable par le citoyen avant signature.
 
-import { useState } from "react";
+import { useRef, useState } from "react";
 import type { CSSProperties } from "react";
 import { linkifyArticles } from "../../utils/linkifyArticles";
 
@@ -263,6 +263,121 @@ function Section({ emoji, title, subtitle, defaultOpen = false, children }: Sect
         <span style={{ fontSize: 18, color: "#94a3b8" }}>{open ? "▾" : "▸"}</span>
       </div>
       {open && <div style={sectionBodyStyle}>{children}</div>}
+    </div>
+  );
+}
+
+// ── Autocomplétion d'adresse (Base Adresse Nationale, data.gouv.fr) ─────────
+// Le citoyen saisit sa voie ; on interroge en « live » l'API Adresse publique
+// (BAN) — le même référentiel que la recherche de terrain — et, au choix d'une
+// suggestion, on remplit d'un coup le numéro, la voie, le code postal et la
+// localité. API gratuite, sans clé, hébergée en France (cf. CSP connect-src).
+type BanProperties = {
+  label: string;
+  housenumber?: string;
+  street?: string;
+  name?: string;
+  postcode?: string;
+  city?: string;
+};
+
+type AddressParts = {
+  numero: string;
+  voie: string;
+  codePostal: string;
+  localite: string;
+};
+
+function AddressAutocomplete({
+  value,
+  onType,
+  onPick,
+  inputStyle,
+  onFocus,
+  onBlur,
+  placeholder,
+}: {
+  value: string;
+  onType: (val: string) => void;
+  onPick: (parts: AddressParts) => void;
+  inputStyle: CSSProperties;
+  onFocus: (e: React.FocusEvent<HTMLInputElement>) => void;
+  onBlur: (e: React.FocusEvent<HTMLInputElement>) => void;
+  placeholder: string;
+}) {
+  const [suggestions, setSuggestions] = useState<BanProperties[]>([]);
+  const [show, setShow] = useState(false);
+  const timer = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const handleChange = (val: string) => {
+    onType(val);
+    setShow(true);
+    if (timer.current) clearTimeout(timer.current);
+    // En deçà de 3 caractères la BAN renvoie surtout du bruit : on attend.
+    if (val.trim().length < 3) { setSuggestions([]); return; }
+    // Anti-rebond : on n'interroge l'API qu'après 250 ms sans frappe.
+    timer.current = setTimeout(() => {
+      void fetch(`https://api-adresse.data.gouv.fr/search/?q=${encodeURIComponent(val)}&limit=6&autocomplete=1`)
+        .then((r) => r.json())
+        .then((data: { features?: Array<{ properties: BanProperties }> }) => {
+          setSuggestions((data.features ?? []).map((f) => f.properties));
+        })
+        .catch(() => setSuggestions([]));
+    }, 250);
+  };
+
+  const pick = (p: BanProperties) => {
+    onPick({
+      numero: p.housenumber ?? "",
+      // `street` est renseigné au niveau numéro ; sinon `name` porte la voie
+      // (adresses « rue » ou lieux-dits sans numéro).
+      voie: p.street ?? p.name ?? "",
+      codePostal: p.postcode ?? "",
+      localite: p.city ?? "",
+    });
+    setSuggestions([]);
+    setShow(false);
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <input
+        type="text"
+        value={value}
+        onChange={(e) => handleChange(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Escape") { setSuggestions([]); setShow(false); } }}
+        onFocus={(e) => { onFocus(e); setShow(true); }}
+        onBlur={(e) => { onBlur(e); setTimeout(() => setShow(false), 150); }}
+        placeholder={placeholder}
+        style={inputStyle}
+      />
+      {show && suggestions.length > 0 && (
+        <div style={{
+          position: "absolute", top: "calc(100% + 4px)", left: 0, right: 0, zIndex: 200,
+          background: "white", border: "1px solid #E2E8F0", borderRadius: 10,
+          boxShadow: "0 8px 24px rgba(0,0,0,0.12)", overflow: "hidden",
+        }}>
+          {suggestions.map((s, i) => (
+            <button
+              key={i}
+              type="button"
+              // onMouseDown (avant le blur) pour que le clic ne ferme pas la liste.
+              onMouseDown={(e) => { e.preventDefault(); pick(s); }}
+              style={{
+                display: "flex", alignItems: "center", gap: 10, width: "100%",
+                padding: "11px 14px", background: "white", border: "none",
+                borderBottom: i < suggestions.length - 1 ? "1px solid #F1F5F9" : "none",
+                cursor: "pointer", textAlign: "left", fontSize: 13, color: "#0F172A",
+              }}
+              onMouseEnter={(e) => (e.currentTarget.style.background = "#F8FAFC")}
+              onMouseLeave={(e) => (e.currentTarget.style.background = "white")}
+            >
+              <span style={{ color: "#94a3b8", flexShrink: 0 }}>📍</span>
+              {s.label}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -549,12 +664,19 @@ export function Step5CerfaInfos({
               onFocus={onFocus}
               onBlur={onBlur}
             />
-            <input
-              type="text"
+            <AddressAutocomplete
               value={cerfaData.adresseDemandeurVoie ?? ""}
-              onChange={(e) => setCerfa("adresseDemandeurVoie", e.target.value)}
+              onType={(v) => setCerfa("adresseDemandeurVoie", v)}
+              onPick={(parts) => {
+                // Une suggestion choisie remplit les quatre champs d'un coup ;
+                // ils restent ensuite modifiables à la main.
+                setCerfa("adresseDemandeurVoie", parts.voie);
+                if (parts.numero) setCerfa("adresseDemandeurNumero", parts.numero);
+                if (parts.codePostal) setCerfa("adresseDemandeurCodePostal", parts.codePostal);
+                if (parts.localite) setCerfa("adresseDemandeurLocalite", parts.localite);
+              }}
               placeholder="Rue, avenue…"
-              style={inputStyle}
+              inputStyle={inputStyle}
               onFocus={onFocus}
               onBlur={onBlur}
             />
