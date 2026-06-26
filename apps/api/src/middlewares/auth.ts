@@ -51,8 +51,16 @@ async function currentTokenVersion(userId: string): Promise<number | null> {
   const now = Date.now();
   const cached = _tvCache.get(userId);
   if (cached && cached.exp > now) return cached.tv;
-  const [u] = await db.select({ tv: users.token_version }).from(users).where(eq(users.id, userId)).limit(1);
-  if (!u) { _tvCache.delete(userId); return null; }
+  const [u] = await db
+    .select({ tv: users.token_version, deactivated_at: users.deactivated_at })
+    .from(users)
+    .where(eq(users.id, userId))
+    .limit(1);
+  // Utilisateur supprimé (citoyen effacé) OU désactivé (offboarding d'un compte
+  // pro) → jeton invalide. On traite la désactivation comme une révocation : la
+  // session tombe au plus tard au prochain rafraîchissement du cache (≤ TTL), et
+  // immédiatement si la désactivation a bumpé token_version (cf. deactivateUser).
+  if (!u || u.deactivated_at) { _tvCache.delete(userId); return null; }
   _tvCache.set(userId, { tv: u.tv, exp: now + TV_TTL_MS });
   return u.tv;
 }

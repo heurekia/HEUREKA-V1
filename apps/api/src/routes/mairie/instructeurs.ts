@@ -23,7 +23,9 @@ async function agentsInCallerScope(
   restrictToIds?: string[],
 ): Promise<Array<{ id: string; prenom: string; nom: string; email: string }>> {
   const scope = await getCommuneScope(req.user!.id, req.user!.role);
-  const roleFilter = sql`${users.role} IN ('instructeur', 'mairie')`;
+  // Exclut les agents désactivés (offboardés) : ils ne doivent plus apparaître
+  // dans les sélecteurs d'assignation / délégation.
+  const roleFilter = sql`${users.role} IN ('instructeur', 'mairie') AND ${users.deactivated_at} IS NULL`;
   const idFilter = restrictToIds && restrictToIds.length > 0 ? inArray(users.id, restrictToIds) : undefined;
 
   if (scope === null) {

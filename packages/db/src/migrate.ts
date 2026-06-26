@@ -776,6 +776,17 @@ ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS metadata jsonb;
 CREATE INDEX IF NOT EXISTS idx_audit_logs_role ON audit_logs(role);
 CREATE INDEX IF NOT EXISTS idx_audit_logs_target ON audit_logs(target_type, target_id);
 
+-- ── Offboarding des comptes professionnels (désactivation, pas suppression) ──
+-- Un agent/admin n'est JAMAIS supprimé : ses arrêtés signés (decisions.instructeur_id
+-- est NOT NULL), courriers émis, etc. sont des records légaux à conserver, et leurs
+-- FK interdisent de toute façon l'effacement de la ligne users. On le DÉSACTIVE :
+-- deactivated_at non NULL ⇒ connexion refusée + sessions révoquées (token_version),
+-- et l'agent disparaît des listes/assignations. Les citoyens, eux, restent effacés
+-- (RGPD art. 17). deactivated_by = uuid de l'admin (sans FK, cf. instructeur_status_by).
+ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_at timestamp;
+ALTER TABLE users ADD COLUMN IF NOT EXISTS deactivated_by uuid;
+CREATE INDEX IF NOT EXISTS idx_users_deactivated_at ON users(deactivated_at);
+
 -- ── Annotations chunk-level sur documents indexés (Phase 1 niveau B) ──
 -- Une annotation valide est INJECTÉE à côté du chunk lors du search RAG.
 -- Permet à l'instructeur de "patcher" un PDF sans le réécrire : corrections

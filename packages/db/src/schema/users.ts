@@ -40,6 +40,17 @@ export const users = pgTable("users", {
   mfa_secret: text("mfa_secret"),
   mfa_enabled: boolean("mfa_enabled").notNull().default(false),
   mfa_backup_codes: jsonb("mfa_backup_codes").$type<string[]>(),
+  // Offboarding d'un compte PROFESSIONNEL (mairie/instructeur/admin/service).
+  // NULL = compte actif ; non-NULL = compte désactivé. Contrairement aux
+  // citoyens (effacés, RGPD art. 17), les comptes pro ne sont JAMAIS supprimés :
+  // ils portent des records légaux dont les FK NOT NULL interdisent l'effacement
+  // (decisions.instructeur_id = arrêté signé). Une fois deactivated_at posé, la
+  // connexion est refusée et toutes les sessions sont révoquées (token_version).
+  // deactivated_by = id de l'admin qui a effectué l'offboarding (uuid simple,
+  // sans FK — cf. instructeur_status_by — pour ne pas réintroduire une FK
+  // bloquante sur users).
+  deactivated_at: timestamp("deactivated_at"),
+  deactivated_by: uuid("deactivated_by"),
   // Préférences de notification de la cloche mairie, par type :
   // { [type]: boolean }. Une clé absente vaut « activé » (modèle opt-out). Lue
   // et filtrée dans services/notify.ts avant l'insertion d'une notification.
