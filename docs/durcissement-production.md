@@ -43,9 +43,9 @@ pilote mono-instance** une fois le Palier 0 traité. Ce n'est pas un audit
 | Palier | Objectif | Risque | État |
 |---|---|---|---|
 | **0** | Garde-fous à faible risque (index, timeouts, rate-limit) | Faible | ✅ Fait |
-| **1** | Sortir le travail lourd du cycle requête + transactions | Moyen | ✅ Fait (hors 1.3b mineur) |
-| **2** | Exécution (build JS, fin du `tsx`) & observabilité | Moyen | ✅ `tsx`→`node` activé en prod ; healthcheck + logs (reste métriques/Sentry) |
-| **3** | Frontend (code splitting, mémoïsation, cache données) | Faible | ✅ Fait (hors cache react-query, optionnel) |
+| **1** | Sortir le travail lourd du cycle requête + transactions | Moyen | ✅ Fait |
+| **2** | Exécution (build JS, fin du `tsx`) & observabilité | Moyen | ✅ Fait — `tsx`→`node` en prod, healthcheck, logs, métriques, Sentry (front optionnel) |
+| **3** | Frontend (code splitting, mémoïsation, cache données) | Faible | ✅ Fait (cache react-query : fondation posée) |
 | **4** | Scaling horizontal (Redis, clustering, Postgres séparé) | Élevé | ⏳ À faire |
 
 ## 4. Journal d'avancement
@@ -122,25 +122,40 @@ Le décodage base64 de l'ingestion PLU admin (jusqu'à ~300 Mo, ~2 s) reste
 synchrone : opération admin rare, déjà bornée par la limite de corps (300 Mo) et
 dominée par le `JSON.parse` du corps — hors périmètre de ce palier.
 
-### Palier 2 — exécution & observabilité 🚧
+### Palier 2 — exécution & observabilité ✅ (hors Sentry front, optionnel)
 
 | # | Chantier | État | Commit |
 |---|---|---|---|
 | 2.1 | Healthcheck profond (`/api/health` → `SELECT 1`, 503 si DB KO) + `/api/health/live` | ✅ Fait | `feat(api): healthcheck profond` |
 | 2.2 | Logs structurés (pino) + log de requêtes avec reqId (X-Request-Id) | ✅ Fait | `feat(api): logs structurés (pino)` |
-| 2.3 | Métriques Prometheus (`/metrics`) | ⏸️ Reporté | — |
-| 2.4 | Sentry (back + front) | ⏸️ Reporté | — |
+| 2.3 | Métriques Prometheus (`/metrics`, prom-client) | ✅ Fait | `feat(api): métriques Prometheus /metrics` |
+| 2.4 | Capture d'erreurs Sentry (back, gated `SENTRY_DSN`) | ✅ Fait | `feat(api): capture d'erreurs Sentry` |
 | 2.5a | Refactor des chemins (`src/paths.ts`) — prérequis bundle | ✅ Fait | `refactor(api): centralise la résolution des chemins` |
 | 2.5b | Bundle tsup + config pm2 `node` — **prêt + boot vérifié localement** | ✅ Fait (activation déploiement restante) | `build(api): bundle … tsup + config pm2 node` |
 | 2.5c | Activation : bascule pm2 `tsx` → `node dist/index.js` sur le VPS | ✅ Fait (en prod, `/api/health` → 200) ; deploy.yml bascule sur `startOrReload ecosystem` | `fix(deploy): ecosystem … cwd racine` |
 
-**2.3 / 2.4 — pourquoi reportés.** `prom-client` et `@sentry/node` v8+ tirent
-tous deux `@opentelemetry/api`, qui est un **peer optionnel de drizzle-orm** : sa
-présence crée une **2e instance de drizzle-orm** et casse le typage (mélange de
-types `SQL` entre instances, cf. `scheduler.ts`). À reprendre avec une **dédup
-explicite** de `@opentelemetry/api` (le fournir uniformément à tous les
-consommateurs de drizzle-orm, ou figer une seule instance) **et** une validation
-sur serveur (ces outils nécessitent un process qui tourne + un DSN Sentry).
+**2.3 / 2.4 — débloqués (le conflit otel ne se reproduit plus).** Le blocage
+historique venait d'`@opentelemetry/api` (peer optionnel de drizzle-orm) qui, en
+plusieurs versions dans l'arbre, créait une **2e instance de drizzle-orm** et
+cassait le typage (`SQL` mélangé entre instances, cf. `scheduler.ts`). Diagnostic
+**empirique** refait sur l'arbre actuel : `@opentelemetry/api` y est résolu à une
+**version unique `1.9.1`, uniforme** pour tous les consommateurs drizzle ;
+`prom-client` **comme** `@sentry/node` (v10) réclament cette même `1.9.1` → aucune
+nouvelle instance, typage OK. Vérifié : typecheck des 6 paquets + 527 tests +
+bundle tsup + **smoke tests runtime** (`/metrics` 200 avec token / 401 sans,
+`nodejs_eventloop_lag_seconds` exposé ; boot du bundle avec/sans `SENTRY_DSN`).
+
+- **Métriques** (`src/metrics.ts`) : `/metrics` Prometheus — métriques process par
+  défaut (event loop lag, RSS/heap, GC) + durée/nombre des requêtes HTTP labellés
+  méthode/route/statut (label = **pattern** de route, pas le chemin brut → pas
+  d'explosion de cardinalité). Protégé par `METRICS_TOKEN` si défini.
+- **Sentry** (`src/sentry.ts`) : capture d'exceptions **gated sur `SENTRY_DSN`**
+  (no-op sans DSN → mergeable tout de suite). Handlers globaux (uncaught /
+  unhandledRejection) + handler Express ; pas de tracing (`tracesSampleRate 0` —
+  la perf est couverte par les métriques). Le warning « express is not
+  instrumented » au boot est attendu et sans effet sur la capture.
+- **Front (2.4)** : la capture Sentry **navigateur** reste à faire (optionnel) ;
+  ce palier ne couvre que le back.
 
 **2.5 — état : bundle prêt et boot-vérifié ; reste l'activation déploiement.**
 Les bloqueurs identifiés ont été levés :
@@ -231,6 +246,10 @@ Prochaines cibles naturelles (quand utile) : lectures relues à chaque navigatio
 | `CPU_YIELD_THRESHOLD_BYTES` | `8388608` (8 Mo) | Seuil au-delà duquel base64/sha256 cèdent l'event loop par tranches (cf. 1.3b) |
 | `CPU_CHUNK_BYTES` | `2097152` (2 Mo) | Taille d'une tranche de base64/sha256 coopératif (arrondie à un multiple de 12) |
 | `LOG_LEVEL` | `info` (prod) / `debug` | Niveau du logger pino |
+| `METRICS_TOKEN` | _(vide)_ | Si défini, `/metrics` exige `Authorization: Bearer <token>` (ou `?token=`). Sinon servi avec avertissement — à restreindre via nginx (cf. 2.3) |
+| `SENTRY_DSN` | _(vide)_ | DSN du projet Sentry. **Vide = Sentry désactivé** (no-op). Le définir active la capture d'erreurs back (cf. 2.4) |
+| `SENTRY_RELEASE` | _(vide)_ | Version/release associée aux erreurs Sentry (optionnel) |
+| `SENTRY_SAMPLE_RATE` | `1` | Fraction des erreurs envoyées à Sentry (1 = toutes) |
 | `UPLOADS_DIR` | `apps/api/uploads` | Dossier des pièces déposées (stockage local) |
 | `FRONTEND_DIST` | `apps/web/dist` | Build frontend servi par Express en fallback |
 | `DATA_DIR` | `apps/api/src/data` | Assets de données (templates CERFA…) |
