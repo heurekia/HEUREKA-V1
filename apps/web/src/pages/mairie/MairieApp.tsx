@@ -1123,8 +1123,9 @@ function InfosPersoScreen() {
     { type: "pieces_complementaires_recues", label: "Pièces complémentaires reçues", sub: "Quand un pétitionnaire ajoute les pièces demandées" },
     { type: "message_citoyen", label: "Message d'un pétitionnaire", sub: "Quand un pétitionnaire écrit sur un de vos dossiers" },
     { type: "dossier_pret_apres_ocr", label: "Dossier prêt à l'instruction", sub: "Quand l'analyse automatique des pièces est terminée" },
-    { type: "signature_requise", label: "Signature requise", sub: "Quand un projet d'arrêté attend votre signature" },
+    { type: "signature_requise", label: "Signature requise", sub: "Quand un projet d'arrêté ou un courrier attend votre signature" },
     { type: "decision_signee", label: "Arrêté signé", sub: "Quand un arrêté que vous avez instruit est signé" },
+    { type: "courrier_signe", label: "Courrier signé", sub: "Quand un courrier que vous avez préparé est signé par le signataire" },
     { type: "signature_refusee", label: "Signature refusée", sub: "Quand un signataire refuse de signer un arrêté" },
   ];
   const [notifPrefs, setNotifPrefs] = useState<Record<string, boolean>>(user?.notification_prefs ?? {});

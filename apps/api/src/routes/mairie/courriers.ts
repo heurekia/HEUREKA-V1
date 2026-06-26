@@ -333,7 +333,11 @@ courriersRouter.post("/dossiers/:id/courriers/:courrierId/sign", async (req: Aut
     const dossierId = req.params.id as string;
     const courrierId = req.params.courrierId as string;
     const [existing] = await db
-      .select({ id: dossier_courriers.id, signature_status: dossier_courriers.signature_status })
+      .select({
+        id: dossier_courriers.id,
+        signature_status: dossier_courriers.signature_status,
+        signature_requested_by: dossier_courriers.signature_requested_by,
+      })
       .from(dossier_courriers)
       .where(and(eq(dossier_courriers.id, courrierId), eq(dossier_courriers.dossier_id, dossierId)))
       .limit(1);
@@ -352,6 +356,18 @@ courriersRouter.post("/dossiers/:id/courriers/:courrierId/sign", async (req: Aut
       tampon_image: sig.tampon_image ?? null,
       ...(typeof body.body_snapshot === "string" ? { body_snapshot: body.body_snapshot } : {}),
     }).where(eq(dossier_courriers.id, courrierId)).returning();
+    // Prévient l'instructeur ayant demandé la signature que le courrier est signé
+    // (comme decision_signee pour un arrêté). On n'auto-notifie pas un signataire
+    // qui signe son propre courrier (requester == signataire).
+    if (existing.signature_requested_by && existing.signature_requested_by !== req.user!.id) {
+      await notifyUser({
+        user_id: existing.signature_requested_by,
+        dossier_id: dossierId,
+        type: "courrier_signe",
+        title: "Courrier signé",
+        message: `Le courrier en attente de signature a été signé. Vous pouvez désormais l'envoyer au pétitionnaire (commune : ${d.commune}).`,
+      });
+    }
     res.json(row);
   } catch (err) {
     console.error("[courriers sign]", err);
