@@ -107,9 +107,10 @@ Non créées pour l'instant : aucune donnée ne circule encore dans l'outil.
 
 | Variable cible | Champ Operis | Modèle CERFA existant (`CerfaPcmiData`) |
 |---|---|---|
-| `demandeur_civilite` ✅ *intégré* | `DEMANDQUALITE` | `cerfa_data.civilite` (saisi au dépôt citoyen) |
+| `demandeur_civilite` ✅ *intégré* | `DEMANDQUALITE` | `cerfa_data.civilite` (saisi au dépôt citoyen) ; fallback civilité du représentant pour une personne morale |
 | `demandeur_adresse` ✅ *intégré* | `DEMANDADR*` | `cerfa_data.adresseDemandeur*` (D3*), fallback adresse terrain |
-| `mandataire_nom`, `mandataire_qualite` | `representant`, `REPRES*` | `societe_representant*` (D2*) ✔ |
+| `representant_nom` ✅ *intégré* | `representant`, `REPRES*` | `cerfa_data.societeRepresentant*` (civilité + prénom + nom du représentant physique désigné de la personne morale) |
+| `codemandeur_civilite`, `codemandeur_nom` ✅ *intégré* | (co-pétitionnaire) | `cerfa_data.coDemandeur*` (saisi au dépôt citoyen) |
 | `destinataire_bloc` | `destinataire*` | dérivé (mandataire sinon demandeur) |
 | `destination_projet` | `S_SEP_STD_DESTINATION` | `destinationActuelle/Future/Usage` ✔ |
 | `surface_demolie` | `TotalShonDemoli` | `surfaceSupprimee` ✔ |
