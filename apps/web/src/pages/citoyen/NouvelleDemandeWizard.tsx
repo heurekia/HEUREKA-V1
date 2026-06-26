@@ -537,6 +537,38 @@ export function NouvelleDemandeWizard() {
     });
   }, [surface, empriseExistante]);
 
+  // ── Profil CERFA mémorisé (RGPD — confort de pré-remplissage) ───────────────
+  // Si le citoyen a déjà coché « Mémoriser » lors d'une demande précédente
+  // (opt-in révocable, état civil chiffré côté serveur), on pré-remplit le
+  // step 5. Uniquement pour une NOUVELLE demande : en reprise de brouillon, le
+  // cerfa_data déjà enregistré fait foi et ne doit pas être écrasé.
+  const [rememberProfile, setRememberProfile] = useState(false);
+  const hadStoredProfile = useRef(false);
+  const profilePrefilled = useRef(false);
+  useEffect(() => {
+    if (dossierParam || profilePrefilled.current) return;
+    if (!user || user.role !== "citoyen") return;
+    profilePrefilled.current = true;
+    void api
+      .get<{ profile: Record<string, string> | null }>("/auth/me/cerfa-profile")
+      .then((res) => {
+        if (!res.profile || Object.keys(res.profile).length === 0) return;
+        hadStoredProfile.current = true;
+        setRememberProfile(true);
+        setCerfaData((prev) => {
+          const next = { ...prev } as Record<string, unknown>;
+          // Ne jamais écraser un champ déjà saisi par le citoyen.
+          for (const [k, v] of Object.entries(res.profile!)) {
+            if (next[k] === undefined || next[k] === "") next[k] = v;
+          }
+          return next as CerfaData;
+        });
+      })
+      .catch(() => {
+        /* pré-remplissage best-effort : ne bloque jamais le dépôt */
+      });
+  }, [user, dossierParam]);
+
   // Step 6 – Infos personnelles
   const [nom, setNom] = useState(user?.nom ?? "");
   const [prenom, setPrenom] = useState(user?.prenom ?? "");
@@ -970,6 +1002,20 @@ export function NouvelleDemandeWizard() {
         setDossierNumero(result.numero);
         id = result.id;
       }
+      // RGPD : mémorisation opt-in du profil CERFA pour les prochaines demandes.
+      // Le serveur minimise l'entrée (seul l'état civil réutilisable est gardé)
+      // et la chiffre. Non bloquant : la demande est déjà enregistrée.
+      try {
+        if (rememberProfile) {
+          await api.put("/auth/me/cerfa-profile", { profile: cerfaData });
+          hadStoredProfile.current = true;
+        } else if (hadStoredProfile.current) {
+          await api.delete("/auth/me/cerfa-profile");
+          hadStoredProfile.current = false;
+        }
+      } catch {
+        /* la mémorisation est un confort : un échec ne doit pas casser le dépôt */
+      }
       setStep((s) => (s + 1) as Step);
       // Attend que la génération du CERFA prérempli aboutisse côté API,
       // puis remonte la pièce dans l'UI. Volontairement non-bloquant pour
@@ -980,7 +1026,7 @@ export function NouvelleDemandeWizard() {
     } finally {
       setCreatingDossier(false);
     }
-  }, [dossierId, classification, parcel, parcelRaw, description, natures, surface, cerfaData, waitForCerfa]);
+  }, [dossierId, classification, parcel, parcelRaw, description, natures, surface, cerfaData, rememberProfile, waitForCerfa]);
 
   // ── Upload a piece and get AI analysis ───────────────────────────────────────
   // `rubricLabel` = libellé de la catégorie (ex. "Plan de situation" ou "Annexe")
@@ -2133,6 +2179,8 @@ export function NouvelleDemandeWizard() {
               cerfaData={cerfaData}
               setCerfa={setCerfa}
               inputStyle={inputStyle}
+              rememberProfile={rememberProfile}
+              onToggleRemember={setRememberProfile}
               onPrev={prev}
               onNext={next}
             />

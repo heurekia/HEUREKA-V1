@@ -69,6 +69,10 @@ export function PolitiqueConfidentialite() {
                 <td className="py-2 pr-4">Notifications sur l'avancement des dossiers</td>
                 <td className="py-2">Exécution du contrat (art. 6-1-b)</td>
               </tr>
+              <tr>
+                <td className="py-2 pr-4">Mémorisation de votre état civil pour pré-remplir vos prochaines demandes (facultatif)</td>
+                <td className="py-2">Consentement explicite et révocable (art. 6-1-a)</td>
+              </tr>
             </tbody>
           </table>
         </div>
@@ -139,6 +143,7 @@ export function PolitiqueConfidentialite() {
           <p><strong>Dossiers d'urbanisme :</strong> 10 ans à compter de la décision (obligations légales en matière d'urbanisme).</p>
           <p><strong>Logs de connexion (audit_logs) :</strong> 12 mois (purge automatique).</p>
           <p><strong>Journal des appels IA (ai_usage_events) :</strong> conservé pour la durée du dossier, à des fins d'auditabilité.</p>
+          <p><strong>Profil CERFA mémorisé (facultatif) :</strong> conservé tant que vous le souhaitez, chiffré et lié à votre seul compte. Supprimé dès le retrait de votre consentement (bouton « Oublier ces informations » dans « Mon profil ») et à la suppression de votre compte.</p>
           <p><strong>Inputs côté Mistral AI :</strong> politique de rétention contractuelle (compte entreprise, no-training), à formaliser au DPA Mistral.</p>
         </div>
       </section>
