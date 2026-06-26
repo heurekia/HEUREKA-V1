@@ -4,8 +4,9 @@
   "type": "module",
   "scripts": {
     "dev": "tsx watch src/index.ts",
-    "build": "tsc",
+    "build": "tsup",
     "start": "tsx src/index.ts",
+    "start:prod": "node --enable-source-maps dist/index.js",
     "ingest-plu": "tsx src/scripts/ingest-plu.ts",
     "refresh-plu-cache": "tsx src/scripts/refresh-plu-cache.ts",
     "migrate-uploads": "tsx src/scripts/migrate-uploads-to-s3.ts",
@@ -64,6 +65,7 @@
     "@types/node-cron": "^3.0.11",
     "@types/nodemailer": "^8.0.0",
     "@types/qrcode": "^1.5.5",
+    "tsup": "^8.5.1",
     "typescript": "~5.9.2",
     "vitest": "^3.0.5"
   }

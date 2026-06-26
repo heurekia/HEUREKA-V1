@@ -2,8 +2,8 @@
 
 > Document vivant. Tient le fil de l'audit de performance et du durcissement de
 > la plateforme en vue d'une montée en charge. Mis à jour **au fur et à mesure**
-> de l'avancement (cf. § Journal d'avancement). Dernière mise à jour : Palier 3
-> terminé (code splitting + DossiersScreen + recharts) ; Palier 2 build/tsx à coordonner.
+> de l'avancement (cf. § Journal d'avancement). Dernière mise à jour : Palier 2
+> bundle tsx→node prêt + boot vérifié (reste l'activation pm2 sur le VPS).
 
 ## 1. Contexte & verdict
 
@@ -44,7 +44,7 @@ pilote mono-instance** une fois le Palier 0 traité. Ce n'est pas un audit
 |---|---|---|---|
 | **0** | Garde-fous à faible risque (index, timeouts, rate-limit) | Faible | ✅ Fait |
 | **1** | Sortir le travail lourd du cycle requête + transactions | Moyen | ✅ Fait (hors 1.3b mineur) |
-| **2** | Exécution (build JS, fin du `tsx`) & observabilité | Moyen | 🚧 Partiel (observabilité entamée ; build/tsx à coordonner) |
+| **2** | Exécution (build JS, fin du `tsx`) & observabilité | Moyen | 🚧 Bundle prêt + boot vérifié (reste l'activation pm2 sur le VPS) |
 | **3** | Frontend (code splitting, mémoïsation, cache données) | Faible | ✅ Fait (hors cache react-query, optionnel) |
 | **4** | Scaling horizontal (Redis, clustering, Postgres séparé) | Élevé | ⏳ À faire |
 
@@ -96,7 +96,9 @@ bloquant** AVEC préservation/renforcement du blocage de soumission.
 | 2.2 | Logs structurés (pino) + log de requêtes avec reqId (X-Request-Id) | ✅ Fait | `feat(api): logs structurés (pino)` |
 | 2.3 | Métriques Prometheus (`/metrics`) | ⏸️ Reporté | — |
 | 2.4 | Sentry (back + front) | ⏸️ Reporté | — |
-| 2.5 | **Compiler l'API en JS + `node` (fin du `tsx` en prod)** — BLOQUANT | ⏳ À coordonner | — |
+| 2.5a | Refactor des chemins (`src/paths.ts`) — prérequis bundle | ✅ Fait | `refactor(api): centralise la résolution des chemins` |
+| 2.5b | Bundle tsup + config pm2 `node` — **prêt + boot vérifié localement** | ✅ Fait (activation déploiement restante) | `build(api): bundle … tsup + config pm2 node` |
+| 2.5c | Activation : bascule pm2 `tsx` → `node dist/index.js` sur le VPS | ⏳ À faire (accès déploiement) | — |
 
 **2.3 / 2.4 — pourquoi reportés.** `prom-client` et `@sentry/node` v8+ tirent
 tous deux `@opentelemetry/api`, qui est un **peer optionnel de drizzle-orm** : sa
@@ -106,28 +108,30 @@ explicite** de `@opentelemetry/api` (le fournir uniformément à tous les
 consommateurs de drizzle-orm, ou figer une seule instance) **et** une validation
 sur serveur (ces outils nécessitent un process qui tourne + un DSN Sentry).
 
-**2.5 — blocages identifiés (à traiter ensemble, en environnement de déploiement).**
-Ce n'est PAS un simple changement de script `start`. Bloqueurs réels :
-1. **Résolutions de chemins via `import.meta.url`** relatives à l'emplacement
-   *source* : `services/storage.ts`, `services/cerfaPcmiFiller.ts`,
-   `services/dossierConformity.ts`, `routes/uploads.ts` calculent
-   `../../uploads` et `../data/cerfa/...` depuis `src/services/`. Un bundle vers
-   `dist/index.js` (profondeur différente) casserait ces chemins (uploads
-   introuvables, **génération CERFA cassée**). → refactorer vers une base stable
-   et configurable (ex. `UPLOADS_DIR`, racine du package) AVANT de bundler.
-2. **Assets binaires `src/data/`** (template CERFA `13406-16.pdf`, `*.fields.json`,
-   plans de hauteurs) : à copier dans la sortie de build ou à référencer via un
-   chemin stable.
-3. **Packages workspace** (`@heureka-v1/*`) résolus vers du TS source (et
-   `ingestion` utilise des imports en `.ts`) : à **bundler** (esbuild/tsup avec
-   `noExternal: [/@heureka-v1/]`) ou à compiler package par package.
-4. **Déploiement** : versionner un `ecosystem.config.cjs`, passer pm2 à
-   `node dist/index.js`, adapter `deploy.yml` (build → artefact), retirer `tsx`
-   du chemin runtime. `tsconfig` API : retirer `noEmit`/`allowImportingTsExtensions`.
+**2.5 — état : bundle prêt et boot-vérifié ; reste l'activation déploiement.**
+Les bloqueurs identifiés ont été levés :
+1. ✅ **Résolutions de chemins** centralisées dans `src/paths.ts` (niveau `src/`,
+   donc à la même profondeur que `dist/` une fois bundlé → invariantes), toutes
+   surchargeables par env. Défauts identiques à l'existant (validé par le test
+   CERFA qui lit le template via le nouveau chemin).
+2. ✅ **Assets `src/data/`** : `DATA_DIR` (défaut `apps/api/src/data`, présent
+   dans le dépôt déployé donc lisible même en bundle ; surchargeable).
+3. ✅ **Packages workspace** : bundlés par `tsup` (`noExternal: [/@heureka-v1/]`),
+   node_modules externes. `dist/index.js` ≈ 1,2 Mo.
+4. ✅ **Build** : script `build` → `tsup` ; `ecosystem.config.cjs` versionné
+   (pm2 → `node --enable-source-maps dist/index.js`, fork mono-instance).
 
-Approche recommandée : `tsup` (bundle ESM, workspace inliné, node_modules
-externes) APRÈS le refactor des chemins (point 1), avec un boot local
-`node dist/index.js` comme garde-fou, puis validation déploiement.
+**Vérifié localement** : `pnpm build` produit l'artefact ; `node dist/index.js`
+démarre, écoute et répond (`/api/health/live` → 200). Les seuls échecs au boot
+sont des ressources externes absentes en local (DB, poppler, creds), toutes
+gérées.
+
+**Reste (2.5c — accès déploiement requis)** : sur le VPS, `pnpm build` puis
+`pm2 startOrReload ecosystem.config.cjs --update-env && pm2 save`, vérifier
+`/api/health`, et remplacer dans `deploy.yml` la ligne
+`pm2 restart heurekia-api` par `pm2 startOrReload ecosystem.config.cjs`. Tant que
+ce n'est pas fait, pm2 lance toujours l'API via `tsx` (inchangé). NB : ne PAS
+passer en `cluster`/multi-instances avant le Palier 4 (état in-memory).
 
 ### Palier 3 — frontend ✅ (hors cache react-query, optionnel)
 
@@ -161,6 +165,9 @@ Palier 3 bis) mais ne pèse plus que sur les utilisateurs mairie authentifiés.
 | `RL_ANALYZE_MAX` / `RL_ANALYZE_WINDOW_MS` | `60` / `300000` | Quota analyses réglementaires |
 | `RUBRIC_MISMATCH_MIN_CONFIDENCE` | `0.75` | Confiance min. sur le type détecté pour bloquer un dépôt « hors-sujet » |
 | `LOG_LEVEL` | `info` (prod) / `debug` | Niveau du logger pino |
+| `UPLOADS_DIR` | `apps/api/uploads` | Dossier des pièces déposées (stockage local) |
+| `FRONTEND_DIST` | `apps/web/dist` | Build frontend servi par Express en fallback |
+| `DATA_DIR` | `apps/api/src/data` | Assets de données (templates CERFA…) |
 
 > ⚠️ Les rate-limiters et timeouts d'inactivité utilisent un **store en mémoire**
 > (par process), cohérent avec le mono-instance. À externaliser en Redis au

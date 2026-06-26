@@ -4,7 +4,7 @@ import compression from "compression";
 import helmet from "helmet";
 import cookieParser from "cookie-parser";
 import path from "path";
-import { fileURLToPath } from "url";
+import { FRONTEND_DIST_DIR } from "./paths.js";
 import { publicRouter } from "./routes/public.js";
 import { authRouter } from "./routes/auth.js";
 import { franceConnectRouter } from "./routes/franceConnect.js";
@@ -147,9 +147,6 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const frontendDist = path.resolve(__dirname, "../../web/dist");
-
 // Fichiers déposés (pièces jointes des dossiers) — authentifié et vérifié
 // par routes/uploads.ts (auth + scope commune / propriétaire).
 // IMPORTANT : enregistré AVANT le catch-all `/api` ci-dessous.
@@ -163,7 +160,7 @@ app.use("/api", (_req, res) => {
 });
 
 // Hashed JS/CSS assets → cache 1 year
-app.use(express.static(frontendDist, {
+app.use(express.static(FRONTEND_DIST_DIR, {
   maxAge: "1y",
   immutable: true,
   setHeaders(res, filePath) {
@@ -184,5 +181,5 @@ app.use(express.static(frontendDist, {
 
 app.get("*", (_req, res) => {
   res.setHeader("Cache-Control", "no-cache");
-  res.sendFile(path.join(frontendDist, "index.html"));
+  res.sendFile(path.join(FRONTEND_DIST_DIR, "index.html"));
 });
