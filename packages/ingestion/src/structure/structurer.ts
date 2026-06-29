@@ -103,6 +103,68 @@ export const structuredRuleSchema = z
     message: "rule_text et article_title tous deux vides",
   });
 
+// ── Garde-fou : contraintes de hauteur RELATIVES ─────────────────────────────
+// Certaines règles de hauteur ne fixent pas un plafond absolu mais un ÉCART
+// maximal par rapport à une AUTRE référence (« le faîtage ne peut dépasser de
+// plus de 4 m la hauteur de la construction autorisée », « supérieure de 2 m à
+// l'égout du bâtiment voisin »…). Le LLM aplatit souvent ce « 4 m » en
+// value_max=4 ; l'évaluateur comparerait alors un faîtage absolu (≈ 9 m) à 4 m
+// → faux « non conforme » systématique sur toute la zone.
+//
+// Tant que l'évaluation différentielle n'est pas portée (niveaux 2/3), on
+// NEUTRALISE le seuil chiffré (value_* → null) : la règle devient qualitative,
+// et l'évaluateur la remonte en « à vérifier » plutôt qu'en refus erroné. Le
+// chiffre et le sens sont préservés dans instructor_note pour l'instructeur.
+//
+// Distinction clé tenue par les motifs : « de plus de 4 m LA hauteur » (relatif,
+// neutralisé) vs « de plus de 4 m DE hauteur » (absolu, conservé).
+
+// « ...de plus de 4 mètres la hauteur / l'égout / la construction voisine... »
+//          └── écart ──┘ └────────── référence ──────────┘
+const RELATIVE_HEIGHT_DELTA_RE =
+  /\bde\s+plus\s+de\s+\d[\d.,]*\s*(?:m\b|m[èe]tres?\b)\s+(?:la\s+|l['’]\s*|à\s+l['’]?\s*|au\s+|du\s+|de\s+la\s+)(?:hauteur|[ée]gouts?|fa[îi]tages?|constructions?|b[âa]timents?|niveau|cote)/i;
+// « ...supérieure de 2 m à l'égout... »
+// `à` étant non-word en regex ASCII, on borne par une espace plutôt que \b.
+const RELATIVE_HEIGHT_SUPERIEUR_RE = /\bsup[ée]rieure?s?\s+de\s+\d[\d.,]*\s*(?:m\b|m[èe]tres?\b)\s+(?:à|au|aux)\s/i;
+
+/** Vrai si le texte décrit une hauteur RELATIVE (écart à une autre référence). */
+export function isRelativeHeightConstraint(text: string): boolean {
+  return RELATIVE_HEIGHT_DELTA_RE.test(text) || RELATIVE_HEIGHT_SUPERIEUR_RE.test(text);
+}
+
+/**
+ * Neutralise le seuil chiffré d'une règle de hauteur RELATIVE pour éviter qu'il
+ * soit interprété comme un plafond absolu. No-op si la règle n'est pas une
+ * hauteur, ne chiffre rien, ou n'est pas formulée en relatif.
+ */
+export function neutralizeRelativeHeightRule(rule: StructuredRule): StructuredRule {
+  if (rule.topic !== "hauteur") return rule;
+  if (rule.value_min == null && rule.value_max == null && rule.value_exact == null) return rule;
+  if (!isRelativeHeightConstraint(`${rule.rule_text} ${rule.summary}`)) return rule;
+
+  const extracted = [
+    rule.value_min != null ? `min ${rule.value_min}` : null,
+    rule.value_max != null ? `max ${rule.value_max}` : null,
+    rule.value_exact != null ? `exact ${rule.value_exact}` : null,
+  ]
+    .filter(Boolean)
+    .join(", ");
+  const note =
+    `Hauteur RELATIVE : écart maximal par rapport à une autre référence ` +
+    `(hauteur autorisée / égout / construction voisine), et NON un plafond absolu. ` +
+    `Valeur extraite : ${extracted} ${rule.unit ?? "m"}. Seuil neutralisé — à apprécier ` +
+    `manuellement tant que l'évaluation différentielle n'est pas automatisée.`;
+
+  return {
+    ...rule,
+    value_min: null,
+    value_max: null,
+    value_exact: null,
+    sub_theme: rule.sub_theme ?? "hauteur_relative",
+    instructor_note: rule.instructor_note ? `${rule.instructor_note} — ${note}` : note,
+  };
+}
+
 /** Injected LLM call: receives a system + user prompt, returns raw text (JSON expected). */
 export type LlmFn = (system: string, user: string) => Promise<string>;
 
@@ -131,6 +193,7 @@ Règles :
 - Une règle par article présent. Si "non réglementé"/"sans objet" → garde-la avec value_* null.
 - VALEUR PRINCIPALE (value_min/max/exact + unit) = le seuil PRINCIPAL du thème, dans une unité COHÉRENTE (emprise_sol/espaces_verts/cos → %, hauteur/reculs → m, terrain_min → m², stationnement → places). Ne prends PAS "le plus grand nombre". Respecte min ("≥/minimum") vs max ("≤/maximum"). Ne mélange JAMAIS valeur et unité. Les mesures secondaires ou d'autres unités (épaisseurs en cm, ratios…) vont UNIQUEMENT dans "cases". Si rien de cohérent → value_* null.
 - topic 'aspect' (article 11) : capture matériaux, couleurs, toitures, menuiseries, clôtures dans rule_text.
+- HAUTEUR RELATIVE : si une règle de hauteur fixe un ÉCART par rapport à une AUTRE référence (« ne peut dépasser DE PLUS DE X m la hauteur autorisée / l'égout / la construction voisine », « supérieure de X m à… ») et NON un plafond absolu, laisse value_* = null et décris l'écart dans instructor_note. X n'est PAS une hauteur absolue. (« X m DE hauteur » reste, lui, un seuil absolu → value_max.)
 - N'invente AUCUNE valeur : si incertain, value_* = null.${calibrationFewShot()}`;
 
 function buildUserPrompt(zone: { code: string; label: string }, articles: Array<{ number: string; title: string; text: string }>): string {
@@ -169,7 +232,7 @@ export function parseRules(
   arr.forEach((item, i) => {
     const parsed = structuredRuleSchema.safeParse(item);
     if (parsed.success) {
-      rules.push(parsed.data);
+      rules.push(neutralizeRelativeHeightRule(parsed.data));
     } else {
       const detail = parsed.error.issues.map((iss) => `${iss.path.join(".") || "(racine)"} : ${iss.message}`).join(" ; ");
       onIssue(`règle ${i + 1}/${arr.length} rejetée — ${detail}`);

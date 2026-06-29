@@ -1,5 +1,12 @@
 import { describe, it, expect } from "vitest";
-import { parseRules, structureSegments, inferZoneType, type LlmFn } from "./structurer.ts";
+import {
+  parseRules,
+  structureSegments,
+  inferZoneType,
+  isRelativeHeightConstraint,
+  neutralizeRelativeHeightRule,
+  type LlmFn,
+} from "./structurer.ts";
 import type { Segment } from "../adapters/interface.ts";
 
 describe("parseRules", () => {
@@ -42,6 +49,62 @@ describe("parseRules", () => {
     expect(issues).toHaveLength(2);
     expect(issues[0]).toContain("règle 2/3 rejetée");
     expect(issues[1]).toContain("règle 3/3 rejetée");
+  });
+});
+
+describe("hauteurs relatives (garde-fou niveau 1)", () => {
+  it("détecte les formulations relatives et épargne les seuils absolus", () => {
+    // Relatif : écart par rapport à une autre référence → neutralisé.
+    expect(
+      isRelativeHeightConstraint(
+        "Le faîtage ne peut pas dépasser de plus de 4 mètres la hauteur de la construction autorisée.",
+      ),
+    ).toBe(true);
+    expect(isRelativeHeightConstraint("Hauteur supérieure de 2 m à l'égout du bâtiment voisin.")).toBe(true);
+    // Absolu : « X m DE hauteur » / « X m au faîtage » → conservé.
+    expect(isRelativeHeightConstraint("La hauteur maximale est de 9 m au faîtage.")).toBe(false);
+    expect(isRelativeHeightConstraint("Construction de plus de 4 mètres de hauteur interdite.")).toBe(false);
+  });
+
+  it("cas Boucau : ne réduit plus « +4 m au-dessus de la hauteur autorisée » à un plafond de 4 m", () => {
+    const raw = `[{"article_number":10,"article_title":"Hauteur (UC)","topic":"hauteur",
+      "rule_text":"Le faîtage de toutes nouvelles constructions ne peut pas dépasser de plus de 4 mètres la hauteur de la construction autorisée.",
+      "value_max":4,"unit":"m","summary":"Hauteur maximale au faîtage : 4m"}]`;
+    const rule = parseRules(raw)[0]!;
+    // Le seuil chiffré est neutralisé → règle qualitative (l'évaluateur la
+    // remontera en « à vérifier », plus de faux non-conforme bloquant).
+    expect(rule.value_max).toBeNull();
+    expect(rule.value_min).toBeNull();
+    expect(rule.value_exact).toBeNull();
+    // Le chiffre et le sens restent tracés pour l'instructeur.
+    expect(rule.sub_theme).toBe("hauteur_relative");
+    expect(rule.instructor_note).toContain("max 4");
+    expect(rule.instructor_note).toContain("RELATIVE");
+    // La prose source n'est pas altérée.
+    expect(rule.rule_text).toContain("la hauteur de la construction autorisée");
+  });
+
+  it("ne touche pas une règle de hauteur absolue", () => {
+    const rule = neutralizeRelativeHeightRule({
+      article_number: 10, article_title: "Hauteur", topic: "hauteur",
+      rule_text: "La hauteur au faîtage est limitée à 9 m.",
+      value_min: null, value_max: 9, value_exact: null, unit: "m",
+      conditions: null, summary: "9 m au faîtage", instructor_note: null,
+      cases: [], sub_theme: null, applies_if: [],
+    });
+    expect(rule.value_max).toBe(9);
+    expect(rule.instructor_note).toBeNull();
+  });
+
+  it("n'agit que sur le topic hauteur", () => {
+    const rule = neutralizeRelativeHeightRule({
+      article_number: 7, article_title: "Implantation", topic: "recul_limite",
+      rule_text: "Recul supérieur de 2 m à la hauteur.", // formulation relative mais autre topic
+      value_min: null, value_max: 2, value_exact: null, unit: "m",
+      conditions: null, summary: "", instructor_note: null,
+      cases: [], sub_theme: null, applies_if: [],
+    });
+    expect(rule.value_max).toBe(2);
   });
 });
 
