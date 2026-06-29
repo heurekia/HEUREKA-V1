@@ -496,6 +496,7 @@ CREATE TABLE IF NOT EXISTS gpu_parcel_cache (
   informations    jsonb,
   sup_surf        jsonb,
   sup_lin         jsonb,
+  sup_pct         jsonb,
   generateurs     jsonb,
   plu_partition   text,
   scot_name       text,
@@ -503,6 +504,9 @@ CREATE TABLE IF NOT EXISTS gpu_parcel_cache (
   hit_count       integer NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_gpu_parcel_cache_parcelle ON gpu_parcel_cache(parcelle_id);
+-- SUP ponctuelles (assiette-sup-p) ajoutées après coup : colonne idempotente
+-- pour les bases déjà créées sans elle.
+ALTER TABLE gpu_parcel_cache ADD COLUMN IF NOT EXISTS sup_pct jsonb;
 
 CREATE TABLE IF NOT EXISTS dossier_consultations (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
