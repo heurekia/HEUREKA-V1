@@ -752,6 +752,35 @@ export function ReglementationScreen({ commune, inseeCode }: { commune: string; 
     } finally { setSaving(false); }
   };
 
+  // Valide d'un coup tous les brouillons — d'une zone (zoneId fourni) ou de
+  // toute la commune. Ne touche pas aux règles déjà validées/rejetées.
+  const bulkValidate = async (zoneId?: string) => {
+    const draftCount = zoneId
+      ? (data?.zones.find(z => z.id === zoneId)?.stats.brouillon ?? 0)
+      : (data?.zones.reduce((n, z) => n + z.stats.brouillon, 0) ?? 0);
+    if (draftCount === 0) return;
+    const label = zoneId
+      ? `Valider les ${draftCount} brouillon(s) de cette zone ?`
+      : `Valider les ${draftCount} brouillon(s) de toutes les zones de ${commune} ?`;
+    if (!confirm(label)) return;
+    setSaving(true);
+    try {
+      await api.post("/mairie/reglementation/rules/bulk-validate",
+        zoneId ? { zone_id: zoneId } : (inseeCode ? { insee_code: inseeCode } : { commune_name: commune }));
+      const promote = (r: RuleRow): RuleRow =>
+        (r.validation_status === "brouillon" || r.validation_status === "draft")
+          ? { ...r, validation_status: "valide" } : r;
+      setData(prev => prev ? {
+        ...prev,
+        zones: prev.zones.map(z => (zoneId && z.id !== zoneId) ? z : {
+          ...z,
+          rules: z.rules.map(promote),
+          stats: computeStats(z.rules.map(promote)),
+        }),
+      } : null);
+    } finally { setSaving(false); }
+  };
+
   const deleteRule = async (id: string) => {
     if (!confirm("Supprimer cette règle ?")) return;
     await api.delete(`/mairie/reglementation/rules/${id}`);
@@ -872,6 +901,16 @@ export function ReglementationScreen({ commune, inseeCode }: { commune: string; 
               <div style={{ height: 6, background: "#E2E8F0", borderRadius: 99, overflow: "hidden" }}>
                 <div style={{ height: "100%", width: `${totalStats.total ? (totalStats.valide / totalStats.total) * 100 : 0}%`, background: "#4F46E5", borderRadius: 99, transition: "width 0.3s" }} />
               </div>
+              {(() => {
+                const drafts = data.zones.reduce((n, z) => n + z.stats.brouillon, 0);
+                if (drafts === 0) return null;
+                return (
+                  <button onClick={() => bulkValidate()} disabled={saving} title="Valider tous les brouillons de toutes les zones"
+                    style={{ marginTop: 10, width: "100%", padding: "7px 0", border: "1px solid #BBF7D0", background: "#F0FDF4", borderRadius: 8, fontSize: 12, color: "#15803D", cursor: saving ? "wait" : "pointer", fontWeight: 600 }}>
+                    ✓ Valider {drafts} brouillon{drafts > 1 ? "s" : ""}
+                  </button>
+                );
+              })()}
             </div>
           )}
         </div>
@@ -973,6 +1012,12 @@ export function ReglementationScreen({ commune, inseeCode }: { commune: string; 
                   </span>
                 ); })()}
                 <span style={{ fontSize: 16, fontWeight: 700, color: "#000020", flex: 1 }}>{selectedZone.zone_label}</span>
+                {selectedZone.stats.brouillon > 0 && (
+                  <button onClick={() => bulkValidate(selectedZone.id)} disabled={saving} title="Valider tous les brouillons de cette zone"
+                    style={{ border: "1px solid #BBF7D0", background: "#F0FDF4", borderRadius: 7, padding: "4px 10px", fontSize: 11, color: "#15803D", cursor: saving ? "wait" : "pointer", fontWeight: 600 }}>
+                    ✓ Valider {selectedZone.stats.brouillon} brouillon{selectedZone.stats.brouillon > 1 ? "s" : ""}
+                  </button>
+                )}
                 <button onClick={() => deleteZone(selectedZone.id)} title="Supprimer la zone" style={{ border: "1px solid #FECACA", background: "#FFF5F5", borderRadius: 7, padding: "4px 10px", fontSize: 11, color: "#EF4444", cursor: "pointer" }}>✕ Zone</button>
               </div>
             </div>
