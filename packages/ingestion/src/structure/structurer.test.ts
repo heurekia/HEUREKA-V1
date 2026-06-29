@@ -54,16 +54,25 @@ describe("parseRules", () => {
 
 describe("hauteurs relatives (garde-fou niveau 1)", () => {
   it("détecte les formulations relatives et épargne les seuils absolus", () => {
-    // Relatif : écart par rapport à une autre référence → neutralisé.
-    expect(
-      isRelativeHeightConstraint(
-        "Le faîtage ne peut pas dépasser de plus de 4 mètres la hauteur de la construction autorisée.",
-      ),
-    ).toBe(true);
-    expect(isRelativeHeightConstraint("Hauteur supérieure de 2 m à l'égout du bâtiment voisin.")).toBe(true);
-    // Absolu : « X m DE hauteur » / « X m au faîtage » → conservé.
-    expect(isRelativeHeightConstraint("La hauteur maximale est de 9 m au faîtage.")).toBe(false);
-    expect(isRelativeHeightConstraint("Construction de plus de 4 mètres de hauteur interdite.")).toBe(false);
+    // Relatif : référence à une AUTRE construction → neutralisé.
+    const relatives = [
+      "Le faîtage ne peut pas dépasser de plus de 4 mètres la hauteur de la construction autorisée.",
+      "Hauteur supérieure de 2 m à l'égout du bâtiment voisin.",
+      "La hauteur est appréciée par rapport à la construction voisine la plus haute.",
+      "Le faîtage est aligné sur le faîtage des constructions voisines.",
+      "La construction ne peut s'élever au-dessus de la hauteur de l'égout du bâtiment contigu.",
+      "La hauteur ne peut excéder celle des constructions mitoyennes existantes.",
+    ];
+    for (const t of relatives) expect(isRelativeHeightConstraint(t), t).toBe(true);
+
+    // Absolu : un nombre est la référence → conservé (jamais neutralisé).
+    const absolus = [
+      "La hauteur maximale est de 9 m au faîtage.",
+      "Construction de plus de 4 mètres de hauteur interdite.",
+      "Aucune construction au-dessus de 9 m n'est autorisée.",
+      "La hauteur est mesurée au-dessus du sol naturel, 12 m maximum.",
+    ];
+    for (const t of absolus) expect(isRelativeHeightConstraint(t), t).toBe(false);
   });
 
   it("cas Boucau : ne réduit plus « +4 m au-dessus de la hauteur autorisée » à un plafond de 4 m", () => {
