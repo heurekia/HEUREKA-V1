@@ -10,7 +10,7 @@ import { isProfessionalRole, deactivateUser, eraseCitizenAccount } from "../../s
 import { getCommuneScope, communeInScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import { hashPasswordToken } from "../../lib/passwordToken.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
 import { PLU_SAVE_RULE_TOOL, PLU_EXTRACTION_CALIBRATION, coerceCases, coerceAppliesIf, type PluRuleInput } from "./pluSaveRuleTool.js";
 import { normalizeSecteur } from "@heureka-v1/ingestion/secteur";
 import { PDFDocument } from "pdf-lib";
@@ -841,6 +841,19 @@ async function detectPluToc(
   const tocPages = Math.min(15, totalPages);
   const nativeText = await extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
   let toc: TocEntry[] = nativeText ? parseTocFromNativeText(nativeText) : [];
+
+  if (toc.length === 0) {
+    // Repli déterministe AVANT Pixtral : sommaire sans numéros de page (ou
+    // aplati sur une seule ligne par l'extraction texte) → la voie sommaire ne
+    // produit aucune ancre. On lit alors le texte natif COMPLET (toutes les
+    // pages, séparées par le form-feed `\f` de pdftotext) et on localise chaque
+    // chapitre via son en-tête « DISPOSITIONS APPLICABLES À LA ZONE X ».
+    const fullText = await extractPdfText(pdfBuffer);
+    if (fullText) {
+      const located = parseTocFromHeadings(fullText.split("\f"));
+      if (located.length > 0) toc = located;
+    }
+  }
 
   if (toc.length === 0) {
     // Bascule Pixtral. Sur PDF normal, on n'arrive ici que pour des PLU à
