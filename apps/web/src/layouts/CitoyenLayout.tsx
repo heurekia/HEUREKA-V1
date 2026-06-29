@@ -203,7 +203,11 @@ export function CitoyenLayout() {
           `lg`, l'espace mairie passe en sidebar et le cadre est désactivé : le
           rendu desktop est strictement identique à l'existant. */}
       <main className="flex-1 overflow-auto pb-16 lg:pb-0 bg-[#E2E5EA] lg:bg-transparent">
-        <div className="mx-auto w-full max-w-[480px] lg:max-w-none min-h-[calc(100vh-3rem)] lg:min-h-0 bg-[#F0F0F0] lg:bg-transparent shadow-[0_0_40px_rgba(15,23,42,0.07)] lg:shadow-none">
+        {/* `flex flex-col` + la règle CSS `.citizen-frame > *` font remplir au
+            cadre toute sa hauteur à la page rendue, même quand son contenu est
+            court : pas de raccord de fond visible. Désactivé en `lg:block`
+            (desktop sidebar inchangé). */}
+        <div className="citizen-frame flex flex-col lg:block mx-auto w-full max-w-[480px] lg:max-w-none min-h-[calc(100vh-3rem)] lg:min-h-0 bg-[#F0F0F0] lg:bg-transparent shadow-[0_0_40px_rgba(15,23,42,0.07)] lg:shadow-none">
           <Outlet />
         </div>
       </main>

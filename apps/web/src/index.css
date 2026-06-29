@@ -6,6 +6,12 @@
 @keyframes spin { to { transform: rotate(360deg); } }
 .spin { animation: spin 0.9s linear infinite; }
 
+/* Cadre « app » de l'espace citoyen (mobile/tablette) : la page rendue (enfant
+   direct) remplit toute la hauteur du cadre même si son contenu est court, pour
+   éviter qu'un fond de page (#F8FAFC du wizard, etc.) laisse apparaître le fond
+   du cadre en dessous. Sans effet sur desktop (le cadre passe en `lg:block`). */
+.citizen-frame > * { flex: 1 0 auto; }
+
 :root {
   --background: 255 47% 94%;
   --foreground: 240 100% 6%;
