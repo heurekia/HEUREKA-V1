@@ -197,8 +197,15 @@ export function CitoyenLayout() {
       </aside>
 
       {/* ── Contenu ──────────────────────────────────────────── */}
-      <main className="flex-1 overflow-auto pb-16 lg:pb-0">
-        <Outlet />
+      {/* Cadre « app » sur mobile/tablette : le contenu est plafonné à 480px et
+          centré, avec un fond distinct sur les côtés (visible dès que l'écran
+          dépasse 480px — grands téléphones, tablettes en portrait). Au-delà de
+          `lg`, l'espace mairie passe en sidebar et le cadre est désactivé : le
+          rendu desktop est strictement identique à l'existant. */}
+      <main className="flex-1 overflow-auto pb-16 lg:pb-0 bg-[#E2E5EA] lg:bg-transparent">
+        <div className="mx-auto w-full max-w-[480px] lg:max-w-none min-h-[calc(100vh-3rem)] lg:min-h-0 bg-[#F0F0F0] lg:bg-transparent shadow-[0_0_40px_rgba(15,23,42,0.07)] lg:shadow-none">
+          <Outlet />
+        </div>
       </main>
 
       {/* ── Bottom-nav mobile (< lg) ─────────────────────────── */}
