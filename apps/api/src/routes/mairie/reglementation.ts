@@ -171,6 +171,61 @@ reglementationRouter.patch("/reglementation/rules/:id", requirePermission("zones
   }
 });
 
+// POST /mairie/reglementation/rules/bulk-validate
+// Valide en une fois tous les brouillons — soit d'UNE zone (zone_id), soit de
+// TOUTE la commune (insee_code / commune_name). Évite à l'instructeur de cliquer
+// « Valider » règle par règle après un import PLU (souvent 100+ brouillons).
+// Ne touche QUE les règles en brouillon : les règles déjà validées ou rejetées
+// (= décision humaine explicite) ne sont jamais ré-écrasées.
+reglementationRouter.post("/reglementation/rules/bulk-validate", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
+  try {
+    const { insee_code, commune_name, zone_id } = req.body as {
+      insee_code?: string; commune_name?: string; zone_id?: string;
+    };
+    const scope = await getCommuneScope(req.user!.id, req.user!.role);
+    const draftStatuses = ["brouillon", "draft"];
+
+    // Zones cibles : une seule zone, ou toutes les zones actives de la commune.
+    let zoneIds: string[];
+    if (zone_id) {
+      if (!(await zoneInScope(zone_id, scope))) {
+        return res.status(404).json({ error: "Zone introuvable" });
+      }
+      zoneIds = [zone_id];
+    } else {
+      const communeName = commune_name?.trim();
+      const inseeCode = insee_code?.trim();
+      if (!inseeCode && !communeName) {
+        return res.status(400).json({ error: "zone_id, insee_code ou commune_name requis" });
+      }
+      const [commune] = await db.select().from(communes)
+        .where(inseeCode ? eq(communes.insee_code, inseeCode) : ilike(communes.name, `%${communeName!}%`))
+        .limit(1);
+      if (!commune) return res.status(404).json({ error: "Commune non trouvée" });
+      if (!communeInScope(commune.name, scope)) {
+        return res.status(403).json({ error: "Commune hors de votre périmètre" });
+      }
+      // Mêmes zones que celles affichées par GET /reglementation (PLUi-aware).
+      zoneIds = await resolveCommuneActiveZoneIds(commune.id);
+    }
+
+    if (zoneIds.length === 0) return res.json({ updated: 0 });
+
+    const updated = await db.update(zone_regulatory_rules)
+      .set({ validation_status: "valide", updated_at: new Date() })
+      .where(and(
+        inArray(zone_regulatory_rules.zone_id, zoneIds),
+        inArray(zone_regulatory_rules.validation_status, draftStatuses),
+      ))
+      .returning({ id: zone_regulatory_rules.id });
+
+    res.json({ updated: updated.length });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // DELETE /mairie/reglementation/rules/:id
 reglementationRouter.delete("/reglementation/rules/:id", requirePermission("zones.edit"), requireRole("mairie", "instructeur", "admin"), async (req: AuthRequest, res) => {
   try {
