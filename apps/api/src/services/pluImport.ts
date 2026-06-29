@@ -124,9 +124,21 @@ export function chunkPages(start: number, end: number, batchSize: number): Array
  * conservé en majuscules, suffixe en minuscules (sauf le 2e caractère des
  * codes U[A-Z]).
  */
+const ROMAN_AU: Record<string, string> = { I: "1", II: "2", III: "3", IV: "4" };
+
 export function normalizeZoneCode(raw: string): string {
-  const s = raw.trim();
+  // Compacte les espaces internes : certains sommaires/en-têtes écrivent les
+  // zones à urbaniser « I AU », « II AU » (chiffre romain + espace) au lieu de
+  // « 1AU »/« 2AU ». Sans ça, "I AU" ne matche aucune branche et ressort tel
+  // quel → zone fantôme distincte de "1AU".
+  const s = raw.trim().replace(/\s+/g, " ");
   if (s.length === 0) return "";
+  // « I AU », « II AU », « 1 AU »… → « 1AU »/« 2AU » (romain → arabe, espace ôté).
+  const roman = s.match(/^(I{1,3}|IV|[1-4])\s*AU([a-z0-9]*)$/i);
+  if (roman) {
+    const head = roman[1]!.toUpperCase();
+    return (ROMAN_AU[head] ?? head) + "AU" + (roman[2] ?? "").toLowerCase();
+  }
   if (/^[12]?AU/i.test(s)) {
     // 1AU, 2AU, AUs, AUa : "AU" majuscule, suffixe minuscule.
     const m = s.match(/^([12]?)AU(.*)$/i)!;
@@ -169,6 +181,64 @@ export function parseTocFromNativeText(text: string, minZones = 3): TocEntry[] {
     seenCodes.set(code, { code, label: `Zone ${code}`, type: zoneTypeFromCode(code), startPage: page });
   }
   const entries = [...seenCodes.values()].sort((a, b) => a.startPage - b.startPage);
+  return entries.length >= minZones ? entries : [];
+}
+
+// En-tête de chapitre de zone tel qu'il apparaît dans le CORPS du règlement :
+// « DISPOSITIONS APPLICABLES À LA ZONE UA », souvent précédé de « CHAPITRE UA - ».
+// Ancré en DÉBUT de ligne (flag `m`, `\s*` absorbe l'indentation de pdftotext
+// -layout), avec un préfixe « CHAPITRE … - » optionnel borné. Cet ancrage
+// écarte les simples références noyées en milieu de paragraphe (« …le
+// pétitionnaire se réfère aux dispositions applicables à la zone UA… »). Le
+// groupe `code` accepte les zones AU en chiffres romains ou espacés (« I AU »,
+// « II AU »), normalisées ensuite par normalizeZoneCode.
+const ZONE_HEADING_RE =
+  /^\s*(?:CHAPITRE\b[^\n]{0,12}?[-–]\s*)?DISPOSITIONS\s+APPLICABLES\s+[AÀ]\s+LA\s+ZONE\s+(I{1,3}\s*AU[a-z0-9]*|IV\s*AU[a-z0-9]*|[1-4]\s*AU[a-z0-9]*|AU[a-z0-9]*|U[A-Z][a-z0-9]?|N[a-z0-9]{0,2}|A[a-z0-9]{0,2})\b/gim;
+
+/**
+ * Détection des zones par les EN-TÊTES du corps du document, en repli de
+ * `parseTocFromNativeText`.
+ *
+ * Indispensable quand le sommaire ne porte PAS de numéros de page (ou que
+ * l'extraction texte a aplati tout le sommaire sur une seule ligne) : la voie
+ * sommaire ne peut alors produire aucune ancre zone→page. On lit alors le
+ * texte natif COMPLET (pages séparées par le form-feed `\f` de `pdftotext`) et
+ * on repère, page par page, l'en-tête « DISPOSITIONS APPLICABLES À LA ZONE X »
+ * qui ouvre chaque chapitre. La page de cet en-tête EST la page de début de la
+ * zone — exactement l'ancre attendue par `partitionPagesByZone`.
+ *
+ * Le sommaire lui-même contient ces mêmes libellés ; pour ne pas confondre la
+ * mention au sommaire avec le vrai début de section, on écarte les pages
+ * « sommaire » = celles qui portent ≥ 3 en-têtes de zones distinctes (le corps
+ * n'en a qu'un par chapitre). Pour chaque code, on retient la PREMIÈRE page de
+ * corps où son en-tête apparaît.
+ *
+ * Fonction pure (pas d'I/O) → couverte par pluImport.test.ts.
+ */
+export function parseTocFromHeadings(pages: string[], minZones = 3): TocEntry[] {
+  // Codes de zone trouvés sur chaque page (Set → dédup intra-page).
+  const perPage = pages.map((page) => {
+    const codes = new Set<string>();
+    for (const m of page.matchAll(ZONE_HEADING_RE)) {
+      const code = normalizeZoneCode(m[1] ?? "");
+      if (code) codes.add(code);
+    }
+    return codes;
+  });
+  // Pages de sommaire : ≥ 3 en-têtes distincts regroupés → à exclure.
+  const tocPages = new Set<number>();
+  perPage.forEach((codes, i) => {
+    if (codes.size >= 3) tocPages.add(i);
+  });
+  const byCode = new Map<string, TocEntry>();
+  perPage.forEach((codes, i) => {
+    if (tocPages.has(i)) return;
+    for (const code of codes) {
+      if (byCode.has(code)) continue; // 1re page de corps = début réel de la zone
+      byCode.set(code, { code, label: `Zone ${code}`, type: zoneTypeFromCode(code), startPage: i + 1 });
+    }
+  });
+  const entries = [...byCode.values()].sort((a, b) => a.startPage - b.startPage);
   return entries.length >= minZones ? entries : [];
 }
 

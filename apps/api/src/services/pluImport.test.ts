@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode } from "./pluImport.ts";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode } from "./pluImport.ts";
 
 describe("partitionPagesByZone", () => {
   it("découpe les zones en plages fermées [start, end] selon la zone suivante", () => {
@@ -209,6 +209,84 @@ describe("parseTocFromNativeText", () => {
   });
 });
 
+describe("parseTocFromHeadings", () => {
+  // Reproduit le cas réel signalé : sommaire SANS numéros de page, aplati sur
+  // une seule ligne par l'extraction texte → la voie sommaire renvoie [].
+  // Le règlement, lui, porte un en-tête de chapitre par zone dans son corps.
+  const sommaireSansPages =
+    "SOMMAIRE\n" +
+    "DÉFINITIONS ---- CHAPITRE UA - DISPOSITIONS APPLICABLES A LA ZONE UA ---- " +
+    "CHAPITRE UB - DISPOSITIONS APPLICABLES A LA ZONE UB ---- " +
+    "CHAPITRE UC - DISPOSITIONS APPLICABLES A LA ZONE UC ---- " +
+    "CHAPITRE UD - DISPOSITIONS APPLICABLES A LA ZONE UD ---- " +
+    "CHAPITRE UY - DISPOSITIONS APPLICABLES A LA ZONE UY ---- " +
+    "CHAPITRE I AU - DISPOSITIONS APPLICABLES A LA ZONE I AU ---- " +
+    "CHAPITRE II AU - DISPOSITIONS APPLICABLES A LA ZONE II AU ---- " +
+    "CHAPITRE N - DISPOSITIONS APPLICABLES A LA ZONE N ----";
+
+  it("la voie sommaire échoue sur ce PDF (aucune page indiquée)", () => {
+    // Pré-condition du repli : parseTocFromNativeText ne sait rien en tirer.
+    expect(parseTocFromNativeText(sommaireSansPages)).toEqual([]);
+  });
+
+  it("récupère les 8 zones + pages via les en-têtes du corps, sommaire exclu", () => {
+    const pages = [
+      sommaireSansPages,                                          // p1 : sommaire (8 en-têtes → exclu)
+      "DISPOSITIONS GENERALES\nChamp d'application…",             // p2
+      "CHAPITRE UA - DISPOSITIONS APPLICABLES A LA ZONE UA\nArticle UA 1", // p3
+      "suite de la zone UA…",                                     // p4
+      "CHAPITRE UB - DISPOSITIONS APPLICABLES A LA ZONE UB",      // p5
+      "CHAPITRE UC - DISPOSITIONS APPLICABLES A LA ZONE UC",      // p6
+      "CHAPITRE UD - DISPOSITIONS APPLICABLES A LA ZONE UD",      // p7
+      "CHAPITRE UY - DISPOSITIONS APPLICABLES A LA ZONE UY",      // p8
+      "CHAPITRE I AU - DISPOSITIONS APPLICABLES A LA ZONE I AU",  // p9
+      "CHAPITRE II AU - DISPOSITIONS APPLICABLES A LA ZONE II AU",// p10
+      "CHAPITRE N - DISPOSITIONS APPLICABLES A LA ZONE N",        // p11
+    ];
+    const toc = parseTocFromHeadings(pages);
+    expect(toc.map((z) => [z.code, z.startPage])).toEqual([
+      ["UA", 3], ["UB", 5], ["UC", 6], ["UD", 7], ["UY", 8], ["1AU", 9], ["2AU", 10], ["N", 11],
+    ]);
+    // Codes AU en chiffres romains → normalisés en 1AU/2AU, type AU.
+    expect(toc.find((z) => z.code === "1AU")!.type).toBe("AU");
+    expect(toc.find((z) => z.code === "N")!.type).toBe("N");
+  });
+
+  it("retient la PREMIÈRE page de corps quand un en-tête réapparaît", () => {
+    const pages = [
+      "CHAPITRE UA - DISPOSITIONS APPLICABLES A LA ZONE UA",          // p1
+      "rappel : DISPOSITIONS APPLICABLES A LA ZONE UA (suite)",       // p2 — ne doit pas écraser
+      "CHAPITRE UB - DISPOSITIONS APPLICABLES A LA ZONE UB",          // p3
+      "CHAPITRE N - DISPOSITIONS APPLICABLES A LA ZONE N",            // p4
+    ];
+    const toc = parseTocFromHeadings(pages);
+    expect(toc.find((z) => z.code === "UA")!.startPage).toBe(1);
+    expect(toc.map((z) => z.code)).toEqual(["UA", "UB", "N"]);
+  });
+
+  it("renvoie [] si moins de minZones en-têtes trouvés", () => {
+    const pages = [
+      "CHAPITRE UA - DISPOSITIONS APPLICABLES A LA ZONE UA",
+      "CHAPITRE UB - DISPOSITIONS APPLICABLES A LA ZONE UB",
+    ];
+    expect(parseTocFromHeadings(pages, 3)).toEqual([]);
+    expect(parseTocFromHeadings(pages, 2)).toHaveLength(2);
+  });
+
+  it("ignore une simple référence en milieu de paragraphe (non ancrée en début de ligne)", () => {
+    const pages = [
+      "Le pétitionnaire se réfère aux dispositions applicables à la zone UA puis poursuit.",
+      "CHAPITRE UB - DISPOSITIONS APPLICABLES A LA ZONE UB",
+      "CHAPITRE UC - DISPOSITIONS APPLICABLES A LA ZONE UC",
+      "CHAPITRE N - DISPOSITIONS APPLICABLES A LA ZONE N",
+    ];
+    const toc = parseTocFromHeadings(pages);
+    // La mention noyée p1 (pas en début de ligne, pas un en-tête « CHAPITRE … - »)
+    // n'est pas captée comme ancre de début de zone.
+    expect(toc.map((z) => z.code)).toEqual(["UB", "UC", "N"]);
+  });
+});
+
 describe("toArticleInt", () => {
   it("renvoie null pour vide / null / undefined / non numérique", () => {
     // C'était la cause du crash : "" sur une colonne integer Postgres.
@@ -359,6 +437,15 @@ describe("normalizeZoneCode", () => {
     expect(normalizeZoneCode("AUS")).toBe("AUs");
     expect(normalizeZoneCode("1au")).toBe("1AU");
     expect(normalizeZoneCode("2AUb")).toBe("2AUb");
+  });
+
+  it("convertit les zones AU en chiffres romains ou espacés (I AU → 1AU)", () => {
+    // Sommaire/en-têtes réels : « ZONE I AU », « ZONE II AU ».
+    expect(normalizeZoneCode("I AU")).toBe("1AU");
+    expect(normalizeZoneCode("II AU")).toBe("2AU");
+    expect(normalizeZoneCode("III AU")).toBe("3AU");
+    expect(normalizeZoneCode("1 AU")).toBe("1AU");
+    expect(normalizeZoneCode("ii au")).toBe("2AU");
   });
 
   it("normalise les sous-zones N/A avec suffixe minuscule", () => {
