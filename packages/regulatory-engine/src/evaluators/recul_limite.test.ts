@@ -10,7 +10,7 @@ function rule(o: Partial<EvaluableRule> & { rule_id: string }): EvaluableRule {
     applies_if: [], validation_status: "valide", rule_text: "L≥3 m", summary: null,
     conditions: null, exceptions: null,
     value_min: o.value_min ?? null, value_max: null, value_exact: null,
-    unit: "m", cases: o.cases ?? [],
+    unit: "m", cases: o.cases ?? [], height_spec: o.height_spec ?? null,
     citizen_title: null, citizen_summary: null, citizen_relevant: true, instructor_note: null,
     source_segment_id: o.source_segment_id ?? null, source_page: o.source_page ?? null, source_quote: o.source_quote ?? null,
   };

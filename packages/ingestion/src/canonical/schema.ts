@@ -46,6 +46,19 @@ export const CanonicalRuleCaseSchema = z.object({
 });
 export type CanonicalRuleCase = z.infer<typeof CanonicalRuleCaseSchema>;
 
+// ── Spécification hauteur structurée (niveau 2) ───────────────────────────────
+// Permet de porter DEUX plafonds (égout / faîtage) et/ou une contrainte
+// RELATIVE (écart par rapport à une autre référence) sans surcharger value_max.
+// Hauteurs en mètres. Tous les champs nullables. Un outil tiers peut le fournir ;
+// l'ingestion LLM le déduit du texte (cf. structurer.enrichHeightSpec).
+export const CanonicalHeightSpecSchema = z.object({
+  egout: z.number().nullable().default(null),
+  faitage: z.number().nullable().default(null),
+  relative_to: z.string().nullable().default(null),
+  max_delta: z.number().nullable().default(null),
+});
+export type CanonicalHeightSpec = z.infer<typeof CanonicalHeightSpecSchema>;
+
 // ── Règle ─────────────────────────────────────────────────────────────────────
 
 export const CanonicalRuleSchema = z.object({
@@ -73,6 +86,9 @@ export const CanonicalRuleSchema = z.object({
   exceptions: z.string().nullable().default(null),
   cases: z.array(CanonicalRuleCaseSchema).default([]),
   applies_if: z.array(z.string()).default([]),
+  // Spécification hauteur structurée (niveau 2). null pour les règles
+  // non-hauteur ou sans seuil/référence structuré.
+  height_spec: CanonicalHeightSpecSchema.nullable().default(null),
 
   // Vues abrégées
   summary: z.string().default(""),

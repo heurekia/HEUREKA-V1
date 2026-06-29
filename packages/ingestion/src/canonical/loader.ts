@@ -41,6 +41,8 @@ export function canonicalToZoneRules(plu: CanonicalPLU): ZoneRules[] {
       })),
       sub_theme: r.sub_theme,
       applies_if: r.applies_if,
+      // Spécification hauteur structurée (niveau 2) si fournie par l'outil tiers.
+      height_spec: r.height_spec ?? null,
       // Traçabilité : le canonique porte déjà un bloc `source` (document, page,
       // paragraph). On le mappe vers la provenance fine. Pas de segment RAG ici
       // (le canonique ne référence pas les document_segments) → source_segment_id

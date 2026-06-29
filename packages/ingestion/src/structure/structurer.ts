@@ -25,6 +25,35 @@ export interface RuleCase {
   kind: "condition" | "parametre"; // alternative exclusive vs valeur de calcul cumulative
 }
 
+/**
+ * Spécification structurée d'une règle de HAUTEUR (niveau 2).
+ *
+ * Le champ `value_max` historique ne peut porter qu'UN seuil dans UNE
+ * référence — insuffisant pour deux cas fréquents :
+ *   - un article fixe DEUX plafonds (« 9 m à l'égout, 12 m au faîtage ») ;
+ *   - la hauteur est RELATIVE (« +4 m au-dessus de la hauteur autorisée »).
+ *
+ * `height_spec` capture ces dimensions sans écraser quoi que ce soit. Les
+ * hauteurs sont en MÈTRES. C'est une donnée de FONDATION : l'évaluateur ne la
+ * consomme pas encore pour rendre un verdict (cf. niveau 3), il continue de
+ * lire value_*. Tous les champs sont indépendamment nullables.
+ */
+export interface HeightSpec {
+  /** Plafond absolu à l'égout du toit, en mètres. */
+  egout: number | null;
+  /** Plafond absolu au faîtage, en mètres. */
+  faitage: number | null;
+  /**
+   * Référence d'une contrainte RELATIVE, si la hauteur est un écart par
+   * rapport à une autre construction : "hauteur_autorisee" | "egout" |
+   * "faitage_voisin" | "construction_voisine" | "sol_naturel" |
+   * "reference_externe". null si la règle est absolue.
+   */
+  relative_to: string | null;
+  /** Écart vertical maximal (m) pour une contrainte relative. */
+  max_delta: number | null;
+}
+
 export interface StructuredRule {
   article_number: number | null;
   article_title: string;
@@ -40,6 +69,10 @@ export interface StructuredRule {
   cases: RuleCase[];
   sub_theme: string | null;
   applies_if: string[];
+  // Spécification hauteur structurée (niveau 2), renseignée hors LLM par
+  // enrichHeightSpec. Optionnelle : absente pour les règles non-hauteur ou
+  // sans seuil/référence détectable.
+  height_spec?: HeightSpec | null;
   // Provenance fine (renseignée hors LLM) : permet de retracer le passage
   // source. source_segment_id = id du segment RAG d'origine (= Segment.id,
   // donc une ligne document_segments), source_quote = verbatim citable.
@@ -182,6 +215,76 @@ export function neutralizeRelativeHeightRule(rule: StructuredRule): StructuredRu
   };
 }
 
+// ── Enrichissement : spécification hauteur structurée (niveau 2) ──────────────
+// Déduit `height_spec` du texte de la règle, de façon DÉTERMINISTE (pas de LLM).
+// Deux familles disjointes :
+//   - RELATIVE : la hauteur est un écart → on capte (relative_to, max_delta) et
+//     on NE lit PAS de plafond absolu (les nombres sont des deltas, pas des
+//     cotes d'égout/faîtage).
+//   - ABSOLUE  : on capte les plafonds à l'égout et au faîtage séparément, ce
+//     qui résout la conflation « 9 m à l'égout / 12 m au faîtage » réduite à un
+//     seul chiffre par l'extraction.
+
+const NUM_UNIT = "(\\d[\\d.,]*)\\s*(?:m\\b|m[èe]tres?\\b)";
+// Capture l'écart d'une formulation relative (« de plus de 4 m », « supérieure de 2 m »).
+const DELTA_CAPTURE_RE = new RegExp(`(?:de\\s+plus\\s+de|sup[ée]rieure?s?\\s+de)\\s+${NUM_UNIT}`, "i");
+
+function parseFrNumber(raw: string): number | null {
+  const n = Number(raw.replace(",", "."));
+  return Number.isFinite(n) ? n : null;
+}
+
+// Plafond absolu le plus proche d'un mot de référence (égout/faîtage), dans une
+// fenêtre courte pour ne pas rattacher un nombre d'une autre clause. Cherche le
+// nombre AVANT puis APRÈS la référence.
+function nearestAbsoluteHeight(text: string, refSrc: string): number | null {
+  // Fenêtre courte (≤ 14 car.) : « 12 m au faîtage » lie bien, mais le « 9 m »
+  // d'une clause d'égout voisine (« 9 m à l'égout et 12 m au faîtage », ~22 car.)
+  // ne déborde pas sur le faîtage. Cherche le nombre AVANT puis APRÈS la réf.
+  const before = new RegExp(`${NUM_UNIT}[^.;]{0,14}?${refSrc}`, "i");
+  const after = new RegExp(`${refSrc}[^.;]{0,14}?${NUM_UNIT}`, "i");
+  const m = before.exec(text) ?? after.exec(text);
+  return m ? parseFrNumber(m[1]!) : null;
+}
+
+// Déduit l'objet de référence d'une contrainte relative depuis le vocabulaire.
+function inferRelativeRef(text: string): string {
+  if (/(?:construction|hauteur)\s+(?:de\s+la\s+construction\s+)?autoris/i.test(text) || /hauteur\s+autoris/i.test(text))
+    return "hauteur_autorisee";
+  if (/fa[îi]tage\s+(?:voisin|des\s+constructions?)/i.test(text)) return "faitage_voisin";
+  if (/(?:construction|b[âa]timent)s?\s+(?:voisin\w*|mitoyen\w*|contigu\w*|attenant\w*|existant\w*)/i.test(text))
+    return "construction_voisine";
+  if (/[ée]gout/i.test(text)) return "egout";
+  if (/(?:terrain|sol)\s+naturel/i.test(text)) return "sol_naturel";
+  return "reference_externe";
+}
+
+/**
+ * Renseigne `height_spec` sur une règle de hauteur. No-op (rule inchangée) si la
+ * règle n'est pas une hauteur ou si rien d'exploitable n'est détecté.
+ */
+export function enrichHeightSpec(rule: StructuredRule): StructuredRule {
+  if (rule.topic !== "hauteur") return rule;
+  const text = `${rule.rule_text} ${rule.summary}`;
+
+  let egout: number | null = null;
+  let faitage: number | null = null;
+  let relative_to: string | null = null;
+  let max_delta: number | null = null;
+
+  if (isRelativeHeightConstraint(text)) {
+    relative_to = inferRelativeRef(text);
+    const m = DELTA_CAPTURE_RE.exec(text);
+    if (m) max_delta = parseFrNumber(m[1]!);
+  } else {
+    egout = nearestAbsoluteHeight(text, "[ée]gout");
+    faitage = nearestAbsoluteHeight(text, "fa[îi]tage");
+  }
+
+  if (egout == null && faitage == null && relative_to == null && max_delta == null) return rule;
+  return { ...rule, height_spec: { egout, faitage, relative_to, max_delta } };
+}
+
 /** Injected LLM call: receives a system + user prompt, returns raw text (JSON expected). */
 export type LlmFn = (system: string, user: string) => Promise<string>;
 
@@ -249,7 +352,9 @@ export function parseRules(
   arr.forEach((item, i) => {
     const parsed = structuredRuleSchema.safeParse(item);
     if (parsed.success) {
-      rules.push(neutralizeRelativeHeightRule(parsed.data));
+      // enrichHeightSpec d'abord (lit le texte + les valeurs d'origine), puis
+      // neutralizeRelativeHeightRule (préserve height_spec via spread).
+      rules.push(neutralizeRelativeHeightRule(enrichHeightSpec(parsed.data)));
     } else {
       const detail = parsed.error.issues.map((iss) => `${iss.path.join(".") || "(racine)"} : ${iss.message}`).join(" ; ");
       onIssue(`règle ${i + 1}/${arr.length} rejetée — ${detail}`);
