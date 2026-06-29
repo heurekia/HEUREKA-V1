@@ -18,18 +18,25 @@ describe("classifyHeightRule", () => {
     expect(c.category).toBe("relative_guarded");
   });
 
-  it("relative_suspect : relatif NON couvert avec un seuil chiffré encore présent", () => {
+  it("relative_guarded a la priorité : un relatif couvert n'est jamais 'suspect'", () => {
+    // « par rapport à la construction voisine » est désormais capté par le garde-fou.
     expect(classifyHeightRule(h("Hauteur appréciée par rapport à la construction voisine, max 9 m.")).category).toBe(
+      "relative_guarded",
+    );
+  });
+
+  it("relative_suspect : indice relatif NON couvert, avec un seuil chiffré présent", () => {
+    // « au-dessus du sol » / « au-delà des » : repérés par le scanner pour revue
+    // humaine, mais volontairement PAS neutralisés par le garde-fou (ambigus).
+    expect(classifyHeightRule(h("La hauteur s'apprécie au-dessus du sol fini, 12 m max.")).category).toBe(
       "relative_suspect",
     );
-    expect(classifyHeightRule(h("La hauteur est mesurée au-dessus du sol, 12 m max.")).category).toBe(
-      "relative_suspect",
-    );
+    expect(classifyHeightRule(h("Hauteur portée au-delà des 9 m interdite.")).category).toBe("relative_suspect");
   });
 
   it("ne signale pas relative_suspect si aucun seuil chiffré n'est en jeu", () => {
     const c = classifyHeightRule(
-      h("Hauteur appréciée par rapport à la construction voisine.", { value_max: null, value_min: null, value_exact: null }),
+      h("La hauteur s'apprécie au-dessus du sol fini.", { value_max: null, value_min: null, value_exact: null }),
     );
     expect(c.category).not.toBe("relative_suspect");
   });
@@ -61,7 +68,7 @@ describe("scanHeightRules", () => {
   it("agrège les compteurs et n'examine que le topic hauteur", () => {
     const rules: ScannableRule[] = [
       h("Le faîtage ne peut dépasser de plus de 4 m la hauteur autorisée.", { value_max: null }),
-      h("Hauteur par rapport à la construction voisine, 9 m."),
+      h("La hauteur s'apprécie au-dessus du sol fini, 9 m."), // relatif non couvert → suspect
       h("9 m à l'égout et 12 m au faîtage."),
       h("Hauteur maximale 9 m."),
       { topic: "recul_limite", rule_text: "H/2 min 3 m.", value_min: 3, unit: "m" }, // ignoré

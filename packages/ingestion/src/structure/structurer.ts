@@ -119,17 +119,34 @@ export const structuredRuleSchema = z
 // Distinction clé tenue par les motifs : « de plus de 4 m LA hauteur » (relatif,
 // neutralisé) vs « de plus de 4 m DE hauteur » (absolu, conservé).
 
-// « ...de plus de 4 mètres la hauteur / l'égout / la construction voisine... »
-//          └── écart ──┘ └────────── référence ──────────┘
-const RELATIVE_HEIGHT_DELTA_RE =
-  /\bde\s+plus\s+de\s+\d[\d.,]*\s*(?:m\b|m[èe]tres?\b)\s+(?:la\s+|l['’]\s*|à\s+l['’]?\s*|au\s+|du\s+|de\s+la\s+)(?:hauteur|[ée]gouts?|fa[îi]tages?|constructions?|b[âa]timents?|niveau|cote)/i;
-// « ...supérieure de 2 m à l'égout... »
-// `à` étant non-word en regex ASCII, on borne par une espace plutôt que \b.
-const RELATIVE_HEIGHT_SUPERIEUR_RE = /\bsup[ée]rieure?s?\s+de\s+\d[\d.,]*\s*(?:m\b|m[èe]tres?\b)\s+(?:à|au|aux)\s/i;
+// Mot désignant une RÉFÉRENCE de hauteur (et non un nombre) : c'est la présence
+// d'un tel objet — « la hauteur autorisée », « le bâtiment voisin », « l'égout »
+// — qui distingue le relatif (« de plus de 4 m LA hauteur ») de l'absolu
+// (« de plus de 4 m DE hauteur », « au-dessus de 9 m »).
+const REF = "(?:hauteur|[ée]gouts?|fa[îi]tages?|constructions?|b[âa]timents?|niveau|cote|acrot[èe]res?)";
 
-/** Vrai si le texte décrit une hauteur RELATIVE (écart à une autre référence). */
+// Chaque motif décrit UNE manière de formuler une hauteur relative. On reste
+// volontairement précis (la référence doit être un OBJET, jamais un nombre)
+// pour ne JAMAIS neutraliser un vrai plafond absolu.
+const RELATIVE_HEIGHT_RES: RegExp[] = [
+  // « ...de plus de 4 mètres la hauteur / l'égout / la construction voisine... »
+  //          └── écart ──┘ └──────────── référence ───────────┘
+  new RegExp(`\\bde\\s+plus\\s+de\\s+\\d[\\d.,]*\\s*(?:m\\b|m[èe]tres?\\b)\\s+(?:la\\s+|l['’]\\s*|à\\s+l['’]?\\s*|au\\s+|du\\s+|de\\s+la\\s+)${REF}`, "i"),
+  // « ...supérieure de 2 m à l'égout... » (`à` non-word ASCII → on borne par une espace)
+  /\bsup[ée]rieure?s?\s+de\s+\d[\d.,]*\s*(?:m\b|m[èe]tres?\b)\s+(?:à|au|aux)\s/i,
+  // « ...par rapport à la hauteur autorisée / au bâtiment voisin / à l'alignement... »
+  new RegExp(`\\bpar\\s+rapport\\s+[àa]\\s+(?:la\\s+|le\\s+|l['’]\\s*|au\\s+|aux\\s+|du\\s+|des\\s+)?(?:${REF.slice(3, -1)}|alignement|voisin\\w*|existant\\w*|mitoyen\\w*)`, "i"),
+  // « ...au-dessus de la hauteur / de l'égout / du bâtiment... » (et NON « au-dessus de 9 m »)
+  new RegExp(`\\bau[-\\s]dessus\\s+(?:de\\s+la|de\\s+l['’]|du|des)\\s+${REF}`, "i"),
+  // « ...alignée sur les constructions voisines / sur le faîtage voisin... »
+  /\balign[ée]e?s?\s+sur\b/i,
+  // Mot de hauteur + référence à une construction voisine/mitoyenne/existante dans la même clause.
+  new RegExp(`${REF}[^.;]{0,60}(?:constructions?|b[âa]timents?)\\s+(?:voisin\\w*|mitoyen\\w*|contigu\\w*|attenant\\w*|existant\\w*)`, "i"),
+];
+
+/** Vrai si le texte décrit une hauteur RELATIVE (écart/référence à une autre construction). */
 export function isRelativeHeightConstraint(text: string): boolean {
-  return RELATIVE_HEIGHT_DELTA_RE.test(text) || RELATIVE_HEIGHT_SUPERIEUR_RE.test(text);
+  return RELATIVE_HEIGHT_RES.some((re) => re.test(text));
 }
 
 /**
@@ -193,7 +210,7 @@ Règles :
 - Une règle par article présent. Si "non réglementé"/"sans objet" → garde-la avec value_* null.
 - VALEUR PRINCIPALE (value_min/max/exact + unit) = le seuil PRINCIPAL du thème, dans une unité COHÉRENTE (emprise_sol/espaces_verts/cos → %, hauteur/reculs → m, terrain_min → m², stationnement → places). Ne prends PAS "le plus grand nombre". Respecte min ("≥/minimum") vs max ("≤/maximum"). Ne mélange JAMAIS valeur et unité. Les mesures secondaires ou d'autres unités (épaisseurs en cm, ratios…) vont UNIQUEMENT dans "cases". Si rien de cohérent → value_* null.
 - topic 'aspect' (article 11) : capture matériaux, couleurs, toitures, menuiseries, clôtures dans rule_text.
-- HAUTEUR RELATIVE : si une règle de hauteur fixe un ÉCART par rapport à une AUTRE référence (« ne peut dépasser DE PLUS DE X m la hauteur autorisée / l'égout / la construction voisine », « supérieure de X m à… ») et NON un plafond absolu, laisse value_* = null et décris l'écart dans instructor_note. X n'est PAS une hauteur absolue. (« X m DE hauteur » reste, lui, un seuil absolu → value_max.)
+- HAUTEUR RELATIVE : si une règle de hauteur se réfère à une AUTRE construction au lieu d'un plafond absolu (« ne peut dépasser DE PLUS DE X m la hauteur autorisée / l'égout », « supérieure de X m à… », « par rapport à la construction voisine », « alignée sur le faîtage voisin », « au-dessus de la hauteur de l'égout »), laisse value_* = null et décris la référence dans instructor_note. Le nombre n'est PAS une hauteur absolue. (« X m DE hauteur », « au-dessus de X m » restent, eux, des seuils absolus → value_max.)
 - N'invente AUCUNE valeur : si incertain, value_* = null.${calibrationFewShot()}`;
 
 function buildUserPrompt(zone: { code: string; label: string }, articles: Array<{ number: string; title: string; text: string }>): string {
