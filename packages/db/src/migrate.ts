@@ -1639,6 +1639,21 @@ CREATE TABLE IF NOT EXISTS commune_fiscalite (
   updated_at                timestamp NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_commune_fiscalite_commune_eff ON commune_fiscalite(commune_id, effective_from);
+
+-- Seed des constantes nationales (uniformes, à portée juridique) : valeurs
+-- forfaitaires par m², forfaits piscine/stationnement, RAP, abattement de droit.
+-- Source : arrêtés annuels (art. 1635 quater I CGI). ON CONFLICT DO NOTHING pour
+-- ne jamais écraser une correction saisie ensuite par un admin via le back-office.
+-- Les taux de part départementale (votés par chaque conseil départemental) ne
+-- sont PAS seedés ici : à renseigner par département dans fiscal_departemental_rates.
+INSERT INTO fiscal_national_constants
+  (year, valeur_forfaitaire_m2, valeur_forfaitaire_m2_idf, abattement_rate,
+   abattement_surface_threshold_m2, rap_rate, forfait_piscine_m2,
+   forfait_stationnement_min, forfait_stationnement_max, source_arrete)
+VALUES
+  (2025, 930, 1054, 0.5, 100, 0.40, 262, 3052, 6104, 'Valeurs forfaitaires 2025 (art. 1635 quater I CGI)'),
+  (2026, 892, 1011, 0.5, 100, 0.40, 251, 2928, 5857, 'Arrêté du 22 décembre 2025 (art. 1635 quater I CGI)')
+ON CONFLICT (year) DO NOTHING;
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
