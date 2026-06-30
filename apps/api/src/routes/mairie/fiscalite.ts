@@ -4,10 +4,12 @@ import {
   communes,
   commune_fiscalite,
   fiscal_national_constants,
+  zones,
 } from "@heureka-v1/db";
-import { and, desc, eq, isNull } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
+import { resolveCommuneActiveZoneIds } from "../../services/communeZones.js";
 import { resolveFiscaliteForCommune } from "../../services/fiscaliteResolver.js";
 import {
   computeTaxeAmenagement,
@@ -66,6 +68,35 @@ fiscaliteRouter.get("/communes/:insee/fiscalite", async (req: AuthRequest, res) 
     res.json({ commune: { id: commune.id, name: commune.name, insee_code: commune.insee_code }, fiscalite: resolved });
   } catch (err) {
     console.error("[fiscalite] GET résolue:", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ── GET zones PLU de la commune (pour rattacher les secteurs à taux majoré) ───
+// Les secteurs fiscaux ne sont pas le zonage PLU, mais ils s'y rattachent en
+// pratique : on propose les zones réelles de la commune plutôt qu'un libellé
+// libre, ce qui permet le matching parcelle→secteur via la zone déjà résolue.
+fiscaliteRouter.get("/communes/:insee/zones", async (req: AuthRequest, res) => {
+  try {
+    const commune = await loadCommuneInScope(req, res, req.params.insee as string);
+    if (!commune) return;
+    const zoneIds = await resolveCommuneActiveZoneIds(commune.id);
+    if (zoneIds.length === 0) return res.json([]);
+    const rows = await db
+      .select({ zone_code: zones.zone_code, zone_label: zones.zone_label, zone_type: zones.zone_type })
+      .from(zones)
+      .where(inArray(zones.id, zoneIds))
+      .orderBy(zones.display_order, zones.zone_code);
+    // Dédup par code (un même code peut apparaître via plusieurs sources).
+    const seen = new Set<string>();
+    const distinct = rows.filter((z) => {
+      if (seen.has(z.zone_code)) return false;
+      seen.add(z.zone_code);
+      return true;
+    });
+    res.json(distinct);
+  } catch (err) {
+    console.error("[fiscalite] GET zones:", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });
