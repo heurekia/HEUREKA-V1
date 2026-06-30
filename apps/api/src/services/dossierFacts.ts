@@ -541,7 +541,7 @@ export function extractFactsFromDossier(dossier: DossierForFacts): FactCandidate
     }
     // Servitudes : flag ABF si une SUP de catégorie AC1, AC2, AC3 (Monument
     // historique, Sites inscrits/classés) est présente.
-    const sups = [...readArray(analysis.sup_surf), ...readArray(analysis.sup_lin)];
+    const sups = [...readArray(analysis.sup_surf), ...readArray(analysis.sup_lin), ...readArray(analysis.sup_pct)];
     const abfCategories = new Set(["AC1", "AC2", "AC3", "AC4"]);
     const hasAbf = sups.some((s) => {
       const o = readObject(s);

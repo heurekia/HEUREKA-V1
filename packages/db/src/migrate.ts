@@ -575,6 +575,7 @@ CREATE TABLE IF NOT EXISTS gpu_parcel_cache (
   informations    jsonb,
   sup_surf        jsonb,
   sup_lin         jsonb,
+  sup_pct         jsonb,
   generateurs     jsonb,
   plu_partition   text,
   scot_name       text,
@@ -582,6 +583,9 @@ CREATE TABLE IF NOT EXISTS gpu_parcel_cache (
   hit_count       integer NOT NULL DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_gpu_parcel_cache_parcelle ON gpu_parcel_cache(parcelle_id);
+-- SUP ponctuelles (assiette-sup-p) ajoutées après coup : colonne idempotente
+-- pour les bases déjà créées sans elle.
+ALTER TABLE gpu_parcel_cache ADD COLUMN IF NOT EXISTS sup_pct jsonb;
 
 CREATE TABLE IF NOT EXISTS dossier_consultations (
   id              uuid PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -1663,6 +1667,57 @@ ALTER TABLE users ADD COLUMN IF NOT EXISTS notification_prefs jsonb NOT NULL DEF
 -- a la suppression du compte (colonne portee par users).
 ALTER TABLE users ADD COLUMN IF NOT EXISTS cerfa_profile text;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS cerfa_profile_consent_at timestamp;
+
+-- ── Fiscalité de l'urbanisme (taxe d'aménagement / RAP) ──
+-- Modèle hybride : constantes nationales + part départementale maintenues par
+-- nous ; fiscalité communale saisie par la commune et VERSIONNÉE (un CU
+-- cristallise → on doit restituer le taux en vigueur à la date de la demande).
+CREATE TABLE IF NOT EXISTS fiscal_national_constants (
+  year                            integer PRIMARY KEY,
+  valeur_forfaitaire_m2           double precision NOT NULL,
+  valeur_forfaitaire_m2_idf       double precision NOT NULL,
+  abattement_rate                 double precision NOT NULL DEFAULT 0.5,
+  abattement_surface_threshold_m2 double precision NOT NULL DEFAULT 100,
+  rap_rate                        double precision NOT NULL,
+  forfait_piscine_m2              double precision,
+  forfait_stationnement_min       double precision,
+  forfait_stationnement_max       double precision,
+  forfaits_installations          jsonb,
+  source_arrete                   text,
+  note                            text,
+  updated_by                      uuid REFERENCES users(id) ON DELETE SET NULL,
+  updated_at                      timestamp NOT NULL DEFAULT now()
+);
+
+CREATE TABLE IF NOT EXISTS fiscal_departemental_rates (
+  id                        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  departement_code          text NOT NULL,
+  year                      integer NOT NULL,
+  part_departementale_rate  double precision NOT NULL,
+  source                    text,
+  updated_by                uuid REFERENCES users(id) ON DELETE SET NULL,
+  updated_at                timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_fiscal_dept_rates_dept_year ON fiscal_departemental_rates(departement_code, year);
+
+CREATE TABLE IF NOT EXISTS commune_fiscalite (
+  id                        uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  commune_id                uuid NOT NULL REFERENCES communes(id) ON DELETE CASCADE,
+  part_communale_rate       double precision NOT NULL,
+  secteurs_taux_majore      jsonb,
+  exonerations_facultatives jsonb,
+  deliberation_ref          text,
+  deliberation_date         timestamp,
+  effective_from            timestamp NOT NULL,
+  effective_to              timestamp,
+  status                    text NOT NULL DEFAULT 'brouillon',
+  validated_by              uuid REFERENCES users(id) ON DELETE SET NULL,
+  validated_at              timestamp,
+  created_by                uuid REFERENCES users(id) ON DELETE SET NULL,
+  created_at                timestamp NOT NULL DEFAULT now(),
+  updated_at                timestamp NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_commune_fiscalite_commune_eff ON commune_fiscalite(commune_id, effective_from);
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

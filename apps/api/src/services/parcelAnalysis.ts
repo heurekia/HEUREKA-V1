@@ -72,6 +72,11 @@ export interface PrescriptionResult {
   libelle: string;
   typepsc: string;
   txtpsc?: string;
+  // Nature géométrique de la prescription au GPU : surfacique (EBC, secteurs),
+  // linéaire (alignements, marges de recul, continuités) ou ponctuelle (éléments
+  // bâtis protégés L.151-19, arbres remarquables). Avant, seules les surfaciques
+  // étaient récupérées ; on conserve la distinction pour l'instruction.
+  geometry_type?: "surface" | "lineaire" | "ponctuelle";
 }
 
 export interface ServitudeResult {
@@ -79,7 +84,7 @@ export interface ServitudeResult {
   libelle?: string;       // libellé de la catégorie SUP
   nomsup?: string;        // nom spécifique (ex: "Église Saint-Symphorien")
   dessup?: string;        // description textuelle de la SUP
-  geometry_type?: "surface" | "lineaire";
+  geometry_type?: "surface" | "lineaire" | "ponctuelle";
   ref_acte?: string;      // identifiant SUP (ex: "AC-37214-0001")
   urlacte?: string;       // URL vers l'acte légal (arrêté, décret)
   gestionnaire?: string;  // autorité gestionnaire (DRAC, DDT, etc.)
@@ -684,16 +689,25 @@ export async function getMunicipality(lat: number, lng: number): Promise<Municip
   }
 }
 
-// ── GPU prescriptions surfaciques (EBC, reculs spéciaux…) ────────────────────
+// ── GPU prescriptions surfaciques / linéaires / ponctuelles ───────────────────
+// Surfaciques : EBC, secteurs de mixité, reculs spéciaux.
+// Linéaires    : alignements, marges de recul, continuités, façades à préserver.
+// Ponctuelles  : éléments bâtis protégés (L.151-19), arbres remarquables.
+// Les trois couches sont indépendantes au GPU et toutes utiles à un CUa.
 
-export async function getPrescriptionsSurf(lat: number, lng: number, partition?: string): Promise<PrescriptionResult[]> {
+async function fetchPrescriptionLayer(
+  endpoint: "prescription-surf" | "prescription-lin" | "prescription-pct",
+  geometryType: PrescriptionResult["geometry_type"],
+  lat: number,
+  lng: number,
+  partition?: string,
+): Promise<PrescriptionResult[]> {
   try {
     const geom = JSON.stringify({ type: "Point", coordinates: [lng, lat] });
     const params = new URLSearchParams({ geom });
     if (partition) params.set("partition", partition);
-    const url = `https://apicarto.ign.fr/api/gpu/prescription-surf?${params.toString()}`;
-    const r = await fetch(url, { signal: AbortSignal.timeout(6000) });
-    if (!r.ok) return [];
+    const r = await gpuFetch(`https://apicarto.ign.fr/api/gpu/${endpoint}?${params.toString()}`, 6000);
+    if (!r) return [];
     const data = await r.json() as {
       features?: Array<{ properties: { libelle?: string; typepsc?: string; txtpsc?: string } }>;
     };
@@ -701,10 +715,25 @@ export async function getPrescriptionsSurf(lat: number, lng: number, partition?:
       libelle: f.properties.libelle ?? "",
       typepsc: f.properties.typepsc ?? "",
       txtpsc: f.properties.txtpsc,
+      geometry_type: geometryType,
     }));
   } catch {
     return [];
   }
+}
+
+export async function getPrescriptionsSurf(lat: number, lng: number, partition?: string): Promise<PrescriptionResult[]> {
+  return fetchPrescriptionLayer("prescription-surf", "surface", lat, lng, partition);
+}
+
+// Récupère les prescriptions des TROIS natures géométriques en un lot parallèle.
+export async function getPrescriptions(lat: number, lng: number, partition?: string): Promise<PrescriptionResult[]> {
+  const [surf, lin, pct] = await Promise.all([
+    fetchPrescriptionLayer("prescription-surf", "surface", lat, lng, partition),
+    fetchPrescriptionLayer("prescription-lin", "lineaire", lat, lng, partition),
+    fetchPrescriptionLayer("prescription-pct", "ponctuelle", lat, lng, partition),
+  ]);
+  return [...surf, ...lin, ...pct];
 }
 
 // ── GPU périmètres d'informations (info-surf) ─────────────────────────────────
@@ -836,7 +865,7 @@ function str(props: Record<string, unknown>, ...keys: string[]): string | undefi
   return undefined;
 }
 
-function mapSupFeature(f: GpuSupFeature, geomType: "surface" | "lineaire"): ServitudeResult {
+function mapSupFeature(f: GpuSupFeature, geomType: "surface" | "lineaire" | "ponctuelle"): ServitudeResult {
   const p = f.properties;
   const categorie = scanPropsForCategory(p);
   // "idgen" links the assiette to its generateur — used as the cross-reference key.
@@ -870,26 +899,32 @@ async function getGenerateursSup(lat: number, lng: number): Promise<Map<string, 
     coordinates: [[[lng - DLNG, lat - DLAT], [lng + DLNG, lat - DLAT], [lng + DLNG, lat + DLAT], [lng - DLNG, lat + DLAT], [lng - DLNG, lat - DLAT]]],
   });
   const map = new Map<string, Partial<ServitudeResult>>();
-  try {
-    const r = await fetch(`https://apicarto.ign.fr/api/gpu/generateur-sup-s?geom=${encodeURIComponent(bbox)}&_limit=30`, { signal: AbortSignal.timeout(8000) });
-    if (!r.ok) return map;
-    const data = await r.json() as { features?: GpuSupFeature[] };
-    for (const f of data.features ?? []) {
-      const p = f.properties as Record<string, unknown>;
-      // Generateurs are keyed by "idgen" so assiettes can cross-reference via their own "idgen" field
-      const ref = str(p, "idgen", "idass", "idsup", "idacte");
-      if (!ref) continue;
-      map.set(ref, {
-        nomsup:       str(p, "nomsuplitt", "nomsup", "libsup"),
-        categorie:    scanPropsForCategory(p),
-        urlacte:      str(p, "urlreg", "urlacte") || undefined,
-        gestionnaire: str(p, "gestionnaire"),
-        dessup:       str(p, "dessup"),
-        datdecr:      parseGpuDate(p["datesrcass"]) ?? str(p, "datdecr", "datprotect", "datvalid"),
-        typeprotect:  str(p, "typeass", "typeprotect", "typeacte"),
-      });
-    }
-  } catch { /* best-effort */ }
+  // Les générateurs existent en trois natures (surfacique / linéaire / ponctuelle)
+  // au même titre que les assiettes : une assiette linéaire (ligne HT) ou
+  // ponctuelle (captage) n'était pas enrichie tant qu'on n'interrogeait que -s.
+  const endpoints = ["generateur-sup-s", "generateur-sup-l", "generateur-sup-p"] as const;
+  await Promise.all(endpoints.map(async (endpoint) => {
+    try {
+      const r = await fetch(`https://apicarto.ign.fr/api/gpu/${endpoint}?geom=${encodeURIComponent(bbox)}&_limit=30`, { signal: AbortSignal.timeout(8000) });
+      if (!r.ok) return;
+      const data = await r.json() as { features?: GpuSupFeature[] };
+      for (const f of data.features ?? []) {
+        const p = f.properties as Record<string, unknown>;
+        // Generateurs are keyed by "idgen" so assiettes can cross-reference via their own "idgen" field
+        const ref = str(p, "idgen", "idass", "idsup", "idacte");
+        if (!ref || map.has(ref)) continue;
+        map.set(ref, {
+          nomsup:       str(p, "nomsuplitt", "nomsup", "libsup"),
+          categorie:    scanPropsForCategory(p),
+          urlacte:      str(p, "urlreg", "urlacte") || undefined,
+          gestionnaire: str(p, "gestionnaire"),
+          dessup:       str(p, "dessup"),
+          datdecr:      parseGpuDate(p["datesrcass"]) ?? str(p, "datdecr", "datprotect", "datvalid"),
+          typeprotect:  str(p, "typeass", "typeprotect", "typeacte"),
+        });
+      }
+    } catch { /* best-effort */ }
+  }));
   return map;
 }
 
@@ -931,6 +966,20 @@ export async function getServitudesLin(lat: number, lng: number, parcelGeom?: Ge
     if (!r.ok) return [];
     const data = await r.json() as { features?: GpuSupFeature[] };
     return (data.features ?? []).map(f => mapSupFeature(f, "lineaire"));
+  } catch {
+    return [];
+  }
+}
+
+// SUP ponctuelles (assiette-sup-p) — ex. points de captage (AS1), antennes/
+// faisceaux (PT), monuments générateurs ponctuels. Avant non interrogées.
+export async function getServitudesPct(lat: number, lng: number, parcelGeom?: Geometry | null): Promise<ServitudeResult[]> {
+  try {
+    const geom = supGeom(lat, lng, parcelGeom);
+    const r = await fetch(`https://apicarto.ign.fr/api/gpu/assiette-sup-p?geom=${encodeURIComponent(geom)}&_limit=20`, { signal: AbortSignal.timeout(8000) });
+    if (!r.ok) return [];
+    const data = await r.json() as { features?: GpuSupFeature[] };
+    return (data.features ?? []).map(f => mapSupFeature(f, "ponctuelle"));
   } catch {
     return [];
   }
@@ -1192,6 +1241,7 @@ type GpuCachePayload = {
   informations: InformationResult[];
   sup_surf: ServitudeResult[];
   sup_lin: ServitudeResult[];
+  sup_pct: ServitudeResult[];
   generateurs: Record<string, Partial<ServitudeResult>>;
 };
 
@@ -1209,6 +1259,7 @@ async function readGpuCache(key: string): Promise<{ payload: GpuCachePayload; st
       informations:  (row.informations as InformationResult[]) ?? [],
       sup_surf:      (row.sup_surf as ServitudeResult[]) ?? [],
       sup_lin:       (row.sup_lin as ServitudeResult[]) ?? [],
+      sup_pct:       (row.sup_pct as ServitudeResult[]) ?? [],
       generateurs:   (row.generateurs as Record<string, Partial<ServitudeResult>>) ?? {},
     };
     // Increment hit counter asynchronously (fire-and-forget)
@@ -1235,6 +1286,7 @@ async function writeGpuCache(key: string, parcelle_id: string | undefined, paylo
       informations: payload.informations as never,
       sup_surf:     payload.sup_surf as never,
       sup_lin:      payload.sup_lin as never,
+      sup_pct:      payload.sup_pct as never,
       generateurs:  payload.generateurs as never,
       cached_at:    new Date(),
       hit_count:    0,
@@ -1249,6 +1301,7 @@ async function writeGpuCache(key: string, parcelle_id: string | undefined, paylo
         informations:  payload.informations as never,
         sup_surf:      payload.sup_surf as never,
         sup_lin:       payload.sup_lin as never,
+        sup_pct:       payload.sup_pct as never,
         generateurs:   payload.generateurs as never,
         cached_at:     new Date(),
         hit_count:     0,
@@ -1690,21 +1743,22 @@ export async function analyseParcel(
         // Toutes ces couches GPU sont indépendantes les unes des autres : on les
         // interroge en un seul lot parallèle (au lieu de deux salves séquentielles)
         // → la latence est celle de l'appel le plus lent, et non leur somme.
-        const [municipality, prescriptions, informations, supSurf, supLin] = await Promise.all([
+        const [municipality, prescriptions, informations, supSurf, supLin, supPct] = await Promise.all([
           getMunicipality(lat, lng),
-          getPrescriptionsSurf(lat, lng, gpuPartition),
+          getPrescriptions(lat, lng, gpuPartition),
           getInfoSurf(lat, lng, gpuPartition),
           getServitudesSurf(lat, lng, parcelGeom),
           getServitudesLin(lat, lng, parcelGeom),
+          getServitudesPct(lat, lng, parcelGeom),
         ]);
 
         let generateurs: Record<string, Partial<ServitudeResult>> = {};
-        if (supSurf.length > 0 || supLin.length > 0) {
+        if (supSurf.length > 0 || supLin.length > 0 || supPct.length > 0) {
           const genMap = await getGenerateursSup(lat, lng);
           generateurs = Object.fromEntries(genMap.entries());
         }
 
-        gpuPayload = { pluPartition: resolvedPartition, scotName, zone_urba: zone, municipality, prescriptions, informations, sup_surf: supSurf, sup_lin: supLin, generateurs };
+        gpuPayload = { pluPartition: resolvedPartition, scotName, zone_urba: zone, municipality, prescriptions, informations, sup_surf: supSurf, sup_lin: supLin, sup_pct: supPct, generateurs };
 
         // Only cache a COMPLETE payload. A null municipality while a zone exists
         // signals a transient GPU failure on the supplementary layers (commune,
@@ -1753,7 +1807,7 @@ export async function analyseParcel(
       }
       void gpuPartitionForDisplay; // used above via pluPartition passed to helper calls
 
-      const { municipality, prescriptions, informations, sup_surf: supSurf, sup_lin: supLin, generateurs } = gpuPayload;
+      const { municipality, prescriptions, informations, sup_surf: supSurf, sup_lin: supLin, sup_pct: supPct, generateurs } = gpuPayload;
 
       if (municipality) {
         result.municipality = municipality;
@@ -1775,7 +1829,7 @@ export async function analyseParcel(
       if (informations.length > 0) result.informations = informations;
 
       // Merge + deduplicate SUP, enrich with generateur data
-      const allServitudes = [...supSurf, ...supLin];
+      const allServitudes = [...supSurf, ...supLin, ...(supPct ?? [])];
       const seen = new Set<string>();
       const deduped = allServitudes.filter(s => {
         const k = s.ref_acte ?? `${s.categorie}|${s.nomsup ?? s.libelle ?? ""}`;

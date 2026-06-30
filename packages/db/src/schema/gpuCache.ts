@@ -12,11 +12,12 @@ export const gpu_parcel_cache = pgTable("gpu_parcel_cache", {
   documents:       jsonb("documents"),       // /document → pluPartition + scotName
   zone_urba:       jsonb("zone_urba"),        // /zone-urba → PluZoneResult
   municipality:    jsonb("municipality"),     // /municipality → MunicipalityResult
-  prescriptions:   jsonb("prescriptions"),   // /prescription-surf → PrescriptionResult[]
+  prescriptions:   jsonb("prescriptions"),   // /prescription-{surf,lin,pct} → PrescriptionResult[]
   informations:    jsonb("informations"),     // /info-surf → InformationResult[]
   sup_surf:        jsonb("sup_surf"),         // /assiette-sup-s → ServitudeResult[]
   sup_lin:         jsonb("sup_lin"),          // /assiette-sup-l → ServitudeResult[]
-  generateurs:     jsonb("generateurs"),      // /generateur-sup-s → enrichment map
+  sup_pct:         jsonb("sup_pct"),          // /assiette-sup-p → ServitudeResult[]
+  generateurs:     jsonb("generateurs"),      // /generateur-sup-{s,l,p} → enrichment map
   // Meta
   plu_partition:   text("plu_partition"),
   scot_name:       text("scot_name"),
