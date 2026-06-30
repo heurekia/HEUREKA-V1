@@ -6,6 +6,7 @@ import { StatusBadge } from "./ui";
 import { COMMUNE_INSEE, notifIcon, notifColor, relTime, resolveCommune, type ApiNotif } from "./shared";
 import { ReglementationScreen } from "./ReglementationScreen";
 import { TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
+import { FiscalTab } from "./FiscalTab";
 
 // Écran "Paramètres" : onglets Général / Utilisateurs / Réglementation /
 // Documents / Notifications / Workflow / Intégrations, et le panneau
@@ -593,7 +594,7 @@ function CommuneUsersTab({ commune, isAdmin, currentUserId }: { commune: string;
 
 export function ParametresScreen({ commune = "", communes = [], isAdmin = false, canManageUsers = false, communeInseeMap = COMMUNE_INSEE, onInseeUpdated }: { commune?: string; communes?: string[]; isAdmin?: boolean; canManageUsers?: boolean; communeInseeMap?: Record<string, string>; onInseeUpdated?: () => void }) {
   const { user } = useAuth();
-  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Notifications", "Courriers", "Intégrations"];
+  const settingsTabs = ["Général", "Utilisateurs", "Réglementation", "Documents", "Notifications", "Courriers", "Fiscal", "Intégrations"];
   const TAB_SLUGS: Record<string, string> = {
     "Général": "general",
     "Utilisateurs": "utilisateurs",
@@ -601,6 +602,7 @@ export function ParametresScreen({ commune = "", communes = [], isAdmin = false,
     "Documents": "documents",
     "Notifications": "notifications",
     "Courriers": "courriers",
+    "Fiscal": "fiscal",
     "Intégrations": "integrations",
   };
   const SLUG_TO_TAB: Record<string, string> = Object.fromEntries(Object.entries(TAB_SLUGS).map(([tab, slug]) => [slug, tab]));
@@ -866,6 +868,7 @@ export function ParametresScreen({ commune = "", communes = [], isAdmin = false,
           </div>
         </div>
       )}
+      {stab === "Fiscal" && <FiscalTab commune={commune} inseeMap={communeInseeMap} />}
       {stab === "Intégrations" && (
         <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", padding: 20 }}>
           <div style={{ fontSize: 15, fontWeight: 700, color: "#0F172A", marginBottom: 4 }}>Intégrations et services connectés</div>

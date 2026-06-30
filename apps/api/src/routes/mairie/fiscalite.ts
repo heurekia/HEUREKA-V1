@@ -19,17 +19,18 @@ import {
 
 export const fiscaliteRouter = Router();
 
-// Charge une commune par id ET vérifie qu'elle est dans le périmètre de
-// l'appelant. Renvoie la commune, ou null après avoir répondu (404/403).
+// Charge une commune par son code INSEE (clé naturelle utilisée côté front) ET
+// vérifie qu'elle est dans le périmètre de l'appelant. Renvoie la commune, ou
+// null après avoir répondu (404/403).
 async function loadCommuneInScope(
   req: AuthRequest,
   res: import("express").Response,
-  communeId: string,
+  insee: string,
 ): Promise<{ id: string; name: string; insee_code: string } | null> {
   const [commune] = await db
     .select({ id: communes.id, name: communes.name, insee_code: communes.insee_code })
     .from(communes)
-    .where(eq(communes.id, communeId))
+    .where(eq(communes.insee_code, insee))
     .limit(1);
   if (!commune) {
     res.status(404).json({ error: "Commune introuvable" });
@@ -56,9 +57,9 @@ function parseDate(v: unknown): Date | null {
 
 // ── GET fiscalité résolue (version en vigueur à la date) ──────────────────────
 // ?at=YYYY-MM-DD pour rejouer la fiscalité à une date passée (cristallisation).
-fiscaliteRouter.get("/communes/:id/fiscalite", async (req: AuthRequest, res) => {
+fiscaliteRouter.get("/communes/:insee/fiscalite", async (req: AuthRequest, res) => {
   try {
-    const commune = await loadCommuneInScope(req, res, req.params.id as string);
+    const commune = await loadCommuneInScope(req, res, req.params.insee as string);
     if (!commune) return;
     const atDate = parseDate(req.query.at) ?? undefined;
     const resolved = await resolveFiscaliteForCommune(commune.id, { atDate });
@@ -70,9 +71,9 @@ fiscaliteRouter.get("/communes/:id/fiscalite", async (req: AuthRequest, res) => 
 });
 
 // ── GET historique des versions (cristallisation / audit) ─────────────────────
-fiscaliteRouter.get("/communes/:id/fiscalite/history", async (req: AuthRequest, res) => {
+fiscaliteRouter.get("/communes/:insee/fiscalite/history", async (req: AuthRequest, res) => {
   try {
-    const commune = await loadCommuneInScope(req, res, req.params.id as string);
+    const commune = await loadCommuneInScope(req, res, req.params.insee as string);
     if (!commune) return;
     const rows = await db
       .select()
@@ -90,12 +91,12 @@ fiscaliteRouter.get("/communes/:id/fiscalite/history", async (req: AuthRequest, 
 // Réservé au responsable commune (rôle mairie) et à l'admin — pas aux
 // instructeurs. La version en vigueur précédente est clôturée (effective_to) :
 // on ne réécrit jamais une version, pour préserver la cristallisation.
-fiscaliteRouter.put("/communes/:id/fiscalite", async (req: AuthRequest, res) => {
+fiscaliteRouter.put("/communes/:insee/fiscalite", async (req: AuthRequest, res) => {
   try {
     if (req.user!.role !== "mairie" && req.user!.role !== "admin") {
       return res.status(403).json({ error: "Seul un responsable de la commune peut modifier la fiscalité." });
     }
-    const commune = await loadCommuneInScope(req, res, req.params.id as string);
+    const commune = await loadCommuneInScope(req, res, req.params.insee as string);
     if (!commune) return;
 
     const body = req.body as Record<string, unknown>;
@@ -198,9 +199,9 @@ fiscaliteRouter.get("/fiscalite/constantes", async (req: AuthRequest, res) => {
 // ── POST aperçu de calcul (chaîne complète résolveur → calcul) ────────────────
 // Body : { surface_m2, residence_principale?, piscine_m2?, stationnement_places?,
 //          exoneration_communale?, at? }. Sert l'aperçu temps réel de l'onglet.
-fiscaliteRouter.post("/communes/:id/fiscalite/preview", async (req: AuthRequest, res) => {
+fiscaliteRouter.post("/communes/:insee/fiscalite/preview", async (req: AuthRequest, res) => {
   try {
-    const commune = await loadCommuneInScope(req, res, req.params.id as string);
+    const commune = await loadCommuneInScope(req, res, req.params.insee as string);
     if (!commune) return;
     const body = req.body as Record<string, unknown>;
     const atDate = parseDate(body.at) ?? undefined;
