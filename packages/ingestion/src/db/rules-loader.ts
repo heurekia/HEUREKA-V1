@@ -226,6 +226,7 @@ export async function loadRules(
           cases: r.cases ?? [],
           applies_if: r.applies_if ?? [],
           sub_theme: r.sub_theme,
+          height_spec: r.height_spec ?? null,
           instructor_note: r.instructor_note,
           // Provenance fine : retrouver le passage source (segment + page) et
           // le verbatim citable. source_quote retombe sur rule_text si absent.

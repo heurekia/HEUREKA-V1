@@ -23,6 +23,7 @@ function rule(overrides: Partial<EvaluableRule> & { rule_id: string }): Evaluabl
     value_exact: overrides.value_exact ?? null,
     unit: overrides.unit ?? "m",
     cases: overrides.cases ?? [],
+    height_spec: overrides.height_spec ?? null,
     citizen_title: overrides.citizen_title ?? null,
     citizen_summary: overrides.citizen_summary ?? null,
     citizen_relevant: overrides.citizen_relevant ?? true,

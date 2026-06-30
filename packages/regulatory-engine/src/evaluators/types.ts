@@ -9,6 +9,16 @@ export interface RuleCase {
   kind?: string;
 }
 
+// Spécification hauteur structurée (niveau 2), alignée sur le schéma d'ingestion
+// (cf. structurer.HeightSpec). Portée jusqu'ici pour l'évaluation différentielle
+// (niveau 3) ; l'évaluateur de hauteur ne la consomme pas encore. Mètres.
+export interface HeightSpec {
+  egout: number | null;
+  faitage: number | null;
+  relative_to: string | null;
+  max_delta: number | null;
+}
+
 // Règle complète, telle qu'un évaluateur en a besoin pour produire un
 // verdict. Strictement plus large que RuleForApplicability : la couche
 // applicabilité travaille sur la projection slim, les évaluateurs sur la
@@ -24,6 +34,9 @@ export interface EvaluableRule extends RuleForApplicability {
   value_exact: number | null;
   unit: string | null;
   cases: RuleCase[];
+  // Spécification hauteur structurée (niveau 2). null hors hauteur ou si non
+  // renseignée. Disponible pour l'évaluation différentielle à venir (niveau 3).
+  height_spec: HeightSpec | null;
   citizen_title: string | null;
   citizen_summary: string | null;
   citizen_relevant: boolean;

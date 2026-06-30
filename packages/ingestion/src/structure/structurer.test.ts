@@ -5,6 +5,8 @@ import {
   inferZoneType,
   isRelativeHeightConstraint,
   neutralizeRelativeHeightRule,
+  enrichHeightSpec,
+  type StructuredRule,
   type LlmFn,
 } from "./structurer.ts";
 import type { Segment } from "../adapters/interface.ts";
@@ -114,6 +116,61 @@ describe("hauteurs relatives (garde-fou niveau 1)", () => {
       cases: [], sub_theme: null, applies_if: [],
     });
     expect(rule.value_max).toBe(2);
+  });
+});
+
+describe("enrichHeightSpec (niveau 2 : spécification hauteur structurée)", () => {
+  const mk = (rule_text: string, over: Partial<StructuredRule> = {}): StructuredRule => ({
+    article_number: 10, article_title: "Hauteur", topic: "hauteur", rule_text,
+    value_min: null, value_max: null, value_exact: null, unit: "m",
+    conditions: null, summary: "", instructor_note: null, cases: [], sub_theme: null, applies_if: [],
+    ...over,
+  });
+
+  it("dissocie les deux plafonds égout / faîtage (conflation résolue)", () => {
+    const r = enrichHeightSpec(mk("Hauteur maximale : 9 m à l'égout et 12 m au faîtage.", { value_max: 9 }));
+    expect(r.height_spec).toEqual({ egout: 9, faitage: 12, relative_to: null, max_delta: null });
+    // value_max n'est PAS écrasé — height_spec est purement additif.
+    expect(r.value_max).toBe(9);
+  });
+
+  it("capte la référence et l'écart d'une contrainte relative (cas Boucau)", () => {
+    const r = enrichHeightSpec(
+      mk("Le faîtage ne peut dépasser de plus de 4 mètres la hauteur de la construction autorisée."),
+    );
+    expect(r.height_spec).toEqual({
+      egout: null,
+      faitage: null,
+      relative_to: "hauteur_autorisee",
+      max_delta: 4,
+    });
+  });
+
+  it("sur un relatif, n'interprète PAS le delta comme un plafond d'égout", () => {
+    const r = enrichHeightSpec(mk("Hauteur supérieure de 2 m à l'égout du toit voisin."));
+    // 2 est un écart, pas une cote d'égout → egout reste null.
+    expect(r.height_spec?.egout).toBeNull();
+    expect(r.height_spec?.max_delta).toBe(2);
+    expect(r.height_spec?.relative_to).toBe("egout");
+  });
+
+  it("capte un plafond unique à l'égout (datum simple)", () => {
+    const r = enrichHeightSpec(mk("La hauteur maximale est de 9 m à l'égout du toit.", { value_max: 9 }));
+    expect(r.height_spec).toEqual({ egout: 9, faitage: null, relative_to: null, max_delta: null });
+  });
+
+  it("no-op hors hauteur ou sans rien d'exploitable", () => {
+    expect(enrichHeightSpec(mk("H/2 min 3 m.", { topic: "recul_limite" })).height_spec).toBeUndefined();
+    expect(enrichHeightSpec(mk("La hauteur s'inscrit dans le paysage.")).height_spec).toBeUndefined();
+  });
+
+  it("parseRules enrichit ET neutralise un relatif de bout en bout", () => {
+    const raw = `[{"article_number":10,"topic":"hauteur",
+      "rule_text":"Le faîtage ne peut dépasser de plus de 4 mètres la hauteur de la construction autorisée.",
+      "value_max":4,"unit":"m","summary":""}]`;
+    const r = parseRules(raw)[0]!;
+    expect(r.value_max).toBeNull(); // garde-fou niveau 1
+    expect(r.height_spec).toEqual({ egout: null, faitage: null, relative_to: "hauteur_autorisee", max_delta: 4 });
   });
 });
 

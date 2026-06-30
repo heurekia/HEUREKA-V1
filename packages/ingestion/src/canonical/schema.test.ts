@@ -46,6 +46,29 @@ describe("parseCanonical()", () => {
     expect(rule.applies_if).toEqual([]);
     expect(rule.citizen_relevant).toBe(true);
     expect(rule.source).toBeNull();
+    // height_spec (niveau 2) : absent du JSON → défaut null, non bloquant.
+    expect(rule.height_spec).toBeNull();
+  });
+
+  it("accepte et préserve un height_spec fourni par un outil tiers", () => {
+    const doc = minimalPLU();
+    (doc.zones[0]!.rules[0] as Record<string, unknown>).height_spec = {
+      egout: 9,
+      faitage: 12,
+      relative_to: null,
+      max_delta: null,
+    };
+    const r = parseCanonical(doc);
+    expect(r.ok).toBe(true);
+    const rule = r.data!.zones[0]!.rules[0]!;
+    expect(rule.height_spec).toEqual({ egout: 9, faitage: 12, relative_to: null, max_delta: null });
+    // Et il traverse la conversion vers ZoneRules (chemin de chargement DB).
+    expect(canonicalToZoneRules(r.data!)[0]!.rules[0]!.height_spec).toEqual({
+      egout: 9,
+      faitage: 12,
+      relative_to: null,
+      max_delta: null,
+    });
   });
 
   it("rejette un schema_version non supporté", () => {

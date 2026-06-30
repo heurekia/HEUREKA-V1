@@ -1,6 +1,6 @@
 import { db, zone_regulatory_rules, zones } from "@heureka-v1/db";
 import { eq, inArray } from "drizzle-orm";
-import type { EvaluableRule, RuleCase } from "./types.js";
+import type { EvaluableRule, HeightSpec, RuleCase } from "./types.js";
 
 // Hydrate les règles complètes à partir d'une liste d'IDs. Garde la même
 // règle "validation_status uniquement" qu'à l'applicabilité : un fait
@@ -28,6 +28,7 @@ export async function loadEvaluableRulesByIds(ids: string[]): Promise<EvaluableR
       value_exact: zone_regulatory_rules.value_exact,
       unit: zone_regulatory_rules.unit,
       cases: zone_regulatory_rules.cases,
+      height_spec: zone_regulatory_rules.height_spec,
       citizen_title: zone_regulatory_rules.citizen_title,
       citizen_summary: zone_regulatory_rules.citizen_summary,
       citizen_relevant: zone_regulatory_rules.citizen_relevant,
@@ -59,6 +60,7 @@ export async function loadEvaluableRulesByIds(ids: string[]): Promise<EvaluableR
     value_exact: r.value_exact,
     unit: r.unit,
     cases: asRuleCases(r.cases),
+    height_spec: asHeightSpec(r.height_spec),
     citizen_title: r.citizen_title,
     citizen_summary: r.citizen_summary,
     citizen_relevant: r.citizen_relevant,
@@ -72,6 +74,22 @@ export async function loadEvaluableRulesByIds(ids: string[]): Promise<EvaluableR
 function asStringArray(v: unknown): string[] {
   if (!Array.isArray(v)) return [];
   return v.filter((x): x is string => typeof x === "string");
+}
+
+function asHeightSpec(v: unknown): HeightSpec | null {
+  if (!v || typeof v !== "object") return null;
+  const o = v as Record<string, unknown>;
+  const num = (x: unknown): number | null => (typeof x === "number" && Number.isFinite(x) ? x : null);
+  const str = (x: unknown): string | null => (typeof x === "string" && x.trim() ? x : null);
+  const spec: HeightSpec = {
+    egout: num(o.egout),
+    faitage: num(o.faitage),
+    relative_to: str(o.relative_to),
+    max_delta: num(o.max_delta),
+  };
+  // Tout-null → pas d'information : on rend null pour éviter un objet vide.
+  if (spec.egout == null && spec.faitage == null && spec.relative_to == null && spec.max_delta == null) return null;
+  return spec;
 }
 
 function asRuleCases(v: unknown): RuleCase[] {

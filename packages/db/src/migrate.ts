@@ -647,6 +647,10 @@ ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS cases jsonb DEFAULT '
 -- Décomposition d'articles complexes en sous-règles + applicabilité
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS applies_if jsonb DEFAULT '[]'::jsonb;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS sub_theme text;
+-- Spécification hauteur structurée (niveau 2) : { egout, faitage, relative_to,
+-- max_delta } en mètres. Porte deux plafonds (égout/faîtage) et/ou une
+-- contrainte relative sans écraser value_max. NULL hors hauteur / par défaut.
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS height_spec jsonb;
 -- Version « citoyen » générée par l'IA à l'ingestion (titre + phrase simple + pertinence)
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_title text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_summary text;

@@ -45,6 +45,10 @@ export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
   applies_if: jsonb("applies_if").default([]),
   // Sous-thème pour les articles décomposés (ex: "Toitures", "Clôtures sur rue").
   sub_theme: text("sub_theme"),
+  // Spécification hauteur structurée (niveau 2) : { egout, faitage, relative_to,
+  // max_delta } en mètres. Porte deux plafonds distincts (égout/faîtage) et/ou
+  // une contrainte relative, sans écraser value_max. null hors hauteur.
+  height_spec: jsonb("height_spec"),
   // Version « citoyen » générée à l'ingestion par l'IA : titre court + une phrase
   // simple en langage courant. citizen_relevant = false pour les dispositions
   // purement administratives/procédurales sans intérêt pour un particulier.
