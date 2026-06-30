@@ -7,7 +7,10 @@ import { useAuth } from "../../hooks/useAuth";
 // constantes nationales (lecture seule) déployées avec l'application. Un aperçu
 // de calcul démontre la chaîne complète (résolveur → computeTaxeAmenagement).
 
-type Secteur = { libelle: string; taux: number };
+// Un secteur à taux majoré est rattaché à une ZONE PLU réelle de la commune
+// (zone_code), pour qu'une parcelle déjà classée dans sa zone hérite du bon taux.
+type Secteur = { zone_code: string; libelle: string; taux: number };
+type ZoneRef = { zone_code: string; zone_label: string | null; zone_type: string | null };
 
 type Resolved = {
   year: number;
@@ -66,6 +69,7 @@ export function FiscalTab({ commune, inseeMap }: { commune: string; inseeMap: Re
   const insee = inseeMap[commune];
 
   const [resolved, setResolved] = useState<Resolved | null>(null);
+  const [zonesList, setZonesList] = useState<ZoneRef[]>([]);
   const [history, setHistory] = useState<Version[]>([]);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
@@ -94,10 +98,12 @@ export function FiscalTab({ commune, inseeMap }: { commune: string; inseeMap: Re
     Promise.all([
       api.get<{ fiscalite: Resolved }>(`/mairie/communes/${insee}/fiscalite`),
       api.get<Version[]>(`/mairie/communes/${insee}/fiscalite/history`).catch(() => []),
+      api.get<ZoneRef[]>(`/mairie/communes/${insee}/zones`).catch(() => []),
     ])
-      .then(([f, h]) => {
+      .then(([f, h, z]) => {
         setResolved(f.fiscalite);
         setHistory(h);
+        setZonesList(z);
         // Pré-remplit le formulaire avec la version en vigueur.
         if (f.fiscalite.taux_communal_pct != null) setPartCommunale(String(f.fiscalite.taux_communal_pct));
         setExonerations(f.fiscalite.exonerations_facultatives ?? []);
@@ -122,7 +128,7 @@ export function FiscalTab({ commune, inseeMap }: { commune: string; inseeMap: Re
       await api.put(`/mairie/communes/${insee}/fiscalite`, {
         part_communale_rate: part,
         exonerations_facultatives: exonerations,
-        secteurs_taux_majore: secteurs.filter((s) => s.libelle.trim() && Number.isFinite(s.taux)),
+        secteurs_taux_majore: secteurs.filter((s) => s.zone_code.trim() && Number.isFinite(s.taux)),
         deliberation_ref: deliberationRef.trim() || null,
         deliberation_date: deliberationDate || null,
         effective_from: effectiveFrom || null,
@@ -249,15 +255,30 @@ export function FiscalTab({ commune, inseeMap }: { commune: string; inseeMap: Re
         <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 6 }}>
           <div style={label}>Secteurs à taux majoré</div>
           {canEdit && (
-            <button onClick={() => setSecteurs((s) => [...s, { libelle: "", taux: 0 }])}
-              style={{ fontSize: 12, color: "#4F46E5", background: "none", border: "none", cursor: "pointer" }}>+ Ajouter un secteur</button>
+            <button onClick={() => setSecteurs((s) => [...s, { zone_code: "", libelle: "", taux: 0 }])}
+              disabled={zonesList.length === 0}
+              style={{ fontSize: 12, color: zonesList.length === 0 ? "#CBD5E1" : "#4F46E5", background: "none", border: "none", cursor: zonesList.length === 0 ? "not-allowed" : "pointer" }}>+ Ajouter un secteur</button>
           )}
         </div>
-        {secteurs.length === 0 && <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>Aucun secteur à taux majoré.</div>}
+        {zonesList.length === 0 && (
+          <div style={{ fontSize: 12, color: "#92400E", background: "#FEF3C7", borderRadius: 8, padding: "8px 11px", marginBottom: 8 }}>
+            Aucune zone PLU disponible pour cette commune. Les secteurs à taux majoré se rattachent à une zone :
+            créez-la d'abord dans l'onglet <strong>Réglementation</strong> (zones de la commune).
+          </div>
+        )}
+        {zonesList.length > 0 && secteurs.length === 0 && <div style={{ fontSize: 12, color: "#94a3b8", marginBottom: 8 }}>Aucun secteur à taux majoré.</div>}
         {secteurs.map((s, i) => (
           <div key={i} style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-            <input style={{ ...input, flex: 1 }} value={s.libelle} disabled={!canEdit} placeholder="Libellé du secteur"
-              onChange={(e) => setSecteurs((arr) => arr.map((x, j) => j === i ? { ...x, libelle: e.target.value } : x))} />
+            <select style={{ ...input, flex: 1 }} value={s.zone_code} disabled={!canEdit}
+              onChange={(e) => {
+                const z = zonesList.find((zz) => zz.zone_code === e.target.value);
+                setSecteurs((arr) => arr.map((x, j) => j === i ? { ...x, zone_code: e.target.value, libelle: z?.zone_label || e.target.value } : x));
+              }}>
+              <option value="">— Choisir une zone PLU —</option>
+              {zonesList.map((z) => (
+                <option key={z.zone_code} value={z.zone_code}>{z.zone_code}{z.zone_label ? ` — ${z.zone_label}` : ""}</option>
+              ))}
+            </select>
             <input style={{ ...input, width: 110 }} value={String(s.taux)} disabled={!canEdit} placeholder="Taux %" inputMode="decimal"
               onChange={(e) => setSecteurs((arr) => arr.map((x, j) => j === i ? { ...x, taux: parseFloat(e.target.value.replace(",", ".")) || 0 } : x))} />
             {canEdit && <button onClick={() => setSecteurs((arr) => arr.filter((_, j) => j !== i))}
