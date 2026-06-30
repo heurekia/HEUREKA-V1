@@ -20,6 +20,7 @@ import { dossierDocumentsRouter } from "./documents.js";
 import { assistantRouter } from "./assistant.js";
 import { helpReaderRouter } from "../help.js";
 import { supportRouter } from "./support.js";
+import { fiscaliteRouter } from "./fiscalite.js";
 
 export const mairieRouter = Router();
 mairieRouter.use(requireAuth);
@@ -56,6 +57,7 @@ mairieRouter.use(courriersRouter);
 mairieRouter.use(conversationsRouter);
 mairieRouter.use(instructeursRouter);
 mairieRouter.use(communesRouter);
+mairieRouter.use(fiscaliteRouter);
 mairieRouter.use(adminRouter);
 mairieRouter.use(reglementationRouter);
 mairieRouter.use(consultationsRouter);
