@@ -834,6 +834,15 @@ UPDATE dossier_pieces_jointes
  WHERE ocr_status = 'pending' AND uploaded_at < now() - interval '5 minutes';
 CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_ocr_status
   ON dossier_pieces_jointes(dossier_id, ocr_status);
+-- Index partiel très sélectif sur les pièces « en vol » (OCR pas encore
+-- terminé, non archivées). La très grande majorité des pièces sont en statut
+-- done/skipped : ce prédicat garde l'index minuscule. Il sert exactement au
+-- sweep OCR minute (jobs/scheduler.ts) et à l'expression ocr_processing de la
+-- liste des dossiers (routes/mairie/dossiers.ts), qui filtrent tous deux sur
+-- archived_at IS NULL AND ocr_status IN ('pending','processing').
+CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_ocr_inflight
+  ON dossier_pieces_jointes(dossier_id)
+  WHERE archived_at IS NULL AND ocr_status IN ('pending', 'processing');
 
 -- ── RGPD : empreinte du fichier envoyé à l'IA (sans stocker le contenu) ──
 -- SHA-256 hexadécimal calculé côté serveur AVANT envoi. Permet de prouver

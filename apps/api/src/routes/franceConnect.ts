@@ -166,13 +166,24 @@ async function findOrCreateUser(
     const [byEmail] = await db.select().from(users).where(eq(users.email, email)).limit(1);
     if (byEmail) {
       if (byEmail.role !== "citoyen") return { error: "Ce compte ne peut pas être utilisé avec FranceConnect." };
+      // Anti pre-hijacking : ne JAMAIS rattacher FranceConnect à un compte local
+      // dont l'email n'a pas été vérifié. Sinon un attaquant pourrait créer un
+      // compte avec l'email d'une victime (mot de passe qu'il connaît), le
+      // laisser non vérifié, puis « capturer » la connexion FranceConnect de la
+      // victime tout en conservant l'accès par mot de passe. On exige donc que
+      // la propriété de l'email ait déjà été prouvée côté HEUREKA avant le lien.
+      if (!byEmail.email_verified_at) {
+        return {
+          error:
+            "Un compte existe déjà avec cette adresse mais son email n'a pas été vérifié. " +
+            "Connectez-vous d'abord avec votre mot de passe et vérifiez votre email, " +
+            "puis reliez FranceConnect depuis votre profil.",
+        };
+      }
       const [linked] = await db
         .update(users)
         .set({
           fc_sub: identity.sub,
-          // FranceConnect atteste l'adresse email : on confirme la vérification
-          // si le compte local ne l'était pas encore.
-          email_verified_at: byEmail.email_verified_at ?? new Date(),
           updated_at: new Date(),
         })
         .where(eq(users.id, byEmail.id))

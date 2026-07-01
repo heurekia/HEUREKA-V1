@@ -13,6 +13,43 @@ cf. [`remediation-vps-2026-06.md`](./remediation-vps-2026-06.md) et
 
 ---
 
+## État des correctifs (2026-07-01)
+
+Correctifs appliqués sur cette branche (typecheck API+web OK, 587 tests verts) :
+
+| # | Correctif | Fichier |
+|---|-----------|---------|
+| ✅ S1 | Refus du rattachement FranceConnect si l'email local n'est pas vérifié (anti pre-hijacking) | `routes/franceConnect.ts` |
+| ✅ S2 | Garde anti-SSRF au point d'envoi Slack (`https://hooks.slack.com` uniquement) — défense en profondeur en plus de la validation à l'écriture | `services/aiAlerts.ts` |
+| ✅ F1 | `useMemo` sur la value d'`AuthContext` + `useCallback` sur les handlers | `hooks/useAuth.tsx` |
+| ✅ F3 | `React.memo` sur `MapLeaflet` et `PdfAnnotator` | `components/MapLeaflet.tsx`, `PdfAnnotator.tsx` |
+| ✅ P1′ | Index partiel très sélectif sur les pièces « en vol » (remplace la reco GIN, voir ci-dessous) | `packages/db/src/migrate.ts` |
+
+Ajustements après vérification dans le code (findings d'agent revus) :
+
+- **P1 (index GIN sur `analyse_ia`/`extraction_ia`) — écarté.** Vérification faite :
+  ces colonnes ne sont **jamais filtrées en WHERE**, seulement lues. Un index GIN
+  serait du surcoût d'écriture sans bénéfice. Remplacé par un **index partiel**
+  `WHERE archived_at IS NULL AND ocr_status IN ('pending','processing')` qui, lui,
+  sert au sweep OCR et à l'expression `ocr_processing` de la liste des dossiers.
+- **P4 (fusionner COUNT + SELECT) — non appliqué.** La requête de liste contient
+  une sous-requête corrélée `ocr_processing` par ligne ; un `COUNT(*) OVER()`
+  forcerait son évaluation sur **toutes** les lignes filtrées (pas seulement la
+  page) → risque de régression. Le design deux-requêtes actuel est justifié.
+- **P5 (N+1 cron OCR) — non appliqué.** La sélection est déjà **une seule requête**
+  bornée à `LIMIT 50` ; la boucle ne traite que les dossiers réellement bloqués
+  (rare) et la paralléliser risquerait des races de notification.
+- **P3 (pagination `/dossiers/:id/pieces`) — différé.** La route renvoie un tableau
+  consommé tel quel par le front ; changer le contrat nécessite une coordination
+  front/back. Volume réel faible (quelques dizaines de pièces/dossier).
+
+Reste à traiter (hors périmètre de ce commit) : **P2** (paralléliser `pdftoppm`),
+**F2** (virtualisation `DossiersScreen`), **I1** (pin actions GitHub par SHA —
+nécessite de résoudre les SHA des dépôts `actions/*`, hors scope de ce dépôt),
+**S3** (rate limiting listes), **S4** (logs console).
+
+---
+
 ## Synthèse — axes d'amélioration priorisés
 
 | # | Axe | Type | Sévérité | Effort |
