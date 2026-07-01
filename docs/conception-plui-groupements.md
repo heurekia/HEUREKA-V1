@@ -2,7 +2,7 @@
 
 | Champ | Valeur |
 |-------|--------|
-| Statut | Implémenté (Lots 1a → 4) — dette transitoire & arbitrage substitution documentés §8 |
+| Statut | Implémenté (Lots 1a → 5) — dette transitoire résiduelle documentée §8 |
 | Date | 1er juillet 2026 |
 | Périmètre | `packages/db`, `packages/ingestion`, `packages/regulatory-engine`, `apps/api`, `apps/web` |
 | Lecteurs cibles | Équipe technique, produit |
@@ -112,7 +112,7 @@ Les communes membres sont **upsertées par code INSEE** (`upsertCommune`) puis r
 
 `loadCandidateRuleIds()` résout les règles applicables à une commune par **union de deux chemins** :
 
-1. **Voie moderne (document-centric)** — `document_communes` → `zone_regulatory_rules.source_document_id`. Couvre nativement les PLUi (1 document → N communes) *et* les PLU communaux (1 document → 1 commune). Toute règle ingérée depuis le Lot 3 passe par là.
+1. **Voie moderne (document-centric)** — `document_communes` → `zone_regulatory_rules.source_document_id`. Couvre nativement les PLUi (1 document → N communes) *et* les PLU communaux (1 document → 1 commune). Toute règle ingérée depuis le Lot 3 passe par là. C'est ce chemin qui porte l'**arbitrage de substitution** (Lot 5) : parmi les documents de famille PLU couvrant la commune, seul celui **en vigueur** à la date d'analyse contribue ses règles (§8.1).
 
 2. **Fallback (commune-centric)** — `zones.commune_id`, restreint à `source_document_id IS NULL`. Rattrape les règles **créées à la main** via `POST /reglementation/zones/:zoneId/rules`, qui ne posent pas de `source_document_id`.
 
@@ -139,9 +139,9 @@ Le parc est **mixte et le restera** : certaines communes gardent « 1 commune = 
 | Relation | Exemple | Comportement correct | État |
 |---|---|---|---|
 | **Superposition** | PLU/PLUi **+** PPRI **+** SPR **+** OAP | **Union** — opposabilités cumulées, chaque document s'ajoute | ✅ implémenté (union du §5) |
-| **Substitution** | PLU communal **↔** PLUi (même famille `PLU_FAMILY_TYPES`) | **Un seul en vigueur** par commune à une date donnée | ⚠️ non arbitré (cf. §8) |
+| **Substitution** | PLU communal **↔** PLUi (même famille `PLU_FAMILY_TYPES`) | **Un seul en vigueur** par commune à une date donnée | ✅ arbitré par datation d'effet (§8.1) |
 
-Le moteur traite aujourd'hui **tout** comme de la superposition — correct pour les familles distinctes, faux pour deux documents de la **même** famille couvrant une même commune (un PLUi ne s'ajoute pas au PLU communal, il **le remplace** à son entrée en vigueur). Ce cas — et la datation d'effet qui le résout, alignée sur le patron `fiscalite.ts` — est détaillé en **§8, dette n°4**.
+Le moteur **superpose** les familles distinctes (correct) mais **arbitre** les documents de la **même** famille PLU couvrant une même commune : un PLUi ne s'ajoute pas au PLU communal, il **le remplace** à son entrée en vigueur. Cet arbitrage — datation d'effet alignée sur le patron `fiscalite.ts` — est décrit en **§8.1** (Lot 5).
 
 ### 6.3 Exceptions par commune dans une zone PLUi partagée
 
@@ -180,26 +180,30 @@ Encart « documents » dans la fiche EPCI du SuperAdmin : upload multi-PDF, suiv
 
 ## 8. Dette transitoire & conditions de retrait
 
-Les trois premiers éléments sont de la rétro-compat **volontairement** conservée. Le quatrième est un **manque d'arbitrage** à combler avant de généraliser les PLUi sur des communes déjà dotées d'un PLU communal. Aucun ne bloque le fonctionnement actuel, mais tous se traitent **pas à l'aveugle**.
+Les trois premiers éléments sont de la rétro-compat **volontairement** conservée. Le quatrième — la substitution PLU↔PLUi — est désormais **résolu** (Lot 5). Le cinquième reste un manque de modélisation à combler sur données réelles. Aucun ne bloque le fonctionnement actuel, mais tous se traitent **pas à l'aveugle**.
 
 | # | Élément | Où | Condition de retrait / résolution |
 |---|---|---|---|
 | 1 | `regulatory_documents.commune_id` | schéma + backfills | Tous les documents ont un `porteur_*` renseigné et plus aucun consommateur ne lit `commune_id`. |
 | 2 | Fallback chemin 2 de `loadCandidateRuleIds()` | `builder.ts` | **Toutes** les règles `valide` ont un `source_document_id` non NULL. |
 | 3 | Note rétro-compat `document_communes` | `documentCommunes.ts` | Idem : `loadRules()` et le moteur ne s'appuient plus que sur `document_communes`. |
-| 4 | **Substitution PLU ↔ PLUi non arbitrée** | `builder.ts` (résolution), `regulatoryDocuments.ts` (schéma) | Voir §8.1 — datation d'effet + sélection « famille PLU en vigueur par commune ». |
+| 4 | ~~Substitution PLU ↔ PLUi non arbitrée~~ | `builder.ts`, `regulatoryDocuments.ts` | ✅ **Résolu (Lot 5)** — datation d'effet + sélection « famille PLU en vigueur par commune ». Voir §8.1. |
 | 5 | **Règles transversales de document sans domicile** | `zone_regulatory_rules` (modèle « règle → zone ») | Voir §8.3 — porter les dispositions communes à toutes les zones. |
 
-### 8.1 Substitution PLU communal ↔ PLUi (dette n°4)
+### 8.1 Substitution PLU communal ↔ PLUi — ✅ résolu (Lot 5)
 
-Aujourd'hui, si une commune est couverte **à la fois** par un PLU communal et un PLUi tous deux `valide`, `loadCandidateRuleIds()` **unionne** les deux → doublons/contradictions. Or, juridiquement, un PLUi **se substitue** au PLU communal à son entrée en vigueur (même famille `PLU_FAMILY_TYPES` → substitution, pas superposition — cf. §6.2). Rien n'impose aujourd'hui l'invariant « au plus un document de famille PLU en vigueur par commune ».
+**Problème.** Si une commune est couverte **à la fois** par un PLU communal et un PLUi tous deux `valide`, une simple union des règles produit doublons/contradictions. Or, juridiquement, un PLUi **se substitue** au PLU communal à son entrée en vigueur (même famille `PLU_FAMILY_TYPES` → substitution, pas superposition — cf. §6.2).
 
-**Résolution recommandée — aligner sur le patron `fiscalite.ts` (`effective_from` / `effective_to`, `effective_to IS NULL` = en vigueur, déjà éprouvé dans le repo) :**
+**Solution livrée (option B, alignée sur le patron `fiscalite.ts`).**
 
-- **A — intérimaire, zéro code moteur.** À l'entrée en vigueur d'un PLUi, retirer l'ancien PLU communal (`validation_status = 'rejete'` ou détachement de `document_communes`). Le résolveur cesse de le voir. Manuel, sans garde-fou.
-- **B — cible.** Ajouter `effective_from` / `effective_to` à `regulatory_documents` ; le résolveur, **pour la seule famille PLU**, ne retient par commune que le document en vigueur à la date d'analyse. Les autres familles continuent de s'empiler. Correct par construction, gère la fenêtre de transition (PLUi approuvé le T → `effective_to = T` sur le PLU communal), et apporte la reproductibilité juridique déjà visée par `regulatory_analyses.ruleset_version`.
+- **Schéma** — `regulatory_documents.effective_from` / `effective_to` (nullable ; deux NULL = « en vigueur, sans borne » → rétro-compat des documents existants). Migration additive « Lot 5 » dans `migrate.ts`.
+- **Résolution** — `loadCandidateRuleIds()` (`builder.ts`) charge, pour chaque règle du chemin 1, les métadonnées de son document (type + fenêtre d'effet), puis délègue l'arbitrage à `selectActiveDocumentIds()` (`context/documentSelection.ts`, **pure et testée**) : parmi les documents de **famille PLU** couvrant la commune, ne garde que **celui en vigueur** à la `referenceDate` (le plus récent par `effective_from`, `created_at` en départage) ; **toutes les autres familles** (PPRI, OAP…) sont conservées (superposition). Le fallback chemin 2 (règles manuelles sans document) reste hors arbitrage.
+- **Date de référence** — `dossier.date_depot` (cristallisation des droits), à défaut « maintenant ».
+- **API** — `effective_from` / `effective_to` exposés en création (`POST /admin/epci/:id/documents`) et édition (`PATCH …/:docId`), avec validation `to > from`.
 
-La modification moteur est **étroite** : grouper les documents-candidats de famille PLU par commune, ne garder que celui en vigueur ; ne rien changer aux autres familles.
+**Fenêtre de transition** : PLUi approuvé le T → poser `effective_from = T` sur le PLUi suffit (il devient le document en vigueur le plus récent et remplace le PLU communal non daté) ; on peut aussi poser `effective_to = T` sur l'ancien PLU pour une clôture explicite.
+
+**Tests** : `documentSelection.test.ts` (17 cas — superposition des annexes, substitution datée, PLUi futur non encore en vigueur, clôture, départage, `plum`…).
 
 ### 8.2 Retrait du fallback chemin 2 (dette n°2)
 
@@ -234,7 +238,7 @@ Nomenclature interne des commentaires de migration (`packages/db/src/migrate.ts`
 | **2** | `zone_regulatory_rules.source_document_id` + backfill (PLU le + récent de la commune) | ✅ |
 | **3** | `zones.source_document_id` + `loadRules()` document-centric (purge par document, mode EPCI) | ✅ |
 | **4** | Résolution moteur par `document_communes` (union des deux chemins) | ✅ |
-| **5** *(à faire)* | Datation d'effet + arbitrage substitution « famille PLU en vigueur par commune » (§8.1) | ⏳ |
+| **5** | Datation d'effet (`effective_from` / `effective_to`) + arbitrage substitution « famille PLU en vigueur par commune » (§8.1) | ✅ |
 | **6** *(à faire)* | Règles transversales de document (dispositions communes à toutes les zones, §8.3) | ⏳ |
 
 ## 10. Comment déployer un PLUi (bout en bout)

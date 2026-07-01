@@ -39,6 +39,18 @@ export const regulatory_documents = pgTable("regulatory_documents", {
   validation_status: text("validation_status").notNull().default("brouillon"),
   validated_by: uuid("validated_by"),
   validated_at: timestamp("validated_at"),
+  // Fenêtre d'entrée en vigueur (Lot 5 — datation d'effet, patron aligné sur
+  // commune_fiscalite). Sert à ARBITRER la substitution entre documents de la
+  // MÊME famille PLU couvrant une même commune : un PLUi entré en vigueur
+  // remplace le PLU communal historique. Le résolveur ne retient, par commune
+  // et pour la famille PLU, que le document en vigueur à la date d'analyse :
+  //   effective_from IS NULL OR effective_from <= D   (NULL = « depuis toujours »)
+  //   AND (effective_to IS NULL OR effective_to > D)  (NULL = toujours en vigueur)
+  // Les deux NULL par défaut → rétro-compat : tout document existant reste
+  // « en vigueur, sans borne ». Les autres familles (PPRI, OAP…) ne sont pas
+  // concernées : elles se SUPERPOSENT, jamais ne se substituent.
+  effective_from: timestamp("effective_from"),
+  effective_to: timestamp("effective_to"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });

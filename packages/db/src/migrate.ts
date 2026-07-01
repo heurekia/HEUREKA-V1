@@ -1737,6 +1737,21 @@ VALUES
   (2025, 930, 1054, 0.5, 100, 0.40, 262, 3052, 6104, 'Valeurs forfaitaires 2025 (art. 1635 quater I CGI)'),
   (2026, 892, 1011, 0.5, 100, 0.40, 251, 2928, 5857, 'Arrêté du 22 décembre 2025 (art. 1635 quater I CGI)')
 ON CONFLICT (year) DO NOTHING;
+
+-- ── Lot 5 — Datation d'effet des documents réglementaires ───────────────────
+-- Arbitre la SUBSTITUTION entre documents de la même famille PLU couvrant une
+-- même commune : un PLUi entré en vigueur remplace le PLU communal historique.
+-- Le résolveur (builder.ts) ne retient, par commune et pour la famille PLU, que
+-- le document en vigueur à la date d'analyse ; les autres familles (PPRI, OAP…)
+-- continuent de se superposer. Additif strict : les deux colonnes sont NULL par
+-- défaut → tout document existant reste « en vigueur, sans borne » (rétro-compat).
+ALTER TABLE regulatory_documents ADD COLUMN IF NOT EXISTS effective_from timestamp;
+ALTER TABLE regulatory_documents ADD COLUMN IF NOT EXISTS effective_to timestamp;
+
+-- Recherche « document de famille PLU en vigueur pour la commune X à la date D »
+-- (jointure document_communes → regulatory_documents, filtre sur la fenêtre).
+CREATE INDEX IF NOT EXISTS idx_regulatory_documents_effective
+  ON regulatory_documents(effective_from);
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation
