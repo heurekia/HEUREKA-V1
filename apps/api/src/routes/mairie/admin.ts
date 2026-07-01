@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_documents, document_communes } from "@heureka-v1/db";
+import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_documents, document_communes, niveauNormeForDocType } from "@heureka-v1/db";
 import { eq, sql, ilike, inArray, and, ne, isNull } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole, bumpTokenVersion } from "../../middlewares/auth.js";
@@ -761,6 +761,9 @@ type IngestJob = {
   // PLU communal historique).
   document?: {
     id: string;
+    // Type du document source (cf. REGULATORY_DOCUMENT_TYPES). Détermine le
+    // niveau_norme des règles écrites : un SPR/PPRI est supra-PLU (SUP).
+    type: string;
     porteur: "commune" | "epci";
     // Communes membres rattachées via document_communes. En mode PLU communal
     // (porteur="commune"), un seul élément.
@@ -1007,6 +1010,7 @@ adminRouter.post("/admin/ingest-plu-pdf/start", requirePermission("zones.import"
       commune = refCommune;
       documentCtx = {
         id: doc.id,
+        type: doc.type,
         porteur: doc.porteur_epci_id ? "epci" : "commune",
         communeIds,
       };
@@ -1341,6 +1345,10 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
     const isEpciDoc = job.document?.porteur === "epci";
     const sourceDocumentId = job.document?.id ?? null;
     const zoneCommuneId = isEpciDoc ? null : job.commune.id;
+    // Niveau de norme des règles produites : un document servitude (SPR/AC4,
+    // PPRI…) est supra-PLU → 'sup'. PLU communal (mode legacy, sans document) →
+    // 'plu'. La primauté effective SPR>PLU est appliquée à la livraison (Moitié 2).
+    const niveauNorme = niveauNormeForDocType(job.document?.type);
     const numCoerce = (v: unknown): number | null =>
       v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null;
 
@@ -1377,6 +1385,7 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
           await tx.insert(zone_regulatory_rules).values({
             zone_id: zoneId,
             source_document_id: sourceDocumentId,
+            niveau_norme: niveauNorme,
             article_number: articleInt,
             article_title: rule.article_title ?? (articleInt != null ? `Article ${articleInt}` : ""),
             topic: rule.topic,
