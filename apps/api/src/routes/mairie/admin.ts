@@ -10,7 +10,7 @@ import { isProfessionalRole, deactivateUser, eraseCitizenAccount } from "../../s
 import { getCommuneScope, communeInScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import { hashPasswordToken } from "../../lib/passwordToken.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, realignTocToPhysicalPages, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
 import { PLU_SAVE_RULE_TOOL, PLU_EXTRACTION_CALIBRATION, coerceCases, coerceAppliesIf, type PluRuleInput } from "./pluSaveRuleTool.js";
 import { normalizeSecteur } from "@heureka-v1/ingestion/secteur";
 import { PDFDocument } from "pdf-lib";
@@ -841,6 +841,16 @@ async function detectPluToc(
   const tocPages = Math.min(15, totalPages);
   const nativeText = await extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
   let toc: TocEntry[] = nativeText ? parseTocFromNativeText(nativeText) : [];
+
+  if (toc.length > 0) {
+    // Les numéros du sommaire sont souvent IMPRIMÉS (recommencent à 1 après la
+    // page de garde) et non les pages PHYSIQUES du PDF. On relit le texte
+    // complet pour relocaliser chaque zone via son titre de chapitre et
+    // corriger le décalage — sinon pdftoppm rend des pages décalées (cas
+    // Rochecorbon, +4). No-op si numérotation imprimée == physique (ex. Tours).
+    const fullText = await extractPdfText(pdfBuffer);
+    if (fullText) toc = realignTocToPhysicalPages(toc, fullText.split("\f"));
+  }
 
   if (toc.length === 0) {
     // Repli déterministe AVANT Pixtral : sommaire sans numéros de page (ou
