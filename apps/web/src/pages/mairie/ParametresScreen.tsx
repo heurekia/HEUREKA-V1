@@ -3,7 +3,7 @@ import { useNavigate, useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
 import { StatusBadge } from "./ui";
-import { COMMUNE_INSEE, notifIcon, notifColor, relTime, resolveCommune, type ApiNotif } from "./shared";
+import { COMMUNE_INSEE, notifIcon, notifColor, relTime, type ApiNotif } from "./shared";
 import { ReglementationScreen } from "./ReglementationScreen";
 import { TemplateManagerPanel, CommuneLetterheadPanel } from "./MairieCourrierScreen";
 import { FiscalTab } from "./FiscalTab";
@@ -663,13 +663,17 @@ export function ParametresScreen({ commune = "", communes = [], isAdmin = false,
   }, [searchParams]);
   const [histNotifs, setHistNotifs] = useState<ApiNotif[]>([]);
   const [histLoading, setHistLoading] = useState(false);
+  // Cet historique appartient à la commune affichée, pas à l'agent : on scope
+  // la requête sur `?commune=` pour agréger les notifications de toute la ville
+  // (le back déduplique les envois multi-agents d'un même événement).
+  const communeQuery = commune ? `?commune=${encodeURIComponent(commune)}` : "";
   const loadHistNotifs = () => {
     setHistLoading(true);
-    api.get<ApiNotif[]>("/notifications").then(setHistNotifs).catch(() => {}).finally(() => setHistLoading(false));
+    api.get<ApiNotif[]>(`/notifications${communeQuery}`).then(setHistNotifs).catch(() => {}).finally(() => setHistLoading(false));
   };
-  useEffect(() => { if (stab === "Notifications") loadHistNotifs(); }, [stab]);
+  useEffect(() => { if (stab === "Notifications") loadHistNotifs(); }, [stab, commune]);
   const markAllHistRead = async () => {
-    await api.patch("/notifications/read-all").catch(() => {});
+    await api.patch(`/notifications/read-all${communeQuery}`).catch(() => {});
     setHistNotifs(ns => ns.map(n => ({ ...n, is_read: true })));
   };
   const markOneRead = (n: ApiNotif) => {
@@ -734,12 +738,15 @@ export function ParametresScreen({ commune = "", communes = [], isAdmin = false,
             <div style={{ background: "white", borderRadius: 12, border: "1px solid #E2E8F0", overflow: "hidden" }}>
               <div style={{ padding: "14px 20px", borderBottom: "1px solid #F1F5F9", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
                 <span style={{ fontSize: 14, fontWeight: 700, color: "#0F172A" }}>
-                  Toutes les notifications
+                  {commune ? `Notifications de ${commune}` : "Toutes les notifications"}
                   {histNotifs.filter(n => !n.is_read).length > 0 && (
                     <span style={{ background: "#EF4444", color: "white", borderRadius: 6, fontSize: 10, fontWeight: 700, padding: "1px 6px", marginLeft: 8 }}>
                       {histNotifs.filter(n => !n.is_read).length} non lues
                     </span>
                   )}
+                  <div style={{ fontSize: 11, fontWeight: 400, color: "#94a3b8", marginTop: 2 }}>
+                    Activité de la commune, tous instructeurs confondus.
+                  </div>
                 </span>
                 <div style={{ display: "flex", gap: 8 }}>
                   <button onClick={loadHistNotifs} style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "5px 12px", fontSize: 12, color: "#64748b", cursor: "pointer" }}>↻ Actualiser</button>
@@ -757,8 +764,9 @@ export function ParametresScreen({ commune = "", communes = [], isAdmin = false,
                   <div style={{ fontSize: 12, color: "#94a3b8" }}>Vous êtes à jour !</div>
                 </div>
               ) : histNotifs.map(n => {
-                // Agent multi-communes : préfixe le nom de la ville concernée.
-                const communeLabel = communes.length > 1 ? (resolveCommune(n.commune, communes) ?? n.commune) : null;
+                // Le flux est déjà scopé à la commune affichée : inutile de
+                // répéter son nom sur chaque ligne.
+                const communeLabel = null;
                 return (
                 <div key={n.id} onClick={() => handleHistNotifClick(n)}
                   style={{ display: "flex", alignItems: "flex-start", gap: 12, padding: "14px 20px", borderBottom: "1px solid #F8FAFC", background: n.is_read ? "white" : "#F8F7FF", cursor: "pointer", transition: "background 0.15s" }}>
