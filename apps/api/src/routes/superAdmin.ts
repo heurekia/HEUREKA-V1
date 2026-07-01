@@ -305,7 +305,7 @@ superAdminRouter.get("/epci", async (_req, res) => {
   try {
     const epciList = await db.select().from(epci).orderBy(epci.name);
     const communeList = await db
-      .select({ id: communes.id, name: communes.name, epci_id: communes.epci_id })
+      .select({ id: communes.id, name: communes.name, epci_id: communes.epci_id, population: communes.population })
       .from(communes)
       .where(isNotNull(communes.epci_id));
 
@@ -378,9 +378,18 @@ superAdminRouter.get("/epci", async (_req, res) => {
         mode = "none";
       }
 
+      // Population totale du groupement = somme des habitants des communes
+      // membres renseignées ; null si aucune population connue.
+      const membersWithPop = members.filter((c) => parsePopulation(c.population) != null);
+      const populationTotal = membersWithPop.length
+        ? membersWithPop.reduce((s, c) => s + (parsePopulation(c.population) ?? 0), 0)
+        : null;
+
       return {
         ...e,
         communes: members.map((c) => ({ id: c.id, name: c.name })),
+        population_total: populationTotal,
+        communes_sans_population: members.length - membersWithPop.length,
         regulatory: {
           mode,
           intercommunal_document_id: interDoc?.id ?? null,
@@ -3036,6 +3045,44 @@ superAdminRouter.get("/billing/plans/resolve", async (req, res) => {
     res.status(400).json({ error: "commune_id ou epci_id requis." });
   } catch (err) {
     console.error("[billing/plans/resolve]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// Communes membres d'un EPCI, chacune résolue vers son plan tarifaire « commune »
+// (par population). Sert à facturer un abonnement par ville plutôt qu'une seule
+// ligne au niveau du groupement : le front affiche une ligne par commune et
+// crée une prestation facturée rattachée à chaque commune.
+superAdminRouter.get("/billing/epci/:id/communes", async (req, res) => {
+  try {
+    const [grp] = await db.select({ id: epci.id, name: epci.name })
+      .from(epci).where(eq(epci.id, req.params.id)).limit(1);
+    if (!grp) return res.status(404).json({ error: "Groupement introuvable." });
+    const [plans, members] = await Promise.all([
+      db.select().from(billing_plans),
+      db.select({ id: communes.id, name: communes.name, population: communes.population })
+        .from(communes).where(eq(communes.epci_id, req.params.id)).orderBy(asc(communes.name)),
+    ]);
+    const rows = members.map((c) => {
+      const population = parsePopulation(c.population);
+      return { id: c.id, name: c.name, population, plan: matchPlanForPopulation(plans, population) };
+    });
+    // Population totale du groupement = somme des habitants des communes membres
+    // (celles dont la population est renseignée). `null` si aucune n'est connue.
+    const known = rows.filter((r) => r.population != null);
+    const population_total = known.length ? known.reduce((s, r) => s + (r.population ?? 0), 0) : null;
+    res.json({
+      epci: {
+        id: grp.id,
+        name: grp.name,
+        population_total,
+        communes_total: rows.length,
+        communes_sans_population: rows.length - known.length,
+      },
+      communes: rows,
+    });
+  } catch (err) {
+    console.error("[billing/epci/:id/communes]", err);
     res.status(500).json({ error: "Erreur serveur" });
   }
 });

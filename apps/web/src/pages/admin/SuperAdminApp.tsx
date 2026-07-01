@@ -55,6 +55,8 @@ interface Epci {
   region: string | null;
   logo_url: string | null;
   communes: { id: string; name: string }[];
+  population_total?: number | null;
+  communes_sans_population?: number;
 }
 
 interface UserItem {
@@ -2748,6 +2750,7 @@ function Groupements() {
                     <div style={{ fontWeight: 700, fontSize: 16, color: C.text }}>{e.name}</div>
                     <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>
                       {e.communes.length} commune{e.communes.length !== 1 ? "s" : ""}
+                      {e.population_total != null && ` · ${e.population_total.toLocaleString("fr-FR")} hab${e.communes_sans_population ? " (partiel)" : ""}`}
                       {e.siren && ` · SIREN: ${e.siren}`}
                     </div>
                   </div>
@@ -6486,6 +6489,11 @@ interface BillingPlan {
   sort_order: number;
 }
 interface PlanResolve { client_type: string; population: number | null; plan: BillingPlan | null }
+interface EpciCommunePlan { id: string; name: string; population: number | null; plan: BillingPlan | null }
+interface EpciCommunesResp {
+  epci: { id: string; name: string; population_total: number | null; communes_total: number; communes_sans_population: number };
+  communes: EpciCommunePlan[];
+}
 interface BillingClientsResp { communes: BillingClient[]; epci: (BillingClient & { epci_type?: string })[] }
 interface BillingSummary {
   period: { preset: string; from: string | null; to: string | null };
@@ -6825,6 +6833,12 @@ function PrestationsFacturees() {
   const [planBill, setPlanBill] = useState<{ client: string; start_date: string } | null>(null);
   const [planBillResolve, setPlanBillResolve] = useState<PlanResolve | null>(null);
   const [planBillSel, setPlanBillSel] = useState({ abo: true, aboCycle: "yearly" as "yearly" | "monthly", onbInitial: true, onbInterm: false });
+  // Facturation d'un EPCI : une ligne d'abonnement par ville membre (la ligne
+  // au niveau du groupement n'est plus utilisée). `epciCommunes` = membres
+  // résolus vers leur plan ; `communeSel` = sélection par ville.
+  const [epciCommunes, setEpciCommunes] = useState<EpciCommunesResp | null>(null);
+  const [epciLoading, setEpciLoading] = useState(false);
+  const [communeSel, setCommuneSel] = useState<Record<string, { include: boolean; cycle: "yearly" | "monthly"; onbInitial: boolean }>>({});
   const [planBillSaving, setPlanBillSaving] = useState(false);
   const { toast, setToast } = useBillToast();
 
@@ -6931,26 +6945,91 @@ function PrestationsFacturees() {
   // ── « Facturer un plan » : rattachement + sélection de composants ──
   const openBillPlan = () => {
     setPlanBillResolve(null);
+    setEpciCommunes(null);
+    setCommuneSel({});
     setPlanBillSel({ abo: true, aboCycle: "yearly", onbInitial: true, onbInterm: false });
     setPlanBill({ client: "", start_date: new Date().toISOString().slice(0, 10) });
   };
   const planBillClient = planBill?.client ?? "";
   useEffect(() => {
-    if (!planBillClient) { setPlanBillResolve(null); return; }
+    if (!planBillClient) { setPlanBillResolve(null); setEpciCommunes(null); return; }
     const [ctype, cid] = planBillClient.split(":");
-    if (!ctype || !cid) { setPlanBillResolve(null); return; }
+    if (!ctype || !cid) { setPlanBillResolve(null); setEpciCommunes(null); return; }
     let cancelled = false;
-    const param = ctype === "commune" ? "commune_id" : "epci_id";
-    api.get<PlanResolve>(`/admin/billing/plans/resolve?${param}=${encodeURIComponent(cid)}`)
+    // EPCI : on ne facture plus une ligne au niveau du groupement — on résout
+    // ses communes membres pour proposer un abonnement par ville.
+    if (ctype === "epci") {
+      setPlanBillResolve(null);
+      setEpciCommunes(null);
+      setEpciLoading(true);
+      api.get<EpciCommunesResp>(`/admin/billing/epci/${encodeURIComponent(cid)}/communes`)
+        .then((r) => {
+          if (cancelled) return;
+          setEpciCommunes(r);
+          const sel: Record<string, { include: boolean; cycle: "yearly" | "monthly"; onbInitial: boolean }> = {};
+          for (const c of r.communes) sel[c.id] = { include: !!c.plan, cycle: "yearly", onbInitial: false };
+          setCommuneSel(sel);
+        })
+        .catch(() => { if (!cancelled) setEpciCommunes(null); })
+        .finally(() => { if (!cancelled) setEpciLoading(false); });
+      return () => { cancelled = true; };
+    }
+    setEpciCommunes(null);
+    api.get<PlanResolve>(`/admin/billing/plans/resolve?commune_id=${encodeURIComponent(cid)}`)
       .then((r) => { if (!cancelled) setPlanBillResolve(r); })
       .catch(() => { if (!cancelled) setPlanBillResolve(null); });
     return () => { cancelled = true; };
   }, [planBillClient]);
 
   const submitBillPlan = async () => {
-    if (!planBill || !planBillResolve?.plan) return;
+    if (!planBill) return;
     const [ctype, cid] = planBill.client.split(":");
     if (!ctype || !cid) { setToast({ kind: "err", msg: "Sélectionne un client." }); return; }
+
+    // EPCI : une prestation d'abonnement (+ onboarding optionnel) par ville
+    // membre sélectionnée, rattachée à la commune et non au groupement.
+    if (ctype === "epci") {
+      if (!epciCommunes) return;
+      const targets = epciCommunes.communes.filter((c) => communeSel[c.id]?.include && c.plan);
+      if (targets.length === 0) { setToast({ kind: "err", msg: "Sélectionne au moins une ville disposant d'un plan." }); return; }
+      setPlanBillSaving(true);
+      try {
+        let count = 0;
+        for (const c of targets) {
+          const plan = c.plan!;
+          const sel = communeSel[c.id]!;
+          const keys: PlanComponentKey[] = [sel.cycle === "yearly" ? "abo_annuel" : "abo_mensuel"];
+          if (sel.onbInitial) keys.push("onb_initial");
+          for (const key of keys) {
+            const s = planComponentSpec(plan, key);
+            await api.post("/admin/billing/items", {
+              plan_id: plan.id,
+              commune_id: c.id,
+              epci_id: null,
+              label: `${plan.name} — ${s.label}`,
+              quantity: 1,
+              unit_price_eur: s.price,
+              vat_rate: plan.vat_rate,
+              billing_cycle: s.cycle,
+              start_date: planBill.start_date,
+              status: "active",
+            });
+            count++;
+          }
+        }
+        setPlanBill(null);
+        setToast({ kind: "ok", msg: `${count} ligne(s) facturée(s) sur ${targets.length} ville(s).` });
+        load();
+      } catch (e) {
+        setToast({ kind: "err", msg: (e as Error).message });
+      } finally {
+        setPlanBillSaving(false);
+      }
+      return;
+    }
+
+    // Commune : abonnement + onboarding au niveau de la ville.
+    if (!planBillResolve?.plan) return;
     const plan = planBillResolve.plan;
     const keys: PlanComponentKey[] = [];
     if (planBillSel.abo) keys.push(planBillSel.aboCycle === "yearly" ? "abo_annuel" : "abo_mensuel");
@@ -6963,8 +7042,8 @@ function PrestationsFacturees() {
         const s = planComponentSpec(plan, key);
         await api.post("/admin/billing/items", {
           plan_id: plan.id,
-          commune_id: ctype === "commune" ? cid : null,
-          epci_id: ctype === "epci" ? cid : null,
+          commune_id: cid,
+          epci_id: null,
           label: `${plan.name} — ${s.label}`,
           quantity: 1,
           unit_price_eur: s.price,
@@ -7173,11 +7252,87 @@ function PrestationsFacturees() {
             </Field>
             {!planBill.client ? (
               <div style={{ fontSize: 13, color: C.textMuted, padding: "4px 2px" }}>Sélectionne un client pour voir son plan et les prestations à facturer.</div>
+            ) : planBill.client.startsWith("epci:") ? (
+              // ── EPCI : un abonnement par ville membre ──
+              epciLoading ? (
+                <div style={{ textAlign: "center", padding: 16 }}><Spinner size={18} /></div>
+              ) : !epciCommunes ? (
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: C.orangeBg, border: `1px solid ${C.orange}`, fontSize: 12.5, color: C.text }}>
+                  Impossible de charger les communes de ce groupement.
+                </div>
+              ) : epciCommunes.communes.length === 0 ? (
+                <div style={{ padding: "10px 14px", borderRadius: 10, background: C.orangeBg, border: `1px solid ${C.orange}`, fontSize: 12.5, color: C.text }}>
+                  Ce groupement n'a aucune commune rattachée.
+                </div>
+              ) : (() => {
+                const annualEq = (p: BillingPlan, cycle: "yearly" | "monthly") => cycle === "yearly" ? p.annual_price_eur : p.monthly_price_eur * 12;
+                const selected = epciCommunes.communes.filter((c) => communeSel[c.id]?.include && c.plan);
+                const aboAnnualTotal = selected.reduce((s, c) => s + annualEq(c.plan!, communeSel[c.id]!.cycle), 0);
+                const popTotal = epciCommunes.epci.population_total;
+                const costPerInhab = popTotal && popTotal > 0 ? aboAnnualTotal / popTotal : null;
+                return (
+                  <>
+                    <div style={{ padding: "10px 14px", borderRadius: 10, background: C.accentLight, border: `1px solid ${C.accent}`, fontSize: 13, color: C.text }}>
+                      🤝 <strong>{epciCommunes.epci.name}</strong> · {epciCommunes.epci.communes_total} commune{epciCommunes.epci.communes_total > 1 ? "s" : ""}
+                      {" · population totale "}
+                      <strong>{popTotal != null ? popTotal.toLocaleString("fr-FR") : "—"}{popTotal != null ? " hab" : ""}</strong>
+                      {epciCommunes.epci.communes_sans_population > 0 && (
+                        <span style={{ color: C.textMuted, fontWeight: 500 }}> · {epciCommunes.epci.communes_sans_population} sans population renseignée</span>
+                      )}
+                    </div>
+                    <div style={{ fontSize: 12.5, color: C.textMuted, padding: "0 2px" }}>
+                      Sélectionne un abonnement pour chaque ville. Une ligne facturée sera créée par ville, rattachée à la commune.
+                    </div>
+                    <div style={{ display: "grid", gap: 0, border: `1px solid ${C.border}`, borderRadius: 10, overflow: "hidden", maxHeight: 340, overflowY: "auto" }}>
+                      {epciCommunes.communes.map((c, idx) => {
+                        const sel = communeSel[c.id] ?? { include: false, cycle: "yearly" as const, onbInitial: false };
+                        const upd = (patch: Partial<typeof sel>) => setCommuneSel((prev) => ({ ...prev, [c.id]: { ...sel, ...patch } }));
+                        return (
+                          <div key={c.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "10px 12px", borderTop: idx === 0 ? "none" : `1px solid ${C.border}`, background: sel.include ? "white" : C.bg, opacity: c.plan ? 1 : 0.6 }}>
+                            <input type="checkbox" checked={sel.include} disabled={!c.plan} onChange={(e) => upd({ include: e.target.checked })} />
+                            <div style={{ flex: 1, minWidth: 0 }}>
+                              <div style={{ fontSize: 13.5, fontWeight: 600, color: C.text, whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{c.name}</div>
+                              <div style={{ fontSize: 11.5, color: C.textMuted }}>
+                                {c.population != null ? `${c.population.toLocaleString("fr-FR")} hab` : "population non renseignée"}
+                                {c.plan ? ` · ${c.plan.name}` : " · aucun plan"}
+                              </div>
+                            </div>
+                            {c.plan ? (
+                              <>
+                                <select value={sel.cycle} disabled={!sel.include} onChange={(e) => upd({ cycle: e.target.value as "yearly" | "monthly" })}
+                                  style={{ ...billInput, width: "auto", padding: "6px 8px", fontSize: 12.5, opacity: sel.include ? 1 : 0.5 }}>
+                                  <option value="yearly">Annuel · {fmtEuro(c.plan.annual_price_eur)}</option>
+                                  <option value="monthly">Mensuel · {fmtEuro(c.plan.monthly_price_eur)}</option>
+                                </select>
+                                <label title="Onboarding initial (one-shot)" style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11.5, color: C.textMuted, whiteSpace: "nowrap" }}>
+                                  <input type="checkbox" checked={sel.onbInitial} disabled={!sel.include} onChange={(e) => upd({ onbInitial: e.target.checked })} />
+                                  Onb.
+                                </label>
+                              </>
+                            ) : (
+                              <span style={{ fontSize: 11.5, color: C.orange, fontStyle: "italic", whiteSpace: "nowrap" }}>plan à définir</span>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div style={{ display: "flex", justifyContent: "space-between", flexWrap: "wrap", gap: 8, padding: "10px 14px", borderRadius: 10, background: C.bg, border: `1px solid ${C.border}`, fontSize: 13 }}>
+                      <span>{selected.length} ville{selected.length > 1 ? "s" : ""} · abonnement annualisé <strong style={{ color: C.text }}>{fmtEuro(aboAnnualTotal)}</strong></span>
+                      <span style={{ color: C.text }}>
+                        Coût / habitant : <strong>{costPerInhab != null ? `${costPerInhab.toLocaleString("fr-FR", { minimumFractionDigits: 2, maximumFractionDigits: 2 })} €/hab/an` : "—"}</strong>
+                      </span>
+                    </div>
+                    <Field label="Date de début / facturation">
+                      <input type="date" value={planBill.start_date} onChange={(e) => setPlanBill({ ...planBill, start_date: e.target.value })} style={billInput} />
+                    </Field>
+                  </>
+                );
+              })()
             ) : !planBillResolve ? (
               <div style={{ textAlign: "center", padding: 16 }}><Spinner size={18} /></div>
             ) : !planBillResolve.plan ? (
               <div style={{ padding: "10px 14px", borderRadius: 10, background: C.orangeBg, border: `1px solid ${C.orange}`, fontSize: 12.5, color: C.text }}>
-                Aucun plan ne correspond {planBillResolve.client_type === "commune" ? "à la population de cette commune (population non renseignée ?)" : "à ce groupement"}. Renseigne la population (onglet Grille tarifaire → ⟳ Compléter les populations) ou utilise « Ligne manuelle ».
+                Aucun plan ne correspond à la population de cette commune (population non renseignée ?). Renseigne la population (onglet Grille tarifaire → ⟳ Compléter les populations) ou utilise « Ligne manuelle ».
               </div>
             ) : (
               <>
@@ -7211,13 +7366,22 @@ function PrestationsFacturees() {
                 </Field>
               </>
             )}
-            <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
-              <button onClick={() => setPlanBill(null)} style={{ padding: "10px 18px", borderRadius: 8, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Annuler</button>
-              <button onClick={submitBillPlan} disabled={planBillSaving || !planBillResolve?.plan}
-                style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: C.accent, color: "white", fontSize: 14, fontWeight: 600, cursor: (planBillSaving || !planBillResolve?.plan) ? "default" : "pointer", opacity: (planBillSaving || !planBillResolve?.plan) ? 0.6 : 1 }}>
-                {planBillSaving ? "Facturation…" : "Facturer la sélection"}
-              </button>
-            </div>
+            {(() => {
+              const isEpci = planBill.client.startsWith("epci:");
+              const canSubmit = isEpci
+                ? !!epciCommunes && epciCommunes.communes.some((c) => communeSel[c.id]?.include && c.plan)
+                : !!planBillResolve?.plan;
+              const disabled = planBillSaving || !canSubmit;
+              return (
+                <div style={{ display: "flex", gap: 10, justifyContent: "flex-end", marginTop: 4 }}>
+                  <button onClick={() => setPlanBill(null)} style={{ padding: "10px 18px", borderRadius: 8, border: `1px solid ${C.border}`, background: "white", color: C.text, fontSize: 14, fontWeight: 600, cursor: "pointer" }}>Annuler</button>
+                  <button onClick={submitBillPlan} disabled={disabled}
+                    style={{ padding: "10px 18px", borderRadius: 8, border: "none", background: C.accent, color: "white", fontSize: 14, fontWeight: 600, cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.6 : 1 }}>
+                    {planBillSaving ? "Facturation…" : "Facturer la sélection"}
+                  </button>
+                </div>
+              );
+            })()}
           </div>
         </Modal>
       )}
