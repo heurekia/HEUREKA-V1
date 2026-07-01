@@ -6829,6 +6829,10 @@ function PrestationsFacturees() {
   const [suggestion, setSuggestion] = useState<PlanResolve | null>(null);
   const [saving, setSaving] = useState(false);
   const [confirmId, setConfirmId] = useState<string | null>(null);
+  // Sélection multiple pour la suppression groupée.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
+  const [confirmBulk, setConfirmBulk] = useState(false);
+  const [bulkDeleting, setBulkDeleting] = useState(false);
   // Modal « Facturer un plan » : crée plusieurs lignes (abonnement + onboarding) d'un coup.
   const [planBill, setPlanBill] = useState<{ client: string; start_date: string } | null>(null);
   const [planBillResolve, setPlanBillResolve] = useState<PlanResolve | null>(null);
@@ -6935,10 +6939,34 @@ function PrestationsFacturees() {
     setConfirmId(null);
     try {
       await api.delete(`/admin/billing/items/${id}`);
+      setSelected((s) => { const n = new Set(s); n.delete(id); return n; });
       setToast({ kind: "ok", msg: "Ligne supprimée." });
       load();
     } catch (e) {
       setToast({ kind: "err", msg: (e as Error).message });
+    }
+  };
+
+  const toggleOne = (id: string) => setSelected((s) => {
+    const n = new Set(s);
+    if (n.has(id)) n.delete(id); else n.add(id);
+    return n;
+  });
+
+  const bulkDelete = async () => {
+    const ids = Array.from(selected);
+    if (ids.length === 0) { setConfirmBulk(false); return; }
+    setBulkDeleting(true);
+    try {
+      const r = await api.post<{ deleted: number }>("/admin/billing/items/bulk-delete", { ids });
+      setSelected(new Set());
+      setConfirmBulk(false);
+      setToast({ kind: "ok", msg: `${r.deleted} ligne${r.deleted > 1 ? "s" : ""} supprimée${r.deleted > 1 ? "s" : ""}.` });
+      load();
+    } catch (e) {
+      setToast({ kind: "err", msg: (e as Error).message });
+    } finally {
+      setBulkDeleting(false);
     }
   };
 
@@ -7067,12 +7095,20 @@ function PrestationsFacturees() {
 
   const filtered = filter ? items.filter((i) => clientKey(i.client_type, i.client_id ?? "") === filter) : items;
   const lineHt = (i: BillingItem) => i.quantity * i.unit_price_eur;
+  const selectedInView = filtered.filter((i) => selected.has(i.id)).length;
+  const allInViewSelected = filtered.length > 0 && selectedInView === filtered.length;
+  const toggleAllInView = () => setSelected((s) => {
+    const n = new Set(s);
+    if (allInViewSelected) filtered.forEach((i) => n.delete(i.id));
+    else filtered.forEach((i) => n.add(i.id));
+    return n;
+  });
 
   return (
     <>
       <BillToast toast={toast} />
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, gap: 12, flexWrap: "wrap" }}>
-        <select value={filter} onChange={(e) => setFilter(e.target.value)} style={{ ...billInput, width: "auto", minWidth: 240 }}>
+        <select value={filter} onChange={(e) => { setFilter(e.target.value); setSelected(new Set()); }} style={{ ...billInput, width: "auto", minWidth: 240 }}>
           <option value="">Tous les clients ({items.length} ligne{items.length > 1 ? "s" : ""})</option>
           <optgroup label="Communes">
             {clients.communes.map((c) => <option key={c.id} value={clientKey("commune", c.id)}>{c.name}</option>)}
@@ -7082,6 +7118,11 @@ function PrestationsFacturees() {
           </optgroup>
         </select>
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+          {selected.size > 0 && (
+            <button onClick={() => setConfirmBulk(true)} style={{ padding: "10px 18px", background: C.red, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>
+              🗑 Supprimer la sélection ({selected.size})
+            </button>
+          )}
           <button onClick={openBillPlan} style={{ padding: "10px 18px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 600, whiteSpace: "nowrap" }}>
             ⚡ Facturer un plan
           </button>
@@ -7098,6 +7139,9 @@ function PrestationsFacturees() {
           <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
             <thead>
               <tr style={{ background: C.bg, borderBottom: `1px solid ${C.border}` }}>
+                <th style={{ padding: "10px 16px", width: 36 }}>
+                  <input type="checkbox" checked={allInViewSelected} ref={(el) => { if (el) el.indeterminate = selectedInView > 0 && !allInViewSelected; }} onChange={toggleAllInView} style={{ cursor: "pointer" }} title="Tout sélectionner" />
+                </th>
                 <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Client</th>
                 <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Prestation</th>
                 <th style={{ padding: "10px 16px", textAlign: "left", fontWeight: 600, color: C.textMuted, fontSize: 12 }}>Cycle</th>
@@ -7112,7 +7156,10 @@ function PrestationsFacturees() {
             </thead>
             <tbody>
               {filtered.map((it) => (
-                <tr key={it.id} style={{ borderTop: `1px solid ${C.border}`, opacity: it.status === "cancelled" ? 0.55 : 1 }}>
+                <tr key={it.id} style={{ borderTop: `1px solid ${C.border}`, opacity: it.status === "cancelled" ? 0.55 : 1, background: selected.has(it.id) ? C.accentLight : undefined }}>
+                  <td style={{ padding: "11px 16px" }}>
+                    <input type="checkbox" checked={selected.has(it.id)} onChange={() => toggleOne(it.id)} style={{ cursor: "pointer" }} />
+                  </td>
                   <td style={{ padding: "11px 16px", color: C.text, fontWeight: 600 }}>{it.client_name}</td>
                   <td style={{ padding: "11px 16px", color: C.text }}>{it.label}</td>
                   <td style={{ padding: "11px 16px", color: C.textMuted }}>{CYCLE_LABELS[it.billing_cycle] ?? it.billing_cycle}</td>
@@ -7386,6 +7433,7 @@ function PrestationsFacturees() {
         </Modal>
       )}
       {confirmId && <ConfirmDialog message="Supprimer cette ligne facturée ?" onConfirm={() => del(confirmId)} onCancel={() => setConfirmId(null)} />}
+      {confirmBulk && <ConfirmDialog message={`Supprimer ${selected.size} ligne${selected.size > 1 ? "s" : ""} facturée${selected.size > 1 ? "s" : ""} ? Cette action est irréversible.`} onConfirm={bulkDeleting ? () => {} : bulkDelete} onCancel={() => setConfirmBulk(false)} />}
     </>
   );
 }

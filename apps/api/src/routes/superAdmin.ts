@@ -2862,6 +2862,20 @@ superAdminRouter.delete("/billing/items/:id", async (req, res) => {
   }
 });
 
+// Suppression groupée : plusieurs lignes facturées d'un coup.
+superAdminRouter.post("/billing/items/bulk-delete", async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.filter((v: unknown): v is string => typeof v === "string" && v.length > 0) : [];
+    if (ids.length === 0) return res.status(400).json({ error: "Aucune ligne à supprimer." });
+    const rows = await db.delete(billing_items).where(inArray(billing_items.id, ids)).returning();
+    await logAudit(req, "admin_billing_item_deleted", { metadata: { ids, count: rows.length } });
+    res.json({ deleted: rows.length });
+  } catch (err) {
+    console.error("[billing/items bulk-delete]", err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
 // ─── Charges saisies ─────────────────────────────────────────────────────────
 superAdminRouter.get("/billing/costs", async (_req, res) => {
   try {
