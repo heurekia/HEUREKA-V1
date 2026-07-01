@@ -1,7 +1,8 @@
-import { db, dossiers, dossier_facts, zone_regulatory_rules, zones, communes, document_communes } from "@heureka-v1/db";
+import { db, dossiers, dossier_facts, zone_regulatory_rules, zones, communes, document_communes, regulatory_documents } from "@heureka-v1/db";
 import { and, eq, isNull } from "drizzle-orm";
 import { ENGINE_VERSION } from "../version.js";
 import { deriveApplicabilityTags } from "./applicability_tags.js";
+import { selectActiveDocumentIds, type CandidateDocument } from "./documentSelection.js";
 import type {
   DossierFact,
   DossierSummary,
@@ -129,7 +130,11 @@ export async function buildInstructionContext(
   // Candidats : règles validées de la commune du dossier, filtrées plus
   // tard sur la zone par le RuleApplicabilityEngine. On reste large à ce
   // stade pour pouvoir afficher dans l'UI ce qui *aurait pu* s'appliquer.
-  const candidate_rule_ids = await loadCandidateRuleIds(dossier.commune, opts);
+  // Date de référence pour l'arbitrage de substitution PLU↔PLUi (Lot 5) : la
+  // date de dépôt fait foi (cristallisation des droits d'urbanisme), à défaut
+  // « maintenant ». Déterministe dès que date_depot est renseignée.
+  const referenceDate = dossierRow.date_depot ?? new Date();
+  const candidate_rule_ids = await loadCandidateRuleIds(dossier.commune, opts, referenceDate);
 
   const missing_facts = REQUIRED_FACT_KEYS.filter((k) => !factByKey.has(k));
 
@@ -149,6 +154,7 @@ export async function buildInstructionContext(
 async function loadCandidateRuleIds(
   commune: string | undefined,
   opts: BuildContextOptions,
+  referenceDate: Date,
 ): Promise<string[]> {
   if (!commune) {
     if (opts.allowMissingCommune) return [];
@@ -163,38 +169,67 @@ async function loadCandidateRuleIds(
   const communeRow = communeRows[0];
   if (!communeRow) return [];
 
-  // Résolution via deux chemins unionnés, pour préparer le support PLUi sans
-  // casser les règles existantes :
+  // Résolution via deux chemins unionnés, pour supporter les PLUi sans casser
+  // les règles existantes :
   //
   //  1) document_communes → rules.source_document_id : voie « moderne ». Couvre
   //     nativement les PLUi (1 document → N communes via document_communes)
   //     et reste équivalente aux PLU strictement communaux (1 document →
   //     1 commune). Toute règle ingérée par loadRules() depuis le Lot 3
-  //     passe par ce chemin.
+  //     passe par ce chemin. C'est ce chemin qui porte l'ARBITRAGE de
+  //     substitution (Lot 5, cf. plus bas).
   //
   //  2) zones.commune_id, restreint à source_document_id IS NULL : fallback
   //     pour les règles créées manuellement via POST /reglementation/zones/
   //     :zoneId/rules qui ne posent pas de source_document_id. Garantit qu'on
-  //     ne perd aucune règle pré-Lot 3 ou créée à la main.
-  //
-  // Pendant la cohabitation, l'union des deux est strictement ≥ la requête
-  // historique unique zones.commune_id — on ne risque pas de masquer une
-  // règle. Une fois toutes les règles taguées source_document_id, le chemin 2
-  // pourra disparaître.
+  //     ne perd aucune règle pré-Lot 3 ou créée à la main. Hors périmètre de
+  //     l'arbitrage (pas de document, donc pas de famille) : toujours gardées.
   const ruleIds = new Set<string>();
 
+  // Chemin 1 : on récupère les règles AVEC les métadonnées de leur document
+  // source (type + fenêtre d'effet), pour arbitrer la substitution PLU↔PLUi.
   const fromDocument = await db
-    .select({ id: zone_regulatory_rules.id })
+    .select({
+      id: zone_regulatory_rules.id,
+      document_id: zone_regulatory_rules.source_document_id,
+      doc_type: regulatory_documents.type,
+      effective_from: regulatory_documents.effective_from,
+      effective_to: regulatory_documents.effective_to,
+      created_at: regulatory_documents.created_at,
+    })
     .from(zone_regulatory_rules)
     .innerJoin(
       document_communes,
       eq(document_communes.document_id, zone_regulatory_rules.source_document_id),
     )
+    .innerJoin(
+      regulatory_documents,
+      eq(regulatory_documents.id, zone_regulatory_rules.source_document_id),
+    )
     .where(and(
       eq(document_communes.commune_id, communeRow.id),
       eq(zone_regulatory_rules.validation_status, "valide"),
     ));
-  for (const r of fromDocument) ruleIds.add(r.id);
+
+  // Arbitrage substitution (Lot 5) : parmi les documents de famille PLU
+  // couvrant cette commune, on ne garde que celui en vigueur à `referenceDate` ;
+  // les autres familles (PPRI, OAP…) se superposent normalement.
+  const docsById = new Map<string, CandidateDocument>();
+  for (const r of fromDocument) {
+    if (r.document_id && !docsById.has(r.document_id)) {
+      docsById.set(r.document_id, {
+        documentId: r.document_id,
+        type: r.doc_type,
+        effectiveFrom: r.effective_from,
+        effectiveTo: r.effective_to,
+        createdAt: r.created_at,
+      });
+    }
+  }
+  const allowedDocIds = selectActiveDocumentIds([...docsById.values()], referenceDate);
+  for (const r of fromDocument) {
+    if (r.document_id && allowedDocIds.has(r.document_id)) ruleIds.add(r.id);
+  }
 
   const fromZoneFallback = await db
     .select({ id: zone_regulatory_rules.id })
