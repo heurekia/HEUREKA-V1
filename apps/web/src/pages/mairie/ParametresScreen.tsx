@@ -1116,6 +1116,11 @@ function DocumentsPanel({ commune }: { commune: string }) {
   const [syntheseDraft, setSyntheseDraft] = useState("");
   const [savingSynthese, setSavingSynthese] = useState(false);
   const [uploadError, setUploadError] = useState<string | null>(null);
+  // Référentiel des types de la liste déroulante, paramétré depuis le
+  // super-admin. On part des valeurs par défaut (DOC_TYPES) puis on remplace par
+  // la config serveur dès qu'elle est chargée ; si l'appel échoue, on garde le
+  // fallback pour ne jamais casser le formulaire.
+  const [docTypes, setDocTypes] = useState(DOC_TYPES);
 
   const load = () => {
     setLoading(true);
@@ -1126,6 +1131,14 @@ function DocumentsPanel({ commune }: { commune: string }) {
   };
 
   useEffect(() => { load(); }, [commune]);
+
+  useEffect(() => {
+    api.get<{ value: string; label: string; color: string }[]>("/mairie/document-types")
+      .then((rows) => {
+        if (rows.length) setDocTypes(rows.map((r) => ({ value: r.value, label: r.label, color: r.color })));
+      })
+      .catch(() => { /* garde le fallback DOC_TYPES */ });
+  }, []);
 
   const handleFile = (file: File) => {
     if (file.type !== "application/pdf") return;
@@ -1173,10 +1186,25 @@ function DocumentsPanel({ commune }: { commune: string }) {
     setDocs(d => d.filter(x => x.id !== id));
   };
 
-  const grouped = DOC_TYPES.map(t => ({
+  const grouped = docTypes.map(t => ({
     ...t,
     items: docs.filter(d => d.type === t.value),
   })).filter(g => g.items.length > 0);
+
+  // Filet de sécurité : un document dont le type n'est plus dans le référentiel
+  // (type désactivé/supprimé côté super-admin) ne doit pas disparaître.
+  const knownValues = new Set(docTypes.map(t => t.value));
+  for (const doc of docs) {
+    if (!knownValues.has(doc.type)) {
+      knownValues.add(doc.type);
+      grouped.push({
+        value: doc.type,
+        label: doc.type.toUpperCase(),
+        color: "#64748B",
+        items: docs.filter(d => d.type === doc.type),
+      });
+    }
+  }
 
   const fmt = (bytes: number | null) => {
     if (!bytes) return "";
@@ -1215,7 +1243,7 @@ function DocumentsPanel({ commune }: { commune: string }) {
               <label style={{ fontSize: 12, fontWeight: 600, color: "#374151", display: "block", marginBottom: 4 }}>Type</label>
               <select value={form.type} onChange={e => setForm(f => ({ ...f, type: e.target.value }))}
                 style={{ width: "100%", border: "1px solid #D1D5DB", borderRadius: 8, padding: "8px 10px", fontSize: 13, background: "white" }}>
-                {DOC_TYPES.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
+                {docTypes.map(t => <option key={t.value} value={t.value}>{t.label}</option>)}
               </select>
             </div>
             <div>

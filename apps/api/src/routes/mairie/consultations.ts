@@ -1,7 +1,7 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossiers, communes, regulatory_documents, dossier_consultations, external_services, service_communes, dossier_messages } from "@heureka-v1/db";
-import { eq, desc, and, sql, ilike } from "drizzle-orm";
+import { dossiers, communes, regulatory_documents, regulatory_document_types, dossier_consultations, external_services, service_communes, dossier_messages } from "@heureka-v1/db";
+import { eq, desc, and, or, asc, sql, ilike } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { getCommuneScope, communeInScope } from "../../middlewares/dossierAccess.js";
 import { documentInScope } from "../../middlewares/regulatoryScope.js";
@@ -12,6 +12,34 @@ export const consultationsRouter = Router();
 // Les routes /documents* adressent le référentiel réglementaire par commune ou
 // par :id : hors préfixe /dossiers/:id, elles échappent à enforceDossierAccess
 // et doivent vérifier elles-mêmes le périmètre commune.
+
+// Référentiel paramétrable des types (pilote la liste déroulante « Type » du
+// formulaire de dépôt côté mairie). Édité depuis le super-admin. On ne renvoie
+// que les entrées actives visibles au niveau commune. Fallback: si la table
+// n'est pas seedée, le front garde ses valeurs par défaut.
+consultationsRouter.get("/document-types", requirePermission("consultations.read"), async (_req: AuthRequest, res) => {
+  try {
+    const rows = await db
+      .select({
+        value: regulatory_document_types.value,
+        label: regulatory_document_types.label,
+        description: regulatory_document_types.description,
+        color: regulatory_document_types.color,
+      })
+      .from(regulatory_document_types)
+      .where(
+        and(
+          eq(regulatory_document_types.is_active, true),
+          or(eq(regulatory_document_types.scope, "commune"), eq(regulatory_document_types.scope, "both")),
+        ),
+      )
+      .orderBy(asc(regulatory_document_types.sort_order), asc(regulatory_document_types.label));
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
 
 // ── Référentiel documentaire par commune ──────────────────────────────────────
 

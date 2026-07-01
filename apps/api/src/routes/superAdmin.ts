@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../db.js";
-import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, site_settings, billing_prestations, billing_plans, billing_items, billing_costs, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES } from "@heureka-v1/db";
+import { communes, epci, users, dossiers, role_permissions, external_services, service_communes, user_communes, audit_logs, password_tokens, dossier_pieces_jointes, legal_mentions, legal_mentions_misses, ai_usage_events, ai_alert_config, ai_pricing, regulatory_documents, document_communes, zones, zone_regulatory_rules, site_settings, billing_prestations, billing_plans, billing_items, billing_costs, PLU_FAMILY_TYPES, REGULATORY_DOCUMENT_TYPES, regulatory_document_types } from "@heureka-v1/db";
 import { resolvePeriod, summarizeRevenue, summarizeCosts, computeMrr, recognizedRevenueHt, recognizedCostHt, matchPlanForPopulation, matchPlanForEpci, parsePopulation, type RevenueLine, type CostLine, type Period } from "../services/billing.js";
 import { invalidateAiAlertConfigCache, sendTestNotification } from "../services/aiAlerts.js";
 import { invalidatePricingCache } from "../services/aiUsage.js";
@@ -127,6 +127,129 @@ superAdminRouter.patch("/site-settings", async (req, res) => {
       },
     });
     res.json(publicSiteSettings(updated!));
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// ─── Référentiel des types de documents réglementaires ───────────────────────
+// Pilote les listes déroulantes « Type » du dépôt de documents (mairie + EPCI).
+// Les intitulés, couleurs, ordre et visibilité sont éditables ici ; la clé
+// technique `value` (stockée dans regulatory_documents.type) n'est jamais
+// renommée pour ne pas orpheliner les documents existants.
+const DOC_TYPE_SCOPES = new Set(["commune", "epci", "both"]);
+const DOC_TYPE_VALUE_RE = /^[a-z0-9_]+$/;
+
+superAdminRouter.get("/document-types", async (_req, res) => {
+  try {
+    const rows = await db
+      .select()
+      .from(regulatory_document_types)
+      .orderBy(asc(regulatory_document_types.sort_order), asc(regulatory_document_types.label));
+    res.json(rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: "Erreur serveur" });
+  }
+});
+
+// PUT /admin/document-types — remplace l'ensemble du référentiel (édition en
+// masse : la liste renvoyée EST le nouvel état). L'ordre du tableau fixe le
+// sort_order. On refuse de supprimer un type encore utilisé par un document
+// (on peut en revanche le désactiver via is_active).
+superAdminRouter.put("/document-types", async (req, res) => {
+  const body = (req.body ?? {}) as {
+    types?: Array<{
+      value?: unknown;
+      label?: unknown;
+      description?: unknown;
+      color?: unknown;
+      scope?: unknown;
+      is_active?: unknown;
+    }>;
+  };
+  if (!Array.isArray(body.types)) {
+    return res.status(400).json({ error: "Corps invalide : `types` doit être un tableau." });
+  }
+
+  // Validation métier (avant tout accès base) → 400 avec message explicite.
+  const seen = new Set<string>();
+  const cleaned: Array<{
+    value: string; label: string; description: string | null;
+    color: string; scope: string; is_active: boolean; sort_order: number;
+  }> = [];
+  for (let i = 0; i < body.types.length; i++) {
+    const t = body.types[i]!;
+    const value = typeof t.value === "string" ? t.value.trim().toLowerCase() : "";
+    const label = typeof t.label === "string" ? t.label.trim() : "";
+    const description =
+      typeof t.description === "string" && t.description.trim() ? t.description.trim() : null;
+    const color = typeof t.color === "string" && t.color.trim() ? t.color.trim() : "#64748B";
+    const scope = typeof t.scope === "string" && DOC_TYPE_SCOPES.has(t.scope) ? t.scope : "both";
+    const is_active = t.is_active === undefined ? true : Boolean(t.is_active);
+
+    if (!DOC_TYPE_VALUE_RE.test(value)) {
+      return res.status(400).json({ error: `Clé invalide « ${value || "(vide)"} » : lettres minuscules, chiffres et « _ » uniquement.` });
+    }
+    if (!label) return res.status(400).json({ error: `Intitulé manquant pour la clé « ${value} ».` });
+    if (seen.has(value)) return res.status(400).json({ error: `Clé en double : « ${value} ».` });
+    seen.add(value);
+
+    cleaned.push({ value, label, description, color, scope, is_active, sort_order: (i + 1) * 10 });
+  }
+
+  try {
+    const existing = await db.select({ value: regulatory_document_types.value }).from(regulatory_document_types);
+    const removed = existing.map((r) => r.value).filter((v) => !seen.has(v));
+
+    if (removed.length > 0) {
+      const used = await db
+        .select({ type: regulatory_documents.type })
+        .from(regulatory_documents)
+        .where(inArray(regulatory_documents.type, removed))
+        .groupBy(regulatory_documents.type);
+      const blocked = used.map((u) => u.type);
+      if (blocked.length > 0) {
+        return res.status(400).json({
+          error: `Impossible de supprimer un type encore utilisé par des documents : ${blocked.join(", ")}. Désactivez-le plutôt.`,
+        });
+      }
+    }
+
+    const now = new Date();
+    const saved = await db.transaction(async (tx) => {
+      if (removed.length > 0) {
+        await tx.delete(regulatory_document_types).where(inArray(regulatory_document_types.value, removed));
+      }
+      for (const t of cleaned) {
+        await tx
+          .insert(regulatory_document_types)
+          .values({ ...t, updated_at: now })
+          .onConflictDoUpdate({
+            target: regulatory_document_types.value,
+            set: {
+              label: t.label,
+              description: t.description,
+              color: t.color,
+              scope: t.scope,
+              is_active: t.is_active,
+              sort_order: t.sort_order,
+              updated_at: now,
+            },
+          });
+      }
+      return tx
+        .select()
+        .from(regulatory_document_types)
+        .orderBy(asc(regulatory_document_types.sort_order), asc(regulatory_document_types.label));
+    });
+
+    await logAudit(req, "admin_document_types_updated", {
+      targetType: "regulatory_document_types",
+      metadata: { count: cleaned.length, removed },
+    });
+    res.json(saved);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: "Erreur serveur" });
@@ -778,8 +901,18 @@ superAdminRouter.post("/epci/:id/documents", async (req, res) => {
 
     if (!type) return res.status(400).json({ error: "type est requis" });
     if (!name?.trim()) return res.status(400).json({ error: "name est requis" });
+    // Types autorisés : le référentiel de base (REGULATORY_DOCUMENT_TYPES) plus
+    // tout type actif ajouté par un admin dans « Types de documents ». On tolère
+    // ainsi les types personnalisés sans figer la validation sur la constante.
     if (!(REGULATORY_DOCUMENT_TYPES as readonly string[]).includes(type)) {
-      return res.status(400).json({ error: `type invalide. Valeurs autorisées : ${REGULATORY_DOCUMENT_TYPES.join(", ")}` });
+      const [custom] = await db
+        .select({ value: regulatory_document_types.value })
+        .from(regulatory_document_types)
+        .where(and(eq(regulatory_document_types.value, type), eq(regulatory_document_types.is_active, true)))
+        .limit(1);
+      if (!custom) {
+        return res.status(400).json({ error: `type invalide. Valeurs autorisées : ${REGULATORY_DOCUMENT_TYPES.join(", ")}` });
+      }
     }
 
     const [groupement] = await db.select({ id: epci.id }).from(epci).where(eq(epci.id, id)).limit(1);
