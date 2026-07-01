@@ -8,9 +8,17 @@ import { probeAiUsageTable, probePdfTooling } from "./services/aiUsage.js";
 import { warmCodeTocCache } from "./services/legifrance.js";
 
 const PORT = Number(process.env.PORT ?? 3001);
+// Adresse d'écoute. Défaut historique `0.0.0.0` (toutes interfaces) CONSERVÉ
+// pour ne casser aucun déploiement. En production derrière nginx sur le MÊME
+// hôte (topologie VPS OVH actuelle : app + nginx + Postgres colocalisés),
+// positionner `HOST=127.0.0.1` pour que l'API ne soit joignable QUE via le
+// reverse proxy : défense en profondeur si le pare-feu venait à tomber (cf.
+// audit VPS — « port API accessible publiquement sans passer par nginx »).
+// Postgres écoute déjà en loopback (cf. infra/backup/backup.env.example).
+const HOST = process.env.HOST ?? "0.0.0.0";
 
-const server = app.listen(PORT, "0.0.0.0", () => {
-  console.log(`🚀 HEUREKA V1 API running on http://0.0.0.0:${PORT}`);
+const server = app.listen(PORT, HOST, () => {
+  console.log(`🚀 HEUREKA V1 API running on http://${HOST}:${PORT}`);
   startScheduledJobs();
   void probeAiUsageTable();
   // Vérifie poppler-utils (pdftoppm/pdftotext) : sans lui l'OCR de toute pièce
