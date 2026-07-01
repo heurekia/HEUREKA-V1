@@ -10,7 +10,7 @@ import { isProfessionalRole, deactivateUser, eraseCitizenAccount } from "../../s
 import { getCommuneScope, communeInScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import { hashPasswordToken } from "../../lib/passwordToken.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, realignTocToPhysicalPages, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
 import { PLU_SAVE_RULE_TOOL, PLU_EXTRACTION_CALIBRATION, coerceCases, coerceAppliesIf, type PluRuleInput } from "./pluSaveRuleTool.js";
 import { normalizeSecteur } from "@heureka-v1/ingestion/secteur";
 import { PDFDocument } from "pdf-lib";
@@ -842,6 +842,16 @@ async function detectPluToc(
   const nativeText = await extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
   let toc: TocEntry[] = nativeText ? parseTocFromNativeText(nativeText) : [];
 
+  if (toc.length > 0) {
+    // Les numéros du sommaire sont souvent IMPRIMÉS (recommencent à 1 après la
+    // page de garde) et non les pages PHYSIQUES du PDF. On relit le texte
+    // complet pour relocaliser chaque zone via son titre de chapitre et
+    // corriger le décalage — sinon pdftoppm rend des pages décalées (cas
+    // Rochecorbon, +4). No-op si numérotation imprimée == physique (ex. Tours).
+    const fullText = await extractPdfText(pdfBuffer);
+    if (fullText) toc = realignTocToPhysicalPages(toc, fullText.split("\f"));
+  }
+
   if (toc.length === 0) {
     // Repli déterministe AVANT Pixtral : sommaire sans numéros de page (ou
     // aplati sur une seule ligne par l'extraction texte) → la voie sommaire ne
@@ -1178,6 +1188,11 @@ async function runIngestJob(job: IngestJob): Promise<void> {
 
   let next = 0;
   let firstError: Error | null = null;
+  // Lots abandonnés après épuisement des ré-essais (timeout / erreur
+  // transitoire persistante). On NE tue PAS tout l'import pour autant : les
+  // autres zones continuent, et `assertTocCoverage` tranche à la fin si la
+  // couverture globale devient insuffisante (cf. plus bas).
+  const failedBatches: Array<{ zoneCode: string; batchIndex: number }> = [];
   // Concurrence serveur volontairement modeste (3) : reste sous le rate limit
   // Mistral et évite de saturer le tier prod sur une seule ingestion.
   const SERVER_CONCURRENCY = 3;
@@ -1193,6 +1208,13 @@ async function runIngestJob(job: IngestJob): Promise<void> {
       {
         model: "ai-smart",
         max_tokens: 4000,
+        // Le worker tourne en TÂCHE DE FOND (hors proxy nginx 60 s) : chaque lot
+        // peut disposer d'un budget large. 90 s (défaut) suffisent aux PDF
+        // « texte » natifs (ex. Tours, PLU pourtant volumineux) mais coupaient
+        // les PDF scannés / haute résolution (ex. Rochecorbon), dont chaque
+        // page-image est lourde à rendre et à analyser en vision → timeout, puis
+        // abandon de tout l'import faute de tolérance côté worker (cf. plus bas).
+        timeoutMs: 180_000,
         tools: [PLU_SAVE_RULE_TOOL],
         tool_choice: "any",
         messages: [{
@@ -1247,13 +1269,27 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
           break;
         } catch (e) {
           const status = (e as { status?: number })?.status;
-          const transient = status === 429 || status === 529 || (typeof status === "number" && status >= 500);
-          if (transient && attempt < MAX_RETRY) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const transientStatus = status === 429 || status === 529 || (typeof status === "number" && status >= 500);
+          // Un abort/timeout de fetchWithRetry n'a pas de `.status` HTTP : on le
+          // reconnaît au message ("aborted due to timeout"). fetchWithRetry a
+          // DÉJÀ rejoué en interne, donc on ne re-boucle pas ici dessus.
+          const isTimeout = /abort|timeout/i.test(msg);
+          if (transientStatus && attempt < MAX_RETRY) {
             await new Promise((r) => setTimeout(r, 1500 * Math.pow(2, attempt)));
             attempt++;
             continue;
           }
           console.error(`[ingest-plu-pdf] worker ${zoneCode} lot ${batchIndex} échoué`, e);
+          // Timeout ou transitoire épuisé → on abandonne CE lot seulement et on
+          // passe au suivant : une seule page lente (PDF scanné) ne doit pas
+          // condamner l'extraction des autres zones. La couverture finale est
+          // vérifiée par assertTocCoverage. Toute autre erreur (4xx client,
+          // config, bug) est fatale : elle se reproduirait à l'identique.
+          if (transientStatus || isTimeout) {
+            failedBatches.push({ zoneCode, batchIndex });
+            break;
+          }
           firstError = e as Error;
           return;
         }
@@ -1264,6 +1300,15 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
   try {
     await Promise.all(Array.from({ length: SERVER_CONCURRENCY }, worker));
     if (firstError) throw firstError;
+    if (failedBatches.length > 0) {
+      // Import partiel toléré : on trace les lots perdus. Si trop de zones se
+      // retrouvent sans règle, assertTocCoverage lèvera juste après et rien ne
+      // sera écrit ; sinon l'import se poursuit sur les zones réussies.
+      console.warn(
+        `[ingest-plu-pdf] ${failedBatches.length} lot(s) abandonné(s) après ré-essais : `
+          + failedBatches.map((b) => `${b.zoneCode}#${b.batchIndex}`).join(", "),
+      );
+    }
 
     // Fusion inter-segments par code de zone : un PLUi en plusieurs PDF produit
     // un état par (segment, zone) ; on regroupe les règles d'un même code (cf.
