@@ -649,10 +649,15 @@ superAdminRouter.post("/epci/import", async (req, res) => {
             attached.push(c.nom!);
           }
         } else {
+          // Population légale récupérée à la création (comme la création
+          // manuelle d'une commune) : évite de devoir lancer le backfill après
+          // chaque import pour disposer du total d'habitants du groupement.
+          const pop = await fetchCommunePopulation(c.insee!);
           await db.insert(communes).values({
             name: c.nom!,
             insee_code: c.insee!,
             zip_code: c.zip || "",
+            population: pop != null ? String(pop) : null,
             departement: c.departement || null,
             region: c.region || null,
             epci_id: epciId,
