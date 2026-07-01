@@ -85,6 +85,9 @@ du code au 2026-07-01.
 
 ### ⏳ Infra VPS OVH — hors dépôt, action requise côté serveur
 
+> Plan de remédiation pas-à-pas (commandes + séquence anti-lockout) :
+> [`remediation-vps-2026-06.md`](./remediation-vps-2026-06.md).
+
 - 🔴 **Réactiver le pare-feu** (ufw/nftables) ; n'exposer que 80/443/22.
 - 🔴 **`HOST=127.0.0.1`** pour l'API + vérifier que l'upstream nginx pointe en
   loopback (le code accepte désormais la variable).
