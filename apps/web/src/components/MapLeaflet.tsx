@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
@@ -57,7 +57,7 @@ const DEFAULT_ZOOM = 13;
 // fonds OpenStreetMap/CARTO (serveurs hors UE) ont été retirés.
 export type BaseLayer = "ign-plan" | "ign-ortho";
 
-export function MapLeaflet({
+function MapLeafletImpl({
   dossiers,
   height = 300,
   filterStatus,
@@ -500,3 +500,7 @@ export function MapLeaflet({
     </div>
   );
 }
+
+// Mémoïsé : la carte Leaflet (init + tuiles IGN) est coûteuse. Évite un
+// remontage complet quand le parent re-render sans que les props changent.
+export const MapLeaflet = memo(MapLeafletImpl);
