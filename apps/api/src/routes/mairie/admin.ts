@@ -999,7 +999,13 @@ adminRouter.post("/admin/ingest-plu-pdf/start", requirePermission("zones.import"
         .select({ commune_id: document_communes.commune_id })
         .from(document_communes)
         .where(eq(document_communes.document_id, doc.id));
-      const communeIds = rattachements.map((r) => r.commune_id);
+      // Repli commune : un document COMMUNAL (ex. SPR d'une commune, créé via
+      // POST /mairie/documents) porte son périmètre sur `commune_id` sans ligne
+      // document_communes. On l'accepte tel quel pour l'ingestion doc-scoped ;
+      // les documents EPCI/PLUi continuent d'utiliser document_communes.
+      const communeIds = rattachements.length > 0
+        ? rattachements.map((r) => r.commune_id)
+        : (doc.commune_id ? [doc.commune_id] : []);
       if (communeIds.length === 0) {
         return res.status(400).json({ error: "Document sans commune rattachée — rattachez au moins une commune avant d'ingérer." });
       }

@@ -15,6 +15,10 @@ export const communes = pgTable("communes", {
   description: text("description"),
   epci_id: uuid("epci_id"),
   instruction_mutualisee: boolean("instruction_mutualisee").notNull().default(false),
+  // Active l'onglet SPR (Site Patrimonial Remarquable) dans la Réglementation.
+  // Toutes les communes n'ont pas de SPR → drapeau posé depuis le back-office
+  // (superAdmin PATCH /communes/:id). false → écran Réglementation inchangé.
+  has_spr: boolean("has_spr").notNull().default(false),
   letterhead_logo: text("letterhead_logo"),
   letterhead_title: text("letterhead_title"),
   letterhead_subtitle: text("letterhead_subtitle"),

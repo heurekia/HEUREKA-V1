@@ -154,6 +154,7 @@ superAdminRouter.get("/communes", async (_req, res) => {
           epci_id: communes.epci_id,
           epci_name: epci.name,
           instruction_mutualisee: communes.instruction_mutualisee,
+          has_spr: communes.has_spr,
         })
         .from(communes)
         .leftJoin(epci, eq(communes.epci_id, epci.id))
@@ -279,7 +280,7 @@ superAdminRouter.patch("/communes/:id", async (req, res) => {
     const ALLOWED = [
       "name", "insee_code", "zip_code", "email", "telephone", "logo_url",
       "population", "surface", "departement", "region", "description",
-      "epci_id", "instruction_mutualisee",
+      "epci_id", "instruction_mutualisee", "has_spr",
     ] as const;
     const updates: Record<string, unknown> = { updated_at: new Date() };
     for (const f of ALLOWED) {

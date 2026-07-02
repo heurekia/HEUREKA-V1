@@ -191,6 +191,8 @@ CREATE TABLE IF NOT EXISTS epci (
 );
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS epci_id uuid REFERENCES epci(id) ON DELETE SET NULL;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS instruction_mutualisee boolean NOT NULL DEFAULT false;
+-- Onglet SPR de la Réglementation, activé par commune depuis le back-office.
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS has_spr boolean NOT NULL DEFAULT false;
 
 -- Promote mairie@tours.fr to admin
 UPDATE users SET role = 'admin' WHERE email = 'mairie@tours.fr';
