@@ -24,6 +24,8 @@ Correctifs appliqués sur cette branche (typecheck API+web OK, 587 tests verts) 
 | ✅ F1 | `useMemo` sur la value d'`AuthContext` + `useCallback` sur les handlers | `hooks/useAuth.tsx` |
 | ✅ F3 | `React.memo` sur `MapLeaflet` et `PdfAnnotator` | `components/MapLeaflet.tsx`, `PdfAnnotator.tsx` |
 | ✅ P1′ | Index partiel très sélectif sur les pièces « en vol » (remplace la reco GIN, voir ci-dessous) | `packages/db/src/migrate.ts` |
+| ✅ P2 | Segmentation vision : batches `pdftoppm`+appel IA parallélisés (concurrence bornée à 3, quota Mistral) au lieu d'une chaîne séquentielle ; échec de batch → pages en repli au lieu d'être droppées | `services/pieceSegmenter.ts` |
+| ✅ F2 | `DossiersScreen` : pagination côté client (50/page) — ne monte plus jusqu'à 500 `<tr>` d'un coup | `pages/mairie/DossiersScreen.tsx` |
 
 Ajustements après vérification dans le code (findings d'agent revus) :
 
@@ -43,10 +45,16 @@ Ajustements après vérification dans le code (findings d'agent revus) :
   consommé tel quel par le front ; changer le contrat nécessite une coordination
   front/back. Volume réel faible (quelques dizaines de pièces/dossier).
 
-Reste à traiter (hors périmètre de ce commit) : **P2** (paralléliser `pdftoppm`),
-**F2** (virtualisation `DossiersScreen`), **I1** (pin actions GitHub par SHA —
-nécessite de résoudre les SHA des dépôts `actions/*`, hors scope de ce dépôt),
-**S3** (rate limiting listes), **S4** (logs console).
+Reste à traiter : **I1** (pin actions GitHub par SHA — nécessite de résoudre les
+SHA des dépôts `actions/*`, hors scope de ce dépôt), **S3** (rate limiting
+listes), **S4** (logs console), **P3** (pagination `/dossiers/:id/pieces`, requiert
+coordination front/back).
+
+Note P2 : `convertPdfPagesToPng` utilise `execFileAsync` (process enfant) — il ne
+bloquait pas l'event-loop comme le suggérait le finding ; le gain réel vient du
+recouvrement des batches (rendu + appel vision) auparavant strictement séquentiels.
+Note F2 : virtualisation (`react-window`) écartée au profit de la pagination — pas
+de nouvelle dépendance, sémantique `<table>` préservée, DOM borné à 50 lignes.
 
 ---
 
