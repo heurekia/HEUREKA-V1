@@ -11,6 +11,7 @@ import { getCommuneScope, communeInScope, communeScopeFilter } from "../../middl
 import { hashPasswordToken } from "../../lib/passwordToken.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
 import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, realignTocToPhysicalPages, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
+import { parseSprSecteurs } from "../../services/sprImport.js";
 import { PLU_SAVE_RULE_TOOL, PLU_EXTRACTION_CALIBRATION, coerceCases, coerceAppliesIf, type PluRuleInput } from "./pluSaveRuleTool.js";
 import { normalizeSecteur } from "@heureka-v1/ingestion/secteur";
 import { PDFDocument } from "pdf-lib";
@@ -918,6 +919,19 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
   return dedupeTocByCode(toc);
 }
 
+// Détecte les secteurs d'un règlement SPR (Site Patrimonial Remarquable) depuis
+// le TEXTE NATIF COMPLET. Contrairement au PLU (sommaire → zones U/AU/A/N), un
+// SPR se découpe en SECTEURS paysagers (Livret 2) repérés par leurs en-têtes de
+// chapitre (« Chapitre N - Secteur … ») — cf. sprImport.parseSprSecteurs. Les
+// entrées renvoyées sont des TocEntry (type "spr") → elles rejoignent le même
+// pipeline de partition/chunk/extraction que le PLU. Renvoie [] si aucun secteur
+// (le caller traite alors le segment comme « sans sommaire »).
+async function detectSprToc(pdfBuffer: Buffer): Promise<TocEntry[]> {
+  const fullText = await extractPdfText(pdfBuffer);
+  if (!fullText) return [];
+  return parseSprSecteurs(fullText.split("\f"));
+}
+
 // Garde, par code, l'entrée à la plus petite startPage (le début réel de la
 // section ; une 2e occurrence du même code est une coquille de sommaire).
 function dedupeTocByCode(entries: TocEntry[]): TocEntry[] {
@@ -1056,15 +1070,21 @@ adminRouter.post("/admin/ingest-plu-pdf/start", requirePermission("zones.import"
     // lent (~15-20 s) ; les enchaîner ferait dépasser le proxy nginx (60 s →
     // 504) dès qu'on a plusieurs PDF scannés. Promise.all conserve l'ordre
     // d'origine → segmentIndex stable.
+    // Un SPR ne se découpe pas en zones PLU mais en SECTEURS paysagers (Livret 2),
+    // repérés par leurs en-têtes de chapitre (cf. detectSprToc/sprImport). On
+    // bascule sur cette détection dès que le document est de type `spr`.
+    const isSprDoc = documentCtx?.type === "spr";
     const detected = await Promise.all(pdfList.map(async (b64) => {
       const pdfBuffer = Buffer.from(b64, "base64");
       const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
       const totalPages = pdfDoc.getPageCount();
-      const toc = await detectPluToc(
-        pdfBuffer, totalPages,
-        { userId, communeId: commune.id },
-        singlePdf ? manualEntries : [],
-      );
+      const toc = isSprDoc
+        ? await detectSprToc(pdfBuffer)
+        : await detectPluToc(
+            pdfBuffer, totalPages,
+            { userId, communeId: commune.id },
+            singlePdf ? manualEntries : [],
+          );
       return { pdfBuffer, totalPages, toc };
     }));
 
@@ -1180,6 +1200,66 @@ adminRouter.post("/admin/ingest-plu-pdf/start", requirePermission("zones.import"
 // commit la transaction DB. Ne renvoie rien — le client lit l'avancée via
 // /status. Tant que le process Node tourne, le job continue, indépendamment
 // de la connexion HTTP qui a lancé /start (l'utilisateur peut fermer l'onglet).
+// Prompt d'extraction PLU (texte historique, articles 1-16). Inchangé sur le
+// fond ; simplement factorisé pour cohabiter avec la variante SPR.
+function pluExtractionPrompt(zone: { code: string; label: string }): string {
+  return `Ces pages font partie d'un règlement PLU français, section "Zone ${zone.code}" (${zone.label}). Extrais les règles de la ZONE ${zone.code} uniquement.
+
+Pour CHAQUE article ou sous-article distinct présent dans ces pages, appelle save_rule UNE fois.
+Correspondance article → topic :
+  1/2 → destinations | 5 → terrain_min | 6 → recul_voie | 7 → recul_limite
+  8 → recul_batiments | 9 → emprise_sol | 10 → hauteur | 11 → aspect
+  12 → stationnement | 13 → espaces_verts | 14 → cos
+
+- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau = une règle distincte → un appel save_rule par ligne.
+- Un même article peut porter PLUSIEURS règles distinctes selon la destination (habitation, commerce, bureaux, artisanat, hôtellerie…). Émets UN save_rule par destination / catégorie, avec son propre rule_text et sa propre valeur. Ne fusionne pas tout dans une seule règle.
+- Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
+- Plusieurs valeurs selon sous-secteurs géographiques (UA1 vs UA2…) → 1 save_rule par sous-secteur si possible, sinon valeur principale dans value_max + variantes dans conditions.
+- Si la règle renvoie à un schéma/croquis graphique → needs_vision = true.
+- Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
+- N'invente aucune valeur. Si incertain, omets value_min/max/exact.
+
+CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à rédiger SOIGNEUSEMENT :
+- citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Stationnement pour logements individuels », « Hauteur maximale des annexes », « Implantation en limite de propriété ».
+- citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant, niveau « particulier qui veut construire chez lui ». Inclus EXPLICITEMENT : la règle, les conditions, les exceptions, les valeurs chiffrées avec unité, ET — si needs_vision = true — décris le schéma associé (ce qu'il montre, ce qu'il autorise, ce qu'il interdit). Phrases complètes, JAMAIS de version 10 mots compacte, pas de bullets, pas de jargon juridique.
+- Exemple acceptable (article 7, recul limites) : « Selon la profondeur par rapport à la voie, l'implantation est autorisée soit d'une limite à l'autre, soit avec un retrait minimal. Sur les 20 premiers mètres : retrait de 3 m minimum (ou H/2) pour moins de 3 logements ; 5 m (ou 1,5 × H) pour 3 logements et plus. Au-delà de 20 mètres, l'implantation en limite séparative est interdite. Exceptions : annexes, jumelages, extensions de constructions déjà en limite. Les piscines doivent rester à 3 m minimum. Le schéma associé illustre le calcul de H sur terrain plat ou en pente, et la zone des 20 mètres depuis la voie. »
+- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.${PLU_EXTRACTION_CALIBRATION}`;
+}
+
+// Prompt d'extraction SPR (Site Patrimonial Remarquable / AVAP). À la différence
+// du PLU, le règlement est PATRIMONIAL et QUALITATIF (aspect, toitures, façades,
+// matériaux, menuiseries, clôtures, devantures, plantations…), organisé par
+// secteur paysager et non par articles 1-16. On réutilise l'outil save_rule :
+// la plupart des prescriptions relèvent du topic "aspect" (avec un sub_theme
+// précis) ; hauteur → "hauteur", plantations/espaces → "espaces_verts",
+// implantation → "recul_voie"/"recul_limite"/"general", interdictions →
+// "interdictions". Les valeurs chiffrées sont souvent ABSENTES : le rule_text
+// qualitatif EST la règle, ne pas le réduire à un nombre.
+function sprExtractionPrompt(zone: { code: string; label: string }): string {
+  return `Ces pages appartiennent au règlement d'un SITE PATRIMONIAL REMARQUABLE (SPR, ex-AVAP) français — un document PATRIMONIAL opposable, supérieur au PLU sur l'aspect des constructions. Section : "${zone.label}". Extrais UNIQUEMENT les prescriptions de cette section.
+
+Pour CHAQUE prescription distincte (un thème = une règle), appelle save_rule UNE fois. Découpe finement : une prescription sur les toitures, une sur les façades, une sur les menuiseries, une sur les clôtures, etc. = autant d'appels distincts.
+
+Choix du topic (grille save_rule) :
+- Aspect extérieur au sens large — toitures, couvertures, façades, enduits, pierres, menuiseries, couleurs/teintes, devantures, clôtures, murs — → topic "aspect", avec un sub_theme PRÉCIS (ex: « Toitures », « Menuiseries et volets », « Clôtures sur rue », « Devantures commerciales », « Enduits et ravalement »).
+- Hauteur / gabarit / volumétrie → "hauteur".
+- Plantations, espaces libres, arbres, jardins → "espaces_verts".
+- Implantation par rapport à la voie / aux limites → "recul_voie" / "recul_limite", sinon "general".
+- Occupations ou travaux INTERDITS (démolitions, matériaux proscrits…) → "interdictions".
+- À défaut de correspondance claire → "general".
+
+Règles d'extraction :
+- Le SPR est surtout QUALITATIF : conserve fidèlement le texte de la prescription dans rule_text (matériaux, teintes, mises en œuvre imposées ou interdites). N'invente AUCUNE valeur ; value_min/max/exact restent souvent vides.
+- Tags applies_if pertinents quand la prescription le précise : cloture_sur_rue, cloture_limite, devanture_commerciale, ravalement, demolition, extension, surelevation, protege_l151_19, unesco. [] sinon. (Inutile de taguer « abf » : tout le SPR relève de l'ABF.)
+- Si la prescription renvoie à un croquis / une illustration → needs_vision = true (décris-le dans citizen_summary).
+- Si elle renvoie à un nuancier, un cahier de recommandations ou un autre document externe → needs_external_doc = true, external_doc_name = nom exact.
+
+CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES :
+- citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Couleur des volets », « Matériaux de toiture autorisés », « Clôtures sur rue ».
+- citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant (« particulier qui rénove sa maison en secteur protégé »). Inclus la prescription, ce qui est imposé/autorisé/interdit, les matériaux et teintes, les exceptions, et — si needs_vision = true — la description du croquis. Phrases complètes, pas de bullets, pas de jargon.
+- citizen_relevant : false UNIQUEMENT si purement administratif ; true sinon.`;
+}
+
 async function runIngestJob(job: IngestJob): Promise<void> {
   // Aplatit tous les lots de tous les segments en une queue, traité par un
   // pool de workers. Chaque entrée porte son segmentIndex pour rendre les pages
@@ -1207,8 +1287,9 @@ async function runIngestJob(job: IngestJob): Promise<void> {
     const zone = seg.zones.find((z) => z.code === zoneCode)!;
     const batch = zone.batches[batchIndex]!;
     const blocks = await renderPagesAsBlocksFor(seg.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
+    const isSprBatch = job.document?.type === "spr";
     const ruleMsg = await callAi(
-      { purpose: "plu_rule_extract", userId: job.userId, communeId: job.commune.id },
+      { purpose: isSprBatch ? "spr_rule_extract" : "plu_rule_extract", userId: job.userId, communeId: job.commune.id },
       {
         model: "ai-smart",
         max_tokens: 4000,
@@ -1225,27 +1306,9 @@ async function runIngestJob(job: IngestJob): Promise<void> {
           role: "user",
           content: [
             ...blocks,
-            { type: "text", text: `Ces pages font partie d'un règlement PLU français, section "Zone ${zone.code}" (${zone.label}). Extrais les règles de la ZONE ${zone.code} uniquement.
-
-Pour CHAQUE article ou sous-article distinct présent dans ces pages, appelle save_rule UNE fois.
-Correspondance article → topic :
-  1/2 → destinations | 5 → terrain_min | 6 → recul_voie | 7 → recul_limite
-  8 → recul_batiments | 9 → emprise_sol | 10 → hauteur | 11 → aspect
-  12 → stationnement | 13 → espaces_verts | 14 → cos
-
-- Lis ATTENTIVEMENT les tableaux (notamment l'article 12 stationnement, l'article 13 espaces verts) : chaque ligne du tableau = une règle distincte → un appel save_rule par ligne.
-- Un même article peut porter PLUSIEURS règles distinctes selon la destination (habitation, commerce, bureaux, artisanat, hôtellerie…). Émets UN save_rule par destination / catégorie, avec son propre rule_text et sa propre valeur. Ne fusionne pas tout dans une seule règle.
-- Si l'article dit "sans objet" ou "non réglementé" → not_regulated = true, appelle quand même save_rule.
-- Plusieurs valeurs selon sous-secteurs géographiques (UA1 vs UA2…) → 1 save_rule par sous-secteur si possible, sinon valeur principale dans value_max + variantes dans conditions.
-- Si la règle renvoie à un schéma/croquis graphique → needs_vision = true.
-- Si la règle renvoie à un document externe (PPRI, PLH, cahier des charges ZAC, arrêté préfectoral, servitude…) → needs_external_doc = true, external_doc_name = nom exact.
-- N'invente aucune valeur. Si incertain, omets value_min/max/exact.
-
-CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à rédiger SOIGNEUSEMENT :
-- citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Stationnement pour logements individuels », « Hauteur maximale des annexes », « Implantation en limite de propriété ».
-- citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant, niveau « particulier qui veut construire chez lui ». Inclus EXPLICITEMENT : la règle, les conditions, les exceptions, les valeurs chiffrées avec unité, ET — si needs_vision = true — décris le schéma associé (ce qu'il montre, ce qu'il autorise, ce qu'il interdit). Phrases complètes, JAMAIS de version 10 mots compacte, pas de bullets, pas de jargon juridique.
-- Exemple acceptable (article 7, recul limites) : « Selon la profondeur par rapport à la voie, l'implantation est autorisée soit d'une limite à l'autre, soit avec un retrait minimal. Sur les 20 premiers mètres : retrait de 3 m minimum (ou H/2) pour moins de 3 logements ; 5 m (ou 1,5 × H) pour 3 logements et plus. Au-delà de 20 mètres, l'implantation en limite séparative est interdite. Exceptions : annexes, jumelages, extensions de constructions déjà en limite. Les piscines doivent rester à 3 m minimum. Le schéma associé illustre le calcul de H sur terrain plat ou en pente, et la zone des 20 mètres depuis la voie. »
-- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.${PLU_EXTRACTION_CALIBRATION}` },
+            // Prompt adapté au type de document : un SPR est thématique/patrimonial
+            // (aspect, toitures, matériaux…) et non articulé en articles 1-16.
+            { type: "text", text: isSprBatch ? sprExtractionPrompt(zone) : pluExtractionPrompt(zone) },
           ],
         }],
       },
