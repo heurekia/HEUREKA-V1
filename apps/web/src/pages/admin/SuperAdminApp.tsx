@@ -427,6 +427,7 @@ const navGroups: NavGroup[] = [
     title: "Système",
     items: [
       { path: adminPath("/site"), icon: "🚀", label: "Site public" },
+      { path: adminPath("/types-documents"), icon: "🗂", label: "Types de documents" },
       { path: adminPath("/configuration"), icon: "⚙", label: "Configuration" },
     ],
   },
@@ -1560,6 +1561,20 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
   // évite de pré-cocher 44 cases au montage du formulaire.
   const [selection, setSelection] = useState<Set<string> | null>(null);
   const [form, setForm] = useState({ type: "plui", name: "", original_filename: "" });
+  // Référentiel des types (paramétré depuis « Types de documents »). On garde
+  // EPCI_DOCUMENT_TYPES en repli tant que la config n'est pas chargée / en cas
+  // d'erreur, pour ne jamais vider la liste déroulante.
+  const [docTypes, setDocTypes] = useState<{ value: string; label: string }[]>([...EPCI_DOCUMENT_TYPES]);
+  useEffect(() => {
+    api.get<{ value: string; label: string; description: string | null; scope: string; is_active: boolean }[]>("/admin/document-types")
+      .then((rows) => {
+        const usable = rows
+          .filter((r) => r.is_active && (r.scope === "epci" || r.scope === "both"))
+          .map((r) => ({ value: r.value, label: r.description ? `${r.label} — ${r.description}` : r.label }));
+        if (usable.length) setDocTypes(usable);
+      })
+      .catch(() => { /* garde le fallback EPCI_DOCUMENT_TYPES */ });
+  }, []);
 
   // ── Flow d'ingestion PDF d'un document existant ──────────────────────────
   // Étape 1 : on uploade le PDF en base64 via /start (le worker serveur
@@ -1963,7 +1978,7 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
     setManualToc((p) => p ? { ...p, submitting: false } : p);
   };
 
-  const typeLabel = (t: string) => EPCI_DOCUMENT_TYPES.find((d) => d.value === t)?.label.split(" — ")[0] ?? t.toUpperCase();
+  const typeLabel = (t: string) => docTypes.find((d) => d.value === t)?.label.split(" — ")[0] ?? t.toUpperCase();
   const statusColors: Record<string, { color: string; bg: string }> = {
     uploaded: { color: C.textMuted, bg: C.bg },
     ingested: { color: C.green, bg: C.greenBg },
@@ -2019,7 +2034,7 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
           <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12, marginBottom: 12 }}>
             <Field label="Type">
               <Select value={form.type} onChange={(v) => setForm({ ...form, type: v })} disabled={submitting}>
-                {EPCI_DOCUMENT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                {docTypes.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
               </Select>
             </Field>
             <Field label="Nom du document *">
@@ -2182,7 +2197,7 @@ function EpciDocuments({ epciId, members }: { epciId: string; members: { id: str
                     <div style={{ display: "grid", gridTemplateColumns: "1fr 2fr", gap: 12, marginBottom: 12 }}>
                       <Field label="Type">
                         <Select value={editForm.type} onChange={(v) => setEditForm({ ...editForm, type: v })} disabled={actionSubmitting}>
-                          {EPCI_DOCUMENT_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
+                          {docTypes.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                         </Select>
                       </Field>
                       <Field label="Nom du document *">
@@ -8277,6 +8292,194 @@ function SitePublic() {
   );
 }
 
+// ─── Types de documents réglementaires ───────────────────────────────────────
+// Paramétrage des intitulés de la liste déroulante « Type » utilisée au dépôt
+// d'un document réglementaire (côté mairie et côté EPCI ici). La clé technique
+// (`value`) est immuable pour un type existant — on ne renomme que l'intitulé
+// affiché — afin de ne pas orpheliner les documents déjà déposés.
+interface DocTypeRow {
+  id?: string;
+  value: string;
+  label: string;
+  description: string | null;
+  color: string;
+  scope: "commune" | "epci" | "both";
+  is_active: boolean;
+  _new?: boolean;
+}
+
+const SCOPE_LABELS: Record<DocTypeRow["scope"], string> = {
+  commune: "Commune",
+  epci: "EPCI",
+  both: "Commune + EPCI",
+};
+
+function DocumentTypes() {
+  const [rows, setRows] = useState<DocTypeRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [savedAt, setSavedAt] = useState<string | null>(null);
+
+  useEffect(() => {
+    api.get<DocTypeRow[]>("/admin/document-types")
+      .then(setRows)
+      .catch(() => setError("Impossible de charger les types de documents."))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const update = (i: number, patch: Partial<DocTypeRow>) =>
+    setRows((rs) => rs.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+
+  const move = (i: number, dir: -1 | 1) =>
+    setRows((rs) => {
+      const j = i + dir;
+      if (j < 0 || j >= rs.length) return rs;
+      const next = [...rs];
+      [next[i], next[j]] = [next[j]!, next[i]!];
+      return next;
+    });
+
+  const removeRow = (i: number) => setRows((rs) => rs.filter((_, idx) => idx !== i));
+
+  const addRow = () =>
+    setRows((rs) => [
+      ...rs,
+      { value: "", label: "", description: "", color: "#64748B", scope: "both", is_active: true, _new: true },
+    ]);
+
+  const save = async () => {
+    setError(null);
+    setSavedAt(null);
+    setSaving(true);
+    try {
+      const payload = {
+        types: rows.map((r) => ({
+          value: r.value,
+          label: r.label,
+          description: r.description,
+          color: r.color,
+          scope: r.scope,
+          is_active: r.is_active,
+        })),
+      };
+      const saved = await api.put<DocTypeRow[]>("/admin/document-types", payload);
+      setRows(saved);
+      setSavedAt(new Date().toLocaleTimeString("fr-FR"));
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Échec de l'enregistrement.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  if (loading) {
+    return <PageShell><div style={{ display: "flex", justifyContent: "center", padding: 80 }}><Spinner size={40} /></div></PageShell>;
+  }
+
+  const cell: React.CSSProperties = { padding: "8px 8px", verticalAlign: "middle" };
+  const inputStyle: React.CSSProperties = {
+    width: "100%", padding: "7px 9px", fontSize: 13, borderRadius: 7,
+    border: `1px solid ${C.border}`, color: C.text, outline: "none", boxSizing: "border-box",
+  };
+
+  return (
+    <PageShell>
+      <div style={{ marginBottom: 24 }}>
+        <h1 style={{ margin: "0 0 4px", fontSize: 24, fontWeight: 800, color: C.text }}>Types de documents réglementaires</h1>
+        <p style={{ margin: 0, color: C.textMuted, fontSize: 14 }}>
+          Paramétrez les intitulés, couleurs et l'ordre de la liste déroulante « Type » proposée au dépôt d'un document réglementaire (PLU, PPRI, OAP…). La <strong>clé technique</strong> d'un type existant n'est pas modifiable pour préserver les documents déjà déposés — désactivez un type plutôt que de le supprimer s'il est encore utilisé.
+        </p>
+      </div>
+
+      <div style={{ background: C.white, borderRadius: 14, border: `1px solid ${C.border}`, overflow: "hidden" }}>
+        <table style={{ width: "100%", borderCollapse: "collapse", fontSize: 13 }}>
+          <thead>
+            <tr style={{ background: C.bg, textAlign: "left", color: C.textMuted, fontSize: 12 }}>
+              <th style={{ ...cell, width: 70 }}>Ordre</th>
+              <th style={{ ...cell, width: 150 }}>Intitulé</th>
+              <th style={{ ...cell, width: 150 }}>Clé technique</th>
+              <th style={cell}>Description</th>
+              <th style={{ ...cell, width: 70 }}>Couleur</th>
+              <th style={{ ...cell, width: 150 }}>Visibilité</th>
+              <th style={{ ...cell, width: 80 }}>Actif</th>
+              <th style={{ ...cell, width: 50 }}></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r, i) => (
+              <tr key={r.id ?? `new-${i}`} style={{ borderTop: `1px solid ${C.border}`, opacity: r.is_active ? 1 : 0.55 }}>
+                <td style={cell}>
+                  <div style={{ display: "flex", gap: 2 }}>
+                    <button onClick={() => move(i, -1)} disabled={i === 0} title="Monter"
+                      style={{ border: `1px solid ${C.border}`, background: C.white, borderRadius: 6, cursor: i === 0 ? "default" : "pointer", padding: "2px 6px", opacity: i === 0 ? 0.4 : 1 }}>↑</button>
+                    <button onClick={() => move(i, 1)} disabled={i === rows.length - 1} title="Descendre"
+                      style={{ border: `1px solid ${C.border}`, background: C.white, borderRadius: 6, cursor: i === rows.length - 1 ? "default" : "pointer", padding: "2px 6px", opacity: i === rows.length - 1 ? 0.4 : 1 }}>↓</button>
+                  </div>
+                </td>
+                <td style={cell}>
+                  <input value={r.label} onChange={(e) => update(i, { label: e.target.value })} placeholder="Ex. PPRI" style={inputStyle} />
+                </td>
+                <td style={cell}>
+                  {r._new ? (
+                    <input value={r.value} onChange={(e) => update(i, { value: e.target.value.toLowerCase() })} placeholder="ex. ppri" style={{ ...inputStyle, fontFamily: "monospace" }} />
+                  ) : (
+                    <code style={{ fontSize: 12, color: C.textMuted, background: C.bg, padding: "4px 8px", borderRadius: 6, display: "inline-block" }}>{r.value}</code>
+                  )}
+                </td>
+                <td style={cell}>
+                  <input value={r.description ?? ""} onChange={(e) => update(i, { description: e.target.value })} placeholder="Libellé long (optionnel)" style={inputStyle} />
+                </td>
+                <td style={cell}>
+                  <input type="color" value={r.color} onChange={(e) => update(i, { color: e.target.value })} style={{ width: 40, height: 30, border: `1px solid ${C.border}`, borderRadius: 6, padding: 2, cursor: "pointer" }} />
+                </td>
+                <td style={cell}>
+                  <select value={r.scope} onChange={(e) => update(i, { scope: e.target.value as DocTypeRow["scope"] })} style={inputStyle}>
+                    {(Object.keys(SCOPE_LABELS) as DocTypeRow["scope"][]).map((s) => (
+                      <option key={s} value={s}>{SCOPE_LABELS[s]}</option>
+                    ))}
+                  </select>
+                </td>
+                <td style={cell}>
+                  <button
+                    type="button" role="switch" aria-checked={r.is_active} aria-label="Actif"
+                    onClick={() => update(i, { is_active: !r.is_active })}
+                    style={{ width: 40, height: 23, borderRadius: 999, position: "relative", padding: 0, border: "none", cursor: "pointer", background: r.is_active ? C.accent : "#CBD5E1", transition: "background 0.15s" }}
+                  >
+                    <span style={{ position: "absolute", top: 3, left: r.is_active ? 20 : 3, width: 17, height: 17, borderRadius: "50%", background: "white", transition: "left 0.15s", boxShadow: "0 1px 2px rgba(0,0,0,0.2)" }} />
+                  </button>
+                </td>
+                <td style={cell}>
+                  <button onClick={() => removeRow(i)} title="Supprimer" style={{ border: "none", background: "none", cursor: "pointer", color: C.red, fontSize: 16 }}>🗑</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+        <div style={{ padding: "12px 14px", borderTop: `1px solid ${C.border}` }}>
+          <button onClick={addRow} style={{ border: `1px dashed ${C.accent}`, background: C.accentLight, color: C.accent, borderRadius: 8, padding: "8px 14px", fontSize: 13, fontWeight: 600, cursor: "pointer" }}>
+            + Ajouter un type
+          </button>
+        </div>
+      </div>
+
+      {error && (
+        <div style={{ background: C.redBg, border: "1px solid #FECACA", color: "#B91C1C", borderRadius: 8, padding: "10px 14px", fontSize: 13, marginTop: 16 }}>
+          {error}
+        </div>
+      )}
+
+      <div style={{ display: "flex", alignItems: "center", gap: 14, marginTop: 20 }}>
+        <button onClick={save} disabled={saving}
+          style={{ padding: "11px 22px", fontSize: 14, fontWeight: 700, borderRadius: 8, border: "none", background: C.accent, color: "white", cursor: saving ? "not-allowed" : "pointer", opacity: saving ? 0.6 : 1 }}>
+          {saving ? "Enregistrement…" : "Enregistrer"}
+        </button>
+        {savedAt && <span style={{ fontSize: 13, color: C.green, fontWeight: 600 }}>✓ Enregistré à {savedAt}</span>}
+      </div>
+    </PageShell>
+  );
+}
+
 // ─── App Root ──────────────────────────────────────────────
 export function SuperAdminApp() {
   return (
@@ -8304,6 +8507,7 @@ export function SuperAdminApp() {
           <Route path="/conformite" element={<Conformite />} />
           <Route path="/documentation" element={<DocumentationAdmin />} />
           <Route path="/site" element={<SitePublic />} />
+          <Route path="/types-documents" element={<DocumentTypes />} />
           <Route path="/configuration" element={<Configuration />} />
           <Route path="*" element={<Navigate to={adminPath()} replace />} />
         </Routes>

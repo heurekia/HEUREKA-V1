@@ -1,5 +1,6 @@
 import "dotenv/config";
 import postgres from "postgres";
+import { DEFAULT_REGULATORY_DOCUMENT_TYPES } from "./schema/regulatoryDocumentTypes.js";
 
 const connectionString = process.env.DATABASE_URL ?? "postgres://localhost:5432/heureka_v1";
 
@@ -1761,6 +1762,25 @@ VALUES
   (2026, 892, 1011, 0.5, 100, 0.40, 251, 2928, 5857, 'Arrêté du 22 décembre 2025 (art. 1635 quater I CGI)')
 ON CONFLICT (year) DO NOTHING;
 
+-- ── Référentiel paramétrable des types de documents réglementaires ─────────
+-- Pilote les listes déroulantes « Type » du dépôt de documents (mairie + EPCI),
+-- éditable depuis le super-admin (libellés, couleurs, ordre, visibilité). La
+-- colonne value reste la clé stockée dans regulatory_documents.type. Le seed
+-- initial (reproduisant les anciennes constantes front) est inséré plus bas via
+-- SEED_DOCUMENT_TYPES (ON CONFLICT DO NOTHING -- jamais d'ecrasement).
+CREATE TABLE IF NOT EXISTS regulatory_document_types (
+  id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+  value         text NOT NULL UNIQUE,
+  label         text NOT NULL,
+  description   text,
+  color         text NOT NULL DEFAULT '#64748B',
+  scope         text NOT NULL DEFAULT 'both',
+  sort_order    integer NOT NULL DEFAULT 0,
+  is_active     boolean NOT NULL DEFAULT true,
+  created_at    timestamp NOT NULL DEFAULT now(),
+  updated_at    timestamp NOT NULL DEFAULT now()
+);
+
 -- ── Lot 5 — Datation d'effet des documents réglementaires ───────────────────
 -- Arbitre la SUBSTITUTION entre documents de la même famille PLU couvrant une
 -- même commune : un PLUi entré en vigueur remplace le PLU communal historique.
@@ -1800,12 +1820,27 @@ WHERE type = 'certificat_urbanisme'
   AND (metadata->>'certificatType' IS DISTINCT FROM 'a');
 `;
 
+// Seed du référentiel des types de documents réglementaires. Généré depuis la
+// source unique DEFAULT_REGULATORY_DOCUMENT_TYPES pour éviter toute divergence
+// avec le schéma. ON CONFLICT (value) DO NOTHING : idempotent et non destructif
+// (les libellés édités ensuite par un admin ne sont jamais réécrasés).
+const escape = (s: string) => s.replace(/'/g, "''");
+const SEED_DOCUMENT_TYPES = `
+INSERT INTO regulatory_document_types (value, label, description, color, scope, sort_order)
+VALUES
+${DEFAULT_REGULATORY_DOCUMENT_TYPES.map((t) =>
+  `  ('${escape(t.value)}', '${escape(t.label)}', ${t.description === null ? "NULL" : `'${escape(t.description)}'`}, '${escape(t.color)}', '${escape(t.scope)}', ${t.sort_order})`,
+).join(",\n")}
+ON CONFLICT (value) DO NOTHING;
+`;
+
 async function main() {
   const client = postgres(connectionString, { max: 1, onnotice: () => {} });
   try {
     console.log("Running migrations...");
     await client.unsafe(SQL);
     await client.unsafe(BACKFILL_DOSSIER_TYPES);
+    await client.unsafe(SEED_DOCUMENT_TYPES);
     console.log("Migrations complete.");
   } finally {
     await client.end();
