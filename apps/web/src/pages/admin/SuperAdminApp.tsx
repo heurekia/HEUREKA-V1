@@ -42,6 +42,7 @@ interface Commune {
   epci_id: string | null;
   epci_name: string | null;
   instruction_mutualisee: boolean;
+  has_spr: boolean;
   user_count: number;
   dossier_count: number;
 }
@@ -936,7 +937,7 @@ function CommuneDetail() {
   const [step1, setStep1] = useState({ name: "", insee_code: "", zip_code: "", departement: "", region: "" });
   const [step2, setStep2] = useState({ email: "", telephone: "", description: "" });
   const [step3, setStep3] = useState({ logo_url: "" });
-  const [step4, setStep4] = useState({ epci_id: "", instruction_mutualisee: false });
+  const [step4, setStep4] = useState({ epci_id: "", instruction_mutualisee: false, has_spr: false });
   const [newUser, setNewUser] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
   const [editingUser, setEditingUser] = useState<UserItem | null>(null);
   const [editUserForm, setEditUserForm] = useState({ prenom: "", nom: "", email: "", role: "mairie", telephone: "" });
@@ -956,7 +957,7 @@ function CommuneDetail() {
         setStep1({ name: found.name, insee_code: found.insee_code, zip_code: found.zip_code ?? "", departement: found.departement ?? "", region: found.region ?? "" });
         setStep2({ email: found.email ?? "", telephone: found.telephone ?? "", description: found.description ?? "" });
         setStep3({ logo_url: found.logo_url ?? "" });
-        setStep4({ epci_id: found.epci_id ?? "", instruction_mutualisee: found.instruction_mutualisee ?? false });
+        setStep4({ epci_id: found.epci_id ?? "", instruction_mutualisee: found.instruction_mutualisee ?? false, has_spr: found.has_spr ?? false });
 
         const users = await api.get<UserItem[]>(`/admin/users?commune=${encodeURIComponent(found.name)}`);
         setCommuneUsers(users.filter((u) => u.role !== "citoyen"));
@@ -1253,6 +1254,20 @@ function CommuneDetail() {
                 })}
               </div>
             )}
+            {/* Site Patrimonial Remarquable : active l'onglet SPR dans la
+                Réglementation de la commune (indépendant du groupement). */}
+            <div
+              onClick={() => setStep4({ ...step4, has_spr: !step4.has_spr })}
+              style={{ display: "flex", alignItems: "center", gap: 12, padding: "14px 16px", background: step4.has_spr ? C.accentLight : C.bg, border: `1px solid ${step4.has_spr ? C.accent : C.border}`, borderRadius: 10, cursor: "pointer", userSelect: "none" }}
+            >
+              <div style={{ width: 18, height: 18, borderRadius: 5, border: `2px solid ${step4.has_spr ? C.accent : C.border}`, background: step4.has_spr ? C.accent : "white", flexShrink: 0, display: "flex", alignItems: "center", justifyContent: "center", color: "white", fontSize: 12, fontWeight: 700 }}>
+                {step4.has_spr && "✓"}
+              </div>
+              <div>
+                <div style={{ fontSize: 14, fontWeight: 600, color: step4.has_spr ? C.accent : C.text }}>Site Patrimonial Remarquable (SPR)</div>
+                <div style={{ fontSize: 12, color: C.textMuted, marginTop: 2 }}>Active l'onglet SPR dans la Réglementation de cette commune (import du règlement + secteurs).</div>
+              </div>
+            </div>
             <div>
               <button
                 onClick={() => setShowCreateEpci(!showCreateEpci)}
@@ -1292,7 +1307,7 @@ function CommuneDetail() {
                 ← Précédent
               </button>
               <button
-                onClick={() => save({ epci_id: step4.epci_id || null, instruction_mutualisee: step4.instruction_mutualisee })}
+                onClick={() => save({ epci_id: step4.epci_id || null, instruction_mutualisee: step4.instruction_mutualisee, has_spr: step4.has_spr })}
                 disabled={saving}
                 style={{ padding: "10px 24px", background: C.accent, color: "white", border: "none", borderRadius: 8, cursor: "pointer", fontSize: 14, fontWeight: 700 }}
               >

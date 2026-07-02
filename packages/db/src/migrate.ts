@@ -191,6 +191,8 @@ CREATE TABLE IF NOT EXISTS epci (
 );
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS epci_id uuid REFERENCES epci(id) ON DELETE SET NULL;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS instruction_mutualisee boolean NOT NULL DEFAULT false;
+-- Onglet SPR de la Réglementation, activé par commune depuis le back-office.
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS has_spr boolean NOT NULL DEFAULT false;
 
 -- Promote mairie@tours.fr to admin
 UPDATE users SET role = 'admin' WHERE email = 'mairie@tours.fr';
@@ -655,6 +657,18 @@ ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS height_spec jsonb;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_title text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_summary text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_relevant boolean NOT NULL DEFAULT true;
+-- Niveau de norme pour la primauté entre règles co-applicables (SPR/SUP > PLU).
+-- Default 'plu' → toutes les règles existantes gardent leur comportement.
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS niveau_norme text NOT NULL DEFAULT 'plu';
+-- Rétro-tag idempotent : une règle issue d'un document servitude (SPR/PPRI/…)
+-- est supra-PLU. Aligne l'existant sur niveauNormeForDocType (aucune règle non
+-- servitude n'est touchée). Sans effet aujourd'hui (aucun de ces docs ne génère
+-- encore de règle), mais garantit la cohérence dès qu'ils en produiront.
+UPDATE zone_regulatory_rules r SET niveau_norme = 'sup'
+  FROM regulatory_documents d
+  WHERE r.source_document_id = d.id
+    AND d.type IN ('spr', 'ppri', 'pprt', 'pprn', 'peb')
+    AND r.niveau_norme <> 'sup';
 
 -- article_number : integer → double precision. Les PLU modernisés numérotent
 -- en décimal (« 12.1 », « 12.2 »…) ; la colonne integer faisait planter
