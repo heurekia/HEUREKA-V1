@@ -2,7 +2,7 @@ import { useState, useEffect, useMemo, useRef } from "react";
 import { useSearchParams } from "react-router-dom";
 import { api } from "../../lib/api";
 import { useAuth } from "../../hooks/useAuth";
-import { DotsIcon, StatusBadge, ChevronDownIcon } from "./ui";
+import { DotsIcon, StatusBadge } from "./ui";
 import { fmtDate, STATUS_LABEL, TYPE_LABEL, type ApiDossier, type DossierInfo } from "./shared";
 
 // Écran "Dossiers" : liste filtrable/paginée des dossiers de la commune.
@@ -37,6 +37,12 @@ export function DossiersScreen({ commune, onDossierClick }: { commune: string; o
   const [menuAnchor, setMenuAnchor] = useState<DOMRect | null>(null);
   const [rowActionBusy, setRowActionBusy] = useState(false);
   const [refreshKey, setRefreshKey] = useState(0);
+  // Pagination côté client : les dossiers sont déjà tous chargés et filtrés en
+  // mémoire, mais on ne monte dans le DOM qu'une page de lignes à la fois. Une
+  // commune à plusieurs centaines de dossiers gardait jusqu'ici autant de <tr>
+  // montés simultanément (scroll saccadé, RAM/CPU élevés, surtout sur mobile).
+  const PAGE_SIZE = 50;
+  const [page, setPage] = useState(0);
 
   type ColKey = "petitionnaire" | "adresse" | "type" | "statut" | "date_depot" | "echeance" | "instructeur";
   const ALL_COLS: { key: ColKey; label: string }[] = [
@@ -135,6 +141,19 @@ export function DossiersScreen({ commune, onDossierClick }: { commune: string; o
       return matchTab && matchQ;
     });
   }, [allRows, activeTab, searchQ]);
+
+  // Tout changement de filtre/recherche/portée ou de source remet la vue en
+  // première page (sinon on pourrait rester bloqué sur une page désormais vide).
+  useEffect(() => { setPage(0); }, [activeTab, searchQ, scope, apiDossiers]);
+
+  const pageCount = Math.max(1, Math.ceil(rows.length / PAGE_SIZE));
+  const safePage = Math.min(page, pageCount - 1);
+  const pageRows = useMemo(
+    () => rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE),
+    [rows, safePage],
+  );
+  const rangeStart = rows.length === 0 ? 0 : safePage * PAGE_SIZE + 1;
+  const rangeEnd = Math.min(rows.length, (safePage + 1) * PAGE_SIZE);
 
   // N° Dossier + colonnes visibles (en excluant « instructeur » pour les
   // non-superviseurs, qui ne voient pas la colonne) + Actions.
@@ -289,7 +308,7 @@ export function DossiersScreen({ commune, onDossierClick }: { commune: string; o
               <tr><td colSpan={colSpan} style={{ padding: "24px 16px", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Chargement…</td></tr>
             ) : rows.length === 0 ? (
               <tr><td colSpan={colSpan} style={{ padding: "24px 16px", textAlign: "center", color: "#94a3b8", fontSize: 13 }}>Aucun dossier trouvé</td></tr>
-            ) : rows.map((r) => (
+            ) : pageRows.map((r) => (
               <tr key={r.id} style={{
                 borderBottom: "1px solid #F1F5F9",
                 cursor: r.ocrProcessing ? "not-allowed" : "pointer",
@@ -438,15 +457,31 @@ export function DossiersScreen({ commune, onDossierClick }: { commune: string; o
           </tbody>
         </table>
         <div style={{ padding: "12px 16px", display: "flex", alignItems: "center", justifyContent: "space-between", borderTop: "1px solid #F1F5F9" }}>
-          <span style={{ fontSize: 12, color: "#64748b" }}>{rows.length} dossier{rows.length !== 1 ? "s" : ""} affiché{rows.length !== 1 ? "s" : ""}</span>
+          <span style={{ fontSize: 12, color: "#64748b" }}>
+            {rows.length === 0
+              ? "Aucun dossier"
+              : `${rangeStart}–${rangeEnd} sur ${rows.length} dossier${rows.length !== 1 ? "s" : ""}`}
+          </span>
           <div style={{ flex: 1 }} />
-          {/* Indicateur décoratif (une seule option). On évite le <select> natif :
-              ses contrôles sont rendus par la couche native du navigateur et
-              transparaissent par-dessus le menu « ⋮ » (fixed, z-index) qui peut
-              recouvrir ce pied de page — quel que soit le z-index. */}
-          <div style={{ border: "1px solid #E2E8F0", borderRadius: 6, padding: "4px 8px", fontSize: 12, color: "#64748b", background: "white", display: "inline-flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
-            Tous les dossiers par page
-            <span style={{ color: "#94a3b8", display: "inline-flex" }}><ChevronDownIcon size={12} /></span>
+          {/* Navigation par page. Boutons Précédent/Suivant plutôt qu'un <select>
+              natif, dont les contrôles (rendus par la couche native du navigateur)
+              transparaissent par-dessus le menu « ⋮ » (fixed, z-index élevé). */}
+          <div style={{ display: "inline-flex", alignItems: "center", gap: 8, whiteSpace: "nowrap" }}>
+            <button
+              onClick={() => setPage(p => Math.max(0, p - 1))}
+              disabled={safePage <= 0}
+              style={{ border: "1px solid #E2E8F0", borderRadius: 6, padding: "4px 10px", fontSize: 12, color: safePage <= 0 ? "#CBD5E1" : "#475569", background: "white", cursor: safePage <= 0 ? "default" : "pointer" }}
+            >
+              Précédent
+            </button>
+            <span style={{ fontSize: 12, color: "#64748b" }}>Page {safePage + 1} / {pageCount}</span>
+            <button
+              onClick={() => setPage(p => Math.min(pageCount - 1, p + 1))}
+              disabled={safePage >= pageCount - 1}
+              style={{ border: "1px solid #E2E8F0", borderRadius: 6, padding: "4px 10px", fontSize: 12, color: safePage >= pageCount - 1 ? "#CBD5E1" : "#475569", background: "white", cursor: safePage >= pageCount - 1 ? "default" : "pointer" }}
+            >
+              Suivant
+            </button>
           </div>
         </div>
       </div>

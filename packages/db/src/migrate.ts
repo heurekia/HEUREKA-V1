@@ -192,6 +192,8 @@ CREATE TABLE IF NOT EXISTS epci (
 );
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS epci_id uuid REFERENCES epci(id) ON DELETE SET NULL;
 ALTER TABLE communes ADD COLUMN IF NOT EXISTS instruction_mutualisee boolean NOT NULL DEFAULT false;
+-- Onglet SPR de la Réglementation, activé par commune depuis le back-office.
+ALTER TABLE communes ADD COLUMN IF NOT EXISTS has_spr boolean NOT NULL DEFAULT false;
 
 -- Promote mairie@tours.fr to admin
 UPDATE users SET role = 'admin' WHERE email = 'mairie@tours.fr';
@@ -656,6 +658,18 @@ ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS height_spec jsonb;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_title text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_summary text;
 ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS citizen_relevant boolean NOT NULL DEFAULT true;
+-- Niveau de norme pour la primauté entre règles co-applicables (SPR/SUP > PLU).
+-- Default 'plu' → toutes les règles existantes gardent leur comportement.
+ALTER TABLE zone_regulatory_rules ADD COLUMN IF NOT EXISTS niveau_norme text NOT NULL DEFAULT 'plu';
+-- Rétro-tag idempotent : une règle issue d'un document servitude (SPR/PPRI/…)
+-- est supra-PLU. Aligne l'existant sur niveauNormeForDocType (aucune règle non
+-- servitude n'est touchée). Sans effet aujourd'hui (aucun de ces docs ne génère
+-- encore de règle), mais garantit la cohérence dès qu'ils en produiront.
+UPDATE zone_regulatory_rules r SET niveau_norme = 'sup'
+  FROM regulatory_documents d
+  WHERE r.source_document_id = d.id
+    AND d.type IN ('spr', 'ppri', 'pprt', 'pprn', 'peb')
+    AND r.niveau_norme <> 'sup';
 
 -- article_number : integer → double precision. Les PLU modernisés numérotent
 -- en décimal (« 12.1 », « 12.2 »…) ; la colonne integer faisait planter
@@ -835,6 +849,15 @@ UPDATE dossier_pieces_jointes
  WHERE ocr_status = 'pending' AND uploaded_at < now() - interval '5 minutes';
 CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_ocr_status
   ON dossier_pieces_jointes(dossier_id, ocr_status);
+-- Index partiel très sélectif sur les pièces « en vol » (OCR pas encore
+-- terminé, non archivées). La très grande majorité des pièces sont en statut
+-- done/skipped : ce prédicat garde l'index minuscule. Il sert exactement au
+-- sweep OCR minute (jobs/scheduler.ts) et à l'expression ocr_processing de la
+-- liste des dossiers (routes/mairie/dossiers.ts), qui filtrent tous deux sur
+-- archived_at IS NULL AND ocr_status IN ('pending','processing').
+CREATE INDEX IF NOT EXISTS idx_dossier_pieces_jointes_ocr_inflight
+  ON dossier_pieces_jointes(dossier_id)
+  WHERE archived_at IS NULL AND ocr_status IN ('pending', 'processing');
 
 -- ── RGPD : empreinte du fichier envoyé à l'IA (sans stocker le contenu) ──
 -- SHA-256 hexadécimal calculé côté serveur AVANT envoi. Permet de prouver
@@ -1757,6 +1780,21 @@ CREATE TABLE IF NOT EXISTS regulatory_document_types (
   created_at    timestamp NOT NULL DEFAULT now(),
   updated_at    timestamp NOT NULL DEFAULT now()
 );
+
+-- ── Lot 5 — Datation d'effet des documents réglementaires ───────────────────
+-- Arbitre la SUBSTITUTION entre documents de la même famille PLU couvrant une
+-- même commune : un PLUi entré en vigueur remplace le PLU communal historique.
+-- Le résolveur (builder.ts) ne retient, par commune et pour la famille PLU, que
+-- le document en vigueur à la date d'analyse ; les autres familles (PPRI, OAP…)
+-- continuent de se superposer. Additif strict : les deux colonnes sont NULL par
+-- défaut → tout document existant reste « en vigueur, sans borne » (rétro-compat).
+ALTER TABLE regulatory_documents ADD COLUMN IF NOT EXISTS effective_from timestamp;
+ALTER TABLE regulatory_documents ADD COLUMN IF NOT EXISTS effective_to timestamp;
+
+-- Recherche « document de famille PLU en vigueur pour la commune X à la date D »
+-- (jointure document_communes → regulatory_documents, filtre sur la fenêtre).
+CREATE INDEX IF NOT EXISTS idx_regulatory_documents_effective
+  ON regulatory_documents(effective_from);
 `;
 
 // Backfill exécuté APRÈS le bloc DDL : PostgreSQL n'autorise pas l'utilisation

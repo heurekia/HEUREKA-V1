@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect, useCallback, type ReactNode } from "react";
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, type ReactNode } from "react";
 import { api } from "../lib/api";
 
 export interface User {
@@ -85,7 +85,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => { fetchUser(); }, [fetchUser]);
 
-  const login = async (email: string, password: string): Promise<LoginResult> => {
+  const login = useCallback(async (email: string, password: string): Promise<LoginResult> => {
     const res = await api.post<{ user?: User; mfa_required?: boolean; mfa_ticket?: string }>("/auth/login", { email, password });
     // MFA activée : pas de session encore, on remonte le ticket pour la 2e étape.
     if (res.mfa_required && res.mfa_ticket) return { status: "mfa", ticket: res.mfa_ticket };
@@ -95,39 +95,43 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       return { status: "ok", user: res.user };
     }
     throw new Error("Réponse de connexion inattendue");
-  };
+  }, []);
 
-  const verifyMfaLogin = async (ticket: string, code: string): Promise<User> => {
+  const verifyMfaLogin = useCallback(async (ticket: string, code: string): Promise<User> => {
     const res = await api.post<{ user: User }>("/auth/mfa/login-verify", { mfa_ticket: ticket, code });
     setUser(res.user);
     prewarmPluZones(res.user);
     return res.user;
-  };
+  }, []);
 
   // L'inscription ne connecte plus l'utilisateur : il doit confirmer son email.
   // On renvoie l'état "en attente de vérification" pour que l'UI affiche
   // l'écran « consultez votre boîte mail ».
-  const register = async (data: { email: string; password: string; prenom: string; nom: string; role?: string; commune?: string }) => {
+  const register = useCallback(async (data: { email: string; password: string; prenom: string; nom: string; role?: string; commune?: string }) => {
     return api.post<{ pendingVerification: boolean; email: string }>("/auth/register", data);
-  };
+  }, []);
 
-  const verifyEmail = async (token: string) => {
+  const verifyEmail = useCallback(async (token: string) => {
     const res = await api.post<{ user: User }>("/auth/verify-email", { token });
     setUser(res.user);
     prewarmPluZones(res.user);
     return res.user;
-  };
+  }, []);
 
-  const logout = async () => {
+  const logout = useCallback(async () => {
     await api.post("/auth/logout").catch(() => {});
     setUser(null);
-  };
+  }, []);
 
-  return (
-    <AuthContext.Provider value={{ user, loading, login, verifyMfaLogin, register, verifyEmail, logout, refreshUser: fetchUser }}>
-      {children}
-    </AuthContext.Provider>
+  // Mémoïsé : évite de recréer l'objet de contexte à chaque render, ce qui
+  // ferait re-render tous les consommateurs de useAuth() (carte, viewer PDF,
+  // listes) même quand user/loading n'ont pas changé.
+  const value = useMemo(
+    () => ({ user, loading, login, verifyMfaLogin, register, verifyEmail, logout, refreshUser: fetchUser }),
+    [user, loading, login, verifyMfaLogin, register, verifyEmail, logout, fetchUser],
   );
+
+  return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
 }
 
 export function useAuth() {

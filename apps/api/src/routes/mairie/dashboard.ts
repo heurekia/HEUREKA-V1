@@ -141,7 +141,14 @@ dashboardRouter.get("/stats/delais", requirePermission("stats"), async (req: Aut
   try {
     const commune = req.query.commune as string | undefined;
     const scope = await getCommuneScope(req.user!.id, req.user!.role);
-    const cf = communeScopeFilter(sql`commune`, scope, commune);
+    // ⚠️ On qualifie EXPLICITEMENT `dossiers.commune` : la requête `en_retard`
+    // ci-dessous JOINT `users` (pour le nom du pétitionnaire), et `users` porte
+    // AUSSI une colonne `commune`. Un `commune` nu y serait ambigu et ferait
+    // échouer la requête (« column reference "commune" is ambiguous ») → 500
+    // pour tout agent mairie/instructeur dont le périmètre restreint les
+    // communes (scope non-null). Les autres requêtes du handler n'ont pas le
+    // join, mais `dossiers.commune` y reste correct.
+    const cf = communeScopeFilter(sql`dossiers.commune`, scope, commune);
 
     // Délai moyen réel vs délai légal, par type. Le « délai légal » est mesuré
     // sur la vraie échéance calendaire (date_limite_instruction, calculée en

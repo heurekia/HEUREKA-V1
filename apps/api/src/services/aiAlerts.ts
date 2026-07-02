@@ -29,7 +29,24 @@ interface SlackBlock {
   fields?: Array<{ type: string; text: string }>;
 }
 
+// Défense en profondeur anti-SSRF : même si la sauvegarde du webhook valide
+// déjà le domaine (routes/superAdmin.ts), on ne fait JAMAIS confiance à une URL
+// venant de la base au moment de l'envoi. On restreint au domaine officiel
+// Slack en HTTPS, ce qui exclut loopback, IP privées et métadonnées cloud.
+function isAllowedSlackWebhook(webhookUrl: string): boolean {
+  try {
+    const u = new URL(webhookUrl);
+    return u.protocol === "https:" && u.hostname === "hooks.slack.com";
+  } catch {
+    return false;
+  }
+}
+
 async function postToSlack(webhookUrl: string, text: string, blocks?: SlackBlock[]): Promise<boolean> {
+  if (!isAllowedSlackWebhook(webhookUrl)) {
+    console.error("[aiAlerts] webhook Slack refusé (doit être https://hooks.slack.com/...)");
+    return false;
+  }
   try {
     const r = await fetch(webhookUrl, {
       method: "POST",

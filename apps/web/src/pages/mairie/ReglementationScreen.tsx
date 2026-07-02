@@ -376,7 +376,7 @@ type ZoneRow = {
   rules: RuleRow[];
   stats: { total: number; valide: number; brouillon: number; rejete: number };
 };
-type ReglData = { commune: { id: string; name: string; insee_code: string }; zones: ZoneRow[] };
+type ReglData = { commune: { id: string; name: string; insee_code: string; has_spr?: boolean }; zones: ZoneRow[] };
 
 const TOPIC_META: Record<string, { label: string; icon: string }> = {
   interdictions:    { label: "Occupations interdites",     icon: "🚫" },
@@ -416,11 +416,143 @@ const PLU_ARTICLES: Record<number, { title: string; topic: string; abroge?: bool
   14: { title: "Coefficient d'occupation des sols — COS (sans objet — loi ALUR)", topic: "cos", abroge: true },
 };
 
+// Panneau d'upload du règlement SPR — VOLONTAIREMENT ISOLÉ de PluUploadPanel
+// pour ne pas toucher le flux PLU qui fonctionne. Il crée un regulatory_document
+// de type `spr` (mode commune) puis lance l'ingestion en MODE DOCUMENT (doc_id)
+// → les zones SPR (zone_type "spr", source_document_id) cohabitent avec le PLU
+// sans jamais le purger. jobId persisté sous une clé distincte du PLU.
+function SprUploadPanel({ commune, inseeCode, onSuccess }: { commune: string; inseeCode?: string; onSuccess: () => void }) {
+  const [pdfFile, setPdfFile] = useState<File | null>(null);
+  const [dragging, setDragging] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [phase, setPhase] = useState<string | null>(null);
+  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [done, setDone] = useState<{ zones: number; rules: number } | null>(null);
+  const fileRef = useRef<HTMLInputElement>(null);
+  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const SPR_JOB_KEY = `spr-ingest-job:${(inseeCode ?? "").trim()}`;
+
+  const stopPolling = () => {
+    if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
+  };
+
+  const startPolling = (jobId: string) => {
+    stopPolling();
+    const tick = async () => {
+      try {
+        const r = await fetch(`/api/mairie/admin/ingest-plu-pdf/status?jobId=${encodeURIComponent(jobId)}`, { credentials: "include" });
+        if (r.status === 404) {
+          setError("Le job d'ingestion SPR a expiré côté serveur. Relancez l'import.");
+          setPhase(null); setLoading(false); stopPolling();
+          try { localStorage.removeItem(SPR_JOB_KEY); } catch { /* SSR-safe */ }
+          return;
+        }
+        if (!r.ok) return; // transitoire → prochain tick
+        const s = await r.json() as StatusResp;
+        setPhase(s.phase);
+        setProgress({ done: s.zones.filter((z) => z.done).length, total: s.zones.length });
+        if (s.status === "done" && s.result) {
+          setDone({ zones: s.result.zones, rules: s.result.rules });
+          setPhase(null); setLoading(false); stopPolling();
+          try { localStorage.removeItem(SPR_JOB_KEY); } catch { /* SSR-safe */ }
+          setTimeout(onSuccess, 1500);
+        } else if (s.status === "error") {
+          setError(s.error ?? "Erreur serveur"); setPhase(null); setLoading(false); stopPolling();
+          try { localStorage.removeItem(SPR_JOB_KEY); } catch { /* SSR-safe */ }
+        }
+      } catch { /* blip réseau — tick suivant */ }
+    };
+    void tick();
+    pollTimerRef.current = setInterval(tick, 2500);
+  };
+
+  // Reprend le polling si un job SPR était en cours pour cette commune.
+  useEffect(() => {
+    const insee = (inseeCode ?? "").trim();
+    if (!insee) return;
+    let saved: string | null = null;
+    try { saved = localStorage.getItem(SPR_JOB_KEY); } catch { /* SSR-safe */ }
+    if (saved) { setLoading(true); setPhase("Reprise de l'ingestion SPR…"); startPolling(saved); }
+    return stopPolling;
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [inseeCode]);
+
+  const handleFile = (f: File | null) => { setPdfFile(f); setError(null); setDone(null); };
+
+  const handleSubmit = async () => {
+    if (!pdfFile) { setError("Sélectionnez le PDF du règlement SPR."); return; }
+    setLoading(true); setError(null); setDone(null); setPhase("Lecture du PDF…");
+    try {
+      const pdf_base64 = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve((reader.result as string).split(",")[1]!);
+        reader.onerror = reject;
+        reader.readAsDataURL(pdfFile);
+      });
+      // 1) Créer le document SPR (mode commune). Sans pdf_base64 ici : la
+      //    couche texte sert à l'extraction des règles via /start, pas au RAG.
+      setPhase("Création du document SPR…");
+      const doc = await api.post<{ id: string }>("/mairie/documents", {
+        commune_name: commune, type: "spr", name: `SPR — ${commune}`, original_filename: pdfFile.name, file_size: pdfFile.size,
+      });
+      // 2) Ingestion en MODE DOCUMENT → zones SPR isolées du PLU.
+      setPhase("Analyse du règlement SPR…");
+      const start = await api.post<{ jobId: string }>("/mairie/admin/ingest-plu-pdf/start", { doc_id: doc.id, pdf_base64 });
+      try { localStorage.setItem(SPR_JOB_KEY, start.jobId); } catch { /* SSR-safe */ }
+      startPolling(start.jobId);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Erreur serveur"); setPhase(null); setLoading(false);
+    }
+  };
+
+  return (
+    <div style={{ padding: 24 }}>
+      <div style={{ fontWeight: 700, color: "#0F172A", fontSize: 15, marginBottom: 6 }}>Charger le règlement SPR de {commune}</div>
+      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>
+        Importez le règlement écrit du Site Patrimonial Remarquable en PDF. L'IA extrait les secteurs et prescriptions — les règles sont créées en brouillon, <b>distinctes du PLU</b>, pour validation.
+      </div>
+
+      {loading ? (
+        <div style={{ border: "1px solid #FBCFE8", background: "#FDF2F8", borderRadius: 10, padding: 16 }}>
+          <div style={{ fontWeight: 600, color: "#9D174D", fontSize: 13 }}>⟳ {phase ?? "Extraction en cours…"}</div>
+          {progress && <div style={{ fontSize: 12, color: "#64748b", marginTop: 6 }}>Secteurs traités : {progress.done} / {progress.total}</div>}
+          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>Vous pouvez fermer cet onglet — l'extraction continue côté serveur.</div>
+        </div>
+      ) : done ? (
+        <div style={{ border: "1px solid #BBF7D0", background: "#F0FDF4", borderRadius: 10, padding: 16, fontSize: 13, color: "#15803D" }}>
+          ✓ SPR importé : {done.zones} secteur{done.zones > 1 ? "s" : ""}, {done.rules} règle{done.rules > 1 ? "s" : ""} en brouillon.
+        </div>
+      ) : (
+        <>
+          <div
+            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f?.type === "application/pdf") handleFile(f); else setError("Seuls les PDF sont acceptés."); }}
+            onClick={() => fileRef.current?.click()}
+            style={{ border: `2px dashed ${dragging ? "#9D174D" : pdfFile ? "#22c55e" : "#CBD5E1"}`, borderRadius: 12, padding: "24px 16px", textAlign: "center", cursor: "pointer", background: dragging ? "#FDF2F8" : pdfFile ? "#F0FDF4" : "#F8FAFC", marginBottom: 14 }}
+          >
+            {pdfFile
+              ? <div style={{ fontSize: 13, fontWeight: 600, color: "#16a34a" }}>✓ {pdfFile.name}</div>
+              : <div style={{ fontSize: 13, color: "#475569" }}>Glissez le PDF du règlement SPR ici ou cliquez pour parcourir</div>}
+          </div>
+          <input ref={fileRef} type="file" accept="application/pdf" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files?.[0] ?? null)} />
+          <button onClick={handleSubmit} disabled={!pdfFile} style={{ border: "none", background: pdfFile ? "#9D174D" : "#E2E8F0", color: pdfFile ? "white" : "#94a3b8", borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 600, cursor: pdfFile ? "pointer" : "not-allowed" }}>
+            Lancer l'extraction SPR
+          </button>
+        </>
+      )}
+      {error && <div style={{ marginTop: 12, fontSize: 12, color: "#DC2626" }}>{error}</div>}
+    </div>
+  );
+}
+
 const ZONE_TYPE_STYLE: Record<string, { bg: string; color: string; border: string; label: string }> = {
   U:  { bg: "#EEF2FF", color: "#4338CA", border: "#C7D2FE", label: "Urbaine" },
   AU: { bg: "#FFF7ED", color: "#C2410C", border: "#FED7AA", label: "À urbaniser" },
   A:  { bg: "#FEFCE8", color: "#A16207", border: "#FDE68A", label: "Agricole" },
   N:  { bg: "#F0FDF4", color: "#15803D", border: "#BBF7D0", label: "Naturelle" },
+  spr: { bg: "#FDF2F8", color: "#9D174D", border: "#FBCFE8", label: "Secteur SPR" },
 };
 
 // Découpe le règlement collé en blocs analysables par l'IA.
@@ -551,6 +683,9 @@ export function ReglementationScreen({ commune, inseeCode }: { commune: string; 
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [selectedZoneId, setSelectedZoneId] = useState<string | null>(null);
+  // Onglet actif Réglementation : "plu" (défaut, comportement historique) ou
+  // "spr". L'onglet SPR n'est proposé que si la commune a activé has_spr.
+  const [regTab, setRegTab] = useState<"plu" | "spr">("plu");
   const [editingId, setEditingId] = useState<string | null>(null);
   const [editForm, setEditForm] = useState<Partial<RuleRow>>({});
   const [saving, setSaving] = useState(false);
@@ -841,8 +976,17 @@ export function ReglementationScreen({ commune, inseeCode }: { commune: string; 
     rejete: rules.filter(r => r.validation_status === "rejete").length,
   });
 
-  const selectedZone = data?.zones.find(z => z.id === selectedZoneId);
-  const totalStats = data ? data.zones.reduce((acc, z) => ({
+  // Onglets PLU / SPR (SPR proposé seulement si la commune l'a activé). Le
+  // filtrage par zone_type est purement front : les zones PLU (U/AU/A/N) restent
+  // à l'identique dans l'onglet PLU, les zones SPR (zone_type "spr") vont dans
+  // l'onglet SPR. Aucune commune sans has_spr ne voit de changement.
+  const hasSprTab = !!data?.commune.has_spr;
+  const sprZones = data ? data.zones.filter(z => z.zone_type === "spr") : [];
+  const pluZones = data ? data.zones.filter(z => z.zone_type !== "spr") : [];
+  const onSpr = hasSprTab && regTab === "spr";
+  const visibleZones = onSpr ? sprZones : pluZones;
+  const selectedZone = visibleZones.find(z => z.id === selectedZoneId);
+  const totalStats = visibleZones.length ? visibleZones.reduce((acc, z) => ({
     total: acc.total + z.stats.total,
     valide: acc.valide + z.stats.valide,
   }), { total: 0, valide: 0 }) : null;
@@ -880,14 +1024,31 @@ export function ReglementationScreen({ commune, inseeCode }: { commune: string; 
       <div style={{ width: 288, flexShrink: 0, borderRight: "1px solid #E2E8F0", background: "white", display: "flex", flexDirection: "column", overflowY: "auto" }}>
         {/* Header */}
         <div style={{ padding: "20px 20px 16px", borderBottom: "1px solid #F1F5F9" }}>
-          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
-            <div style={{ fontSize: 15, fontWeight: 700, color: "#000020" }}>Réglementation PLU</div>
-            <div style={{ display: "flex", gap: 6 }}>
-              {(data?.zones.length ?? 0) > 0 && (
-                <button onClick={purgeAll} disabled={purging} title="Vider la réglementation de cette commune" style={{ border: "1px solid #FECACA", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#DC2626", cursor: purging ? "wait" : "pointer", fontWeight: 600 }}>{purging ? "Suppression…" : "🗑 Vider"}</button>
-              )}
-              <button onClick={() => { setManualMode(false); setShowUpload(true); }} title="Importer un PLU (PDF)" style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>↑ Importer PDF</button>
+          {/* Onglets PLU / SPR — uniquement si la commune a activé le SPR. */}
+          {hasSprTab && (
+            <div style={{ display: "flex", gap: 0, borderBottom: "2px solid #E2E8F0", marginBottom: 14 }}>
+              {(["plu", "spr"] as const).map(t => (
+                <button key={t} onClick={() => { setRegTab(t); setSelectedZoneId(null); setShowUpload(false); }}
+                  style={{ border: "none", background: "none", padding: "6px 14px", fontSize: 13,
+                    fontWeight: regTab === t ? 600 : 400, color: regTab === t ? "#9D174D" : "#64748b",
+                    borderBottom: regTab === t ? "2px solid #9D174D" : "2px solid transparent", marginBottom: -2, cursor: "pointer" }}>
+                  {t.toUpperCase()}
+                </button>
+              ))}
             </div>
+          )}
+          <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 4 }}>
+            <div style={{ fontSize: 15, fontWeight: 700, color: "#000020" }}>Réglementation {onSpr ? "SPR" : "PLU"}</div>
+            {/* Actions PLU (vider / importer) réservées à l'onglet PLU — l'upload
+                SPR se fait via son propre panneau dans la zone de droite. */}
+            {!onSpr && (
+              <div style={{ display: "flex", gap: 6 }}>
+                {pluZones.length > 0 && (
+                  <button onClick={purgeAll} disabled={purging} title="Vider la réglementation de cette commune" style={{ border: "1px solid #FECACA", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#DC2626", cursor: purging ? "wait" : "pointer", fontWeight: 600 }}>{purging ? "Suppression…" : "🗑 Vider"}</button>
+                )}
+                <button onClick={() => { setManualMode(false); setShowUpload(true); }} title="Importer un PLU (PDF)" style={{ border: "1px solid #E2E8F0", background: "white", borderRadius: 7, padding: "4px 9px", fontSize: 11, color: "#4F46E5", cursor: "pointer", fontWeight: 600 }}>↑ Importer PDF</button>
+              </div>
+            )}
           </div>
           <div style={{ fontSize: 12, color: "#9CA3AF" }}>{commune}</div>
           {totalStats && (
@@ -902,7 +1063,7 @@ export function ReglementationScreen({ commune, inseeCode }: { commune: string; 
                 <div style={{ height: "100%", width: `${totalStats.total ? (totalStats.valide / totalStats.total) * 100 : 0}%`, background: "#4F46E5", borderRadius: 99, transition: "width 0.3s" }} />
               </div>
               {(() => {
-                const drafts = data.zones.reduce((n, z) => n + z.stats.brouillon, 0);
+                const drafts = visibleZones.reduce((n, z) => n + z.stats.brouillon, 0);
                 if (drafts === 0) return null;
                 return (
                   <button onClick={() => bulkValidate()} disabled={saving} title="Valider tous les brouillons de toutes les zones"
@@ -917,7 +1078,7 @@ export function ReglementationScreen({ commune, inseeCode }: { commune: string; 
 
         {/* Zone cards */}
         <div style={{ flex: 1, padding: "12px 12px" }}>
-          {data.zones.map(zone => {
+          {visibleZones.map(zone => {
             const ts = ZONE_TYPE_STYLE[zone.zone_type] ?? ZONE_TYPE_STYLE["U"]!;
             const pct = zone.stats.total ? Math.round((zone.stats.valide / zone.stats.total) * 100) : 0;
             const isSelected = zone.id === selectedZoneId;
@@ -997,9 +1158,12 @@ export function ReglementationScreen({ commune, inseeCode }: { commune: string; 
 
       {/* ── Right: rules ── */}
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}>
-        {!selectedZone ? (
+        {onSpr && sprZones.length === 0 ? (
+          // Onglet SPR sans règlement encore chargé → panneau d'upload SPR isolé.
+          <SprUploadPanel commune={commune} inseeCode={inseeCode} onSuccess={load} />
+        ) : !selectedZone ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#9CA3AF", fontSize: 14 }}>
-            ← Sélectionnez une zone
+            ← Sélectionnez {onSpr ? "un secteur" : "une zone"}
           </div>
         ) : (
           <>

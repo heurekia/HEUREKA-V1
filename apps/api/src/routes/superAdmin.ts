@@ -277,6 +277,7 @@ superAdminRouter.get("/communes", async (_req, res) => {
           epci_id: communes.epci_id,
           epci_name: epci.name,
           instruction_mutualisee: communes.instruction_mutualisee,
+          has_spr: communes.has_spr,
         })
         .from(communes)
         .leftJoin(epci, eq(communes.epci_id, epci.id))
@@ -402,7 +403,7 @@ superAdminRouter.patch("/communes/:id", async (req, res) => {
     const ALLOWED = [
       "name", "insee_code", "zip_code", "email", "telephone", "logo_url",
       "population", "surface", "departement", "region", "description",
-      "epci_id", "instruction_mutualisee",
+      "epci_id", "instruction_mutualisee", "has_spr",
     ] as const;
     const updates: Record<string, unknown> = { updated_at: new Date() };
     for (const f of ALLOWED) {
@@ -826,6 +827,17 @@ superAdminRouter.post("/epci/import", async (req, res) => {
 // L'ingestion effective des règles passe ensuite par la CLI pnpm ingest avec
 // --doc-id, ou par une route ultérieure d'extraction PDF.
 
+// Parsing d'une date d'effet optionnelle (Lot 5). Renvoie :
+//  - null   si l'entrée est absente / vide / explicitement null (borne ouverte) ;
+//  - Date   si l'entrée est une date ISO valide ;
+//  - INVALID_DATE (sentinelle) si l'entrée est fournie mais illisible → 400.
+const INVALID_DATE = Symbol("invalid_date");
+function parseOptionalDate(v: string | null | undefined): Date | null | typeof INVALID_DATE {
+  if (v == null || v === "") return null;
+  const d = new Date(v);
+  return Number.isNaN(d.getTime()) ? INVALID_DATE : d;
+}
+
 // Liste les documents portés par un EPCI, avec leur couverture (N/M communes).
 // Comportement parallèle à GET /superadmin/epci pour le bloc regulatory : tout
 // est dérivé du modèle documentaire, rien n'est stocké en double.
@@ -844,6 +856,8 @@ superAdminRouter.get("/epci/:id/documents", async (req, res) => {
         synthese: regulatory_documents.synthese,
         status: regulatory_documents.status,
         validation_status: regulatory_documents.validation_status,
+        effective_from: regulatory_documents.effective_from,
+        effective_to: regulatory_documents.effective_to,
         ingested_at: regulatory_documents.ingested_at,
         created_at: regulatory_documents.created_at,
       })
@@ -891,12 +905,17 @@ superAdminRouter.get("/epci/:id/documents", async (req, res) => {
 superAdminRouter.post("/epci/:id/documents", async (req, res) => {
   try {
     const { id } = req.params;
-    const { type, name, original_filename, commune_ids, synthese } = req.body as {
+    const { type, name, original_filename, commune_ids, synthese, effective_from, effective_to } = req.body as {
       type?: string;
       name?: string;
       original_filename?: string;
       commune_ids?: string[];
       synthese?: string;
+      // Fenêtre d'entrée en vigueur (Lot 5). ISO 8601 ou null. Poser
+      // effective_from sur un PLUi suffit à le faire remplacer le PLU communal
+      // historique (non daté) à la résolution — cf. arbitrage de substitution.
+      effective_from?: string | null;
+      effective_to?: string | null;
     };
 
     if (!type) return res.status(400).json({ error: "type est requis" });
@@ -913,6 +932,14 @@ superAdminRouter.post("/epci/:id/documents", async (req, res) => {
       if (!custom) {
         return res.status(400).json({ error: `type invalide. Valeurs autorisées : ${REGULATORY_DOCUMENT_TYPES.join(", ")}` });
       }
+    }
+    const effFrom = parseOptionalDate(effective_from);
+    const effTo = parseOptionalDate(effective_to);
+    if (effFrom === INVALID_DATE || effTo === INVALID_DATE) {
+      return res.status(400).json({ error: "effective_from / effective_to doivent être des dates ISO valides ou null" });
+    }
+    if (effFrom && effTo && effTo.getTime() <= effFrom.getTime()) {
+      return res.status(400).json({ error: "effective_to doit être postérieure à effective_from" });
     }
 
     const [groupement] = await db.select({ id: epci.id }).from(epci).where(eq(epci.id, id)).limit(1);
@@ -962,6 +989,8 @@ superAdminRouter.post("/epci/:id/documents", async (req, res) => {
           name: name.trim(),
           original_filename: original_filename?.trim() || "—",
           synthese: synthese?.trim() || null,
+          effective_from: effFrom,
+          effective_to: effTo,
           // Statut initial "uploaded" : aucune règle n'est encore ingérée. La
           // CLI ou une route d'extraction passera ensuite à "ingested".
           status: "uploaded",
@@ -992,12 +1021,15 @@ superAdminRouter.post("/epci/:id/documents", async (req, res) => {
 superAdminRouter.patch("/epci/:id/documents/:docId", async (req: any, res) => {
   try {
     const { id, docId } = req.params;
-    const { type, name, original_filename, synthese, validation_status } = req.body as {
+    const { type, name, original_filename, synthese, validation_status, effective_from, effective_to } = req.body as {
       type?: string;
       name?: string;
       original_filename?: string;
       synthese?: string | null;
       validation_status?: "valide" | "brouillon" | "rejete";
+      // Fenêtre d'effet (Lot 5). ISO 8601 ou null (borne ouverte).
+      effective_from?: string | null;
+      effective_to?: string | null;
     };
 
     // Cohérence : on vérifie que le document est bien porté par cet EPCI.
@@ -1023,6 +1055,22 @@ superAdminRouter.patch("/epci/:id/documents/:docId", async (req: any, res) => {
     }
     if (original_filename !== undefined) patch.original_filename = original_filename.trim() || "—";
     if (synthese !== undefined) patch.synthese = synthese?.trim() || null;
+    if (effective_from !== undefined) {
+      const d = parseOptionalDate(effective_from);
+      if (d === INVALID_DATE) return res.status(400).json({ error: "effective_from doit être une date ISO valide ou null" });
+      patch.effective_from = d;
+    }
+    if (effective_to !== undefined) {
+      const d = parseOptionalDate(effective_to);
+      if (d === INVALID_DATE) return res.status(400).json({ error: "effective_to doit être une date ISO valide ou null" });
+      patch.effective_to = d;
+    }
+    // Cohérence de la fenêtre, en tenant compte des valeurs non modifiées.
+    const effFrom = patch.effective_from !== undefined ? patch.effective_from : doc.effective_from;
+    const effTo = patch.effective_to !== undefined ? patch.effective_to : doc.effective_to;
+    if (effFrom && effTo && effTo.getTime() <= effFrom.getTime()) {
+      return res.status(400).json({ error: "effective_to doit être postérieure à effective_from" });
+    }
     if (validation_status !== undefined) {
       if (!["valide", "brouillon", "rejete"].includes(validation_status)) {
         return res.status(400).json({ error: "validation_status invalide" });

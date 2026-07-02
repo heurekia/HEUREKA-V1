@@ -39,6 +39,18 @@ export const regulatory_documents = pgTable("regulatory_documents", {
   validation_status: text("validation_status").notNull().default("brouillon"),
   validated_by: uuid("validated_by"),
   validated_at: timestamp("validated_at"),
+  // Fenêtre d'entrée en vigueur (Lot 5 — datation d'effet, patron aligné sur
+  // commune_fiscalite). Sert à ARBITRER la substitution entre documents de la
+  // MÊME famille PLU couvrant une même commune : un PLUi entré en vigueur
+  // remplace le PLU communal historique. Le résolveur ne retient, par commune
+  // et pour la famille PLU, que le document en vigueur à la date d'analyse :
+  //   effective_from IS NULL OR effective_from <= D   (NULL = « depuis toujours »)
+  //   AND (effective_to IS NULL OR effective_to > D)  (NULL = toujours en vigueur)
+  // Les deux NULL par défaut → rétro-compat : tout document existant reste
+  // « en vigueur, sans borne ». Les autres familles (PPRI, OAP…) ne sont pas
+  // concernées : elles se SUPERPOSENT, jamais ne se substituent.
+  effective_from: timestamp("effective_from"),
+  effective_to: timestamp("effective_to"),
   created_at: timestamp("created_at").notNull().defaultNow(),
   updated_at: timestamp("updated_at").notNull().defaultNow(),
 });
@@ -52,6 +64,12 @@ export const regulatory_documents = pgTable("regulatory_documents", {
 //  - plui : PLU intercommunal (porteur = EPCI, rattaché à N communes).
 //  - plum : PLU métropolitain — variante de PLUi portée par une métropole.
 //  - ppri/pprt : plans de prévention des risques (inondation / technologique).
+//  - spr  : Site Patrimonial Remarquable (ex-AVAP/ZPPAUP/secteur sauvegardé).
+//           Servitude d'utilité publique AC4, opposable et SUPÉRIEURE au PLU sur
+//           les thèmes qu'elle traite (aspect, toitures, matériaux…) dans son
+//           périmètre. Comme le PLU, il produit des règles structurées (secteurs
+//           + catégories de bâti) — d'où sa présence hors « famille PLU » mais
+//           génératrice de règles (cf. niveauNormeForDocType).
 //  - oap  : Orientations d'Aménagement et de Programmation.
 //  - peb  : Plan d'Exposition au Bruit.
 //  - plh  : Programme Local de l'Habitat.
@@ -63,6 +81,7 @@ export const REGULATORY_DOCUMENT_TYPES = [
   "plum",
   "ppri",
   "pprt",
+  "spr",
   "oap",
   "peb",
   "plh",
@@ -86,4 +105,26 @@ export type PluFamilyType = (typeof PLU_FAMILY_TYPES)[number];
 
 export function isPluFamily(type: string | null | undefined): boolean {
   return type != null && (PLU_FAMILY_TYPES as readonly string[]).includes(type);
+}
+
+// Niveaux de norme, du plus fort au plus faible. Sert à arbitrer la PRIMAUTÉ
+// entre règles co-applicables à une même parcelle (cf. §4.4 conception
+// « mode d'opposabilité »). « sup » (servitude d'utilité publique : SPR/AC4,
+// PPRI, PPRT…) prime sur « plu » sur les thèmes qu'elle traite, dans son
+// périmètre. « autre » = documents sans opposabilité de conformité (OAP…).
+export const NIVEAUX_NORME = ["sup", "plu", "autre"] as const;
+export type NiveauNorme = (typeof NIVEAUX_NORME)[number];
+
+// Types de documents dont les règles sont des SERVITUDES supra-PLU. Une règle
+// issue de l'un d'eux est écrite avec niveau_norme = 'sup' et l'emporte, à
+// périmètre et thème équivalents, sur la règle PLU (résolution de primauté,
+// livrée avec la Moitié 2). Le SPR en fait partie (AC4).
+export const SUP_DOCUMENT_TYPES = ["spr", "ppri", "pprt", "pprn", "peb"] as const;
+
+// Déduit le niveau de norme d'une règle à partir du type de son document
+// source. Défaut « plu » : PLU/PLUi/PLUm, saisie manuelle, type inconnu — le
+// comportement historique est préservé (aucune règle existante ne change).
+export function niveauNormeForDocType(type: string | null | undefined): NiveauNorme {
+  if (type != null && (SUP_DOCUMENT_TYPES as readonly string[]).includes(type)) return "sup";
+  return "plu";
 }

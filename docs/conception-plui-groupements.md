@@ -2,7 +2,7 @@
 
 | Champ | Valeur |
 |-------|--------|
-| Statut | Implémenté (Lots 1a → 4) — dette transitoire documentée §7 |
+| Statut | Implémenté (Lots 1a → 5) — dette transitoire résiduelle documentée §8 |
 | Date | 1er juillet 2026 |
 | Périmètre | `packages/db`, `packages/ingestion`, `packages/regulatory-engine`, `apps/api`, `apps/web` |
 | Lecteurs cibles | Équipe technique, produit |
@@ -46,7 +46,7 @@ La refonte généralise le modèle **« document communal »** en **« document 
 |---|---|
 | `porteur_commune_id` | Renseigné pour un document **communal**. |
 | `porteur_epci_id` | Renseigné pour un document **intercommunal** (PLUi). |
-| `commune_id` | **Rétro-compat** — commune « propriétaire » historique. Voir §7. |
+| `commune_id` | **Rétro-compat** — commune « propriétaire » historique. Voir §8. |
 
 **Invariant clé (contrainte SQL `regulatory_documents_porteur_xor`)** :
 
@@ -106,21 +106,54 @@ Deux régimes selon l'option `epci` :
 
 Les communes membres sont **upsertées par code INSEE** (`upsertCommune`) puis rattachées via `document_communes`.
 
+> **Ce qui devient une règle — et ce qui n'en devient pas.** Seul le **règlement de zonage** (opposable, par zone) est structuré en `zone_regulatory_rules`. Un PLUi peut embarquer des volets **non opposables à la parcelle** — typiquement le *Programme d'Orientations et d'Actions* (POA) d'un PLUi **valant PLH / déplacements** (« PLUi-HD », cf. §11). Ces volets restent de la **synthèse/annexe** et ne doivent jamais alimenter le moteur de conformité.
+
 ## 5. Résolution côté moteur — `packages/regulatory-engine/src/context/builder.ts`
 
 `loadCandidateRuleIds()` résout les règles applicables à une commune par **union de deux chemins** :
 
-1. **Voie moderne (document-centric)** — `document_communes` → `zone_regulatory_rules.source_document_id`. Couvre nativement les PLUi (1 document → N communes) *et* les PLU communaux (1 document → 1 commune). Toute règle ingérée depuis le Lot 3 passe par là.
+1. **Voie moderne (document-centric)** — `document_communes` → `zone_regulatory_rules.source_document_id`. Couvre nativement les PLUi (1 document → N communes) *et* les PLU communaux (1 document → 1 commune). Toute règle ingérée depuis le Lot 3 passe par là. C'est ce chemin qui porte l'**arbitrage de substitution** (Lot 5) : parmi les documents de famille PLU couvrant la commune, seul celui **en vigueur** à la date d'analyse contribue ses règles (§8.1).
 
 2. **Fallback (commune-centric)** — `zones.commune_id`, restreint à `source_document_id IS NULL`. Rattrape les règles **créées à la main** via `POST /reglementation/zones/:zoneId/rules`, qui ne posent pas de `source_document_id`.
 
 Les deux ensembles sont filtrés sur `validation_status = 'valide'` puis unionnés (dédup par `Set<id>`). Pendant la cohabitation, l'union est **strictement ≥** la requête historique unique : aucun risque de masquer une règle existante.
 
-> **Pourquoi deux chemins.** La voie moderne seule perdrait les règles manuelles non taguées. Le fallback seul ne verrait pas les zones PLUi (dont `commune_id` est NULL). L'union est la seule forme correcte tant que le corpus n'est pas intégralement tagué — cf. condition de retrait §7.
+> **Pourquoi deux chemins.** La voie moderne seule perdrait les règles manuelles non taguées. Le fallback seul ne verrait pas les zones PLUi (dont `commune_id` est NULL). L'union est la seule forme correcte tant que le corpus n'est pas intégralement tagué — cf. condition de retrait §8.
 
-## 6. API & UI
+## 6. Cohabitation des régimes (communal / intercommunal)
 
-### 6.1 Routes (`apps/api/src/routes/superAdmin.ts`)
+Le parc est **mixte et le restera** : certaines communes gardent « 1 commune = 1 règlement » (PLU communal), d'autres relèvent d'un PLUi. Le modèle doit faire coexister les deux — non seulement entre communes, mais parfois **au sein d'une même commune** (annexes communales sous un socle intercommunal). Deux dimensions **orthogonales** structurent cette cohabitation.
+
+### 6.1 Dimension « portée » — commune-scoped vs zone-partagée
+
+| Nature du document | Portée | Modélisation |
+|---|---|---|
+| **Règlement PLU communal** | la commune | zones `commune_id` = la commune |
+| **Règlement PLUi** | la **zone**, partagée entre les N communes membres | zones `commune_id = NULL`, `source_document_id` = le PLUi |
+| **Annexes / servitudes** (OAP, PPRI, PPRT, SPR, PEB…) | **toujours la commune** | document porteur commune, `document_communes` = 1 ligne |
+
+**Point capital : « PLUi » ne signifie pas « tout est intercommunal ».** Seul le socle de zonage l'est. Une commune membre d'un PLUi conserve **ses propres** OAP, PPRI, SPR — un PPRI est lié à un aléa sur *cette* commune, un SPR à un périmètre patrimonial précis. Ces annexes restent des documents à porteur commune et **cohabitent avec le PLUi par superposition** (cf. 6.2). Le résolveur les unionne déjà nativement : **aucune évolution nécessaire.**
+
+### 6.2 Dimension « relation » — superposition vs substitution
+
+| Relation | Exemple | Comportement correct | État |
+|---|---|---|---|
+| **Superposition** | PLU/PLUi **+** PPRI **+** SPR **+** OAP | **Union** — opposabilités cumulées, chaque document s'ajoute | ✅ implémenté (union du §5) |
+| **Substitution** | PLU communal **↔** PLUi (même famille `PLU_FAMILY_TYPES`) | **Un seul en vigueur** par commune à une date donnée | ✅ arbitré par datation d'effet (§8.1) |
+
+Le moteur **superpose** les familles distinctes (correct) mais **arbitre** les documents de la **même** famille PLU couvrant une même commune : un PLUi ne s'ajoute pas au PLU communal, il **le remplace** à son entrée en vigueur. Cet arbitrage — datation d'effet alignée sur le patron `fiscalite.ts` — est décrit en **§8.1** (Lot 5).
+
+### 6.3 Exceptions par commune dans une zone PLUi partagée
+
+Un PLUi donne un règlement **par zone**, identique sur toutes les communes membres — mais **des exceptions peuvent être explicitement mentionnées** pour une commune (« en zone UA, sur la commune de X… »). Deux cas :
+
+- **Exception spatiale (cas courant) — gérée gratuitement.** Une exception s'exprime presque toujours comme un **secteur** (« UAa »). On la modélise comme une zone à `parent_zone_code = "UA"`, `commune_id = X`, `source_document_id` = le PLUi, avec sa **propre géométrie**. L'arbitrage réel se fait à la résolution **parcelle → zone par géométrie** (`findZoneAtPoint`), pas à la présélection commune → règles : une parcelle de la commune Y ne tombe jamais dans le secteur UAa de X, ses règles ne se déclenchent donc pas — même si elles restent dans l'ensemble candidat (superset assumé, cf. §5). **Aucune évolution de schéma.**
+
+- **Exception non spatiale (rare) — non automatisée.** « En zone UA, sauf commune X où la hauteur est 9 m », sans secteur géographique dédié. Aujourd'hui portée par le champ texte `zone_regulatory_rules.exceptions`, lu par l'instructeur mais **pas arbitré par le moteur**. Une portée commune au niveau de la règle (`only_commune_ids` / `except_commune_ids`) serait la voie d'automatisation — **à ne construire que si des données réelles l'exigent**, pas spéculativement.
+
+## 7. API & UI
+
+### 7.1 Routes (`apps/api/src/routes/superAdmin.ts`)
 
 CRUD des documents portés par un EPCI, tout dérivé du modèle documentaire (rien stocké en double) :
 
@@ -134,26 +167,45 @@ CRUD des documents portés par un EPCI, tout dérivé du modèle documentaire (r
 
 **Garde-fou transversal** : toute commune passée en paramètre est filtrée contre les membres réels de l'EPCI (`communes.epci_id`). Une commune externe est rejetée en 400 — signal de bug côté appelant.
 
-### 6.2 Ingestion PDF EPCI-aware (`apps/api/src/routes/mairie/admin.ts`)
+### 7.2 Ingestion PDF EPCI-aware (`apps/api/src/routes/mairie/admin.ts`)
 
 Le flux `POST /admin/ingest-plu-pdf/start` accepte un `doc_id` (créé en amont) et **plusieurs PDF** (`pdfs_base64[]` — un PLUi peut être livré en plusieurs tomes). Il détecte le mode via `doc.porteur_epci_id` :
 
 - `isEpciDoc = true` → `zoneCommuneId = null`, zones partagées, `source_document_id` propagé.
 - Repli **sommaire manuel** (`no_toc`, 422) quand la détection auto échoue sur un mono-PDF volumineux.
 
-### 6.3 Web (`apps/web/src/pages/admin/SuperAdminApp.tsx`)
+### 7.3 Web (`apps/web/src/pages/admin/SuperAdminApp.tsx`)
 
 Encart « documents » dans la fiche EPCI du SuperAdmin : upload multi-PDF, suivi d'extraction avec reprise (jobId en `localStorage`), affichage de la couverture *« 3 / 44 communes couvertes »*, édition du périmètre et du statut de validation.
 
-## 7. Dette transitoire & conditions de retrait
+## 8. Dette transitoire & conditions de retrait
 
-Trois éléments de rétro-compat subsistent **volontairement**. Ils ne bloquent pas le fonctionnement mais devront être retirés — **pas à l'aveugle**.
+Les trois premiers éléments sont de la rétro-compat **volontairement** conservée. Le quatrième — la substitution PLU↔PLUi — est désormais **résolu** (Lot 5). Le cinquième reste un manque de modélisation à combler sur données réelles. Aucun ne bloque le fonctionnement actuel, mais tous se traitent **pas à l'aveugle**.
 
-| Élément | Où | Condition de retrait |
-|---|---|---|
-| `regulatory_documents.commune_id` | schéma + backfills | Tous les documents ont un `porteur_*` renseigné et plus aucun consommateur ne lit `commune_id`. |
-| Fallback chemin 2 de `loadCandidateRuleIds()` | `builder.ts` | **Toutes** les règles `valide` ont un `source_document_id` non NULL. |
-| Note rétro-compat `document_communes` | `documentCommunes.ts` | Idem : `loadRules()` et le moteur ne s'appuient plus que sur `document_communes`. |
+| # | Élément | Où | Condition de retrait / résolution |
+|---|---|---|---|
+| 1 | `regulatory_documents.commune_id` | schéma + backfills | Tous les documents ont un `porteur_*` renseigné et plus aucun consommateur ne lit `commune_id`. |
+| 2 | Fallback chemin 2 de `loadCandidateRuleIds()` | `builder.ts` | **Toutes** les règles `valide` ont un `source_document_id` non NULL. |
+| 3 | Note rétro-compat `document_communes` | `documentCommunes.ts` | Idem : `loadRules()` et le moteur ne s'appuient plus que sur `document_communes`. |
+| 4 | ~~Substitution PLU ↔ PLUi non arbitrée~~ | `builder.ts`, `regulatoryDocuments.ts` | ✅ **Résolu (Lot 5)** — datation d'effet + sélection « famille PLU en vigueur par commune ». Voir §8.1. |
+| 5 | **Règles transversales de document sans domicile** | `zone_regulatory_rules` (modèle « règle → zone ») | Voir §8.3 — porter les dispositions communes à toutes les zones. |
+
+### 8.1 Substitution PLU communal ↔ PLUi — ✅ résolu (Lot 5)
+
+**Problème.** Si une commune est couverte **à la fois** par un PLU communal et un PLUi tous deux `valide`, une simple union des règles produit doublons/contradictions. Or, juridiquement, un PLUi **se substitue** au PLU communal à son entrée en vigueur (même famille `PLU_FAMILY_TYPES` → substitution, pas superposition — cf. §6.2).
+
+**Solution livrée (option B, alignée sur le patron `fiscalite.ts`).**
+
+- **Schéma** — `regulatory_documents.effective_from` / `effective_to` (nullable ; deux NULL = « en vigueur, sans borne » → rétro-compat des documents existants). Migration additive « Lot 5 » dans `migrate.ts`.
+- **Résolution** — `loadCandidateRuleIds()` (`builder.ts`) charge, pour chaque règle du chemin 1, les métadonnées de son document (type + fenêtre d'effet), puis délègue l'arbitrage à `selectActiveDocumentIds()` (`context/documentSelection.ts`, **pure et testée**) : parmi les documents de **famille PLU** couvrant la commune, ne garde que **celui en vigueur** à la `referenceDate` (le plus récent par `effective_from`, `created_at` en départage) ; **toutes les autres familles** (PPRI, OAP…) sont conservées (superposition). Le fallback chemin 2 (règles manuelles sans document) reste hors arbitrage.
+- **Date de référence** — `dossier.date_depot` (cristallisation des droits), à défaut « maintenant ».
+- **API** — `effective_from` / `effective_to` exposés en création (`POST /admin/epci/:id/documents`) et édition (`PATCH …/:docId`), avec validation `to > from`.
+
+**Fenêtre de transition** : PLUi approuvé le T → poser `effective_from = T` sur le PLUi suffit (il devient le document en vigueur le plus récent et remplace le PLU communal non daté) ; on peut aussi poser `effective_to = T` sur l'ancien PLU pour une clôture explicite.
+
+**Tests** : `documentSelection.test.ts` (17 cas — superposition des annexes, substitution datée, PLUi futur non encore en vigueur, clôture, départage, `plum`…).
+
+### 8.2 Retrait du fallback chemin 2 (dette n°2)
 
 **Requête de contrôle avant tout retrait du fallback** — combien de règles validées restent non taguées :
 
@@ -166,7 +218,16 @@ WHERE validation_status = 'valide'
 
 Tant que ce compte est > 0, retirer le chemin 2 **fait disparaître silencieusement ces règles** de l'analyse. Le retrait doit être précédé d'un backfill (rattacher ces règles à un document) ou d'une acceptation explicite.
 
-## 8. Correspondance des « Lots »
+### 8.3 Règles transversales de document (dette n°5)
+
+Un PLUi (et beaucoup de PLU) porte un socle de **dispositions communes à toutes les zones** (« Titre I ») — ex. Agglopolys, §11. Or le modèle attache **toute** règle à une zone (`zone_regulatory_rules.zone_id NOT NULL`). Ces règles transversales n'ont donc pas de domicile naturel. Deux voies :
+
+- **A — pragmatique.** Les dupliquer sur chaque zone du document à l'ingestion. Simple, mais gonfle le corpus et complique les mises à jour.
+- **B — cible.** Introduire une **portée document** : une règle rattachée au `source_document_id` sans `zone_id` (ou une zone « pseudo-transversale » par document), que le résolveur ajoute à **toutes** les zones du document pour la commune analysée. Évite la duplication, aligné sur la logique document-centric du Lot 3.
+
+À arbitrer sur données réelles — ne pas construire avant d'avoir ingéré un premier règlement à Titre I substantiel.
+
+## 9. Correspondance des « Lots »
 
 Nomenclature interne des commentaires de migration (`packages/db/src/migrate.ts`) :
 
@@ -177,11 +238,42 @@ Nomenclature interne des commentaires de migration (`packages/db/src/migrate.ts`
 | **2** | `zone_regulatory_rules.source_document_id` + backfill (PLU le + récent de la commune) | ✅ |
 | **3** | `zones.source_document_id` + `loadRules()` document-centric (purge par document, mode EPCI) | ✅ |
 | **4** | Résolution moteur par `document_communes` (union des deux chemins) | ✅ |
+| **5** | Datation d'effet (`effective_from` / `effective_to`) + arbitrage substitution « famille PLU en vigueur par commune » (§8.1) | ✅ |
+| **6** *(à faire)* | Règles transversales de document (dispositions communes à toutes les zones, §8.3) | ⏳ |
 
-## 9. Comment déployer un PLUi (bout en bout)
+## 10. Comment déployer un PLUi (bout en bout)
 
 1. Créer l'EPCI et importer ses communes membres (`POST /admin/epci/import`).
 2. Créer le document PLUi (`POST /admin/epci/:id/documents`, type `plui`) — couverture totale ou pilote.
 3. Uploader le(s) PDF depuis l'encart EPCI du SuperAdmin → extraction des règles (statut `brouillon`).
 4. Valider les synthèses / règles (`validation_status = 'valide'`) — gate juridique avant lecture par le moteur.
 5. À l'analyse d'une parcelle, le moteur résout les règles de la commune via `document_communes`, sans qu'aucune donnée n'ait été dupliquée.
+
+## 11. Cas de référence — PLUi-HD d'Agglopolys (43 communes)
+
+La Communauté d'Agglomération de Blois (Agglopolys) couvre ses **43 communes** par un unique **PLUi-HD** — *valant Programme Local de l'Habitat **et** de Déplacements*. C'est le banc d'essai qui valide la conception sur un cas réel.
+
+**Organisation observée** ([sources](https://www.agglopolys.fr/3620-le-plui-en-vigueur.htm), [règlements PLUi-HD et PSMV](https://www.agglopolys.fr/DISABLE_REDIRECT_MOBILE/1/3761-reglements-d-urbanisme-plui-hd-et-psmv.htm)) :
+
+- **Règlement écrit** = un socle de *dispositions communes à tout le territoire* **+** des *règles par zone* (U, A, N…), avec sous-secteurs (**Uv** végétal/vergers, **Uj** jardins urbains…).
+- **Document graphique (zonage) par commune** — une carte par commune, puisant dans le vocabulaire de zones commun.
+- **OAP sectorielles** par périmètre de projet.
+- **Cahier « ensembles patrimoniaux »** (overlay sur Uv, Uj, A, N).
+- Blois dispose **en plus** de son propre **PSMV** (secteur sauvegardé / SPR), publié **à côté** du PLUi-HD.
+
+**Correspondance avec le modèle :**
+
+| Observation Agglopolys | Modélisation | Verdict |
+|---|---|---|
+| Règlement par zone, commun aux 43 communes | zones `commune_id = NULL`, partagées, `source_document_id` = le PLUi | ✅ |
+| Document graphique **par commune** | résolution parcelle → zone **par géométrie** (`findZoneAtPoint`) | ✅ (§6.3) |
+| OAP sectorielles | annexes à portée commune/secteur, superposées | ✅ (§6.1) |
+| Sous-secteurs Uv / Uj | exceptions spatiales = secteurs géométriques | ✅ (§6.3) |
+| **PSMV de Blois à côté du PLUi-HD** | document **commune-scoped** (porteur Blois) superposé au PLUi (porteur EPCI) | ✅ **cas d'école** |
+
+Le **PSMV de Blois** est la démonstration parfaite de §6.1 : sur une même commune coexistent un règlement **intercommunal** (PLUi-HD, porteur EPCI) et une servitude **communale** (PSMV, propre à Blois), qui se **superposent** — exactement ce que gère l'union du §5. *« PLUi » ne veut pas dire « tout est intercommunal ».*
+
+**Deux nuances que ce cas fait émerger** (détaillées en §4 et §8.3) :
+
+- **Volet « H-D » (Habitat-Déplacements = POA).** Un PLUi-HD embarque un *Programme d'Orientations et d'Actions* qui n'est **ni zoné ni opposable à la parcelle**. Il ne doit **jamais** être transformé en `zone_regulatory_rules` — c'est de la synthèse/annexe (cf. §4). Notre type `plh` est distinct dans `REGULATORY_DOCUMENT_TYPES`, mais dans un PLUi-HD ce volet est **fondu** dans le `plui`.
+- **Dispositions communes à toutes les zones (Titre I).** Un PLUi a un socle de règles **transversales** que notre modèle « règle → zone » n'héberge pas naturellement — cf. dette n°5 (§8.3).

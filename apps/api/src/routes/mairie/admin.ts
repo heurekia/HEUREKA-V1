@@ -1,6 +1,6 @@
 import { Router } from "express";
 import { db } from "../../db.js";
-import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_documents, document_communes } from "@heureka-v1/db";
+import { dossiers, users, communes, zones, zone_regulatory_rules, regulatory_documents, document_communes, niveauNormeForDocType } from "@heureka-v1/db";
 import { eq, sql, ilike, inArray, and, ne, isNull } from "drizzle-orm";
 import { type AuthRequest } from "../../middlewares/auth.js";
 import { requireRole, bumpTokenVersion } from "../../middlewares/auth.js";
@@ -10,7 +10,8 @@ import { isProfessionalRole, deactivateUser, eraseCitizenAccount } from "../../s
 import { getCommuneScope, communeInScope, communeScopeFilter } from "../../middlewares/dossierAccess.js";
 import { hashPasswordToken } from "../../lib/passwordToken.js";
 import { callAi, convertPdfPagesToPng, extractPdfText, type AiContentBlock } from "../../services/aiUsage.js";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, realignTocToPhysicalPages, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode, type TocEntry } from "../../services/pluImport.js";
+import { parseSprSecteurs } from "../../services/sprImport.js";
 import { PLU_SAVE_RULE_TOOL, PLU_EXTRACTION_CALIBRATION, coerceCases, coerceAppliesIf, type PluRuleInput } from "./pluSaveRuleTool.js";
 import { normalizeSecteur } from "@heureka-v1/ingestion/secteur";
 import { PDFDocument } from "pdf-lib";
@@ -761,6 +762,9 @@ type IngestJob = {
   // PLU communal historique).
   document?: {
     id: string;
+    // Type du document source (cf. REGULATORY_DOCUMENT_TYPES). Détermine le
+    // niveau_norme des règles écrites : un SPR/PPRI est supra-PLU (SUP).
+    type: string;
     porteur: "commune" | "epci";
     // Communes membres rattachées via document_communes. En mode PLU communal
     // (porteur="commune"), un seul élément.
@@ -842,6 +846,16 @@ async function detectPluToc(
   const nativeText = await extractPdfText(pdfBuffer, { firstPage: 1, lastPage: tocPages });
   let toc: TocEntry[] = nativeText ? parseTocFromNativeText(nativeText) : [];
 
+  if (toc.length > 0) {
+    // Les numéros du sommaire sont souvent IMPRIMÉS (recommencent à 1 après la
+    // page de garde) et non les pages PHYSIQUES du PDF. On relit le texte
+    // complet pour relocaliser chaque zone via son titre de chapitre et
+    // corriger le décalage — sinon pdftoppm rend des pages décalées (cas
+    // Rochecorbon, +4). No-op si numérotation imprimée == physique (ex. Tours).
+    const fullText = await extractPdfText(pdfBuffer);
+    if (fullText) toc = realignTocToPhysicalPages(toc, fullText.split("\f"));
+  }
+
   if (toc.length === 0) {
     // Repli déterministe AVANT Pixtral : sommaire sans numéros de page (ou
     // aplati sur une seule ligne par l'extraction texte) → la voie sommaire ne
@@ -903,6 +917,19 @@ Si tu ne trouves pas de sommaire dans ces ${TOC_PAGES} pages, renvoie [].` },
   // clé zoneState (`${segmentIndex}::${code}`) et un routage de lot ambigu
   // (seg.zones.find renvoie le 1er). On garde l'ancre à la plus petite page.
   return dedupeTocByCode(toc);
+}
+
+// Détecte les secteurs d'un règlement SPR (Site Patrimonial Remarquable) depuis
+// le TEXTE NATIF COMPLET. Contrairement au PLU (sommaire → zones U/AU/A/N), un
+// SPR se découpe en SECTEURS paysagers (Livret 2) repérés par leurs en-têtes de
+// chapitre (« Chapitre N - Secteur … ») — cf. sprImport.parseSprSecteurs. Les
+// entrées renvoyées sont des TocEntry (type "spr") → elles rejoignent le même
+// pipeline de partition/chunk/extraction que le PLU. Renvoie [] si aucun secteur
+// (le caller traite alors le segment comme « sans sommaire »).
+async function detectSprToc(pdfBuffer: Buffer): Promise<TocEntry[]> {
+  const fullText = await extractPdfText(pdfBuffer);
+  if (!fullText) return [];
+  return parseSprSecteurs(fullText.split("\f"));
 }
 
 // Garde, par code, l'entrée à la plus petite startPage (le début réel de la
@@ -972,7 +999,13 @@ adminRouter.post("/admin/ingest-plu-pdf/start", requirePermission("zones.import"
         .select({ commune_id: document_communes.commune_id })
         .from(document_communes)
         .where(eq(document_communes.document_id, doc.id));
-      const communeIds = rattachements.map((r) => r.commune_id);
+      // Repli commune : un document COMMUNAL (ex. SPR d'une commune, créé via
+      // POST /mairie/documents) porte son périmètre sur `commune_id` sans ligne
+      // document_communes. On l'accepte tel quel pour l'ingestion doc-scoped ;
+      // les documents EPCI/PLUi continuent d'utiliser document_communes.
+      const communeIds = rattachements.length > 0
+        ? rattachements.map((r) => r.commune_id)
+        : (doc.commune_id ? [doc.commune_id] : []);
       if (communeIds.length === 0) {
         return res.status(400).json({ error: "Document sans commune rattachée — rattachez au moins une commune avant d'ingérer." });
       }
@@ -997,6 +1030,7 @@ adminRouter.post("/admin/ingest-plu-pdf/start", requirePermission("zones.import"
       commune = refCommune;
       documentCtx = {
         id: doc.id,
+        type: doc.type,
         porteur: doc.porteur_epci_id ? "epci" : "commune",
         communeIds,
       };
@@ -1042,15 +1076,21 @@ adminRouter.post("/admin/ingest-plu-pdf/start", requirePermission("zones.import"
     // lent (~15-20 s) ; les enchaîner ferait dépasser le proxy nginx (60 s →
     // 504) dès qu'on a plusieurs PDF scannés. Promise.all conserve l'ordre
     // d'origine → segmentIndex stable.
+    // Un SPR ne se découpe pas en zones PLU mais en SECTEURS paysagers (Livret 2),
+    // repérés par leurs en-têtes de chapitre (cf. detectSprToc/sprImport). On
+    // bascule sur cette détection dès que le document est de type `spr`.
+    const isSprDoc = documentCtx?.type === "spr";
     const detected = await Promise.all(pdfList.map(async (b64) => {
       const pdfBuffer = Buffer.from(b64, "base64");
       const pdfDoc = await PDFDocument.load(pdfBuffer, { ignoreEncryption: true });
       const totalPages = pdfDoc.getPageCount();
-      const toc = await detectPluToc(
-        pdfBuffer, totalPages,
-        { userId, communeId: commune.id },
-        singlePdf ? manualEntries : [],
-      );
+      const toc = isSprDoc
+        ? await detectSprToc(pdfBuffer)
+        : await detectPluToc(
+            pdfBuffer, totalPages,
+            { userId, communeId: commune.id },
+            singlePdf ? manualEntries : [],
+          );
       return { pdfBuffer, totalPages, toc };
     }));
 
@@ -1166,40 +1206,10 @@ adminRouter.post("/admin/ingest-plu-pdf/start", requirePermission("zones.import"
 // commit la transaction DB. Ne renvoie rien — le client lit l'avancée via
 // /status. Tant que le process Node tourne, le job continue, indépendamment
 // de la connexion HTTP qui a lancé /start (l'utilisateur peut fermer l'onglet).
-async function runIngestJob(job: IngestJob): Promise<void> {
-  // Aplatit tous les lots de tous les segments en une queue, traité par un
-  // pool de workers. Chaque entrée porte son segmentIndex pour rendre les pages
-  // depuis le bon PDF.
-  const queue: Array<{ segmentIndex: number; zoneCode: string; batchIndex: number }> = [];
-  for (const seg of job.segments)
-    for (const z of seg.zones)
-      for (const b of z.batches)
-        queue.push({ segmentIndex: seg.segmentIndex, zoneCode: z.code, batchIndex: b.index });
-
-  let next = 0;
-  let firstError: Error | null = null;
-  // Concurrence serveur volontairement modeste (3) : reste sous le rate limit
-  // Mistral et évite de saturer le tier prod sur une seule ingestion.
-  const SERVER_CONCURRENCY = 3;
-  const MAX_RETRY = 2;
-
-  const processBatch = async (segmentIndex: number, zoneCode: string, batchIndex: number): Promise<void> => {
-    const seg = job.segments[segmentIndex]!;
-    const zone = seg.zones.find((z) => z.code === zoneCode)!;
-    const batch = zone.batches[batchIndex]!;
-    const blocks = await renderPagesAsBlocksFor(seg.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
-    const ruleMsg = await callAi(
-      { purpose: "plu_rule_extract", userId: job.userId, communeId: job.commune.id },
-      {
-        model: "ai-smart",
-        max_tokens: 4000,
-        tools: [PLU_SAVE_RULE_TOOL],
-        tool_choice: "any",
-        messages: [{
-          role: "user",
-          content: [
-            ...blocks,
-            { type: "text", text: `Ces pages font partie d'un règlement PLU français, section "Zone ${zone.code}" (${zone.label}). Extrais les règles de la ZONE ${zone.code} uniquement.
+// Prompt d'extraction PLU (texte historique, articles 1-16). Inchangé sur le
+// fond ; simplement factorisé pour cohabiter avec la variante SPR.
+function pluExtractionPrompt(zone: { code: string; label: string }): string {
+  return `Ces pages font partie d'un règlement PLU français, section "Zone ${zone.code}" (${zone.label}). Extrais les règles de la ZONE ${zone.code} uniquement.
 
 Pour CHAQUE article ou sous-article distinct présent dans ces pages, appelle save_rule UNE fois.
 Correspondance article → topic :
@@ -1219,7 +1229,92 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
 - citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Stationnement pour logements individuels », « Hauteur maximale des annexes », « Implantation en limite de propriété ».
 - citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant, niveau « particulier qui veut construire chez lui ». Inclus EXPLICITEMENT : la règle, les conditions, les exceptions, les valeurs chiffrées avec unité, ET — si needs_vision = true — décris le schéma associé (ce qu'il montre, ce qu'il autorise, ce qu'il interdit). Phrases complètes, JAMAIS de version 10 mots compacte, pas de bullets, pas de jargon juridique.
 - Exemple acceptable (article 7, recul limites) : « Selon la profondeur par rapport à la voie, l'implantation est autorisée soit d'une limite à l'autre, soit avec un retrait minimal. Sur les 20 premiers mètres : retrait de 3 m minimum (ou H/2) pour moins de 3 logements ; 5 m (ou 1,5 × H) pour 3 logements et plus. Au-delà de 20 mètres, l'implantation en limite séparative est interdite. Exceptions : annexes, jumelages, extensions de constructions déjà en limite. Les piscines doivent rester à 3 m minimum. Le schéma associé illustre le calcul de H sur terrain plat ou en pente, et la zone des 20 mètres depuis la voie. »
-- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.${PLU_EXTRACTION_CALIBRATION}` },
+- citizen_relevant : false UNIQUEMENT si la disposition est purement administrative (procédure dépôt de permis…). True sinon.${PLU_EXTRACTION_CALIBRATION}`;
+}
+
+// Prompt d'extraction SPR (Site Patrimonial Remarquable / AVAP). À la différence
+// du PLU, le règlement est PATRIMONIAL et QUALITATIF (aspect, toitures, façades,
+// matériaux, menuiseries, clôtures, devantures, plantations…), organisé par
+// secteur paysager et non par articles 1-16. On réutilise l'outil save_rule :
+// la plupart des prescriptions relèvent du topic "aspect" (avec un sub_theme
+// précis) ; hauteur → "hauteur", plantations/espaces → "espaces_verts",
+// implantation → "recul_voie"/"recul_limite"/"general", interdictions →
+// "interdictions". Les valeurs chiffrées sont souvent ABSENTES : le rule_text
+// qualitatif EST la règle, ne pas le réduire à un nombre.
+function sprExtractionPrompt(zone: { code: string; label: string }): string {
+  return `Ces pages appartiennent au règlement d'un SITE PATRIMONIAL REMARQUABLE (SPR, ex-AVAP) français — un document PATRIMONIAL opposable, supérieur au PLU sur l'aspect des constructions. Section : "${zone.label}". Extrais UNIQUEMENT les prescriptions de cette section.
+
+Pour CHAQUE prescription distincte (un thème = une règle), appelle save_rule UNE fois. Découpe finement : une prescription sur les toitures, une sur les façades, une sur les menuiseries, une sur les clôtures, etc. = autant d'appels distincts.
+
+Choix du topic (grille save_rule) :
+- Aspect extérieur au sens large — toitures, couvertures, façades, enduits, pierres, menuiseries, couleurs/teintes, devantures, clôtures, murs — → topic "aspect", avec un sub_theme PRÉCIS (ex: « Toitures », « Menuiseries et volets », « Clôtures sur rue », « Devantures commerciales », « Enduits et ravalement »).
+- Hauteur / gabarit / volumétrie → "hauteur".
+- Plantations, espaces libres, arbres, jardins → "espaces_verts".
+- Implantation par rapport à la voie / aux limites → "recul_voie" / "recul_limite", sinon "general".
+- Occupations ou travaux INTERDITS (démolitions, matériaux proscrits…) → "interdictions".
+- À défaut de correspondance claire → "general".
+
+Règles d'extraction :
+- Le SPR est surtout QUALITATIF : conserve fidèlement le texte de la prescription dans rule_text (matériaux, teintes, mises en œuvre imposées ou interdites). N'invente AUCUNE valeur ; value_min/max/exact restent souvent vides.
+- Tags applies_if pertinents quand la prescription le précise : cloture_sur_rue, cloture_limite, devanture_commerciale, ravalement, demolition, extension, surelevation, protege_l151_19, unesco. [] sinon. (Inutile de taguer « abf » : tout le SPR relève de l'ABF.)
+- Si la prescription renvoie à un croquis / une illustration → needs_vision = true (décris-le dans citizen_summary).
+- Si elle renvoie à un nuancier, un cahier de recommandations ou un autre document externe → needs_external_doc = true, external_doc_name = nom exact.
+
+CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES :
+- citizen_title : titre court (≤ 8 mots) en langage courant. Ex : « Couleur des volets », « Matériaux de toiture autorisés », « Clôtures sur rue ».
+- citizen_summary : explication COMPLÈTE en 3 à 6 phrases, langage courant (« particulier qui rénove sa maison en secteur protégé »). Inclus la prescription, ce qui est imposé/autorisé/interdit, les matériaux et teintes, les exceptions, et — si needs_vision = true — la description du croquis. Phrases complètes, pas de bullets, pas de jargon.
+- citizen_relevant : false UNIQUEMENT si purement administratif ; true sinon.`;
+}
+
+async function runIngestJob(job: IngestJob): Promise<void> {
+  // Aplatit tous les lots de tous les segments en une queue, traité par un
+  // pool de workers. Chaque entrée porte son segmentIndex pour rendre les pages
+  // depuis le bon PDF.
+  const queue: Array<{ segmentIndex: number; zoneCode: string; batchIndex: number }> = [];
+  for (const seg of job.segments)
+    for (const z of seg.zones)
+      for (const b of z.batches)
+        queue.push({ segmentIndex: seg.segmentIndex, zoneCode: z.code, batchIndex: b.index });
+
+  let next = 0;
+  let firstError: Error | null = null;
+  // Lots abandonnés après épuisement des ré-essais (timeout / erreur
+  // transitoire persistante). On NE tue PAS tout l'import pour autant : les
+  // autres zones continuent, et `assertTocCoverage` tranche à la fin si la
+  // couverture globale devient insuffisante (cf. plus bas).
+  const failedBatches: Array<{ zoneCode: string; batchIndex: number }> = [];
+  // Concurrence serveur volontairement modeste (3) : reste sous le rate limit
+  // Mistral et évite de saturer le tier prod sur une seule ingestion.
+  const SERVER_CONCURRENCY = 3;
+  const MAX_RETRY = 2;
+
+  const processBatch = async (segmentIndex: number, zoneCode: string, batchIndex: number): Promise<void> => {
+    const seg = job.segments[segmentIndex]!;
+    const zone = seg.zones.find((z) => z.code === zoneCode)!;
+    const batch = zone.batches[batchIndex]!;
+    const blocks = await renderPagesAsBlocksFor(seg.pdfBuffer, batch.firstPage, batch.lastPage - batch.firstPage + 1);
+    const isSprBatch = job.document?.type === "spr";
+    const ruleMsg = await callAi(
+      { purpose: isSprBatch ? "spr_rule_extract" : "plu_rule_extract", userId: job.userId, communeId: job.commune.id },
+      {
+        model: "ai-smart",
+        max_tokens: 4000,
+        // Le worker tourne en TÂCHE DE FOND (hors proxy nginx 60 s) : chaque lot
+        // peut disposer d'un budget large. 90 s (défaut) suffisent aux PDF
+        // « texte » natifs (ex. Tours, PLU pourtant volumineux) mais coupaient
+        // les PDF scannés / haute résolution (ex. Rochecorbon), dont chaque
+        // page-image est lourde à rendre et à analyser en vision → timeout, puis
+        // abandon de tout l'import faute de tolérance côté worker (cf. plus bas).
+        timeoutMs: 180_000,
+        tools: [PLU_SAVE_RULE_TOOL],
+        tool_choice: "any",
+        messages: [{
+          role: "user",
+          content: [
+            ...blocks,
+            // Prompt adapté au type de document : un SPR est thématique/patrimonial
+            // (aspect, toitures, matériaux…) et non articulé en articles 1-16.
+            { type: "text", text: isSprBatch ? sprExtractionPrompt(zone) : pluExtractionPrompt(zone) },
           ],
         }],
       },
@@ -1247,13 +1342,27 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
           break;
         } catch (e) {
           const status = (e as { status?: number })?.status;
-          const transient = status === 429 || status === 529 || (typeof status === "number" && status >= 500);
-          if (transient && attempt < MAX_RETRY) {
+          const msg = e instanceof Error ? e.message : String(e);
+          const transientStatus = status === 429 || status === 529 || (typeof status === "number" && status >= 500);
+          // Un abort/timeout de fetchWithRetry n'a pas de `.status` HTTP : on le
+          // reconnaît au message ("aborted due to timeout"). fetchWithRetry a
+          // DÉJÀ rejoué en interne, donc on ne re-boucle pas ici dessus.
+          const isTimeout = /abort|timeout/i.test(msg);
+          if (transientStatus && attempt < MAX_RETRY) {
             await new Promise((r) => setTimeout(r, 1500 * Math.pow(2, attempt)));
             attempt++;
             continue;
           }
           console.error(`[ingest-plu-pdf] worker ${zoneCode} lot ${batchIndex} échoué`, e);
+          // Timeout ou transitoire épuisé → on abandonne CE lot seulement et on
+          // passe au suivant : une seule page lente (PDF scanné) ne doit pas
+          // condamner l'extraction des autres zones. La couverture finale est
+          // vérifiée par assertTocCoverage. Toute autre erreur (4xx client,
+          // config, bug) est fatale : elle se reproduirait à l'identique.
+          if (transientStatus || isTimeout) {
+            failedBatches.push({ zoneCode, batchIndex });
+            break;
+          }
           firstError = e as Error;
           return;
         }
@@ -1264,6 +1373,15 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
   try {
     await Promise.all(Array.from({ length: SERVER_CONCURRENCY }, worker));
     if (firstError) throw firstError;
+    if (failedBatches.length > 0) {
+      // Import partiel toléré : on trace les lots perdus. Si trop de zones se
+      // retrouvent sans règle, assertTocCoverage lèvera juste après et rien ne
+      // sera écrit ; sinon l'import se poursuit sur les zones réussies.
+      console.warn(
+        `[ingest-plu-pdf] ${failedBatches.length} lot(s) abandonné(s) après ré-essais : `
+          + failedBatches.map((b) => `${b.zoneCode}#${b.batchIndex}`).join(", "),
+      );
+    }
 
     // Fusion inter-segments par code de zone : un PLUi en plusieurs PDF produit
     // un état par (segment, zone) ; on regroupe les règles d'un même code (cf.
@@ -1296,6 +1414,10 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
     const isEpciDoc = job.document?.porteur === "epci";
     const sourceDocumentId = job.document?.id ?? null;
     const zoneCommuneId = isEpciDoc ? null : job.commune.id;
+    // Niveau de norme des règles produites : un document servitude (SPR/AC4,
+    // PPRI…) est supra-PLU → 'sup'. PLU communal (mode legacy, sans document) →
+    // 'plu'. La primauté effective SPR>PLU est appliquée à la livraison (Moitié 2).
+    const niveauNorme = niveauNormeForDocType(job.document?.type);
     const numCoerce = (v: unknown): number | null =>
       v != null && v !== "" && Number.isFinite(Number(v)) ? Number(v) : null;
 
@@ -1332,6 +1454,7 @@ CHAMPS « CITOYEN » (citizen_title + citizen_summary) — OBLIGATOIRES, à réd
           await tx.insert(zone_regulatory_rules).values({
             zone_id: zoneId,
             source_document_id: sourceDocumentId,
+            niveau_norme: niveauNorme,
             article_number: articleInt,
             article_title: rule.article_title ?? (articleInt != null ? `Article ${articleInt}` : ""),
             topic: rule.topic,

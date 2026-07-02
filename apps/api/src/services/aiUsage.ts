@@ -148,6 +148,17 @@ export interface AiRequest {
   /** Function calling (format OpenAI-compatible). */
   tools?: AiToolDefinition[];
   tool_choice?: "auto" | "none" | "any" | { type: "function"; function: { name: string } };
+  /**
+   * Timeout par tentative (ms). Défaut 90 s — calibré pour les appels
+   * synchrones sous le proxy nginx (60 s). Les appels lancés depuis un worker
+   * de FOND (ingestion PLU) ne sont plus bornés par nginx et peuvent porter ce
+   * plafond plus haut : une page scannée / haute résolution génère beaucoup de
+   * `save_rule` et dépasse régulièrement 90 s alors qu'un PDF « texte » léger
+   * passe largement dessous (d'où des villes qui marchaient et d'autres non).
+   */
+  timeoutMs?: number;
+  /** Nombre de ré-essais internes de fetchWithRetry (tentatives = retries + 1). Défaut 3. */
+  retries?: number;
 }
 
 export type AiResponseBlock =
@@ -511,7 +522,7 @@ export async function callAi(ctx: CallAiContext, request: AiRequest): Promise<Ai
       "Accept": "application/json",
     },
     body: JSON.stringify(body),
-  }, { timeoutMs: 90_000, retries: 3, label: "Mistral (call)" });
+  }, { timeoutMs: request.timeoutMs ?? 90_000, retries: request.retries ?? 3, label: "Mistral (call)" });
   const durationMs = Date.now() - startedAt;
   if (!res.ok) {
     const txt = await res.text();

@@ -56,6 +56,15 @@ export const zone_regulatory_rules = pgTable("zone_regulatory_rules", {
   citizen_summary: text("citizen_summary"),
   citizen_relevant: boolean("citizen_relevant").notNull().default(true),
   instructor_note: text("instructor_note"),
+  // Niveau de norme, pour arbitrer la PRIMAUTÉ entre règles co-applicables à une
+  // même parcelle (cf. NIVEAUX_NORME + §4.4 conception « mode d'opposabilité »).
+  //   "sup"  : servitude supra-PLU (SPR/AC4, PPRI…) — prime sur le PLU, à
+  //            périmètre et thème équivalents (résolution : Moitié 2).
+  //   "plu"  : règle de PLU/PLUi/PLUm ou saisie manuelle (défaut).
+  //   "autre": document sans opposabilité de conformité (OAP…).
+  // Posé à l'ingestion via niveauNormeForDocType(type du document source).
+  // Default "plu" → aucune règle existante ne change de comportement.
+  niveau_norme: text("niveau_norme").notNull().default("plu"),
   // Convention applicative : "valide" | "brouillon" | "rejete". Une règle
   // n'est consommée par le moteur d'instruction que si statut = "valide".
   // Default "brouillon" → safe-by-default : tout insert qui oublierait de

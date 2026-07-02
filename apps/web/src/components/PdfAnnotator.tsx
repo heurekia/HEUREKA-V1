@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { memo, useEffect, useRef, useState } from "react";
 import { Document, Page, pdfjs } from "react-pdf";
 import "react-pdf/dist/Page/AnnotationLayer.css";
 import "react-pdf/dist/Page/TextLayer.css";
@@ -98,7 +98,7 @@ const KIND_LABELS: Record<AnnotationKind, string> = {
   note_perso: "Note perso",
 };
 
-export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotationCreated, originalDownloadUrl }: Props) {
+function PdfAnnotatorImpl({ fileUrl, initialPage = 1, documentId, onAnnotationCreated, originalDownloadUrl }: Props) {
   const [numPages, setNumPages] = useState<number | null>(null);
   // `page` est désormais la page la plus visible dans le scroll continu —
   // dérivée du scrollTop, pas la seule page rendue. Sert au compteur en barre
@@ -804,3 +804,8 @@ export function PdfAnnotator({ fileUrl, initialPage = 1, documentId, onAnnotatio
     </div>
   );
 }
+
+// Mémoïsé : le viewer PDF charge pdfjs (~1 Mo) et monte react-pdf. Évite un
+// rechargement/remontage du document quand le parent re-render sans changement
+// de props (fileUrl / documentId stables).
+export const PdfAnnotator = memo(PdfAnnotatorImpl);

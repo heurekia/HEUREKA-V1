@@ -155,7 +155,7 @@ export function normalizeZoneCode(raw: string): string {
 
 /** Déduit le type de zone ("U" | "AU" | "A" | "N") à partir d'un code normalisé. */
 export function zoneTypeFromCode(code: string): string {
-  return /^[12]?AU/i.test(code) ? "AU"
+  return /^[1-9]?AU/i.test(code) ? "AU"
     : code.startsWith("U") ? "U"
     : code.startsWith("A") ? "A"
     : code.startsWith("N") ? "N" : "U";
@@ -163,7 +163,10 @@ export function zoneTypeFromCode(code: string): string {
 
 export function parseTocFromNativeText(text: string, minZones = 3): TocEntry[] {
   if (!text) return [];
-  const zoneCodeRe = /\bzone\s+(?<code>[12]?AU[a-z]{0,2}|U[A-Z][a-z]?|N[a-z]{0,2}|A[a-z]{0,2})\b/i;
+  // [1-9]?AU : couvre 1AU…9AU (et AU nu). Sans le [1-9] on perdait 3AU/4AU —
+  // p. ex. Rochecorbon (zone 3AU jamais détectée → sommaire à 8 zones au lieu
+  // de 9, et plage de 2AU dilatée jusqu'à l'ancre suivante).
+  const zoneCodeRe = /\bzone\s+(?<code>[1-9]?AU[a-z]{0,2}|U[A-Z][a-z]?|N[a-z]{0,2}|A[a-z]{0,2})\b/i;
   const pageRe = /(?:p\.?\s*|page\s+)?(\d{1,3})\s*$/;
   const seenCodes = new Map<string, TocEntry>();
   const lines = text.split(/\r?\n/);
@@ -240,6 +243,73 @@ export function parseTocFromHeadings(pages: string[], minZones = 3): TocEntry[] 
   });
   const entries = [...byCode.values()].sort((a, b) => a.startPage - b.startPage);
   return entries.length >= minZones ? entries : [];
+}
+
+// Titre de chapitre OUVRANT une section de zone dans le CORPS du règlement :
+// « Règlement de la zone UA : … » ou « DISPOSITIONS APPLICABLES À LA ZONE UA ».
+// Le séparateur « : » / « - » APRÈS le code distingue ce vrai titre de la
+// simple ligne de sommaire « REGLEMENT DE LA ZONE UA        9 » (numéro de page
+// en fin de ligne, aucun séparateur) → pas de faux positif sur le sommaire.
+const ZONE_CHAPTER_START_RE =
+  /(?:R[EÈÉ]GLEMENT\s+DE\s+LA\s+ZONE|DISPOSITIONS\s+APPLICABLES\s+[AÀ]\s+LA\s+ZONE)\s+([1-9]?AU[a-z0-9]*|U[A-Z][a-z0-9]?|N[a-z0-9]{0,2}|A[a-z0-9]{0,2})\s*[:\-–]/gim;
+
+/**
+ * Réaligne un sommaire dont les numéros de page sont ceux IMPRIMÉS (ils
+ * recommencent à 1 après la page de garde) sur les pages PHYSIQUES du PDF.
+ *
+ * POURQUOI c'est indispensable : `pdftoppm -f startPage` raisonne en pages
+ * physiques. Si le sommaire dit « Zone UA … 1 » mais que la zone UA commence en
+ * réalité page physique 5 (2 couvertures + 1 sommaire + 1 page de titre), on
+ * envoie à l'IA les couvertures au lieu du règlement — et TOUTES les zones sont
+ * décalées d'autant. Cas réel : Rochecorbon, décalage constant de +4.
+ *
+ * Méthode : on localise, dans le corps, le titre de chapitre de chaque zone
+ * (`ZONE_CHAPTER_START_RE`) → sa page physique. Le décalage imprimé→physique
+ * est ensuite VOTÉ par les zones relocalisées, et le décalage majoritaire est
+ * appliqué à toutes les ancres (y compris celles non relocalisées).
+ *
+ * SÉCURITÉ (ne pas casser les PLU qui marchaient déjà, ex. Tours) :
+ *   - `pages` = texte natif page par page (form-feed pdftotext), index 0 = p.1 ;
+ *   - les pages « sommaire » (≥ 3 titres regroupés) sont ignorées ;
+ *   - si rien n'est relocalisé, ou si le décalage majoritaire est 0, ou s'il
+ *     n'a pas au moins 2 votes concordants → on renvoie le sommaire INCHANGÉ.
+ *
+ * Fonction pure (pas d'I/O) → couverte par pluImport.test.ts.
+ */
+export function realignTocToPhysicalPages(toc: TocEntry[], pages: string[]): TocEntry[] {
+  if (toc.length === 0 || pages.length === 0) return toc;
+  // Page physique (1-indexée) du 1er titre de chapitre de chaque code.
+  const chapterPageByCode = new Map<string, number>();
+  pages.forEach((page, i) => {
+    const codes = new Set<string>();
+    for (const m of page.matchAll(ZONE_CHAPTER_START_RE)) {
+      const code = normalizeZoneCode(m[1] ?? "");
+      if (code) codes.add(code);
+    }
+    if (codes.size >= 3) return; // page de sommaire regroupant les titres → à écarter
+    for (const code of codes) {
+      if (!chapterPageByCode.has(code)) chapterPageByCode.set(code, i + 1);
+    }
+  });
+  // Décalage imprimé→physique, voté par les zones effectivement relocalisées.
+  const offsetVotes = new Map<number, number>();
+  for (const t of toc) {
+    const phys = chapterPageByCode.get(t.code);
+    if (phys == null) continue;
+    const off = phys - t.startPage;
+    offsetVotes.set(off, (offsetVotes.get(off) ?? 0) + 1);
+  }
+  if (offsetVotes.size === 0) return toc; // aucune zone relocalisée → on ne touche à rien
+  let bestOff = 0;
+  let bestVotes = 0;
+  for (const [off, votes] of offsetVotes) {
+    if (votes > bestVotes) { bestOff = off; bestVotes = votes; }
+  }
+  // Exiger ≥ 2 votes concordants (ou 1 si le sommaire n'a qu'une zone) et un
+  // décalage non nul : sinon la numérotation imprimée == physique (rien à faire).
+  const minVotes = Math.min(2, toc.length);
+  if (bestOff === 0 || bestVotes < minVotes) return toc;
+  return toc.map((t) => ({ ...t, startPage: t.startPage + bestOff }));
 }
 
 /**

@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode } from "./pluImport.ts";
+import { partitionPagesByZone, chunkPages, assertTocCoverage, parseTocFromNativeText, parseTocFromHeadings, realignTocToPhysicalPages, toArticleInt, isUsableRule, dedupeRules, mergeRulesByZoneCode, normalizeZoneCode, zoneTypeFromCode } from "./pluImport.ts";
 
 describe("partitionPagesByZone", () => {
   it("découpe les zones en plages fermées [start, end] selon la zone suivante", () => {
@@ -206,6 +206,69 @@ describe("parseTocFromNativeText", () => {
   it("ignore le texte vide / sans 'zone'", () => {
     expect(parseTocFromNativeText("")).toEqual([]);
     expect(parseTocFromNativeText("Article 1 - Occupations ........... 7")).toEqual([]);
+  });
+
+  it("détecte les zones à urbaniser 3AU/4AU (cas Rochecorbon)", () => {
+    // Régression : la regex `[12]?AU` perdait 3AU/4AU → 8 zones au lieu de 9.
+    const text = `
+      REGLEMENT DE LA ZONE 1AU                                          25
+      REGLEMENT DE LA ZONE 2AU                                          33
+      REGLEMENT DE LA ZONE 3AU                                          41
+      REGLEMENT DE LA ZONE AU                                           49
+    `;
+    const toc = parseTocFromNativeText(text);
+    expect(toc.map(z => z.code)).toEqual(["1AU", "2AU", "3AU", "AU"]);
+    expect(toc.find(z => z.code === "3AU")!.type).toBe("AU");
+  });
+});
+
+describe("realignTocToPhysicalPages", () => {
+  // Reproduit Rochecorbon : sommaire en pages IMPRIMÉES (UA=1…), corps décalé
+  // de +4 (2 couvertures + sommaire + page de titre) avec un titre de chapitre
+  // « Règlement de la zone X : … » en tête de chaque section.
+  const toc = [
+    { code: "UA", label: "Zone UA", type: "U", startPage: 1 },
+    { code: "UB", label: "Zone UB", type: "U", startPage: 9 },
+    { code: "3AU", label: "Zone 3AU", type: "AU", startPage: 41 },
+    { code: "N", label: "Zone N", type: "N", startPage: 65 },
+  ];
+  const bodyPages = (starts: Record<string, number>, total: number): string[] => {
+    const pages = Array.from({ length: total }, () => "Règlement — page de corps quelconque");
+    for (const [code, p] of Object.entries(starts)) {
+      pages[p - 1] = `Règlement                    Zone ${code}\nRèglement de la zone ${code} : intitulé`;
+    }
+    return pages;
+  };
+
+  it("réaligne les ancres imprimées sur les pages physiques (+4)", () => {
+    const pages = bodyPages({ UA: 5, UB: 13, "3AU": 45, N: 69 }, 79);
+    const fixed = realignTocToPhysicalPages(toc, pages);
+    expect(fixed.map(z => [z.code, z.startPage])).toEqual([
+      ["UA", 5], ["UB", 13], ["3AU", 45], ["N", 69],
+    ]);
+  });
+
+  it("no-op quand la numérotation imprimée == physique (ex. Tours)", () => {
+    const pages = bodyPages({ UA: 1, UB: 9, "3AU": 41, N: 65 }, 80);
+    expect(realignTocToPhysicalPages(toc, pages)).toEqual(toc);
+  });
+
+  it("no-op quand aucun titre de chapitre n'est reconnu dans le corps", () => {
+    const pages = Array.from({ length: 80 }, () => "texte sans titre de chapitre de zone");
+    expect(realignTocToPhysicalPages(toc, pages)).toEqual(toc);
+  });
+
+  it("ignore les pages de sommaire (≥ 3 titres regroupés) comme source d'ancre", () => {
+    const pages = Array.from({ length: 79 }, () => "corps");
+    // Fausse page « sommaire » avec tous les titres regroupés → ne doit PAS
+    // servir d'ancre (sinon décalage aberrant).
+    pages[2] = toc.map(z => `Règlement de la zone ${z.code} : x`).join("\n");
+    // Vrais débuts de chapitre, décalage +4.
+    for (const [code, p] of Object.entries({ UA: 5, UB: 13, "3AU": 45, N: 69 })) {
+      pages[p - 1] = `Règlement de la zone ${code} : intitulé`;
+    }
+    const fixed = realignTocToPhysicalPages(toc, pages);
+    expect(fixed.find(z => z.code === "UA")!.startPage).toBe(5);
   });
 });
 

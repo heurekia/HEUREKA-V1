@@ -32,6 +32,7 @@ const REVIEW_THRESHOLD = 0.7;     // sous ce score, le segment est marqué « à
 const MIN_CODE_CONFIDENCE = 0.35; // sous ce score, la page bascule en « autre »
 const VISION_DPI = 130;           // assez net pour lire le petit texte du cartouche, sans exploser le payload
 const VISION_BATCH = 6;           // pages par appel vision (borne la taille du payload)
+const VISION_CONCURRENCY = 3;     // batches vision en parallèle (quota Mistral ~5 req/s)
 const MAX_PAGES = 60;             // au-delà, on ne segmente pas page à page (filet)
 
 const VALID_TYPES: PieceType[] = [
@@ -176,6 +177,23 @@ async function classifyByText(
   return parsePageClassifications(text, 0);
 }
 
+// Petit pool de parallélisme borné (même patron que dossierConformity) : évite
+// de saturer l'API Mistral (~5 req/s sur La Plateforme) tout en évitant la
+// sérialisation stricte convert→appel IA batch par batch.
+async function mapWithConcurrency<T, R>(items: T[], limit: number, fn: (item: T, i: number) => Promise<R>): Promise<R[]> {
+  const out: R[] = new Array(items.length);
+  let cursor = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i]!, i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
 // ── Classification par la vision (PDF scanné sans couche texte) ──────────────
 async function classifyByVision(
   buffer: Buffer,
@@ -184,16 +202,28 @@ async function classifyByVision(
   trace: Trace,
 ): Promise<PageClassification[]> {
   const total = Math.min(pageCount, MAX_PAGES);
-  const all: PageClassification[] = [];
+
+  // Découpe en batches indépendants (chacun porte son offset de page), puis
+  // traite ces batches avec un petit parallélisme. Auparavant la boucle était
+  // strictement séquentielle : sur un dossier de 60 pages (10 batches), les
+  // rendus pdftoppm + appels vision s'additionnaient et pouvaient dépasser le
+  // timeout proxy nginx (60 s). Les batches étant indépendants, on les recouvre.
+  const batches: Array<{ start: number; firstPage: number; count: number }> = [];
   for (let start = 0; start < total; start += VISION_BATCH) {
-    const firstPage = start + 1;
-    const count = Math.min(VISION_BATCH, total - start);
+    batches.push({ start, firstPage: start + 1, count: Math.min(VISION_BATCH, total - start) });
+  }
+
+  const perBatch = await mapWithConcurrency(batches, VISION_CONCURRENCY, async ({ start, firstPage, count }) => {
     let pngs: Buffer[];
     try {
       pngs = await convertPdfPagesToPng(buffer, { firstPage, maxPages: count, dpi: VISION_DPI });
     } catch (err) {
       console.warn("[pieceSegmenter] convertPdfPagesToPng a échoué:", err instanceof Error ? err.message : err);
-      break;
+      // Repli : ne pas perdre silencieusement ces pages — les marquer « autre »
+      // à faible confiance pour qu'elles restent visibles/vérifiables par l'agent.
+      return Array.from({ length: count }, (_, k) => (
+        { page: firstPage + k, codes: [], types: ["autre"], confidence: 0.2, title: "" } as PageClassification
+      ));
     }
     const content: Array<{ type: "text"; text: string } | { type: "image"; source: { type: "base64"; media_type: string; data: string } }> = [
       { type: "text", text: `Voici ${pngs.length} page(s), dans l'ordre (ce sont les pages ${firstPage} à ${firstPage + pngs.length - 1} du dossier). Classe-les en respectant cet ordre.` },
@@ -211,8 +241,10 @@ async function classifyByVision(
       },
     );
     const text = msg.content[0]?.type === "text" ? msg.content[0].text : "{}";
-    all.push(...parsePageClassifications(text, start));
-  }
+    return parsePageClassifications(text, start);
+  });
+
+  const all: PageClassification[] = perBatch.flat();
   // Filet : pages au-delà du plafond → « autre » à vérifier.
   for (let p = total + 1; p <= pageCount; p++) {
     all.push({ page: p, codes: [], types: ["autre"], confidence: 0.2, title: "" });
