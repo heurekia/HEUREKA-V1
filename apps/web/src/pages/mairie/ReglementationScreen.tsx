@@ -7,12 +7,11 @@ import { api } from "../../lib/api";
 
 type ZoneProgress = { code: string; label: string; type: string; status: "pending" | "done"; rules?: number; vision?: number; batch?: number; total_batches?: number };
 
-// Le jobId actif (ingestion en cours côté serveur) est persisté en
-// localStorage clé `plu-ingest-job:<INSEE>` : si l'utilisateur navigue ailleurs
-// puis revient sur cette page, on reprend le polling — l'extraction continue
-// côté serveur tant que le process Node tourne, indépendamment de la connexion
-// HTTP qui a lancé le job.
-const ACTIVE_JOB_KEY = (insee: string) => `plu-ingest-job:${insee.trim()}`;
+// Le jobId actif (ingestion en cours côté serveur) est persisté en localStorage
+// (clé `plu-ingest-job:<INSEE>` pour le PLU, `spr-ingest-job:<INSEE>` pour le
+// SPR — cf. JOB_KEY dans PluUploadPanel) : si l'utilisateur navigue ailleurs
+// puis revient, on reprend le polling — l'extraction continue côté serveur tant
+// que le process Node tourne, indépendamment de la connexion HTTP.
 
 type ZoneSpec = { code: string; label: string; type: string; total_batches: number };
 type StatusResp = {
@@ -30,7 +29,16 @@ type StatusResp = {
   error: string | null;
 };
 
-function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, onManual }: { commune: string; inseeCode?: string; onSuccess: () => void; loadError: string | null; onCancel?: () => void; onManual?: () => void }) {
+function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, onManual, spr }: { commune: string; inseeCode?: string; onSuccess: () => void; loadError: string | null; onCancel?: () => void; onManual?: () => void; spr?: boolean }) {
+  // Mode SPR : réutilise TOUTE la mécanique d'ingestion (job de fond, /start,
+  // polling /status, reprise sur remontage, affichage de progression par
+  // section). Seuls changent : la clé de reprise (localStorage), la requête de
+  // démarrage (création d'un document `spr` + ingestion en mode doc_id) et
+  // quelques libellés. Le chemin PLU (spr absent) reste identique à l'existant.
+  const JOB_KEY = (insee: string) => `${spr ? "spr" : "plu"}-ingest-job:${insee.trim()}`;
+  const L = spr
+    ? { title: "règlement SPR", desc: "Importez le règlement écrit du Site Patrimonial Remarquable en PDF. L'IA extrait les secteurs et prescriptions — les règles sont créées en brouillon (distinctes du PLU) pour validation.", detected: "Secteurs détectés", action: "Analyser le SPR", unit: "secteur", hint: "Règlement écrit du SPR · max ~35 Mo", accent: "#9D174D", accentSoft: "#FDF2F8", accentBorder: "#FBCFE8" }
+    : { title: "PLU", desc: "Importez le règlement PLU en PDF. L'IA extrait les zones et règles automatiquement — les règles sont créées en brouillon pour validation.", detected: "Zones détectées", action: "Analyser le PLU", unit: "zone", hint: "Règlement PLU uniquement (pas le RI) · max ~35 Mo", accent: "#4F46E5", accentSoft: "#EEF2FF", accentBorder: "#C7D2FE" };
   const [pdfFile, setPdfFile] = useState<File | null>(null);
   const [communeInput, setCommuneInput] = useState(commune);
   const [inseeInput, setInseeInput] = useState(inseeCode ?? "");
@@ -63,14 +71,14 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
       setPhase(null);
       setLoading(false);
       stopPolling();
-      try { localStorage.removeItem(ACTIVE_JOB_KEY(s.commune.insee_code)); } catch { /* SSR-safe */ }
+      try { localStorage.removeItem(JOB_KEY(s.commune.insee_code)); } catch { /* SSR-safe */ }
       setTimeout(onSuccess, 1500);
     } else if (s.status === "error") {
       setError(s.error ?? "Erreur serveur");
       setPhase(null);
       setLoading(false);
       stopPolling();
-      try { localStorage.removeItem(ACTIVE_JOB_KEY(s.commune.insee_code)); } catch { /* SSR-safe */ }
+      try { localStorage.removeItem(JOB_KEY(s.commune.insee_code)); } catch { /* SSR-safe */ }
     }
   };
 
@@ -84,7 +92,7 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
           // l'utilisateur de relancer.
           setError("Le job d'ingestion a expiré côté serveur (process redémarré ?). Relancez l'import.");
           setPhase(null); setLoading(false); stopPolling();
-          try { localStorage.removeItem(ACTIVE_JOB_KEY(inseeInput)); } catch { /* SSR-safe */ }
+          try { localStorage.removeItem(JOB_KEY(inseeInput)); } catch { /* SSR-safe */ }
           return;
         }
         if (!r.ok) return; // erreur transitoire (réseau, 5xx) → on retentera au prochain tick
@@ -103,7 +111,7 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
     const insee = (inseeCode ?? "").trim();
     if (!insee) return;
     let savedJob: string | null = null;
-    try { savedJob = localStorage.getItem(ACTIVE_JOB_KEY(insee)); } catch { /* SSR-safe */ }
+    try { savedJob = localStorage.getItem(JOB_KEY(insee)); } catch { /* SSR-safe */ }
     if (!savedJob) return;
     setLoading(true);
     setPhase("Reprise de l'ingestion en cours…");
@@ -169,17 +177,28 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
     };
 
     try {
-      setPhase("Lecture du sommaire…");
-      const startResp = await postJSONWithRetry<StartResp>(
-        "/api/mairie/admin/ingest-plu-pdf/start",
-        { commune_name: communeInput.trim(), insee_code: inseeInput.trim(), pdf_base64 },
-      );
+      // Corps de démarrage selon le mode : SPR = on crée d'abord un document
+      // `spr` (mode commune) puis on ingère en MODE DOCUMENT (doc_id) → zones
+      // SPR isolées, PLU jamais purgé. PLU = mode commune historique inchangé.
+      let startBody: unknown;
+      if (spr) {
+        setPhase("Création du document SPR…");
+        const doc = await postJSON<{ id: string }>("/api/mairie/documents", {
+          commune_name: communeInput.trim(), type: "spr", name: `SPR — ${communeInput.trim()}`,
+          original_filename: pdfFile.name, file_size: pdfFile.size,
+        });
+        startBody = { doc_id: doc.id, pdf_base64 };
+      } else {
+        startBody = { commune_name: communeInput.trim(), insee_code: inseeInput.trim(), pdf_base64 };
+      }
+      setPhase(spr ? "Analyse du règlement SPR…" : "Lecture du sommaire…");
+      const startResp = await postJSONWithRetry<StartResp>("/api/mairie/admin/ingest-plu-pdf/start", startBody);
       const { jobId, zones: zoneSpecs } = startResp;
       // Persiste le jobId : si l'utilisateur navigue ailleurs, on reprendra au
       // remount via le useEffect ci-dessus.
-      try { localStorage.setItem(ACTIVE_JOB_KEY(inseeInput.trim()), jobId); } catch { /* SSR-safe */ }
+      try { localStorage.setItem(JOB_KEY(inseeInput.trim()), jobId); } catch { /* SSR-safe */ }
       setZoneProgress(zoneSpecs.map((z) => ({ code: z.code, label: z.label, type: z.type, status: "pending" })));
-      setPhase(`Sommaire : ${zoneSpecs.length} zones (${zoneSpecs.map((z) => z.code).join(", ")}). Extraction en arrière-plan…`);
+      setPhase(`${zoneSpecs.length} ${L.unit}${zoneSpecs.length > 1 ? "s" : ""} détecté${zoneSpecs.length > 1 ? "s" : ""}. Extraction en arrière-plan…`);
       // Le serveur fait tout le travail (extraction des règles + écriture DB).
       // On suit l'avancée via polling de /status.
       startPolling(jobId);
@@ -190,7 +209,7 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
     }
   };
 
-  const ZONE_COLORS: Record<string, string> = { U: "#4338CA", AU: "#C2410C", A: "#A16207", N: "#15803D" };
+  const ZONE_COLORS: Record<string, string> = { U: "#4338CA", AU: "#C2410C", A: "#A16207", N: "#15803D", spr: "#9D174D" };
   const doneCount = zoneProgress.filter(z => z.status === "done").length;
 
   return (
@@ -198,25 +217,29 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
       <div style={{ width: "100%", maxWidth: 540, background: "white", borderRadius: 16, border: "1px solid #E2E8F0", padding: 32, boxShadow: "0 2px 16px rgba(0,0,0,0.06)" }}>
         <div style={{ marginBottom: 24 }}>
           <div style={{ fontSize: 22, marginBottom: 10 }}>📄</div>
-          <div style={{ fontWeight: 700, color: "#0F172A", fontSize: 16, marginBottom: 6 }}>Charger le PLU de {commune || "la commune"}</div>
+          <div style={{ fontWeight: 700, color: "#0F172A", fontSize: 16, marginBottom: 6 }}>Charger le {L.title} de {commune || "la commune"}</div>
           <div style={{ fontSize: 13, color: "#64748b" }}>
-            Importez le règlement PLU en PDF. L'IA extrait les zones et règles automatiquement — les règles sont créées en brouillon pour validation.
+            {L.desc}
           </div>
           {loadError && <div style={{ marginTop: 10, fontSize: 12, color: "#DC2626" }}>Erreur de chargement : {loadError}</div>}
         </div>
 
         {!loading && (
           <>
-            <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
-              <div style={{ flex: 2 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>COMMUNE</div>
-                <input value={communeInput} onChange={e => setCommuneInput(e.target.value)} placeholder="ex : Tours" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
+            {/* Commune/INSEE éditables au bootstrap PLU ; en mode SPR la commune
+                est fixée (onglet d'une commune donnée) → champs masqués. */}
+            {!spr && (
+              <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+                <div style={{ flex: 2 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>COMMUNE</div>
+                  <input value={communeInput} onChange={e => setCommuneInput(e.target.value)} placeholder="ex : Tours" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
+                </div>
+                <div style={{ flex: 1 }}>
+                  <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>CODE INSEE</div>
+                  <input value={inseeInput} onChange={e => setInseeInput(e.target.value)} placeholder="ex : 37261" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
+                </div>
               </div>
-              <div style={{ flex: 1 }}>
-                <div style={{ fontSize: 11, fontWeight: 600, color: "#64748b", marginBottom: 4 }}>CODE INSEE</div>
-                <input value={inseeInput} onChange={e => setInseeInput(e.target.value)} placeholder="ex : 37261" style={{ width: "100%", padding: "8px 10px", border: "1px solid #E2E8F0", borderRadius: 8, fontSize: 13, outline: "none", boxSizing: "border-box" as const }} />
-              </div>
-            </div>
+            )}
 
             <div
               onDragOver={e => { e.preventDefault(); setDragging(true); }}
@@ -234,7 +257,7 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
                 <>
                   <div style={{ fontSize: 28, marginBottom: 8 }}>📂</div>
                   <div style={{ fontSize: 13, fontWeight: 500, color: "#475569" }}>Glissez le PDF ici ou cliquez pour parcourir</div>
-                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>Règlement PLU uniquement (pas le RI) · max ~35 Mo</div>
+                  <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4 }}>{L.hint}</div>
                 </>
               )}
               <input ref={fileRef} type="file" accept="application/pdf" style={{ display: "none" }} onChange={e => handleFile(e.target.files?.[0] ?? null)} />
@@ -259,7 +282,7 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
             {zoneProgress.length > 0 && (
               <div style={{ border: "1px solid #E2E8F0", borderRadius: 10, overflow: "hidden" }}>
                 <div style={{ padding: "8px 14px", background: "#F8FAFC", borderBottom: "1px solid #E2E8F0", fontSize: 11, fontWeight: 600, color: "#64748b", display: "flex", justifyContent: "space-between" }}>
-                  <span>Zones détectées</span>
+                  <span>{L.detected}</span>
                   <span style={{ color: "#4F46E5" }}>{doneCount} / {zoneProgress.length}</span>
                 </div>
                 <div style={{ maxHeight: 220, overflowY: "auto" }}>
@@ -293,7 +316,7 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
         )}
         {done && (
           <div style={{ background: "#F0FDF4", border: "1px solid #86EFAC", borderRadius: 8, padding: "12px 14px", fontSize: 13, color: "#15803d", marginBottom: 14 }}>
-            ✓ {done.zones} zone{done.zones > 1 ? "s" : ""} · {done.rules} règle{done.rules > 1 ? "s" : ""} extraites
+            ✓ {done.zones} {L.unit}{done.zones > 1 ? "s" : ""} · {done.rules} règle{done.rules > 1 ? "s" : ""} extraites
             {done.needs_review > 0 && ` · ${done.needs_review} à vérifier`} — chargement…
           </div>
         )}
@@ -303,9 +326,9 @@ function PluUploadPanel({ commune, inseeCode, onSuccess, loadError, onCancel, on
             <button
               onClick={handleSubmit}
               disabled={!pdfFile || !communeInput || !inseeInput}
-              style={{ width: "100%", background: !pdfFile || !communeInput || !inseeInput ? "#A5B4FC" : "#4F46E5", color: "white", border: "none", borderRadius: 10, padding: "12px 20px", fontSize: 14, fontWeight: 700, cursor: !pdfFile ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}
+              style={{ width: "100%", background: !pdfFile || !communeInput || !inseeInput ? "#A5B4FC" : L.accent, color: "white", border: "none", borderRadius: 10, padding: "12px 20px", fontSize: 14, fontWeight: 700, cursor: !pdfFile ? "not-allowed" : "pointer", display: "flex", alignItems: "center", justifyContent: "center", gap: 10 }}
             >
-              Analyser le PLU
+              {L.action}
             </button>
             {onManual && (
               <>
@@ -416,136 +439,6 @@ const PLU_ARTICLES: Record<number, { title: string; topic: string; abroge?: bool
   14: { title: "Coefficient d'occupation des sols — COS (sans objet — loi ALUR)", topic: "cos", abroge: true },
 };
 
-// Panneau d'upload du règlement SPR — VOLONTAIREMENT ISOLÉ de PluUploadPanel
-// pour ne pas toucher le flux PLU qui fonctionne. Il crée un regulatory_document
-// de type `spr` (mode commune) puis lance l'ingestion en MODE DOCUMENT (doc_id)
-// → les zones SPR (zone_type "spr", source_document_id) cohabitent avec le PLU
-// sans jamais le purger. jobId persisté sous une clé distincte du PLU.
-function SprUploadPanel({ commune, inseeCode, onSuccess }: { commune: string; inseeCode?: string; onSuccess: () => void }) {
-  const [pdfFile, setPdfFile] = useState<File | null>(null);
-  const [dragging, setDragging] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [phase, setPhase] = useState<string | null>(null);
-  const [progress, setProgress] = useState<{ done: number; total: number } | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [done, setDone] = useState<{ zones: number; rules: number } | null>(null);
-  const fileRef = useRef<HTMLInputElement>(null);
-  const pollTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const SPR_JOB_KEY = `spr-ingest-job:${(inseeCode ?? "").trim()}`;
-
-  const stopPolling = () => {
-    if (pollTimerRef.current) { clearInterval(pollTimerRef.current); pollTimerRef.current = null; }
-  };
-
-  const startPolling = (jobId: string) => {
-    stopPolling();
-    const tick = async () => {
-      try {
-        const r = await fetch(`/api/mairie/admin/ingest-plu-pdf/status?jobId=${encodeURIComponent(jobId)}`, { credentials: "include" });
-        if (r.status === 404) {
-          setError("Le job d'ingestion SPR a expiré côté serveur. Relancez l'import.");
-          setPhase(null); setLoading(false); stopPolling();
-          try { localStorage.removeItem(SPR_JOB_KEY); } catch { /* SSR-safe */ }
-          return;
-        }
-        if (!r.ok) return; // transitoire → prochain tick
-        const s = await r.json() as StatusResp;
-        setPhase(s.phase);
-        setProgress({ done: s.zones.filter((z) => z.done).length, total: s.zones.length });
-        if (s.status === "done" && s.result) {
-          setDone({ zones: s.result.zones, rules: s.result.rules });
-          setPhase(null); setLoading(false); stopPolling();
-          try { localStorage.removeItem(SPR_JOB_KEY); } catch { /* SSR-safe */ }
-          setTimeout(onSuccess, 1500);
-        } else if (s.status === "error") {
-          setError(s.error ?? "Erreur serveur"); setPhase(null); setLoading(false); stopPolling();
-          try { localStorage.removeItem(SPR_JOB_KEY); } catch { /* SSR-safe */ }
-        }
-      } catch { /* blip réseau — tick suivant */ }
-    };
-    void tick();
-    pollTimerRef.current = setInterval(tick, 2500);
-  };
-
-  // Reprend le polling si un job SPR était en cours pour cette commune.
-  useEffect(() => {
-    const insee = (inseeCode ?? "").trim();
-    if (!insee) return;
-    let saved: string | null = null;
-    try { saved = localStorage.getItem(SPR_JOB_KEY); } catch { /* SSR-safe */ }
-    if (saved) { setLoading(true); setPhase("Reprise de l'ingestion SPR…"); startPolling(saved); }
-    return stopPolling;
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inseeCode]);
-
-  const handleFile = (f: File | null) => { setPdfFile(f); setError(null); setDone(null); };
-
-  const handleSubmit = async () => {
-    if (!pdfFile) { setError("Sélectionnez le PDF du règlement SPR."); return; }
-    setLoading(true); setError(null); setDone(null); setPhase("Lecture du PDF…");
-    try {
-      const pdf_base64 = await new Promise<string>((resolve, reject) => {
-        const reader = new FileReader();
-        reader.onload = () => resolve((reader.result as string).split(",")[1]!);
-        reader.onerror = reject;
-        reader.readAsDataURL(pdfFile);
-      });
-      // 1) Créer le document SPR (mode commune). Sans pdf_base64 ici : la
-      //    couche texte sert à l'extraction des règles via /start, pas au RAG.
-      setPhase("Création du document SPR…");
-      const doc = await api.post<{ id: string }>("/mairie/documents", {
-        commune_name: commune, type: "spr", name: `SPR — ${commune}`, original_filename: pdfFile.name, file_size: pdfFile.size,
-      });
-      // 2) Ingestion en MODE DOCUMENT → zones SPR isolées du PLU.
-      setPhase("Analyse du règlement SPR…");
-      const start = await api.post<{ jobId: string }>("/mairie/admin/ingest-plu-pdf/start", { doc_id: doc.id, pdf_base64 });
-      try { localStorage.setItem(SPR_JOB_KEY, start.jobId); } catch { /* SSR-safe */ }
-      startPolling(start.jobId);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Erreur serveur"); setPhase(null); setLoading(false);
-    }
-  };
-
-  return (
-    <div style={{ padding: 24 }}>
-      <div style={{ fontWeight: 700, color: "#0F172A", fontSize: 15, marginBottom: 6 }}>Charger le règlement SPR de {commune}</div>
-      <div style={{ fontSize: 13, color: "#64748b", marginBottom: 16 }}>
-        Importez le règlement écrit du Site Patrimonial Remarquable en PDF. L'IA extrait les secteurs et prescriptions — les règles sont créées en brouillon, <b>distinctes du PLU</b>, pour validation.
-      </div>
-
-      {loading ? (
-        <div style={{ border: "1px solid #FBCFE8", background: "#FDF2F8", borderRadius: 10, padding: 16 }}>
-          <div style={{ fontWeight: 600, color: "#9D174D", fontSize: 13 }}>⟳ {phase ?? "Extraction en cours…"}</div>
-          {progress && <div style={{ fontSize: 12, color: "#64748b", marginTop: 6 }}>Secteurs traités : {progress.done} / {progress.total}</div>}
-          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 8 }}>Vous pouvez fermer cet onglet — l'extraction continue côté serveur.</div>
-        </div>
-      ) : done ? (
-        <div style={{ border: "1px solid #BBF7D0", background: "#F0FDF4", borderRadius: 10, padding: 16, fontSize: 13, color: "#15803D" }}>
-          ✓ SPR importé : {done.zones} secteur{done.zones > 1 ? "s" : ""}, {done.rules} règle{done.rules > 1 ? "s" : ""} en brouillon.
-        </div>
-      ) : (
-        <>
-          <div
-            onDragOver={(e) => { e.preventDefault(); setDragging(true); }}
-            onDragLeave={() => setDragging(false)}
-            onDrop={(e) => { e.preventDefault(); setDragging(false); const f = e.dataTransfer.files[0]; if (f?.type === "application/pdf") handleFile(f); else setError("Seuls les PDF sont acceptés."); }}
-            onClick={() => fileRef.current?.click()}
-            style={{ border: `2px dashed ${dragging ? "#9D174D" : pdfFile ? "#22c55e" : "#CBD5E1"}`, borderRadius: 12, padding: "24px 16px", textAlign: "center", cursor: "pointer", background: dragging ? "#FDF2F8" : pdfFile ? "#F0FDF4" : "#F8FAFC", marginBottom: 14 }}
-          >
-            {pdfFile
-              ? <div style={{ fontSize: 13, fontWeight: 600, color: "#16a34a" }}>✓ {pdfFile.name}</div>
-              : <div style={{ fontSize: 13, color: "#475569" }}>Glissez le PDF du règlement SPR ici ou cliquez pour parcourir</div>}
-          </div>
-          <input ref={fileRef} type="file" accept="application/pdf" style={{ display: "none" }} onChange={(e) => handleFile(e.target.files?.[0] ?? null)} />
-          <button onClick={handleSubmit} disabled={!pdfFile} style={{ border: "none", background: pdfFile ? "#9D174D" : "#E2E8F0", color: pdfFile ? "white" : "#94a3b8", borderRadius: 8, padding: "10px 16px", fontSize: 13, fontWeight: 600, cursor: pdfFile ? "pointer" : "not-allowed" }}>
-            Lancer l'extraction SPR
-          </button>
-        </>
-      )}
-      {error && <div style={{ marginTop: 12, fontSize: 12, color: "#DC2626" }}>{error}</div>}
-    </div>
-  );
-}
 
 const ZONE_TYPE_STYLE: Record<string, { bg: string; color: string; border: string; label: string }> = {
   U:  { bg: "#EEF2FF", color: "#4338CA", border: "#C7D2FE", label: "Urbaine" },
@@ -1159,8 +1052,10 @@ export function ReglementationScreen({ commune, inseeCode }: { commune: string; 
       {/* ── Right: rules ── */}
       <div style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}>
         {onSpr && sprZones.length === 0 ? (
-          // Onglet SPR sans règlement encore chargé → panneau d'upload SPR isolé.
-          <SprUploadPanel commune={commune} inseeCode={inseeCode} onSuccess={load} />
+          // Onglet SPR sans règlement encore chargé → même panneau d'ingestion
+          // que le PLU, en mode `spr` (crée le document + ingère en doc_id ;
+          // réutilise job de fond, polling, reprise et progression par secteur).
+          <PluUploadPanel spr commune={commune} inseeCode={inseeCode} onSuccess={load} loadError={null} />
         ) : !selectedZone ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "center", height: 200, color: "#9CA3AF", fontSize: 14 }}>
             ← Sélectionnez {onSpr ? "un secteur" : "une zone"}
